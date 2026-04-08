@@ -1,26 +1,13 @@
-# Bundle Transition Refactoring Design
+# Bundle State Machine Design
 
-This document describes the design goals for centralizing bundle state transitions, the problems with the current approach, and proposed architectural options.
+This document defines the bundle state machine, the states a bundle can be in, the transitions between them, and the crash recovery semantics.
 
 ## Related Documents
 
-- **[Bundle State Machine Design](bundle_state_machine_design.md)**: Current state machine diagram and crash safety model
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Persistence model for bundle state
 - **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter hooks and checkpoint ordering
 
-## Motivation
-
-The bundle state machine is the core design of the BPA. Every bundle follows a
-lifecycle from reception to final disposition, and the state determines what
-operations are valid at each step. Getting this wrong causes data loss, crash
-recovery failures, or bundles stuck in invalid states.
-
-Currently, state transitions are scattered across the codebase. Any code with
-access to the bundle can set `metadata.status` to any value, skip persistence,
-or apply an invalid transition. The state machine exists only as documentation
-and developer discipline - the code does not enforce it.
-
-## Problems
+## Problems with the current implementation
 
 ### 1. No transition validation
 
@@ -30,8 +17,7 @@ Any code can assign any state:
 bundle.metadata.status = BundleStatus::Dispatching;
 ```
 
-There is no check that the bundle was in a valid source state. An `AduFragment`
-bundle could be set to `Dispatching` without going through reassembly.
+There is no check that the bundle was in a valid source state.
 
 ### 2. Persistence is a separate call
 
@@ -42,228 +28,287 @@ bundle.metadata.status = BundleStatus::Waiting;
 self.store.update_status(&mut bundle, &BundleStatus::Waiting).await;
 ```
 
-If the persistence call is forgotten, the in-memory state and storage diverge.
-A crash at this point loses the transition.
+If the persistence call is forgotten, in-memory state and storage diverge.
 
 ### 3. State transitions in the wrong layer
 
-The storage layer (`Store`, `channel::Sender`) performs state transitions.
-`channel::Sender::send()` auto-updates the bundle status to the channel's
-target state. `adu_reassembly.rs` transitions bundles to `AduFragment`.
-State machine logic belongs in the dispatcher, not in storage plumbing.
+The storage layer (`channel::Sender`) performs state transitions. `channel::Sender::send()` auto-updates the bundle status to the channel's target state. State machine logic belongs in the dispatcher, not in storage plumbing.
 
 ### 4. Inconsistent naming
 
-The enum is `BundleStatus` but represents processing state, not protocol
-status. Variant names mix tenses (`New`, `Dispatching`, `Waiting`,
-`ForwardPending`). The field is `metadata.status` but conceptually it is
-the bundle's processing state.
+The enum is `BundleStatus` but represents processing state, not protocol status. Variant names mix tenses (`New`, `Dispatching`, `Waiting`, `ForwardPending`).
 
-## Common Ground
+### 5. Missing outcome states
 
-Regardless of which option is chosen, the following should apply:
+The current design goes directly from `Dispatching`/`ForwardPending` to tombstone without a checkpoint. A crash after CLA transmission or local delivery but before tombstoning causes duplicate sends or deliveries on recovery.
 
-### State enum
+### 6. Unnecessary re-processing
 
-Rename to `BundleState` with consistent naming:
+`RoutePending` bypasses `Dispatching` and duplicates the dispatch fan-out. `ServicePending` re-runs the Ingress filter on bundles that already passed it.
 
+## State machine
+
+### States
+
+Rename `BundleStatus` to `BundleState`.
+
+**Hot path**, the states every transit bundle follows:
+
+| State         | Situation                                 | Recovery                     |
+| ------------- | ----------------------------------------- | ---------------------------- |
+| `Ingested`    | Entered system, stored but unprocessed    | Re-run ingestion             |
+| `Dispatching` | Ingress filter passed, undergoing routing | Skip ingress, re-route       |
+| `Forwarded`   | CLA confirmed transmission                | Tombstone (don't re-send)    |
+| `Delivered`   | Local service received payload            | Tombstone (don't re-deliver) |
+| `Tombstone`   | Consumed / deleted (terminal)             | -                            |
+
+**Waiting for event**, bundle idle, waiting for an external condition:
+
+| State                              | Waiting for          | Resolves to                              |
+| ---------------------------------- | -------------------- | ---------------------------------------- |
+| `ForwardPending { peer, queue }`   | CLA ready to send    | `Forwarded` (send)                       |
+| `RoutePending`                     | Route in RIB         | RIB result (no persist to `Dispatching`) |
+| `ReassemblyPending { source, ts }` | Sibling fragments    | `Tombstone` (consumed)                   |
+| `ServicePending { service }`       | Service registration | `Delivered` (deliver directly)           |
+
+With custody transfer enabled, `Forwarded` and `Delivered` become durable states. The bundle stays until a custody acknowledgment arrives.
+
+```rust
+pub enum BundleState {
+    // Hot path
+    Ingested,
+    Dispatching,
+    Forwarded,
+    Delivered,
+
+    // Waiting for event
+    ForwardPending { peer: u32, queue: Option<u32> },
+    RoutePending,
+    ReassemblyPending { source: Eid, timestamp: CreationTimestamp },
+    ServicePending { service: Eid },
+}
 ```
-BundleState::Received         Bundle arrived, not yet processed
-BundleState::Ingested         Ingress filter done, ready for routing
-BundleState::ForwardPending   Queued for CLA peer
-BundleState::FragmentPending  Waiting for sibling fragments
-BundleState::RoutePending     No route available, waiting
-BundleState::ServicePending   Status report waiting for service registration
+
+### Transition graph
+
+```mermaid
+graph LR
+    cla(( )) --> Ingested
+    svc(( )) -->|Originate filter| Dispatching
+    Ingested -->|Ingress filter| Dispatching
+    Dispatching -->|Egress filter, CLA sends| Forwarded
+    Dispatching -->|Deliver filter| Delivered
+    Forwarded --> Tombstone([Tombstone])
+    Delivered --> Tombstone
+
+    Dispatching -->|CLA busy| ForwardPending
+    Dispatching -->|no route| RoutePending
+    Dispatching -->|fragment, siblings missing| ReassemblyPending
+    Dispatching -.->|fragments assembled| Ingested
+    Dispatching -->|no service| ServicePending
+    Dispatching -->|drop / filter drops| Tombstone
+
+    ForwardPending -->|Egress filter, CLA sends| Forwarded
+    ForwardPending -.->|peer dies| Dispatching
+    ForwardPending -->|expired / filter drops| Tombstone
+    RoutePending -.->|route appears| Dispatching
+    RoutePending -->|expired| Tombstone
+    ReassemblyPending -->|expired / consumed| Tombstone
+    ServicePending -->|Deliver filter| Delivered
+    ServicePending -->|expired / filter drops| Tombstone
+
+    Ingested -->|expired / invalid| Tombstone
+
+    style cla fill:#3498db,stroke:#2980b9,color:#fff
+    style svc fill:#3498db,stroke:#2980b9,color:#fff
+    style Ingested fill:#3498db,stroke:#2980b9,color:#fff
+    style Dispatching fill:#3498db,stroke:#2980b9,color:#fff
+    style Forwarded fill:#3498db,stroke:#2980b9,color:#fff
+    style Delivered fill:#3498db,stroke:#2980b9,color:#fff
+    style Tombstone fill:#e74c3c,stroke:#c0392b,color:#fff
+    style ForwardPending fill:#f39c12,stroke:#e67e22,color:#fff
+    style RoutePending fill:#f39c12,stroke:#e67e22,color:#fff
+    style ReassemblyPending fill:#f39c12,stroke:#e67e22,color:#fff
+    style ServicePending fill:#f39c12,stroke:#e67e22,color:#fff
 ```
 
-### State transition diagram
+> **Legend**: :blue_circle: hot path, :orange_circle: waiting for event, :red_circle: terminal. Solid arrows = forward transitions. Dotted arrows = re-entry into dispatch logic (no persist).
 
-```
-                       ingest()
- Received ───────────────────────────> Ingested
- RoutePending ────────────────────────>    |
- FragmentPending ─────────────────────>    |
- ServicePending ──────────────────────>    |
-                                           |
-              ┌──── route() ──────── RoutePending ──── (watch + expire)
-              |
- Ingested ────┼──── forward() ────── ForwardPending ── (watch + expire)
-              |
-              ├──── fragment() ───── FragmentPending ─ (watch + expire)
-              |
-              ├──── service() ────── ServicePending ── (watch + expire)
-              |
-              ├──── deliver ───────── (tombstone)
-              |
-              └──── drop ──────────── (tombstone)
+### Filter hooks
 
- ForwardPending ─── route() ───────── RoutePending ── (peer died)
+Four filter hooks, each on a specific edge:
 
- Any ───────────── delete() ────────── (data + tombstone, consumed)
-```
+- **Originate**: `→ Dispatching` (local bundles only, skips `Ingested` and Ingress)
+- **Ingress**: `Ingested → Dispatching` (CLA bundles only)
+- **Egress**: at send time. `Dispatching → Forwarded` and `ForwardPending → Forwarded` (always fresh, runs with extension block updates)
+- **Deliver**: `Dispatching → Delivered` and `ServicePending → Delivered`
+
+Any filter can drop the bundle → `Tombstone`.
+
+**Originate crash safety**: the Originate filter runs in-memory on a bundle that has not yet been stored. No checkpoint is needed. Crash before store = nothing persisted, caller retries. Crash after store = bundle enters `Dispatching` directly.
+
+### Edges
+
+- **Ingested → Dispatching**: validate lifetime, validate hop count, run Ingress filter, persist checkpoint
+- **Ingested → Tombstone**: expired, hop limit exceeded, or Ingress filter drops
+- **Dispatching → Forwarded**: RIB lookup returns `Forward(peer)`, CLA available. Run Egress filter, update extension blocks (Previous Node, Hop Count, Bundle Age), CLA transmits, persist checkpoint
+- **Dispatching → ForwardPending**: RIB lookup returns `Forward(peer)` but CLA is busy or peer not connected. Bundle queued, no filter yet
+- **Dispatching → RoutePending**: RIB lookup returns no route, bundle watched for expiry
+- **Dispatching → ReassemblyPending**: RIB lookup returns `Deliver` and bundle is a fragment, siblings still missing
+- **Dispatching → Ingested** (reassembly): RIB lookup returns `Deliver`, bundle is a fragment, all siblings present. Reassemble, waiting fragments tombstoned, reassembled whole enters as new `Ingested`
+- **Dispatching → ServicePending**: RIB lookup returns `AdminEndpoint` but target service not registered
+- **Dispatching → Delivered**: RIB returns `Deliver` (whole bundle), run Deliver filter, payload to local service, persist checkpoint
+- **Dispatching → Tombstone**: RIB returns `Drop`, or admin record delivered, or filter drops
+- **ForwardPending → Forwarded**: CLA becomes available. Run Egress filter, update extension blocks, CLA transmits
+- **ForwardPending → Dispatching**: peer dies, re-enter dispatch for new RIB lookup (may find alternate route)
+- **ForwardPending → Tombstone**: expired, or Egress filter drops
+- **Forwarded → Tombstone**: delete data, tombstone metadata (immediate without custody, on custody ack with custody transfer)
+- **Delivered → Tombstone**: delete data, tombstone metadata
+- **RoutePending → Dispatching** (logical, no persist): `poll_waiting()` picks up bundle when RIB changes, runs RIB lookup and transitions directly to the outcome. Bundle stays `RoutePending` in storage until the outcome is persisted. Crash recovers to `RoutePending`
+- **ReassemblyPending → Tombstone**: fragment expires while waiting, or consumed when a later fragment completes the set
+- **ServicePending → Delivered**: target service registers, run Deliver filter, payload to service. No dispatch needed, service is already known
+- **ServicePending → Tombstone**: expired, or Deliver filter drops
+
+### Hot path persists
+
+| Persist | Operation                                | Checkpoint                          |
+| ------- | ---------------------------------------- | ----------------------------------- |
+| 1       | `save_data()`                            | Bundle bytes stored                 |
+| 2       | `insert_metadata()`                      | Bundle tracked (Ingested)           |
+| 3       | `update_metadata()`                      | Ingress filter passed (Dispatching) |
+| 4       | `update_status()`                        | Forwarded or Delivered              |
+| 5       | `delete_data()` + `tombstone_metadata()` | Bundle consumed                     |
+
+5 storage round-trips per bundle on the hot path.
+
+### Performance considerations
+
+Possible reductions to the 5 hot-path persists:
+
+- **Combine persists 1+2** (save data + insert metadata): single transaction in PostgreSQL; parallel I/O for localdisk+SQLite
+- **Skip persist 3** (Dispatching checkpoint): accept re-running ingress filter on crash. Saves one persist if ingress filter is cheap
+- **Async persist 5** (cleanup): `Forwarded`/`Delivered` → `Tombstone` in a background sweep instead of inline. The bundle is "done" at persist 4
+- **Skip persist 4** (Forwarded/Delivered): accept duplicate sends/delivers on crash. Only viable without custody transfer
+
+Best case: 3 persists (store, outcome, async cleanup) or 2 inline (store, outcome) with background cleanup.
+
+Event state re-entry skips persists:
+- `RoutePending` and `ForwardPending` (peer dies) re-enter dispatch logic without persisting `Dispatching`. On crash they recover to their event state and re-poll
+- `ForwardPending → Forwarded` and `ServicePending → Delivered` resolve directly to their outcome. Routing decision already made, no re-dispatch
+
+### Crash safety
+
+The `Forwarded` checkpoint narrows but cannot eliminate the duplicate
+window:
+
+1. `CLA.forward()`, data sent to peer
+2. Persist `Forwarded`
+3. Delete data + tombstone
+
+A crash between steps 1 and 2 leaves the bundle in `Dispatching`, recovery re-sends, duplicate. This is inherent (CLA send + persist cannot be atomic without 2PC). DTN receivers must deduplicate regardless.
+
+With custody transfer, `Forwarded` becomes a durable state. The bundle stays until a custody acknowledgment arrives.
+
+#### Persistence ordering
+
+- Save data before metadata: ensures data is not lost if metadata insert fails
+- Save before delete: ensures old data is preserved if new save fails
+- Tombstone last: metadata tombstoned after data deleted, allows recovery
+
+#### Recovery behavior
+
+On restart, `restart_bundle()` examines the persisted state to determine where to resume:
+
+| State | Recovery action |
+|-------|-----------------|
+| `Ingested` | Re-run ingestion (validate, Ingress filter) |
+| `Dispatching` | Skip ingress, re-route via `process_bundle()` |
+| `Forwarded` | Tombstone immediately (already sent, don't re-send) |
+| `Delivered` | Tombstone immediately (already delivered, don't re-deliver) |
+| `ForwardPending` | Re-queue for CLA peer transmission |
+| `RoutePending` | Resume `poll_waiting()` |
+| `ReassemblyPending` | Resume reassembly polling |
+| `ServicePending` | Deliver when service becomes available |
+
+Bundle data found on disk without matching metadata is treated as an orphan and re-ingested. Metadata without matching data is reported as depleted storage. Unparseable data is deleted as junk.
+
+### Open questions
+
+- **CLA try-send API**: the hot path (`Dispatching → Forwarded`) requires the CLA to attempt a send and report success/busy synchronously. The current code always queues via `ForwardPending`. A try-send API is needed to skip the queue when the CLA is idle
+- **Fragment duplicate detection**: the reassembled bundle reuses the original (pre-fragmentation) bundle ID. If that ID already exists as a tombstone, the metadata store rejects it. Reassembly must check for this
+- **Bulk re-dispatch on peer death**: when a peer dies, all its `ForwardPending` bundles re-enter dispatch. The RIB must be updated before re-dispatch to avoid routing back to the dead peer
+
+## Implementation
 
 ### Private state field
 
-The `metadata.state` field is not public. External code reads through
-`bundle.state()` which returns `&BundleState`.
+The `metadata.state` field is not public. External code reads through `bundle.state()` which returns `&BundleState`.
 
 ### Controlled construction
 
-| Constructor | Purpose | Persists |
-|-------------|---------|----------|
-| `Bundle::new(bpv7, data, ingress, store)` | CLA reception | Yes |
-| `Bundle::draft(bpv7)` | Pre-filter path (originate, reports) | No |
-| `Bundle::recover(bpv7, metadata)` | Crash recovery from storage | No |
+| Constructor                                   | Purpose                              | Persists |
+| --------------------------------------------- | ------------------------------------ | -------- |
+| `Bundle::try_new(bpv7, data, ingress, store)` | Bundle ingress (CLA or local)        | Yes      |
+| `Bundle::draft(bpv7)`                         | Pre-filter path (originate, reports) | No       |
+| `Bundle::recover(bpv7, metadata)`             | Crash recovery from storage          | No       |
 
 ### Channel behavior
 
-The channel does not transition bundles. It asserts the bundle is already
-in the expected state. The caller transitions before sending.
+The channel does not transition bundles. It asserts the bundle is already in the expected state. The caller transitions before sending.
 
-## Option A: Transitions on Bundle
+### Implementation options
 
-Transition methods live on `Bundle` and take `&Store`. Each method validates,
-applies, and persists in one call.
+#### Option A: Transitions on Bundle
+
+Transition methods live on `Bundle` and take `&Store`. Each method validates, applies, and persists in one call.
 
 ```rust
-// Dispatcher:
-bundle.route(&store).await?;
 bundle.forward(&store, peer, queue).await?;
+bundle.deliver(&store).await?;
 ```
 
-```
-┌──────────────┐         ┌──────────────────────┐         ┌───────┐
-│  Dispatcher  │──call──>│  Bundle::route(store) │──call──>│ Store │
-│              │         │  - validate           │         │       │
-│              │         │  - set state           │         │ persist
-│              │         │  - persist             │         │       │
-│              │         │  - watch               │         │       │
-└──────────────┘         └──────────────────────┘         └───────┘
-```
+**Pros:** One call per transition, impossible to forget persistence. Simple call sites.
+**Cons:** Bundle depends on Store. Transition methods are async. Harder to unit test without a Store.
 
-**Pros:**
-- One call per transition, impossible to forget persistence
-- State machine is centralized in `transitions.rs`
-- Simple call sites in the Dispatcher
+#### Option B: Pure state machine + Store applies
 
-**Cons:**
-- Bundle (a data type) depends on Store (infrastructure)
-- Transition methods are async because of persistence
-- Harder to unit test transitions without a Store
-
-**Module layout:**
-```
-bundle/
-  mod.rs           Bundle struct, state() accessor
-  state.rs         BundleState enum
-  metadata.rs      BundleMetadata
-  transitions.rs   Constructors + transition methods (takes &Store)
-```
-
-## Option B: Pure state machine + Store applies
-
-Transition validation lives on `BundleState` as pure functions (no I/O).
-The Store applies the validated transition and persists.
+Transition validation lives on `BundleState` as pure functions (no I/O). The Store applies the validated transition and persists.
 
 ```rust
-// Dispatcher:
-let next = bundle.state().route()?;
+let next = bundle.state().forward(peer, queue)?;
 store.apply(&mut bundle, next).await;
 ```
 
-```
-┌──────────────┐         ┌────────────────────┐
-│  Dispatcher  │──call──>│ BundleState::route()│  pure, no I/O
-│              │         │ - validate           │
-│              │         │ - return next state  │
-│              │         └────────────────────┘
-│              │
-│              │──call──>┌──────────────────────┐
-│              │         │ Store::apply(bundle)  │
-│              │         │ - set state            │
-│              │         │ - persist              │
-│              │         │ - watch                │
-│              │         └──────────────────────┘
-└──────────────┘
-```
+**Pros:** Bundle is a plain data type. State machine is pure logic, fully testable with unit tests.
+**Cons:** Two calls per transition, caller can forget the second.
 
-**Pros:**
-- Bundle is a plain data type, no storage dependency
-- State machine is pure logic, fully testable with unit tests
-- Clear separation: validation vs persistence
+#### Option C: Dispatcher owns transitions
 
-**Cons:**
-- Two calls per transition (validate + apply), caller can forget the second
-- Store must trust that the caller validated (no double-check)
-- More ceremony at each call site
-
-**Module layout:**
-```
-bundle/
-  mod.rs           Bundle struct, state() accessor
-  state.rs         BundleState enum + pure transition methods
-  metadata.rs      BundleMetadata
-```
-
-## Option C: Dispatcher owns transitions
-
-A `transitions.rs` in the dispatcher module holds methods on `Dispatcher`
-that validate, apply, and persist. Bundle and Store stay decoupled.
+A `transitions.rs` in the dispatcher module holds methods that validate, apply, and persist.
 
 ```rust
-// Dispatcher:
-self.transition_route(&mut bundle).await?;
 self.transition_forward(&mut bundle, peer, queue).await?;
 ```
 
-```
-┌──────────────────────────────────┐
-│  Dispatcher::transition_route()  │
-│  - validate bundle.state()       │
-│  - set state                      │
-│  - store.update_state(bundle)    │
-│  - store.watch_bundle(bundle)    │
-└──────────────────────────────────┘
-```
+**Pros:** Bundle and Store stay decoupled. All transition logic in one place.
+**Cons:** Transition methods on Dispatcher, not on the data they modify.
 
-**Pros:**
-- Bundle is a plain data type
-- Store is a plain persistence layer
-- All transition logic + persistence in one place
-- Dispatcher already has access to Store
+### Naming
 
-**Cons:**
-- Transition methods scattered on Dispatcher, not on the data they modify
-- Other code (storage backends, recovery) may need transitions too
-- `Dispatcher` grows larger
+| Old                               | New                              |
+| --------------------------------- | -------------------------------- |
+| `BundleStatus`                    | `BundleState`                    |
+| `BundleStatus::New`               | `BundleState::Ingested`          |
+| `BundleStatus::Dispatching`       | `BundleState::Dispatching`       |
+| `BundleStatus::ForwardPending`    | `BundleState::ForwardPending`    |
+| `BundleStatus::Waiting`           | `BundleState::RoutePending`      |
+| `BundleStatus::AduFragment`       | `BundleState::ReassemblyPending` |
+| `BundleStatus::WaitingForService` | `BundleState::ServicePending`    |
+| - (new)                           | `BundleState::Forwarded`         |
+| - (new)                           | `BundleState::Delivered`         |
+| `metadata.status`                 | `metadata.state` (via accessor)  |
 
-**Module layout:**
-```
-bundle/
-  mod.rs           Bundle struct, state() accessor
-  state.rs         BundleState enum
-  metadata.rs      BundleMetadata
-
-dispatcher/
-  transitions.rs   Transition methods on Dispatcher
-```
-
-## Naming
-
-| Old | New |
-|-----|-----|
-| `BundleStatus` | `BundleState` |
-| `BundleStatus::New` | `BundleState::Received` |
-| `BundleStatus::Dispatching` | `BundleState::Ingested` |
-| `BundleStatus::Waiting` | `BundleState::RoutePending` |
-| `BundleStatus::ForwardPending` | `BundleState::ForwardPending` |
-| `BundleStatus::AduFragment` | `BundleState::FragmentPending` |
-| `BundleStatus::WaitingForService` | `BundleState::ServicePending` |
-| `metadata.status` | `metadata.state` (via accessor) |
-
-## Migration
-
-Regardless of the chosen option, migration can be done incrementally:
+### Migration
 
 1. Add the new `BundleState` enum and `state.rs`
 2. Add backward-compatible alias `pub type BundleStatus = BundleState`
