@@ -215,13 +215,6 @@ pub fn init() {
         metrics::Unit::Count,
         "Junk data discovered during restart"
     );
-
-    // -- J. Performance --
-    metrics::describe_gauge!(
-        "bpa.processing_pool.active",
-        metrics::Unit::Count,
-        "Active tasks in the bounded processing pool"
-    );
 }
 
 /// Convert an optional ReasonCode to a static label string for the `"reason"` label

@@ -66,7 +66,6 @@ use crate::task_pool::TaskPool;
 #[derive(Clone)]
 pub struct BoundedTaskPool {
     inner: TaskPool,
-    max_concurrent: usize,
     semaphore: Arc<tokio::sync::Semaphore>,
 }
 
@@ -86,17 +85,10 @@ impl BoundedTaskPool {
     /// let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(8).unwrap());
     /// ```
     pub fn new(max_concurrent: core::num::NonZeroUsize) -> Self {
-        let max: usize = max_concurrent.into();
         Self {
             inner: TaskPool::new(),
-            max_concurrent: max,
-            semaphore: Arc::new(tokio::sync::Semaphore::new(max)),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent.into())),
         }
-    }
-
-    /// Returns the number of tasks currently active (holding permits).
-    pub fn active_tasks(&self) -> usize {
-        self.max_concurrent - self.semaphore.available_permits()
     }
 
     /// Spawns a task, waiting for a permit if at capacity.

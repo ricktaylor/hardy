@@ -206,9 +206,6 @@ impl Dispatcher {
     pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
-        metrics::gauge!("bpa.processing_pool.active")
-            .set(self.processing_pool.active_tasks() as f64);
-
         let dispatcher = self.clone();
         hardy_async::spawn!(self.processing_pool, "ingest_bundle", async move {
             dispatcher.ingest_bundle_inner(bundle, data).await
@@ -321,8 +318,6 @@ impl Dispatcher {
                 continue;
             }
 
-            metrics::gauge!("bpa.processing_pool.active")
-                .set(self.processing_pool.active_tasks() as f64);
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
@@ -416,8 +411,6 @@ impl Dispatcher {
                                 continue;
                             }
 
-                            metrics::gauge!("bpa.processing_pool.active")
-                                .set(self.processing_pool.active_tasks() as f64);
                             let dispatcher = dispatcher.clone();
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
                                 if let Some(data) = dispatcher.load_data(&bundle).await {
