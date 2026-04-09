@@ -19,6 +19,9 @@ pub enum Error {
 
     #[error("Invalid Node Id: {0}")]
     InvalidNodeId(#[from] hardy_bpv7::eid::Error),
+
+    #[error("Extension item exceeds remaining length")]
+    InvalidExtensionLength,
 }
 
 #[repr(u8)]
@@ -156,15 +159,17 @@ impl SessionInitMessage {
             if src_cloned.len() < item_length as usize {
                 return Ok(None);
             }
-            let ext_size = 5usize.saturating_add(item_length as usize);
+            let ext_size = 5 + item_length as usize;
             session_extensions.push(SessionInitExtension {
                 flags,
                 item_type,
                 item_length,
                 item_value: src_cloned.split_to(item_length as usize).into(),
             });
-            consumed = consumed.saturating_add(ext_size);
-            ext_remaining = ext_remaining.saturating_sub(ext_size);
+            consumed += ext_size;
+            ext_remaining = ext_remaining
+                .checked_sub(ext_size)
+                .ok_or(Error::InvalidExtensionLength)?;
         }
         src.advance(consumed);
         Ok(Some(Message::SessionInit(SessionInitMessage {
@@ -661,7 +666,7 @@ impl TransferSegmentMessage {
                 let flags = src_cloned.get_u8().into();
                 let item_type = src_cloned.get_u16();
                 let item_length = src_cloned.get_u16(); // RFC 9174 Section 5.2.5: U16
-                let ext_size = 5usize.saturating_add(item_length as usize);
+                let ext_size = 5 + item_length as usize;
                 if src_cloned.len() < item_length as usize {
                     return Ok(None);
                 }
@@ -671,8 +676,10 @@ impl TransferSegmentMessage {
                     item_length,
                     item_value: src_cloned.split_to(item_length as usize).into(),
                 });
-                consumed = consumed.saturating_add(ext_size);
-                ext_remaining = ext_remaining.saturating_sub(ext_size);
+                consumed += ext_size;
+                ext_remaining = ext_remaining
+                    .checked_sub(ext_size)
+                    .ok_or(Error::InvalidExtensionLength)?;
             }
         }
         if src_cloned.len() < 8 {
@@ -683,7 +690,7 @@ impl TransferSegmentMessage {
             return Ok(None);
         }
         // Skip the header bytes (message type, flags, transfer_id, extensions, data_length)
-        let _ = src.split_to(consumed.saturating_add(8));
+        let _ = src.split_to(consumed + 8);
         Ok(Some(Message::TransferSegment(TransferSegmentMessage {
             message_flags,
             transfer_id,
