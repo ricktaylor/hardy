@@ -157,14 +157,16 @@ pub struct OtelGuard {
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        self.tracer_provider
-            .shutdown()
-            .unwrap_or_else(|e| eprintln!("Failed to shutdown tracer provider: {e}"));
-        self.meter_provider
-            .shutdown()
-            .unwrap_or_else(|e| eprintln!("Failed to shutdown meter provider: {e}"));
-        self.logger_provider
-            .shutdown()
-            .unwrap_or_else(|e| eprintln!("Failed to shutdown logger provider: {e}"));
+        // Shutdown flushes pending telemetry to the OTLP collector.
+        // Failures are common when no collector is running and are not fatal.
+        self.tracer_provider.shutdown().unwrap_or_else(|e| {
+            tracing::warn!("OTEL tracer provider did not shut down cleanly: {e}")
+        });
+        self.meter_provider.shutdown().unwrap_or_else(|e| {
+            tracing::warn!("OTEL meter provider did not shut down cleanly: {e}")
+        });
+        self.logger_provider.shutdown().unwrap_or_else(|e| {
+            eprintln!("Warning: OTEL logger provider did not shut down cleanly: {e}")
+        });
     }
 }
