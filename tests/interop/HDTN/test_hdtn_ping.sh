@@ -209,6 +209,8 @@ if [ "$USE_DOCKER" = true ]; then
             log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s)"
             break
         elif ss -tlnp 2>/dev/null | grep -q ":$HDTN_PORT "; then
+            # ss sees the socket but actual connections may not be ready yet
+            sleep 2
             log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s, detected via ss)"
             break
         fi

@@ -21,19 +21,16 @@ impl EchoService {
 
     /// Registers this service on the specified service IDs.
     ///
-    /// The same EchoService instance can be registered on multiple service IDs.
-    /// Only the first registration's sink is stored (subsequent registrations
-    /// share the same underlying service).
+    /// Creates a separate EchoService instance per endpoint to work around
+    /// the single-sink-per-registration API limitation (see #479).
     pub async fn register(
-        self: &Arc<Self>,
         bpa: &dyn BpaRegistration,
         services: &[hardy_bpv7::eid::Service],
     ) -> Result<Vec<hardy_bpv7::eid::Eid>, hardy_bpa::services::Error> {
         let mut eids = Vec::with_capacity(services.len());
         for service in services {
-            let eid = bpa
-                .register_service(Some(service.clone()), self.clone())
-                .await?;
+            let echo = Arc::new(Self::new());
+            let eid = bpa.register_service(Some(service.clone()), echo).await?;
             eids.push(eid);
         }
         Ok(eids)
@@ -95,7 +92,6 @@ impl hardy_bpa::services::Service for EchoService {
         _source: &hardy_bpv7::eid::Eid,
         sink: Box<dyn hardy_bpa::services::ServiceSink>,
     ) {
-        // Store sink (only first registration succeeds, others are ignored)
         self.sink.call_once(|| sink);
     }
 
