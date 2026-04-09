@@ -36,6 +36,51 @@ impl MetadataMemStorage {
 
         Self { entries }
     }
+
+    /// Account for an entry leaving the LRU (eviction or replacement).
+    fn on_remove(value: &Option<Bundle>) {
+        match value {
+            Some(_) => metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0),
+            None => metrics::gauge!("bpa.mem_metadata.tombstones").decrement(1.0),
+        }
+    }
+
+    /// Account for an entry entering the LRU.
+    fn on_add(value: &Option<Bundle>) {
+        match value {
+            Some(_) => metrics::gauge!("bpa.mem_metadata.entries").increment(1.0),
+            None => metrics::gauge!("bpa.mem_metadata.tombstones").increment(1.0),
+        }
+    }
+
+    /// Insert or replace a value in the LRU, updating metrics for all transitions:
+    /// added, replaced, evicted.
+    fn put(&self, key: Id, value: Option<Bundle>) -> Result<()> {
+        let prev = { self.entries.lock().put(key, value.clone()) };
+        if let Some(prev) = prev {
+            Self::on_remove(&prev);
+        }
+        Self::on_add(&value);
+        Ok(())
+    }
+
+    /// Insert a new entry only if the key is absent. Returns false if already present.
+    /// Accounts for LRU eviction of a different entry.
+    fn push(&self, key: Id, value: Option<Bundle>) -> Result<bool> {
+        let evicted = {
+            let mut entries = self.entries.lock();
+            if entries.get(&key).is_some() {
+                return Ok(false);
+            }
+            entries.push(key, value.clone()).map(|e| e.1)
+        };
+
+        if let Some(evicted) = evicted {
+            Self::on_remove(&evicted);
+        }
+        Self::on_add(&value);
+        Ok(true)
+    }
 }
 
 #[async_trait]
@@ -45,28 +90,11 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn insert(&self, bundle: &Bundle) -> Result<bool> {
-        let mut entries = self.entries.lock();
-        if entries.get(&bundle.bundle.id).is_some() {
-            Ok(false)
-        } else {
-            if let Some((_, evicted)) = entries.push(bundle.bundle.id.clone(), Some(bundle.clone()))
-            {
-                // A different entry was evicted due to LRU capacity
-                match evicted {
-                    Some(_) => metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0),
-                    None => metrics::gauge!("bpa.mem_metadata.tombstones").decrement(1.0),
-                }
-            }
-            metrics::gauge!("bpa.mem_metadata.entries").increment(1.0);
-            Ok(true)
-        }
+        self.push(bundle.bundle.id.clone(), Some(bundle.clone()))
     }
 
     async fn replace(&self, bundle: &Bundle) -> Result<()> {
-        self.entries
-            .lock()
-            .put(bundle.bundle.id.clone(), Some(bundle.clone()));
-        Ok(())
+        self.put(bundle.bundle.id.clone(), Some(bundle.clone()))
     }
 
     async fn update_status(&self, bundle: &Bundle) -> Result<()> {
@@ -74,10 +102,7 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
-        self.entries.lock().put(bundle_id.clone(), None);
-        metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0);
-        metrics::gauge!("bpa.mem_metadata.tombstones").increment(1.0);
-        Ok(())
+        self.put(bundle_id.clone(), None)
     }
 
     async fn start_recovery(&self) {
