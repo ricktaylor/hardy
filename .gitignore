@@ -9,3 +9,6 @@ bpa-server/certs/
 # MkDocs
 /site/
 /.venv/
+
+# Fuzz corpus
+tcpclv4/fuzz/
