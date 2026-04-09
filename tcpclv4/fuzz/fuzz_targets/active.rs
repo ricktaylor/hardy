@@ -32,7 +32,7 @@ fn get_cla() -> &'static std::sync::Arc<hardy_tcpclv4::Cla> {
 fn get_listener() -> &'static TcpListener {
     LISTENER.get_or_init(|| {
         get_runtime()
-            .block_on(TcpListener::bind(FUZZ_ADDR))
+            .block_on(TcpListener::bind(fuzz_addr()))
             .expect("failed to bind fuzz listener")
     })
 }
