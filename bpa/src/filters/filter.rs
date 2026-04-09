@@ -177,6 +177,8 @@ impl PreparedFilters {
             + Clone
             + Send,
     {
+        let mut data_changed = false;
+
         for level in self.levels {
             if !level.readers.is_empty() {
                 let bd = Arc::new((bundle, data));
@@ -218,6 +220,7 @@ impl PreparedFilters {
                         }
                         if let Some(new_data) = new_data {
                             debug!("WriteFilter rewrote bundle data");
+                            data_changed = true;
                             let parsed =
                                 hardy_bpv7::bundle::CheckedBundle::parse(&new_data, &key_provider)?;
                             data = Bytes::from(parsed.new_data.unwrap_or(new_data));
@@ -476,7 +479,7 @@ mod tests {
 
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _)
+            registry::ExecResult::Continue(_, _, _)
         ));
     }
 
@@ -503,7 +506,7 @@ mod tests {
 
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _)
+            registry::ExecResult::Continue(_, _, _)
         ));
     }
 
@@ -512,7 +515,7 @@ mod tests {
         let chain = FilterChain::default();
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _)
+            registry::ExecResult::Continue(_, _, _)
         ));
     }
 }

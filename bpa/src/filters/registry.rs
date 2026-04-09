@@ -9,6 +9,8 @@ pub struct Mutation {
 }
 
 /// Result of executing the filter chain on a bundle.
+///
+/// `Continue` carries the bundle, data, and whether a WriteFilter produced new data.
 #[allow(clippy::large_enum_variant)]
 pub enum ExecResult {
     Continue(Mutation, bundle::Bundle, Bytes),
