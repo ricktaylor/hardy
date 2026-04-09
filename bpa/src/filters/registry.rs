@@ -1,5 +1,12 @@
-use super::*;
+use bytes::Bytes;
 use hardy_async::sync::RwLock;
+use hardy_bpv7::bpsec::key::KeySource;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::status_report::ReasonCode;
+
+use super::filter::FilterChain;
+use super::{Error, Filter, Hook};
+use crate::bundle::Bundle;
 
 /// Tracks whether filters modified the bundle or its metadata.
 #[derive(Default)]
@@ -13,23 +20,20 @@ pub struct Mutation {
 /// `Continue` carries the bundle, data, and whether a WriteFilter produced new data.
 #[allow(clippy::large_enum_variant)]
 pub enum ExecResult {
-    Continue(Mutation, bundle::Bundle, Bytes),
-    Drop(
-        bundle::Bundle,
-        Option<hardy_bpv7::status_report::ReasonCode>,
-    ),
+    Continue(Mutation, Bundle, Bytes, bool),
+    Drop(Bundle, Option<ReasonCode>),
 }
 
 #[derive(Default)]
 struct RegistryInner {
-    ingress: filter::FilterChain,
-    deliver: filter::FilterChain,
-    originate: filter::FilterChain,
-    egress: filter::FilterChain,
+    ingress: FilterChain,
+    deliver: FilterChain,
+    originate: FilterChain,
+    egress: FilterChain,
 }
 
 impl RegistryInner {
-    fn chain(&self, hook: &Hook) -> &filter::FilterChain {
+    fn chain(&self, hook: &Hook) -> &FilterChain {
         match hook {
             Hook::Ingress => &self.ingress,
             Hook::Deliver => &self.deliver,
@@ -38,7 +42,7 @@ impl RegistryInner {
         }
     }
 
-    fn chain_mut(&mut self, hook: &Hook) -> &mut filter::FilterChain {
+    fn chain_mut(&mut self, hook: &Hook) -> &mut FilterChain {
         match hook {
             Hook::Ingress => &mut self.ingress,
             Hook::Deliver => &mut self.deliver,
@@ -98,15 +102,13 @@ impl Registry {
     pub async fn exec<F>(
         &self,
         hook: Hook,
-        bundle: bundle::Bundle,
+        bundle: Bundle,
         data: Bytes,
         key_provider: F,
         pool: &hardy_async::BoundedTaskPool,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let hook_label = hook.label();
         let prepared = self.inner.read().chain(&hook).prepare();

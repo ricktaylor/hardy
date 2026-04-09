@@ -1,5 +1,9 @@
-use super::*;
+use hardy_async::async_trait;
+use hardy_bpv7::status_report::ReasonCode;
 use thiserror::Error;
+
+use crate::Arc;
+use crate::bundle::{Bundle, WritableMetadata};
 
 pub(crate) mod registry;
 
@@ -32,20 +36,20 @@ pub enum FilterResult {
     #[default]
     Continue,
     /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Drop(Option<ReasonCode>),
 }
 
 /// Outcome of a read-write filter evaluation, which may modify the bundle.
 #[derive(Debug)]
 pub enum RewriteResult {
-    /// Continue processing, optionally with modified metadata and/or bundle data.
-    /// - `(None, None)`: no change
-    /// - `(Some(meta), None)`: metadata changed, bundle bytes unchanged
-    /// - `(None, Some(data))`: bundle bytes changed (rare)
-    /// - `(Some(meta), Some(data))`: both changed
-    Continue(Option<bundle::WritableMetadata>, Option<Box<[u8]>>),
+    /// Continue processing, optionally with modified metadata and/or bundle data
+    /// - (None, None): no change
+    /// - (Some(meta), None): metadata changed, bundle bytes unchanged
+    /// - (None, Some(data)): bundle bytes changed (rare)
+    /// - (Some(meta), Some(data)): both changed
+    Continue(Option<WritableMetadata>, Option<Box<[u8]>>),
     /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Drop(Option<ReasonCode>),
 }
 
 // Filter traits
@@ -53,21 +57,13 @@ pub enum RewriteResult {
 /// Read-only filter: can run in parallel with other ReadFilters
 #[async_trait]
 pub trait ReadFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &bundle::Bundle,
-        data: &[u8],
-    ) -> Result<FilterResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<FilterResult, crate::Error>;
 }
 
 /// Read-write filter: runs sequentially, may modify metadata or bundle data
 #[async_trait]
 pub trait WriteFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &bundle::Bundle,
-        data: &[u8],
-    ) -> Result<RewriteResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<RewriteResult, crate::Error>;
 }
 
 /// Filter wrapper enum for registration

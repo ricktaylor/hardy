@@ -1,4 +1,14 @@
-use super::*;
+use bytes::Bytes;
+use hardy_bpv7::bpsec::key::KeySource;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::bundle::CheckedBundle;
+use trace_err::*;
+use tracing::debug;
+
+use super::registry::ExecResult;
+use super::{Error, Filter, FilterResult, ReadFilter, RewriteResult, WriteFilter};
+use crate::bundle::Bundle;
+use crate::{Arc, HashSet};
 
 struct FilterEntry {
     name: String,
@@ -168,14 +178,12 @@ impl PreparedFilters {
     pub async fn exec<F>(
         self,
         pool: &hardy_async::BoundedTaskPool,
-        mut bundle: bundle::Bundle,
+        mut bundle: Bundle,
         mut data: Bytes,
         key_provider: F,
-    ) -> Result<registry::ExecResult, crate::Error>
+    ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let mut data_changed = false;
 
@@ -206,7 +214,7 @@ impl PreparedFilters {
                 for result in results {
                     if let FilterResult::Drop(reason) = result {
                         debug!("ReadFilter dropped bundle: {reason:?}");
-                        return Ok(registry::ExecResult::Drop(bundle, reason));
+                        return Ok(ExecResult::Drop(bundle, reason));
                     }
                 }
             }
@@ -221,15 +229,14 @@ impl PreparedFilters {
                         if let Some(new_data) = new_data {
                             debug!("WriteFilter rewrote bundle data");
                             data_changed = true;
-                            let parsed =
-                                hardy_bpv7::bundle::CheckedBundle::parse(&new_data, &key_provider)?;
+                            let parsed = CheckedBundle::parse(&new_data, &key_provider)?;
                             data = Bytes::from(parsed.new_data.unwrap_or(new_data));
                             bundle.bundle = parsed.bundle;
                         }
                     }
                     RewriteResult::Drop(reason) => {
                         debug!("WriteFilter dropped bundle: {reason:?}");
-                        return Ok(registry::ExecResult::Drop(bundle, reason));
+                        return Ok(ExecResult::Drop(bundle, reason));
                     }
                 }
             }
@@ -246,6 +253,7 @@ impl PreparedFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hardy_async::async_trait;
 
     struct PassFilter;
 
@@ -253,7 +261,7 @@ mod tests {
     impl ReadFilter for PassFilter {
         async fn filter(
             &self,
-            _bundle: &bundle::Bundle,
+            _bundle: &Bundle,
             _data: &[u8],
         ) -> Result<FilterResult, crate::Error> {
             Ok(FilterResult::Continue)
@@ -266,7 +274,7 @@ mod tests {
     impl ReadFilter for DropFilter {
         async fn filter(
             &self,
-            _bundle: &bundle::Bundle,
+            _bundle: &Bundle,
             _data: &[u8],
         ) -> Result<FilterResult, crate::Error> {
             Ok(FilterResult::Drop(None))
@@ -279,7 +287,7 @@ mod tests {
     impl WriteFilter for NoopWriter {
         async fn filter(
             &self,
-            _bundle: &bundle::Bundle,
+            _bundle: &Bundle,
             _data: &[u8],
         ) -> Result<RewriteResult, crate::Error> {
             Ok(RewriteResult::Continue(None, None))
@@ -458,10 +466,10 @@ mod tests {
 
     // --- Exec ---
 
-    async fn run_chain(chain: &FilterChain) -> registry::ExecResult {
+    async fn run_chain(chain: &FilterChain) -> ExecResult {
         let prepared = chain.prepare();
         let pool = hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
-        let bundle = bundle::Bundle {
+        let bundle = Bundle {
             bundle: Default::default(),
             metadata: Default::default(),
         };
@@ -479,7 +487,7 @@ mod tests {
 
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _, _)
+            ExecResult::Continue(_, _, _)
         ));
     }
 
@@ -493,10 +501,7 @@ mod tests {
             .add_filter("drop", Filter::Read(Arc::new(DropFilter)), &[])
             .unwrap();
 
-        assert!(matches!(
-            run_chain(&chain).await,
-            registry::ExecResult::Drop(_, _)
-        ));
+        assert!(matches!(run_chain(&chain).await, ExecResult::Drop(_, _)));
     }
 
     #[tokio::test]
@@ -506,7 +511,7 @@ mod tests {
 
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _, _)
+            ExecResult::Continue(_, _, _)
         ));
     }
 
@@ -515,7 +520,7 @@ mod tests {
         let chain = FilterChain::default();
         assert!(matches!(
             run_chain(&chain).await,
-            registry::ExecResult::Continue(_, _, _)
+            ExecResult::Continue(_, _, _)
         ));
     }
 }

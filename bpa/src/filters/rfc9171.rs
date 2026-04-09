@@ -11,7 +11,14 @@ These checks are separated from the parser because:
 3. Different deployments may have different interoperability requirements
 */
 
-use super::*;
+use hardy_async::async_trait;
+use hardy_bpv7::block::BibCoverage;
+use hardy_bpv7::crc::CrcType;
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::debug;
+
+use super::{FilterResult, ReadFilter};
+use crate::bundle::Bundle;
 
 /// Configuration for the RFC9171 validity filter.
 ///
@@ -99,25 +106,19 @@ impl Rfc9171ValidityFilter {
 
 #[async_trait]
 impl ReadFilter for Rfc9171ValidityFilter {
-    async fn filter(
-        &self,
-        bundle: &bundle::Bundle,
-        _data: &[u8],
-    ) -> Result<FilterResult, crate::Error> {
+    async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<FilterResult, crate::Error> {
         // RFC9171 §4.3.1: Primary block integrity check
         if self.config.primary_block_integrity {
             if let Some(primary_block) = bundle.bundle.blocks.get(&0) {
-                let has_crc = !matches!(bundle.bundle.crc_type, hardy_bpv7::crc::CrcType::None);
-                let has_bib = !matches!(primary_block.bib, hardy_bpv7::block::BibCoverage::None);
+                let has_crc = !matches!(bundle.bundle.crc_type, CrcType::None);
+                let has_bib = !matches!(primary_block.bib, BibCoverage::None);
 
                 if !has_crc && !has_bib {
                     debug!(
                         bundle_id = %bundle.bundle.id,
                         "Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)"
                     );
-                    return Ok(FilterResult::Drop(Some(
-                        hardy_bpv7::status_report::ReasonCode::BlockUnintelligible,
-                    )));
+                    return Ok(FilterResult::Drop(Some(ReasonCode::BlockUnintelligible)));
                 }
             }
         }
@@ -131,9 +132,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                 bundle_id = %bundle.bundle.id,
                 "Rejecting bundle: no clock in creation timestamp and no Bundle Age block"
             );
-            return Ok(FilterResult::Drop(Some(
-                hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
-            )));
+            return Ok(FilterResult::Drop(Some(ReasonCode::LifetimeExpired)));
         }
 
         Ok(FilterResult::Continue)
