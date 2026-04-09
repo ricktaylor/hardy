@@ -4,18 +4,19 @@
 | :--- | :--- |
 | **Functional Area** | Application Runtime & Transport |
 | **Module** | `hardy-tcpclv4-server` |
-| **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3) |
+| **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3) |
 | **Test Suite ID** | PLAN-TCPCL-SERVER-01 |
 
 ## 1. Introduction
 
-This document details the testing strategy for the `hardy-tcpclv4-server` module. This module is the **deployable executable** for the TCP Convergence Layer. It wraps the `hardy-tcpclv4` library, handling configuration, gRPC registration with the BPA, and process lifecycle.
+This document details the testing strategy for the `hardy-tcpclv4-server` module. This module is the **deployable executable** for the TCP Convergence Layer. It wraps the `hardy-tcpclv4` library, handling configuration, gRPC registration with the BPA, process lifecycle, and observability.
 
 **Scope:**
 
 * **Configuration Management:** Loading settings from TOML/Env.
 * **Process Lifecycle:** Startup, Shutdown, Signal handling.
 * **BPA Integration:** gRPC registration and keepalive.
+* **Observability:** OTEL tracing and metrics.
 * **Packaging:** OCI Images and Helm Charts.
 
 **Delegation:**
@@ -55,7 +56,17 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 *Note: SYS-01 through SYS-03 are exercised by every interop test run, which starts a `hardy-bpa-server` and `hardy-tcpclv4-server` pair.*
 
-### 4.2 Performance (REQ-13)
+### 4.2 Observability (REQ-19)
+
+*Objective: Verify integration with `hardy-otel` and the OTLP exporter.*
+
+| Test ID | Scenario | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- |
+| **OTEL-01** | **Trace Export** | 1. Configure `otel_endpoint`.<br>2. Transfer a bundle.<br>3. Query Grafana Tempo for traces. | Spans exist for session + transfer. |
+| **OTEL-02** | **Metrics Export** | 1. Transfer bundles.<br>2. Query metrics endpoint. | Session and transfer counters increment. |
+| **OTEL-03** | **Log Export** | 1. Configure OTLP.<br>2. Trigger an error.<br>3. Query Loki. | Structured log with trace correlation. |
+
+### 4.3 Performance (REQ-13)
 
 *Objective: Verify throughput capabilities of the standalone server.*
 
@@ -63,7 +74,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | ----- | ----- | ----- | ----- |
 | **PERF-SRV-01** | **Throughput** | 1. Run Server.<br>2. Connect `iperf`-like load generator via TCPCL. | Throughput > 1Gbps (or link limit). |
 
-### 4.3 Packaging & Deployment (REQ-15, REQ-16)
+### 4.4 Packaging & Deployment (REQ-15, REQ-16)
 
 *Objective: Verify build artifacts.*
 
@@ -75,4 +86,6 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 ## 5. Execution Strategy
 
 * **Unit Tests:** `cargo test -p hardy-tcpclv4-server`
+* **Interop Tests:** `tests/interop/hardy/test_hardy_ping.sh`
+* **CI Pipeline:** `docker compose -f tests/compose.ping-tests.yml up`
 * **System Tests:** Manual verification or Python harness wrapping Docker.
