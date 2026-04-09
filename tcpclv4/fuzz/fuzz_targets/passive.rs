@@ -41,7 +41,7 @@ async fn run_iteration(data: &[u8]) {
     // Connect to the listener, retrying briefly if it's not ready yet
     let mut stream = None;
     for _ in 0..10 {
-        match tokio::net::TcpStream::connect(FUZZ_ADDR).await {
+        match tokio::net::TcpStream::connect(fuzz_addr()).await {
             Ok(s) => {
                 stream = Some(s);
                 break;
