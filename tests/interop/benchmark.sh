@@ -307,6 +307,21 @@ else
     log_warn "ud3tn test script not found, skipping"
 fi
 
+# ESA-BP (STCP)
+if [ -x "$SCRIPT_DIR/ESA-BP/test_esa_bp_ping.sh" ]; then
+    if docker image inspect esa-bp-interop &>/dev/null; then
+        log_step "Running ESA-BP test..."
+        OUTPUT=$("$SCRIPT_DIR/ESA-BP/test_esa_bp_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        extract_rtt_stats "$OUTPUT" "ESA-BP"
+        log_info "ESA-BP complete"
+    else
+        log_warn "esa-bp-interop Docker image not found, skipping"
+        RESULTS+=("ESA-BP|-|-|-|-|No image|-|")
+    fi
+else
+    log_warn "ESA-BP test script not found, skipping"
+fi
+
 # =============================================================================
 # Generate Markdown Table
 # =============================================================================
@@ -377,6 +392,7 @@ OUTPUT_FILE="$SCRIPT_DIR/benchmark_results.md"
     echo "- **Pings**: Received/Transmitted count"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
     echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION uses STCP via plugin CLA"
+    echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION and ESA-BP use STCP via plugin CLA"
     echo "- Hardy baseline runs inline; other tests use existing interop scripts"
     echo ""
     echo "_$PING_COUNT pings per test, generated $(date '+%Y-%m-%d %H:%M:%S')_"
