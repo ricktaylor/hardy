@@ -152,13 +152,14 @@ BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
 # Build if needed
 if [ -z "$SKIP_BUILD_FLAG" ]; then
     log_info "Building Hardy..."
-    # Build with dynamic-plugins so ION test can use --cla for plugin CLA
-    (cd "$WORKSPACE_DIR" && cargo build --release \
-        -p hardy-tools --features hardy-tools/dynamic-plugins \
-        -p hardy-bpa-server --features hardy-bpa-server/dynamic-plugins) || {
+    if ! (cd "$WORKSPACE_DIR" && cargo build --release \
+        -p hardy-tools \
+        -p hardy-bpa-server); then
         log_warn "Build failed, skipping Hardy baseline"
         RESULTS+=("Hardy|-|-|-|-|Build failed|-|")
-    }
+        BPA_BIN=""
+        BP_BIN=""
+    fi
 
     # Build the MTCP/STCP CLA plugin for ION interop
     MTCP_CLA_DIR="$SCRIPT_DIR/mtcp"
