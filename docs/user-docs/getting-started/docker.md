@@ -103,22 +103,15 @@ run as separate containers communicating via gRPC.
     containers. Requires published `hardy-tcpclv4-server` and
     `hardy-tvr` images.
 
-### Architecture
+### Deployment Topology
 
-```
-                        ┌─────────────────┐
-                        │   hardy-tvr     │
-                        │   (routing)     │
-                        └────────┬────────┘
-                                 │ gRPC :50051
-                                 ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ tcpclv4-server  │◄───►│   bpa-server    │◄───►│ tcpclv4-server  │
-│ (uplink CLA)    │gRPC │   (core)        │gRPC │ (downlink CLA)  │
-└────────┬────────┘     └─────────────────┘     └────────┬────────┘
-         │ :4556                                         │ :4557
-         ▼                                               ▼
-    Uplink peers                                   Downlink peers
+```mermaid
+graph LR
+    UP_PEERS["Uplink peers"] <-->|:4556| UPLINK["tcpclv4-server<br/>(uplink CLA)"]
+    UPLINK <-->|gRPC| BPA["bpa-server<br/>(core)"]
+    TVR["hardy-tvr<br/>(routing)"] -->|gRPC| BPA
+    BPA <-->|gRPC| DOWNLINK["tcpclv4-server<br/>(downlink CLA)"]
+    DOWNLINK <-->|:4557| DOWN_PEERS["Downlink peers"]
 ```
 
 In this model:
