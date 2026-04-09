@@ -77,3 +77,7 @@ The hardy-proto package provides a `ClaSinkProxy` that implements the `Sink` tra
 ### With hardy-bpa-server
 
 The BPA server hosts the CLA gRPC service. When this server registers via gRPC, the BPA treats it like any other CLA - sending forwarding requests and receiving dispatched bundles.
+
+## Testing
+
+- [Test Plan](test_plan.md) - Configuration, lifecycle, observability, cross-coverage from tcpclv4 library and interop tests
