@@ -18,7 +18,7 @@ jobs:
         include:
           - image: hardy-bpa-server
             dockerfile: ./bpa-server/Dockerfile
-            build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage
+            build-args: CARGO_ARGS=--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage,hardy-bpa-server/s3-storage
           - image: hardy-tcpclv4-server
             dockerfile: ./tcpclv4-server/Dockerfile
             build-args: ""
