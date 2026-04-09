@@ -2,6 +2,13 @@ name: Rust
 on:
   pull_request:
     branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+      - "proto/**"
+      - "tests/**"
 
 permissions:
   contents: read
