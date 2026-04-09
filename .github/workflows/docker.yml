@@ -3,6 +3,13 @@ name: Docker
 on:
   push:
     branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "**/Dockerfile"
+      - ".github/workflows/docker.yml"
+      - "proto/**"
 
 env:
   REGISTRY: ghcr.io
