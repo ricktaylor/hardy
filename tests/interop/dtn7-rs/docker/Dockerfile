@@ -1,4 +1,4 @@
-FROM docker.io/rust:1.85 as builder
+FROM docker.io/rust:1.86 as builder
 
 # Optional: specify a git ref (tag, branch, or commit hash)
 # Build with: docker build --build-arg DTN7_REF=v0.21.0 ...
