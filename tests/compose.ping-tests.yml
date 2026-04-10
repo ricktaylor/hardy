@@ -7,7 +7,7 @@ services:
   ping-tests:
     build:
       context: .
-      dockerfile: tests/Dockerfile.tools
+      dockerfile: tools/Dockerfile
     image: hardy-ping-tests:latest
     depends_on:
       hardy:
