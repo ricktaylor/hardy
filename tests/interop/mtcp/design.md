@@ -94,7 +94,7 @@ bpa-address = "http://[::1]:50051"
 cla-name = "cl0"
 framing = "stcp"
 address = "[::]:4557"
-peer = "127.0.0.1:4556"
+peer = "127.0.0.1:4557"
 peer-node = "ipn:2.0"
 ```
 

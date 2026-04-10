@@ -14,7 +14,7 @@
 #
 # Run:
 #   docker run -it --rm --network host --ipc=host \
-#       -e ION_NODE_NUM=2 -e STCP_PORT=4556 \
+#       -e ION_NODE_NUM=2 -e STCP_PORT=4557 \
 #       ion-interop
 
 FROM debian:bookworm AS builder
@@ -70,12 +70,12 @@ RUN mkdir -p /ion && chown ion:ion /ion
 
 # Environment variables (overridden at runtime)
 ENV ION_NODE_NUM=2
-ENV STCP_PORT=4556
+ENV STCP_PORT=4557
 ENV REMOTE_HOST=""
-ENV REMOTE_PORT=4557
+ENV REMOTE_PORT=4558
 ENV REMOTE_NODE=1
 
-EXPOSE 4556/tcp
+EXPOSE 4557/tcp
 
 WORKDIR /ion
 USER ion

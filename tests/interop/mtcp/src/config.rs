@@ -50,7 +50,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ClaConfig {
-    /// TCP address to listen on (e.g., "[::]:4556").
+    /// TCP address to listen on (e.g., "[::]:4557").
     /// If not set, the CLA will not accept incoming connections.
     pub address: Option<SocketAddr>,
 
@@ -61,7 +61,7 @@ pub struct ClaConfig {
     #[serde(default = "default_max_bundle_size")]
     pub max_bundle_size: u64,
 
-    /// Peer address for outbound connections (e.g., "127.0.0.1:4556").
+    /// Peer address for outbound connections (e.g., "127.0.0.1:4557").
     pub peer: Option<String>,
 
     /// Peer node ID (e.g., "ipn:2.0").

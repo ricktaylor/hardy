@@ -5,7 +5,7 @@
 # All arguments are forwarded to ud3tn.
 #
 # If no arguments are provided, starts with defaults suitable for interop:
-#   -e ipn:2.0 -c "mtcp:0.0.0.0,4556" -b 7 -A 0.0.0.0 -P 4243 -R
+#   -e ipn:2.0 -c "mtcp:0.0.0.0,4557" -b 7 -A 0.0.0.0 -P 4243 -R
 #
 # Usage:
 #   start_ud3tn [ud3tn-args...]
@@ -15,12 +15,12 @@ set -e
 if [ $# -eq 0 ]; then
     echo "ud3tn Interop Testing (default config)"
     echo "  EID:     ipn:2.0"
-    echo "  MTCP:    0.0.0.0:4556"
+    echo "  MTCP:    0.0.0.0:4557"
     echo "  AAP2:    0.0.0.0:4243"
     echo ""
     exec ud3tn \
         -e "ipn:2.0" \
-        -c "mtcp:0.0.0.0,4556" \
+        -c "mtcp:0.0.0.0,4557" \
         -b 7 \
         -A 0.0.0.0 -P 4243 \
         -R

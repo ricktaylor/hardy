@@ -12,7 +12,7 @@
 # Run:
 #   docker run -it --rm --network host \
 #       ud3tn-interop \
-#       -e ipn:2.0 -c "mtcp:0.0.0.0,4556" -b 7 -A 0.0.0.0 -P 4243 -R
+#       -e ipn:2.0 -c "mtcp:0.0.0.0,4557" -b 7 -A 0.0.0.0 -P 4243 -R
 
 FROM python:3.13-slim AS builder
 
@@ -64,6 +64,6 @@ COPY --from=builder /install/python/ /usr/local/
 COPY start_ud3tn /usr/local/bin/start_ud3tn
 RUN chmod +x /usr/local/bin/start_ud3tn /usr/local/bin/ud3tn
 
-EXPOSE 4556/tcp 4242/tcp 4243/tcp
+EXPOSE 4557/tcp 4242/tcp 4243/tcp
 
 ENTRYPOINT ["/usr/local/bin/start_ud3tn"]

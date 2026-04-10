@@ -8,9 +8,9 @@
 #   bpa-address = "http://[::1]:50051"
 #   cla-name = "cl0"
 #   framing = "mtcp"
-#   peer = "127.0.0.1:4556"
+#   peer = "127.0.0.1:4557"
 #   peer-node = "ipn:2.0"
-#   address = "[::]:4557"
+#   address = "[::]:4558"
 #
 # Then run:
 #   bp ping ipn:2.7 \
@@ -25,10 +25,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 UD3TN_IMAGE="ud3tn-interop"
 UD3TN_NODE_NUM=2
-UD3TN_MTCP_PORT=4556
+UD3TN_MTCP_PORT=4557
 UD3TN_AAP2_PORT=4243
 HARDY_NODE_NUM=1
-HARDY_MTCP_PORT=4557
+HARDY_MTCP_PORT=4558
 HARDY_GRPC_PORT=50051
 
 cleanup() {
