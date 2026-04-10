@@ -25,8 +25,7 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Configuration
 HARDY_NODE_NUM=1
 HDTN_NODE_NUM=10
-HDTN_PORT=4556
-HARDY_PORT=4556
+TCPCLV4_PORT=4556
 HDTN_IMAGE="hdtn-interop"
 PING_COUNT=5
 
@@ -181,7 +180,7 @@ if [ "$USE_DOCKER" = true ]; then
         --name hdtn-interop-test \
         --network host \
         -e NODE_ID="$HDTN_NODE_NUM" \
-        -e TCPCL_PORT="$HDTN_PORT" \
+        -e TCPCL_PORT="$TCPCLV4_PORT" \
         "$HDTN_IMAGE")
 
     log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
@@ -202,14 +201,14 @@ if [ "$USE_DOCKER" = true ]; then
         fi
 
         # Check if port is open (try multiple methods for compatibility)
-        if nc -z 127.0.0.1 "$HDTN_PORT" 2>/dev/null; then
-            log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s)"
+        if nc -z 127.0.0.1 "$TCPCLV4_PORT" 2>/dev/null; then
+            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
             break
-        elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$HDTN_PORT" 2>/dev/null; then
-            log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s)"
+        elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$TCPCLV4_PORT" 2>/dev/null; then
+            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
             break
-        elif ss -tlnp 2>/dev/null | grep -q ":$HDTN_PORT "; then
-            log_info "HDTN is listening on port $HDTN_PORT (took ${WAIT_COUNT}s, detected via ss)"
+        elif ss -tlnp 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
+            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s, detected via ss)"
             break
         fi
 
@@ -218,11 +217,11 @@ if [ "$USE_DOCKER" = true ]; then
     done
 
     if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "HDTN did not start listening on port $HDTN_PORT within ${WAIT_TIMEOUT}s"
+        log_error "HDTN did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
         log_error "Checking what ports are listening inside container:"
         docker exec "$HDTN_CONTAINER" netstat -tlnp 2>/dev/null || docker exec "$HDTN_CONTAINER" ss -tlnp 2>/dev/null || true
         log_error "Checking from host:"
-        netstat -tlnp 2>/dev/null | grep -E ":$HDTN_PORT|:4556" || ss -tlnp 2>/dev/null | grep -E ":$HDTN_PORT|:4556" || true
+        netstat -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || ss -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || true
         log_error "HDTN container logs:"
         docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
         exit 1
@@ -240,7 +239,7 @@ echo ""
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Use a known source EID so HDTN can route responses back
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$HDTN_PORT" \
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
     --source "ipn:$HARDY_NODE_NUM.1" \
     --count "$PING_COUNT" \
     --no-sign \
@@ -309,7 +308,7 @@ primary-block-integrity = false
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$HARDY_PORT"
+address = "[::]:$TCPCLV4_PORT"
 EOF
 
 log_step "Starting Hardy BPA server..."
@@ -362,7 +361,7 @@ if [ "$USE_DOCKER" = true ]; then
             "convergenceLayer": "tcpcl_v4",
             "nextHopNodeId": $HARDY_NODE_NUM,
             "remoteHostname": "127.0.0.1",
-            "remotePort": $HARDY_PORT,
+            "remotePort": $TCPCLV4_PORT,
             "maxNumberOfBundlesInPipeline": 50,
             "maxSumOfBundleBytesInPipeline": 50000000,
             "keepAliveIntervalSeconds": 17,
