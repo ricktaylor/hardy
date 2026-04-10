@@ -1,4 +1,5 @@
 CFE_LIB, bplib,         BPLib_PrintVersion, BP_LIB,       0,    0,     0x0, 0;
 CFE_APP, bpnode,        BPNode_AppMain,     BPNODE,       20,   16384, 0x0, 0;
+CFE_APP, echo_app,      EchoApp_Main,       ECHO_APP,     50,   16384, 0x0, 0;
 CFE_APP, ci_lab,        CI_LAB_AppMain,     CI_LAB_APP,   60,   16384, 0x0, 0;
 CFE_APP, sch_lab,       SCH_LAB_AppMain,    SCH_LAB_APP,  80,   16384, 0x0, 0;

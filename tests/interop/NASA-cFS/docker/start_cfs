@@ -1,15 +1,13 @@
 #!/bin/bash
 # Start NASA cFS BPNode for interop testing
 #
-# This script creates the required storage directory and starts the
-# cFS core executable. It runs in the binary directory so cFS can
-# find its table files and startup script.
+# Creates the storage directory, starts the cFS core executable, and
+# sends BPNode management commands to configure the echo topology.
 
 set -e
 
 CFS_DIR="/opt/cfs/echo"
 
-# Create storage directory required by BPNode
 mkdir -p "$CFS_DIR/storage"
 
 # Raise POSIX message queue limits (cFS needs deep queues)
@@ -19,7 +17,6 @@ fi
 
 cd "$CFS_DIR"
 
-# cFS expects startup script at ./cf/cfe_es_startup.scr
 mkdir -p cf
 cp -n /opt/cfs/cfe_es_startup.scr cf/ 2>/dev/null || true
 
@@ -27,22 +24,23 @@ echo "Starting cFS BPNode (STCP echo mode)..."
 echo "  STCP listen port: 4501"
 echo "  STCP connect to:  127.0.0.1:4551"
 
-# Start cFS in background, then send commands to start contacts
 ./core-echo &
 CFS_PID=$!
 
-# Wait for cFS to initialize
 sleep 5
 
-# Send commands via cmdUtil through CI_LAB (UDP port 1234)
-# BPNODE_CMD_MID = 0x1838 (topic 0x38), little-endian
+# BPNode commands via CI_LAB (UDP port 1234)
 CMDUTIL="/opt/cfs/host/cmdUtil --port 1234 --endian=LE --pktid=0x1838"
 
-# Add Application for channels (CC=14), Setup Contact (CC=29),
-# Start Application (CC=17), Start Contact (CC=30)
-# Channel 0 was auto-added during init; add Channel 1 for echo outbound
+# Channel 0 is auto-added and auto-started during init, but the auto-start
+# does not activate SB subscriptions.  Stop it, then restart so the ADU
+# proxy table (including the echo_app subscription) takes full effect.
 echo "Adding BPNode application for channel 1..."
 $CMDUTIL --cmdcode=14 --uint32=1 2>/dev/null || true
+sleep 1
+
+echo "Stopping auto-started Channel 0..."
+$CMDUTIL --cmdcode=18 --uint32=0 2>/dev/null || true
 sleep 1
 
 echo "Starting BPNode applications..."
@@ -60,5 +58,4 @@ sleep 2
 
 echo "BPNode startup commands sent."
 
-# Wait for cFS process
 wait $CFS_PID
