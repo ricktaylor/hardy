@@ -26,7 +26,7 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 HARDY_NODE_NUM=1
 HDTN_NODE_NUM=10
 HDTN_PORT=4556
-HARDY_PORT=4557
+HARDY_PORT=4556
 HDTN_IMAGE="hdtn-interop"
 PING_COUNT=5
 
@@ -295,8 +295,7 @@ status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
 
 [built-in-services]
-# Echo service on IPN service 7 (standard) and 2047 (HDTN compatible)
-echo = [7, 2047]
+echo = [7]
 
 [storage.metadata]
 type = "memory"
@@ -332,16 +331,15 @@ if [ "$USE_DOCKER" = true ]; then
     # Clean up any existing container with the same name
     docker rm -f hdtn-interop-test 2>/dev/null || true
 
-    # Start HDTN container
+    # Start container without the HDTN daemon — bping is standalone
     HDTN_CONTAINER=$(docker run -d \
         --name hdtn-interop-test \
         --network host \
-        -e NODE_ID="$HDTN_NODE_NUM" \
-        -e TCPCL_PORT="$HDTN_PORT" \
-        "$HDTN_IMAGE")
+        --entrypoint sleep \
+        "$HDTN_IMAGE" infinity)
 
     log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
-    sleep 5
+    sleep 1
 
     # Check if container is still running
     if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
@@ -386,8 +384,6 @@ EOF
 
         # Run bping from HDTN container
         # --duration is in seconds (sends at --bundle-rate per second, default 1)
-        # Use service 7 (not 2047) because Hardy's EchoService has a bug where
-        # only the first registered service works (second sink gets dropped)
         echo ""
         PING_OUTPUT=$(docker exec hdtn-interop-test bping \
             --use-bp-version-7 \
