@@ -305,6 +305,7 @@ if [ -x "$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" ]; then
     fi
 else
     log_warn "ud3tn test script not found, skipping"
+fi
 
 # NASA cFS (STCP)
 if [ -x "$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" ]; then
