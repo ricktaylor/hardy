@@ -27,25 +27,29 @@ echo requests to `ipn:1.7` via MTCP.  Hardy's echo service responds.
 
 ## Architecture
 
+### Test 1 — Hardy pings ud3tn
+
 ```mermaid
 flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-        CLA["mtcp-cla<br/>MTCP framing"]
-    end
-
-    subgraph UD3TN ["ud3tn (node 2)"]
-        ECHO["Python echo agent<br/>svc 7 via AAP2"]
-        PING["aap2_ping"]
-    end
-
-    BP --> CLA
-    CLA -- "MTCP :4557" --> ECHO
-    ECHO -- "MTCP :4558" --> CLA
+    BP["bp ping"] --> CLA["mtcp-cla<br/>MTCP framing"]
+    CLA -- "MTCP" --> UD3TN["ud3tn BPA"]
+    UD3TN --> ECHO["Python echo agent<br/>svc 7 via AAP2"]
+    ECHO --> UD3TN
+    UD3TN -- "MTCP" --> CLA
     CLA --> BP
+```
 
-    PING -- "MTCP :4558" --> CLA
-    CLA --> BP
+### Test 2 — ud3tn pings Hardy
+
+```mermaid
+flowchart LR
+    PING["aap2_ping"] --> UD3TN["ud3tn BPA"]
+    UD3TN -- "MTCP" --> CLA["mtcp-cla<br/>MTCP framing"]
+    CLA --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA --> CLA
+    CLA -- "MTCP" --> UD3TN
 ```
 
 Hardy uses the external `mtcp-cla` binary since ud3tn uses MTCP rather

@@ -27,25 +27,29 @@ requests to `ipn:1.7` via STCP.  Hardy's echo service responds.
 
 ## Architecture
 
+### Test 1 — Hardy pings ION
+
 ```mermaid
 flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-        CLA["mtcp-cla<br/>STCP framing"]
-    end
-
-    subgraph ION ["ION (node 2)"]
-        ECHO["bpecho<br/>svc 7"]
-        BPING["bping"]
-    end
-
-    BP --> CLA
-    CLA -- "STCP :4557" --> ECHO
-    ECHO -- "STCP :4558" --> CLA
+    BP["bp ping"] --> CLA["mtcp-cla<br/>STCP framing"]
+    CLA -- "STCP" --> ION["ION BPA"]
+    ION --> ECHO["bpecho<br/>svc 7"]
+    ECHO --> ION
+    ION -- "STCP" --> CLA
     CLA --> BP
+```
 
-    BPING -- "STCP :4558" --> CLA
-    CLA --> BP
+### Test 2 — ION pings Hardy
+
+```mermaid
+flowchart LR
+    BPING["bping"] --> ION["ION BPA"]
+    ION -- "STCP" --> CLA["mtcp-cla<br/>STCP framing"]
+    CLA --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA --> CLA
+    CLA -- "STCP" --> ION
 ```
 
 Hardy uses the external `mtcp-cla` binary (in STCP framing mode) since

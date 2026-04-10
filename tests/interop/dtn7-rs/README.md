@@ -28,21 +28,26 @@ via TCPCLv4.  Hardy's echo service responds.  Verified via dtn7-rs's
 
 ## Architecture
 
+### Test 1 — Hardy pings dtn7-rs
+
 ```mermaid
 flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-    end
+    BP["bp ping"] -- "TCPCLv4" --> DTN7["dtnd"]
+    DTN7 --> ECHO["dtnecho2<br/>svc 7"]
+    ECHO --> DTN7
+    DTN7 -- "TCPCLv4" --> BP
+```
 
-    subgraph DTN7 ["dtn7-rs (node 23)"]
-        ECHO["dtnecho2<br/>svc 7"]
-        SEND["dtnsend / dtnrecv"]
-    end
+### Test 2 — dtn7-rs pings Hardy
 
-    BP -- "TCPCLv4 :4556" --> ECHO
-    ECHO -- "TCPCLv4" --> BP
-    SEND -- "TCPCLv4 :4556" --> BP
-    BP -- "TCPCLv4" --> SEND
+```mermaid
+flowchart LR
+    SEND["dtnsend"] --> DTN7["dtnd"]
+    DTN7 -- "TCPCLv4" --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA -- "TCPCLv4" --> DTN7
+    DTN7 --> RECV["dtnrecv"]
 ```
 
 ## dtn7-rs Modifications
