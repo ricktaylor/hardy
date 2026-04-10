@@ -17,15 +17,16 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
 COPY patches/ patches/
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json -p hardy-tools
 COPY . .
 RUN cargo build --release -p hardy-tools
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash \
         ca-certificates \
         netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/bp /usr/local/bin/bp
-ENTRYPOINT ["/bin/bash", "-c"]
+ENTRYPOINT ["/usr/local/bin/bp"]

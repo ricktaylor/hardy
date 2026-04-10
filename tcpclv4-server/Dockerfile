@@ -21,7 +21,7 @@ COPY --from=planner /build/recipe.json recipe.json
 # (a local stub to resolve a links="sqlite3" conflict). It must be present before
 # cargo chef cook so the resolver can find it.
 COPY patches/ patches/
-RUN cargo chef cook --release --recipe-path recipe.json $CARGO_ARGS
+RUN cargo chef cook --release --recipe-path recipe.json -p hardy-tcpclv4-server $CARGO_ARGS
 COPY . .
 RUN cargo build --release --bin hardy-tcpclv4-server $CARGO_ARGS
 
