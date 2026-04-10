@@ -99,7 +99,7 @@ cat > "$RUNTIME_DIR/hdtn_config.json" << EOF
         "storageDiskConfigVector": [
             {
                 "name": "disk0",
-                "storeFilePath": "$RUNTIME_DIR/bundles"
+                "storeFilePath": "/dev/shm/hdtn_bundles"
             }
         ]
     }
