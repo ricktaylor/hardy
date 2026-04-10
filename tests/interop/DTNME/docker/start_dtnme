@@ -32,7 +32,7 @@ fi
 echo ""
 
 # Create directories
-mkdir -p /dtn/data/db /dtn/data/bundles
+mkdir -p /dtn/data/db /dtn/data/bundles /dev/shm/dtnme/db /dev/shm/dtnme/bundles
 
 # Generate runtime configuration
 cat > /dtn/conf/dtnme_runtime.cfg << EOF
@@ -69,11 +69,11 @@ console set prompt "\$local_node_name dtn% "
 # API configuration
 api set local_port \$local_api_port
 
-# Storage configuration
+# Storage configuration — use /dev/shm (tmpfs) to avoid disk I/O in benchmarks
 storage set type berkeleydb
-storage set payloaddir \${local_db_dir}/bundles
+storage set payloaddir /dev/shm/dtnme/bundles
 storage set dbname DTN
-storage set dbdir \${local_db_dir}/db
+storage set dbdir /dev/shm/dtnme/db
 storage set db_log_auto_removal true
 storage set payload_quota 10000000000
 

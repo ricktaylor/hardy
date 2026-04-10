@@ -25,8 +25,7 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Configuration
 HARDY_NODE_NUM=1
 DTNME_NODE_NUM=2
-DTNME_PORT=4556
-HARDY_PORT=4557
+TCPCLV4_PORT=4556
 DTNME_IMAGE="dtnme-interop"
 PING_COUNT=5
 
@@ -186,9 +185,9 @@ if [ "$USE_DOCKER" = true ]; then
         --name dtnme-interop-test \
         --network host \
         -e NODE_ID="$DTNME_NODE_NUM" \
-        -e TCPCL_PORT="$DTNME_PORT" \
+        -e TCPCL_PORT="$TCPCLV4_PORT" \
         -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$HARDY_PORT" \
+        -e REMOTE_PORT="$TCPCLV4_PORT" \
         -e REMOTE_NODE="$HARDY_NODE_NUM" \
         "$DTNME_IMAGE")
 
@@ -236,7 +235,7 @@ echo ""
 # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
 #       payload block CRC but rejects bundles when CRC validation fails.
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$DTNME_PORT" \
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
     --no-sign \
@@ -307,7 +306,7 @@ primary-block-integrity = false
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$HARDY_PORT"
+address = "[::]:$TCPCLV4_PORT"
 EOF
 
 log_step "Starting Hardy BPA server..."
@@ -329,14 +328,14 @@ if [ "$USE_DOCKER" = true ]; then
     # Clean up any existing container with the same name
     docker rm -f dtnme-interop-test 2>/dev/null || true
 
-    # Start DTNME container with link to Hardy
+    # Start DTNME container — induct on 4558 (Hardy has 4556)
     DTNME_CONTAINER=$(docker run -d \
         --name dtnme-interop-test \
         --network host \
         -e NODE_ID="$DTNME_NODE_NUM" \
-        -e TCPCL_PORT="$DTNME_PORT" \
+        -e TCPCL_PORT=$((TCPCLV4_PORT+1)) \
         -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$HARDY_PORT" \
+        -e REMOTE_PORT="$TCPCLV4_PORT" \
         -e REMOTE_NODE="$HARDY_NODE_NUM" \
         "$DTNME_IMAGE")
 
@@ -352,7 +351,7 @@ if [ "$USE_DOCKER" = true ]; then
     else
         # Establish DTNME link to Hardy before pinging
         log_info "Establishing DTNME -> Hardy TCP connection..."
-        docker exec "$DTNME_CONTAINER" /dtn/bin/send_me -s "ipn:$DTNME_NODE_NUM.1" -d "127.0.0.1:$HARDY_PORT" -p "link warmup" 2>/dev/null || true
+        docker exec "$DTNME_CONTAINER" /dtn/bin/send_me -s "ipn:$DTNME_NODE_NUM.1" -d "127.0.0.1:$TCPCLV4_PORT" -p "link warmup" 2>/dev/null || true
 
         # Wait for connection to stabilize (prevents losing first pings)
         log_info "Waiting for connection to stabilize..."
