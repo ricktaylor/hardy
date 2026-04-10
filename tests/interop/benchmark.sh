@@ -161,12 +161,12 @@ if [ -z "$SKIP_BUILD_FLAG" ]; then
         BP_BIN=""
     fi
 
-    # Build the MTCP/STCP CLA plugin for ION interop
+    # Build the MTCP/STCP CLA client for ION interop
     MTCP_CLA_DIR="$SCRIPT_DIR/mtcp"
     if [ -d "$MTCP_CLA_DIR" ]; then
-        log_info "Building MTCP/STCP CLA plugin..."
+        log_info "Building MTCP/STCP CLA client..."
         (cd "$MTCP_CLA_DIR" && cargo build --release) || {
-            log_warn "MTCP CLA plugin build failed, ION test may be skipped"
+            log_warn "MTCP CLA client build failed, ION test may be skipped"
         }
     fi
 
