@@ -5,6 +5,8 @@ use rand::TryRng;
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
+mod key_wrap;
+
 fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
     let mut buf = vec![0u8; N].into_boxed_slice();
     rand::rngs::SysRng

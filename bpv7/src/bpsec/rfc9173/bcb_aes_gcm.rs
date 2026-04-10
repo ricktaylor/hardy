@@ -318,17 +318,18 @@ impl Operation {
         let key = if let Some(cek) = cek {
             Some(
                 match &jwk.key_algorithm {
-                    Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string())),
-                    Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string())),
-                    Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
-                        .and_then(|kek| kek.wrap_vec(&cek))
-                        .map_err(|e| Error::Algorithm(e.to_string())),
+                    Some(key::KeyAlgorithm::A128KW) => {
+                        key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek)
+                    }
+                    Some(key::KeyAlgorithm::A192KW) => {
+                        key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek)
+                    }
+                    Some(key::KeyAlgorithm::A256KW) => {
+                        key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek)
+                    }
                     _ => unreachable!("Key algorithm validated during key lookup"),
-                }?
+                }
+                .map_err(Error::Algorithm)?
                 .into(),
             )
         } else {
@@ -380,17 +381,18 @@ impl Operation {
             };
 
             let cek = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) => aes_kw::KekAes128::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::DecryptionFailed)?,
-                Some(key::KeyAlgorithm::A192KW) => aes_kw::KekAes192::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::DecryptionFailed)?,
-                Some(key::KeyAlgorithm::A256KW) => aes_kw::KekAes256::try_from(kek.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::DecryptionFailed)?,
+                Some(key::KeyAlgorithm::A128KW) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes128>(kek.as_ref(), wrapped_cek)
+                }
+                Some(key::KeyAlgorithm::A192KW) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes192>(kek.as_ref(), wrapped_cek)
+                }
+                Some(key::KeyAlgorithm::A256KW) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes256>(kek.as_ref(), wrapped_cek)
+                }
                 _ => return Err(Error::DecryptionFailed),
-            };
+            }
+            .map_err(|_| Error::DecryptionFailed)?;
             let cek = zeroize::Zeroizing::from(Box::<[u8]>::from(cek));
 
             self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())

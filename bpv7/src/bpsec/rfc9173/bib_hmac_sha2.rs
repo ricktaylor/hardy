@@ -350,16 +350,11 @@ impl Operation {
 
         let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
             let key = match key_wrap {
-                KeyWrap::Aes128 => aes_kw::KekAes128::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                KeyWrap::Aes192 => aes_kw::KekAes192::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-                KeyWrap::Aes256 => aes_kw::KekAes256::try_from(kek.as_ref())
-                    .and_then(|kek| kek.wrap_vec(&cek))
-                    .map_err(|e| Error::Algorithm(e.to_string())),
-            }?;
+                KeyWrap::Aes128 => key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek),
+                KeyWrap::Aes192 => key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek),
+                KeyWrap::Aes256 => key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek),
+            }
+            .map_err(Error::Algorithm)?;
             Some(key.into())
         } else {
             None
@@ -397,17 +392,18 @@ impl Operation {
             };
 
             let cek = match as_key_wrap(jwk.key_algorithm) {
-                Some(KeyWrap::Aes128) => aes_kw::KekAes128::try_from(key.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::IntegrityCheckFailed)?,
-                Some(KeyWrap::Aes192) => aes_kw::KekAes192::try_from(key.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::IntegrityCheckFailed)?,
-                Some(KeyWrap::Aes256) => aes_kw::KekAes256::try_from(key.as_ref())
-                    .and_then(|kek| kek.unwrap_vec(wrapped_cek))
-                    .map_err(|_| Error::IntegrityCheckFailed)?,
+                Some(KeyWrap::Aes128) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes128>(key.as_ref(), wrapped_cek)
+                }
+                Some(KeyWrap::Aes192) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes192>(key.as_ref(), wrapped_cek)
+                }
+                Some(KeyWrap::Aes256) => {
+                    key_wrap::unwrap::<aes_kw::aes::Aes256>(key.as_ref(), wrapped_cek)
+                }
                 None => return Err(Error::IntegrityCheckFailed),
-            };
+            }
+            .map_err(|_| Error::IntegrityCheckFailed)?;
             let cek = zeroize::Zeroizing::from(Box::from(cek));
 
             if self.verify_inner(&cek, &args)? {
