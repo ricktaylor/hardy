@@ -24,8 +24,7 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Configuration
 HARDY_NODE_NUM=1
 DTN7_NODE_NUM=23
-DTN7_PORT=4556
-HARDY_PORT=4557
+TCPCLV4_PORT=4556
 DTN7_WS_PORT=3000
 DTN7_IMAGE="dtn7-interop"
 PING_COUNT=5
@@ -192,7 +191,7 @@ if [ "$USE_DOCKER" = true ]; then
         --network host \
         -e NODE_ID="$DTN7_NODE_NUM" \
         "$DTN7_IMAGE" \
-        -d -i0 -r epidemic -C "tcp:port=$DTN7_PORT")
+        -d -i0 -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$TCPCLV4_PORT")
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
@@ -217,7 +216,7 @@ if [ "$USE_DOCKER" = true ]; then
 else
     # Run dtn7-rs natively
     # dtnd: -d debug, -i0 interval, -r epidemic routing, -n node number, -C tcp convergence layer
-    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$DTN7_PORT" &
+    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
     DTND_PID=$!
     log_info "Started dtnd with PID $DTND_PID"
 
@@ -247,7 +246,7 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$DTN7_PORT" \
+PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --count "$PING_COUNT" \
     --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
@@ -323,7 +322,7 @@ primary-block-integrity = false
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$HARDY_PORT"
+address = "[::]:$TCPCLV4_PORT"
 EOF
 
 log_step "Starting Hardy BPA server..."
@@ -345,13 +344,13 @@ if [ "$USE_DOCKER" = true ]; then
     # Clean up any existing container with the same name
     docker rm -f dtn7-interop-test 2>/dev/null || true
 
-    # Start dtn7-rs container
+    # Start dtn7-rs container — induct on unused port (Hardy has $TCPCLV4_PORT)
     DTN7_CONTAINER=$(docker run -d \
         --name dtn7-interop-test \
         --network host \
         -e NODE_ID="$DTN7_NODE_NUM" \
         "$DTN7_IMAGE" \
-        -d -i0 -r epidemic -C "tcp:port=$DTN7_PORT")
+        -d -i0 -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
     sleep 3
@@ -370,9 +369,9 @@ if [ "$USE_DOCKER" = true ]; then
     # First, add Hardy as a peer via dtn7-rs REST API
     # Format: /peers/add?p=<PEER_URL>&p_t=<STATIC|DYNAMIC>
     # PEER_URL format for IPN: tcp://host:port/<node_number>
-    log_info "Adding Hardy as peer at 127.0.0.1:$HARDY_PORT..."
+    log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
     docker exec "$DTN7_CONTAINER" \
-        curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$HARDY_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
+        curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
         2>&1 || log_warn "Could not add peer"
 
     sleep 1
@@ -419,13 +418,13 @@ if [ "$USE_DOCKER" = true ]; then
     fi
 else
     # Native mode
-    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$DTN7_PORT" &
+    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
     DTND_PID=$!
     sleep 3
 
     # Add Hardy as peer via REST API
-    log_info "Adding Hardy as peer at 127.0.0.1:$HARDY_PORT..."
-    curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$HARDY_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
+    log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
+    curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
         >/dev/null 2>&1 || log_warn "Could not add peer"
 
     sleep 1
