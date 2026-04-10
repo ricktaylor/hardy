@@ -45,7 +45,7 @@ impl From<Verbosity> for tracing::Level {
 /// Send ping bundles to a destination endpoint and measure round-trip times.
 ///
 /// Embeds a minimal BPA and establishes a CLA connection (TCPCLv4 by default,
-/// or a plugin CLA via --cla). Bundles are signed by default to detect
+/// or a gRPC CLA via --cla). Bundles are signed by default to detect
 /// corruption. Press Ctrl+C to stop and show statistics.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
