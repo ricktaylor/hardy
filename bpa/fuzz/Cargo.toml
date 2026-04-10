@@ -25,7 +25,7 @@ hardy-postgres-storage = { path = "../../postgres-storage", optional = true }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 hardy-file-cla = { path = "../../file-cla", optional = true }
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1.51.1", features = ["rt-multi-thread", "time"] }
 time = { version = "0.3.47", features = ["parsing"] }
 tracing = { version = "0.1.44", default-features = false }
 arbitrary = { version = "1.4.2", features = ["derive"] }
