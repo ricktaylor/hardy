@@ -399,8 +399,8 @@ else
     # Generate a CLI config and logging properties for the container
     docker exec esa-bp-interop-test sh -c 'cat > /tmp/logging.properties << LOGEOF
 handlers = java.util.logging.ConsoleHandler
-.level = INFO
-java.util.logging.ConsoleHandler.level = INFO
+.level = WARNING
+java.util.logging.ConsoleHandler.level = WARNING
 java.util.logging.ConsoleHandler.formatter = java.util.logging.SimpleFormatter
 LOGEOF'
 
@@ -428,6 +428,7 @@ CLIEOF"
     # Use -c=N to limit pings; sleep then send newline so the CLI exits cleanly.
     PING_OUTPUT=$(docker exec -i esa-bp-interop-test sh -c \
         "{ sleep $((PING_COUNT + 5)); echo ''; echo 'quit'; } | java -Xmx256m \
+        -Djava.util.logging.config.file=/tmp/logging.properties \
         -Dcli.configuration=/tmp/CLI.yml \
         -Dclient.service.number=1 \
         -cp /opt/esa-bp/esa.egos.bp.cli/jars/cli.jar \

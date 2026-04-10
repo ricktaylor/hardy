@@ -9,7 +9,7 @@ STCP_DEST_PORT="${STCP_DEST_PORT:-4557}"
 REMOTE_NODE_ID="${REMOTE_NODE_ID:-1}"
 
 CONFIG_DIR="/opt/esa-bp/interop-cfg"
-mkdir -p "$CONFIG_DIR/etc" "$CONFIG_DIR/etc/LTP" "$CONFIG_DIR/var/routing-mib" "$CONFIG_DIR/var/LTP" "$CONFIG_DIR/var/storage/model/store/property" "$CONFIG_DIR/var/storage/model/requests"
+mkdir -p "$CONFIG_DIR/etc" "$CONFIG_DIR/etc/LTP" "$CONFIG_DIR/var/routing-mib" "$CONFIG_DIR/var/LTP" "$CONFIG_DIR/var/storage/model/requests" /dev/shm/esa-bp-bundles
 # Empty identity map (required by configFiles.bn.identity.file)
 echo '<?xml version="1.0" encoding="UTF-8"?><identities/>' > "$CONFIG_DIR/var/identity_map.xml"
 # Empty model template (required by bundleStore.requestFileTemplate)
@@ -51,7 +51,7 @@ handlers:
 bundleStore:
     implementation: "esa.egos.bp.bundle.store.implementation.BundleStoreImpl"
     appendFile: "_bundle"
-    modelDir: "${CONFIG_DIR}/var/storage/model/store/property"
+    modelDir: "/dev/shm/esa-bp-bundles"
     softLimit: 30000000
     hardLimit: 50000000
     compressedCustodyAcceptanceLimit: 30000000
