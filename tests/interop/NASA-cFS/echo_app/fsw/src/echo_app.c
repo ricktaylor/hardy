@@ -60,6 +60,9 @@ void EchoApp_Main(void)
             CFE_MSG_Size_t Sz;
             CFE_MSG_GetSize(&BufPtr->Msg, &Sz);
 
+            if (Sz > sizeof(Out))
+                continue;
+
             memcpy(&Out, BufPtr, Sz);
             CFE_MSG_SetMsgId(&Out.SB.Msg, CFE_SB_ValueToMsgId(ECHO_RESP_MID));
             CFE_SB_TransmitMsg(&Out.SB.Msg, true);
