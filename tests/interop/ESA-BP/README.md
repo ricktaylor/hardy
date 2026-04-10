@@ -29,42 +29,41 @@ responds.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-        CLA["mtcp-cla<br/>STCP framing"]
-    end
-
-    subgraph ESA ["ESA-BP (node 10)"]
-        STCP["ClElementStcp"]
-        NODE["ESA-BP Node"]
-        ECHO["EchoService<br/>svc 7"]
-        BPING["CLI bping"]
-    end
-
-    BP --> CLA
-    CLA -- "STCP :4558" --> STCP
-    STCP --> NODE --> ECHO
-    ECHO --> NODE --> STCP
-    STCP -- "STCP :4557" --> CLA
-    CLA --> BP
-
-    BPING --> NODE
-```
-
 ### Test 1 — Hardy pings ESA-BP
 
 Hardy's `bp ping` uses `mtcp-cla` (in STCP framing mode) to connect to
-ESA-BP's custom STCP convergence layer element on port 4558.  ESA-BP's
-`EchoService` receives bundles via gRPC from the node and echoes them
-back to Hardy.
+ESA-BP's custom STCP convergence layer element.  ESA-BP's `EchoService`
+receives bundles via gRPC from the node and echoes them back to Hardy.
+
+```mermaid
+flowchart LR
+    BP["bp ping"] --> CLA["mtcp-cla<br/>STCP framing"]
+    CLA -- "STCP" --> STCP["ClElementStcp"]
+    STCP --> NODE["ESA-BP Node"]
+    NODE --> ECHO["EchoService<br/>svc 7"]
+    ECHO --> NODE
+    NODE --> STCP
+    STCP -- "STCP" --> CLA
+    CLA --> BP
+```
 
 ### Test 2 — ESA-BP pings Hardy
 
 Hardy runs `hardy-bpa-server` with an echo service, and `mtcp-cla`
-listening on port 4557.  ESA-BP's CLI `bping` command sends echo
-requests to `ipn:1.7` through the node's STCP element.
+listening for STCP connections.  ESA-BP's CLI `bping` command sends
+echo requests to `ipn:1.7` through the node's STCP element.
+
+```mermaid
+flowchart LR
+    BPING["CLI bping"] --> NODE["ESA-BP Node"]
+    NODE --> STCP["ClElementStcp"]
+    STCP -- "STCP" --> CLA["mtcp-cla<br/>STCP framing"]
+    CLA --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA --> CLA
+    CLA -- "STCP" --> STCP
+```
 
 ## ESA-BP Modifications
 
