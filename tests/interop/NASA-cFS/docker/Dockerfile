@@ -67,16 +67,32 @@ RUN git clone --depth 1 --branch ${TINYCBOR_REF} \
 RUN git clone --depth 1 https://github.com/laurencelundblade/QCBOR.git && \
     cd QCBOR && make && make install PREFIX=/usr/local
 
-# Inject STCP PSP module into the cFS PSP modules directory
+# ---- New components ----
+
+# STCP convergence layer (PSP IODriver module)
 COPY stcpsock_intf cfs-bundle/psp/fsw/modules/stcpsock_intf
 
-# Apply AduUnwrapping fix (completing the existing TODO in fwp_adup.c)
+# Echo service app — relays ADU payloads through a second SB message so that
+# a single BPLib channel can echo from the same service EID (RFC 9171 §4.2.2)
+COPY echo_app src/echo_app
+
+# ---- BPNode bug fixes (candidates for upstream) ----
+
+# Complete the existing TODO in fwp_adup.c: strip TLM header from ADU payload
 RUN sed -i \
     '/TODO remove header/{s|/\* TODO remove header \*/|*AduSize -= sizeof(CFE_MSG_TelemetryHeader_t); AduPtr = (uint8 *)AduPtr + sizeof(CFE_MSG_TelemetryHeader_t);|}' \
     src/bpnode/fsw/fwp/fwp_adup.c
 
-# Patch Contact 0 DestEIDs to route to Hardy (node 1) instead of default node 200
-# Also widen the service range so any service on node 1 matches
+# Shorten table names that exceed cFS default 16-char limit
+RUN sed -i \
+    's/\bMIBConfigPNTable\b/MIBCfgPNTbl/g; s/\bMIBConfigPSTable\b/MIBCfgPSTbl/g' \
+    src/bpnode/fsw/fwp/fwp_tablep.c \
+    src/bpnode/fsw/tables/bpnode_mib_pn.c \
+    src/bpnode/fsw/tables/bpnode_mib_ps.c
+
+# ---- Test topology configuration ----
+
+# Contact 0: route to Hardy (node 1, any service) instead of default node 200
 RUN sed -i '0,/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/{s/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/1/}' \
     src/bpnode/fsw/tables/bpnode_contacts.c && \
     sed -i '0,/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/{s/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/1/}' \
@@ -86,22 +102,15 @@ RUN sed -i '0,/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/{s/BPNODE_EID_NODE_NUM_FOR_CONT
     sed -i '0,/\.MinService.*= BPNODE_EID_SERVICE_NUM_FOR_CONTACT_0/{s/\.MinService.*= BPNODE_EID_SERVICE_NUM_FOR_CONTACT_0/.MinService   = 0/}' \
     src/bpnode/fsw/tables/bpnode_contacts.c
 
-# Enable AduWrapping on Channel 0 and AduUnwrapping on Channel 1 for SB echo routing
-# Channel 1 DestEID → Hardy (node 1, service 128)
+# Channel 0: enable ADU wrapping/unwrapping, set DestEID to Hardy (ipn:1.128)
 RUN sed -i '0,/\.AduWrapping.*= false/{s/\.AduWrapping.*= false/.AduWrapping            = true/}' \
     src/bpnode/fsw/tables/bpnode_channel.c && \
     sed -i 's/\.AduUnwrapping.*= false/.AduUnwrapping          = true/' \
     src/bpnode/fsw/tables/bpnode_channel.c && \
-    sed -i '/Channel 1/,$ { s/\.Node.*= BPLIB_LOCAL_EID_NODE_NUM/.Node           = 1/; s/\.Service.*= BPNODE_EID_SERVICE_NUM_FOR_CHANNEL_1/.Service        = 128/ }' \
+    sed -i 's/BPNODE_EID_NODE_NUM_FOR_CONTACT_0/1/' \
+    src/bpnode/fsw/tables/bpnode_channel.c && \
+    sed -i 's/BPNODE_EID_SERVICE_NUM_FOR_CONTACT_0/128/' \
     src/bpnode/fsw/tables/bpnode_channel.c
-
-# Shorten table names that exceed cFS default 16-char limit.
-# Use word-boundary matching to avoid renaming type names like BPLib_NC_MIBConfigPNTable_t.
-RUN sed -i \
-    's/\bMIBConfigPNTable\b/MIBCfgPNTbl/g; s/\bMIBConfigPSTable\b/MIBCfgPSTbl/g' \
-    src/bpnode/fsw/fwp/fwp_tablep.c \
-    src/bpnode/fsw/tables/bpnode_mib_pn.c \
-    src/bpnode/fsw/tables/bpnode_mib_ps.c
 
 # Prepare build configuration
 # Start from cFE sample_defs, then overlay BPNode's CI buildconfig

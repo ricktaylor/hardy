@@ -215,7 +215,7 @@ cat > "$TEST_DIR/stcp_cla.toml" << EOF
 bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
 cla-name = "cl0"
 framing = "stcp"
-log-level = "debug"
+log-level = "warn"
 address = "0.0.0.0:$HARDY_STCP_PORT"
 peer = "127.0.0.1:$CFS_STCP_PORT"
 peer-node = "ipn:$CFS_NODE_NUM.0"
@@ -226,6 +226,7 @@ EOF
 log_step "Hardy pinging cFS echo service at ipn:$CFS_NODE_NUM.7 via STCP..."
 echo ""
 
+# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
     --cla "$MTCP_CLA_BIN" \
     --cla-args "--config $TEST_DIR/stcp_cla.toml" \
@@ -238,42 +239,38 @@ PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
 echo "$PING_OUTPUT"
 echo ""
 
-# Extract results
+# Extract received count from "N bundles transmitted, M received" line
 STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
 TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
 RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-# The cFS SB echo responds from a different service number than what was pinged
-# (BPLib requires unique LocalServiceNumber per channel), so the ping tool's
-# strict source EID check rejects the responses. Instead, verify the echo by
-# checking the container logs for bidirectional bundle flow.
-CFS_LOGS=$(docker logs "$CFS_CONTAINER" 2>&1)
-
-# Check that bundles were received by the STCP module
-BUNDLES_IN=$(echo "$CFS_LOGS" | grep -c 'STCP received complete bundle' || true)
-# Check that cFS connected outbound to send echo responses
-ECHO_OUT=$(echo "$CFS_LOGS" | grep -c 'STCP output connected' || true)
-
-log_info "cFS received $BUNDLES_IN bundles, made $ECHO_OUT outbound connections"
-
-if [ "$BUNDLES_IN" -ge "$PING_COUNT" ] && [ "$ECHO_OUT" -ge 1 ]; then
-    log_info "TEST 1 PASSED: Bidirectional STCP bundle flow verified ($BUNDLES_IN in, echo connected)"
-    TEST1_RESULT="PASS"
-elif [ "$BUNDLES_IN" -ge 1 ]; then
-    log_warn "TEST 1 PARTIAL: cFS received $BUNDLES_IN/$PING_COUNT bundles, echo out=$ECHO_OUT"
+if [ $EXIT_CODE -eq 0 ]; then
+    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+        log_info "TEST 1 PASSED: Hardy successfully pinged cFS ($RECEIVED/$TRANSMITTED)"
+        TEST1_RESULT="PASS"
+    else
+        log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
+        TEST1_RESULT="FAIL"
+    fi
+elif [ $EXIT_CODE -eq 1 ]; then
+    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
     TEST1_RESULT="FAIL"
 else
-    log_error "TEST 1 FAILED: No bundles received by cFS"
+    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     TEST1_RESULT="FAIL"
 fi
 
-# Show relevant container logs
+# Show cFS container logs for diagnostics
+CFS_LOGS=$(docker logs "$CFS_CONTAINER" 2>&1)
 log_info "cFS container logs:"
-echo "$CFS_LOGS" | grep -i 'BPNODE\|STCP\|contact\|application\|Error\|listen\|accept\|connect\|Setup\|complete bundle' | grep -v 'Child Task' | tail -20
+echo "$CFS_LOGS" | grep -i 'BPNODE\|STCP\|contact\|application\|Error\|listen\|accept\|connect\|Setup\|complete bundle\|EchoApp\|echo_app\|ECHO_APP\|Syslog' | grep -v 'Child Task' | tail -30
 echo ""
 
 # =============================================================================
 # TEST 2: Hardy as server, verify cFS delivers bundles to Hardy
+# TODO: This test still uses cFS log-based verification instead of checking
+# actual bundle delivery at Hardy's BPA. Needs redesign — either verify via
+# Hardy BPA logs or use ci_lab to inject bundles for a true reverse-direction test.
 # =============================================================================
 echo ""
 echo "============================================================"
