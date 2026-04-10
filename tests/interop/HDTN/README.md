@@ -28,34 +28,25 @@ requests to `ipn:1.7` via TCPCLv4.  Hardy's echo service responds.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-    end
-
-    subgraph HDTN ["HDTN (node 10)"]
-        ECHO["Echo Service<br/>svc 2047"]
-        BPING["bping"]
-    end
-
-    BP -- "TCPCLv4 :4556" --> ECHO
-    ECHO -- "TCPCLv4" --> BP
-    BPING -- "TCPCLv4 :4556" --> BP
-    BP -- "TCPCLv4" --> BPING
-```
-
 ### Test 1 — Hardy pings HDTN
 
-Hardy's `bp ping` initiates a TCPCLv4 connection to HDTN on port 4556
-(IANA standard), targeting HDTN's echo service at `ipn:10.2047`.  HDTN
-uses service 2047 for echo (not the standard service 7).
+```mermaid
+flowchart LR
+    BP["bp ping"] -- "TCPCLv4" --> HDTN_BP["HDTN daemon"]
+    HDTN_BP --> ECHO["Echo Service<br/>svc 2047"]
+    ECHO --> HDTN_BP
+    HDTN_BP -- "TCPCLv4" --> BP
+```
 
 ### Test 2 — HDTN pings Hardy
 
-Hardy runs `hardy-bpa-server` with an echo service on port 4556.
-HDTN's `bping` tool connects directly via TCPCLv4 — it is a standalone
-tool and does not require the HDTN daemon (`hdtn-one-process`).
+```mermaid
+flowchart LR
+    BPING["bping"] -- "TCPCLv4" --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA -- "TCPCLv4" --> BPING
+```
 
 ## HDTN Modifications
 

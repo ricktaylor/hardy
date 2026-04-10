@@ -28,21 +28,25 @@ responds.
 
 ## Architecture
 
+### Test 1 — Hardy pings DTNME
+
 ```mermaid
 flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping / bpa-server"]
-    end
+    BP["bp ping"] -- "TCPCLv4" --> DTNME["DTNME daemon"]
+    DTNME --> ECHO["echo_me<br/>svc 7"]
+    ECHO --> DTNME
+    DTNME -- "TCPCLv4" --> BP
+```
 
-    subgraph DTNME ["DTNME (node 2)"]
-        ECHO["echo_me<br/>svc 7"]
-        PING["ping_me"]
-    end
+### Test 2 — DTNME pings Hardy
 
-    BP -- "TCPCLv4 :4556" --> ECHO
-    ECHO -- "TCPCLv4" --> BP
-    PING -- "TCPCLv4 :4556" --> BP
-    BP -- "TCPCLv4" --> PING
+```mermaid
+flowchart LR
+    PING["ping_me"] --> DTNME["DTNME daemon"]
+    DTNME -- "TCPCLv4" --> BPA["bpa-server"]
+    BPA --> ECHO["Echo Service<br/>svc 7"]
+    ECHO --> BPA
+    BPA -- "TCPCLv4" --> DTNME
 ```
 
 ## DTNME Modifications
@@ -76,6 +80,7 @@ rejects bundles with payload CRC validation failures.
 | TLS | Disabled | |
 | Bundle signing | Disabled | `--no-sign` |
 | Payload CRC | Disabled | `--no-payload-crc` (DTNME compatibility) |
+| Storage | `/dev/shm` | tmpfs — avoids disk I/O in benchmarks |
 
 ## File Layout
 
