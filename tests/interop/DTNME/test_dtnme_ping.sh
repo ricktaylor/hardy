@@ -187,7 +187,7 @@ if [ "$USE_DOCKER" = true ]; then
         -e NODE_ID="$DTNME_NODE_NUM" \
         -e TCPCL_PORT="$TCPCLV4_PORT" \
         -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$TCPCLV4_PORT" \
+        -e REMOTE_PORT="$((TCPCLV4_PORT+1))" \
         -e REMOTE_NODE="$HARDY_NODE_NUM" \
         "$DTNME_IMAGE")
 

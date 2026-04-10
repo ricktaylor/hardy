@@ -6,7 +6,7 @@
 #
 # Environment variables:
 #   ION_NODE_NUM  - Node number for IPN EID (default: 2)
-#   STCP_PORT     - STCP listening port (default: 4556)
+#   STCP_PORT     - STCP listening port (default: 4557, avoids 4556 which is TCPCLv4)
 #   REMOTE_HOST   - Hostname/IP of remote DTN node (optional)
 #   REMOTE_PORT   - Remote STCP port (default: 4557)
 #   REMOTE_NODE   - Remote node number (default: 1)
@@ -14,7 +14,7 @@
 set -e
 
 ION_NODE_NUM=${ION_NODE_NUM:-2}
-STCP_PORT=${STCP_PORT:-4556}
+STCP_PORT=${STCP_PORT:-4557}
 REMOTE_HOST=${REMOTE_HOST:-}
 REMOTE_PORT=${REMOTE_PORT:-4557}
 REMOTE_NODE=${REMOTE_NODE:-1}

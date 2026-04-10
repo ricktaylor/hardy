@@ -8,9 +8,9 @@
 #   bpa-address = "http://[::1]:50051"
 #   cla-name = "cl0"
 #   framing = "stcp"
-#   peer = "127.0.0.1:4556"
+#   peer = "127.0.0.1:4557"
 #   peer-node = "ipn:2.0"
-#   address = "0.0.0.0:4557"
+#   address = "0.0.0.0:4558"
 #
 # Then run:
 #   bp ping ipn:2.7 \
@@ -25,9 +25,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ION_IMAGE="ion-interop"
 ION_NODE_NUM=2
-ION_STCP_PORT=4558
+ION_STCP_PORT=4557
 HARDY_NODE_NUM=1
-HARDY_STCP_PORT=4557
+HARDY_STCP_PORT=4558
 HARDY_GRPC_PORT=50051
 
 cleanup() {
