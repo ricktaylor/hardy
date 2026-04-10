@@ -199,7 +199,11 @@ static int32 stcpsock_intf_Configure(stcpsock_intf_State_t *State, uint32 Instan
     }
     else if (strncmp(ConfigString, "port=", 5) == 0)
     {
-        State->LocalAddr.sin_port = htons(atoi(ConfigString + 5));
+        char *end;
+        long port = strtol(ConfigString + 5, &end, 10);
+        if (*end != '\0' || port <= 0 || port > 65535)
+            return CFE_PSP_ERROR;
+        State->LocalAddr.sin_port = htons((uint16_t)port);
         return CFE_PSP_SUCCESS;
     }
     else if (strncmp(ConfigString, "IpAddr=", 7) == 0)
@@ -311,7 +315,9 @@ static int32 stcpsock_intf_ReadPacket(stcpsock_intf_State_t *State,
     /* Parse length prefix (first time after header complete) */
     if (State->PendingLen == 0)
     {
-        State->PendingLen = ntohl(*(uint32_t *)State->LenBuf);
+        uint32_t netVal;
+        memcpy(&netVal, State->LenBuf, sizeof(netVal));
+        State->PendingLen = ntohl(netVal);
 
         /* Zero-length = keepalive, skip and reset for next frame */
         if (State->PendingLen == 0)
