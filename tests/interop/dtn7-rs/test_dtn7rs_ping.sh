@@ -207,8 +207,8 @@ if [ "$USE_DOCKER" = true ]; then
             exit 1
         fi
 
-        if ss -tln 2>/dev/null | grep -q ":$DTN7_PORT "; then
-            log_info "dtnd is listening on port $DTN7_PORT (took ${WAIT_COUNT}s)"
+        if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
+            log_info "dtnd is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
             break
         fi
 
@@ -220,7 +220,7 @@ if [ "$USE_DOCKER" = true ]; then
     sleep 2
 
     if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "dtnd did not start listening on port $DTN7_PORT within ${WAIT_TIMEOUT}s"
+        log_error "dtnd did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
         docker logs "$DTN7_CONTAINER" 2>&1 | tail -30
         exit 1
     fi
@@ -379,8 +379,8 @@ if [ "$USE_DOCKER" = true ]; then
         if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
             break
         fi
-        if ss -tln 2>/dev/null | grep -q ":$DTN7_PORT "; then
-            log_info "dtnd is listening on port $DTN7_PORT (took ${WAIT_COUNT}s)"
+        if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
+            log_info "dtnd is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
             break
         fi
         sleep 1
