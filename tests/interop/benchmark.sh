@@ -305,6 +305,20 @@ if [ -x "$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" ]; then
     fi
 else
     log_warn "ud3tn test script not found, skipping"
+
+# NASA cFS (STCP)
+if [ -x "$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" ]; then
+    if docker image inspect cfs-interop &>/dev/null; then
+        log_step "Running NASA cFS test..."
+        OUTPUT=$("$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        extract_rtt_stats "$OUTPUT" "NASA cFS"
+        log_info "NASA cFS complete"
+    else
+        log_warn "cfs-interop Docker image not found, skipping"
+        RESULTS+=("NASA cFS|-|-|-|-|No image|-|")
+    fi
+else
+    log_warn "NASA cFS test script not found, skipping"
 fi
 
 # ESA-BP (STCP)
@@ -391,7 +405,7 @@ OUTPUT_FILE="$SCRIPT_DIR/benchmark_results.md"
     echo ""
     echo "- **Pings**: Received/Transmitted count"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
-    echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION and ESA-BP use STCP via client CLA"
+    echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION, ESA-BP, NASA cFS use STCP via client CLA"
     echo "- Hardy baseline runs inline; other tests use existing interop scripts"
     echo ""
     echo "_$PING_COUNT pings per test, generated $(date '+%Y-%m-%d %H:%M:%S')_"
