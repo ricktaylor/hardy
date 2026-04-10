@@ -30,35 +30,39 @@ Hardy-side delivery checks — to be improved.)
 
 ## Architecture
 
+Both tests use **Channel 0 (service 7)** for inbound and outbound,
+ensuring the echo response source EID matches the pinged destination
+per RFC 9171 §4.2.2.  The `echo_app` relays payloads through a second
+SB message because the cFS Software Bus does not deliver messages back
+to the publishing pipe.
+
+### Test 1 — Hardy pings cFS
+
 ```mermaid
 flowchart LR
-    subgraph Hardy ["Hardy (node 1)"]
-        BP["bp ping<br/>ipn:1.128"]
-    end
-
-    subgraph cFS ["cFS BPNode (node 100)"]
-        STCP_IN["STCP In<br/>:4501"]
-        CH0_W["Channel 0<br/>AduWrapping"]
-        ADU_OUT(["ADU_OUT_MID"])
-        ECHO["echo_app"]
-        ECHO_RESP(["ECHO_RESP_MID"])
-        CH0_U["Channel 0<br/>AduUnwrapping"]
-        CONTACT["Contact 0"]
-        STCP_OUT["STCP Out<br/>:4551"]
-
-        STCP_IN --> CH0_W --> ADU_OUT --> ECHO
-        ECHO --> ECHO_RESP --> CH0_U --> CONTACT --> STCP_OUT
-    end
-
-    BP -- "STCP" --> STCP_IN
-    STCP_OUT -- "STCP" --> BP
+    BP["bp ping"] --> CLA["mtcp-cla<br/>STCP framing"]
+    CLA -- "STCP" --> STCP_IN["STCP In"]
+    STCP_IN --> CH0_W["Channel 0<br/>AduWrapping"]
+    CH0_W --> ADU_OUT(["ADU_OUT_MID"])
+    ADU_OUT --> ECHO["echo_app"]
+    ECHO --> ECHO_RESP(["ECHO_RESP_MID"])
+    ECHO_RESP --> CH0_U["Channel 0<br/>AduUnwrapping"]
+    CH0_U --> STCP_OUT["STCP Out"]
+    STCP_OUT -- "STCP" --> CLA
+    CLA --> BP
 ```
 
-Both inbound and outbound use **Channel 0 (service 7)**, ensuring the
-echo response source EID matches the pinged destination per RFC 9171
-§4.2.2.  The `echo_app` relays payloads through a second SB message
-because the cFS Software Bus does not deliver messages back to the
-publishing pipe.
+### Test 2 — cFS delivers to Hardy
+
+```mermaid
+flowchart LR
+    TRIGGER["bp ping<br/>(throwaway)"] --> CLA2["mtcp-cla"]
+    CLA2 -- "STCP" --> STCP_IN["STCP In"]
+    STCP_IN --> CFS["cFS echo path"]
+    CFS --> STCP_OUT["STCP Out"]
+    STCP_OUT -- "STCP" --> CLA["mtcp-cla"]
+    CLA --> BPA["bpa-server"]
+```
 
 ## cFS Modifications
 
