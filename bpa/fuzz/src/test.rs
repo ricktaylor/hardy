@@ -4,7 +4,7 @@ use std::io::Read;
 #[test]
 fn test() {
     if let Ok(mut file) =
-        std::fs::File::open("./artifacts/cla/crash-5943b7c21c186171effb01f9514dbe9302f2a606")
+        std::fs::File::open("./artifacts/bpa/oom-da39a3ee5e6b4b0d3255bfef95601890afd80709")
     {
         let mut buffer = Vec::new();
         if file.read_to_end(&mut buffer).is_ok() {
@@ -15,7 +15,7 @@ fn test() {
 
 #[test]
 fn test_all() {
-    match std::fs::read_dir("./corpus/cla") {
+    match std::fs::read_dir("./corpus/bpa") {
         Err(e) => {
             eprintln!(
                 "Failed to open dir: {e}, curr dir: {}",

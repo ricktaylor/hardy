@@ -1872,6 +1872,7 @@ name = "hardy-bpa-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "cfg-if",
  "flume",
  "hardy-async",
  "hardy-bpa",
