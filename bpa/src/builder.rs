@@ -21,8 +21,8 @@ pub struct BpaBuilder {
     max_cached_bundle_size: NonZeroUsize,
     cache_disabled: bool,
     node_ids: NodeIds,
-    metadata_storage: Arc<dyn MetadataStorage>,
-    bundle_storage: Arc<dyn BundleStorage>,
+    metadata_storage: Option<Arc<dyn MetadataStorage>>,
+    bundle_storage: Option<Arc<dyn BundleStorage>>,
 }
 
 impl BpaBuilder {
@@ -31,7 +31,7 @@ impl BpaBuilder {
     }
 
     pub fn bundle_storage(mut self, bundle_storage: Arc<dyn BundleStorage>) -> Self {
-        self.bundle_storage = bundle_storage;
+        self.bundle_storage = Some(bundle_storage);
         // Auto-enable cache for non-default (presumably persistent) storage,
         // unless the caller has explicitly disabled caching.
         if !self.cache_disabled {
@@ -42,7 +42,7 @@ impl BpaBuilder {
     }
 
     pub fn metadata_storage(mut self, metadata_storage: Arc<dyn MetadataStorage>) -> Self {
-        self.metadata_storage = metadata_storage;
+        self.metadata_storage = Some(metadata_storage);
         self
     }
 
@@ -87,8 +87,10 @@ impl BpaBuilder {
             self.lru_capacity,
             self.max_cached_bundle_size,
             self.poll_channel_depth,
-            self.metadata_storage,
-            self.bundle_storage,
+            self.metadata_storage
+                .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default()))),
+            self.bundle_storage
+                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default()))),
         ));
 
         let node_ids = Arc::new(self.node_ids);
@@ -151,8 +153,6 @@ impl Default for BpaBuilder {
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
         let node_ids = NodeIds::default();
-        let metadata_storage = Arc::new(MetadataMemStorage::new(&Default::default()));
-        let bundle_storage = Arc::new(BundleMemStorage::new(&Default::default()));
 
         Self {
             status_reports,
@@ -162,8 +162,8 @@ impl Default for BpaBuilder {
             max_cached_bundle_size: crate::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             cache_disabled: false,
             node_ids,
-            metadata_storage,
-            bundle_storage,
+            metadata_storage: None,
+            bundle_storage: None,
         }
     }
 }
