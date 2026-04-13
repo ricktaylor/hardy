@@ -5,25 +5,25 @@
 | **Module** | `hardy-otel` |
 | **Standard** | OpenTelemetry Specification v1.x |
 | **Test Plan** | [`UTP-OTEL-01`](unit_test_plan.md) |
-| **Date** | 2026-04-02 |
+| **Date** | 2026-04-13 |
 
-## 1. Functional Coverage Summary
+## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-All `metrics::Recorder` trait methods and all `CounterFn`/`GaugeFn`/`HistogramFn` trait implementations are exercised.
+The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The table below maps functional requirements to their verification status. All functional requirements verified (11 pass).
 
-| Feature | Status | Tests |
-| :--- | :--- | :--- |
-| **Gauge increment** | Verified | `gauge_increment`, `gauge_increment_decrement_sequence`, `macro_gauge_increment_decrement`, `macro_gauge_with_labels` |
-| **Gauge decrement** | Verified | `gauge_decrement`, `gauge_increment_decrement_sequence`, `gauge_decrement_below_zero`, `macro_gauge_increment_decrement` |
-| **Gauge set** | Verified | `gauge_set`, `gauge_set_overrides_accumulated`, `macro_gauge_set`, `macro_gauge_set_overrides_increments` |
-| **Gauge with labels** | Verified | `gauge_with_labels`, `macro_gauge_with_labels`, `recorder_labeled_gauge`, `macro_multiple_label_values_are_distinct` |
-| **Counter increment** | Verified | `counter_increment`, `macro_counter`, `macro_counter_with_labels` |
-| **Counter absolute (rejected)** | Verified | `counter_absolute_panics` |
-| **Histogram record** | Verified | `histogram_record`, `macro_histogram` |
-| **Recorder registration** | Verified | `recorder_register_gauge_and_use`, `recorder_describe_then_register`, `recorder_labeled_gauge` |
-| **Instrument caching** | Verified | `recorder_register_gauge_and_use` (two registrations share state) |
-| **Description propagation** | Verified | `recorder_describe_then_register`, `macro_describe_then_use` |
-| **Label value isolation** | Verified | `macro_multiple_label_values_are_distinct` (same name, different labels → separate instruments) |
+| LLR | Feature | Result | Test | Part 4 Ref |
+| :--- | :--- | :--- | :--- | :--- |
+| **—** | Gauge increment | Pass | `gauge_increment`, `gauge_increment_decrement_sequence`, `macro_gauge_increment_decrement`, `macro_gauge_with_labels` | 19.1 |
+| **—** | Gauge decrement | Pass | `gauge_decrement`, `gauge_increment_decrement_sequence`, `gauge_decrement_below_zero`, `macro_gauge_increment_decrement` | 19.1 |
+| **—** | Gauge set | Pass | `gauge_set`, `gauge_set_overrides_accumulated`, `macro_gauge_set`, `macro_gauge_set_overrides_increments` | 19.1 |
+| **—** | Gauge with labels | Pass | `gauge_with_labels`, `macro_gauge_with_labels`, `recorder_labeled_gauge`, `macro_multiple_label_values_are_distinct` | 19.1 |
+| **—** | Counter increment | Pass | `counter_increment`, `macro_counter`, `macro_counter_with_labels` | 19.1 |
+| **—** | Counter absolute (rejected) | Pass | `counter_absolute_panics` | 19.1 |
+| **—** | Histogram record | Pass | `histogram_record`, `macro_histogram` | 19.1 |
+| **—** | Recorder registration | Pass | `recorder_register_gauge_and_use`, `recorder_describe_then_register`, `recorder_labeled_gauge` | 19.1 |
+| **—** | Instrument caching | Pass | `recorder_register_gauge_and_use` (two registrations share state) | 19.1 |
+| **—** | Description propagation | Pass | `recorder_describe_then_register`, `macro_describe_then_use` | 19.1 |
+| **—** | Label value isolation | Pass | `macro_multiple_label_values_are_distinct` (same name, different labels → separate instruments) | 19.1 |
 
 ## 2. Test Inventory
 
@@ -57,7 +57,14 @@ All `metrics::Recorder` trait methods and all `CounterFn`/`GaugeFn`/`HistogramFn
 
 **Total: 26 tests, ~46 assertions.**
 
-## 3. Line Coverage
+## 3. Coverage vs Plan
+
+| Section | Scenario | Planned | Implemented | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| UTP-OTEL-01 | All functional requirements | 26 | 26 | Complete |
+| | **Total** | **26** | **26** | **100%** |
+
+## 4. Line Coverage
 
 ```
 cargo llvm-cov test --package hardy-otel --lcov --output-path lcov.info --html
@@ -80,7 +87,7 @@ Per-file breakdown (from HTML report):
 
 The `lib.rs` file (OTEL provider initialisation, tracing subscriber wiring) is not unit-testable in isolation — it requires an OTLP endpoint and sets global state. It is verified at the system level through `bpa-server` and `tcpclv4-server` integration tests.
 
-## 4. Uncovered Lines
+### Uncovered Lines
 
 The 2 uncovered lines in `metrics_otel.rs`:
 
@@ -89,13 +96,13 @@ The 2 uncovered lines in `metrics_otel.rs`:
 | 70 | `otel_unit` passthrough (`other => other.into()`) | `metrics::Unit` is an enum — all variants are mapped explicitly. This branch exists as a forward-compatibility fallback if the `metrics` crate adds new variants. |
 | 220 | CAS retry loop body (`compare_exchange_weak` failure path) | Only triggered under concurrent contention. The CAS pattern is well-established; correctness of the transform function is verified by single-threaded tests. |
 
-## 5. Known Gaps
+## 5. Key Gaps
 
-| Gap | Impact | Mitigation |
-| :--- | :--- | :--- |
-| `lib.rs` not unit-tested | Low — integration-only code | Covered by system-level test plans ([`PLAN-SERVER-01`](../../bpa-server/docs/test_plan.md)) |
-| Counter/histogram have no readable state | Low — OTEL SDK owns the aggregation | Verified via no-panic + registration cache presence; OTEL SDK has its own test suite |
+| Area | Gap | Severity | Notes |
+| :--- | :--- | :--- | :--- |
+| `lib.rs` | Not unit-tested (integration-only code) | Low | Covered by system-level test plans ([`PLAN-SERVER-01`](../../bpa-server/docs/test_plan.md)) |
+| Counter/histogram | No readable state for assertions | Low | OTEL SDK owns aggregation; verified via no-panic + registration cache presence |
 
-## 5. Conclusion
+## 6. Conclusion
 
 The `metrics_otel.rs` recorder bridge has comprehensive test coverage across all three instrument types at three levels: direct trait calls, `Recorder` API, and `metrics::*!()` macros. The gauge state tracking (AtomicU64 CAS loop) — the most complex logic in the crate — has 7 dedicated unit tests plus 5 macro-level tests covering set, increment, decrement, label isolation, and edge cases (negative values, set-overrides-accumulation). The `lib.rs` initialisation code is an integration concern appropriately tested at the system level.

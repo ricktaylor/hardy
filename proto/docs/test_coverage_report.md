@@ -4,20 +4,21 @@
 | :--- | :--- |
 | **Module** | `hardy-proto` |
 | **Test Plan** | [`COMP-GRPC-01`](component_test_plan.md) |
-| **Date** | 2026-04-01 |
+| **Date** | 2026-04-13 |
 
-## 1. Coverage Summary
+## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-| Suite | Area | Planned | Implemented | Status |
+The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructure. The table below maps functional areas to their verification status. All functional areas verified (7 pass).
+
+| LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
-| 1 | Application Client | 6 | 6 | **Complete** |
-| 2 | CLA Client | 5 | 5 | **Complete** |
-| 3 | Service Client | 5 | 5 | **Complete** |
-| 4 | Routing Agent Client | 3 | 3 | **Complete** |
-| 5 | Error Handling | 3 | 3 | **Complete** |
-| 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
-| 7 | Server Proxy Handlers | 3 | 3 | **Complete** |
-| | **Total** | **31** | **31** | **100%** |
+| **—** | Application Client registration and message flow | Pass | `app_cli_01..06` | — |
+| **—** | CLA Client registration and message flow | Pass | `cla_cli_01..05` | — |
+| **—** | Service Client registration and message flow | Pass | `svc_cli_01..05` | — |
+| **—** | Routing Agent Client registration and message flow | Pass | `rte_cli_01..03` | — |
+| **—** | Error handling (premature close, duplicate response, invalid sequence) | Pass | `err_cli_02..04` | — |
+| **—** | Unregistration and lifecycle (client-init, BPA-init, drop, crash, simultaneous, exactly-once) | Pass | `life_01..06` | — |
+| **—** | Server proxy handlers (sink availability, lock safety) | Pass | `srv_02..04` | — |
 
 ## 2. Test Inventory
 
@@ -81,13 +82,6 @@ These are unit tests because they use custom mock servers built from crate-inter
 | `life_05_simultaneous_unregister` | LIFE-05 | Client and BPA unregister concurrently, Mutex take() ensures no double-unregister or deadlock |
 | `life_06_exactly_once_unregister` | LIFE-06 | BPA-initiated unregister delivers exactly one on_unregister to client trait impl |
 
-### Test Infrastructure (`tests/common/`)
-
-| File | Purpose |
-| :--- | :--- |
-| `common/mod.rs` | MockBpa (BpaRegistration impl), sink wrappers, server helpers, port allocation |
-| `common/sinks.rs` | Mock sink implementations (RoutingSink, CLA Sink, ServiceSink, ApplicationSink) |
-
 ### Suite 7: Server Proxy Handlers (unit tests in `src/server/routing.rs`)
 
 These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration handshake), SRV-05 (on_close cancels proxy), and SRV-06 (on_unregister drains proxy) were removed — they are covered by Suites 1–4 and Suite 6 lifecycle tests respectively.
@@ -98,14 +92,18 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 | `srv_03_sink_unavailable_after_unregister` | SRV-03 | `sink()` returns Err(Unavailable) after sink is taken |
 | `srv_04_spin_lock_not_held_across_await` | SRV-04 | Re-entrant on_unregister during unregister() does not deadlock |
 
-## 3. Key Bugs Found During Development
+## 3. Coverage vs Plan
 
-| Bug | Root Cause | Fix |
-| :--- | :--- | :--- |
-| Client WARN "Failed to request unregistration" | Server cancelled proxy before Unregister response was sent | Removed Unregister/OnUnregister messages; unregistration via stream close |
-| BPA hang on shutdown (force kill) | Spin lock held across `.await` in `if let Some(sink) = self.sink.lock().take()` | Split into `let sink = self.sink.lock().take();` then `sink.unregister().await` |
-| Orphaned proxy tasks on drop | RpcProxy Drop didn't cancel tasks | Added `Drop` impl that calls `cancel()` |
-| Re-entrant shutdown deadlock | `proxy.shutdown()` called from within reader task (on_close) | Added `is_cancelled()` guard in `shutdown()` |
+| Suite | Area | Planned | Implemented | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| 1 | Application Client | 6 | 6 | **Complete** |
+| 2 | CLA Client | 5 | 5 | **Complete** |
+| 3 | Service Client | 5 | 5 | **Complete** |
+| 4 | Routing Agent Client | 3 | 3 | **Complete** |
+| 5 | Error Handling | 3 | 3 | **Complete** |
+| 6 | Unregistration & Lifecycle | 6 | 6 | **Complete** |
+| 7 | Server Proxy Handlers | 3 | 3 | **Complete** |
+| | **Total** | **31** | **31** | **100%** |
 
 ## 4. Line Coverage
 
@@ -128,3 +126,31 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 | **Total** | **1354 / 1736** | **78.0%** |
 
 The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_receive`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
+
+## 5. Test Infrastructure
+
+### Mock Framework (`tests/common/`)
+
+| File | Purpose |
+| :--- | :--- |
+| `common/mod.rs` | MockBpa (BpaRegistration impl), sink wrappers, server helpers, port allocation |
+| `common/sinks.rs` | Mock sink implementations (RoutingSink, CLA Sink, ServiceSink, ApplicationSink) |
+
+### Key Bugs Found During Development
+
+| Bug | Root Cause | Fix |
+| :--- | :--- | :--- |
+| Client WARN "Failed to request unregistration" | Server cancelled proxy before Unregister response was sent | Removed Unregister/OnUnregister messages; unregistration via stream close |
+| BPA hang on shutdown (force kill) | Spin lock held across `.await` in `if let Some(sink) = self.sink.lock().take()` | Split into `let sink = self.sink.lock().take();` then `sink.unregister().await` |
+| Orphaned proxy tasks on drop | RpcProxy Drop didn't cancel tasks | Added `Drop` impl that calls `cancel()` |
+| Re-entrant shutdown deadlock | `proxy.shutdown()` called from within reader task (on_close) | Added `is_cancelled()` guard in `shutdown()` |
+
+## 6. Key Gaps
+
+| Area | Gap | Severity | Notes |
+| :--- | :--- | :--- | :--- |
+| Application/Service client proxies | Server-push error-handling branches uncovered | Low | Error paths in `on_receive`, `on_status_notify` callbacks |
+
+## 7. Conclusion
+
+The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 78.0% (1354/1736 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.

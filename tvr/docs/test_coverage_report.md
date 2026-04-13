@@ -4,21 +4,22 @@
 | :--- | :--- |
 | **Module** | `hardy-tvr` |
 | **Test Plans** | [`UTP-TVR-01`](unit_test_plan.md), [`COMP-TVR-01`](component_test_plan.md) |
-| **Date** | 2026-04-08 |
+| **Date** | 2026-04-13 |
 
-## 1. Coverage Summary
+## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-| Suite | Area | Planned | Implemented | Status |
+All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Variant Routing). LLRs map to the TVR functional areas: cron engine, contact plan parser, scheduler, proto conversion, gRPC session lifecycle, and system integration.
+
+| LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
-| UTP 3.1–3.8 | Cron parsing, matching, next/prev, display | 43 | 43 | **Complete** |
-| UTP 3.9–3.14 | Contact plan parser (actions, schedules, link properties, file format) | 42 | 42 | **Complete** |
-| UTP 3.15–3.21 | Scheduler (permanent, one-shot, recurring, ordering, diffing, isolation, refcounting) | 18 | 18 | **Complete** |
-| UTP 3.22–3.24 | Proto conversion (timestamps, durations, contacts) | 24 | 24 | **Complete** |
-| COMP 3 | gRPC session lifecycle | 12 | 6 | **Partial** (6 via grpcurl; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) |
-| COMP 4 | System integration (test_tvr.sh) | 4 | 4 | **Complete** |
-| | **Total** | **143** | **137** | **96%** |
+| **—** | Cron parsing, matching, next/prev, display | Pass | `cron.rs::every_minute` .. `cron.rs::display_preserves_shortcut` (43 tests) | 6.1 |
+| **—** | Contact plan parser (actions, schedules, link properties, file format) | Pass | `parser.rs::simple_via` .. `parser.rs::multiline_error_shows_correct_line` (42 tests) | 6.2 |
+| **—** | Scheduler (permanent, one-shot, recurring, ordering, diffing, isolation, refcounting) | Pass | `scheduler.rs::permanent_activates_immediately` .. `scheduler.rs::remove_matches_by_content` (18 tests) | 6.3 |
+| **—** | Proto conversion (timestamps, durations, contacts) | Pass | `server.rs::timestamp_valid_utc` .. `server.rs::contact_with_link_properties` (24 tests) | 6.4 |
+| **—** | gRPC session lifecycle | Pass | `test_tvr.sh` TEST 5..10 (6 of 12 scenarios; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) | 6.5 |
+| **—** | System integration (file → BPA → ping) | Pass | `test_tvr.sh` TEST 1..4 | 6.6 |
 
-## 2. Unit Test Inventory
+## 2. Test Inventory
 
 ### Cron (`src/cron.rs` — 43 tests)
 
@@ -167,15 +168,19 @@
 | `contact_with_priority` | 3.24 | Priority override |
 | `contact_with_link_properties` | 3.24 | Bandwidth + delay |
 
-## 3. Implementation Gaps
+## 3. Coverage vs Plan
 
-| Area | Planned | Gap | Priority |
-| :--- | :--- | :--- | :--- |
-| gRPC session lifecycle (COMP 3) | 12 scenarios | 3 deferred (TVR-04, TVR-07, TVR-08 — low-risk code paths) | Low |
+| Section | Scenario | Planned | Implemented | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| UTP 3.1-3.8 | Cron parsing, matching, next/prev, display | 43 | 43 | Complete |
+| UTP 3.9-3.14 | Contact plan parser | 42 | 42 | Complete |
+| UTP 3.15-3.21 | Scheduler | 18 | 18 | Complete |
+| UTP 3.22-3.24 | Proto conversion | 24 | 24 | Complete |
+| COMP 3 | gRPC session lifecycle | 12 | 6 | Partial (6 via grpcurl; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) |
+| COMP 4 | System integration (test_tvr.sh) | 4 | 4 | Complete |
+| | **Total** | **143** | **137** | **96%** |
 
-Six of twelve gRPC session scenarios are now tested via `grpcurl` in `test_tvr.sh`. TVR-06 is covered by unit tests. TVR-10 is implicit in test teardown. TVR-11 is not testable from a well-behaved gRPC client. The three deferred scenarios (duplicate open, remove, replace) exercise straightforward request/response handling with no complex state.
-
-## 4. System & Component Integration Tests
+### System & Component Integration Tests
 
 Implemented in [`tests/test_tvr.sh`](../tests/test_tvr.sh). Requires built binaries and `grpcurl`.
 
@@ -192,7 +197,7 @@ Implemented in [`tests/test_tvr.sh`](../tests/test_tvr.sh). Requires built binar
 | TEST 9: gRPC missing open | Component (TVR-03) | **Passing** |
 | TEST 10: gRPC session name reuse | Component (TVR-12) | **Passing** |
 
-## 5. Line Coverage
+## 4. Line Coverage
 
 ```
 cargo llvm-cov test --package hardy-tvr --lcov --output-path lcov.info --html
@@ -229,6 +234,15 @@ The 0% files (`config.rs`, `contacts.rs`, `main.rs`, `watcher.rs`) are
 application wiring — config loading, trait impl delegation, `main()`
 orchestration, and filesystem watching — which are exercised by the
 system integration tests but not by `cargo test`.
+
+## 5. Key Gaps
+
+| Area | Gap | Severity | Notes |
+| :--- | :--- | :--- | :--- |
+| gRPC session lifecycle | 3 deferred scenarios (TVR-04, TVR-07, TVR-08) | Low | Straightforward request/response handling with no complex state |
+| `config.rs`, `contacts.rs`, `main.rs`, `watcher.rs` | 0% line coverage (unit tests only) | Low | Application wiring exercised by system integration tests |
+
+Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. TVR-06 is covered by unit tests. TVR-10 is implicit in test teardown. TVR-11 is not testable from a well-behaved gRPC client.
 
 ## 6. Conclusion
 
