@@ -5,9 +5,8 @@ manipulation. These are built from source — see the
 [GitHub README](https://github.com/ricktaylor/hardy#getting-started)
 for build instructions.
 
-!!! note "TODO"
-    A `hardy-tools` container image is planned to provide CLI tools
-    without requiring a Rust toolchain.
+CLI tools are also available via the `ghcr.io/ricktaylor/hardy/hardy-tools` container
+image, which includes `bp`, `bundle`, and `cbor`.
 
 All tools support `--help` for detailed usage information:
 

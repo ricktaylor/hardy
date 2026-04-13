@@ -11,12 +11,12 @@ Container Registry:
 |-------|----------|-------------|
 | `ghcr.io/ricktaylor/hardy/hardy-bpa-server` | BPA server with inline TCPCLv4 | 50051 (gRPC), 4556 (TCPCLv4) |
 | `ghcr.io/ricktaylor/hardy/hardy-tcpclv4-server` | Standalone TCPCLv4 CLA | 4556 |
+| `ghcr.io/ricktaylor/hardy/hardy-tools` | CLI tools (`bp`, `bundle`, `cbor`) | -- |
 
 !!! note "TODO: Additional images"
     The following images are planned but not yet published:
 
     - `hardy-tvr` -- Time-Variant Routing agent
-    - `hardy-tools` -- CLI tools (`bp`, `bundle`, `cbor`)
 
 All images are built for `linux/amd64` and `linux/arm64`.
 
