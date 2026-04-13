@@ -7,6 +7,7 @@
 | **Target Source** | `bpa/fuzz/fuzz_targets/bpa.rs` |
 | **Tooling** | `cargo-fuzz` (libFuzzer) + `tokio` (single thread) |
 | **Test Suite ID** | FUZZ-BPA-01 |
+| **Revision** | Rev 2 (2026-04-11) — Source file paths updated; Msg variant status noted |
 
 ## 1. Introduction
 
@@ -48,15 +49,15 @@ The harness operates by simulating a "Mock Reactor" around the BPA:
 
    * **`Msg::Service(service::Msg)`**: Injects application-layer messages via the Service API. This tests the Northbound interface (Application Registration, ADU Send/Receive).
 
-   * **`Msg::TickTimer(u64)`**: Advances the mock clock by a delta (triggering expiry/resend checks).
+   * **`Msg::TickTimer(u64)`**: *(Not yet implemented)* Advances the mock clock by a delta (triggering expiry/resend checks).
 
-   * **`Msg::UpdateRoute(Vec<Updates>)`**: Injects a configuration or routing update event (e.g., adding/removing routes) to test dynamic reconfiguration.
+   * **`Msg::UpdateRoute(Vec<Updates>)`**: *(Not yet implemented)* Injects a configuration or routing update event (e.g., adding/removing routes) to test dynamic reconfiguration.
 
 4. **Invariant Check:** The BPA loop must process the event and return to an `await` state without panicking.
 
 ### 3.2 Coverage Scope
 
-This target exercises the logic paths in `bpa/src/process.rs` (or equivalent core loop):
+This target exercises the logic paths in `bpa/src/dispatcher/` (core processing pipeline):
 
 * **State Transitions:** `Pending` -> `Forwarded` -> `Deleted`.
 
