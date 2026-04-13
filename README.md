@@ -111,7 +111,7 @@ cargo test --workspace
 From source:
 
 ```bash
-./target/release/hardy-bpa-server -c hardy.toml
+./target/release/hardy-bpa-server -c hardy.yaml
 ```
 
 Via Docker Compose (with PostgreSQL + MinIO):
@@ -126,7 +126,7 @@ For a lightweight setup with in-memory storage (no PostgreSQL/MinIO):
 docker compose --profile debug up --build hardy-debug
 ```
 
-The server listens on **gRPC** (50051) and **TCPCLv4** (4556). Configuration is in [`hardy.toml`](./hardy.toml); edit it to change node settings. See the [bpa-server README](./bpa-server/README.md) for all options.
+The server listens on **gRPC** (50051) and **TCPCLv4** (4556). Configuration is in [`hardy.yaml`](./hardy.yaml); edit it to change node settings. See the [bpa-server README](./bpa-server/README.md) for all options.
 
 To send a test ping to the echo service:
 

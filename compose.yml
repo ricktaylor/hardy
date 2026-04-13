@@ -54,14 +54,14 @@ services:
     image: hardy-bpa-server:latest
     restart: unless-stopped
     environment:
-      HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.toml
+      HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.yaml
       AWS_ACCESS_KEY_ID: hardy
       AWS_SECRET_ACCESS_KEY: hardyhardy
     ports:
       - "50051:50051"
       - "4556:4556"
     volumes:
-      - ./hardy.toml:/etc/hardy/config.toml:ro
+      - ./hardy.yaml:/etc/hardy/config.yaml:ro
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
       interval: 5s
@@ -82,8 +82,8 @@ services:
     image: hardy-bpa-server:latest
     restart: unless-stopped
     environment:
-      HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.toml
-      # Env vars take precedence over hardy.toml
+      HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.yaml
+      # Env vars take precedence over hardy.yaml
       HARDY_BPA_SERVER_LOG_LEVEL: debug
       HARDY_BPA_SERVER_STORAGE__METADATA__TYPE: memory
       HARDY_BPA_SERVER_STORAGE__BUNDLE__TYPE: memory
@@ -91,7 +91,7 @@ services:
       - "50051:50051"
       - "4556:4556"
     volumes:
-      - ./hardy.toml:/etc/hardy/config.toml:ro
+      - ./hardy.yaml:/etc/hardy/config.yaml:ro
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
       interval: 5s

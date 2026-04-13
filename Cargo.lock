@@ -1896,6 +1896,7 @@ dependencies = [
  "anyhow",
  "chumsky",
  "config",
+ "directories",
  "flume",
  "getopts",
  "hardy-async",
