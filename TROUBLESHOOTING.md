@@ -24,7 +24,7 @@ services:
 
 The flag is safe to leave permanently — migrations are idempotent.
 
-## Hardy Tools
+## `bp ping`
 
 ### `Failed to parse peer address 'hostname:4556': invalid socket address syntax`
 
@@ -42,7 +42,9 @@ bp ping ipn:1.7 192.168.1.10:4556
 
 See [bp-ping(1)](tools/docs/bp-ping.1.md) for full usage documentation.
 
-### Running `hardy-tools` via Docker
+### Running via Docker
+
+The `hardy-tools` image includes `bp`, `bundle`, and `cbor`.
 
 Use `--network host` to reach services on the host:
 
