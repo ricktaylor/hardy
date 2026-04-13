@@ -1,6 +1,6 @@
 # hardy-echo-service Design
 
-In-process echo service library for bundle round-trip testing.
+In-process echo service implementing [draft-taylor-dtn-echo-service](https://datatracker.ietf.org/doc/draft-taylor-dtn-echo-service/) for bundle round-trip testing.
 
 ## Design Goals
 
