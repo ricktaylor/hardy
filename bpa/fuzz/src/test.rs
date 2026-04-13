@@ -2,6 +2,7 @@ use super::*;
 use std::io::Read;
 
 #[test]
+#[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
 fn test() {
     if let Ok(mut file) =
         std::fs::File::open("./artifacts/bpa/oom-da39a3ee5e6b4b0d3255bfef95601890afd80709")
@@ -14,6 +15,7 @@ fn test() {
 }
 
 #[test]
+#[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
 fn test_all() {
     match std::fs::read_dir("./corpus/bpa") {
         Err(e) => {
