@@ -3,6 +3,7 @@
 use std::io::Read;
 
 #[test]
+#[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
 fn test_all() {
     match std::fs::read_dir("./corpus/decode") {
         Err(e) => {

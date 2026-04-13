@@ -63,6 +63,8 @@ Cross-reference against [`UTP-CBOR-01`](unit_test_plan.md):
 
 ## 4. Line Coverage
 
+### Unit Tests
+
 ```
 cargo llvm-cov test --package hardy-cbor --lcov --output-path lcov.info
 lcov --summary lcov.info
@@ -71,13 +73,36 @@ lcov --summary lcov.info
 Results (2026-03-30):
 
 ```
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
   lines......: 68.2% (595 of 872 lines)
   functions..: 79.2% (543 of 686 functions)
 ```
 
-The line coverage (68.2%) is below the 90% target stated in the test plan. The gap is due to generic monomorphisation — `Series<D>`, `FromCbor`, and related generic infrastructure are instantiated for types only used by consuming crates (bpv7, bpa), inflating the total line count. The cbor crate's own logic paths are near-fully exercised: the HTML coverage report shows only closing braces as uncovered lines.
+The line coverage (68.2%) is below the 90% target stated in the test plan. The gap is due to generic monomorphisation — `Series<D>`, `FromCbor`, and related generic infrastructure are instantiated for types only used by consuming crates (bpv7, bpa), inflating the total line count. The cbor crate's own logic paths are near-fully exercised.
+
+### Fuzz Coverage
+
+```
+cargo +nightly fuzz coverage decode
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/decode/lcov.info
+```
+
+Results (2026-04-13):
+
+```
+  lines......: 37.1% (322 of 869 lines)
+  functions..: 18.0% (48 of 266 functions)
+```
+
+Per-file breakdown (decoder only — `encode.rs` at 0% is expected):
+
+| File | Covered | Total | Coverage | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `decode.rs` | 198 | 367 | 54% | Core decoder — adversarial input paths |
+| `decode_seq.rs` | 116 | 219 | 53% | Sequence/container parsing |
+| `encode.rs` | 0 | 314 | 0% | Expected — fuzz target only decodes |
+
+The fuzz coverage is complementary to the unit tests: unit tests verify correctness against known RFC vectors, fuzz verifies robustness against adversarial input. Combined, the decoder paths (`decode.rs` + `decode_seq.rs`) have strong coverage from both directions.
 
 ## 5. Test Infrastructure
 
@@ -89,4 +114,4 @@ All LLRs verified. No significant gaps remain. The 68.2% line coverage figure is
 
 ## 7. Conclusion
 
-The CBOR crate has comprehensive test coverage: 38/38 plan scenarios implemented (100%) across 6 test functions with ~280 assertions, and 68.2% line coverage (limited by generic monomorphisation, not untested logic). All 11 LLRs pass, satisfying Part 4 ref 1.2 ("demonstrate support via a test verification report"). Key strengths include full RFC 8949 Appendix A compliance, complete error-path coverage for all decoder error variants, and robust incomplete-item and opportunistic-parsing verification. Fuzz testing (`decode` target) provides additional robustness assurance.
+The CBOR crate has comprehensive test coverage: 38/38 plan scenarios implemented (100%) across 6 test functions with ~280 assertions, and 68.2% line coverage from unit tests (limited by generic monomorphisation, not untested logic). Fuzz testing adds 54% coverage of the core decoder and 53% of sequence parsing through adversarial inputs, complementing the unit tests' RFC vector verification. All 11 LLRs pass, satisfying Part 4 ref 1.2. Key strengths include full RFC 8949 Appendix A compliance, complete error-path coverage for all decoder error variants, and robust incomplete-item and opportunistic-parsing verification.
