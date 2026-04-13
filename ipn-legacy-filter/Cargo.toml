@@ -17,3 +17,6 @@ hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
 hardy-eid-patterns = { path = "../eid-patterns" }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

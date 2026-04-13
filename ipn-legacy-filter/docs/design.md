@@ -17,7 +17,9 @@ RFC 9758 defines two CBOR encoding formats for IPN EIDs:
 
 Both formats represent the same Fully Qualified Node Number (FQNN). The 2-element format packs the allocator into the high 32 bits of the FQNN, while the 3-element format stores them separately.
 
-Hardy uses 3-element encoding internally (`Eid::Ipn`). When forwarding to a peer that only understands 2-element encoding, this filter rewrites the bundle to use `Eid::LegacyIpn`, which produces the 2-element CBOR array. The FQNN is preserved - only the wire encoding changes.
+Hardy uses 3-element encoding internally (`Eid::Ipn`). When forwarding to a peer that only understands 2-element encoding, this filter rewrites the bundle to use `Eid::LegacyIpn`, which produces the 2-element CBOR array. The FQNN is preserved -- only the wire encoding changes.
+
+Note: when allocator_id=0, the bpv7 Builder already emits 2-element encoding (per RFC 9758's recommendation), so the filter's rewrite is idempotent in that case. When allocator_id!=0, the rewrite produces a genuinely different (shorter) wire encoding.
 
 ## Key Design Decisions
 
