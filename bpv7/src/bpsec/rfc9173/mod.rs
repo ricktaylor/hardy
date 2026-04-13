@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec;
 use core::ops::Range;
 use rand::TryRng;
 
