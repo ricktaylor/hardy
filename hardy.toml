@@ -1,0 +1,42 @@
+log-level = "info"
+node-ids = ["ipn:1.0", "dtn://my-node/"]
+status-reports = true
+poll-channel-depth = 16
+processing-pool-size = 16
+
+[grpc]
+address = "[::]:50051"
+services = ["application", "cla", "service"]
+
+[storage]
+lru-capacity = 1024
+max-cached-bundle-size = 16384
+
+[storage.metadata]
+type = "postgres"
+database-url = "postgresql://hardy:hardy@postgres/hardy"
+
+[storage.bundle]
+type = "s3"
+bucket = "hardy-bundles"
+endpoint-url = "http://minio:9000"
+region = "us-east-1"
+force-path-style = true
+
+[rfc9171-validity]
+primary-block-integrity = true
+bundle-age-required = true
+
+[built-in-services]
+echo = [7, "echo"]
+
+[[clas]]
+name = "tcp-cla-1"
+type = "tcpclv4"
+address = "[::]:4556"
+segment-mru = 16384
+transfer-mru = 562949953421312
+max-idle-connections = 6
+contact-timeout = 15
+keepalive-interval = 60
+require-tls = false
