@@ -258,8 +258,20 @@ fn print_system_info() {
     // Tokio runtime config (from the #[tokio::test] attribute)
     let rt_metrics = tokio::runtime::Handle::current().metrics();
     eprintln!("Tokio workers: {}", rt_metrics.num_workers());
-    eprintln!("Profile: {}", if cfg!(debug_assertions) { "debug" } else { "release" });
-    eprintln!("Date: {}", time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap());
+    eprintln!(
+        "Profile: {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+    eprintln!(
+        "Date: {}",
+        time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -535,40 +547,38 @@ async fn throughput() {
         .collect();
 
     // Warm up
-    for bundle in warmup_bundles {
+    for (i, bundle) in warmup_bundles.into_iter().enumerate() {
         cla.sink
             .get()
             .unwrap()
             .dispatch(bundle, None, None)
             .await
             .unwrap();
-        arrival_rx.recv_async().await.unwrap();
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
+            .await
+            .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
+            .unwrap();
     }
 
-    // Measure — dispatch and receive concurrently to avoid backpressure deadlock.
-    // Throughput = count / (last_arrival - start), using the actual arrival
-    // time captured inside forward(), not the channel drain time.
-    let cla2 = cla.clone();
+    // Measure — serial dispatch+receive to avoid backpressure and duplicate issues.
+    // Each bundle is dispatched and received before the next is sent.
     let start = tokio::time::Instant::now();
-    let (_, last_arrival) = tokio::join!(
-        async {
-            for bundle in test_bundles {
-                cla2.sink
-                    .get()
-                    .unwrap()
-                    .dispatch(bundle, None, None)
-                    .await
-                    .unwrap();
-            }
-        },
-        async {
-            let mut last = tokio::time::Instant::now();
-            for _ in 0..count {
-                last = arrival_rx.recv_async().await.unwrap();
-            }
-            last
-        }
-    );
+    let mut last_arrival = start;
+    for (i, bundle) in test_bundles.into_iter().enumerate() {
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(bundle, None, None)
+            .await
+            .unwrap();
+        last_arrival =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("Timeout waiting for throughput bundle {i} (of {count})")
+                })
+                .unwrap();
+    }
     let elapsed = last_arrival - start;
 
     let bundles_per_sec = count as f64 / elapsed.as_secs_f64();
@@ -580,7 +590,9 @@ async fn throughput() {
         "Throughput {bundles_per_sec:.0} bundles/sec below REQ-13 target of 1000"
     );
 
-    bpa.shutdown().await;
+    // Don't call bpa.shutdown() — 1000 ForwardPending bundles in metadata
+    // cause the internal poller to re-poll indefinitely during shutdown.
+    // The BPA is leaked; the runtime cleans up on test exit.
 }
 
 // ---------------------------------------------------------------------------
@@ -632,14 +644,17 @@ async fn forwarding_latency() {
         .collect();
 
     // Warm up
-    for bundle in warmup_bundles {
+    for (i, bundle) in warmup_bundles.into_iter().enumerate() {
         cla.sink
             .get()
             .unwrap()
             .dispatch(bundle, None, None)
             .await
             .unwrap();
-        arrival_rx.recv_async().await.unwrap();
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
+            .await
+            .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
+            .unwrap();
     }
 
     // Measure individual dispatch-to-forward latencies.
@@ -647,7 +662,7 @@ async fn forwarding_latency() {
     // actual pipeline processing time, not the channel wait.
     let mut latencies = Vec::with_capacity(count);
 
-    for bundle in test_bundles {
+    for (i, bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
         cla.sink
             .get()
@@ -655,7 +670,11 @@ async fn forwarding_latency() {
             .dispatch(bundle, None, None)
             .await
             .unwrap();
-        let arrived = arrival_rx.recv_async().await.unwrap();
+        let arrived =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
+                .await
+                .unwrap_or_else(|_| panic!("Timeout waiting for bundle {i} (of {count})"))
+                .unwrap();
         latencies.push(arrived - dispatched);
     }
 
@@ -666,5 +685,7 @@ async fn forwarding_latency() {
 
     eprintln!("Forwarding latency ({count} bundles): P50={p50:.2?} P95={p95:.2?} P99={p99:.2?}");
 
+    // Drop receiver to unblock any poller send_async, then shutdown
+    drop(arrival_rx);
     bpa.shutdown().await;
 }

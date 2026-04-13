@@ -135,7 +135,14 @@ fn print_system_info() {
         }
     }
     eprintln!("Arch: {}", std::env::consts::ARCH);
-    eprintln!("Profile: {}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    eprintln!(
+        "Profile: {}",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
     eprintln!("Date: {:?}", std::time::SystemTime::now());
 }
 
