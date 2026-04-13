@@ -1,109 +1,47 @@
-use super::*;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::str::FromStr;
+use hardy_async::available_parallelism;
+use hardy_bpa::filters::rfc9171;
+use hardy_bpa::node_ids::NodeIds;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
-mod log_level_serde {
-    use super::*;
+use crate::bpa::clas::Cla;
+use crate::bpa::grpc;
+use crate::bpa::static_routes;
+use crate::bpa::storage;
+use crate::error::Error;
 
-    pub fn serialize<S>(level: &Option<Level>, serializer: S) -> Result<S::Ok, S::Error>
+const DEFAULT_CONFIG_FILE: &str = "/etc/hardy/config.toml";
+
+fn default_log_level() -> Level {
+    Level::INFO
+}
+
+fn default_poll_channel_depth() -> core::num::NonZeroUsize {
+    core::num::NonZeroUsize::new(16).unwrap()
+}
+
+fn default_processing_pool_size() -> core::num::NonZeroUsize {
+    core::num::NonZeroUsize::new(available_parallelism().get() * 4).unwrap()
+}
+
+mod log_level_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::str::FromStr;
+    use tracing::Level;
+
+    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match level {
-            Some(level) => serializer.serialize_some(level.as_str()),
-            None => serializer.serialize_none(),
-        }
+        serializer.serialize_str(level.as_str())
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Level>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let s: Option<String> = Option::deserialize(deserializer)?;
-        s.map(|s| Level::from_str(&s).map_err(serde::de::Error::custom))
-            .transpose()
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
-pub enum MetadataStorage {
-    #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::metadata_mem::Config),
-
-    #[cfg(feature = "sqlite-storage")]
-    #[serde(rename = "sqlite")]
-    Sqlite(hardy_sqlite_storage::Config),
-
-    #[cfg(feature = "postgres-storage")]
-    #[serde(rename = "postgres")]
-    Postgres(hardy_postgres_storage::Config),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
-pub enum BundleStorage {
-    #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::bundle_mem::Config),
-
-    #[cfg(feature = "localdisk-storage")]
-    #[serde(rename = "localdisk")]
-    LocalDisk(hardy_localdisk_storage::Config),
-
-    #[cfg(feature = "s3-storage")]
-    #[serde(rename = "s3")]
-    S3(hardy_s3_storage::Config),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct StorageConfig {
-    /// LRU capacity for the bundle cache.
-    pub lru_capacity: core::num::NonZeroUsize,
-    /// Max size of a single bundle to keep in the LRU cache (bytes).
-    pub max_cached_bundle_size: core::num::NonZeroUsize,
-    /// Metadata storage backend. Uses in-memory if not set.
-    pub metadata: Option<MetadataStorage>,
-    /// Bundle data storage backend. Uses in-memory if not set.
-    pub bundle: Option<BundleStorage>,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            lru_capacity: hardy_bpa::storage::DEFAULT_LRU_CAPACITY,
-            max_cached_bundle_size: hardy_bpa::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-            metadata: None,
-            bundle: None,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct BpaConfig {
-    pub status_reports: bool,
-    pub poll_channel_depth: core::num::NonZeroUsize,
-    pub processing_pool_size: core::num::NonZeroUsize,
-    pub lru_capacity: core::num::NonZeroUsize,
-    pub max_cached_bundle_size: core::num::NonZeroUsize,
-    pub node_ids: hardy_bpa::node_ids::NodeIds,
-}
-
-impl Default for BpaConfig {
-    fn default() -> Self {
-        Self {
-            status_reports: false,
-            poll_channel_depth: core::num::NonZeroUsize::new(16).unwrap(),
-            processing_pool_size: core::num::NonZeroUsize::new(
-                hardy_async::available_parallelism().get() * 4,
-            )
-            .unwrap(),
-            lru_capacity: core::num::NonZeroUsize::new(1024).unwrap(),
-            max_cached_bundle_size: core::num::NonZeroUsize::new(16 * 1024).unwrap(),
-            node_ids: hardy_bpa::node_ids::NodeIds::default(),
-        }
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -117,17 +55,29 @@ pub struct BuiltInServicesConfig {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    /// Logging level
-    #[serde(default, with = "log_level_serde")]
-    pub log_level: Option<Level>,
+    /// Logging level (default: INFO)
+    #[serde(default = "default_log_level", with = "log_level_serde")]
+    pub log_level: Level,
+
+    /// Whether to generate and dispatch bundle status reports (default: false)
+    #[serde(default)]
+    pub status_reports: bool,
+
+    /// Depth of the channel used for polling new bundles (default: 16)
+    #[serde(default = "default_poll_channel_depth")]
+    pub poll_channel_depth: core::num::NonZeroUsize,
+
+    /// Maximum number of concurrent bundle processing tasks (default: 4 * CPU cores)
+    #[serde(default = "default_processing_pool_size")]
+    pub processing_pool_size: core::num::NonZeroUsize,
+
+    /// Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
+    #[serde(default)]
+    pub node_ids: NodeIds,
 
     /// Static Routes Configuration
     #[serde(default)]
     pub static_routes: Option<static_routes::Config>,
-
-    /// Flattened BPA settings
-    #[serde(flatten, default)]
-    pub bpa: BpaConfig,
 
     /// gRPC options
     #[serde(default)]
@@ -135,7 +85,7 @@ pub struct Config {
 
     /// Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
-    pub storage: StorageConfig,
+    pub storage: storage::Config,
 
     #[cfg(feature = "ipn-legacy-filter")]
     #[serde(default)]
@@ -150,7 +100,7 @@ pub struct Config {
     /// - `primary_block_integrity`: Require CRC or BIB on primary block
     /// - `bundle_age_required`: Require Bundle Age when creation time has no clock
     #[serde(default)]
-    pub rfc9171_validity: hardy_bpa::filters::rfc9171::Config,
+    pub rfc9171_validity: rfc9171::Config,
 
     /// Built-in application services to register.
     /// Each service key maps to a list of service identifiers to register on.
@@ -161,59 +111,27 @@ pub struct Config {
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
-    pub clas: Vec<clas::Cla>,
+    pub clas: Vec<Cla>,
 }
 
-pub fn config_dir() -> std::path::PathBuf {
-    directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
-        || {
-            #[cfg(all(target_os = "linux", not(feature = "packaged-installation")))]
-            return std::path::Path::new("/etc/opt").join(env!("CARGO_PKG_NAME"));
+impl Config {
+    pub fn load(config_file: Option<String>) -> Result<Config, Error> {
+        let config_file = &config_file
+            .or_else(|| std::env::var("HARDY_BPA_SERVER_CONFIG_FILE").ok())
+            .unwrap_or_else(|| DEFAULT_CONFIG_FILE.to_string());
 
-            #[cfg(all(
-                unix,
-                not(all(target_os = "linux", not(feature = "packaged-installation")))
-            ))]
-            return std::path::Path::new("/etc").join(env!("CARGO_PKG_NAME"));
+        let source_file = ::config::File::with_name(config_file);
+        let source_env = ::config::Environment::with_prefix("HARDY_BPA_SERVER")
+            .prefix_separator("_")
+            .separator("__");
 
-            #[cfg(windows)]
-            return std::env::current_exe()
-                .trace_expect("Failed to get current executable path")
-                .join(env!("CARGO_PKG_NAME"));
+        let config = ::config::Config::builder()
+            .add_source(source_file)
+            .add_source(source_env)
+            .build()?
+            .try_deserialize()?;
 
-            #[cfg(not(any(unix, windows)))]
-            compile_error!("No idea how to determine default config directory for target platform");
-        },
-        |proj_dirs| {
-            proj_dirs.config_local_dir().to_path_buf()
-            // Lin: /home/alice/.config/barapp
-            // Win: C:\Users\Alice\AppData\Roaming\Foo Corp\Bar App\config
-            // Mac: /Users/Alice/Library/Application Support/com.Foo-Corp.Bar-App
-        },
-    )
-}
-
-pub fn load(cli: &cli::Args) -> Config {
-    let mut b = ::config::Config::builder();
-
-    if let Some(source) = &cli.config_file {
-        eprintln!("Using configuration file '{source}' specified on command line");
-        b = b.add_source(::config::File::with_name(source))
-    } else if let Ok(source) = std::env::var("HARDY_BPA_SERVER_CONFIG_FILE") {
-        eprintln!(
-            "Using configuration file '{source}' specified by HARDY_BPA_SERVER_CONFIG_FILE environment variable"
-        );
-        b = b.add_source(::config::File::with_name(&source))
-    } else {
-        let path = config_dir().join(format!("{}.yaml", env!("CARGO_PKG_NAME")));
-        eprintln!("Using configuration file '{}'", path.display());
-        b = b.add_source(::config::File::from(path).required(false))
+        eprintln!("Loaded configuration from '{config_file}'");
+        Ok(config)
     }
-
-    b = b.add_source(::config::Environment::with_prefix("HARDY_BPA_SERVER"));
-
-    b.build()
-        .expect("Failed to read configuration")
-        .try_deserialize()
-        .expect("Failed to parse configuration")
 }

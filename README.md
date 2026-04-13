@@ -108,54 +108,68 @@ cargo test --workspace
 
 ### Running the BPA Server
 
-```bash
-# Run with a configuration file
-./target/release/hardy-bpa-server -c config.yaml
+From source:
 
-# See available options
-./target/release/hardy-bpa-server --help
+```bash
+./target/release/hardy-bpa-server -c hardy.toml
 ```
 
-See the [bpa-server README](./bpa-server/README.md) for detailed configuration options and example configurations.
-
-### Running with Docker
-
-The BPA server can run as a container using the provided [Dockerfile](./Dockerfile) and [Compose file](./compose.yaml).
-
-**Prerequisites:** Docker and Docker Compose (v2.23+ for inline config support).
-
-Build and start:
+Via Docker Compose (with PostgreSQL + MinIO):
 
 ```bash
 docker compose up --build -d
 ```
 
-The server listens on **gRPC** (50051) and **TCPCLv4** (4556). Configuration is embedded in `compose.yaml` via the `hardy-config` config; edit the `configs.hardy-config.content` block to change node settings.
-
-To send a test bundle to the echo service (from the host, using the `bp` tool):
+For a lightweight setup with in-memory storage (no PostgreSQL/MinIO):
 
 ```bash
-cargo build --release -p hardy-tools
-./target/release/bp ping ipn:1.7 --peer 127.0.0.1:4556
+docker compose --profile debug up --build hardy-debug
 ```
 
-### Bundle Tools
+The server listens on **gRPC** (50051) and **TCPCLv4** (4556). Configuration is in [`hardy.toml`](./hardy.toml); edit it to change node settings. See the [bpa-server README](./bpa-server/README.md) for all options.
+
+To send a test ping to the echo service:
 
 ```bash
+bp ping ipn:1.7 127.0.0.1:4556
+```
+
+### CLI Tools
+
+Three command-line tools are available, also bundled in the `ghcr.io/ricktaylor/hardy/hardy-tools:latest` Docker image:
+
+| Tool | Package | Description |
+|------|---------|-------------|
+| `bp` | [hardy-tools](./tools/) | Network diagnostics — `bp ping` measures RTT, packet loss, and path visibility. |
+| `bundle` | [hardy-bpv7-tools](./bpv7/tools/) | Bundle operations — create, inspect, validate, sign, encrypt, and more. |
+| `cbor` | [hardy-cbor-tools](./cbor/tools/) | CBOR inspection and conversion between binary, CDN, and JSON. |
+
+From source:
+
+```bash
+# Ping a remote node
+bp ping ipn:2.7 192.168.1.1:4556
+
 # Inspect a bundle
 bundle inspect bundle.cbor
 
-# Create a new bundle
-bundle create --source dtn://node1/ --destination dtn://node2/ --payload "Hello DTN"
-
-# Ping a remote node
-bp ping ipn:2.0
+# Create, sign, and inspect a bundle
+echo "Hello DTN" | bundle create -s ipn:1.0 -d ipn:2.0 - \
+  | bundle sign -k key.jwk - \
+  | bundle inspect -
 
 # Inspect CBOR data
 cbor inspect data.cbor
 ```
 
-See the [bpv7-tools README](./bpv7/tools/README.md) and [cbor-tools README](./cbor/tools/README.md) for comprehensive usage guides.
+Via Docker:
+
+```bash
+docker run --rm --network host ghcr.io/ricktaylor/hardy/hardy-tools:latest \
+  bp ping ipn:2.7 192.168.1.1:4556
+```
+
+See the [bp-ping man page](./tools/docs/bp-ping.1.md), [bpv7-tools README](./bpv7/tools/README.md), and [cbor-tools README](./cbor/tools/README.md) for full documentation.
 
 ## Interoperability
 

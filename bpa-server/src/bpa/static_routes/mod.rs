@@ -28,7 +28,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            routes_file: config::config_dir().join("static_routes"),
+            routes_file: std::path::PathBuf::from("/etc/hardy/static_routes.yaml"),
             priority: 100,
             watch: true,
             protocol_id: "static_routes".to_string(),

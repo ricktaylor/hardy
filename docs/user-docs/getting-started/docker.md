@@ -25,32 +25,24 @@ All images are built for `linux/amd64` and `linux/arm64`.
 The simplest deployment runs everything in a single container. This is
 suitable for development, testing, and small single-node deployments.
 
-### In-memory storage
-
-The repository includes a ready-to-use Compose file:
+The repository includes a ready-to-use Compose file with persistent
+storage (PostgreSQL for metadata, MinIO for bundles):
 
 ```bash
 docker compose up -d
 ```
 
-This starts a BPA server with in-memory storage (data is lost on
-restart). See [`compose.yml`](https://github.com/ricktaylor/hardy/blob/main/compose.yml)
-for the full configuration.
-
-### Persistent storage with PostgreSQL
-
-For production use, switch to persistent storage. The repository
-includes a PostgreSQL variant:
-
-```bash
-docker compose -f compose.postgres.yml up -d
-```
-
 This starts:
 
 - **PostgreSQL 17** -- metadata storage with a named volume
-- **Hardy BPA** -- configured with PostgreSQL metadata and local disk
-  bundle storage, also with a named volume
+- **MinIO** -- S3-compatible bundle storage with a named volume
+- **Hardy BPA** -- configured via [`hardy.toml`](https://github.com/ricktaylor/hardy/blob/main/hardy.toml)
+
+For a lightweight setup with in-memory storage (no external dependencies):
+
+```bash
+docker compose --profile debug up hardy-debug
+```
 
 The configuration uses:
 

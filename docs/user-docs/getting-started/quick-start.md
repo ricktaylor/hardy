@@ -14,13 +14,19 @@ cd hardy
 docker compose up --build -d
 ```
 
-This builds and starts a BPA server with:
+This builds and starts a BPA server with PostgreSQL metadata storage,
+S3 bundle storage (MinIO), and:
 
 - **Node ID**: `ipn:1.0`
 - **TCPCLv4**: listening on port 4556
 - **gRPC**: listening on port 50051
 - **Echo service**: registered on IPN service 7
-- **Storage**: in-memory (no persistence across restarts)
+
+For a lightweight setup with in-memory storage instead:
+
+```bash
+docker compose --profile debug up --build hardy-debug
+```
 
 ## 2. Verify it's running
 
@@ -42,19 +48,17 @@ Look for `Listening on [::]:4556` (TCPCLv4) and `Listening on [::]:50051`
 
 ## 3. Customise the configuration
 
-The configuration is embedded in `compose.yml` under the
-`configs.hardy-config.content` block. Edit it to change node settings,
-storage backends, or add TLS. See the
+The configuration is in [`hardy.toml`](https://github.com/ricktaylor/hardy/blob/main/hardy.toml)
+at the project root. Edit it to change node settings, storage backends,
+or add TLS. See the
 [BPA Server Configuration](../configuration/bpa-server.md) for all
 available options.
 
 Key settings you'll want to change for a real deployment:
 
 - **`node-ids`** -- set your node's EID (e.g. `"ipn:42.0"`)
-- **`storage.metadata.type`** -- switch from `"memory"` to `"sqlite"`
-  or `"postgres"` for persistence
-- **`storage.bundle.type`** -- switch from `"memory"` to `"localdisk"`
-  or `"s3"` for persistence
+- **`storage.metadata.type`** -- `"postgres"`, `"sqlite"`, or `"memory"`
+- **`storage.bundle.type`** -- `"s3"`, `"localdisk"`, or `"memory"`
 
 ## 4. Stop
 
