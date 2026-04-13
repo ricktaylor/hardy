@@ -1,6 +1,8 @@
 # Hardy BPA
 
-The Hardy project Bundle Processing Agent
+The Hardy project Bundle Processing Agent.
+
+Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
 ## Table of Contents
 
@@ -93,3 +95,18 @@ Example usage:
 ```
 hardy-bpa-server --config /path/to/config.toml --log-level debug
 ```
+
+## Container Image
+
+```bash
+docker pull ghcr.io/ricktaylor/hardy/hardy-bpa-server:latest
+```
+
+## Documentation
+
+- [Example Configuration](example_config.toml)
+- [User Documentation](https://ricktaylor.github.io/hardy/)
+
+## Licence
+
+Apache 2.0 — see [LICENSE](../LICENSE)

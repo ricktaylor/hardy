@@ -83,6 +83,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 | [**`hardy-tcpclv4-server`**](./tcpclv4-server/) | Standalone TCPCLv4 listener and session handler. |
 | [**`hardy-bpv7-tools`**](./bpv7/tools/) | CLI (`bundle`) for bundle operations: create, inspect, validate, sign, encrypt, and more. |
 | [**`hardy-cbor-tools`**](./cbor/tools/) | CLI (`cbor`) for CBOR inspection and conversion between binary, CDN, and JSON formats. |
+| [**`hardy-tvr`**](./tvr/) | Time-Variant Routing agent — installs and withdraws routes based on contact schedules (cron, file, gRPC). |
 | [**`hardy-tools`**](./tools/) | General DTN utilities including the `bp` command for ping and bundle operations. |
 
 ## Getting Started

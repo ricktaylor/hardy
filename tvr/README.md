@@ -4,6 +4,8 @@ Time-Variant Routing agent for Hardy DTN. Installs and withdraws routes
 in the BPA on a clock, driven by contact schedules from files, gRPC
 sessions, or both.
 
+Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
+
 ## Quick Start
 
 1. Create a contact plan file:
@@ -173,7 +175,12 @@ following metrics are available:
 | `tvr_sessions` | gauge | Active gRPC sessions |
 | `tvr_file_reloads` | counter | File reload attempts (label: `outcome`) |
 
-## Design
+## Documentation
 
-See [docs/design.md](docs/design.md) for architectural decisions and
-rationale.
+- [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [User Documentation](https://ricktaylor.github.io/hardy/)
+
+## Licence
+
+Apache 2.0 — see [LICENSE](../LICENSE)
