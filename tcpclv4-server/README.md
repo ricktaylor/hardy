@@ -24,6 +24,9 @@ docker pull ghcr.io/ricktaylor/hardy/hardy-tcpclv4-server:latest
 
 ## Documentation
 
+- [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [Test Plan](docs/test_plan.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/)
 
 ## Licence

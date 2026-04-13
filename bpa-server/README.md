@@ -104,6 +104,9 @@ docker pull ghcr.io/ricktaylor/hardy/hardy-bpa-server:latest
 
 ## Documentation
 
+- [Design](docs/design.md)
+- [Static Routes Design](docs/static_routes_design.md)
+- [Test Plan](docs/test_plan.md)
 - [Example Configuration](example_config.toml)
 - [User Documentation](https://ricktaylor.github.io/hardy/)
 

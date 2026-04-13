@@ -55,6 +55,9 @@ metrics::histogram!("dispatch.latency").record(0.042);
 
 ## Documentation
 
+- [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [Unit Test Plan](docs/unit_test_plan.md)
 - [API Documentation](https://docs.rs/hardy-otel)
 
 ## Licence
