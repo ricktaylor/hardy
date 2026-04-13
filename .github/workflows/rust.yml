@@ -132,51 +132,12 @@ jobs:
       - name: Build binaries
         run: cargo build --locked --all-features -p hardy-bpa-server -p hardy-tools
 
-      - name: Write config
-        run: |
-          cat > /tmp/hardy-ping-test.toml << 'EOF'
-          log-level = "info"
-          node-ids = ["ipn:1.0", "dtn://my-node/"]
-          status-reports = true
-          poll-channel-depth = 16
-          processing-pool-size = 16
-
-          [storage]
-          lru-capacity = 1024
-          max-cached-bundle-size = 16384
-
-          [storage.metadata]
-          type = "memory"
-
-          [storage.bundle]
-          type = "memory"
-
-          [grpc]
-          address = "[::]:50051"
-          services = ["application", "cla", "service"]
-
-          [rfc9171-validity]
-          primary-block-integrity = true
-          bundle-age-required = true
-
-          [built-in-services]
-          echo = [7, "echo"]
-
-          [[clas]]
-          name = "tcp-cla-1"
-          type = "tcpclv4"
-          address = "[::]:4556"
-          segment-mru = 16384
-          transfer-mru = 562949953421312
-          max-idle-connections = 6
-          contact-timeout = 15
-          keepalive-interval = 60
-          require-tls = false
-          EOF
-
       - name: Run ping tests
         env:
           BP_BIN: ./target/debug/bp
+          HARDY_BPA_SERVER_CONFIG_FILE: ./hardy.yaml
+          HARDY_BPA_SERVER_STORAGE__METADATA__TYPE: memory
+          HARDY_BPA_SERVER_STORAGE__BUNDLE__TYPE: memory
         run: |
-          HARDY_BPA_SERVER_CONFIG_FILE=/tmp/hardy-ping-test.toml ./target/debug/hardy-bpa-server &
+          ./target/debug/hardy-bpa-server &
           bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5

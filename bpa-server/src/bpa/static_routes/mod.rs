@@ -1,20 +1,24 @@
-use super::*;
-use anyhow::Context;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routes::Action;
-use hardy_bpa::routes::{RoutingAgent, RoutingSink};
-use hardy_eid_patterns as eid_patterns;
-use notify_debouncer_full::{
-    DebouncedEvent, new_debouncer,
-    notify::{
-        EventKind, RecursiveMode,
-        event::{CreateKind, RemoveKind},
-    },
-};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
 mod parse;
+
+use anyhow::Context;
+use hardy_async::TaskPool;
+use hardy_async::sync::spin::Once;
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpv7::eid::NodeId;
+use hardy_eid_patterns::EidPattern;
+use notify_debouncer_full::notify::event::{CreateKind, RemoveKind};
+use notify_debouncer_full::notify::{EventKind, RecursiveMode};
+use notify_debouncer_full::{DebouncedEvent, new_debouncer};
+use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use trace_err::*;
+use tracing::{error, info};
+
+use crate::config::default_config_dir;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
@@ -28,7 +32,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            routes_file: std::path::PathBuf::from("/etc/hardy/static_routes.yaml"),
+            routes_file: default_config_dir().join("static_routes"),
             priority: 100,
             watch: true,
             protocol_id: "static_routes".to_string(),
@@ -38,7 +42,7 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct StaticRoute {
-    pattern: eid_patterns::EidPattern,
+    pattern: EidPattern,
     priority: Option<u32>,
     action: Action,
 }
@@ -47,9 +51,9 @@ pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
     watch: bool,
-    sink: hardy_async::sync::spin::Once<Arc<dyn RoutingSink>>,
-    routes: Arc<std::sync::Mutex<Vec<StaticRoute>>>,
-    tasks: hardy_async::TaskPool,
+    sink: Once<Arc<dyn RoutingSink>>,
+    routes: Arc<Mutex<Vec<StaticRoute>>>,
+    tasks: TaskPool,
 }
 
 impl StaticRoutesAgent {
@@ -58,9 +62,9 @@ impl StaticRoutesAgent {
             routes_file,
             priority,
             watch,
-            sink: hardy_async::sync::spin::Once::new(),
-            routes: Arc::new(std::sync::Mutex::new(Vec::new())),
-            tasks: hardy_async::TaskPool::new(),
+            sink: Once::new(),
+            routes: Arc::new(Mutex::new(Vec::new())),
+            tasks: TaskPool::new(),
         }
     }
 
@@ -137,24 +141,20 @@ impl StaticRoutesAgent {
 
         hardy_async::spawn!(self.tasks, "static_routes_watcher", async move {
             let (tx, rx) = flume::unbounded();
-            let mut debouncer = new_debouncer(
-                std::time::Duration::from_secs(1),
-                None,
-                move |res| match res {
-                    Ok(events) => {
-                        for e in events {
-                            if tx.send(e).is_err() {
-                                break;
-                            }
+            let mut debouncer = new_debouncer(Duration::from_secs(1), None, move |res| match res {
+                Ok(events) => {
+                    for e in events {
+                        if tx.send(e).is_err() {
+                            break;
                         }
                     }
-                    Err(e) => {
-                        for e in e {
-                            error!("Watch error: {e}")
-                        }
+                }
+                Err(e) => {
+                    for e in e {
+                        error!("Watch error: {e}")
                     }
-                },
-            )
+                }
+            })
             .trace_expect("Failed to create directory watcher");
 
             debouncer
@@ -193,7 +193,7 @@ async fn refresh_routes_inner(
     routes_file: &PathBuf,
     priority: u32,
     sink: &dyn RoutingSink,
-    routes: &std::sync::Mutex<Vec<StaticRoute>>,
+    routes: &Mutex<Vec<StaticRoute>>,
     watch: bool,
 ) {
     let new_routes = match parse::load_routes(routes_file, true, watch).await {
@@ -245,7 +245,7 @@ async fn refresh_routes_inner(
 
 #[hardy_async::async_trait]
 impl RoutingAgent for StaticRoutesAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[hardy_bpv7::eid::NodeId]) {
+    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
         let sink: Arc<dyn RoutingSink> = sink.into();
         self.sink.call_once(|| sink);
 
@@ -277,7 +277,7 @@ pub async fn init(config: &Config, bpa: &dyn BpaRegistration) -> anyhow::Result<
     let routes_file = match routes_file.canonicalize() {
         Ok(path) => path,
         Err(e) => {
-            if e.kind() != std::io::ErrorKind::NotFound {
+            if e.kind() != ErrorKind::NotFound {
                 return Err(anyhow::anyhow!(
                     "Failed to canonicalise routes_file '{}': {e}'",
                     routes_file.display()

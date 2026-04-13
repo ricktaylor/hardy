@@ -393,7 +393,7 @@ async fn echo_round_trip() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node.clone()])
+        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
         .await
         .unwrap();
 
@@ -530,7 +530,7 @@ async fn throughput() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node.clone()])
+        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
         .await
         .unwrap();
 
@@ -627,7 +627,7 @@ async fn forwarding_latency() {
     cla.sink
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node.clone()])
+        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
         .await
         .unwrap();
 

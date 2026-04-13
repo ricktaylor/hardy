@@ -9,8 +9,7 @@ pub(crate) mod storage;
 
 use hardy_async::TaskPool;
 use std::sync::Arc;
-use trace_err::*;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::config;
 

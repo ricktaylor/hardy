@@ -1,10 +1,16 @@
-use super::*;
 use chumsky::prelude::*;
+use hardy_bpa::routes::Action;
+use hardy_eid_patterns::EidPattern;
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use tracing::{debug, error};
+
+use super::StaticRoute;
 
 type Span = SimpleSpan<usize>;
 type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
 
-fn pattern<'a>() -> impl Parser<'a, &'a str, eid_patterns::EidPattern, Extra<'a>> {
+fn pattern<'a>() -> impl Parser<'a, &'a str, EidPattern, Extra<'a>> {
     any()
         .filter(|c: &char| !c.is_whitespace())
         .repeated()
@@ -182,7 +188,7 @@ pub async fn load_routes(
     watching: bool,
 ) -> anyhow::Result<Vec<StaticRoute>> {
     match tokio::fs::read_to_string(routes_file).await {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && ignore_errors && watching => {
+        Err(e) if e.kind() == ErrorKind::NotFound && ignore_errors && watching => {
             debug!("Static routes file: '{}' not found", routes_file.display());
             Ok(Vec::new())
         }
