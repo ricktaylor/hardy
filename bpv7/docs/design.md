@@ -91,6 +91,8 @@ EIDs are represented as a type-safe enum rather than parsed strings. The variant
 
 This distinction is primarily important for interoperability. When communicating with implementations that do not support three-element encoding (those predating RFC 9758), responses must use two-element encoding. Preserving the decode format allows the BPA to make this decision.
 
+On decode, two-element encoding with allocator_id=0 is normalised to `Ipn` (since two-element and three-element are semantically identical when the allocator is zero). Two-element encoding with allocator_id!=0 is preserved as `LegacyIpn`, since the encoding choice is significant -- it indicates the peer used legacy format despite having a non-zero allocator.
+
 On encode, `Ipn` with allocator_id=0 emits two-element encoding for efficiency per RFC 9758's recommendation, while non-zero allocators require three-element encoding. `LegacyIpn` always emits two-element encoding.
 
 The underlying hardy-cbor library is agnostic to this distinction - it simply handles CBOR array encoding and decoding without IPN-specific knowledge.
