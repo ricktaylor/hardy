@@ -51,7 +51,7 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"], o
 
 [dev-dependencies]
 criterion = "0.8"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 hardy-bpa-fuzz = { path = "./fuzz" }
 #hardy-bpa-fuzz = { path = "./fuzz", features = ["sqlite-storage","localdisk-storage"] }
 

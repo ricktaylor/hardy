@@ -469,17 +469,109 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use crate::bpa::{Bpa, BpaRegistration};
 
-    // // TODO: Implement test for 'Duplicate Reg' (Attempt to register an active ID)
-    // #[test]
-    // fn test_duplicate_reg() {
-    //     todo!("Verify Attempt to register an active ID");
-    // }
+    struct TestApp {
+        sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+    }
 
-    // // TODO: Implement test for 'Cleanup' (Verify ID is freed on disconnect)
-    // #[test]
-    // fn test_cleanup() {
-    //     todo!("Verify ID is freed on disconnect");
-    // }
+    impl TestApp {
+        fn new() -> Self {
+            Self {
+                sink: hardy_async::sync::spin::Once::new(),
+            }
+        }
+    }
+
+    use super::*;
+
+    #[async_trait]
+    impl services::Application for TestApp {
+        async fn on_register(
+            &self,
+            _source: &hardy_bpv7::eid::Eid,
+            sink: Box<dyn services::ApplicationSink>,
+        ) {
+            self.sink.call_once(|| sink);
+        }
+        async fn on_unregister(&self) {}
+        async fn on_receive(
+            &self,
+            _source: hardy_bpv7::eid::Eid,
+            _expiry: time::OffsetDateTime,
+            _ack_requested: bool,
+            _payload: bytes::Bytes,
+        ) {
+        }
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _from: &hardy_bpv7::eid::Eid,
+            _kind: services::StatusNotify,
+            _reason: hardy_bpv7::status_report::ReasonCode,
+            _timestamp: Option<time::OffsetDateTime>,
+        ) {
+        }
+    }
+
+    /// Registering two applications with the same explicit IPN service number should fail.
+    #[tokio::test]
+    async fn test_duplicate_reg() {
+        let bpa = Bpa::builder().build();
+        bpa.start(false);
+
+        let svc_id = hardy_bpv7::eid::Service::Ipn(42);
+
+        // First registration should succeed
+        let app1 = Arc::new(TestApp::new());
+        let result = bpa.register_application(Some(svc_id.clone()), app1).await;
+        assert!(result.is_ok(), "First registration should succeed");
+
+        // Second registration with the same service number should fail
+        let app2 = Arc::new(TestApp::new());
+        let result = bpa.register_application(Some(svc_id), app2).await;
+        assert!(
+            matches!(result, Err(services::Error::IpnServiceInUse(42))),
+            "Duplicate registration should return IpnServiceInUse, got: {result:?}"
+        );
+
+        bpa.shutdown().await;
+    }
+
+    /// After an application drops its sink (unregisters), the service ID should be freed
+    /// for re-registration.
+    #[tokio::test]
+    async fn test_cleanup() {
+        let bpa = Bpa::builder().build();
+        bpa.start(false);
+
+        let svc_id = hardy_bpv7::eid::Service::Ipn(99);
+
+        // Register
+        let app1 = Arc::new(TestApp::new());
+        let result = bpa
+            .register_application(Some(svc_id.clone()), app1.clone())
+            .await;
+        assert!(result.is_ok());
+
+        // Unregister via the sink
+        app1.sink
+            .get()
+            .expect("Sink should be set")
+            .unregister()
+            .await;
+
+        // Small yield to let the unregister propagate
+        tokio::task::yield_now().await;
+
+        // Re-registration with the same service number should now succeed
+        let app2 = Arc::new(TestApp::new());
+        let result = bpa.register_application(Some(svc_id), app2).await;
+        assert!(
+            result.is_ok(),
+            "Re-registration after cleanup should succeed, got: {result:?}"
+        );
+
+        bpa.shutdown().await;
+    }
 }

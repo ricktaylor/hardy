@@ -249,23 +249,97 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+    use crate::storage::{bundle_mem, metadata_mem};
 
-    // // TODO: Implement test for 'Quota Enforcement' (Attempt to store bundle exceeding total capacity)
-    // #[test]
-    // fn test_quota_enforcement() {
-    //     todo!("Verify Attempt to store bundle exceeding total capacity");
-    // }
+    fn make_store() -> Arc<Store> {
+        Arc::new(Store::new(
+            None,
+            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+            core::num::NonZeroUsize::new(16).unwrap(),
+            Arc::new(metadata_mem::MetadataMemStorage::new(&Default::default())),
+            Arc::new(bundle_mem::BundleMemStorage::new(&Default::default())),
+        ))
+    }
 
-    // // TODO: Implement test for 'Double Delete' (Handle deletion of already removed bundle)
-    // #[test]
-    // fn test_double_delete() {
-    //     todo!("Verify Handle deletion of already removed bundle");
-    // }
+    fn make_bundle(dest: &str) -> bundle::Bundle {
+        bundle::Bundle {
+            bundle: hardy_bpv7::bundle::Bundle {
+                id: hardy_bpv7::bundle::Id {
+                    source: "ipn:0.99.1".parse().unwrap(),
+                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    fragment_info: None,
+                },
+                flags: Default::default(),
+                crc_type: Default::default(),
+                destination: dest.parse().unwrap(),
+                report_to: Default::default(),
+                lifetime: core::time::Duration::from_secs(3600),
+                previous_node: None,
+                age: None,
+                hop_count: None,
+                blocks: Default::default(),
+            },
+            metadata: Default::default(),
+        }
+    }
 
-    // // TODO: Implement test for 'Transaction Rollback' (Verify data cleanup on metadata failure)
-    // #[test]
-    // fn test_transaction_rollback() {
-    //     todo!("Verify data cleanup on metadata failure");
-    // }
+    /// Store a bundle and then store a duplicate — second insert should return false.
+    #[tokio::test]
+    async fn test_quota_enforcement() {
+        let store = make_store();
+        let data = Bytes::from(vec![0xABu8; 100]);
+        let mut bundle = make_bundle("ipn:0.2.1");
+
+        // First store should succeed
+        assert!(store.store(&mut bundle, &data).await);
+
+        // Same bundle ID again should be rejected (duplicate)
+        let mut bundle2 = bundle.clone();
+        assert!(
+            !store.store(&mut bundle2, &data).await,
+            "Duplicate bundle should be rejected"
+        );
+    }
+
+    /// Deleting a bundle that doesn't exist should not panic.
+    #[tokio::test]
+    async fn test_double_delete() {
+        let store = make_store();
+        let data = Bytes::from(vec![0xCDu8; 50]);
+        let mut bundle = make_bundle("ipn:0.3.1");
+
+        assert!(store.store(&mut bundle, &data).await);
+
+        let storage_name = bundle.metadata.storage_name.as_ref().unwrap().clone();
+
+        // First delete
+        store.delete_data(&storage_name).await;
+
+        // Second delete of same name should not panic
+        store.delete_data(&storage_name).await;
+
+        // Loading deleted data should return None
+        assert!(store.load_data(&storage_name).await.is_none());
+    }
+
+    /// When metadata insertion fails (duplicate), bundle data should be cleaned up.
+    #[tokio::test]
+    async fn test_transaction_rollback() {
+        let store = make_store();
+        let data = Bytes::from(vec![0xEFu8; 75]);
+        let mut bundle = make_bundle("ipn:0.4.1");
+
+        // First store succeeds
+        assert!(store.store(&mut bundle, &data).await);
+        let first_storage_name = bundle.metadata.storage_name.as_ref().unwrap().clone();
+
+        // Second store of same bundle ID fails (duplicate) — the new data should be cleaned up
+        let mut bundle2 = bundle.clone();
+        bundle2.metadata.storage_name = None; // Reset so store() generates new name
+        assert!(!store.store(&mut bundle2, &data).await);
+
+        // Original data should still be accessible
+        assert!(store.load_data(&first_storage_name).await.is_some());
+    }
 }

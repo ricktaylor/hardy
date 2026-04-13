@@ -218,29 +218,128 @@ impl core::fmt::Display for NodeIds {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // // TODO: Implement test for 'Single Scheme Enforce' (Verify error on multiple IPN IDs)
-    // #[test]
-    // fn test_single_scheme_enforce() {
-    //     todo!("Verify error on multiple IPN IDs");
-    // }
+    fn ipn(alloc: u32, node: u32) -> NodeId {
+        NodeId::Ipn(IpnNodeId {
+            allocator_id: alloc,
+            node_number: node,
+        })
+    }
 
-    // // TODO: Implement test for 'Invalid Types' (Verify rejection of Local/Null nodes)
-    // #[test]
-    // fn test_invalid_types() {
-    //     todo!("Verify rejection of Local/Null nodes");
-    // }
+    fn dtn(name: &str) -> NodeId {
+        NodeId::Dtn(DtnNodeId {
+            node_name: name.into(),
+        })
+    }
 
-    // // TODO: Implement test for 'Admin Resolution (IPN)' (Resolve admin EID for IPN destination)
-    // #[test]
-    // fn test_admin_resolution_ipn() {
-    //     todo!("Resolve admin EID for IPN destination");
-    // }
+    /// Two different IPN node IDs should be rejected.
+    #[test]
+    fn test_single_scheme_enforce() {
+        let ids = [ipn(0, 1), ipn(0, 2)];
+        let result = NodeIds::try_from(ids.as_slice());
+        assert!(matches!(result, Err(Error::MultipleIpnNodeIds)));
 
-    // // TODO: Implement test for 'Admin Resolution (DTN)' (Resolve admin EID for DTN destination)
-    // #[test]
-    // fn test_admin_resolution_dtn() {
-    //     todo!("Resolve admin EID for DTN destination");
-    // }
+        // Same IPN ID twice should be OK (idempotent)
+        let ids = [ipn(0, 1), ipn(0, 1)];
+        assert!(NodeIds::try_from(ids.as_slice()).is_ok());
+
+        // Two different DTN node IDs should also be rejected
+        let ids = [dtn("node-a"), dtn("node-b")];
+        let result = NodeIds::try_from(ids.as_slice());
+        assert!(matches!(result, Err(Error::MultipleDtnNodeIds)));
+    }
+
+    /// LocalNode should be rejected.
+    #[test]
+    fn test_invalid_types() {
+        let ids = [NodeId::LocalNode];
+        let result = NodeIds::try_from(ids.as_slice());
+        assert!(matches!(result, Err(Error::LocalNode)));
+
+        // LocalNode alongside a valid ID should also be rejected
+        let ids = [ipn(0, 1), NodeId::LocalNode];
+        let result = NodeIds::try_from(ids.as_slice());
+        assert!(matches!(result, Err(Error::LocalNode)));
+    }
+
+    /// Admin EID for IPN destination should use the IPN node ID with service 0.
+    #[test]
+    fn test_admin_resolution_ipn() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: Some(DtnNodeId {
+                node_name: "mynode".into(),
+            }),
+        };
+
+        // 3-element IPN destination hits catch-all → Eid::Ipn admin endpoint
+        let dest: Eid = "ipn:0.5.42".parse().unwrap();
+        let admin = node_ids.get_admin_endpoint(&dest);
+        assert_eq!(
+            admin,
+            Eid::Ipn {
+                fqnn: IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 1,
+                },
+                service_number: 0,
+            }
+        );
+
+        // Legacy 2-element IPN destination → Eid::LegacyIpn admin endpoint
+        let legacy_dest = Eid::LegacyIpn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number: 5,
+            },
+            service_number: 42,
+        };
+        let admin = node_ids.get_admin_endpoint(&legacy_dest);
+        assert_eq!(
+            admin,
+            Eid::LegacyIpn {
+                fqnn: IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 1,
+                },
+                service_number: 0,
+            }
+        );
+    }
+
+    /// Admin EID for DTN destination should use the DTN node ID.
+    #[test]
+    fn test_admin_resolution_dtn() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: Some(DtnNodeId {
+                node_name: "mynode".into(),
+            }),
+        };
+
+        // DTN destination should resolve to DTN admin endpoint
+        let dest: Eid = "dtn://mynode/svc".parse().unwrap();
+        let admin = node_ids.get_admin_endpoint(&dest);
+        let expected: Eid = "dtn://mynode/".parse().unwrap();
+        assert_eq!(admin, expected);
+
+        // With only DTN node ID, any destination should resolve to DTN
+        let dtn_only = NodeIds {
+            ipn: None,
+            dtn: Some(DtnNodeId {
+                node_name: "solo".into(),
+            }),
+        };
+        let ipn_dest: Eid = "ipn:0.5.42".parse().unwrap();
+        let admin = dtn_only.get_admin_endpoint(&ipn_dest);
+        let expected: Eid = "dtn://solo/".parse().unwrap();
+        assert_eq!(admin, expected);
+    }
 }

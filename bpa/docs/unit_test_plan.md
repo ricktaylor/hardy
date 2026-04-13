@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [REQ-2](../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR](../../docs/requirements.md#part-3-low-level-requirements-llr) |
 | **Parent Plan** | `bpa/docs/component_test_plan.md` |
 | **Test Suite ID** | UTP-BPA-01 |
+| **Revision** | Rev 3 (2026-04-13) — Source file paths updated; §3.12/§3.13 delegated to bpv7 suite |
 
 ## 1. Introduction
 
@@ -35,8 +36,8 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Route Missing** | Generate report for "No Route to Destination". | `src/dispatcher.rs` | Mock Bundle + `Reason::NoRoute` | Bundle containing correct Status Report payload & Reason Code. |
-| **TTL Expired** | Generate report for "Lifetime Expired". | `src/dispatcher.rs` | Mock Bundle + `Reason::LifetimeExpired` | Bundle targeting original sender; "Lifetime Expired" flag set. |
+| **Route Missing** | Generate report for "No Route to Destination". | `src/dispatcher/report.rs` | Mock Bundle + `Reason::NoRoute` | Bundle containing correct Status Report payload & Reason Code. |
+| **TTL Expired** | Generate report for "Lifetime Expired". | `src/dispatcher/report.rs` | Mock Bundle + `Reason::LifetimeExpired` | Bundle targeting original sender; "Lifetime Expired" flag set. |
 
 ### 3.2 Routing Table Logic (REQ-6)
 
@@ -88,11 +89,11 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Basic Reassembly** | Reassemble 2 fragments in order. | `src/dispatcher.rs` | 1. Frag 1/2 (Offset 0)<br>2. Frag 2/2 (End) | Result: `Some(FullBundle)` |
-| **Out-of-Order** | Reassemble fragments arriving reversed. | `src/dispatcher.rs` | 1. Frag 2/2<br>2. Frag 1/2 | Result: `Some(FullBundle)` |
-| **Duplicate Data** | Handle overlapping/duplicate fragments. | `src/dispatcher.rs` | 1. Frag 1/2<br>2. Frag 1/2 | Result: `None` (Pending, no error) |
-| **Missing Head** | Detect missing offset 0 fragment. | `src/dispatcher.rs` | 1. Frag 2/2 (End) | Result: `None` (Pending) or Log Warning. |
-| **Length Mismatch** | Detect fragments claiming different total lengths. | `src/dispatcher.rs` | 1. Frag A (Total=100)<br>2. Frag B (Total=200) | Result: `None` (Drop/Error). |
+| **Basic Reassembly** | Reassemble 2 fragments in order. | `src/storage/adu_reassembly.rs` | 1. Frag 1/2 (Offset 0)<br>2. Frag 2/2 (End) | Result: `Some(FullBundle)` |
+| **Out-of-Order** | Reassemble fragments arriving reversed. | `src/storage/adu_reassembly.rs` | 1. Frag 2/2<br>2. Frag 1/2 | Result: `Some(FullBundle)` |
+| **Duplicate Data** | Handle overlapping/duplicate fragments. | `src/storage/adu_reassembly.rs` | 1. Frag 1/2<br>2. Frag 1/2 | Result: `None` (Pending, no error) |
+| **Missing Head** | Detect missing offset 0 fragment. | `src/storage/adu_reassembly.rs` | 1. Frag 2/2 (End) | Result: `None` (Pending) or Log Warning. |
+| **Length Mismatch** | Detect fragments claiming different total lengths. | `src/storage/adu_reassembly.rs` | 1. Frag A (Total=100)<br>2. Frag B (Total=200) | Result: `None` (Drop/Error). |
 
 ### 3.6 Storage Logic (Quotas & Eviction)
 
@@ -106,7 +107,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 | **Double Delete** | Handle deletion of already removed bundle. | `src/storage/store.rs` | 1. `Delete(ID_A)`<br>2. `Delete(ID_A)` | Result: `Ok` (Idempotent) or `Error(NotFound)` |
 | **Min Bundles Protection** | Verify `min_bundles` overrides byte quota. | `src/storage/bundle_mem.rs` | Config: `Max=1MB`, `Min=10`<br>Input: 5 bundles of 500KB. | Result: All stored (Over quota, but under count). |
 | **Transaction Rollback** | Verify data cleanup on metadata failure. | `src/storage/store.rs` | 1. `SaveData` (Ok)<br>2. `InsertMeta` (Fail/Dup) | Result: `DeleteData` called automatically. |
-| **Large Quota Config** | Verify `u64` parsing for >1TB limits. | `src/storage/config.rs` | Config: `Max=2TB` (2*10^12) | Result: Parsed correctly (no overflow). |
+| **Large Quota Config** | Verify `u64` parsing for >1TB limits. | `src/storage/bundle_mem.rs` | Config: `Max=2TB` (2*10^12) | Result: Parsed correctly (no overflow). |
 
 ### 3.7 Channel State Machine (Backpressure)
 
@@ -166,8 +167,8 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Age Fallback** | Verify creation time derived from Age. | `src/bundle.rs` | TS: `0`, Age: `10s`, Recv: `T=100` | Result: Creation = `T=90`. |
-| **Expiry Calculation** | Verify expiry time summation. | `src/bundle.rs` | Creation: `T=100`, Life: `50s` | Result: Expiry = `T=150`. |
+| **Age Fallback** | Verify creation time derived from Age. | `src/bundle/core.rs` | TS: `0`, Age: `10s`, Recv: `T=100` | Result: Creation = `T=90`. |
+| **Expiry Calculation** | Verify expiry time summation. | `src/bundle/core.rs` | Creation: `T=100`, Life: `50s` | Result: Expiry = `T=150`. |
 
 ### 3.12 BPSec Policy Logic (REQ-2)
 
@@ -175,8 +176,10 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Fragment Security** | Reject fragmentation if BPSec blocks present. | `src/fragmentation.rs` | Bundle with BIB/BCB + Request Fragment | `Error(CannotFragmentSecureBundle)` |
-| **Target Cleanup** | Remove security info when target block is dropped. | `src/security.rs` | Bundle with BIB targeting Payload + Drop Payload | Bundle with BIB removed. |
+| **Fragment Security** | Reject fragmentation if BPSec blocks present. | `bpv7/src/bpsec/signer.rs` | Bundle with BIB/BCB + Request Fragment | `Error(CannotFragmentSecureBundle)` |
+| **Target Cleanup** | Remove security info when target block is dropped. | `src/dispatcher/dispatch.rs` | Bundle with BIB targeting Payload + Drop Payload | Bundle with BIB removed. |
+
+**Note (Rev 3):** Fragment Security (LLR 2.1.3) is a sender constraint enforced by `bpv7/src/bpsec/signer.rs:75` — not a BPA-level validation. Target Cleanup (LLR 2.1.2) is verified by the bpv7 unit tests (`test_bib_removal_and_readd`, `test_bcb_without_bib_removal`). Both scenarios are covered by the bpv7 test suite ([`UTP-BPSEC-01`](../../bpv7/docs/unit_test_plan_bpsec.md)); no separate BPA tests are required.
 
 ### 3.13 Bundle Manipulation (Canonicalization)
 
@@ -184,8 +187,10 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Unknown Block Drop** | Remove unknown block marked "Discard if Unknown". | `src/process.rs` | Bundle with Unknown Block (Flag=Discard) | Bundle without Block. |
-| **Unknown Block Keep** | Keep unknown block NOT marked "Discard". | `src/process.rs` | Bundle with Unknown Block (Flag=Keep) | Bundle with Block preserved. |
+| **Unknown Block Drop** | Remove unknown block marked "Discard if Unknown". | `src/dispatcher/dispatch.rs` | Bundle with Unknown Block (Flag=Discard) | Bundle without Block. |
+| **Unknown Block Keep** | Keep unknown block NOT marked "Discard". | `src/dispatcher/dispatch.rs` | Bundle with Unknown Block (Flag=Keep) | Bundle with Block preserved. |
+
+**Note (Rev 3):** Unknown block handling (LLR 1.1.30) is implemented by the bpv7 parser and verified by `bpv7/src/bundle/parse.rs::unknown_block_discard` and the CLI integration test REWRITE-01 ([`COMP-BPV7-CLI-01`](../../bpv7/docs/component_test_plan.md)). The BPA delegates to the parser — no separate BPA tests are required.
 
 ## 4. Execution & Pass Criteria
 

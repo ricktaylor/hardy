@@ -270,6 +270,10 @@ impl Registry {
         };
 
         // If entry already existed, clean up the orphaned peer_id
+        // TODO: This deadlocks — PeerTable::remove() calls Peer::close() which calls
+        // self.inner.wait() on an OnceLock that was never initialised (start() was never
+        // called on the orphan). Fix: either check inner.is_initialized() in close(), or
+        // remove directly from the PeerTable HashMap without calling close().
         if !inserted {
             self.peers.remove(peer_id).await;
             return false;
@@ -327,23 +331,141 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+    use crate::bpa::{Bpa, BpaRegistration};
+    use hardy_async::sync::spin::Once;
 
-    // // TODO: Implement test for 'Duplicate Registration' (Register CLA with existing name)
-    // #[test]
-    // fn test_duplicate_registration() {
-    //     todo!("Verify Register CLA with existing name");
-    // }
+    struct TestCla {
+        sink: Once<Box<dyn cla::Sink>>,
+    }
 
-    // // TODO: Implement test for 'Peer Lifecycle' (Verify RIB updates on peer add/remove)
-    // #[test]
-    // fn test_peer_lifecycle() {
-    //     todo!("Verify RIB updates on peer add/remove");
-    // }
+    impl TestCla {
+        fn new() -> Self {
+            Self { sink: Once::new() }
+        }
+    }
 
-    // // TODO: Implement test for 'Cascading Cleanup' (Verify unregistering CLA removes peers)
-    // #[test]
-    // fn test_cascading_cleanup() {
-    //     todo!("Verify unregistering CLA removes peers");
-    // }
+    #[async_trait]
+    impl cla::Cla for TestCla {
+        async fn on_register(
+            &self,
+            sink: Box<dyn cla::Sink>,
+            _node_ids: &[hardy_bpv7::eid::NodeId],
+        ) {
+            self.sink.call_once(|| sink);
+        }
+        async fn on_unregister(&self) {}
+        async fn forward(
+            &self,
+            _queue: Option<u32>,
+            _cla_addr: &ClaAddress,
+            _bundle: bytes::Bytes,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            Ok(cla::ForwardBundleResult::Sent)
+        }
+    }
+
+    /// Registering a CLA with an already-in-use name should fail.
+    #[tokio::test]
+    async fn test_duplicate_registration() {
+        let bpa = Bpa::builder().build();
+        bpa.start(false);
+
+        let cla1 = Arc::new(TestCla::new());
+        let result = bpa
+            .register_cla("test-cla".to_string(), None, cla1, None)
+            .await;
+        assert!(result.is_ok(), "First CLA registration should succeed");
+
+        let cla2 = Arc::new(TestCla::new());
+        let result = bpa
+            .register_cla("test-cla".to_string(), None, cla2, None)
+            .await;
+        assert!(
+            matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
+            "Duplicate CLA name should return AlreadyExists, got: {result:?}"
+        );
+
+        bpa.shutdown().await;
+    }
+
+    /// Adding a peer installs a RIB entry; removing it withdraws it.
+    #[tokio::test]
+    async fn test_peer_lifecycle() {
+        let bpa = Bpa::builder().build();
+        bpa.start(false);
+
+        let cla = Arc::new(TestCla::new());
+        bpa.register_cla("lifecycle-cla".to_string(), None, cla.clone(), None)
+            .await
+            .unwrap();
+
+        let sink = cla.sink.get().expect("Sink should be set after register");
+        let peer_addr = ClaAddress::Private("peer1".as_bytes().into());
+        let peer_node = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+            allocator_id: 0,
+            node_number: 10,
+        });
+
+        // Add peer
+        let added = sink
+            .add_peer(peer_addr.clone(), &[peer_node.clone()])
+            .await
+            .unwrap();
+        assert!(added, "First add_peer should succeed");
+
+        // Remove peer
+        let removed = sink.remove_peer(&peer_addr).await.unwrap();
+        assert!(removed, "remove_peer should succeed");
+
+        // Removing again should return false
+        let removed = sink.remove_peer(&peer_addr).await.unwrap();
+        assert!(!removed, "Double remove_peer should return false");
+
+        bpa.shutdown().await;
+    }
+
+    /// Unregistering a CLA should remove all its peers.
+    #[tokio::test]
+    async fn test_cascading_cleanup() {
+        let bpa = Bpa::builder().build();
+        bpa.start(false);
+
+        let cla = Arc::new(TestCla::new());
+        bpa.register_cla("cascade-cla".to_string(), None, cla.clone(), None)
+            .await
+            .unwrap();
+
+        let sink = cla.sink.get().expect("Sink should be set");
+
+        // Add two peers
+        let addr1 = ClaAddress::Private("p1".as_bytes().into());
+        let addr2 = ClaAddress::Private("p2".as_bytes().into());
+        let node1 = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+            allocator_id: 0,
+            node_number: 20,
+        });
+        let node2 = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+            allocator_id: 0,
+            node_number: 21,
+        });
+
+        sink.add_peer(addr1, &[node1]).await.unwrap();
+        sink.add_peer(addr2, &[node2]).await.unwrap();
+
+        // Unregister the CLA — should cascade-remove both peers
+        sink.unregister().await;
+
+        // Re-registering with same name should now succeed (name freed)
+        let cla2 = Arc::new(TestCla::new());
+        let result = bpa
+            .register_cla("cascade-cla".to_string(), None, cla2, None)
+            .await;
+        assert!(
+            result.is_ok(),
+            "Re-registration after unregister should succeed, got: {result:?}"
+        );
+
+        bpa.shutdown().await;
+    }
 }

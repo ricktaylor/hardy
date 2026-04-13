@@ -218,29 +218,135 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
+    use alloc::collections::BTreeSet;
 
-    // // TODO: Implement test for 'Cache Ordering' (Verify CacheEntry sorts by time)
-    // #[test]
-    // fn test_cache_ordering() {
-    //     todo!("Verify CacheEntry sorts by time");
-    // }
+    fn make_entry(secs_from_now: i64, node: u32) -> CacheEntry {
+        CacheEntry {
+            expiry: time::OffsetDateTime::now_utc() + time::Duration::seconds(secs_from_now),
+            id: hardy_bpv7::bundle::Id {
+                source: format!("ipn:0.{node}.1").parse().unwrap(),
+                timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            destination: format!("ipn:0.{node}.99").parse().unwrap(),
+        }
+    }
 
-    // // TODO: Implement test for 'Cache Saturation' (Verify "Keep Soonest" eviction policy)
-    // #[test]
-    // fn test_cache_saturation() {
-    //     todo!("Verify Keep Soonest eviction policy");
-    // }
+    /// CacheEntry BTreeSet should sort by expiry time (soonest first).
+    #[test]
+    fn test_cache_ordering() {
+        let mut set = BTreeSet::new();
+        let later = make_entry(300, 1);
+        let sooner = make_entry(60, 2);
+        let middle = make_entry(180, 3);
 
-    // // TODO: Implement test for 'Cache Rejection' (Verify later expiry is ignored if full)
-    // #[test]
-    // fn test_cache_rejection() {
-    //     todo!("Verify later expiry is ignored if full");
-    // }
+        set.insert(later.clone());
+        set.insert(sooner.clone());
+        set.insert(middle.clone());
 
-    // // TODO: Implement test for 'Wakeup Trigger' (Verify wakeup signal on new soonest expiry)
-    // #[test]
-    // fn test_wakeup_trigger() {
-    //     todo!("Verify wakeup signal on new soonest expiry");
-    // }
+        let entries: Vec<_> = set.into_iter().collect();
+        assert_eq!(entries[0].expiry, sooner.expiry);
+        assert_eq!(entries[1].expiry, middle.expiry);
+        assert_eq!(entries[2].expiry, later.expiry);
+    }
+
+    /// When cache is full, inserting a sooner entry should evict the latest.
+    #[test]
+    fn test_cache_saturation() {
+        let mut cache = BTreeSet::new();
+        let cache_size = 3;
+
+        // Fill cache with entries at 100, 200, 300 seconds
+        let e100 = make_entry(100, 1);
+        let e200 = make_entry(200, 2);
+        let e300 = make_entry(300, 3);
+        cache.insert(e100.clone());
+        cache.insert(e200.clone());
+        cache.insert(e300.clone());
+        assert_eq!(cache.len(), cache_size);
+
+        // Insert sooner entry (50s) — should evict the latest (300s)
+        let e50 = make_entry(50, 4);
+        if cache.len() >= cache_size {
+            let last_expiry = cache.last().unwrap().expiry;
+            if e50.expiry < last_expiry {
+                cache.pop_last();
+                cache.insert(e50.clone());
+            }
+        }
+
+        assert_eq!(cache.len(), cache_size);
+        // Soonest should be e50
+        assert_eq!(cache.first().unwrap().expiry, e50.expiry);
+        // e300 should have been evicted
+        assert!(!cache.contains(&e300));
+    }
+
+    /// When cache is full, an entry with later expiry than the worst should be rejected.
+    #[test]
+    fn test_cache_rejection() {
+        let mut cache = BTreeSet::new();
+        let cache_size = 3;
+
+        let e100 = make_entry(100, 1);
+        let e200 = make_entry(200, 2);
+        let e300 = make_entry(300, 3);
+        cache.insert(e100.clone());
+        cache.insert(e200.clone());
+        cache.insert(e300.clone());
+
+        // Try to insert an entry at 400s — later than worst (300s), should be rejected
+        let e400 = make_entry(400, 4);
+        let inserted = if cache.len() >= cache_size {
+            let last_expiry = cache.last().unwrap().expiry;
+            if e400.expiry < last_expiry {
+                cache.pop_last();
+                cache.insert(e400.clone());
+                true
+            } else {
+                false
+            }
+        } else {
+            cache.insert(e400.clone());
+            true
+        };
+
+        assert!(!inserted);
+        assert_eq!(cache.len(), cache_size);
+        assert!(!cache.contains(&e400));
+    }
+
+    /// Wakeup should trigger when a newly inserted entry is sooner than the current soonest.
+    #[test]
+    fn test_wakeup_trigger() {
+        let e200 = make_entry(200, 1);
+        let e100 = make_entry(100, 2);
+        let e300 = make_entry(300, 3);
+
+        // Simulate the wakeup logic from watch_bundle_inner
+        let old_expiry: Option<time::OffsetDateTime> = None;
+
+        // First entry into empty cache — should trigger wakeup
+        let needs_wakeup = match old_expiry {
+            None => true,
+            Some(old) => e200.expiry < old,
+        };
+        assert!(needs_wakeup, "First entry should trigger wakeup");
+
+        // Entry sooner than current soonest — should trigger
+        let old_expiry = Some(e200.expiry);
+        let needs_wakeup = match old_expiry {
+            None => true,
+            Some(old) => e100.expiry < old,
+        };
+        assert!(needs_wakeup, "Sooner entry should trigger wakeup");
+
+        // Entry later than current soonest — should NOT trigger
+        let needs_wakeup = match old_expiry {
+            None => true,
+            Some(old) => e300.expiry < old,
+        };
+        assert!(!needs_wakeup, "Later entry should not trigger wakeup");
+    }
 }

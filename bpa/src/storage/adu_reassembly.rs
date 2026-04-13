@@ -393,4 +393,117 @@ mod tests {
             "Should reject when bytes_written < total_adu_length"
         );
     }
+
+    /// Two fragments covering the full ADU reassemble into a complete bundle.
+    #[tokio::test]
+    async fn reassemble_basic_happy_path() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+        let source: hardy_bpv7::eid::Eid = "ipn:0.1.1".parse().unwrap();
+        let dest: hardy_bpv7::eid::Eid = "ipn:0.2.1".parse().unwrap();
+        let payload = b"HelloWorld"; // 10 bytes, split into 5+5
+
+        // Build a complete bundle
+        let (complete_bundle, complete_data) =
+            hardy_bpv7::builder::Builder::new(source.clone(), dest.clone())
+                .with_payload(std::borrow::Cow::Borrowed(&payload[..]))
+                .build(ts.clone())
+                .unwrap();
+
+        // Create fragment 0: offset=0, total=10, payload="Hello"
+        let frag0_data = Editor::new(&complete_bundle, &complete_data)
+            .with_fragment_info(Some(FragmentInfo {
+                offset: 0,
+                total_adu_length: 10,
+            }))
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .update_block(1)
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .with_data(std::borrow::Cow::Borrowed(&b"Hello"[..]))
+            .rebuild()
+            .rebuild()
+            .unwrap();
+
+        // Create fragment 1: offset=5, total=10, payload="World"
+        let frag1_data = Editor::new(&complete_bundle, &complete_data)
+            .with_fragment_info(Some(FragmentInfo {
+                offset: 5,
+                total_adu_length: 10,
+            }))
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .update_block(1)
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .with_data(std::borrow::Cow::Borrowed(&b"World"[..]))
+            .rebuild()
+            .rebuild()
+            .unwrap();
+
+        // Parse fragments back to get Bundle structs with correct block ranges
+        let bundle0 =
+            hardy_bpv7::bundle::ParsedBundle::parse(&frag0_data, hardy_bpv7::bpsec::no_keys)
+                .unwrap()
+                .bundle;
+        let bundle1 =
+            hardy_bpv7::bundle::ParsedBundle::parse(&frag1_data, hardy_bpv7::bpsec::no_keys)
+                .unwrap()
+                .bundle;
+
+        // Store fragment data
+        let name0 = store_bytes(&store, &frag0_data).await;
+        let name1 = store_bytes(&store, &frag1_data).await;
+
+        // Store fragment 0 metadata with the full parsed Bundle (reassemble
+        // passes it to Editor::new which needs the blocks map, not just the ID)
+        let meta_bundle = Bundle {
+            bundle: bundle0.clone(),
+            metadata: BundleMetadata {
+                storage_name: Some(name0.clone()),
+                ..Default::default()
+            },
+        };
+        store.insert_metadata(&meta_bundle).await;
+
+        // Get payload ranges from the parsed bundles
+        let payload0_range = bundle0.blocks.get(&1).unwrap().payload_range();
+        let payload1_range = bundle1.blocks.get(&1).unwrap().payload_range();
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [
+                (0, (bundle0.id.clone(), name0, payload0_range)),
+                (5, (bundle1.id.clone(), name1, payload1_range)),
+            ]
+            .into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(result.is_some(), "Reassembly should succeed");
+
+        let (_, reassembled_data) = result.unwrap();
+
+        // Parse the reassembled bundle and verify
+        let reassembled_bundle =
+            hardy_bpv7::bundle::ParsedBundle::parse(&reassembled_data, hardy_bpv7::bpsec::no_keys)
+                .unwrap()
+                .bundle;
+
+        // Should no longer be a fragment
+        assert!(
+            reassembled_bundle.id.fragment_info.is_none(),
+            "Reassembled bundle should not have fragment_info"
+        );
+
+        // Extract and verify the payload
+        let payload_block = reassembled_bundle.blocks.get(&1).unwrap();
+        let payload_range = payload_block.payload_range();
+        let reassembled_payload = &reassembled_data[payload_range];
+        assert_eq!(
+            reassembled_payload, payload,
+            "Reassembled payload should be 'HelloWorld'"
+        );
+    }
 }
