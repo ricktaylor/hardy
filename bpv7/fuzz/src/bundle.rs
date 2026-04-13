@@ -85,6 +85,7 @@ mod test {
     use std::io::Read;
 
     #[test]
+    #[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
     fn test() {
         if let Ok(mut file) =
             std::fs::File::open("./artifacts/bundle/crash-effffdc7a8837e1dc7225d82466f3f068508a79a")
@@ -97,6 +98,7 @@ mod test {
     }
 
     #[test]
+    #[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
     fn test_all() {
         match std::fs::read_dir("./corpus/bundle") {
             Err(e) => {
