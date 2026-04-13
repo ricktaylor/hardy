@@ -2062,6 +2062,7 @@ dependencies = [
  "hardy-bpv7",
  "hardy-eid-patterns",
  "serde",
+ "tokio",
 ]
 
 [[package]]
