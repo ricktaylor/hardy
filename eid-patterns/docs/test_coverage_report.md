@@ -90,6 +90,13 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/eid_pattern_str/lcov.info
 ```
 
+Results (2026-04-14):
+
+```
+  lines......: 28.3% (126 of 445 lines)
+  functions..: 33.3% (24 of 72 functions)
+```
+
 Fuzz coverage is complementary to unit tests: unit tests verify pattern matching correctness, fuzz verifies parser robustness against adversarial input strings.
 
 ## 5. Key Gaps
