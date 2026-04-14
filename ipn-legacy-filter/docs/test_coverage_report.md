@@ -52,11 +52,16 @@ Coverage is measured against [`PLAN-IPNF-01`](unit_test_plan.md).
 ## 4. Line Coverage
 
 ```
-cargo llvm-cov test --package hardy-ipn-legacy-filter --lcov --output-path lcov.info --html
+cargo llvm-cov test --package hardy-ipn-legacy-filter --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Unit tests (7) exercise pattern matching, EID rewriting, no-op paths, and configuration.
+```
+  lines......: 98.0% (98 of 100 lines)
+  functions..: 100.0% (20 of 20 functions)
+```
+
+Unit tests (7) exercise pattern matching, EID rewriting, no-op paths, and configuration. The 2 uncovered lines are in the `WriteFilter` trait wiring (async trait boilerplate).
 
 ## 5. Conclusion
 

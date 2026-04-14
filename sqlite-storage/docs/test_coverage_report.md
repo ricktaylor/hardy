@@ -58,9 +58,16 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 ## 4. Line Coverage
 
 ```
-cargo llvm-cov test --package hardy-sqlite-storage --lcov --output-path lcov.info --html
+cargo llvm-cov test --package hardy-sqlite-storage --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
+
+```
+  lines......: 70.9% (438 of 618 lines)
+  functions..: 68.3% (71 of 104 functions)
+```
+
+Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The uncovered lines are in the `MetadataStorage` trait implementation (poll methods, recovery protocol) which are exercised by the generic storage harness in a separate crate.
 
 Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The generic storage harness (14 tests) runs in a separate crate and is not captured by `llvm-cov`.
 

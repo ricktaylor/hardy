@@ -51,11 +51,16 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 ## 4. Line Coverage
 
 ```
-cargo llvm-cov test --package hardy-localdisk-storage --lcov --output-path lcov.info --html
+cargo llvm-cov test --package hardy-localdisk-storage --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`.
+```
+  lines......: 76.5% (208 of 272 lines)
+  functions..: 62.9% (22 of 35 functions)
+```
+
+Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`.
 
 ## 5. Conclusion
 
