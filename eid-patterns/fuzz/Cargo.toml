@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4"
 hardy-eid-patterns = { path = ".." }
 
 [[bin]]
-name = "eid-pattern-str"
+name = "eid_pattern_str"
 path = "fuzz_targets/eid_pattern_str.rs"
 test = false
 bench = false
