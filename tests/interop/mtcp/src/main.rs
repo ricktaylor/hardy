@@ -28,19 +28,13 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config = config::load(args.config)?;
-
-    let log_level = std::env::var("MTCP_CLA_LOG_LEVEL")
-        .ok()
-        .and_then(|s| s.parse::<tracing::Level>().ok())
-        .or(config.log_level)
-        .unwrap_or(tracing::Level::ERROR);
+    let config = config::Config::load(args.config)?;
 
     {
         use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
         let filter = EnvFilter::builder()
             .with_default_directive(
-                tracing_subscriber::filter::LevelFilter::from_level(log_level).into(),
+                tracing_subscriber::filter::LevelFilter::from_level(config.log_level).into(),
             )
             .from_env_lossy();
         tracing_subscriber::registry()

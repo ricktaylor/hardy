@@ -1,24 +1,39 @@
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
 use tracing::Level;
 
 mod log_level_serde {
-    use super::*;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::str::FromStr;
+    use tracing::Level;
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Level>, D::Error>
+    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(level.as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let s: Option<String> = Option::deserialize(deserializer)?;
-        s.map(|s| Level::from_str(&s).map_err(serde::de::Error::custom))
-            .transpose()
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
+fn default_log_level() -> Level {
+    Level::INFO
+}
+
+fn default_max_bundle_size() -> u64 {
+    0x4000_0000 // 1GB
+}
+
 /// Framing mode for the CLA.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Framing {
     /// MTCP: CBOR byte string framing (draft-ietf-dtn-mtcpcl-01).
@@ -29,25 +44,25 @@ pub enum Framing {
     Stcp,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
+    /// Logging level (default: INFO)
+    #[serde(default = "default_log_level", with = "log_level_serde")]
+    pub log_level: Level,
+
     /// The address of the BPA gRPC server (e.g. "http://[::1]:50051")
     pub bpa_address: String,
 
     /// The name of this CLA instance to register with the BPA
     pub cla_name: String,
 
-    /// Logging level (e.g. "info", "debug", "trace")
-    #[serde(default, deserialize_with = "log_level_serde::deserialize")]
-    pub log_level: Option<Level>,
-
     /// CLA-specific configuration
     #[serde(flatten)]
     pub cla: ClaConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ClaConfig {
     /// TCP address to listen on (e.g., "[::]:4557").
@@ -69,21 +84,27 @@ pub struct ClaConfig {
     pub peer_node: Option<String>,
 }
 
-fn default_max_bundle_size() -> u64 {
-    0x4000_0000 // 1GB
-}
+impl Config {
+    pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
+        let config_file = config_file
+            .map(|p| p.to_string_lossy().into_owned())
+            .or_else(|| std::env::var("MTCP_CLA_CONFIG_FILE").ok())
+            .unwrap_or_else(|| "mtcp-cla".to_string());
 
-pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
-    let mut builder = config::Config::builder();
+        let source_file = config::File::with_name(&config_file);
+        let source_env = config::Environment::with_prefix("MTCP_CLA")
+            .prefix_separator("_")
+            .separator("__")
+            .convert_case(config::Case::Kebab)
+            .try_parsing(true);
 
-    if let Some(path) = path {
-        builder = builder.add_source(config::File::from(path));
-    } else {
-        builder = builder
-            .add_source(config::File::from(std::path::Path::new("mtcp-cla.toml")).required(false));
+        let config = config::Config::builder()
+            .add_source(source_file)
+            .add_source(source_env)
+            .build()?
+            .try_deserialize()?;
+
+        eprintln!("Loaded configuration from '{config_file}'");
+        Ok(config)
     }
-
-    builder = builder.add_source(config::Environment::with_prefix("MTCP_CLA"));
-
-    builder.build()?.try_deserialize().map_err(Into::into)
 }

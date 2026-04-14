@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 pub struct Args {
-    pub config_file: Option<String>,
+    pub config_file: Option<PathBuf>,
     pub upgrade_storage: bool,
     pub recover_storage: bool,
 }
@@ -48,7 +50,7 @@ pub fn parse() -> Option<Args> {
     }
 
     Some(Args {
-        config_file: flags.opt_str("config"),
+        config_file: flags.opt_str("config").map(PathBuf::from),
         upgrade_storage: flags.opt_present("u"),
         recover_storage: flags.opt_present("r"),
     })
