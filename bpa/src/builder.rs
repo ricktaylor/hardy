@@ -2,16 +2,26 @@ use core::num::NonZeroUsize;
 
 use crate::Arc;
 use crate::bpa::Bpa;
-use crate::cla::registry::Registry as ClaRegistry;
+use crate::cla::registry::ClaRegistryBuilder;
+use crate::cla::{self, Cla, ClaAddressType};
 use crate::dispatcher::Dispatcher;
 use crate::filters::registry::Registry as FilterRegistry;
+use crate::filters::{Filter, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
+use crate::policy::EgressPolicy;
 use crate::rib::Rib;
-use crate::services::registry::Registry as ServiceRegistry;
+use crate::routes::RoutingAgent;
+use crate::services::registry::ServiceRegistryBuilder;
+use crate::services::{self, Service};
 use crate::storage::bundle_mem::BundleMemStorage;
 use crate::storage::metadata_mem::MetadataMemStorage;
 use crate::storage::{BundleStorage, MetadataStorage, Store};
+
+struct PendingRoutingAgent {
+    name: String,
+    agent: Arc<dyn RoutingAgent>,
+}
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
 ///
@@ -31,6 +41,11 @@ pub struct BpaBuilder {
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
+    filter_registry: Arc<FilterRegistry>,
+    keys_registry: Arc<KeyRegistry>,
+    service_registry_builder: ServiceRegistryBuilder,
+    cla_registry_builder: ClaRegistryBuilder,
+    pending_routing_agents: Vec<PendingRoutingAgent>,
 }
 
 impl BpaBuilder {
@@ -90,7 +105,59 @@ impl BpaBuilder {
         self
     }
 
-    pub fn build(self) -> Bpa {
+    /// Register a CLA to be initialized when the BPA is built.
+    pub fn cla(
+        mut self,
+        name: impl Into<String>,
+        cla: Arc<dyn Cla>,
+        address_type: Option<ClaAddressType>,
+        policy: Option<Arc<dyn EgressPolicy>>,
+    ) -> Self {
+        self.cla_registry_builder
+            .insert(name.into(), address_type, cla, policy)
+            .expect("Failed to insert CLA");
+        self
+    }
+
+    /// Register a service to be initialized when the BPA is built.
+    pub fn service(
+        mut self,
+        service: Arc<dyn Service>,
+        service_id: hardy_bpv7::eid::Service,
+    ) -> Self {
+        self.service_registry_builder
+            .insert(
+                service_id,
+                services::registry::ServiceImpl::LowLevel(service),
+            )
+            .expect("Failed to register service");
+        self
+    }
+
+    /// Register a routing agent to be initialized when the BPA is built.
+    pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
+        self.pending_routing_agents.push(PendingRoutingAgent {
+            name: name.into(),
+            agent,
+        });
+        self
+    }
+
+    /// Register a filter immediately.
+    pub fn filter(
+        self,
+        hook: Hook,
+        name: impl Into<String>,
+        after: &[&str],
+        filter: Filter,
+    ) -> Self {
+        self.filter_registry
+            .register(hook, &name.into(), after, filter)
+            .expect("Failed to register filter");
+        self
+    }
+
+    pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
         let store = Arc::new(Store::new(
             self.lru_capacity,
             self.max_cached_bundle_size,
@@ -105,21 +172,63 @@ impl BpaBuilder {
 
         let rib = Arc::new(Rib::new(node_ids.clone(), store.clone()));
 
-        let cla_registry = Arc::new(ClaRegistry::new(
+        let filter_registry = self.filter_registry;
+        let keys_registry = self.keys_registry;
+
+        for ra in self.pending_routing_agents {
+            rib.register_agent(ra.name, ra.agent).await?;
+        }
+
+        let peers = Arc::new(cla::peers::PeerTable::new());
+        let dispatcher = Dispatcher::new(
+            self.status_reports,
+            self.poll_channel_depth,
+            self.processing_pool_size,
             node_ids.clone(),
-            self.poll_channel_depth.into(),
-            rib.clone(),
             store.clone(),
-        ));
-        let keys_registry = Arc::new(KeyRegistry::new());
-        let service_registry = Arc::new(ServiceRegistry::new(node_ids.clone(), rib.clone()));
+            peers.clone(),
+            rib.clone(),
+            keys_registry,
+            filter_registry.clone(),
+        );
+
+        let service_registry = self
+            .service_registry_builder
+            .register_all(&node_ids, &rib, &dispatcher)
+            .await;
+
+        let cla_registry = self
+            .cla_registry_builder
+            .register_all(
+                &node_ids,
+                self.poll_channel_depth.into(),
+                &rib,
+                &store,
+                peers,
+                &dispatcher,
+            )
+            .await?;
+
+        Ok(Bpa::from_parts(
+            node_ids,
+            store,
+            rib,
+            cla_registry,
+            service_registry,
+            filter_registry,
+            dispatcher,
+        ))
+    }
+}
+
+impl Default for BpaBuilder {
+    fn default() -> Self {
         let filter_registry = Arc::new(FilterRegistry::new());
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
         {
             use crate::filters::rfc9171::Rfc9171ValidityFilter;
-            use crate::filters::{Filter, Hook};
 
             filter_registry
                 .register(
@@ -131,47 +240,22 @@ impl BpaBuilder {
                 .expect("Failed to register RFC9171 validity filter");
         }
 
-        let dispatcher = Dispatcher::new(
-            self.status_reports,
-            self.poll_channel_depth,
-            self.processing_pool_size,
-            node_ids,
-            store.clone(),
-            cla_registry.clone(),
-            rib.clone(),
-            keys_registry,
-            filter_registry.clone(),
-        );
-
-        Bpa::from_parts(
-            store,
-            rib,
-            cla_registry,
-            service_registry,
-            filter_registry,
-            dispatcher,
-        )
-    }
-}
-
-impl Default for BpaBuilder {
-    fn default() -> Self {
-        let status_reports = false;
-        let poll_channel_depth = NonZeroUsize::new(16).unwrap();
-        let processing_pool_size =
-            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
-        let node_ids = NodeIds::default();
-
         Self {
-            status_reports,
-            poll_channel_depth,
-            processing_pool_size,
+            status_reports: false,
+            poll_channel_depth: NonZeroUsize::new(16).unwrap(),
+            processing_pool_size: NonZeroUsize::new(hardy_async::available_parallelism().get() * 4)
+                .unwrap(),
             lru_capacity: None,
             max_cached_bundle_size: crate::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             cache_disabled: false,
-            node_ids,
+            node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
+            filter_registry,
+            keys_registry: Arc::new(KeyRegistry::new()),
+            service_registry_builder: ServiceRegistryBuilder::new(),
+            cla_registry_builder: ClaRegistryBuilder::new(),
+            pending_routing_agents: Vec::new(),
         }
     }
 }

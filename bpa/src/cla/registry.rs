@@ -56,9 +56,11 @@ impl core::fmt::Debug for Cla {
     }
 }
 
+type ClaMap = HashMap<String, Arc<Cla>>;
+
 struct Sink {
     cla: Weak<Cla>,
-    registry: Arc<Registry>,
+    registry: Arc<ClaRegistry>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -104,8 +106,6 @@ impl cla::Sink for Sink {
 impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(cla) = self.cla.upgrade() {
-            // Spawn async cleanup onto the Registry's TaskPool
-            // This makes the cleanup tracked by the Registry's lifecycle
             let registry = self.registry.clone();
             hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
                 registry.unregister(cla).await;
@@ -114,37 +114,88 @@ impl Drop for Sink {
     }
 }
 
-pub(crate) struct Registry {
+/// CLA registry in the building phase — only insert() is available.
+pub(crate) struct ClaRegistryBuilder {
+    clas: ClaMap,
+}
+
+impl ClaRegistryBuilder {
+    pub fn new() -> Self {
+        Self {
+            clas: Default::default(),
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        name: String,
+        address_type: Option<ClaAddressType>,
+        cla: Arc<dyn cla::Cla>,
+        policy: Option<Arc<dyn policy::EgressPolicy>>,
+    ) -> cla::Result<()> {
+        let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
+            return Err(cla::Error::AlreadyExists(name));
+        };
+        info!("Inserted CLA: {name}");
+        e.insert(Arc::new(Cla {
+            cla,
+            peers: Default::default(),
+            name,
+            address_type,
+            policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+        }));
+        Ok(())
+    }
+
+    /// Transition to the running registry by registering all inserted CLAs.
+    pub async fn register_all(
+        self,
+        node_ids: &Arc<node_ids::NodeIds>,
+        poll_channel_depth: usize,
+        rib: &Arc<rib::Rib>,
+        store: &Arc<storage::Store>,
+        peers: Arc<peers::PeerTable>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> cla::Result<Arc<ClaRegistry>> {
+        let registry = Arc::new(ClaRegistry {
+            node_ids: node_ids.clone(),
+            clas: hardy_async::sync::spin::Mutex::new(Default::default()),
+            rib: rib.clone(),
+            store: store.clone(),
+            peers,
+            poll_channel_depth,
+            tasks: hardy_async::TaskPool::new(),
+        });
+
+        for (_, cla) in self.clas {
+            registry
+                .register(
+                    cla.name.clone(),
+                    cla.address_type,
+                    cla.cla.clone(),
+                    dispatcher,
+                    Some(cla.policy.clone()),
+                )
+                .await?;
+        }
+
+        Ok(registry)
+    }
+}
+
+/// CLA registry in the running phase — full register/unregister available.
+pub(crate) struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
-    // sync::spin::Mutex for O(1) CLA HashMap operations (no read-only access needed)
-    clas: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Cla>>>,
+    clas: hardy_async::sync::spin::Mutex<ClaMap>,
     rib: Arc<rib::Rib>,
     store: Arc<storage::Store>,
-    peers: peers::PeerTable,
+    peers: Arc<peers::PeerTable>,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,
 }
 
-impl Registry {
-    pub fn new(
-        node_ids: Arc<node_ids::NodeIds>,
-        poll_channel_depth: usize,
-        rib: Arc<rib::Rib>,
-        store: Arc<storage::Store>,
-    ) -> Self {
-        Self {
-            node_ids,
-            clas: Default::default(),
-            rib,
-            store,
-            peers: peers::PeerTable::new(),
-            poll_channel_depth,
-            tasks: hardy_async::TaskPool::new(),
-        }
-    }
-
+impl ClaRegistry {
     pub async fn shutdown(&self) {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
         if !clas.is_empty() {
@@ -155,10 +206,10 @@ impl Registry {
             self.unregister_cla(cla).await;
         }
 
-        // Wait for all cleanup tasks spawned from Drop handlers
         self.tasks.shutdown().await;
     }
 
+    /// Full registration in one step (for runtime dynamic registration via gRPC).
     pub async fn register(
         self: &Arc<Self>,
         name: String,
@@ -167,35 +218,28 @@ impl Registry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
-        // Scope lock
-        let cla = {
+        {
             let mut clas = self.clas.lock();
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(cla::Error::AlreadyExists(name));
             };
-
-            info!("Registered new CLA: {name}");
-
             e.insert(Arc::new(Cla {
                 cla,
                 peers: Default::default(),
-                name,
+                name: name.clone(),
                 address_type,
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
-            }))
-            .clone()
-        };
+            }));
+        }
 
-        metrics::gauge!("bpa.cla.registered").increment(1.0);
+        let cla = self.clas.lock().get(&name).cloned().unwrap();
 
-        // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
             self.rib.add_address_type(address_type, cla.clone());
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
-
         cla.cla
             .on_register(
                 Box::new(Sink {
@@ -206,6 +250,9 @@ impl Registry {
                 &node_ids,
             )
             .await;
+
+        metrics::gauge!("bpa.cla.registered").increment(1.0);
+        info!("Registered CLA: {name}");
 
         Ok(node_ids)
     }
@@ -229,17 +276,12 @@ impl Registry {
         let peers = core::mem::take(&mut *cla.peers.lock());
 
         for (_, (node_ids, peer_id)) in peers {
-            // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
                 metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
-            // Remove from peer table (stops forwarding, signals drain)
             self.peers.remove(peer_id).await;
         }
-
-        // Queue pollers will exit naturally when channels are closed.
-        // They're tracked by Registry's TaskPool and cleaned up in shutdown().
 
         info!("Unregistered CLA: {}", cla.name);
     }
@@ -319,13 +361,6 @@ impl Registry {
         debug!("Removed peer {peer_id}");
 
         true
-    }
-
-    pub async fn forward(&self, peer_id: u32, bundle: bundle::Bundle) {
-        if let Err(bundle) = self.peers.forward(peer_id, bundle).await {
-            debug!("CLA forward failed, returning bundle to watch queue");
-            self.store.watch_bundle(bundle).await;
-        }
     }
 }
 

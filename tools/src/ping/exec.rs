@@ -32,7 +32,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
             .node_ids(node_ids)
-            .build(),
+            .build()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,
     );
 
     // Add a default 'drop' route, we don't want to cache locally
@@ -271,10 +273,12 @@ async fn exec_inner(
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<service::Statistics> {
     let service = std::sync::Arc::new(service::Service::new(args));
-    bpa.register_service(
-        args.source.as_ref().and_then(|eid| eid.service()),
-        service.clone(),
-    )
+    let service_id = args
+        .source
+        .as_ref()
+        .and_then(|eid| eid.service())
+        .unwrap_or(hardy_bpv7::eid::Service::Ipn(1));
+    bpa.register_service(service_id, service.clone())
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 

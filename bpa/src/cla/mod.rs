@@ -4,7 +4,7 @@ use thiserror::Error;
 pub(crate) mod registry;
 
 mod egress_queue;
-mod peers;
+pub(crate) mod peers;
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;

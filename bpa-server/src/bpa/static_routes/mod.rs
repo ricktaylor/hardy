@@ -1,7 +1,6 @@
 use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
-use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
@@ -272,7 +271,10 @@ impl RoutingAgent for StaticRoutesAgent {
     }
 }
 
-pub async fn init(config: &Config, bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
+pub fn add_to_builder(
+    builder: hardy_bpa::builder::BpaBuilder,
+    config: &Config,
+) -> anyhow::Result<hardy_bpa::builder::BpaBuilder> {
     // Ensure it's absolute
     let routes_file = std::env::current_dir()
         .context("Failed to get current directory")?
@@ -298,9 +300,5 @@ pub async fn init(config: &Config, bpa: &dyn BpaRegistration) -> anyhow::Result<
         config.watch,
     ));
 
-    bpa.register_routing_agent(config.protocol_id.clone(), agent)
-        .await
-        .context("Failed to register static routes agent")?;
-
-    Ok(())
+    Ok(builder.routing_agent(config.protocol_id.clone(), agent))
 }

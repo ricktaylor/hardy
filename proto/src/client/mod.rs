@@ -58,19 +58,23 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
 
     async fn register_service(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn hardy_bpa::services::Service>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), service_id, service).await
+        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
     }
 
     async fn register_application(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn hardy_bpa::services::Application>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), service_id, application)
-            .await
+        application::register_application_service(
+            self.grpc_addr.clone(),
+            Some(service_id),
+            application,
+        )
+        .await
     }
 
     async fn register_routing_agent(

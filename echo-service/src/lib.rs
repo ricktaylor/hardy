@@ -13,8 +13,6 @@ injected back into the BPA for forwarding.
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// A BPA service that echoes received bundles back to their source.
@@ -39,24 +37,6 @@ impl EchoService {
         EchoService { sink: Once::new() }
     }
 
-    /// Registers this service on the specified service IDs.
-    ///
-    /// Creates a separate EchoService instance per endpoint to work around
-    /// the single-sink-per-registration API limitation (see #479).
-    pub async fn register(
-        bpa: &dyn BpaRegistration,
-        services: &[hardy_bpv7::eid::Service],
-    ) -> Result<Vec<hardy_bpv7::eid::Eid>, hardy_bpa::services::Error> {
-        let mut eids = Vec::with_capacity(services.len());
-        for service in services {
-            let echo = Arc::new(Self::new());
-            let eid = bpa.register_service(Some(service.clone()), echo).await?;
-            eids.push(eid);
-        }
-        Ok(eids)
-    }
-
-    /// Unregisters this service from the BPA.
     pub async fn unregister(&self) {
         if let Some(sink) = self.sink.get() {
             sink.unregister().await;

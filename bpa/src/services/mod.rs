@@ -18,6 +18,9 @@ pub enum Error {
     #[error("There is already a service using dtn service demux {0}")]
     DtnServiceInUse(String),
 
+    #[error("There is already a service registered with ID {0}")]
+    ServiceIdInUse(String),
+
     /// The provided DTN service name is syntactically invalid.
     #[error("Invalid dtn service name {0}")]
     DtnInvalidServiceName(String),

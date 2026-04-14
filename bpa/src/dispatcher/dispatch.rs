@@ -373,7 +373,10 @@ impl Dispatcher {
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                self.cla_registry.forward(peer, bundle).await
+                if let Err(bundle) = self.peers.forward(peer, bundle).await {
+                    debug!("CLA forward failed, returning bundle to watch queue");
+                    self.store.watch_bundle(bundle).await;
+                }
             }
             _ => {
                 // No route available - wait for one

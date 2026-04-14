@@ -1,5 +1,4 @@
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
 use serde::{Deserialize, Serialize};
 
 // A configured Convergence Layer Adaptor instance.
@@ -49,7 +48,10 @@ pub enum ClaConfig {
 
 // Create and register all configured CLA instances with the BPA.
 #[allow(unused_variables)]
-pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<()> {
+pub async fn add_to_builder(
+    mut builder: hardy_bpa::builder::BpaBuilder,
+    config: &[Cla],
+) -> anyhow::Result<hardy_bpa::builder::BpaBuilder> {
     for cla_config in config {
         let policy = if let Some(p) = &cla_config.policy {
             policy::init(&cla_config.name, p).await?
@@ -63,24 +65,19 @@ pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<(
                 let cla = Arc::new(hardy_tcpclv4::Cla::new(config).map_err(|e| {
                     anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
                 })?);
-
-                cla.register(bpa, cla_config.name.clone(), policy)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_config.name)
-                    })?;
+                builder = builder.cla(
+                    cla_config.name.clone(),
+                    cla,
+                    Some(hardy_bpa::cla::ClaAddressType::Tcp),
+                    policy,
+                );
             }
             #[cfg(feature = "file-cla")]
             ClaConfig::File(config) => {
                 let cla = Arc::new(hardy_file_cla::Cla::new(config).map_err(|e| {
                     anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
                 })?);
-
-                cla.register(bpa, cla_config.name.clone())
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to start CLA '{}': {e}", cla_config.name)
-                    })?;
+                builder = builder.cla(cla_config.name.clone(), cla, None, None);
             }
             ClaConfig::Other {
                 plugin_path,
@@ -93,5 +90,5 @@ pub async fn init(config: &[Cla], bpa: &dyn BpaRegistration) -> anyhow::Result<(
             }
         };
     }
-    Ok(())
+    Ok(builder)
 }
