@@ -29,6 +29,9 @@ jobs:
           - image: hardy-tcpclv4-server
             dockerfile: ./tcpclv4-server/Dockerfile
             build-args: ""
+          - image: hardy-tvr
+            dockerfile: ./tvr/Dockerfile
+            build-args: ""
 
     steps:
       - uses: actions/checkout@v6

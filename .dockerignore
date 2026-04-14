@@ -1,6 +1,8 @@
-target/
+**/target/
 .git/
-docs/
-*.md
+**/docs/
+**/fuzz/corpus/
+**/fuzz/artifacts/
+**/fuzz/coverage/
 *.lock
 !Cargo.lock

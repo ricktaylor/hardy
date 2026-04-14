@@ -239,6 +239,7 @@ Separate processes communicating via gRPC:
 
 ```
 hardy-bpa-server <-> hardy-tcpclv4-server (multiple instances)
+                 <-> hardy-tvr (contact scheduling)
                  <-> Application services
 ```
 

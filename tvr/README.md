@@ -35,6 +35,12 @@ Routes appear in the BPA when contact windows open and are withdrawn
 when they close. Bundles waiting for a destination are automatically
 re-evaluated when routes appear.
 
+## Container Image
+
+```bash
+docker pull ghcr.io/ricktaylor/hardy/hardy-tvr:latest
+```
+
 ## Configuration
 
 Configuration is read from YAML, TOML, or JSON files and environment

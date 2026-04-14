@@ -11,12 +11,8 @@ Container Registry:
 |-------|----------|-------------|
 | `ghcr.io/ricktaylor/hardy/hardy-bpa-server` | BPA server with inline TCPCLv4 | 50051 (gRPC), 4556 (TCPCLv4) |
 | `ghcr.io/ricktaylor/hardy/hardy-tcpclv4-server` | Standalone TCPCLv4 CLA | 4556 |
+| `ghcr.io/ricktaylor/hardy/hardy-tvr` | Time-Variant Routing agent | 50052 (gRPC) |
 | `ghcr.io/ricktaylor/hardy/hardy-tools` | CLI tools (`bp`, `bundle`, `cbor`) | -- |
-
-!!! note "TODO: Additional images"
-    The following images are planned but not yet published:
-
-    - `hardy-tvr` -- Time-Variant Routing agent
 
 All images are built for `linux/amd64` and `linux/arm64`.
 
@@ -92,8 +88,7 @@ run as separate containers communicating via gRPC.
 
 !!! note "TODO"
     Distributed compose example with separate BPA, TCPCLv4, and TVR
-    containers. Requires published `hardy-tcpclv4-server` and
-    `hardy-tvr` images.
+    containers.
 
 ### Deployment Topology
 
@@ -191,7 +186,8 @@ This is pre-configured in both Compose files.
 | Port | Protocol | Component | Purpose |
 |------|----------|-----------|---------|
 | 4556 | TCP | TCPCLv4 | Bundle transfer (peer-to-peer) |
-| 50051 | TCP | gRPC | Management API (internal) |
+| 50051 | TCP | BPA gRPC | Management API (internal) |
+| 50052 | TCP | TVR gRPC | Contact schedule session API |
 
 !!! tip
     The gRPC port (50051) should generally not be exposed externally.
