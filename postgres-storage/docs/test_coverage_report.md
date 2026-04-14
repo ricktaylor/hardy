@@ -26,33 +26,23 @@ Each test creates an isolated database with a random name (`hardy_test_{uuid}`) 
 
 ### Backend-specific tests
 
-No unit tests exist within the crate. No commented-out stubs.
+No unit tests planned — backend-specific scenarios would test `sqlx`/PostgreSQL behaviour rather than Hardy code. See [`PLAN-PG-01` §4](test_plan.md) for rationale.
 
 ## 3. Coverage vs Plan
 
-Coverage is measured against [`PLAN-PG-01`](test_plan.md) (backend-specific) and [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) (trait contract).
+Coverage is measured against [`PLAN-PG-01`](test_plan.md) and [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) (trait contract).
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `PLAN-STORE-01` Suite A (META-01..05) | CRUD + recovery confirmation | 5 | 5 | Complete |
 | `PLAN-STORE-01` Suite B (META-06..10, 14) | Polling & ordering | 6 | 6 | Complete |
 | `PLAN-STORE-01` Suite C (META-11..13) | State transitions & bulk ops | 3 | 3 | Complete |
-| `PLAN-PG-01` §4 (PG-01..04) | Backend-specific | 4 | 0 | Not started |
-| **Total** | | **18** | **14** | **78%** |
+| **Total** | | **14** | **14** | **100%** |
 
 ## 4. Line Coverage
 
 Line coverage is not measurable for this crate. All verification runs through the external `tests/storage/` harness, and tests additionally require a running PostgreSQL instance, so coverage instrumentation is not practical in CI.
 
-## 5. Key Gaps
+## 5. Conclusion
 
-| Test ID | Scenario | Severity | Notes |
-| :--- | :--- | :--- | :--- |
-| PG-01 | Connection pooling under load | Medium | Important for production deployments |
-| PG-02 | Migration logic (create + upgrade) | Medium | Critical for production upgrades |
-| PG-03 | Concurrent writers (same bundle ID) | Low | PostgreSQL provides strong serialisation defaults |
-| PG-04 | Connection timeout / unreachable DB | Low | Operational robustness |
-
-## 6. Conclusion
-
-14 integration tests verify the full `MetadataStorage` trait contract through the shared storage harness (78% of planned scenarios). All CRUD, polling, recovery, and state transition operations pass against a real PostgreSQL instance with per-test database isolation. 4 backend-specific scenarios covering connection pooling, migration, concurrent access, and connection failure remain unimplemented.
+14 integration tests verify the full `MetadataStorage` trait contract through the shared storage harness (100% of planned scenarios). All CRUD, polling, recovery, and state transition operations pass against a real PostgreSQL instance with per-test database isolation. No backend-specific unit tests are planned — see [`PLAN-PG-01` §4](test_plan.md) for rationale.

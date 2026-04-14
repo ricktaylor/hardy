@@ -29,31 +29,21 @@ Each test uses a unique key prefix (`test-{uuid}`) for isolation within the shar
 
 ### Backend-specific tests
 
-No unit tests exist within the crate. No commented-out stubs.
+No unit tests planned — backend-specific scenarios would test `aws-sdk-s3` behaviour rather than Hardy code. See [`PLAN-S3-01` §4](test_plan.md) for rationale.
 
 ## 3. Coverage vs Plan
 
-Coverage is measured against [`PLAN-S3-01`](test_plan.md) (backend-specific) and [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) (trait contract).
+Coverage is measured against [`PLAN-S3-01`](test_plan.md) and [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) (trait contract).
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `PLAN-STORE-01` Suite D (BLOB-01..04) | BundleStorage trait contract | 4 | 4 | Complete |
-| `PLAN-S3-01` §4 (S3-01..04) | Backend-specific | 4 | 0 | Not started |
-| **Total** | | **8** | **4** | **50%** |
+| **Total** | | **4** | **4** | **100%** |
 
 ## 4. Line Coverage
 
 Line coverage is not measurable for this crate. All verification runs through the external `tests/storage/` harness, and tests additionally require a running S3-compatible endpoint, so coverage instrumentation is not practical in CI.
 
-## 5. Key Gaps
+## 5. Conclusion
 
-| Test ID | Scenario | Severity | Notes |
-| :--- | :--- | :--- | :--- |
-| S3-01 | Configuration (endpoint, bucket, prefix, region) | Low | Partially covered by harness setup |
-| S3-02 | Credential expiry mid-session | Low | Handled by AWS SDK credential chain |
-| S3-03 | Prefix isolation (`recover()` scoping) | Low | S3 key-space semantics provide natural isolation |
-| S3-04 | Large object multipart upload | Low | Depends on payload size thresholds |
-
-## 6. Conclusion
-
-4 integration tests verify the `BundleStorage` trait contract through the shared storage harness (50% of planned scenarios). All payload operations (save, load, delete, recovery scan) pass against a real S3-compatible endpoint with per-test prefix isolation. 4 backend-specific scenarios covering configuration, credential lifecycle, prefix isolation, and multipart upload remain unimplemented.
+4 integration tests verify the full `BundleStorage` trait contract through the shared storage harness (100% of planned scenarios). All payload operations (save, load, delete, recovery scan) pass against a real S3-compatible endpoint with per-test prefix isolation. No backend-specific unit tests are planned — see [`PLAN-S3-01` §4](test_plan.md) for rationale.

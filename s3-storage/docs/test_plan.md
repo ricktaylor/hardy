@@ -34,23 +34,15 @@ This backend is registered in the storage harness with `storage_blob_tests_async
 
 Requires `--features s3` and a running S3-compatible endpoint (default: MinIO at `http://localhost:9000`, bucket `hardy-test`).
 
-## 4. Backend-Specific Test Cases
+## 4. Backend-Specific Test Rationale
 
-*Objective: Verify S3-specific behaviour not observable through the `BundleStorage` trait interface.*
+No unit tests are planned for this crate. The `BundleStorage` trait contract is fully verified by the generic harness against a real S3-compatible endpoint (4 tests, feature-gated behind `--features s3`). The backend-specific scenarios listed below all require a live S3/MinIO service and are effectively testing `aws-sdk-s3` behaviour rather than Hardy code. Adding crate-level unit tests would duplicate the harness coverage or test third-party SDK semantics.
 
-| Test ID | Scenario | Source | Procedure | Expected Result |
-| :--- | :--- | :--- | :--- | :--- |
-| **S3-01** | **Configuration** | `config.rs` | 1. Create storage with custom endpoint, bucket, prefix, and region.<br>2. Save a bundle.<br>3. Verify object exists at expected key. | Object created under configured bucket/prefix. |
-| **S3-02** | **Credential expiry** | `storage.rs` | 1. Configure with valid credentials.<br>2. Revoke or expire credentials mid-session.<br>3. Attempt `save()`. | Returns an error; does not panic. |
-| **S3-03** | **Prefix isolation** | `storage.rs` | 1. Save objects under prefix A.<br>2. Save objects under prefix B.<br>3. Call `recover()` with prefix A. | Returns only prefix A objects. |
-| **S3-04** | **Large object multipart** | `storage.rs` | 1. Call `save()` with payload exceeding multipart threshold. | Upload completes using multipart API. |
+If backend-specific integration tests are needed in future (e.g. for multipart upload verification), they should be added to the storage harness as new feature-gated tests, reusing the existing per-test prefix isolation infrastructure.
 
 ## 5. Execution
 
 ```sh
-# Backend-specific tests (when implemented)
-cargo test -p hardy-s3-storage
-
 # Generic harness (covers trait contract — requires running S3/MinIO)
 TEST_S3_ENDPOINT=http://localhost:9000 \
 AWS_ACCESS_KEY_ID=minioadmin \

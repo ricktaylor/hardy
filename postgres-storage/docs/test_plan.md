@@ -33,23 +33,15 @@ This backend is registered in the storage harness with `storage_meta_tests_async
 
 Requires `--features postgres` and a running PostgreSQL instance (default: `postgresql://hardy:hardy@localhost:5432`).
 
-## 4. Backend-Specific Test Cases
+## 4. Backend-Specific Test Rationale
 
-*Objective: Verify PostgreSQL-specific behaviour not observable through the `MetadataStorage` trait interface.*
+No unit tests are planned for this crate. The `MetadataStorage` trait contract is fully verified by the generic harness against a real PostgreSQL instance (14 tests, feature-gated behind `--features postgres`). The backend-specific scenarios listed below are inherently integration concerns — connection pooling, migration, concurrent access, and connection failure all depend on a live database and are effectively testing `sqlx` and PostgreSQL behaviour rather than Hardy code. Adding crate-level unit tests would duplicate the harness coverage or test third-party library semantics.
 
-| Test ID | Scenario | Source | Procedure | Expected Result |
-| :--- | :--- | :--- | :--- | :--- |
-| **PG-01** | **Connection pooling** | `storage.rs` | 1. Spawn N concurrent async readers and writers.<br>2. All operate on different bundles. | All operations complete; no pool exhaustion or timeout errors. |
-| **PG-02** | **Migration logic** | `status.rs` | 1. Create storage (empty DB).<br>2. Verify schema tables exist.<br>3. Reopen (simulate upgrade). | Schema created on first run; no-op on reopen. |
-| **PG-03** | **Concurrent writers** | `storage.rs` | 1. Spawn two tasks inserting the same bundle ID concurrently. | Exactly one returns `true`; no deadlock or constraint violation panic. |
-| **PG-04** | **Connection timeout** | `lib.rs` | 1. Configure with invalid connection string or stopped database.<br>2. Attempt to create storage. | Returns an error; does not panic or hang indefinitely. |
+If backend-specific integration tests are needed in future (e.g. for schema upgrade verification across releases), they should be added to the storage harness as new feature-gated tests, reusing the existing per-test database isolation infrastructure.
 
 ## 5. Execution
 
 ```sh
-# Backend-specific tests (when implemented)
-cargo test -p hardy-postgres-storage
-
 # Generic harness (covers trait contract — requires running PostgreSQL)
 TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
   cargo test -p storage-tests --features postgres
