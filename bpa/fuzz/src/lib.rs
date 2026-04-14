@@ -112,7 +112,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         }
     }
 
-    let bpa = builder.build();
+    let bpa = builder.build().await.expect("Failed to build BPA");
 
     bpa.start(
         #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]
@@ -130,7 +130,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             })
             .expect("Failed to create file CLA"),
         );
-        cla.register(&bpa, "file-cla".to_string())
+        bpa.register_cla("file-cla".to_string(), None, cla, None)
             .await
             .expect("Failed to register CLA");
     }
@@ -184,7 +184,7 @@ impl Msg {
                 .expect("Failed to register routing agent");
 
                 let service = Arc::new(service::PipeService::new());
-                bpa.register_application(None, service.clone())
+                bpa.register_application(hardy_bpv7::eid::Service::Ipn(1), service.clone())
                     .await
                     .expect("Failed to register service");
 

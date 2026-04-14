@@ -1,9 +1,5 @@
 use super::*;
-use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId};
-use rand::{
-    RngExt,
-    distr::{Alphanumeric, SampleString},
-};
+use hardy_bpv7::eid::Eid;
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -21,7 +17,7 @@ pub enum ServiceImpl {
 
 pub struct Service {
     pub service: ServiceImpl,
-    pub service_id: Eid,
+    pub service_id: hardy_bpv7::eid::Service,
 }
 
 impl Service {
@@ -83,28 +79,27 @@ impl core::fmt::Debug for Service {
 /// Sink implementation for both Service and Application traits
 struct Sink {
     service: Weak<Service>,
-    registry: Arc<Registry>,
+    /// Full EID for this service (pre-resolved at activation time)
+    eid: Eid,
+    registry: Arc<ServiceRegistry>,
+    node_ids: Arc<node_ids::NodeIds>,
+    rib: Arc<rib::Rib>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
 impl Sink {
     async fn unregister_inner(&self) {
         if let Some(service) = self.service.upgrade() {
-            self.registry.unregister(service).await
+            self.registry
+                .unregister(service, &self.node_ids, &self.rib)
+                .await
         }
     }
 
     async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        if bundle_id.source
-            != self
-                .service
-                .upgrade()
-                .ok_or(services::Error::Disconnected)?
-                .service_id
-        {
+        if bundle_id.source != self.eid {
             return Ok(false);
         }
-
         Ok(self.dispatcher.cancel_local_dispatch(bundle_id).await)
     }
 }
@@ -116,14 +111,11 @@ impl services::ServiceSink for Sink {
     }
 
     async fn send(&self, data: Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
+        self.service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
-        self.dispatcher
-            .local_dispatch_raw(&service.service_id, data)
-            .await
+        self.dispatcher.local_dispatch_raw(&self.eid, data).await
     }
 
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
@@ -144,19 +136,12 @@ impl services::ApplicationSink for Sink {
         lifetime: core::time::Duration,
         options: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
+        self.service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
         self.dispatcher
-            .local_dispatch(
-                service.service_id.clone(),
-                destination,
-                data,
-                lifetime,
-                options,
-            )
+            .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
             .await
     }
 
@@ -169,33 +154,72 @@ impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(service) = self.service.upgrade() {
             let registry = self.registry.clone();
+            let node_ids = self.node_ids.clone();
+            let rib = self.rib.clone();
             hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
-                registry.unregister(service).await;
+                registry.unregister(service, &node_ids, &rib).await;
             });
         }
     }
 }
 
-pub(crate) struct Registry {
-    node_ids: Arc<node_ids::NodeIds>,
-    rib: Arc<rib::Rib>,
-    // sync::spin::Mutex for O(1) service HashMap operations
-    services: hardy_async::sync::spin::Mutex<HashMap<Eid, Arc<Service>>>,
-    tasks: hardy_async::TaskPool,
+type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
+
+pub(crate) struct ServiceRegistryBuilder {
+    services: ServiceMap,
 }
 
-impl Registry {
-    pub fn new(node_ids: Arc<node_ids::NodeIds>, rib: Arc<rib::Rib>) -> Self {
+impl ServiceRegistryBuilder {
+    pub fn new() -> Self {
         Self {
-            node_ids,
-            rib,
             services: Default::default(),
-            tasks: hardy_async::TaskPool::new(),
         }
     }
 
-    pub async fn shutdown(&self) {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
+    pub fn insert(
+        &mut self,
+        service_id: hardy_bpv7::eid::Service,
+        service: ServiceImpl,
+    ) -> services::Result<()> {
+        if self.services.contains_key(&service_id) {
+            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+        }
+        let service = Arc::new(Service {
+            service,
+            service_id: service_id.clone(),
+        });
+        self.services.insert(service_id.clone(), service);
+        info!("Inserted service: {service_id}");
+        Ok(())
+    }
+
+    pub async fn register_all(
+        self,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> Arc<ServiceRegistry> {
+        let registry = Arc::new(ServiceRegistry {
+            services: hardy_async::sync::spin::Mutex::new(self.services),
+            tasks: hardy_async::TaskPool::new(),
+        });
+
+        let ids: Vec<_> = registry.services.lock().keys().cloned().collect();
+        for id in ids {
+            registry.register(&id, node_ids, rib, dispatcher).await;
+        }
+
+        registry
+    }
+}
+
+pub(crate) struct ServiceRegistry {
+    services: hardy_async::sync::spin::Mutex<ServiceMap>,
+    tasks: hardy_async::TaskPool,
+}
+
+impl ServiceRegistry {
+    pub async fn shutdown(&self, node_ids: &node_ids::NodeIds, rib: &Arc<rib::Rib>) {
         let services = self
             .services
             .lock()
@@ -208,262 +232,112 @@ impl Registry {
         }
 
         for service in services {
-            self.unregister_service(service).await
+            self.unregister_service(service, node_ids, rib).await
         }
 
-        // Wait for all cleanup tasks spawned from Drop handlers
         self.tasks.shutdown().await;
     }
 
-    /// Register an Application (high-level, payload-only access)
-    #[cfg_attr(feature = "instrument", instrument(skip(self, app, dispatcher)))]
-    pub async fn register_application(
-        self: &Arc<Self>,
-        service_id: Option<hardy_bpv7::eid::Service>,
-        app: Arc<dyn services::Application>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> services::Result<Eid> {
-        self.register_inner(service_id, ServiceImpl::Application(app), dispatcher)
-            .await
-    }
-
-    /// Register a low-level Service directly
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service, dispatcher)))]
     pub async fn register_service(
         self: &Arc<Self>,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        self.register_inner(service_id, ServiceImpl::LowLevel(service), dispatcher)
-            .await
+        self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
+        self.register(&service_id, node_ids, rib, dispatcher).await;
+        Ok(node_ids.resolve_eid(&service_id))
     }
 
-    /// Internal registration logic shared by both service types
-    async fn register_inner(
+    pub async fn register_application(
         self: &Arc<Self>,
-        service_id: Option<hardy_bpv7::eid::Service>,
-        service: ServiceImpl,
+        service_id: hardy_bpv7::eid::Service,
+        application: Arc<dyn services::Application>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        // Categorize the request: explicit ID vs auto-generated
-        enum IdRequest {
-            ExplicitIpn {
-                fqnn: IpnNodeId,
-                service_number: u32,
-            },
-            ExplicitDtn {
-                node_name: DtnNodeId,
-                service_name: Box<str>,
-            },
-            AutoIpn {
-                fqnn: IpnNodeId,
-            },
-            AutoDtn {
-                node_name: DtnNodeId,
-            },
+        self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
+        self.register(&service_id, node_ids, rib, dispatcher).await;
+        Ok(node_ids.resolve_eid(&service_id))
+    }
+
+    fn insert_inner(
+        &self,
+        service_id: hardy_bpv7::eid::Service,
+        service: ServiceImpl,
+    ) -> services::Result<()> {
+        let mut services = self.services.lock();
+        if services.contains_key(&service_id) {
+            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
+        let service = Arc::new(Service {
+            service,
+            service_id: service_id.clone(),
+        });
+        services.insert(service_id.clone(), service);
+        Ok(())
+    }
 
-        // Determine what kind of ID we need (no lock held yet)
-        let id_request = if let Some(service_id) = service_id {
-            match service_id {
-                hardy_bpv7::eid::Service::Dtn(service_name) => {
-                    let node_name = self
-                        .node_ids
-                        .dtn
-                        .as_ref()
-                        .ok_or(services::Error::NoDtnNodeId)?
-                        .clone();
+    async fn register(
+        self: &Arc<Self>,
+        service_id: &hardy_bpv7::eid::Service,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) {
+        let service = self.services.lock().get(service_id).cloned().unwrap();
+        let eid = node_ids.resolve_eid(service_id);
 
-                    if service_name.is_empty() {
-                        IdRequest::AutoDtn { node_name }
-                    } else {
-                        if !DtnNodeId::is_valid_service_name(&service_name) {
-                            return Err(services::Error::DtnInvalidServiceName(
-                                service_name.to_string(),
-                            ));
-                        }
-                        IdRequest::ExplicitDtn {
-                            node_name,
-                            service_name,
-                        }
-                    }
-                }
-                hardy_bpv7::eid::Service::Ipn(service_number) => {
-                    let fqnn = self
-                        .node_ids
-                        .ipn
-                        .as_ref()
-                        .ok_or(services::Error::NoIpnNodeId)?
-                        .clone();
+        rib.add_service(eid.clone(), service.clone()).await;
 
-                    if service_number == 0 {
-                        IdRequest::AutoIpn { fqnn }
-                    } else {
-                        IdRequest::ExplicitIpn {
-                            fqnn,
-                            service_number,
-                        }
-                    }
-                }
-            }
-        } else if let Some(fqnn) = &self.node_ids.ipn {
-            IdRequest::AutoIpn { fqnn: fqnn.clone() }
-        } else if let Some(node_name) = &self.node_ids.dtn {
-            IdRequest::AutoDtn {
-                node_name: node_name.clone(),
-            }
-        } else {
-            return Err(services::Error::NoIpnNodeId);
-        };
-
-        // For auto-generated IDs, we need Option to allow retry loop
-        let mut service_impl = Some(service);
-
-        let (service, service_id) = match id_request {
-            // Explicit IDs: single attempt, error on collision
-            IdRequest::ExplicitIpn {
-                fqnn,
-                service_number,
-            } => {
-                let candidate = Eid::Ipn {
-                    fqnn,
-                    service_number,
-                };
-                let mut services = self.services.lock();
-                if services.contains_key(&candidate) {
-                    return Err(services::Error::IpnServiceInUse(service_number));
-                }
-                let service = Arc::new(Service {
-                    service: service_impl.take().unwrap(),
-                    service_id: candidate.clone(),
-                });
-                services.insert(candidate.clone(), service.clone());
-                (service, candidate)
-            }
-
-            IdRequest::ExplicitDtn {
-                node_name,
-                service_name,
-            } => {
-                let candidate = Eid::Dtn {
-                    node_name,
-                    service_name: service_name.clone(),
-                };
-                let mut services = self.services.lock();
-                if services.contains_key(&candidate) {
-                    return Err(services::Error::DtnServiceInUse(service_name.to_string()));
-                }
-                let service = Arc::new(Service {
-                    service: service_impl.take().unwrap(),
-                    service_id: candidate.clone(),
-                });
-                services.insert(candidate.clone(), service.clone());
-                (service, candidate)
-            }
-
-            // Auto-generated IDs: loop with RNG OUTSIDE lock, check+insert inside
-            IdRequest::AutoIpn { fqnn } => {
-                loop {
-                    // Generate candidate OUTSIDE the lock (RNG call here)
-                    let candidate = Eid::Ipn {
-                        fqnn: fqnn.clone(),
-                        service_number: rand::rng().random_range(0x10000..=u32::MAX),
-                    };
-
-                    // Lock scope: O(1) check + insert only
-                    let mut services = self.services.lock();
-                    if services.contains_key(&candidate) {
-                        // Collision - drop lock and try new random value
-                        continue;
-                    }
-
-                    let service = Arc::new(Service {
-                        service: service_impl.take().unwrap(),
-                        service_id: candidate.clone(),
-                    });
-                    services.insert(candidate.clone(), service.clone());
-                    break (service, candidate);
-                }
-            }
-
-            IdRequest::AutoDtn { node_name } => {
-                loop {
-                    // Generate candidate OUTSIDE the lock (RNG call here)
-                    let candidate = Eid::Dtn {
-                        node_name: node_name.clone(),
-                        service_name: format!(
-                            "auto/{}",
-                            Alphanumeric.sample_string(&mut rand::rng(), 16)
-                        )
-                        .into(),
-                    };
-
-                    // Lock scope: O(1) check + insert only
-                    let mut services = self.services.lock();
-                    if services.contains_key(&candidate) {
-                        // Collision - drop lock and try new random value
-                        continue;
-                    }
-
-                    let service = Arc::new(Service {
-                        service: service_impl.take().unwrap(),
-                        service_id: candidate.clone(),
-                    });
-                    services.insert(candidate.clone(), service.clone());
-                    break (service, candidate);
-                }
-            }
-        };
-
-        info!("Registered new service: {service_id}");
-        metrics::gauge!("bpa.service.registered").increment(1.0);
-
-        // Add local service to RIB
-        self.rib
-            .add_service(service_id.clone(), service.clone())
-            .await;
-
-        // Call on_register with appropriate sink type
         let sink = Sink {
             service: Arc::downgrade(&service),
+            eid: eid.clone(),
             registry: self.clone(),
+            node_ids: Arc::new(node_ids.clone()),
+            rib: rib.clone(),
             dispatcher: dispatcher.clone(),
         };
-
         match &service.service {
-            ServiceImpl::LowLevel(svc) => {
-                svc.on_register(&service_id, Box::new(sink)).await;
-            }
-            ServiceImpl::Application(app) => {
-                app.on_register(&service_id, Box::new(sink)).await;
-            }
+            ServiceImpl::LowLevel(s) => s.on_register(&eid, Box::new(sink)).await,
+            ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
         }
-        dispatcher.poll_service_waiting(&service_id).await;
-
-        Ok(service_id)
+        dispatcher.poll_service_waiting(&eid).await;
+        metrics::gauge!("bpa.service.registered").increment(1.0);
     }
 
-    async fn unregister(&self, service: Arc<Service>) {
-        // sync::spin::Mutex::lock() returns guard directly (no Result)
+    async fn unregister(
+        &self,
+        service: Arc<Service>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+    ) {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
             metrics::gauge!("bpa.service.registered").decrement(1.0);
-            self.unregister_service(service).await
+            self.unregister_service(service, node_ids, rib).await
         }
     }
 
-    async fn unregister_service(&self, service: Arc<Service>) {
-        // Remove local service from RIB
-        self.rib.remove_service(&service.service_id, &service);
+    async fn unregister_service(
+        &self,
+        service: Arc<Service>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+    ) {
+        let eid = node_ids.resolve_eid(&service.service_id);
+        rib.remove_service(&eid, &service);
 
         match &service.service {
             ServiceImpl::LowLevel(svc) => svc.on_unregister().await,
             ServiceImpl::Application(app) => app.on_unregister().await,
         }
 
-        info!("Unregistered service: {}", service.service_id);
+        info!("Unregistered service: {eid}");
     }
 }
 

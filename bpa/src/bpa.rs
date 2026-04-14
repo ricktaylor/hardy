@@ -4,7 +4,7 @@ use hardy_bpv7::eid::NodeId;
 use tracing::instrument;
 
 use crate::builder::BpaBuilder;
-use crate::cla::registry::Registry as ClaRegistry;
+use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla, ClaAddressType};
 use crate::dispatcher::Dispatcher;
 use crate::filters::registry::Registry as FilterRegistry;
@@ -13,7 +13,7 @@ use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
 use crate::services::Service;
-use crate::services::registry::Registry as ServiceRegistry;
+use crate::services::registry::ServiceRegistry;
 use crate::storage::Store;
 use crate::{Arc, otel_metrics, services};
 
@@ -151,40 +151,16 @@ pub trait BpaRegistration: Send + Sync {
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
-    ///
-    /// The service will receive a [`services::ServiceSink`] via
-    /// [`services::Service::on_register`] for sending bundles.
-    ///
-    /// # Arguments
-    ///
-    /// * `service_id` - Optional service identifier. If None, one is assigned.
-    /// * `service` - The service implementation
-    ///
-    /// # Returns
-    ///
-    /// The endpoint ID assigned to this service
     async fn register_service(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
     /// Register a high-level Application with payload-only access.
-    ///
-    /// The application will receive an [`services::ApplicationSink`] via
-    /// [`services::Application::on_register`] for sending payloads.
-    ///
-    /// # Arguments
-    ///
-    /// * `service_id` - Optional service identifier. If None, one is assigned.
-    /// * `application` - The application implementation
-    ///
-    /// # Returns
-    ///
-    /// The endpoint ID assigned to this application
     async fn register_application(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
@@ -216,6 +192,7 @@ pub trait BpaRegistration: Send + Sync {
 /// After construction, call [`start()`](Bpa::start) to begin processing and
 /// [`shutdown()`](Bpa::shutdown) for ordered teardown.
 pub struct Bpa {
+    node_ids: Arc<crate::node_ids::NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
     cla_registry: Arc<ClaRegistry>,
@@ -226,6 +203,7 @@ pub struct Bpa {
 
 impl Bpa {
     pub(crate) fn from_parts(
+        node_ids: Arc<crate::node_ids::NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
         cla_registry: Arc<ClaRegistry>,
@@ -234,6 +212,7 @@ impl Bpa {
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
         Self {
+            node_ids,
             store,
             rib,
             cla_registry,
@@ -276,7 +255,9 @@ impl Bpa {
 
         self.rib.shutdown_agents().await;
         self.cla_registry.shutdown().await;
-        self.service_registry.shutdown().await;
+        self.service_registry
+            .shutdown(&self.node_ids, &self.rib)
+            .await;
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
@@ -308,27 +289,37 @@ impl Bpa {
 
 #[async_trait]
 impl BpaRegistration for Bpa {
-    /// Register an Application (high-level, payload-only access)
-    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, application)))]
     async fn register_application(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
-        service: Arc<dyn services::Application>,
+        service_id: hardy_bpv7::eid::Service,
+        application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
-            .register_application(service_id, service, &self.dispatcher)
+            .register_application(
+                service_id,
+                application,
+                &self.node_ids,
+                &self.rib,
+                &self.dispatcher,
+            )
             .await
     }
 
-    /// Register a low-level Service (full bundle access)
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
     async fn register_service(
         &self,
-        service_id: Option<hardy_bpv7::eid::Service>,
+        service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         self.service_registry
-            .register_service(service_id, service, &self.dispatcher)
+            .register_service(
+                service_id,
+                service,
+                &self.node_ids,
+                &self.rib,
+                &self.dispatcher,
+            )
             .await
     }
 

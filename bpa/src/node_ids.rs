@@ -52,31 +52,27 @@ impl NodeIds {
         }
     }
 
-    /*pub(crate) fn contains(&self, eid: &Eid) -> bool {
-        match (eid, &self.ipn, &self.dtn) {
-            (Eid::LocalNode { service_number }, Some(_), _) => service_number == &0,
-            (
-                Eid::LegacyIpn {
-                    allocator_id,
-                    node_number,
-                    service_number,
-                },
-                Some((a, n)),
-                _,
-            )
-            | (
-                Eid::Ipn {
-                    allocator_id,
-                    node_number,
-                    service_number,
-                },
-                Some((a, n)),
-                _,
-            ) => allocator_id == a && node_number == n && service_number == &0,
-            (Eid::Dtn { node_name, demux }, _, Some(n)) => node_name == n && demux.is_empty(),
-            _ => false,
+    /// Resolve a service identifier to a full EID using this node's identity.
+    pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Eid {
+        match service_id {
+            hardy_bpv7::eid::Service::Ipn(n) => Eid::Ipn {
+                fqnn: self
+                    .ipn
+                    .as_ref()
+                    .expect("No IPN node ID configured")
+                    .clone(),
+                service_number: *n,
+            },
+            hardy_bpv7::eid::Service::Dtn(name) => Eid::Dtn {
+                node_name: self
+                    .dtn
+                    .as_ref()
+                    .expect("No DTN node ID configured")
+                    .clone(),
+                service_name: name.clone(),
+            },
         }
-    }*/
+    }
 }
 
 impl Default for NodeIds {

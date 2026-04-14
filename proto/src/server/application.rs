@@ -255,21 +255,18 @@ async fn run_application_session(
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
             app_to_bpa::Msg::Register(request) => {
+                let service_id = request
+                    .service_id
+                    .as_ref()
+                    .map(|service_id| match service_id {
+                        register_request::ServiceId::Dtn(s) => {
+                            hardy_bpv7::eid::Service::Dtn(s.clone().into())
+                        }
+                        register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
+                    })
+                    .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
                 let endpoint_id = bpa
-                    .register_application(
-                        request
-                            .service_id
-                            .as_ref()
-                            .map(|service_id| match service_id {
-                                register_request::ServiceId::Dtn(s) => {
-                                    hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                                }
-                                register_request::ServiceId::Ipn(s) => {
-                                    hardy_bpv7::eid::Service::Ipn(*s)
-                                }
-                            }),
-                        app.clone(),
-                    )
+                    .register_application(service_id, app.clone())
                     .await
                     .map(|endpoint_id| endpoint_id.to_string())
                     .map_err(|e| tonic::Status::from_error(e.into()))?;
