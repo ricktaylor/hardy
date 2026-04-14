@@ -38,7 +38,7 @@ This Strategy is the parent document. Verification is executed according to the 
 | **TCPCLv4 Server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/docs/test_plan.md) | Application lifecycle, config, packaging. |
 | **CLA Trait** | Integration | [`PLAN-CLA-01`](../bpa/docs/cla_integration_test_plan.md) | Generic Convergence Layer Trait verification. |
 | **Service Trait** | Integration | [`PLAN-SVC-01`](../bpa/docs/service_integration_test_plan.md) | Generic Application Service Trait verification. |
-| **Storage** | Integration | [`PLAN-STORE-01`](../bpa/docs/storage_integration_test_plan.md) | Generic Storage Trait verification. |
+| **Storage** | Integration | [`PLAN-STORE-01`](../tests/storage/docs/test_plan.md) | Generic Storage Trait verification. |
 | **Storage** | Component | [`PLAN-SQLITE-01`](../sqlite-storage/docs/test_plan.md) | SQLite Metadata persistence. |
 | **Storage** | Component | [`PLAN-LD-01`](../localdisk-storage/docs/test_plan.md) | Local Disk Bundle persistence. |
 | **API** | Component | [`COMP-GRPC-01`](../proto/docs/component_test_plan.md) | Streaming gRPC proxy interfaces (client & server). |
