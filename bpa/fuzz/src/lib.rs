@@ -41,10 +41,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 
 #[allow(unused)]
 async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
-    let path =
-        std::path::Path::new(&std::env::var("CARGO_TARGET_DIR").unwrap_or("fuzz".to_string()))
-            .join("store")
-            .join(testname);
+    let path = std::env::temp_dir().join("hardy-fuzz").join(testname);
 
     let mut builder = hardy_bpa::bpa::Bpa::builder()
         .status_reports(true)
