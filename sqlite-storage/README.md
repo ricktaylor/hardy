@@ -9,7 +9,8 @@ forwarding state in a local SQLite database with automatic schema migration.
 ## Documentation
 
 - [Design](docs/design.md)
-- [Test Plan](docs/test_plan.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#sqlite)
 
 ## Licence
 

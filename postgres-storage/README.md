@@ -9,6 +9,8 @@ PostgreSQL with connection pooling and automatic schema migration via sqlx.
 ## Documentation
 
 - [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#postgresql)
 
 ## Licence
 

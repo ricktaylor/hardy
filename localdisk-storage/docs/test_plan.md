@@ -6,50 +6,49 @@
 | **Module** | `localdisk-storage` |
 | **Implements** | `hardy_bpa::storage::BundleStorage` |
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.1.x](../../docs/requirements.md#314-local-disk-storage-parent-req-7) |
-| **Parent Plan** | [`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md) |
+| **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-LD-01 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 
-This document details the testing strategy for the `localdisk-storage` crate. This crate provides a persistent implementation of the `BundleStorage` trait using the local filesystem, storing each bundle as a separate file.
+This document defines the backend-specific tests for the `localdisk-storage` crate. This crate provides a persistent implementation of the `BundleStorage` trait using the local filesystem, storing each bundle as a separate file in a two-level directory structure.
+
+Trait-level contract testing (save, load, delete, recovery scan) is covered by the generic storage harness — see [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5 for test scenarios and §6 for the coverage boundary. This plan covers only what falls outside that boundary.
 
 ## 2. Requirements Mapping
 
-The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the unit tests in this plan:
+| LLR ID | Description | Verified By |
+| :--- | :--- | :--- |
+| **7.1.1** | Configurable location for Local Disk bundle storage | LD-01 |
+| **7.1.2** | Configurable maximum total size for Local Disk storage | LD-05 |
+| **7.1** | Store/retrieve bundles | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..04) |
+| **7.3** | Recovery after restart | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) BLOB-04 |
 
-| LLR ID | Description |
-| :--- | :--- |
-| **7.1.1** | Configurable location for Local Disk bundle storage. |
-| **7.1.2** | Configurable maximum total size for Local Disk storage. |
+## 3. Generic Harness Coverage
 
-## 3. Generic Test Coverage
+This backend is registered in the storage harness with `storage_blob_tests!(localdisk, ...)`. The following suite runs against localdisk:
 
-The following suites from the parent plan ([`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md)) are executed against `localdisk-storage`:
+- Suite D: Payload Operations (BLOB-01..04)
 
-### Suite D: Payload Operations
+## 4. Backend-Specific Test Cases
 
-*Objective: Verify the fundamental storage and retrieval of binary bundle data.*
+*Objective: Verify filesystem-specific behaviour not observable through the `BundleStorage` trait interface.*
 
-* **BLOB-01**: Save & Load
-* **BLOB-02**: Delete
-* **BLOB-03**: Missing Load
-* **BLOB-04**: Recovery Scan
+| Test ID | Scenario | Source | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- | :--- |
+| **LD-01** | **Configuration** | `config.rs` | 1. Create storage with custom `store_dir`.<br>2. Save a bundle.<br>3. Verify file created under configured path. | File exists at configured location. |
+| **LD-02** | **Recovery cleanup** | `storage.rs` | 1. Create storage dir with valid bundles, `.tmp` files, zero-byte files, and empty subdirectories.<br>2. Call `recover()`. | Valid bundles returned; `.tmp` files, zero-byte files, and empty dirs cleaned up. |
+| **LD-03** | **Filesystem structure** | `storage.rs` | 1. Save multiple bundles.<br>2. Inspect directory tree. | Files distributed in `xx/yy/` two-level subdirectories; filename collisions resolved without error. |
+| **LD-04** | **Atomic save** | `storage.rs` | 1. Call `save(data)` with `fsync=true`.<br>2. Verify file written to `.tmp` then renamed. | No partial files visible; rename is atomic. |
+| **LD-05** | **Disk full handling** | `storage.rs` | 1. Fill filesystem to capacity.<br>2. Call `save(data)`. | Graceful error returned, no partial `.tmp` files left behind. |
 
-## 4. Unit Test Cases
+## 5. Execution
 
-### 4.1 Implementation Logic (LLR 7.1.1)
+```sh
+# Backend-specific tests (when implemented)
+cargo test -p hardy-localdisk-storage
 
-*Objective: Verify robustness of the filesystem interactions and recovery logic.*
-
-| Test Scenario | Description | Source File | Input | Expected Output |
-| ----- | ----- | ----- | ----- | ----- |
-| **Atomic Save (LD-01)** | Verifies the "save-to-temp, then rename" logic when `fsync` is enabled. | `src/storage.rs` | `save(data)` with `fsync=true`. | Data written to `.tmp`, synced, renamed. No partial files on failure. |
-| **Recovery Logic (LD-02)** | Verifies the `recover()` function correctly handles a dirty storage directory. | `src/storage.rs` | Dir with valid bundles, `.tmp` files, empty dirs. | Returns valid bundles; cleans up garbage. |
-| **Filesystem Structure (LD-03)** | Verifies that the `xx/yy/` two-level directory structure is created correctly. | `src/storage.rs` | `save()` multiple bundles. | Files distributed in subdirs; collisions handled. |
-| **Mmap Feature (LD-04)** | Verify `load()` works with `mmap` enabled/disabled. | `src/storage.rs` | `load(path)` | Returns correct bytes regardless of feature flag. |
-| **Persistence (LD-05)** | Verifies that saved data survives the `Storage` object being dropped and recreated. | `src/storage.rs` | `Storage::new`, `save`, drop, `Storage::new`, `load`. | Data persists across instance lifecycle. |
-
-## 5. Execution Strategy
-
-* **Specific Tests:** `cargo test -p localdisk-storage`
-* **Generic Tests:** `cargo test --test storage_harness` (via `hardy-bpa` harness)
+# Generic harness (covers trait contract)
+cargo test -p storage-tests
+```

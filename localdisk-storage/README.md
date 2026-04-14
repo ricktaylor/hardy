@@ -9,7 +9,8 @@ Configurable store directory (platform-aware defaults) and optional fsync for du
 ## Documentation
 
 - [Design](docs/design.md)
-- [Test Plan](docs/test_plan.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#local-disk)
 
 ## Licence
 

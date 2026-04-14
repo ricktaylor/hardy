@@ -6,69 +6,52 @@
 | **Module** | `sqlite-storage` |
 | **Implements** | `hardy_bpa::storage::MetadataStorage` |
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#315-sqlite-storage-parent-req-7) |
-| **Parent Plan** | [`PLAN-STORE-01`](../../bpa/docs/storage_integration_test_plan.md) |
+| **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 
-This document details the testing strategy for the `sqlite-storage` crate. This crate provides a persistent implementation of the `MetadataStorage` trait using SQLite.
+This document defines the backend-specific tests for the `sqlite-storage` crate. This crate provides a persistent implementation of the `MetadataStorage` trait using SQLite.
+
+Trait-level contract testing (CRUD, polling, ordering, state transitions, recovery) is covered by the generic storage harness — see [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4–§5 for test scenarios and §6 for the coverage boundary. This plan covers only what falls outside that boundary.
 
 ## 2. Requirements Mapping
 
-The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the unit tests in this plan:
+| LLR ID | Description | Verified By |
+| :--- | :--- | :--- |
+| **7.2.1** | Store/retrieve metadata | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite A (META-01..05) |
+| **7.2.2** | Configurable filesystem location for SQLite database | SQL-01 |
 
-| LLR ID | Description |
-| :--- | :--- |
-| **7.2.2** | Configurable filesystem location for SQLite database. |
+## 3. Generic Harness Coverage
 
-## 3. Test Coverage
+This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. The following suites run against SQLite:
 
-The following suites from the parent plan are executed against `sqlite-storage`:
+- Suite A: Basic CRUD Operations (META-01..05)
+- Suite B: Polling & Ordering (META-06..10, META-14)
+- Suite C: State Transitions & Bulk Ops (META-11..13)
 
-### Suite A: Basic CRUD Operations
+Persistence across restart (META-05) is explicitly tested — the harness inserts data, triggers recovery, and verifies the entry survives. This is not duplicated here.
 
-*Objective: Verify INSERT, SELECT, UPDATE, and DELETE (Tombstone) logic.*
+## 4. Backend-Specific Test Cases
 
-* **META-01**: Insert & Get
-* **META-02**: Duplicate Insert (Constraint handling)
-* **META-03**: Update (Replace)
-* **META-04**: Tombstone
-* **META-05**: Confirm Exists
+*Objective: Verify SQLite-specific behaviour not observable through the `MetadataStorage` trait interface.*
 
-### Suite B: Polling & Ordering
+| Test ID | Scenario | Source | Procedure | Expected Result |
+| :--- | :--- | :--- | :--- | :--- |
+| **SQL-01** | **Configuration** | `config.rs` | 1. Create storage with custom `db_dir`.<br>2. Verify database file created at path. | File exists at configured location. |
+| **SQL-02** | **Migration logic** | `migrate.rs` | 1. Create storage (empty DB).<br>2. Verify schema tables exist.<br>3. Reopen (simulate upgrade). | Schema created on first run; no-op on reopen. |
+| **SQL-03** | **Migration errors** | `migrate.rs` | 1. Create storage.<br>2. Manually alter `schema_versions` table.<br>3. Reopen. | Error returned (missing/extra/altered migration detected). |
+| **SQL-04** | **Concurrency (SQLITE_BUSY)** | `storage.rs` | 1. Spawn N concurrent async writers.<br>2. All insert different bundles. | No `SQLITE_BUSY` errors; all inserts succeed. |
+| **SQL-05** | **Corrupt data handling** | `storage.rs` | 1. Insert bundle via trait.<br>2. Manually corrupt row bytes in DB.<br>3. Call `get()`. | Graceful error or tombstone, not panic. |
+| **SQL-06** | **Waiting queue invalidation** | `storage.rs` | 1. Insert bundle (Status=`Waiting`).<br>2. Update status to `Delivered` via `replace()`.<br>3. Call `poll_waiting()`. | Bundle not returned (cache correctly invalidated). |
 
-*Objective: Verify SQL `ORDER BY` and `LIMIT` clauses match the required priority logic.*
+## 5. Execution
 
-* **META-06**: Poll Waiting (FIFO)
-* **META-07**: Poll Expiry (Ordered by time)
-* **META-08**: Poll Pending (FIFO & Limit)
-* **META-09**: Poll Pending (Exact Match)
-* **META-10**: Poll Fragments
+```sh
+# Backend-specific tests (when implemented)
+cargo test -p hardy-sqlite-storage
 
-### Suite C: State Transitions
-
-*Objective: Verify complex updates and transactions.*
-
-* **META-11**: Reset Peer Queue
-* **META-12**: Recovery (Startup scan)
-* **META-13**: Remove Unconfirmed
-
-## 4. Unit Test Cases
-
-### 4.1 Implementation Logic (LLR 7.2.2)
-
-*Objective: Verify SQL-specific logic, migrations, and robustness.*
-
-| Test Scenario | Description | Source File | Input | Expected Output |
-| ----- | ----- | ----- | ----- | ----- |
-| **Migration Logic (SQL-01)** | Verify that the database schema is correctly created and upgraded. | `src/migrate.rs` | Empty DB / Old DB. | Schema created / Upgraded successfully. |
-| **Concurrency (SQL-02)** | Verify that the connection pool handles concurrent reads/writes. | `src/storage.rs` | Concurrent async writes. | No `SQLITE_BUSY` errors. |
-| **Persistence (SQL-03)** | Verify data survives a process restart. | `src/storage.rs` | Write, Close, Reopen, Read. | Data present. |
-| **Migration Errors (SQL-04)** | Verify the migration logic detects tampering. | `src/migrate.rs` | Modified `schema_versions` table. | Error returned (Missing/Extra/Altered). |
-| **Corrupt Data (SQL-05)** | Verify that malformed bundle data is handled gracefully. | `src/storage.rs` | Manually insert bad bytes. | `get()` returns None/Tombstones. |
-| **Waiting Queue (SQL-06)** | Verify `waiting_queue` cache invalidation. | `src/storage.rs` | Update status from Waiting -> Delivered. | Bundle removed from `waiting_queue`. |
-
-## 5. Execution Strategy
-
-* **Specific Tests:** `cargo test -p sqlite-storage`
-* **Generic Tests:** `cargo test --test storage_harness` (via `hardy-bpa` harness)
+# Generic harness (covers trait contract)
+cargo test -p storage-tests
+```

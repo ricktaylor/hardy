@@ -10,6 +10,8 @@ other S3-compatible stores via configurable endpoint URL and path-style addressi
 ## Documentation
 
 - [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#amazon-s3)
 
 ## Licence
 
