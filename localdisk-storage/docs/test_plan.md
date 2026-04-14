@@ -41,7 +41,7 @@ This backend is registered in the storage harness with `storage_blob_tests!(loca
 | **LD-02** | **Recovery cleanup** | `storage.rs` | 1. Create storage dir with valid bundles, `.tmp` files, zero-byte files, and empty subdirectories.<br>2. Call `recover()`. | Valid bundles returned; `.tmp` files, zero-byte files, and empty dirs cleaned up. |
 | **LD-03** | **Filesystem structure** | `storage.rs` | 1. Save multiple bundles.<br>2. Inspect directory tree. | Files distributed in `xx/yy/` two-level subdirectories; filename collisions resolved without error. |
 | **LD-04** | **Atomic save** | `storage.rs` | 1. Call `save(data)` with `fsync=true`.<br>2. Verify file written to `.tmp` then renamed. | No partial files visible; rename is atomic. |
-| **LD-05** | **Disk full handling** | `storage.rs` | 1. Fill filesystem to capacity.<br>2. Call `save(data)`. | Graceful error returned, no partial `.tmp` files left behind. |
+| **LD-05** | **Write failure handling** | `storage.rs` | 1. Make store directory read-only.<br>2. Call `save(data)`. | Graceful error returned, not panic. |
 
 ## 5. Execution
 

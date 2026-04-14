@@ -2070,11 +2070,13 @@ name = "hardy-localdisk-storage"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "flume",
  "hardy-bpa",
  "libc",
  "memmap2",
  "rand 0.10.0",
  "serde",
+ "tempfile",
  "time",
  "tokio",
  "trace-err",

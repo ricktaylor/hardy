@@ -24,6 +24,11 @@ trace-err = "1.0.0"
 memmap2 = { version = "0.9.10", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
+[dev-dependencies]
+flume = "0.12.0"
+tempfile = "3"
+tokio = { version = "1.51.1", features = ["rt", "macros"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.184"
 
