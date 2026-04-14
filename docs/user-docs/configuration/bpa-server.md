@@ -206,9 +206,8 @@ recurring links), the TVR agent provides cron-based route scheduling.
 TVR runs as a separate process and connects to the BPA as a routing
 agent via gRPC — ensure `routing` is included in `grpc.services`.
 
-See the
-[TVR README](https://github.com/ricktaylor/hardy/blob/main/tvr/README.md)
-for configuration and contact plan format.
+See the [TVR configuration reference](tvr.md) for configuration,
+contact plan format, gRPC service, and hot-reload.
 
 ## `rfc9171-validity` — RFC 9171 Validity Filters
 

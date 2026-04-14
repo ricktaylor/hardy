@@ -129,7 +129,7 @@ above. The TCPCLv4 options are flattened to the top level (not nested).
 |-----|-------------|---------|-------------|
 | `bpa-address` | URL string | *Required* | BPA gRPC endpoint to connect to. |
 | `cla-name` | String | *Required* | Name to register with the BPA. |
-| `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `error` | Logging verbosity. |
+| `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. |
 
 The default configuration file is `hardy-tcpclv4.yaml` in the current
 directory. Environment variable prefix is `HARDY_TCPCLV4_`.
