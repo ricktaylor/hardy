@@ -36,7 +36,7 @@ This starts:
 
 - **PostgreSQL 17** -- metadata storage with a named volume
 - **MinIO** -- S3-compatible bundle storage with a named volume
-- **Hardy BPA** -- configured via [`hardy.yaml`](https://github.com/ricktaylor/hardy/blob/main/hardy.yaml)
+- **Hardy BPA** -- configured via [`bpa-server/config.yaml`](https://github.com/ricktaylor/hardy/blob/main/bpa-server/config.yaml)
 
 For a lightweight setup with in-memory storage (no external dependencies):
 

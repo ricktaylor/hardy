@@ -1,3 +1,9 @@
+use hardy_async::TaskPool;
+use std::sync::Arc;
+use tracing::{error, info, warn};
+
+use crate::config;
+
 mod filters;
 mod policy;
 mod services;
@@ -6,12 +12,6 @@ pub(crate) mod clas;
 pub(crate) mod grpc;
 pub(crate) mod static_routes;
 pub(crate) mod storage;
-
-use hardy_async::TaskPool;
-use std::sync::Arc;
-use tracing::{error, info, warn};
-
-use crate::config;
 
 pub(crate) async fn run(
     config: config::Config,

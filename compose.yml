@@ -61,7 +61,7 @@ services:
       - "50051:50051"
       - "4556:4556"
     volumes:
-      - ./hardy.yaml:/etc/hardy/config.yaml:ro
+      - ./bpa-server/config.yaml:/etc/hardy/config.yaml:ro
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
       interval: 5s
@@ -83,7 +83,7 @@ services:
     restart: unless-stopped
     environment:
       HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.yaml
-      # Env vars take precedence over hardy.yaml
+      # Env vars take precedence over config file
       HARDY_BPA_SERVER_LOG_LEVEL: debug
       HARDY_BPA_SERVER_STORAGE__METADATA__TYPE: memory
       HARDY_BPA_SERVER_STORAGE__BUNDLE__TYPE: memory
@@ -91,7 +91,7 @@ services:
       - "50051:50051"
       - "4556:4556"
     volumes:
-      - ./hardy.yaml:/etc/hardy/config.yaml:ro
+      - ./bpa-server/config.yaml:/etc/hardy/config.yaml:ro
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
       interval: 5s
