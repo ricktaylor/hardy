@@ -40,7 +40,7 @@ bp ping ipn:1.7 127.0.0.1:4556
 bp ping ipn:1.7 192.168.1.10:4556
 ```
 
-See [bp-ping(1)](tools/docs/bp-ping.1.md) for full usage documentation.
+See the [CLI Tools documentation](https://ricktaylor.github.io/hardy/operations/tools/) for full usage.
 
 ### Running via Docker
 
