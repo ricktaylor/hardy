@@ -67,7 +67,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ### 4.2 Observability & OpenTelemetry (REQ-19)
 
-OTEL export (traces, metrics, logs) is verified by the hardy-otel crate's integration test (`otel/tests/test_otel_export.sh`). All server binaries use the same `hardy_otel::init()` call, so testing it once at the library level covers all binaries.
+OTEL export (traces, metrics, logs) is verified by [`COMP-OTEL-01`](../../otel/docs/component_test_plan.md). All server binaries use the same `hardy_otel::init()` call, so testing it once at the library level covers all binaries.
 
 ### 4.3 Integration Verification
 

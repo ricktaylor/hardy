@@ -83,7 +83,7 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 | Lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
 | Lifecycle (SYS-04) | Crash recovery | — | — | Delegated to bpa + storage harness |
 | Lifecycle (SYS-05) | Config reload (static routes) | 1 | 1 | Complete (`test_static_routes.sh`, 5 tests) |
-| Observability (OTEL-01..03) | Trace, metric, log export | — | — | Delegated to hardy-otel crate (`otel/tests/test_otel_export.sh`) |
+| Observability (OTEL-01..03) | Trace, metric, log export | — | — | Delegated to [`COMP-OTEL-01`](../../otel/docs/component_test_plan.md) |
 | Performance, stress, packaging | System-level non-functional | 27 | 0 | Full Activity scope |
 | **Total** | | **37** | **27** | **73%** |
 

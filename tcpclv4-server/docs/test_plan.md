@@ -61,7 +61,7 @@ Additional validation tests cover: missing config file → error, invalid log le
 
 ### 4.2 Observability (REQ-19)
 
-OTEL integration is verified by [`PLAN-SERVER-01`](../../bpa-server/docs/test_plan.md) (OTEL-01..03). Both binaries use the same `hardy-otel::init()` call, so testing it once via `bpa-server` is sufficient. The `hardy-otel` crate has its own unit tests ([`UTP-OTEL-01`](../../otel/docs/unit_test_plan.md)) verifying the metrics bridge.
+OTEL integration is verified by [`COMP-OTEL-01`](../../otel/docs/component_test_plan.md). All server binaries use the same `hardy_otel::init()` call, so testing it once at the library level covers all binaries.
 
 ### 4.3 Performance (REQ-13)
 

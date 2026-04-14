@@ -33,6 +33,7 @@ This Strategy is the parent document. Verification is executed according to the 
 | **BPA Logic** | Integration | [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md) | Routing, Pipeline, Performance Benchmarks. |
 | **BPA Pipeline** | Fuzz | [`FUZZ-BPA-01`](../bpa/docs/fuzz_test_plan.md) | Async pipeline stability and deadlocks. |
 | **OpenTelemetry** | Unit | [`UTP-OTEL-01`](../otel/docs/unit_test_plan.md) | Metrics recorder bridge (gauge, counter, histogram). |
+| **OpenTelemetry** | Component | [`COMP-OTEL-01`](../otel/docs/component_test_plan.md) | OTLP export verification (traces, metrics, logs). |
 | **TCPCLv4** | Component | [`PLAN-TCPCL-01`](../tcpclv4/docs/component_test_plan.md) | Session state machine via `duplex` harness. |
 | **TCPCLv4** | Fuzz | [`FUZZ-TCPCL-01`](../tcpclv4/docs/fuzz_test_plan.md) | Protocol stream parsing and state machine robustness. |
 | **TCPCLv4 Server** | System | [`PLAN-TCPCL-SERVER-01`](../tcpclv4-server/docs/test_plan.md) | Application lifecycle, config, packaging. |

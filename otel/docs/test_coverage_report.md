@@ -4,12 +4,12 @@
 | :--- | :--- |
 | **Module** | `hardy-otel` |
 | **Standard** | OpenTelemetry Specification v1.x |
-| **Test Plan** | [`UTP-OTEL-01`](unit_test_plan.md) |
-| **Date** | 2026-04-13 |
+| **Test Plans** | [`UTP-OTEL-01`](unit_test_plan.md), [`COMP-OTEL-01`](component_test_plan.md) |
+| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The table below maps functional requirements to their verification status. All functional requirements verified (11 pass).
+The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The table below maps functional requirements to their verification status. All functional requirements verified (11 pass). OTEL export (traces, metrics, logs) is verified by the integration test (`tests/test_otel_export.sh`).
 
 | LLR | Feature | Result | Test | Part 4 Ref |
 | :--- | :--- | :--- | :--- | :--- |
@@ -55,14 +55,25 @@ The `hardy-otel` crate has no formal LLRs — it is internal infrastructure. The
 | `otel_unit_mapping` | `metrics_otel.rs` | 17 | All `metrics::Unit` variants → UCUM codes |
 | `macro_multiple_label_values_are_distinct` | `metrics_otel.rs` | 2 | Distinct label values → separate instruments |
 
-**Total: 26 tests, ~46 assertions.**
+**Total: 26 unit tests, ~46 assertions.**
+
+### Integration Tests (`tests/test_otel_export.sh`)
+
+| Test | Scope |
+| :--- | :--- |
+| OTEL-01: Traces | Spans exported to OTLP collector via file exporter |
+| OTEL-02: Metrics | Counters, gauges, histograms exported |
+| OTEL-03: Logs | Structured log records exported |
+
+Uses a minimal OpenTelemetry Collector (contrib image) with file exporters. Test harness (`tests/otel_export_test.rs`) initialises `hardy_otel::init()`, emits telemetry, and verifies output via `jq`.
 
 ## 3. Coverage vs Plan
 
 | Section | Scenario | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| UTP-OTEL-01 | All functional requirements | 26 | 26 | Complete |
-| | **Total** | **26** | **26** | **100%** |
+| UTP-OTEL-01 | Metrics bridge unit tests | 26 | 26 | Complete |
+| OTEL-01..03 | OTLP export integration (traces, metrics, logs) | 3 | 3 | Complete (`test_otel_export.sh`) |
+| | **Total** | **29** | **29** | **100%** |
 
 ## 4. Line Coverage
 
@@ -71,11 +82,11 @@ cargo llvm-cov test --package hardy-otel --lcov --output-path lcov.info --html
 lcov --summary lcov.info
 ```
 
-Results (2026-04-02):
+Results (2026-04-14):
 
 ```
-  lines......: 83.3% (439 of 527 lines)
-  functions..: 85.3% (64 of 75 functions)
+  lines......: 81.4% (439 of 539 lines)
+  functions..: 54.2% (64 of 118 functions)
 ```
 
 Per-file breakdown (from HTML report):
@@ -85,7 +96,7 @@ Per-file breakdown (from HTML report):
 | `metrics_otel.rs` | 99.57% (458/460) | 100.00% (63/63) | 2 uncovered lines (see §4) |
 | `lib.rs` | 0.00% (0/92) | 0.00% (0/11) | Integration-only code (see below) |
 
-The `lib.rs` file (OTEL provider initialisation, tracing subscriber wiring) is not unit-testable in isolation — it requires an OTLP endpoint and sets global state. It is verified at the system level through `bpa-server` and `tcpclv4-server` integration tests.
+The `lib.rs` file (OTEL provider initialisation, tracing subscriber wiring) is not unit-testable in isolation — it requires an OTLP endpoint and sets global state. It is verified by the OTEL export integration test (`tests/test_otel_export.sh`).
 
 ### Uncovered Lines
 
@@ -100,9 +111,9 @@ The 2 uncovered lines in `metrics_otel.rs`:
 
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
-| `lib.rs` | Not unit-tested (integration-only code) | Low | Covered by system-level test plans ([`PLAN-SERVER-01`](../../bpa-server/docs/test_plan.md)) |
+| `lib.rs` | Not unit-tested | Low | Covered by OTEL export integration test (`tests/test_otel_export.sh`) |
 | Counter/histogram | No readable state for assertions | Low | OTEL SDK owns aggregation; verified via no-panic + registration cache presence |
 
 ## 6. Conclusion
 
-The `metrics_otel.rs` recorder bridge has comprehensive test coverage across all three instrument types at three levels: direct trait calls, `Recorder` API, and `metrics::*!()` macros. The gauge state tracking (AtomicU64 CAS loop) — the most complex logic in the crate — has 7 dedicated unit tests plus 5 macro-level tests covering set, increment, decrement, label isolation, and edge cases (negative values, set-overrides-accumulation). The `lib.rs` initialisation code is an integration concern appropriately tested at the system level.
+26 unit tests verify the `metrics_otel.rs` recorder bridge across all three instrument types at three levels: direct trait calls, `Recorder` API, and `metrics::*!()` macros. The gauge state tracking (AtomicU64 CAS loop) has 7 dedicated unit tests plus 5 macro-level tests. The `lib.rs` initialisation and OTLP export path is verified by the OTEL export integration test (`tests/test_otel_export.sh`), which confirms traces (spans), metrics (counters, gauges, histograms), and structured logs reach an OTLP collector. This integration test covers all server binaries — bpa-server, tcpclv4-server, and tvr all use the same `hardy_otel::init()` call.
