@@ -116,7 +116,7 @@ mod tests {
     use super::*;
     use hardy_bpa::bundle::{Bundle, BundleMetadata};
     use hardy_bpa::filters::{RewriteResult, WriteFilter};
-    use hardy_bpv7::eid::{Eid, IpnNodeId};
+    use hardy_bpv7::eid::Eid;
 
     fn make_config(patterns: &[&str]) -> Config {
         Config(patterns.iter().map(|p| p.parse().unwrap()).collect())
