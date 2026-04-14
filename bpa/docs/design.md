@@ -92,14 +92,16 @@ Bundle data and metadata are stored in separate backends with fundamentally diff
 | Access pattern | Frequent queries, updates | Rare access (forward/deliver) |
 | Data model | Relational (indexed by status, expiry, queue) | Blob (keyed by storage name) |
 | Size | Small (hundreds of bytes per bundle) | Large (potentially megabytes) |
-| Examples | hardy-sqlite-storage, future: PostgreSQL | hardy-localdisk-storage, future: S3 |
+| Examples | hardy-sqlite-storage, hardy-postgres-storage | hardy-localdisk-storage, hardy-s3-storage |
 
 This separation enables independent backend selection optimised for each access pattern. Metadata benefits from relational indexing for efficient status queries and queue management. Bundle data benefits from blob storage with optional memory mapping for large payloads.
 
 See the storage backend packages for production implementations:
 
 - [hardy-sqlite-storage](../../sqlite-storage/docs/design.md) - SQLite-based metadata storage
+- [hardy-postgres-storage](../../postgres-storage/docs/design.md) - PostgreSQL metadata storage
 - [hardy-localdisk-storage](../../localdisk-storage/docs/design.md) - Filesystem-based bundle storage
+- [hardy-s3-storage](../../s3-storage/docs/design.md) - Amazon S3 bundle storage
 
 ### Application vs Service APIs
 
@@ -209,7 +211,7 @@ The BPA uses all three parsing modes:
 
 ### With Storage Backends
 
-Storage traits (`BundleStorage`, `MetadataStorage`) are injected by the embedding application. The library includes in-memory implementations for testing; production deployments use hardy-localdisk-storage and hardy-sqlite-storage. The trait-based design enables future backends (S3, PostgreSQL) without BPA changes.
+Storage traits (`BundleStorage`, `MetadataStorage`) are injected by the embedding application. The library includes in-memory implementations for testing. Production backends include hardy-sqlite-storage and hardy-postgres-storage for metadata, and hardy-localdisk-storage and hardy-s3-storage for bundle data. The trait-based design allows additional backends without BPA changes.
 
 ### With hardy-proto
 
@@ -284,5 +286,5 @@ Key external dependencies:
 - [Component Test Plan](component_test_plan.md) - Pipeline integration, performance benchmarks
 - [CLA Integration Tests](cla_integration_test_plan.md) - Generic CLA trait verification
 - [Service Integration Tests](service_integration_test_plan.md) - Generic service trait verification
-- [Storage Integration Tests](storage_integration_test_plan.md) - Generic storage trait verification
+- [Storage Integration Tests](../../tests/storage/docs/test_plan.md) - Generic storage trait verification
 - [Fuzz Test Plan](fuzz_test_plan.md) - Async pipeline stability

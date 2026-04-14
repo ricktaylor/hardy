@@ -100,7 +100,7 @@ Bundle data and metadata are stored separately:
 ### Why Separate Storage?
 
 1. **Different access patterns**: Metadata accessed frequently (status checks), data accessed rarely (forwarding)
-2. **Different backends**: SQLite for indexed queries, filesystem for large blobs
+2. **Different backends**: Relational (SQLite, PostgreSQL) for indexed queries, blob stores (filesystem, S3) for large data
 3. **Independent scaling**: Metadata on fast SSD, data on high-capacity storage
 4. **Crash safety**: Atomic operations on each backend independently
 
@@ -146,8 +146,21 @@ Configuration includes the storage directory path and whether to use atomic writ
 | `ForwardPending` | 2 | peer, queue |
 | `AduFragment` | 3 | timestamp, sequence, source_eid |
 | `Dispatching` | 4 | - |
+| `WaitingForService` | 5 | -, -, service_eid |
 
 Configuration includes the database directory and name. See the [sqlite-storage design doc](../../sqlite-storage/docs/design.md) for details.
+
+### PostgreSQL Storage (Metadata)
+
+**Location:** `/workspace/postgres-storage/src/storage.rs`
+
+Implements `MetadataStorage` using PostgreSQL via `sqlx`, enabling shared metadata across multiple BPA instances. Uses connection pooling (`sqlx::PgPool`) and automatic schema migration. See the [postgres-storage design doc](../../postgres-storage/docs/design.md) for details.
+
+### S3 Storage (Bundle Data)
+
+**Location:** `/workspace/s3-storage/src/storage.rs`
+
+Implements `BundleStorage` using the Amazon S3 API via `aws-sdk-s3`, storing each bundle as a separate object under a configurable prefix. Compatible with MinIO and other S3-compatible stores. See the [s3-storage design doc](../../s3-storage/docs/design.md) for details.
 
 ### In-Memory Storage (Testing)
 
