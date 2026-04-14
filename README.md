@@ -176,7 +176,7 @@ Each test verifies ping/echo in both directions. A benchmark script compares RTT
 
 ```bash
 # Run all interop tests with RTT comparison
-./tests/interop/benchmark.sh
+./tests/interop/run_all.sh
 
 # Run a single implementation test
 ./tests/interop/HDTN/test_hdtn_ping.sh

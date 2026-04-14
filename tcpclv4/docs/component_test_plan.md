@@ -20,7 +20,7 @@ The verification strategy is two-fold:
 1. **Generic Trait Compliance:** The `tcpclv4` implementation is run against the generic test harness for the `Cla` trait ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) to ensure it correctly interfaces with the BPA's routing and dispatch logic.
 2. **Protocol Compliance:** Specific component tests are defined to verify the on-the-wire behavior of the TCPCLv4 state machine, including session management, data segmentation, and TLS. These tests use a `duplex` harness to simulate a peer and inspect the byte stream.
 
-Currently, protocol compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../docs/interop_test_plan.md)) against dtn7-rs, HDTN, and DTNME — all independent TCPCLv4 implementations. The `duplex` harness will provide isolated verification of edge cases not covered by interop (e.g. TCP-08 protocol errors).
+Currently, protocol compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) against dtn7-rs, HDTN, and DTNME — all independent TCPCLv4 implementations. The `duplex` harness will provide isolated verification of edge cases not covered by interop (e.g. TCP-08 protocol errors).
 
 ## 3. Generic Test Coverage
 
@@ -74,4 +74,4 @@ These tests verify the RFC 9174 protocol logic using a dedicated component test 
 ## 7. Execution Strategy
 
 * **Unit Tests:** `cargo test -p hardy-tcpclv4`
-* **Interop Tests:** `./tests/interop/benchmark.sh`
+* **Interop Tests:** `./tests/interop/run_all.sh`

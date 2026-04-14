@@ -43,7 +43,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **tvr** | Unit | [`UTP-TVR-01`](../tvr/docs/unit_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (Contact Scheduling) | **Complete** |
 | **tvr** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) (gRPC Sessions, Hot-Reload) | **Complete** (10 tests: 4 system + 6 gRPC session via grpcurl) |
 | **bpa-server** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | [REQ-14](requirements.md#req-14-reliability), [REQ-15](requirements.md#req-15-independent-component-packaging), [REQ-19](requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools) | **Complete** |
-| **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | [REQ-20](requirements.md#req-20-interoperability-with-reference-implementations) (ION/DTNME) | **Complete** |
+| **System** | Interop | [`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md) | [REQ-20](requirements.md#req-20-interoperability-with-reference-implementations) (ION/DTNME) | **Complete** |
 
 ### 2.1 Fuzz Test Plans
 

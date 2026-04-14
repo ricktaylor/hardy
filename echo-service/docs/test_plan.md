@@ -23,7 +23,7 @@ This crate implements draft-taylor-dtn-echo-service. There are no formal LLRs as
 
 The echo service is registered by `bpa-server` and exercised by the interop test suite. All 7 interoperating implementations send bundles to Hardy's echo service endpoint and verify the response, confirming correct bundle reflection through the full BPA pipeline.
 
-See [`tests/interop/README.md`](../../tests/interop/README.md) for details of the interop test suite and supported implementations.
+See [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md) for test scenarios and [`tests/interop/README.md`](../../tests/interop/README.md) for run instructions.
 
 ### Unit Tests
 
@@ -31,4 +31,4 @@ No unit tests are planned. The crate is a thin adapter between the `Service` tra
 
 ## 4. Execution Strategy
 
-* **Interop Tests:** `tests/interop/<implementation>/test_*_ping.sh` (see [interop README](../../tests/interop/README.md))
+* **Interop Tests:** `tests/interop/<implementation>/test_*_ping.sh` (see [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md))

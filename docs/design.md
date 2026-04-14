@@ -152,7 +152,7 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 
 - [Test Strategy](test_strategy.md) - Master test plan with document hierarchy
 - [Test Coverage Report](test_coverage_report.md) - Current test coverage status
-- [Interoperability Test Plan](interop_test_plan.md) - Cross-implementation testing
+- [Interoperability Test Plan](../tests/interop/docs/test_plan.md) - Cross-implementation testing
 
 ### Unit Tests
 

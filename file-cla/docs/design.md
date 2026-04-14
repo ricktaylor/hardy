@@ -128,4 +128,3 @@ When compiled with the `file-cla` feature, configuration is loaded from the serv
 ## Testing
 
 - Manual testing via file creation and examination
-- [Interoperability Test Plan](../../docs/interop_test_plan.md) - ION integration via shared Docker volumes

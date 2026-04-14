@@ -45,7 +45,7 @@ This Strategy is the parent document. Verification is executed according to the 
 | **TVR** | Unit | [`UTP-TVR-01`](../tvr/docs/unit_test_plan.md) | Contact scheduling (cron, parser, scheduler). |
 | **TVR** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | gRPC session lifecycle, file hot-reload, system integration. |
 | **System** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | Application lifecycle, config, OpenTelemetry. |
-| **System** | Interop | [`PLAN-INTEROP-01`](interop_test_plan.md) | Interoperability with ION/DTNME/etc. (REQ-20). |
+| **System** | Interop | [`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md) | Interoperability with ION/DTNME/etc. (REQ-20). |
 
 ## 3. Testing Levels (The Pyramid)
 
@@ -131,7 +131,7 @@ To simulate a realistic cloud deployment, the following architecture is required
 
 | Risk | Impact | Mitigation Strategy |
 | ----- | ----- | ----- |
-| **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Execute the full Interoperability Test Plan ([`PLAN-INTEROP-01`](interop_test_plan.md)) against multiple reference implementations (ION, DTNME, etc.). |
+| **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Execute the full Interoperability Test Plan ([`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md)) against multiple reference implementations (ION, DTNME, etc.). |
 | **Parser Panics** | DoS vulnerability in production. | Enforce 100% fuzz coverage on all parsers (CBOR, Bundle, EID). |
 | **Key Wrapping Failures** | Data loss or Security breach. | Specific Unit Tests for RFC 9173 Key Wrapping (AES-KW). |
 | **Async Deadlocks** | Router hangs under load. | Property-based fuzzing of the BPA pipeline state machine. |

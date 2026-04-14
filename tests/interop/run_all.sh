@@ -1,11 +1,11 @@
 #!/bin/bash
-# Interoperability Benchmark Script
+# Run All Interoperability Tests
 #
 # Runs the existing interop test scripts and extracts RTT statistics
 # to produce a markdown comparison table.
 #
 # Usage:
-#   ./tests/interop/benchmark.sh [--skip-build]
+#   ./tests/interop/run_all.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy binaries (passed to test scripts)
@@ -390,7 +390,7 @@ echo "_Benchmark: $PING_COUNT pings, $(date '+%Y-%m-%d %H:%M:%S')_"
 echo ""
 
 # Also save to file
-OUTPUT_FILE="$SCRIPT_DIR/benchmark_results.md"
+OUTPUT_FILE="$SCRIPT_DIR/run_all_results.md"
 {
     echo "# DTN Implementation Ping Benchmark"
     echo ""

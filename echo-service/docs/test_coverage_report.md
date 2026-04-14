@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Module** | `hardy-echo-service` |
 | **Standard** | [draft-taylor-dtn-echo-service](https://datatracker.ietf.org/doc/draft-taylor-dtn-echo-service/) |
-| **Test Plans** | [`PLAN-ECHO-01`](test_plan.md) |
+| **Test Plans** | [`PLAN-ECHO-01`](test_plan.md), [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md) |
 | **Date** | 2026-04-13 |
 
 ## 1. Functional Coverage Summary
@@ -21,7 +21,7 @@ None. The crate contains no unit tests.
 
 | Test | Location | Scope |
 | :--- | :--- | :--- |
-| Interop tests | `tests/interop/` | All 7 implementations (dtn7-rs, HDTN, DTNME, ud3tn, ION, ESA BP, NASA cFS) send bundles to Hardy's echo service (registered by `bpa-server`) and verify the response |
+| Interop tests | `tests/interop/` | All 7 peer implementations (dtn7-rs, HDTN, DTNME, ud3tn, ION, ESA BP, NASA cFS) send bundles to Hardy's echo service and verify the response. See [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md) |
 
 ## 3. Coverage vs Plan
 

@@ -66,4 +66,4 @@ The tests defined here are intended to be run against **all** implementations of
 These test scenarios are verified through the following methods:
 
 * **BPA Fuzz Harness:** `bpa/fuzz/src/cla.rs` — exercises the CLA trait interface with mock implementations
-* **Interop Tests:** `./tests/interop/benchmark.sh` — system-level verification against independent implementations
+* **Interop Tests:** `./tests/interop/run_all.sh` — system-level verification against independent implementations
