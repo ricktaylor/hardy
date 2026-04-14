@@ -48,8 +48,8 @@ Look for `Listening on [::]:4556` (TCPCLv4) and `Listening on [::]:50051`
 
 ## 3. Customise the configuration
 
-The configuration is in [`hardy.yaml`](https://github.com/ricktaylor/hardy/blob/main/hardy.yaml)
-at the project root. Edit it to change node settings, storage backends,
+The configuration is in [`bpa-server/config.yaml`](https://github.com/ricktaylor/hardy/blob/main/bpa-server/config.yaml).
+Edit it to change node settings, storage backends,
 or add TLS. See the
 [BPA Server Configuration](../configuration/bpa-server.md) for all
 available options.

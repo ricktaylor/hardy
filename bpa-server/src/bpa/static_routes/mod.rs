@@ -1,5 +1,3 @@
-mod parse;
-
 use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
@@ -19,6 +17,8 @@ use trace_err::*;
 use tracing::{error, info};
 
 use crate::config::default_config_dir;
+
+mod parse;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
