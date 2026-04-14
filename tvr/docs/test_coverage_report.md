@@ -203,11 +203,11 @@ Implemented in [`tests/test_tvr.sh`](../tests/test_tvr.sh). Requires built binar
 cargo llvm-cov test --package hardy-tvr --lcov --output-path lcov.info --html
 ```
 
-Results (2026-04-08, 127 tests passed):
+Results (2026-04-14, 141 tests passed):
 
 ```
-  lines......: 75.3% (2053 of 2725 lines)
-  functions..: 76.8% (251 of 327 functions)
+  lines......: 77.2% (2206 of 2856 lines)
+  functions..: 78.4% (273 of 348 functions)
 ```
 
 | File | Lines | Coverage |

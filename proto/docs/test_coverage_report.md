@@ -107,7 +107,17 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 
 ## 4. Line Coverage
 
-`cargo llvm-cov test --package hardy-proto`, 2026-04-01.
+```
+cargo llvm-cov test --package hardy-proto --lcov --output-path lcov.info
+lcov --summary lcov.info
+```
+
+Results (2026-04-14):
+
+```
+  lines......: 81.2% (1268 of 1562 lines)
+  functions..: 31.3% (377 of 1204 functions)
+```
 
 | File | Lines | Coverage |
 | :--- | :--- | :--- |

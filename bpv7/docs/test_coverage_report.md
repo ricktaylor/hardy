@@ -82,11 +82,11 @@ cargo llvm-cov test --package hardy-bpv7 --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-03-30):
+Results (2026-04-14):
 
 ```
-  lines......: 78.2% (4343 of 5551 lines)
-  functions..: 44.5% (470 of 1055 functions)
+  lines......: 78.5% (4354 of 5549 lines)
+  functions..: 9.1% (468 of 5162 functions)
 ```
 
 Per-file breakdown (from HTML report):
@@ -136,11 +136,11 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/eid_str/lcov.info
 ```
 
-| Target | Corpus | Line Coverage | Key Files |
+| Target | Corpus | Line Coverage | Function Coverage |
 | :--- | :--- | :--- | :--- |
-| `random_bundles` | 7,772 inputs | 49.1% (2547/5187) | `bpsec/parse.rs` 100%, `primary_block.rs` 99%, `block.rs` 94%, `bib.rs` 97%, `parse.rs` 69% |
-| `eid_cbor` | 13,787 inputs | 9.5% (488/5134) | `eid/parse.rs` 71%, `cbor/decode.rs` 69% (EID-focused, rest at 0%) |
-| `eid_str` | 5,508 inputs | 1.7% (89/5134) | `eid/parse.rs` 34%, `eid/mod.rs` 11% (string parsing only) |
+| `random_bundles` | 7,772 inputs | 46.2% (1974/4269) | 52.1% (294/564) |
+| `eid_cbor` | 13,787 inputs | 3.7% (156/4269) | 4.8% (27/563) |
+| `eid_str` | 5,508 inputs | 2.1% (89/4269) | 2.8% (16/563) |
 
 The `random_bundles` target provides strong coverage of the parser pipeline, achieving 100% on `bpsec/parse.rs`, 99% on `primary_block.rs`, and 94% on `block.rs`. Combined with unit tests, the parser has comprehensive verification from both known-good (RFC vectors) and adversarial (fuzz) inputs.
 

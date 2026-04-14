@@ -178,11 +178,11 @@ Covered by interop test suite (`tests/interop/`). All 7 implementations passing 
 cargo llvm-cov test --package hardy-bpa --lcov --output-path lcov.info --html
 ```
 
-Results (2026-04-13):
+Results (2026-04-14):
 
 ```
-  lines......: 57.0% (3125 of 5478 lines)
-  functions..: 32.2% (591 of 1834 functions)
+  lines......: 64.0% (3131 of 4890 lines)
+  functions..: 16.5% (588 of 3561 functions)
 ```
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation. The pipeline integration tests (`tests/pipeline.rs`) contributed a 10 percentage point increase by exercising the dispatcher pipeline end-to-end.
@@ -241,10 +241,11 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/bpa/lcov.info
 ```
 
-Results (61,673 corpus inputs, 2026-04-13):
+Results (61,673 corpus inputs, 2026-04-14):
 
 ```
-  lines......: 49.7% (5006 of 10068 lines)
+  lines......: 57.0% (2067 of 3624 lines)
+  functions..: 47.9% (237 of 495 functions)
 ```
 
 Key files where fuzz coverage exceeds unit+pipeline coverage:

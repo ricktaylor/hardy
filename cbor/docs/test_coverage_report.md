@@ -87,11 +87,11 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/decode/lcov.info
 ```
 
-Results (2026-04-13):
+Results (2026-04-14):
 
 ```
-  lines......: 37.1% (322 of 869 lines)
-  functions..: 18.0% (48 of 266 functions)
+  lines......: 36.8% (318 of 865 lines)
+  functions..: 17.7% (47 of 265 functions)
 ```
 
 Per-file breakdown (decoder only — `encode.rs` at 0% is expected):

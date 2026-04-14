@@ -131,7 +131,14 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/active/lcov.info
 ```
 
-Fuzz coverage is complementary to unit tests: unit tests verify codec correctness and negotiation logic, fuzz verifies session robustness against adversarial byte streams from both passive (listener) and active (connector) directions.
+Results (2026-04-14):
+
+| Target | Line Coverage | Function Coverage |
+| :--- | :--- | :--- |
+| `passive` | 8.0% (167/2078) | 7.2% (21/293) |
+| `active` | 48.1% (1000/2078) | 21.4% (92/429) |
+
+The `active` target achieves significantly higher coverage because it exercises the full connector → session → transfer path. The `passive` target covers the listener acceptance and early contact header parsing. Combined with unit tests (24.9%), the crate has broad coverage across codec, negotiation, and session management.
 
 ## 5. Test Infrastructure
 

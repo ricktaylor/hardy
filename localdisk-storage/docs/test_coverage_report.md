@@ -56,7 +56,7 @@ lcov --summary lcov.info
 ```
 
 ```
-  lines......: 76.5% (208 of 272 lines)
+  lines......: 77.1% (216 of 280 lines)
   functions..: 62.9% (22 of 35 functions)
 ```
 
