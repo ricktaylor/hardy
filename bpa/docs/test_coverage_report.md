@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Module** | `hardy-bpa` |
 | **Standard** | RFC 9171 — Bundle Protocol Version 7 |
-| **Test Plans** | [`UTP-BPA-01`](unit_test_plan.md) (Unit), [`PLAN-BPA-01`](component_test_plan.md) (Component) |
+| **Test Plans** | [`UTP-BPA-01`](unit_test_plan.md) (Unit), [`PLAN-BPA-01`](component_test_plan.md) (Component), [`FUZZ-BPA-01`](fuzz_test_plan.md) (Fuzz) |
 | **Date** | 2026-04-13 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
