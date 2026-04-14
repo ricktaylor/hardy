@@ -3,8 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-proto` |
-| **Test Plan** | [`COMP-GRPC-01`](component_test_plan.md) |
-| **Date** | 2026-04-13 |
+| **Standard** | — |
+| **Test Plans** | [`COMP-GRPC-01`](component_test_plan.md) |
+| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 

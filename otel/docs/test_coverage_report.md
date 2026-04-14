@@ -111,8 +111,9 @@ The 2 uncovered lines in `metrics_otel.rs`:
 
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
-| `lib.rs` | Not unit-tested | Low | Covered by OTEL export integration test (`tests/test_otel_export.sh`) |
 | Counter/histogram | No readable state for assertions | Low | OTEL SDK owns aggregation; verified via no-panic + registration cache presence |
+
+Note: `lib.rs` is not unit-tested but is fully covered by the OTEL export integration test ([`COMP-OTEL-01`](component_test_plan.md)). This is by design — it requires an OTLP endpoint and sets global state.
 
 ## 6. Conclusion
 

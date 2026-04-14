@@ -1,4 +1,4 @@
-# Hardy TVR
+# hardy-tvr
 
 Time-Variant Routing agent for Hardy DTN. Installs and withdraws routes
 in the BPA on a clock, driven by contact schedules from files, gRPC

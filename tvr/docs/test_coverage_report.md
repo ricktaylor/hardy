@@ -3,8 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tvr` |
+| **Standard** | — |
 | **Test Plans** | [`UTP-TVR-01`](unit_test_plan.md), [`COMP-TVR-01`](component_test_plan.md) |
-| **Date** | 2026-04-13 |
+| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -243,7 +244,7 @@ by `cargo test`.
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
 | gRPC session lifecycle | 3 deferred scenarios (TVR-04, TVR-07, TVR-08) | Low | Straightforward request/response handling with no complex state |
-| `config.rs`, `contacts.rs`, `main.rs`, `watcher.rs` | 0% line coverage (unit tests only) | Low | Application wiring exercised by system integration tests |
+| `contacts.rs`, `main.rs`, `watcher.rs` | 0% line coverage (unit tests only) | Low | Application wiring exercised by system integration tests |
 
 Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. TVR-06 is covered by unit tests. TVR-10 is implicit in test teardown. TVR-11 is not testable from a well-behaved gRPC client.
 

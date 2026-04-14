@@ -3,6 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tcpclv4-server` |
+| **Standard** | — |
 | **Test Plans** | [`PLAN-TCPCL-SERVER-01`](test_plan.md) |
 | **Date** | 2026-04-14 |
 

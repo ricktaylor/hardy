@@ -1,6 +1,6 @@
-# Hardy BPA
+# hardy-bpa-server
 
-The Hardy project Bundle Processing Agent.
+The Hardy project Bundle Processing Agent server.
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 

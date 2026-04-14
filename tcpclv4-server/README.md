@@ -1,4 +1,4 @@
-# Hardy TCPCLv4 Server
+# hardy-tcpclv4-server
 
 A standalone server executable for the TCP Convergence Layer v4 (RFC 9174).
 
