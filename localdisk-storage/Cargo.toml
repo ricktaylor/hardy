@@ -30,7 +30,7 @@ tempfile = "3"
 tokio = { version = "1.51.1", features = ["rt", "macros"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.184"
+libc = "0.2.185"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "winbase"] }
