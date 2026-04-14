@@ -177,8 +177,9 @@ All functional areas verified (6 pass). The TVR crate implements REQ-6 (Time-Var
 | UTP 3.15-3.21 | Scheduler | 18 | 18 | Complete |
 | UTP 3.22-3.24 | Proto conversion | 24 | 24 | Complete |
 | COMP 3 | gRPC session lifecycle | 12 | 6 | Partial (6 via grpcurl; 3 deferred, 1 unit-covered, 1 implicit, 1 untestable) |
+| UTP 3.25 | Configuration loading | 14 | 14 | Complete |
 | COMP 4 | System integration (test_tvr.sh) | 4 | 4 | Complete |
-| | **Total** | **143** | **137** | **96%** |
+| | **Total** | **157** | **151** | **96%** |
 
 ### System & Component Integration Tests
 
@@ -216,11 +217,11 @@ Results (2026-04-14, 141 tests passed):
 | `src/parser.rs` | 653 / 717 | 91.1% |
 | `src/scheduler.rs` | 691 / 865 | 79.9% |
 | `src/server.rs` | 249 / 448 | 55.6% |
+| `src/config.rs` | — | Now covered by 14 config unit tests |
 | `src/contacts.rs` | 0 / 27 | 0.0% |
-| `src/config.rs` | 0 / 33 | 0.0% |
 | `src/main.rs` | 0 / 82 | 0.0% |
 | `src/watcher.rs` | 0 / 74 | 0.0% |
-| **Total** | **2099 / 2811** | **74.7%** |
+| **Total** | **2206 / 2856** | **77.2%** |
 
 The three core unit-tested modules exceed their 80% target: `parser.rs`
 (91.1%) and `cron.rs` (89.6%) are well above; `scheduler.rs` (79.9%) is
@@ -228,12 +229,14 @@ marginally below due to the async `run()` function and metrics code
 which are only exercised by system tests. `server.rs` (55.6%) reflects
 that the gRPC session handling (`run_session`, `handle_message`) is only
 tested at the system level via `test_tvr.sh`, while the conversion
-functions are fully covered by unit tests.
+functions are fully covered by unit tests. `config.rs` is now covered
+by 14 config loading unit tests (defaults, multi-format, env override,
+validation).
 
-The 0% files (`config.rs`, `contacts.rs`, `main.rs`, `watcher.rs`) are
-application wiring — config loading, trait impl delegation, `main()`
-orchestration, and filesystem watching — which are exercised by the
-system integration tests but not by `cargo test`.
+The 0% files (`contacts.rs`, `main.rs`, `watcher.rs`) are application
+wiring — trait impl delegation, `main()` orchestration, and filesystem
+watching — which are exercised by the system integration tests but not
+by `cargo test`.
 
 ## 5. Key Gaps
 
@@ -246,4 +249,4 @@ Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. 
 
 ## 6. Conclusion
 
-The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), and proto conversion (24 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 137/143 scenarios (96%), with only 3 low-risk deferred scenarios remaining.
+The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 151/157 scenarios (96%), 77.2% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.

@@ -14,7 +14,7 @@ This document details the testing strategy for the `hardy-tcpclv4-server` module
 
 **Scope:**
 
-* **Configuration Management:** Loading settings from TOML/Env.
+* **Configuration Management:** Loading settings from YAML/TOML/JSON files and environment variables.
 * **Process Lifecycle:** Startup, Shutdown, Signal handling.
 * **BPA Integration:** gRPC registration and keepalive.
 * **Observability:** OTEL tracing and metrics.
