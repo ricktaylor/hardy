@@ -25,4 +25,4 @@ tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 serde = { version = "1.0.228", features = ["derive"] }
-config = { version = "0.15.22", features = ["toml"] }
+config = { version = "0.15.22", features = ["yaml", "toml", "json"] }
