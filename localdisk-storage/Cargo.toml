@@ -16,7 +16,7 @@ instrument = ["tracing/attributes"]
 [dependencies]
 hardy-bpa = { path = "../bpa" }
 tokio = { version = "1.51.1", features = ["fs"] }
-rand = "0.10.0"
+rand = "0.10.1"
 directories = "6.0.0"
 tracing = { version = "0.1.44", default-features = false }
 time = "0.3.47"
