@@ -90,7 +90,7 @@ jobs:
 
       - name: Start postgres and minio
         run: |
-          docker compose up -d --wait postgres minio minio-init
+          docker compose up -d --wait postgres minio
 
       - name: Create S3 test bucket
         run: |
