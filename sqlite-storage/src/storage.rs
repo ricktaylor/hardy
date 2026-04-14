@@ -756,17 +756,152 @@ impl storage::MetadataStorage for Storage {
 
 #[cfg(test)]
 mod tests {
-    // Trait-level CRUD/polling/recovery covered by `tests/storage` generic harness.
-    // Remaining backend-specific test gaps:
+    use super::*;
+    use hardy_bpa::storage::MetadataStorage;
 
-    // #[tokio::test]
-    // async fn test_concurrency_sql_02() {
-    //     // Verify connection pool handles concurrent reads/writes without SQLITE_BUSY errors.
-    // }
+    fn make_config(dir: &std::path::Path) -> crate::Config {
+        crate::Config {
+            db_dir: dir.to_path_buf(),
+            db_name: "test.db".into(),
+        }
+    }
 
-    // #[tokio::test]
-    // async fn test_corrupt_data_sql_05() {
-    //     // Verify malformed bundle data in DB is handled gracefully (logged/tombstoned),
-    //     // not panic.
-    // }
+    fn make_bundle(dest_service: u64) -> hardy_bpa::bundle::Bundle {
+        use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
+
+        let source: Eid = "ipn:1.0".parse().unwrap();
+        let dest: Eid = format!("ipn:2.{dest_service}").parse().unwrap();
+        let (_bundle, data) = Builder::new(source, dest)
+            .with_payload(b"test".to_vec().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+
+        let parsed =
+            hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys).unwrap();
+
+        hardy_bpa::bundle::Bundle {
+            bundle: parsed.bundle,
+            metadata: hardy_bpa::bundle::BundleMetadata::default(),
+        }
+    }
+
+    /// SQL-01: Database is created at the configured path.
+    #[tokio::test]
+    async fn test_configuration_custom_db_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = make_config(dir.path());
+        let _store = Storage::new(&config, true);
+
+        let db_path = dir.path().join("test.db");
+        assert!(
+            db_path.exists(),
+            "database file should be created at configured path"
+        );
+    }
+
+    /// SQL-04: Concurrent writers do not panic or deadlock.
+    #[tokio::test]
+    async fn test_concurrency_no_sqlite_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = make_config(dir.path());
+        let store = Arc::new(Storage::new(&config, true));
+
+        // Create all bundles upfront so we can capture their IDs for verification
+        let bundles: Vec<_> = (0..10).map(make_bundle).collect();
+        let ids: Vec<_> = bundles.iter().map(|b| b.bundle.id.clone()).collect();
+
+        let mut handles = Vec::new();
+        for bundle in bundles {
+            let store = store.clone();
+            handles.push(tokio::spawn(async move {
+                store.insert(&bundle).await.unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all 10 were inserted by reading them back
+        for (i, id) in ids.iter().enumerate() {
+            let result = store.get(id).await.unwrap();
+            assert!(result.is_some(), "bundle {i} should exist");
+        }
+    }
+
+    /// SQL-05: Corrupt data in the DB does not panic.
+    ///
+    /// `get()` returns an error on corrupt blob data (deserialization failure).
+    /// `confirm_exists()` handles it gracefully by tombstoning the entry.
+    #[tokio::test]
+    async fn test_corrupt_data_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = make_config(dir.path());
+        let store = Storage::new(&config, true);
+
+        // Insert a valid bundle
+        let bundle = make_bundle(0);
+        let id_bytes = serde_json::to_vec(&bundle.bundle.id).unwrap();
+        assert!(store.insert(&bundle).await.unwrap());
+
+        // Corrupt the bundle blob directly in the DB
+        {
+            let db_path = dir.path().join("test.db");
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute(
+                "UPDATE bundles SET bundle = X'DEADBEEF' WHERE bundle_id = ?1",
+                [&id_bytes],
+            )
+            .unwrap();
+        }
+
+        // get() returns Err (deserialization failure), not panic
+        let result = store.get(&bundle.bundle.id).await;
+        assert!(result.is_err(), "get() should return Err for corrupt data");
+
+        // confirm_exists() handles it gracefully — tombstones the entry
+        store.start_recovery().await;
+        let result = store.confirm_exists(&bundle.bundle.id).await.unwrap();
+        assert!(
+            result.is_none(),
+            "confirm_exists should return None for corrupt data"
+        );
+
+        // Entry should now be tombstoned
+        let result = store.get(&bundle.bundle.id).await.unwrap();
+        assert!(result.is_none(), "tombstoned entry should return None");
+    }
+
+    /// SQL-06: Waiting queue is invalidated when bundle status changes.
+    #[tokio::test]
+    async fn test_waiting_queue_invalidation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = make_config(dir.path());
+        let store = Storage::new(&config, true);
+
+        // Insert a bundle with Waiting status
+        let mut bundle = make_bundle(0);
+        bundle.metadata.status = BundleStatus::Waiting;
+        assert!(store.insert(&bundle).await.unwrap());
+
+        // Poll waiting — should return the bundle (populates waiting_queue)
+        let (tx, rx) = flume::unbounded();
+        store.poll_waiting(tx).await.unwrap();
+        let polled: Vec<_> = rx.drain().collect();
+        assert_eq!(polled.len(), 1, "should poll 1 waiting bundle");
+
+        // Update status to Dispatching
+        bundle.metadata.status = BundleStatus::Dispatching;
+        store.replace(&bundle).await.unwrap();
+
+        // Poll waiting again — should return nothing
+        let (tx, rx) = flume::unbounded();
+        store.poll_waiting(tx).await.unwrap();
+        let polled: Vec<_> = rx.drain().collect();
+        assert_eq!(
+            polled.len(),
+            0,
+            "waiting queue should be empty after status change"
+        );
+    }
 }
