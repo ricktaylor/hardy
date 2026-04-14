@@ -17,8 +17,8 @@ This report summarizes the test planning and execution status for the Hardy proj
 * **Transport:** High coverage (TCPCLv4 interop tests with 4 independent implementations + 2 fuzz targets). RFC 9174 compliance matrix complete (all 10 LLRs verified).
 * **System:** Moderate coverage (Basic End-to-End & Interop defined). Interop tests for dtn7-rs, HDTN, DTNME, ud3tn, and hardy-to-hardy passing.
 * **gRPC Proxies:** Full coverage (proto crate 31/31 plan tests, 78.0% line coverage). Client message mapping, error handling, lifecycle/unregistration, and server proxy handler tests all complete.
-* **TVR:** High coverage (127 unit tests, 75.3% line coverage, 10 system/component integration tests via grpcurl). Cron, parser, scheduler, and proto conversion fully covered.
-* **BPA:** Low unit test coverage (28% — only RIB tested, 36 stubs with `todo!()`). Covered at system level by interop tests and fuzz harness.
+* **TVR:** High coverage (141 unit tests, 77.2% line coverage, 10 system/component integration tests via grpcurl). Cron, parser, scheduler, proto conversion, and config loading fully covered.
+* **BPA:** Good unit test coverage (64% unit+pipeline lcov, 57% fuzz lcov, 55/59 plan scenarios). 2 stubs remaining (queue selection/fallback). See [`bpa/docs/test_coverage_report.md`](../bpa/docs/test_coverage_report.md).
 
 ## 2. Test Plan Inventory
 
@@ -78,7 +78,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | PICS items mapped to tests | 49 (16 fully tested, 14 planned, 15 N/A or not implemented) |
 | Interop peers | 4 passing on main (dtn7-rs, HDTN, DTNME, ud3tn), 3 on branches (ION, ESA-BP, cFS) |
 
-15 PICS items have test scenarios mapped in [PICS_Test_Mapping.md](PICS_Test_Mapping.md) that reference BPA unit test plan stubs. 36 commented-out test stubs with `todo!()` remain across `bpa/src/`. These need to be implemented to achieve full PICS verification coverage.
+15 PICS items have test scenarios mapped in [PICS_Test_Mapping.md](PICS_Test_Mapping.md). BPA has 55/59 in-scope plan scenarios implemented (93%). 2 commented-out stubs remain in `bpa/src/cla/peers.rs` (queue selection/fallback — post-initial-phase scope).
 
 ## 4. Implementation Gaps
 
@@ -105,7 +105,7 @@ This report summarizes the test planning and execution status for the Hardy proj
 | **OCI Packaging** | [REQ-15](requirements.md#req-15-independent-component-packaging) | **Partial** (Dockerfile + CI workflow exist; no published registry images) |
 | **BPSec Key Providers** | [REQ-2](requirements.md#req-2-support-for-bpsec-rfc9172-and-default-security-contexts-rfc9173) | **Partial** (`KeyProvider` trait + Registry exist; no concrete providers) |
 | **TCPCLv4 mTLS** | [REQ-3](requirements.md#req-3-full-compliance-with-rfc9174) | **Partial** (TLS supported; mutual TLS has TODO markers) |
-| **BPA Unit Tests** | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171), [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Partial** (15/53 plan scenarios implemented, 36 stubs with `todo!()`) |
+| **BPA Unit Tests** | [REQ-1](requirements.md#req-1-full-compliance-with-rfc9171), [REQ-6](requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) | **Complete** (55/59 plan scenarios, 64% unit lcov, 57% fuzz lcov) |
 
 ### 4.3 PICS Compliance Gap
 
@@ -115,4 +115,4 @@ This report summarizes the test planning and execution status for the Hardy proj
 
 ## 5. Conclusion
 
-The project has a comprehensive verification strategy for all implemented features. All 25 test plan documents are present and substantive. The test plans are consistent in format and traceable to the Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). The CBOR and BPv7 crates have complete LLR coverage with crate-level coverage reports. The proto crate has 100% plan coverage (31/31 tests, 78.0% line coverage) across 7 test suites covering client proxies, error handling, lifecycle, and server handlers. The TVR crate has 127 unit tests (75.3% line coverage) plus 10 system/component integration tests covering contact scheduling, cron evaluation, and gRPC session lifecycle. TCPCLv4 compliance is verified through interop testing with 3 independent implementations plus 2 fuzz targets. The primary remaining test debt is in the BPA crate (36 `todo!()` stubs, 28% plan coverage).
+The project has a comprehensive verification strategy for all implemented features. Test plans are present for all crates, consistent in format, and traceable to Low-Level Requirements (LLR). Tests are executed continuously via CI (`rust.yml`). Key coverage highlights: BPA 55/59 plan scenarios (93%), 64% unit lcov, 57% fuzz lcov. BPv7 100% plan coverage (78.5% line). Proto 100% plan coverage (81.2% line). TVR 141 unit tests (77.2% line) plus 10 integration tests. TCPCLv4 25 unit tests plus interop with 4 implementations and 2 fuzz targets. Storage backends fully covered by generic harness plus backend-specific unit tests (sqlite 70.9%, localdisk 77.1%). OTEL export verified by integration test (traces, metrics, logs). All server binaries have config unit tests and interop coverage. Interoperability verified across 7 peer implementations (20/20 at 0% loss).

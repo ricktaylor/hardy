@@ -5,7 +5,7 @@
 | **Functional Area** | IPN Legacy Encoding Filter |
 | **Module** | `ipn-legacy-filter` |
 | **Implements** | `hardy_bpa::filters::WriteFilter` trait |
-| **Requirements Ref** | [LLR 1.1.23](../../docs/requirements.md#31-standards-compliance-parent-req-1), [LLR 1.1.24](../../docs/requirements.md#31-standards-compliance-parent-req-1) (RFC 9758 IPN encoding) |
+| **Requirements Ref** | [LLR 1.1.23](../../docs/requirements.md#standards-compliance-11), [LLR 1.1.24](../../docs/requirements.md#standards-compliance-11) (RFC 9758 IPN encoding) |
 | **Test Suite ID** | PLAN-IPNF-01 |
 | **Version** | 1.0 |
 

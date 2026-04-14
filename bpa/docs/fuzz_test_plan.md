@@ -24,11 +24,11 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
  | ----- | ----- |
 | [**REQ-6**](../../docs/requirements.md#req-6-time-variant-routing-api) | Time-variant Routing API (Route updates during processing). |
 | [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs (Ingress/Egress). |
-| [**1.1.33**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Bundle Expiry (Time-to-Live processing). |
-| [**1.1.34**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Hop Count limit enforcement. |
+| [**1.1.33**](../../docs/requirements.md#bpv7-bundle-processing-11) | Bundle Expiry (Time-to-Live processing). |
+| [**1.1.34**](../../docs/requirements.md#bpv7-bundle-processing-11) | Hop Count limit enforcement. |
 | **1.1.50** | Status Report generation (triggered by `Action::Drop` routes in harness). |
-| [**6.1.7**](../../docs/requirements.md#313-routing-parent-req-6) | Routing logic (Discard/Forward decisions). |
-| [**6.1.8**](../../docs/requirements.md#313-routing-parent-req-6) | Bundle Reflection logic (triggered by `Action::Reflect` routes in harness). |
+| [**6.1.7**](../../docs/requirements.md#routing-61) | Routing logic (Discard/Forward decisions). |
+| [**6.1.8**](../../docs/requirements.md#routing-61) | Bundle Reflection logic (triggered by `Action::Reflect` routes in harness). |
 
 ## 3. Fuzz Target Definition
 

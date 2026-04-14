@@ -73,7 +73,7 @@ This document provides traceability between the CCSDS PICS (Protocol Implementat
 | Optional Group (O.1) | 5 | 1 | 1 | 0 | 100% of implemented |
 | Conditional (C) | 3 | 3 | 3 | 0 | 100% |
 
-*Note: Items marked "Planned" have test cases defined in UTP-BPA-01 but the test implementations are not yet active (commented-out stubs in source). See the unit test plan for detailed scenarios.*
+*Note: 55/59 in-scope BPA unit plan scenarios are implemented (93%). 2 stubs remain (queue selection/fallback — post-initial-phase). See the unit test plan and [`bpa/docs/test_coverage_report.md`](../bpa/docs/test_coverage_report.md) for details.*
 
 ## 4. Gaps and Actions
 
@@ -81,11 +81,11 @@ This document provides traceability between the CCSDS PICS (Protocol Implementat
 
 | PICS Item | Feature | Status | Impact | Action |
 | :--- | :--- | :--- | :--- | :--- |
-| 28 | BP Managed Information (Annex C) | M/N | Out of scope for De-risk phase | Documented as known limitation |
+| 28 | BP Managed Information (Annex C) | M/N | Out of scope for initial phase | Documented as known limitation |
 
 ### 4.2 Test Implementation Gaps
 
-15 PICS items now have mapped test scenarios in UTP-BPA-01 but the test code exists only as commented-out stubs (36 `todo!()` stubs across 11 files in `bpa/src/`). These need to be implemented to achieve full verification coverage.
+BPA has 55/59 in-scope plan scenarios implemented (93%). 2 stubs remain in `bpa/src/cla/peers.rs` (queue selection/fallback — post-initial-phase scope).
 
 ## 5. Revision History
 

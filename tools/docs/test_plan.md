@@ -4,7 +4,7 @@
 | :--- | :--- |
 | **Functional Area** | CLI Tools |
 | **Module** | `hardy-tools` |
-| **Requirements Ref** | [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 19.2.x](../../docs/requirements.md#318-tools-parent-req-19) |
+| **Requirements Ref** | [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 19.2.x](../../docs/requirements.md#tools-192) |
 | **Test Suite ID** | PLAN-TOOLS-01 |
 | **Version** | 1.0 |
 

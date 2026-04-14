@@ -5,7 +5,7 @@
 | **Functional Area** | Persistence Layer (Local Filesystem Backend) |
 | **Module** | `localdisk-storage` |
 | **Implements** | `hardy_bpa::storage::BundleStorage` |
-| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.1.x](../../docs/requirements.md#314-local-disk-storage-parent-req-7) |
+| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.1.x](../../docs/requirements.md#local-disk-storage-71) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-LD-01 |
 | **Version** | 1.1 |

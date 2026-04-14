@@ -5,7 +5,7 @@
 | **Functional Area** | Convergence Layer Adapters (Transport) |
 | **Module** | `hardy-bpa` |
 | **Interface** | `crate::cla::Cla` |
-| **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-5](../../docs/requirements.md#req-5-experimental-support-for-quic), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3), [LLR 6.x](../../docs/requirements.md#312-cla-apis-parent-req-6) |
+| **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-5](../../docs/requirements.md#req-5-experimental-support-for-quic), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [LLR 3.x](../../docs/requirements.md#tcpclv4-31), [LLR 6.x](../../docs/requirements.md#cla-apis-61) |
 | **Test Suite ID** | PLAN-CLA-01 |
 | **Version** | 1.0 |
 
@@ -20,8 +20,8 @@ The tests defined here are intended to be run against **all** implementations of
 | ID | Requirement | Test Coverage |
 | :--- | :--- | :--- |
 | [**REQ-3**](../../docs/requirements.md#req-3-full-compliance-with-rfc9174) | TCPCLv4 Compliance. | Verified by running suite against `hardy-tcpcl`. |
-| [**3.1.1**](../../docs/requirements.md#310-tcpclv4-parent-req-3) | Active Session Establishment. | Covered by **Suite D (Peer Management)**. |
-| [**6.1.3**](../../docs/requirements.md#312-cla-apis-parent-req-6) | Forwarding Success API. | Covered by **Suite B (Forwarding)**. |
+| [**3.1.1**](../../docs/requirements.md#tcpclv4-31) | Active Session Establishment. | Covered by **Suite D (Peer Management)**. |
+| [**6.1.3**](../../docs/requirements.md#cla-apis-61) | Forwarding Success API. | Covered by **Suite B (Forwarding)**. |
 
 ## 3. Test Suites
 

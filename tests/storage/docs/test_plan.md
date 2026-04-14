@@ -30,9 +30,9 @@ The `storage-tests` crate is a **generic integration harness** that verifies eve
 | [**REQ-7**](../../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage) | Support for local filesystem (SQLite/Local Disk). | Verified by running suite against `sqlite-storage`, `localdisk-storage`. |
 | [**REQ-8**](../../../docs/requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage) | Support for PostgreSQL. | Verified by running suite against `postgres-storage`. |
 | [**REQ-9**](../../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) | Support for S3 (Bundle Storage). | Verified by running suite against `s3-storage`. |
-| [**7.2.1**](../../../docs/requirements.md#315-sqlite-storage-parent-req-7) | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
-| [**7.1.1**](../../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
-| [**7.1.3**](../../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Configurable discard policy. | Covered by **Suite B (Polling)**. |
+| [**7.2.1**](../../../docs/requirements.md#sqlite-storage-72) | Store/Retrieve metadata. | Covered by **Suite A (Metadata CRUD)**. |
+| [**7.1.1**](../../../docs/requirements.md#local-disk-storage-71) | Store/Retrieve payloads. | Covered by **Suite D (Bundle CRUD)**. |
+| [**7.1.3**](../../../docs/requirements.md#local-disk-storage-71) | Configurable discard policy. | Covered by **Suite B (Polling)**. |
 
 ## 3. Harness Architecture
 

@@ -5,7 +5,7 @@
 | **Functional Area** | Persistence Layer (SQLite Backend) |
 | **Module** | `sqlite-storage` |
 | **Implements** | `hardy_bpa::storage::MetadataStorage` |
-| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#315-sqlite-storage-parent-req-7) |
+| **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [LLR 7.2.x](../../docs/requirements.md#sqlite-storage-72) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-SQLITE-01 |
 | **Version** | 1.1 |

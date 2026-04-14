@@ -287,7 +287,7 @@ Inline mock types (`TestApp`, `TestCla`) implement the `Application`/`Cla` trait
 | Area | Gap | Severity | Action |
 | :--- | :--- | :--- | :--- |
 | Status report generation | 0/2 unit tests | Low | Deferred — exercised by fuzz harness; dedicated tests need full pipeline |
-| CLA queue selection | 2/6 remaining | Low | Post-de-risk — multi-queue not in scope |
+| CLA queue selection | 2/6 remaining | Low | Post-initial-phase — multi-queue not in scope |
 
 ## 7. Conclusion
 

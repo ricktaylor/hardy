@@ -22,8 +22,8 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | LLR ID | Description |
 | ----- | ----- |
 | [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs. |
-| [**1.1.10**](../../docs/requirements.md#33-cbor-decoding-parent-req-1) | CBOR decoder must parse items within context of Maps/Arrays correctly. |
-| [**1.1.12**](../../docs/requirements.md#33-cbor-decoding-parent-req-1) | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
+| [**1.1.10**](../../docs/requirements.md#cbor-decoding-11) | CBOR decoder must parse items within context of Maps/Arrays correctly. |
+| [**1.1.12**](../../docs/requirements.md#cbor-decoding-11) | CBOR decoder must indicate if an incomplete item is found at end of buffer. |
 
 ## 3. Fuzz Target Definition
 

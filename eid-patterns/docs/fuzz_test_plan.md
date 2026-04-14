@@ -22,7 +22,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | LLR ID | Description |
 | ----- | ----- |
 | [**REQ-14**](../../docs/requirements.md#req-14-reliability) | Fuzz testing of all external APIs. |
-| [**6.1.1**](../../docs/requirements.md#311-eid-patterns-parent-req-6) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
+| [**6.1.1**](../../docs/requirements.md#eid-patterns-61) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
 
 ## 3. Fuzz Target Definition
 

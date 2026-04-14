@@ -94,7 +94,7 @@ All 10 scenarios are covered by interop testing (9) or fuzz testing (1). No dedi
 | TCPCL-SCALE-03 | Connection churn (100 conn/sec) | Not implemented |
 | TCPCL-SCALE-04 | TLS handshake throughput | Not implemented |
 
-These are performance/stress tests — appropriate for Full Activity, not De-risk.
+These are performance/stress tests — appropriate for Full Activity, not initial phase.
 
 ### 3.5 Fuzz Tests (FUZZ-TCPCL-01)
 

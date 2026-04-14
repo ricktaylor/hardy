@@ -5,7 +5,7 @@
 | **Functional Area** | Persistence Layer (S3 Backend) |
 | **Module** | `s3-storage` |
 | **Implements** | `hardy_bpa::storage::BundleStorage` |
-| **Requirements Ref** | [REQ-9](../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage), Part 4 ref 9.1, 9.2, [LLR 9.1.x](../../docs/requirements.md#316-s3-storage-parent-req-9) |
+| **Requirements Ref** | [REQ-9](../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage), Part 4 ref 9.1, 9.2, [LLR 9.1.x](../../docs/requirements.md#s3-storage-91) |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-S3-01 |
 | **Version** | 1.1 |

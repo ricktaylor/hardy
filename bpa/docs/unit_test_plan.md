@@ -20,14 +20,14 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | LLR ID | Description |
 | ----- | ----- |
-| [**1.1.30**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
-| [**1.1.33**](../../docs/requirements.md#37-bpv7-bundle-processing-parent-req-1) | Processing must use Bundle Age block for expiry if Creation Time is zero. |
-| [**2.1.2**](../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) | Correctly remove BPSec target info when targeted block is removed. |
-| [**2.1.3**](../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) | Validate that Fragmented bundles do NOT contain BPSec extension blocks. |
-| [**6.1.1**](../../docs/requirements.md#311-eid-patterns-parent-req-6) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
-| [**6.1.9**](../../docs/requirements.md#313-routing-parent-req-6) | Provide mechanism to prioritise routing rules. |
-| [**6.1.10**](../../docs/requirements.md#313-routing-parent-req-6) | Implement Equal Cost Multi-Path (ECMP). |
-| [**7.1.3**](../../docs/requirements.md#314-local-disk-storage-parent-req-7) | Configurable discard policy (FIFO/Priority) when storage full. |
+| [**1.1.30**](../../docs/requirements.md#bpv7-bundle-processing-11) | Processing must enforce bundle rewriting rules when discarding unrecognised blocks. |
+| [**1.1.33**](../../docs/requirements.md#bpv7-bundle-processing-11) | Processing must use Bundle Age block for expiry if Creation Time is zero. |
+| [**2.1.2**](../../docs/requirements.md#bpsec-21---optional-for-initial-development) | Correctly remove BPSec target info when targeted block is removed. |
+| [**2.1.3**](../../docs/requirements.md#bpsec-21---optional-for-initial-development) | Validate that Fragmented bundles do NOT contain BPSec extension blocks. |
+| [**6.1.1**](../../docs/requirements.md#eid-patterns-61) | Correctly parse textual representation of `ipn` and `dtn` EID patterns. |
+| [**6.1.9**](../../docs/requirements.md#routing-61) | Provide mechanism to prioritise routing rules. |
+| [**6.1.10**](../../docs/requirements.md#routing-61) | Implement Equal Cost Multi-Path (ECMP). |
+| [**7.1.3**](../../docs/requirements.md#local-disk-storage-71) | Configurable discard policy (FIFO/Priority) when storage full. |
 
 ## 3. Unit Test Cases
 

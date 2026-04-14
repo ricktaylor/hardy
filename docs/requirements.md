@@ -5,7 +5,7 @@
 | **Field** | **Value** |
 | :--- | :--- |
 | **Project** | Hardy (Cloud-based DTN Router for Ground Systems) |
-| **Version** | 3.0 (Consolidated) |
+| **Version** | 3.1 (LLR parent traceability corrected) |
 
 ## Scope
 
@@ -314,13 +314,13 @@ Not all high- or mid-level requirements have derived requirements, only those wh
 
 All requirements detailed here are validated through automated tests, and verified by examination of test reports.
 
-## 3.1 Standards Compliance (Parent: REQ-1)
+## Standards Compliance (1.1)
 
 | ID | Description |
 | :--- | :--- |
 | **1.1.1** | The implementation shall be compliant with all mandatory requirements of the CCSDS Bundle Protocol Specification (CCSDS 734.20-O-1), excluding the ADU Fragmentation process as defined in Section 5.8 of RFC 9171 |
 
-## 3.2 CBOR Encoding (Parent: REQ-1)
+## CBOR Encoding (1.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -329,7 +329,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **1.1.4** | The CBOR encoding functionality must emit all primitive types in canonical form, to ensure deterministically encoded CBOR, section 4.2 of RFC 8949, can be used appropriately |
 | **1.1.5** | The CBOR encoding functionality must ensure that all Maps and Arrays have the correct number of data items for definite length sequences |
 
-## 3.3 CBOR Decoding (Parent: REQ-1)
+## CBOR Decoding (1.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -340,13 +340,13 @@ All requirements detailed here are validated through automated tests, and verifi
 | **1.1.11** | The CBOR decoding functionality must support the ability to opportunistically parse an item from a byte sequence, and only return a data item if one exists |
 | **1.1.12** | The CBOR decoding functionality must indicate if an incomplete data item is found at the end of a byte sequence, which could be correctly parsed if more bytes were to be provided |
 
-## 3.4 CBOR General (Parent: REQ-1)
+## CBOR General (1.1)
 
 | ID | Description |
 | :--- | :--- |
 | **1.1.13** | The CBOR processing functionality should be suitable for use in embedded platforms (`no_std`) |
 
-## 3.5 BPv7 Parsing (Parent: REQ-1)
+## BPv7 Parsing (1.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -362,7 +362,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **1.1.23** | The bundle parsing functionality must support the 3-element CBOR encoding of 'ipn' scheme EIDs as defined in RFC 9758 |
 | **1.1.24** | The bundle parsing functionality should indicate if an 'ipn' URI scheme EID has been parsed from the 3-element CBOR encoding, or the legacy 2-element packed CBOR encoding |
 
-## 3.6 BPv7 Bundle Generation (Parent: REQ-1)
+## BPv7 Bundle Generation (1.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -372,7 +372,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **1.1.28** | The bundle creation and rewriting functionality must apply the required CRC values to all generated extension blocks |
 | **1.1.29** | The bundle creation functionality must allow a caller to specify the CRC type to be applied to the new bundle |
 
-## 3.7 BPv7 Bundle Processing (Parent: REQ-1)
+## BPv7 Bundle Processing (1.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -382,7 +382,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **1.1.33** | The bundle processing functionality must recognise and process the Bundle Age extension block when determining if a bundle's lifetime has expired |
 | **1.1.34** | The bundle processing functionality must process and act on the Hop Count extension block |
 
-## 3.8 BPSec (Parent: REQ-2) - *Optional for initial development*
+## BPSec (2.1) - *Optional for initial development*
 
 | ID | Description |
 | :--- | :--- |
@@ -390,7 +390,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **2.1.2** | The bundle parsing functionality shall correctly remove BPSec target information from any affected confidentiality or integrity block, when the targeted block is removed |
 | **2.1.3** | The bundle parsing functionality shall validate that any bundle with the "Bundle is a Fragment" flag set does not contain a BPSec extension block |
 
-## 3.9 RFC 9173 Security Contexts (Parent: REQ-2) - *Optional for initial development*
+## RFC 9173 Security Contexts (2.2) - *Optional for initial development*
 
 | ID | Description |
 | :--- | :--- |
@@ -402,7 +402,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **2.2.6** | The bundle parsing functionality may validate BPSec confidentiality extension blocks using the BCB-AES-GCM context with a 256-bit symmetric key value |
 | **2.2.7** | The bundle parsing functionality may validate BPSec confidentiality extension blocks using a key-wrap function on AES key |
 
-## 3.10 TCPCLv4 (Parent: REQ-3)
+## TCPCLv4 (3.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -417,21 +417,21 @@ All requirements detailed here are validated through automated tests, and verifi
 | **3.1.9** | The implementation shall support TLS Entity Identification using the DNS Name, and Network Address methods in Section 4.4.1 of RFC 9174 |
 | **3.1.10** | The implementation shall support session upkeep messages when negotiated |
 
-## 3.11 EID Patterns (Parent: REQ-6)
+## EID Patterns (6.1)
 
 | ID | Description |
 | :--- | :--- |
 | **6.1.1** | The EID pattern parsing functionality shall correctly parse the textual representation of 'ipn' EID patterns |
 | **6.1.2** | The EID pattern parsing functionality shall provide a function to determine if a particular EID and EID pattern match |
 
-## 3.12 CLA APIs (Parent: REQ-6)
+## CLA APIs (6.1)
 
 | ID | Description |
 | :--- | :--- |
 | **6.1.3** | The implementation shall provide an API to enable CLAs to indicate the success of forwarding |
 | **6.1.4** | The implementation shall provide an API for the resolution of EIDs to available CLA addresses, e.g. DNS lookup for TCPCLv4 addresses |
 
-## 3.13 Routing (Parent: REQ-6)
+## Routing (6.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -442,7 +442,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **6.1.9** | The implementation shall provide a mechanism to prioritise routing rules to avoid misconfiguration |
 | **6.1.10** | The implementation shall implement Equal Cost Multi-Path (ECMP) when multiple CLAs of the same priority can forward a bundle |
 
-## 3.14 Local Disk Storage (Parent: REQ-7)
+## Local Disk Storage (7.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -450,14 +450,14 @@ All requirements detailed here are validated through automated tests, and verifi
 | **7.1.2** | The implementation shall provide a configurable maximum total for all bundle data stored on the local filesystem |
 | **7.1.3** | The implementation shall provide a configurable mechanism to control how bundles are discarded when the storage reaches its capacity |
 
-## 3.15 SQLite Storage (Parent: REQ-7)
+## SQLite Storage (7.2)
 
 | ID | Description |
 | :--- | :--- |
 | **7.2.1** | The implementation shall provide the ability to store and retrieve metadata from an SQLite relational database stored on the local filesystem |
 | **7.2.2** | The implementation shall provide a configurable location for the filesystem location of the metadata database |
 
-## 3.16 S3 Storage (Parent: REQ-9)
+## S3 Storage (9.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -466,7 +466,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **9.1.3** | The implementation shall provide a configurable mechanism to control how bundles are discarded when the storage reaches its capacity |
 | **9.1.4** | The implementation shall use the common S3 APIs as implemented by the majority of cloud service providers, avoiding implementor specifics wherever possible |
 
-## 3.17 OpenTelemetry (Parent: REQ-19)
+## OpenTelemetry (19.1)
 
 | ID | Description |
 | :--- | :--- |
@@ -474,7 +474,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **19.1.2** | All components shall be able to emit OpenTelemetry Traces via the OpenTelemetry API |
 | **19.1.3** | All components shall be able to emit OpenTelemetry Metrics via the OpenTelemetry API |
 
-## 3.18 Tools (Parent: REQ-19)
+## Tools (19.2)
 
 | ID | Description |
 | :--- | :--- |
@@ -484,7 +484,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **19.2.4** | Tools shall avoid relying on the availability of BPv7 status reports for correct functionality |
 | **19.2.5** | Tools shall support being run without requiring a fully functional BPA be installed locally |
 
-## 3.19 Documentation (Parent: REQ-21)
+## Documentation (21.1, 21.2)
 
 | ID | Description |
 | :--- | :--- |
@@ -492,7 +492,7 @@ All requirements detailed here are validated through automated tests, and verifi
 | **21.2.2** | The Rust crates shall be available on crates.io |
 | **21.2.3** | The source code documentation shall be made available as RustDoc documentation on docs.rs |
 
-## 3.20 Issue Reporting and Tracking (Parent: REQ-21)
+## Issue Reporting and Tracking (21.3)
 
 | ID | Description |
 | :--- | :--- |
