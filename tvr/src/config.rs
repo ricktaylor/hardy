@@ -105,11 +105,14 @@ pub struct Config {
 impl Config {
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
         let config_file = config_file
-            .map(|p| p.to_string_lossy().into_owned())
-            .or_else(|| std::env::var("HARDY_TVR_CONFIG_FILE").ok())
-            .unwrap_or_else(|| default_config_path().to_string_lossy().into_owned());
+            .or_else(|| {
+                std::env::var("HARDY_TVR_CONFIG_FILE")
+                    .ok()
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(default_config_path);
 
-        let source_file = config::File::with_name(&config_file);
+        let source_file = config::File::with_name(&config_file.to_string_lossy());
         let source_env = config::Environment::with_prefix("HARDY_TVR")
             .prefix_separator("_")
             .separator("__")
@@ -122,7 +125,7 @@ impl Config {
             .build()?
             .try_deserialize()?;
 
-        eprintln!("Loaded configuration from '{config_file}'");
+        eprintln!("Loaded configuration from '{}'", config_file.display());
         Ok(config)
     }
 }
