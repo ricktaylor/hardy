@@ -155,10 +155,29 @@ pub struct OtelGuard {
     logger_provider: SdkLoggerProvider,
 }
 
+impl OtelGuard {
+    /// Force-flush all pending telemetry to the collector.
+    /// Call before shutdown for short-lived processes where the periodic
+    /// export interval (60s for metrics) may not have fired.
+    pub fn force_flush(&self) {
+        self.tracer_provider.force_flush().unwrap_or_else(|e| {
+            tracing::warn!("OTEL tracer flush failed: {e}");
+        });
+        self.meter_provider.force_flush().unwrap_or_else(|e| {
+            tracing::warn!("OTEL meter flush failed: {e}");
+        });
+        self.logger_provider.force_flush().unwrap_or_else(|e| {
+            eprintln!("Warning: OTEL logger flush failed: {e}");
+        });
+    }
+}
+
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        // Shutdown flushes pending telemetry to the OTLP collector.
-        // Failures are common when no collector is running and are not fatal.
+        // Flush pending telemetry before shutdown to avoid timeout errors
+        // when the periodic export interval hasn't fired yet.
+        self.force_flush();
+
         self.tracer_provider.shutdown().unwrap_or_else(|e| {
             tracing::warn!("OTEL tracer provider did not shut down cleanly: {e}")
         });
