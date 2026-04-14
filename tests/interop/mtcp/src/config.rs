@@ -1,6 +1,5 @@
 use serde::{Deserialize, Deserializer};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::Level;
 
@@ -30,7 +29,7 @@ pub enum Framing {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(default, rename_all = "kebab-case")]
 pub struct Config {
     /// The address of the BPA gRPC server (e.g. "http://[::1]:50051")
     pub bpa_address: String,
@@ -45,6 +44,23 @@ pub struct Config {
     /// CLA-specific configuration
     #[serde(flatten)]
     pub cla: ClaConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bpa_address: "http://[::1]:50051".to_string(),
+            cla_name: env!("CARGO_PKG_NAME").to_string(),
+            log_level: None,
+            cla: ClaConfig {
+                address: None,
+                framing: Framing::Stcp,
+                max_bundle_size: default_max_bundle_size(),
+                peer: None,
+                peer_node: None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,17 +89,25 @@ fn default_max_bundle_size() -> u64 {
     0x4000_0000 // 1GB
 }
 
-pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
-    let mut builder = config::Config::builder();
+impl Config {
+    pub fn load(config_file: Option<String>) -> anyhow::Result<Config> {
+        let config_file = config_file
+            .or_else(|| std::env::var("MTCP_CLA_CONFIG_FILE").ok())
+            .unwrap_or_else(|| "mtcp-cla".to_string());
 
-    if let Some(path) = path {
-        builder = builder.add_source(config::File::from(path));
-    } else {
-        builder = builder
-            .add_source(config::File::from(std::path::Path::new("mtcp-cla.toml")).required(false));
+        let source_file = config::File::with_name(&config_file).required(false);
+        let source_env = config::Environment::with_prefix("MTCP_CLA")
+            .prefix_separator("_")
+            .separator("__")
+            .convert_case(config::Case::Kebab);
+
+        let config = config::Config::builder()
+            .add_source(source_file)
+            .add_source(source_env)
+            .build()?
+            .try_deserialize()?;
+
+        eprintln!("Loaded configuration from '{config_file}'");
+        Ok(config)
     }
-
-    builder = builder.add_source(config::Environment::with_prefix("MTCP_CLA"));
-
-    builder.build()?.try_deserialize().map_err(Into::into)
 }

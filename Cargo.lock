@@ -2221,6 +2221,7 @@ dependencies = [
  "hardy-proto",
  "hardy-tcpclv4",
  "serde",
+ "tempfile",
  "tokio",
  "trace-err",
  "tracing",

@@ -59,17 +59,25 @@ impl Default for Config {
     }
 }
 
-pub fn load(path: Option<PathBuf>) -> anyhow::Result<Config> {
-    let mut builder = config::Config::builder();
+impl Config {
+    pub fn load(config_file: Option<String>) -> anyhow::Result<Config> {
+        let config_file = config_file
+            .or_else(|| std::env::var("HARDY_TVR_CONFIG_FILE").ok())
+            .unwrap_or_else(|| "hardy-tvr".to_string());
 
-    if let Some(path) = path {
-        builder = builder.add_source(config::File::from(path));
-    } else {
-        builder = builder
-            .add_source(config::File::from(std::path::Path::new("hardy-tvr.toml")).required(false));
+        let source_file = config::File::with_name(&config_file).required(false);
+        let source_env = config::Environment::with_prefix("HARDY_TVR")
+            .prefix_separator("_")
+            .separator("__")
+            .convert_case(config::Case::Kebab);
+
+        let config = config::Config::builder()
+            .add_source(source_file)
+            .add_source(source_env)
+            .build()?
+            .try_deserialize()?;
+
+        eprintln!("Loaded configuration from '{config_file}'");
+        Ok(config)
     }
-
-    builder = builder.add_source(config::Environment::with_prefix("HARDY_TVR"));
-
-    builder.build()?.try_deserialize().map_err(Into::into)
 }

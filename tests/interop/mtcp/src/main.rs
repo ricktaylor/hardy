@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use clap::Parser;
-use std::path::PathBuf;
+
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -22,13 +22,13 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 struct Args {
     /// Path to configuration file
     #[arg(short, long)]
-    config: Option<PathBuf>,
+    config: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config = config::load(args.config)?;
+    let config = config::Config::load(args.config)?;
 
     let log_level = std::env::var("MTCP_CLA_LOG_LEVEL")
         .ok()

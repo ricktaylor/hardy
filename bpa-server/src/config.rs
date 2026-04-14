@@ -146,7 +146,8 @@ impl Config {
         let source_file = ::config::File::with_name(&config_file);
         let source_env = ::config::Environment::with_prefix("HARDY_BPA_SERVER")
             .prefix_separator("_")
-            .separator("__");
+            .separator("__")
+            .convert_case(::config::Case::Kebab);
 
         let config = ::config::Config::builder()
             .add_source(source_file)

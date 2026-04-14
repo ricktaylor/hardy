@@ -1,7 +1,7 @@
 use clap::Parser;
 use hardy_async::TaskPool;
 use hardy_bpa::bpa::BpaRegistration;
-use std::path::PathBuf;
+
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -15,19 +15,14 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 struct Args {
     /// Path to configuration file
     #[arg(short, long)]
-    config: Option<PathBuf>,
+    config: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config = config::load(args.config)?;
-
-    let log_level = std::env::var("HARDY_TCPCLV4_LOG_LEVEL")
-        .ok()
-        .and_then(|s| s.parse::<tracing::Level>().ok())
-        .or(config.log_level)
-        .unwrap_or(tracing::Level::ERROR);
+    let config = config::Config::load(args.config)?;
+    let log_level = config.log_level.unwrap_or(tracing::Level::ERROR);
 
     #[cfg(feature = "otel")]
     let _guard = hardy_otel::init(PKG_NAME, PKG_VERSION, log_level);
