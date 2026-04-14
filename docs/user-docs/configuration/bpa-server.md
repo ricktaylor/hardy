@@ -50,7 +50,7 @@ and dots. For example:
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `node-ids` | String or list of EID strings | Random IPN EID | Endpoint IDs that identify this node. Supports `ipn:` and `dtn:` schemes. |
-| `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `error` | Logging verbosity. Also settable via `--log-level` CLI argument. |
+| `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. Also settable via `--log-level` CLI argument. |
 | `status-reports` | `true`, `false` | `false` | Whether to generate and dispatch bundle status reports. See warning below. |
 | `processing-pool-size` | Positive integer | 4 &times; CPU cores | Maximum concurrent bundle processing tasks. |
 | `poll-channel-depth` | Positive integer | `16` | Depth of the internal channel used for polling for new bundles. |
