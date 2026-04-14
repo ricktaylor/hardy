@@ -7,14 +7,17 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-14](../../docs/requirements.md#req-14-reliability), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 7.1.x](../../docs/requirements.md#314-local-disk-storage-parent-req-7), [LLR 19.x](../../docs/requirements.md#317-opentelemetry-parent-req-19) |
 | **Standard Ref** | OpenTelemetry (OTLP) |
 | **Test Suite ID** | PLAN-SERVER-01 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 
 This document details the testing strategy for the `hardy-bpa-server` module. Unlike the core libraries, this module is the **deployable executable**. Its primary responsibility is to bootstrap the system, load configuration, initialize telemetry, and wire up the internal components (BPA, TCPCL, Storage).
 
+Configuration loading and validation are tested at the unit level (§3). Protocol logic is delegated to `hardy-bpa`, `hardy-proto`, and `hardy-tcpclv4`, which have their own test coverage. System-level lifecycle behaviour is verified by interop tests.
+
 **Scope:**
 
-* **Configuration Management:** Merging of Config Files (TOML) with Environment Variables.
+* **Configuration Management:** Loading settings from YAML/TOML/JSON files and environment variables.
 
 * **Process Lifecycle:** Clean startup and graceful shutdown (Signal Handling).
 
@@ -38,13 +41,13 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 ### 3.1 Configuration Logic (LLR 3.1.5, 7.1.1, 7.1.2, 7.2.2)
 
 | Test Scenario | Description | Source File | Input | Expected Output |
- | ----- | ----- | ----- | ----- | ----- |
-| **Default Load (CFG-01)** | Verify that an empty or missing config file results in a valid configuration object populated with safe defaults. | `src/config.rs` | Empty config file. | Configuration struct populated with safe defaults (e.g., localhost:4556). |
-| **TOML Parsing (CFG-02)** | Verify that values from a valid `hardy.toml` file correctly override the defaults. | `src/config.rs` | Valid `hardy.toml` with overridden storage path. | `config.storage.path` matches file value. |
-| **Env Override (CFG-03)** | Verify that environment variables take precedence over values from a config file. | `src/config.rs` | File: `port=4000`<br>Env: `HARDY_PORT=5000` | Effective config uses `5000` (Env wins). |
-| **Validation (CFG-04)** | Verify that the parser rejects configuration with invalid values (e.g., out of range). | `src/config.rs` | Config with `keepalive=0` (Invalid). | Parser returns `ConfigError::InvalidValue`. |
-| **No Config File (CFG-05)** | Verify that the server can start using only default values if no config file is specified. | `src/config.rs` | Run without `-c` arg. | Defaults loaded, no error about missing file. |
-| **Path Resolution (CFG-06)** | Verify that relative paths in the config file are resolved correctly relative to a defined base. | `src/config.rs` | Config `storage.path = "./db"`. | Path resolved relative to CWD or Config File (Defined behavior). |
+| ----- | ----- | ----- | ----- | ----- |
+| **Default Load (CFG-01)** | Verify that an empty config file results in a valid configuration with safe defaults. | `src/config.rs` | Empty config file. | Configuration struct populated with defaults. |
+| **Multi-Format Parsing (CFG-02)** | Verify that YAML, TOML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
+| **Env Override (CFG-03)** | Verify that environment variables take precedence over config file values, including nested fields via `__` separator. | `src/config.rs` | File + env `HARDY_BPA_SERVER_LOG_LEVEL`. | Env var wins. |
+| **Validation (CFG-04)** | Verify that invalid values are rejected: malformed files, bad log levels, zero for NonZeroUsize, negative unsigned values. | `src/config.rs` | Various invalid inputs. | Error returned. |
+| **Storage Config (CFG-05)** | Verify storage backend selection (memory, sqlite, localdisk). | `src/config.rs` | Storage type in config. | Correct backend selected. |
+| **CLA Config (CFG-06)** | Verify CLA list parsing (TCPCLv4 entries, empty list). | `src/config.rs` | CLA list in config. | Correct CLA entries parsed. |
 
 ## 4. System Test Cases (Black-Box Execution)
 
@@ -64,14 +67,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ### 4.2 Observability & OpenTelemetry (REQ-19)
 
-*Objective: Verify integration with `hardy-otel` and the OTLP exporter.*
-*Harness: Run a local **Grafana LGTM** (Loki, Grafana, Tempo, Mimir) container to receive data.*
-
-| Test ID | Scenario | Procedure | Expected Result |
-| :--- | :--- | :--- | :--- |
-| **OTEL-01** | **Trace Emission** | 1. Configure `otel_endpoint = "http://localhost:4317"`.<br>2. Start Server.<br>3. Send a Bundle via `bping`.<br>4. Query Grafana Tempo for traces. | Trace exists for bundle transmission.<br>Trace contains spans: `bpa.receive`, `bpa.route`, `tcpcl.forward`. |
-| **OTEL-02** | **Metric Export** | 1. Start Server.<br>2. Send 100 bundles via `bping`.<br>3. Query Prometheus/OTEL metrics endpoint. | Metric `dtn_bundles_processed_total` increases.<br>Metric `dtn_storage_bytes` reflects usage. |
-| **OTEL-03** | **Structured Logging** | 1. Configure `log_format = "json"`.<br>2. Start Server.<br>3. Trigger an error (e.g., bad auth). | Stdout shows JSON formatted logs with `trace_id` and `span_id` correlated. |
+OTEL export (traces, metrics, logs) is verified by the hardy-otel crate's integration test (`otel/tests/test_otel_export.sh`). All server binaries use the same `hardy_otel::init()` call, so testing it once at the library level covers all binaries.
 
 ### 4.3 Integration Verification
 
