@@ -15,7 +15,7 @@ This crate implements a simple echo service (~117 lines) that swaps source and d
 
 ### Unit Tests
 
-None. The crate contains no unit tests.
+No unit tests are implemented — see [`PLAN-ECHO-01`](test_plan.md) §4 for rationale.
 
 ### End-to-End Verification
 
