@@ -50,7 +50,12 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 
 ## 4. Line Coverage
 
-Line coverage is not measurable for this crate. All harness verification runs through the external `tests/storage/` crate. Unit tests run within the crate but `cargo llvm-cov` has not been run.
+```
+cargo llvm-cov test --package hardy-localdisk-storage --lcov --output-path lcov.info --html
+lcov --summary lcov.info
+```
+
+Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`.
 
 ## 5. Conclusion
 

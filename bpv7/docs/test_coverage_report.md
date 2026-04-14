@@ -122,6 +122,20 @@ Per-file breakdown (from HTML report):
 
 ## 5. Fuzz Testing
 
+```
+cargo +nightly fuzz coverage random_bundles
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/random_bundles/lcov.info
+
+cargo +nightly fuzz coverage eid_cbor
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/eid_cbor/lcov.info
+
+cargo +nightly fuzz coverage eid_str
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/eid_str/lcov.info
+```
+
 | Target | Corpus | Line Coverage | Key Files |
 | :--- | :--- | :--- | :--- |
 | `random_bundles` | 7,772 inputs | 49.1% (2547/5187) | `bpsec/parse.rs` 100%, `primary_block.rs` 99%, `block.rs` 94%, `bib.rs` 97%, `parse.rs` 69% |

@@ -57,7 +57,12 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 
 ## 4. Line Coverage
 
-Line coverage is not measurable for this crate. All verification runs through the external `tests/storage/` harness, which exercises the `MetadataStorage` trait via dynamic dispatch. `cargo llvm-cov --package hardy-sqlite-storage` reports 0% because the test binary lives in a separate crate.
+```
+cargo llvm-cov test --package hardy-sqlite-storage --lcov --output-path lcov.info --html
+lcov --summary lcov.info
+```
+
+Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The generic storage harness (14 tests) runs in a separate crate and is not captured by `llvm-cov`.
 
 ## 5. Conclusion
 

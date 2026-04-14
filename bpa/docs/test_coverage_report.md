@@ -150,32 +150,15 @@ Covered by interop test suite (`tests/interop/`). All 7 implementations passing 
 
 ### 3.2 Fuzz Test Plan (FUZZ-BPA-01)
 
-| Target | Planned Msg Variants | Implemented | Status |
-| :--- | :--- | :--- | :--- |
-| `bpa` | `Cla(RandomBundle)` | Yes | Structured random bundles via CLA |
-| `bpa` | `ClaBytes(Vec<u8>)` | Yes | Raw bytes via CLA (parser + pipeline) |
-| `bpa` | `Service(Msg)` | Yes | Application API (send via service) |
-| `bpa` | `TickTimer(u64)` | No | Cannot test expiry paths |
-| `bpa` | `UpdateRoute(Vec<Updates>)` | No | Cannot test dynamic route changes |
-| **Total** | **5** | **3** | **60%** |
+| Msg Variant | Implemented | Status |
+| :--- | :--- | :--- |
+| `Cla(RandomBundle)` | Yes | Structured random bundles via CLA |
+| `ClaBytes(Vec<u8>)` | Yes | Raw bytes via CLA (parser + pipeline) |
+| `Service(Msg)` | Yes | Application API (send via service) |
+| `TickTimer(u64)` | No | Cannot test expiry paths |
+| `UpdateRoute(Vec<Updates>)` | No | Cannot test dynamic route changes |
 
-Fuzz coverage (61,673 corpus inputs, 2026-04-13):
-
-```
-  lines......: 49.7% (5006 of 10068 lines)
-```
-
-Key BPA files exercised by fuzz (not significantly covered by unit/pipeline tests):
-
-| File | Fuzz | Unit+Pipeline | Notes |
-| :--- | :--- | :--- | :--- |
-| `dispatcher/report.rs` | 98% | 11% | Status report generation — fuzz effectively covers §3.1 |
-| `dispatcher/admin.rs` | 85% | 0% | Administrative record processing |
-| `dispatcher/dispatch.rs` | 81% | 29% | Core dispatch pipeline |
-| `dispatcher/forward.rs` | 73% | 37% | Bundle forwarding |
-| `dispatcher/local.rs` | 72% | 39% | Local delivery |
-| `dispatcher/mod.rs` | 90% | 70% | Pipeline orchestration |
-| `storage/store.rs` | 67% | 46% | Store operations |
+3 of 5 message variants implemented. 61,673 corpus inputs.
 
 ### 3.3 Component Test Plan (PLAN-BPA-01)
 
@@ -248,7 +231,35 @@ Per-file breakdown (from HTML report):
 | `storage/recover.rs` | 0 | 142 | 0% | Recovery not exercised |
 | `routes.rs` | 0 | 19 | 0% | Trait definitions only |
 
-**Note:** This covers unit tests only. The fuzz harness (`bpa/fuzz/`) and interop tests exercise the dispatcher pipeline code that shows 0% here.
+**Note:** The above covers unit + pipeline tests only. The fuzz harness and interop tests exercise the dispatcher code that shows 0% here.
+
+### Fuzz Coverage
+
+```
+cargo +nightly fuzz coverage bpa
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/bpa/lcov.info
+```
+
+Results (61,673 corpus inputs, 2026-04-13):
+
+```
+  lines......: 49.7% (5006 of 10068 lines)
+```
+
+Key files where fuzz coverage exceeds unit+pipeline coverage:
+
+| File | Fuzz | Unit+Pipeline | Notes |
+| :--- | :--- | :--- | :--- |
+| `dispatcher/report.rs` | 98% | 11% | Status report generation — fuzz effectively covers §3.1 |
+| `dispatcher/admin.rs` | 85% | 0% | Administrative record processing |
+| `dispatcher/mod.rs` | 90% | 70% | Pipeline orchestration |
+| `dispatcher/dispatch.rs` | 81% | 29% | Core dispatch pipeline |
+| `dispatcher/forward.rs` | 73% | 37% | Bundle forwarding |
+| `dispatcher/local.rs` | 72% | 39% | Local delivery |
+| `storage/store.rs` | 67% | 46% | Store operations |
+
+Fuzz coverage is complementary to unit tests: unit tests verify correctness against known inputs, fuzz verifies pipeline robustness against adversarial bundles and random event sequences.
 
 ## 5. Test Infrastructure
 

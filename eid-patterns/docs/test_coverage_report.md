@@ -82,6 +82,16 @@ The line coverage (56.3%) is below the 90% target. The gaps fall into three cate
 2. **Conversion/Display impls** — `From<IpnNodeId>`, `From<NodeId>`, `From<Eid>`, `TryFrom<EidPattern>`, `Display` for all types — these are API surface exercised by consuming crates (bpa, bpv7), not by eid-patterns unit tests
 3. **Cross-scheme subset logic** — `AnyNumericScheme` vs `AnyTextScheme` comparisons in `is_subset`
 
+### Fuzz Coverage
+
+```
+cargo +nightly fuzz coverage eid_pattern_str
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/eid_pattern_str/lcov.info
+```
+
+Fuzz coverage is complementary to unit tests: unit tests verify pattern matching correctness, fuzz verifies parser robustness against adversarial input strings.
+
 ## 5. Key Gaps
 
 | Area | Gap | Severity | Notes |

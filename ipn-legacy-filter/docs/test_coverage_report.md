@@ -43,26 +43,21 @@ This crate supports the interoperability aspects of RFC 9758 IPN encoding (LLR 1
 
 Coverage is measured against [`PLAN-IPNF-01`](unit_test_plan.md).
 
-| Scope | Tests | Status |
-| :--- | :--- | :--- |
-| Filter via BPA pipeline | Implicit | Rewriting path exercised |
-| Dedicated unit tests | 0 | Not implemented |
+| Scope | Planned | Implemented | Status |
+| :--- | :--- | :--- | :--- |
+| Dedicated unit tests (IPNF-01..06) | 7 | 7 | Complete |
+| Filter via BPA pipeline | — | Implicit | Rewriting path exercised |
+| **Total** | **7** | **7** | **100%** |
 
 ## 4. Line Coverage
 
-Line coverage is not available. The crate has no unit tests. The filter is exercised indirectly through the BPA pipeline.
+```
+cargo llvm-cov test --package hardy-ipn-legacy-filter --lcov --output-path lcov.info --html
+lcov --summary lcov.info
+```
 
-## 5. Key Gaps
+Unit tests (7) exercise pattern matching, EID rewriting, no-op paths, and configuration.
 
-| Area | Gap | Severity | Notes |
-| :--- | :--- | :--- | :--- |
-| Pattern matching | EID pattern matching logic not independently tested | Medium | Core filter logic should be verifiable without full BPA stack |
-| EID rewriting | 3-element to 2-element conversion not independently tested | Medium | Correctness depends on `hardy-bpv7` EID encoding |
-| No-op paths | Bundles not matching the filter pattern should pass through unchanged | Low | Important for correctness but low risk |
-| Configuration | `serde` config deserialization not tested | Low | Thin config struct |
+## 5. Conclusion
 
-Unit tests for the filter transform are recommended. The filter's pattern matching and EID rewriting logic should be independently verifiable without standing up the full BPA pipeline.
-
-## 6. Conclusion
-
-The IPN legacy filter is currently verified only through implicit BPA pipeline and interop testing. No dedicated unit tests exist; the crate is ~112 lines with pattern matching and EID rewriting logic. Unit tests covering the filter transform (pattern matching, 3-to-2 element rewriting, no-op passthrough) are recommended as a Medium-severity gap. The filter's correctness is critical for interoperability with legacy DTN implementations.
+7 unit tests cover all planned scenarios (100%): allocator×matching matrix for both allocator_id=0 and allocator_id!=0, no-op paths (no next-hop, DTN endpoints, non-matching patterns), and empty configuration. The filter is also exercised implicitly through the BPA pipeline and interop tests.
