@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-19](../../docs/requirements.md#req-19-management-and-monitoring-tools) |
 | **Standard Ref** | OpenTelemetry Metrics SDK 0.31, `metrics` crate 0.24 |
 | **Test Suite ID** | UTP-OTEL-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

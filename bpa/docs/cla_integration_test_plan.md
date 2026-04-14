@@ -7,6 +7,7 @@
 | **Interface** | `crate::cla::Cla` |
 | **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-5](../../docs/requirements.md#req-5-experimental-support-for-quic), [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3), [LLR 6.x](../../docs/requirements.md#312-cla-apis-parent-req-6) |
 | **Test Suite ID** | PLAN-CLA-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

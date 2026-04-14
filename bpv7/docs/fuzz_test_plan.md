@@ -7,6 +7,7 @@
 | **Target Directory** | `bpv7/fuzz/fuzz_targets/` |
 | **Tooling** | `cargo-fuzz` (libFuzzer) + `sanitizers` |
 | **Test Suite ID** | FUZZ-BPV7-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

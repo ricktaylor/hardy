@@ -7,6 +7,7 @@
 | **Target Directory** | `tcpclv4/fuzz/fuzz_targets/` |
 | **Tooling** | `cargo fuzz` (libFuzzer) |
 | **Test Suite ID** | FUZZ-TCPCL-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

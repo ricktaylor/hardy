@@ -6,6 +6,7 @@
 | **Module** | `hardy-tvr` |
 | **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api-to-allow-real-time-configuration-of-contacts-and-bandwidth) |
 | **Test Suite ID** | `COMP-TVR-01` |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [LLR 1.1.x](../../docs/requirements.md#35-bpv7-parsing-parent-req-1) |
 | **Standard Ref** | RFC 9171 (BPv7 Wire Format), RFC 9758 (IPN Scheme) |
 | **Test Suite ID** | UTP-BPV7-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [LLR 6.1.x](../../docs/requirements.md#311-eid-patterns-parent-req-6) |
 | **Standard Ref** | `draft-ietf-dtn-eid-pattern-05` |
 | **Test Suite ID** | UTP-PAT-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

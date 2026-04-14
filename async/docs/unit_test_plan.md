@@ -6,6 +6,7 @@
 | **Module** | `hardy-async` |
 | **Parent Plan** | N/A — internal infrastructure, no LLR traceability |
 | **Test Suite ID** | UTP-ASYNC-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

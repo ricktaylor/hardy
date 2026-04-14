@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-1](../../docs/requirements.md#req-1-full-compliance-with-rfc9171), [LLR 1.1.x](../../docs/requirements.md#32-cbor-encoding-parent-req-1) |
 | **Standard Ref** | RFC 8949 (CBOR) |
 | **Test Suite ID** | UTP-CBOR-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

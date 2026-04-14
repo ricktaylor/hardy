@@ -7,6 +7,7 @@
 | **Target Source** | `cbor/fuzz/fuzz_targets/decode.rs` |
 | **Tooling** | `cargo-fuzz` (libFuzzer) + `sanitizers` |
 | **Test Suite ID** | FUZZ-CBOR-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

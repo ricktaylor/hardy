@@ -7,6 +7,7 @@
 | **Target Source** | `eid-patterns/fuzz/fuzz_targets/eid_pattern_str.rs` |
 | **Tooling** | `cargo-fuzz` (libFuzzer) + `sanitizers` |
 | **Test Suite ID** | FUZZ-PAT-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

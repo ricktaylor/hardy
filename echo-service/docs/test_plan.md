@@ -8,6 +8,7 @@
 | **Standard** | [draft-taylor-dtn-echo-service](https://datatracker.ietf.org/doc/draft-taylor-dtn-echo-service/) |
 | **Requirements Ref** | None (application-level service, no LLRs) |
 | **Test Suite ID** | PLAN-ECHO-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

@@ -8,6 +8,7 @@
 | **Tooling** | `cargo-fuzz` (libFuzzer) + `tokio` (single thread) |
 | **Test Suite ID** | FUZZ-BPA-01 |
 | **Revision** | Rev 2 (2026-04-11) — Source file paths updated; Msg variant status noted |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

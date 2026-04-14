@@ -7,6 +7,7 @@
 | **Requirements Ref** | [REQ-2](../../../docs/requirements.md#req-2-full-compliance-with-rfc9172-and-rfc9173), [LLR 2.x](../../../docs/requirements.md#38-bpsec-parent-req-2---optional-for-initial-development) |
 | **Standard Ref** | RFC 9172 (BPSec Core), RFC 9173 (BPSec Contexts) |
 | **Test Suite ID** | UTP-BPSEC-01 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 
