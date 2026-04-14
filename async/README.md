@@ -70,9 +70,8 @@ pool.shutdown().await;
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-async)
-- [Test Plan](docs/unit_test_plan.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-async)
 
 ## Licence
 

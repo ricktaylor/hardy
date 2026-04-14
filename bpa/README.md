@@ -52,8 +52,8 @@ bpa.shutdown().await;
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-bpa)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-bpa)
 
 ## Licence
 

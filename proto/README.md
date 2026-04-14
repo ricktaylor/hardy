@@ -38,8 +38,8 @@ server::init(&config, &bpa, &tasks);
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-proto)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-proto)
 
 ## Licence
 

@@ -42,8 +42,9 @@ cla.unregister().await;
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-tcpclv4)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-tcpclv4)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/convergence-layers/)
 
 ## Licence
 

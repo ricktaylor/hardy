@@ -179,7 +179,7 @@ following metrics are available:
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
-- [User Documentation](https://ricktaylor.github.io/hardy/)
+- [User Documentation](https://ricktaylor.github.io/hardy/configuration/bpa-server/#routing)
 
 ## Licence
 

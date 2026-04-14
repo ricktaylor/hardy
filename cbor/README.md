@@ -61,8 +61,8 @@ let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-cbor)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-cbor)
 
 ## Licence
 

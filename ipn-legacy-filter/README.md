@@ -10,6 +10,7 @@ Peer selection is driven by configurable EID patterns.
 ## Documentation
 
 - [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
 
 ## Licence
 

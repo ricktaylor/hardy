@@ -52,8 +52,8 @@ assert!(narrow.is_subset(&broad));
 ## Documentation
 
 - [Design](docs/design.md)
-- [API Documentation](https://docs.rs/hardy-eid-patterns)
 - [Test Coverage](docs/test_coverage_report.md)
+- [API Documentation](https://docs.rs/hardy-eid-patterns)
 
 ## Licence
 

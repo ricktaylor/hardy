@@ -10,7 +10,6 @@ originator. Used by `bp ping` and interoperability testing.
 ## Documentation
 
 - [Design](docs/design.md)
-- [Test Plan](docs/test_plan.md)
 - [Test Coverage](docs/test_coverage_report.md)
 
 ## Licence

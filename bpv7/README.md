@@ -86,6 +86,8 @@ for targets not supported out of the box.
 
 ## Documentation
 
+- [Design](docs/design.md)
+- [Test Coverage](docs/test_coverage_report.md)
 - [API Documentation](https://docs.rs/hardy-bpv7)
 
 ## Licence
