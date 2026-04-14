@@ -484,8 +484,16 @@ mod tests {
         assert!(result.is_err(), "save to read-only dir should return Err");
 
         // Restore permissions so tempdir cleanup succeeds
-        perms.set_readonly(false);
-        std::fs::set_permissions(dir.path(), perms).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            perms.set_readonly(false);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
     }
 
     /// Recursively collect all file paths under a directory.
