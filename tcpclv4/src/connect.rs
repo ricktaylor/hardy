@@ -40,7 +40,7 @@ impl Connector {
 
         // Send contact header
         stream
-            .write_all(&[b'd', b't', b'n', b'!', 4, self.ctx.tls_contact_flag()])
+            .write_all(&self.ctx.contact_header())
             .await
             .inspect_err(
                 |e| debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}"),

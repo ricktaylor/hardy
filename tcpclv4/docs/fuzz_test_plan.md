@@ -7,7 +7,7 @@
 | **Target Directory** | `tcpclv4/fuzz/fuzz_targets/` |
 | **Tooling** | `cargo fuzz` (libFuzzer) |
 | **Test Suite ID** | FUZZ-TCPCL-01 |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 
@@ -65,8 +65,6 @@ The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fu
   * Unexpected messages during handshake.
 
 ### 2.3 Target B: Service Logic (Structured)
-
-### 2.2 Target B: Service Logic (Structured)
 
 * **Source File:** `service_logic.rs`
 

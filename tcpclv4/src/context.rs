@@ -48,6 +48,11 @@ impl ConnectionContext {
         if self.tls_config.is_some() { 1 } else { 0 }
     }
 
+    /// Build the 6-byte contact header per RFC 9174 Section 4.2.
+    pub fn contact_header(&self) -> [u8; 6] {
+        [b'd', b't', b'n', b'!', 4, self.tls_contact_flag()]
+    }
+
     /// Returns the keepalive interval in seconds, defaulting to 0 if not configured.
     pub fn keepalive_interval_secs(&self) -> u16 {
         self.session.keepalive_interval.unwrap_or(0)
@@ -119,10 +124,7 @@ impl ConnectionContext {
         debug!(%local_addr, %remote_addr, "Contact header received");
 
         // Always send our contact header in reply!
-        if let Err(e) = stream
-            .write_all(&[b'd', b't', b'n', b'!', 4, self.tls_contact_flag()])
-            .await
-        {
+        if let Err(e) = stream.write_all(&self.contact_header()).await {
             debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}");
             return;
         }

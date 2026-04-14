@@ -848,3 +848,292 @@ impl tokio_util::codec::Encoder<Message> for MessageCodec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_util::codec::{Decoder, Encoder};
+
+    fn encode_msg(msg: Message) -> BytesMut {
+        let mut codec = MessageCodec {};
+        let mut buf = BytesMut::new();
+        codec.encode(msg, &mut buf).unwrap();
+        buf
+    }
+
+    fn decode_msg(buf: &[u8]) -> Option<Message> {
+        let mut codec = MessageCodec {};
+        let mut src = BytesMut::from(buf);
+        codec.decode(&mut src).unwrap()
+    }
+
+    // ---- UT-TCP-01: Message SerDes ----
+
+    /// UT-TCP-01: KEEPALIVE round-trip (simplest message — single byte).
+    #[test]
+    fn serdes_keepalive() {
+        let buf = encode_msg(Message::Keepalive);
+        assert_eq!(&buf[..], &[MessageType::KEEPALIVE as u8]);
+
+        let msg = decode_msg(&buf).unwrap();
+        assert!(matches!(msg, Message::Keepalive));
+    }
+
+    /// UT-TCP-01: SESS_TERM round-trip with reason code and reply flag.
+    #[test]
+    fn serdes_sess_term() {
+        let original = SessionTermMessage {
+            message_flags: SessionTermMessageFlags {
+                reply: true,
+                reserved: 0,
+            },
+            reason_code: SessionTermReasonCode::IdleTimeout,
+        };
+
+        let buf = encode_msg(Message::SessionTerm(original.clone()));
+        assert_eq!(buf[0], MessageType::SESS_TERM as u8);
+        assert_eq!(buf.len(), 3); // header + flags + reason
+
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::SessionTerm(decoded) => {
+                assert_eq!(decoded.message_flags.reply, true);
+                assert_eq!(decoded.reason_code, SessionTermReasonCode::IdleTimeout);
+            }
+            _ => panic!("expected SessionTerm"),
+        }
+    }
+
+    /// UT-TCP-01: SESS_INIT round-trip with node ID and no extensions.
+    #[test]
+    fn serdes_sess_init_basic() {
+        let original = SessionInitMessage {
+            keepalive_interval: 60,
+            segment_mru: 16384,
+            transfer_mru: 0x4000_0000,
+            node_id: Some("ipn:1.0".parse().unwrap()),
+            session_extensions: vec![],
+        };
+
+        let buf = encode_msg(Message::SessionInit(original));
+        assert_eq!(buf[0], MessageType::SESS_INIT as u8);
+
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::SessionInit(decoded) => {
+                assert_eq!(decoded.keepalive_interval, 60);
+                assert_eq!(decoded.segment_mru, 16384);
+                assert_eq!(decoded.transfer_mru, 0x4000_0000);
+                assert_eq!(decoded.node_id.unwrap().to_string(), "ipn:1.0");
+                assert!(decoded.session_extensions.is_empty());
+            }
+            _ => panic!("expected SessionInit"),
+        }
+    }
+
+    /// UT-TCP-01: SESS_INIT round-trip with no node ID.
+    #[test]
+    fn serdes_sess_init_no_node_id() {
+        let original = SessionInitMessage {
+            keepalive_interval: 0,
+            segment_mru: 1024,
+            transfer_mru: 1024,
+            node_id: None,
+            session_extensions: vec![],
+        };
+
+        let buf = encode_msg(Message::SessionInit(original));
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::SessionInit(decoded) => {
+                assert!(decoded.node_id.is_none());
+                assert_eq!(decoded.keepalive_interval, 0);
+            }
+            _ => panic!("expected SessionInit"),
+        }
+    }
+
+    /// UT-TCP-01: SESS_INIT round-trip with a session extension item.
+    #[test]
+    fn serdes_sess_init_with_extension() {
+        let ext_data = Bytes::from_static(b"\x01\x02\x03\x04");
+        let original = SessionInitMessage {
+            keepalive_interval: 30,
+            segment_mru: 8192,
+            transfer_mru: 65536,
+            node_id: Some("ipn:2.0".parse().unwrap()),
+            session_extensions: vec![SessionInitExtension {
+                flags: SessionInitExtensionFlags {
+                    critical: true,
+                    reserved: 0,
+                },
+                item_type: 0x00FF,
+                item_length: 4,
+                item_value: ext_data.clone(),
+            }],
+        };
+
+        let buf = encode_msg(Message::SessionInit(original));
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::SessionInit(decoded) => {
+                assert_eq!(decoded.session_extensions.len(), 1);
+                let ext = &decoded.session_extensions[0];
+                assert!(ext.flags.critical);
+                assert_eq!(ext.item_type, 0x00FF);
+                assert_eq!(ext.item_length, 4);
+                assert_eq!(&ext.item_value[..], &ext_data[..]);
+            }
+            _ => panic!("expected SessionInit"),
+        }
+    }
+
+    /// UT-TCP-01: XFER_SEGMENT round-trip (START+END, single segment).
+    #[test]
+    fn serdes_xfer_segment() {
+        let payload = Bytes::from_static(b"hello bundle");
+        let original = TransferSegmentMessage {
+            message_flags: TransferSegmentMessageFlags {
+                start: true,
+                end: true,
+                reserved: 0,
+            },
+            transfer_id: 42,
+            transfer_extensions: vec![],
+            data: payload.clone(),
+        };
+
+        let buf = encode_msg(Message::TransferSegment(original));
+        assert_eq!(buf[0], MessageType::XFER_SEGMENT as u8);
+
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::TransferSegment(decoded) => {
+                assert!(decoded.message_flags.start);
+                assert!(decoded.message_flags.end);
+                assert_eq!(decoded.transfer_id, 42);
+                assert_eq!(&decoded.data[..], b"hello bundle");
+            }
+            _ => panic!("expected TransferSegment"),
+        }
+    }
+
+    /// UT-TCP-01: XFER_ACK round-trip.
+    #[test]
+    fn serdes_xfer_ack() {
+        let buf = encode_msg(Message::TransferAck(TransferAckMessage {
+            message_flags: TransferSegmentMessageFlags {
+                start: false,
+                end: true,
+                reserved: 0,
+            },
+            transfer_id: 99,
+            acknowledged_length: 1000,
+        }));
+        assert_eq!(buf.len(), 18); // header(1) + flags(1) + id(8) + length(8)
+
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::TransferAck(decoded) => {
+                assert_eq!(decoded.transfer_id, 99);
+                assert_eq!(decoded.acknowledged_length, 1000);
+                assert!(decoded.message_flags.end);
+            }
+            _ => panic!("expected TransferAck"),
+        }
+    }
+
+    /// UT-TCP-01: XFER_REFUSE round-trip.
+    #[test]
+    fn serdes_xfer_refuse() {
+        let buf = encode_msg(Message::TransferRefuse(TransferRefuseMessage {
+            reason_code: TransferRefuseReasonCode::NoResources,
+            transfer_id: 7,
+        }));
+        assert_eq!(buf.len(), 10); // header(1) + reason(1) + id(8)
+
+        let msg = decode_msg(&buf).unwrap();
+        match msg {
+            Message::TransferRefuse(decoded) => {
+                assert_eq!(decoded.transfer_id, 7);
+                assert!(matches!(
+                    decoded.reason_code,
+                    TransferRefuseReasonCode::NoResources
+                ));
+            }
+            _ => panic!("expected TransferRefuse"),
+        }
+    }
+
+    /// UT-TCP-01: Invalid message type byte returns error.
+    #[test]
+    fn serdes_invalid_message_type() {
+        let mut codec = MessageCodec {};
+        let mut src = BytesMut::from(&[0xFF_u8][..]);
+        let result = codec.decode(&mut src);
+        assert!(result.is_err());
+    }
+
+    /// UT-TCP-01: Incomplete message returns None (needs more data).
+    #[test]
+    fn serdes_incomplete_returns_none() {
+        // SESS_TERM needs 3 bytes, give it 2
+        let msg = decode_msg(&[MessageType::SESS_TERM as u8, 0x00]);
+        assert!(msg.is_none());
+    }
+
+    // ---- UT-TCP-05: Reason Codes ----
+
+    /// UT-TCP-05: SessionTermReasonCode round-trip for all defined values.
+    #[test]
+    fn reason_code_sess_term_round_trip() {
+        let cases = [
+            (0u8, SessionTermReasonCode::Unknown),
+            (1, SessionTermReasonCode::IdleTimeout),
+            (2, SessionTermReasonCode::VersionMismatch),
+            (3, SessionTermReasonCode::Busy),
+            (4, SessionTermReasonCode::ContactFailure),
+            (5, SessionTermReasonCode::ResourceExhaustion),
+        ];
+
+        for (byte, expected) in &cases {
+            let decoded: SessionTermReasonCode = (*byte).into();
+            let re_encoded: u8 = decoded.into();
+            assert_eq!(re_encoded, *byte, "round-trip failed for {expected:?}");
+        }
+    }
+
+    /// UT-TCP-05: TransferRefuseReasonCode round-trip for all defined values.
+    #[test]
+    fn reason_code_xfer_refuse_round_trip() {
+        let cases: Vec<(u8, TransferRefuseReasonCode)> = vec![
+            (0, TransferRefuseReasonCode::Unknown),
+            (1, TransferRefuseReasonCode::Completed),
+            (2, TransferRefuseReasonCode::NoResources),
+            (3, TransferRefuseReasonCode::Retransmit),
+            (4, TransferRefuseReasonCode::NotAcceptable),
+            (5, TransferRefuseReasonCode::ExtensionFailure),
+            (6, TransferRefuseReasonCode::SessionTerminating),
+        ];
+
+        for (byte, _expected) in &cases {
+            let decoded: TransferRefuseReasonCode = (*byte).into();
+            let re_encoded: u8 = decoded.into();
+            assert_eq!(re_encoded, *byte);
+        }
+    }
+
+    /// UT-TCP-05: Unassigned and private reason code ranges preserved.
+    #[test]
+    fn reason_code_unassigned_and_private() {
+        // Unassigned range (7..=0xEF)
+        let decoded: SessionTermReasonCode = 42u8.into();
+        assert!(matches!(decoded, SessionTermReasonCode::Unassigned(42)));
+        assert_eq!(u8::from(decoded), 42);
+
+        // Private range (0xF0..=0xFF)
+        let decoded: SessionTermReasonCode = 0xF5u8.into();
+        assert!(matches!(decoded, SessionTermReasonCode::Private(0xF5)));
+        assert_eq!(u8::from(decoded), 0xF5);
+    }
+}
