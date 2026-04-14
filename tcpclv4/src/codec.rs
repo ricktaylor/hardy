@@ -897,7 +897,7 @@ mod tests {
         let msg = decode_msg(&buf).unwrap();
         match msg {
             Message::SessionTerm(decoded) => {
-                assert_eq!(decoded.message_flags.reply, true);
+                assert!(decoded.message_flags.reply);
                 assert_eq!(decoded.reason_code, SessionTermReasonCode::IdleTimeout);
             }
             _ => panic!("expected SessionTerm"),

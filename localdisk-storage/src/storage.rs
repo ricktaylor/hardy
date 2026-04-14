@@ -460,7 +460,7 @@ mod tests {
         // No .tmp files should remain anywhere
         let has_tmp = walkdir(dir.path())
             .iter()
-            .any(|p| p.extension().map_or(false, |e| e == "tmp"));
+            .any(|p| p.extension().is_some_and(|e| e == "tmp"));
         assert!(!has_tmp, "no .tmp files should remain after save");
 
         // Data should be correct
