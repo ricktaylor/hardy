@@ -2,9 +2,9 @@
 #
 # Start before running postgres/s3 tests:
 #
-#   docker compose -f tests/storage/compose.storage-tests.yml up -d --wait
-#   docker compose -f tests/storage/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
-#   docker compose -f tests/storage/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
+#   docker compose -f tests/compose.storage-tests.yml up -d --wait
+#   docker compose -f tests/compose.storage-tests.yml exec minio mc alias set local http://localhost:9000 minioadmin minioadmin
+#   docker compose -f tests/compose.storage-tests.yml exec minio mc mb --ignore-existing local/hardy-test
 #   TEST_POSTGRES_URL=postgresql://hardy:hardy@localhost:5432 \
 #   TEST_S3_ENDPOINT=http://localhost:9000 \
 #   AWS_ACCESS_KEY_ID=minioadmin \
@@ -41,4 +41,3 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-
