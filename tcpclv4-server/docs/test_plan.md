@@ -37,9 +37,11 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |
-| **Default Load (CFG-01)** | Verify loading defaults when no config provided. | `src/config.rs` | No config file. | Valid config with default port 4556. |
-| **TOML Parsing (CFG-02)** | Verify loading from TOML file. | `src/config.rs` | `hardy-tcpclv4.toml` with overrides. | Config struct matches file values. |
-| **Env Override (CFG-03)** | Verify environment variables override config. | `src/config.rs` | Env `HARDY_TCPCLV4_BPA_ADDRESS`. | Config reflects env var value. |
+| **Default Config (CFG-01)** | Verify valid defaults when no config provided. | `src/config.rs` | Empty config file. | Valid config: `bpa_address = "http://[::1]:50051"`, `cla_name = PKG_NAME`, port 4556. |
+| **Multi-Format Parsing (CFG-02)** | Verify that TOML, YAML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
+| **Env Override (CFG-03)** | Verify environment variables take precedence over config file values, including nested TCPCLv4 fields via `__` separator. | `src/config.rs` | File + env `HARDY_TCPCLV4_BPA_ADDRESS`. | Env var wins. |
+
+Additional validation tests cover: missing config file → error, invalid log level, negative MRU, invalid address, TLS partial config, malformed TOML/YAML, unknown fields ignored, large MRU values, and keepalive zero (disabled).
 
 ## 4. System Test Cases (Black-Box Execution)
 

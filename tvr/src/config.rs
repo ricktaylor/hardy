@@ -129,3 +129,204 @@ impl Config {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// Helper: write a config file and load it.
+    fn write_and_load(name: &str, content: &str) -> Config {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        Config::load(Some(path)).unwrap()
+    }
+
+    /// Empty config file produces sensible defaults.
+    #[test]
+    #[serial]
+    fn empty_config_has_defaults() {
+        let config = write_and_load("empty.yaml", "");
+        assert_eq!(config.log_level, Level::INFO);
+        assert_eq!(config.bpa_address, "http://[::1]:50051");
+        assert_eq!(config.agent_name, "hardy-tvr");
+        assert_eq!(config.priority, 100);
+        assert!(config.contact_plan.is_none());
+        assert!(config.watch);
+        assert_eq!(
+            config.grpc_listen,
+            std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 50052))
+        );
+    }
+
+    /// YAML config file overrides defaults.
+    #[test]
+    #[serial]
+    fn yaml_overrides_defaults() {
+        let config = write_and_load(
+            "test.yaml",
+            r#"
+log-level: debug
+bpa-address: "http://10.0.0.1:50051"
+agent-name: "my-tvr"
+priority: 200
+contact-plan: "/etc/hardy/contacts"
+watch: false
+grpc-listen: "[::]:9999"
+"#,
+        );
+        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.bpa_address, "http://10.0.0.1:50051");
+        assert_eq!(config.agent_name, "my-tvr");
+        assert_eq!(config.priority, 200);
+        assert_eq!(
+            config.contact_plan.unwrap(),
+            PathBuf::from("/etc/hardy/contacts")
+        );
+        assert!(!config.watch);
+    }
+
+    /// TOML config file works identically to YAML.
+    #[test]
+    #[serial]
+    fn toml_config() {
+        let config = write_and_load(
+            "test.toml",
+            r#"
+log-level = "warn"
+bpa-address = "http://10.0.0.2:50051"
+agent-name = "toml-tvr"
+priority = 50
+"#,
+        );
+        assert_eq!(config.log_level, Level::WARN);
+        assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
+        assert_eq!(config.agent_name, "toml-tvr");
+        assert_eq!(config.priority, 50);
+    }
+
+    /// JSON config file works identically to YAML.
+    #[test]
+    #[serial]
+    fn json_config() {
+        let config = write_and_load(
+            "test.json",
+            r#"{
+    "log-level": "error",
+    "agent-name": "json-tvr",
+    "priority": 1
+}"#,
+        );
+        assert_eq!(config.log_level, Level::ERROR);
+        assert_eq!(config.agent_name, "json-tvr");
+        assert_eq!(config.priority, 1);
+    }
+
+    /// Environment variables override config file values.
+    #[test]
+    #[serial]
+    fn env_overrides_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.yaml");
+        std::fs::write(&path, "log-level: info\nagent-name: file-tvr\n").unwrap();
+
+        unsafe { std::env::set_var("HARDY_TVR_LOG_LEVEL", "debug") };
+        unsafe { std::env::set_var("HARDY_TVR_AGENT_NAME", "env-tvr") };
+        let config = Config::load(Some(path)).unwrap();
+        unsafe { std::env::remove_var("HARDY_TVR_LOG_LEVEL") };
+        unsafe { std::env::remove_var("HARDY_TVR_AGENT_NAME") };
+
+        assert_eq!(
+            config.log_level,
+            Level::DEBUG,
+            "env var should override log level"
+        );
+        assert_eq!(
+            config.agent_name, "env-tvr",
+            "env var should override agent name"
+        );
+    }
+
+    /// Missing config file returns an error.
+    #[test]
+    #[serial]
+    fn missing_config_file_errors() {
+        let result = Config::load(Some(PathBuf::from("/nonexistent/path/config")));
+        assert!(result.is_err());
+    }
+
+    /// Invalid log level in config file returns an error.
+    #[test]
+    #[serial]
+    fn invalid_log_level_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "log-level: banana\n").unwrap();
+        let result = Config::load(Some(path));
+        assert!(result.is_err());
+    }
+
+    /// Malformed YAML returns an error.
+    #[test]
+    #[serial]
+    fn malformed_yaml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "agent-name: [broken\n").unwrap();
+        let result = Config::load(Some(path));
+        assert!(result.is_err());
+    }
+
+    /// Malformed TOML returns an error.
+    #[test]
+    #[serial]
+    fn malformed_toml_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "log-level = \n").unwrap();
+        let result = Config::load(Some(path));
+        assert!(result.is_err());
+    }
+
+    /// Unknown fields are silently ignored.
+    #[test]
+    #[serial]
+    fn unknown_fields_ignored() {
+        let config = write_and_load(
+            "extra.yaml",
+            r#"
+log-level: warn
+this-field-does-not-exist: 42
+"#,
+        );
+        assert_eq!(config.log_level, Level::WARN);
+    }
+
+    /// Contact plan path is preserved.
+    #[test]
+    #[serial]
+    fn contact_plan_path() {
+        let config = write_and_load("plan.yaml", "contact-plan: /tmp/contacts.txt\n");
+        assert_eq!(
+            config.contact_plan.unwrap(),
+            PathBuf::from("/tmp/contacts.txt")
+        );
+    }
+
+    /// Watch can be disabled.
+    #[test]
+    #[serial]
+    fn watch_disabled() {
+        let config = write_and_load("nowatch.yaml", "watch: false\n");
+        assert!(!config.watch);
+    }
+
+    /// Priority zero is valid.
+    #[test]
+    #[serial]
+    fn priority_zero() {
+        let config = write_and_load("prio.yaml", "priority: 0\n");
+        assert_eq!(config.priority, 0);
+    }
+}

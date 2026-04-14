@@ -3,93 +3,81 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tcpclv4-server` |
-| **Test Plan** | [`PLAN-TCPCL-SERVER-01`](test_plan.md) |
-| **Date** | 2026-04-09 |
+| **Test Plans** | [`PLAN-TCPCL-SERVER-01`](test_plan.md) |
+| **Date** | 2026-04-14 |
 
-## 1. Coverage Summary
+## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
-| Suite | Area | Planned | Covered | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| §3 CFG-01–03 | Configuration logic | 3 | 0 | **Not started** |
-| §4.1 SYS-01–03 | Lifecycle & integration | 3 | 3 | **Covered** (interop + CI) |
-| §4.2 OTEL-01–03 | Observability | 3 | 0 | **Not started** |
-| §4.3 PERF-SRV-01 | Performance | 1 | 0 | **Not started** |
-| §4.4 PKG-OCI/HELM | Packaging | 2 | 0 | **Not started** |
-| UT-TCP-01–05 | Library unit tests | 5 | 2 | **Partial** (fuzz only) |
-| TCP-01–10 | Library component tests | 10 | 0 | **Not started** |
-| FUZZ-TCPCL-01 | Library fuzz targets | 2 | 2 | **Complete** (on branch) |
-| Interop | End-to-end scripts | 4 | 4 | **Complete** |
-| CI pipeline | Container ping test | 1 | 1 | **Complete** |
-| | **Total** | **34** | **12** | **35%** |
+The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verification is covered by the library's [coverage report](../../tcpclv4/docs/test_coverage_report.md). This report covers server-specific concerns only.
 
-## 2. Server-Specific Tests
-
-No server-specific unit or system tests are implemented. All planned tests in the test plan (CFG, OTEL, PERF, PKG) remain at 0%.
-
-## 3. Cross-Coverage from Other Test Suites
-
-The tcpclv4-server binary is a thin wrapper around the `hardy-tcpclv4` library. The server-specific code (`main.rs`, `config.rs`) is ~150 lines of application wiring. Protocol-level coverage is provided by library and integration test suites.
-
-### 3.1 Coverage from `hardy-tcpclv4` Library
-
-| Area | Status | Notes |
-| :--- | :--- | :--- |
-| **UT-TCP-01** Message SerDes | Exercised by fuzz | Codec encode/decode of all TCPCL message types |
-| **UT-TCP-02** Contact Header | Exercised by fuzz | Magic string and version validation |
-| **UT-TCP-03** Parameter Negotiation | Stub | `session.rs:655` — not implemented |
-| **UT-TCP-04** Fragment Logic | Stub | `session.rs:663` — not implemented |
-| **UT-TCP-05** Reason Codes | Stub | `session.rs:670` — not implemented |
-| **FUZZ-TCPCL-01** Passive Listener | Complete | `fuzz_targets/passive.rs` (on `tcpclv4-fuzz` branch) |
-| **FUZZ-TCPCL-01** Active Connector | Complete | `fuzz_targets/active.rs` (on `tcpclv4-fuzz` branch) |
-
-Fuzz testing found one bug: subtraction overflow in `codec.rs` extension parsing (SESS_INIT + XFER_SEGMENT). Fixed with `saturating_sub`/`saturating_add` on the `tcpclv4-fuzz` branch.
-
-### 3.2 Coverage from Interop Tests
-
-| Test Script | Peer | Scenarios exercised |
-| :--- | :--- | :--- |
-| `hardy/test_hardy_ping.sh` | Hardy | Startup, BPA registration, active+passive handshake, bidirectional transfer, graceful shutdown |
-| `dtn7-rs/test_dtn7rs_ping.sh` | dtn7-rs | Cross-impl TCPCLv4 handshake, extension tolerance, transfer |
-| `HDTN/test_hdtn_ping.sh` | HDTN | Cross-impl TCPCLv4 handshake, transfer |
-| `DTNME/test_dtnme_ping.sh` | DTNME | Cross-impl TCPCLv4 handshake, transfer |
-
-### 3.3 Coverage from CI Pipeline
-
-| Test | Scenarios exercised |
-| :--- | :--- |
-| `compose.ping-tests.yml` | Docker container startup, health check, `bp ping` loopback, graceful shutdown via container stop |
-
-### 3.4 Server Scenario Coverage Matrix
-
-| Server scenario | Test plan ref | Covered by | Formal test? |
+| Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| Process startup | SYS-01 | Interop + CI | Implicit |
-| TCP listen on configured port | SYS-01 | Interop + CI | Implicit |
-| BPA gRPC registration | SYS-02 | Interop + CI | Implicit |
-| Graceful shutdown (SIGTERM) | SYS-03 | Interop + CI | Implicit |
-| Active TCPCLv4 handshake | TCP-01 (library) | Interop (4 implementations) | Yes |
-| Passive TCPCLv4 handshake | TCP-01 (library) | Interop (4 implementations) | Yes |
-| Bundle transfer (send + receive) | TCP-03 (library) | Interop + CI | Yes |
-| Configuration defaults | CFG-01 | — | **Not covered** |
-| Configuration file parsing | CFG-02 | — | **Not covered** |
-| Environment variable overrides | CFG-03 | — | **Not covered** |
-| OTEL trace export | OTEL-01 | — | **Not covered** |
-| OTEL metrics export | OTEL-02 | — | **Not covered** |
-| OTEL log export | OTEL-03 | — | **Not covered** |
-| mTLS | — | — | **Not implemented** |
-| OCI image structure | PKG-OCI-01 | — | **Not covered** |
-| Helm chart | PKG-HELM-01 | — | **Not covered** |
+| 3.2 | Process startup | **Pass** | Interop + CI (implicit) |
+| 3.2 | BPA gRPC registration | **Pass** | Interop + CI (implicit) |
+| 3.2 | Graceful shutdown (SIGTERM) | **Pass** | Interop + CI (implicit) |
+| 3.2 | Configuration defaults | **Pass** | `empty_config_has_defaults` |
+| 3.2 | Configuration file parsing (TOML, YAML, JSON) | **Pass** | `toml_overrides_defaults`, `yaml_config`, `json_config` |
+| 3.2 | Environment variable overrides | **Pass** | `env_overrides_file`, `env_overrides_nested_fields` |
+| 3.2 | Configuration validation | **Pass** | 7 error-case tests |
+| 3.2 | Performance (> 1Gbps) | **Not tested** | PERF-SRV-01 |
+| 3.2 | OCI image structure | **Not tested** | PKG-OCI-01 |
+| 3.2 | Helm chart | **Not tested** | PKG-HELM-01 |
 
-## 4. Known Gaps
+## 2. Test Inventory
 
-| Gap | Impact | Priority |
-| :--- | :--- | :--- |
-| No configuration tests (CFG-01–03) | Config errors only caught at runtime | Medium |
-| No OTEL metrics defined or tested | No visibility into CLA performance | Medium |
-| Library unit test stubs (UT-TCP-03–05) | Parameter negotiation, fragmentation, and reason code logic untested at unit level | Medium |
-| Fuzz targets not merged to main | `tcpclv4-fuzz` branch with codec bug fix | High — merge before release |
-| mTLS not implemented | `config.rs:45`, `context.rs:352`, `connect.rs:163` | Deferred |
+### Unit Tests (16 tests in `config.rs`)
 
-## 5. Conclusion
+| Test Function | Scope |
+| :--- | :--- |
+| `empty_config_has_defaults` | Empty file → valid defaults (bpa_address, cla_name, port 4556) |
+| `toml_overrides_defaults` | TOML overrides all fields |
+| `yaml_config` | YAML file works identically |
+| `json_config` | JSON file works identically |
+| `env_overrides_file` | Env var overrides file value |
+| `env_overrides_nested_fields` | `__` separator for nested TCPCLv4 fields |
+| `missing_config_file_errors` | Non-existent file → error |
+| `invalid_log_level_errors` | Bad log level → error |
+| `negative_segment_mru_errors` | Negative MRU → error |
+| `invalid_address_errors` | Bad listen address → error |
+| `tls_partial_config` | TLS cert + key without CA |
+| `malformed_toml_errors` | Invalid TOML → error |
+| `malformed_yaml_errors` | Invalid YAML → error |
+| `unknown_fields_ignored` | Extra fields accepted |
+| `large_segment_mru` | Large MRU value accepted |
+| `keepalive_zero` | Zero keepalive = disabled |
 
-The tcpclv4-server has effective protocol-level coverage through library fuzz targets and interop testing against four DTN implementations. The three lifecycle scenarios (startup, registration, shutdown) are implicitly exercised by every interop and CI test run. Server-specific concerns — configuration parsing, OTEL observability, and packaging verification — have no formal tests. The highest-priority gap is merging the `tcpclv4-fuzz` branch.
+### Cross-Coverage from Other Test Suites
+
+Lifecycle scenarios (startup, registration, shutdown) are exercised by:
+
+- **Interop tests** ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) — 4 TCPCLv4 peer implementations
+- **CI pipeline** (`compose.ping-tests.yml`) — Docker container lifecycle
+
+## 3. Coverage vs Plan
+
+| Source | Scope | Planned | Implemented | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (16 tests) |
+| Server lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
+| Performance (PERF-SRV-01) | Throughput | 1 | 0 | Full Activity scope |
+| Packaging (PKG-OCI-01, PKG-HELM-01) | OCI image, Helm chart | 2 | 0 | Full Activity scope |
+
+## 4. Line Coverage
+
+```
+cargo llvm-cov test --package hardy-tcpclv4-server --lcov --output-path lcov.info
+lcov --summary lcov.info
+```
+
+Unit tests (16) exercise config loading, multi-format parsing, env override, validation, and error handling.
+
+## 5. Key Gaps
+
+| Area | Gap | Severity | Notes |
+| :--- | :--- | :--- | :--- |
+| Packaging | No OCI/Helm verification | Low | Full Activity scope |
+| Performance | No throughput test | Low | Full Activity scope |
+
+## 6. Conclusion
+
+16 configuration unit tests cover all 3 planned config scenarios (CFG-01..03) including multi-format parsing (TOML, YAML, JSON), env overrides with nested field support, and comprehensive validation/error handling. Lifecycle scenarios are verified implicitly by interop and CI. Performance and packaging tests remain for Full Activity.

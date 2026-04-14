@@ -331,6 +331,18 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **With Priority** | Priority override set. | `src/server.rs` | `{ ..., priority: 50 }` | `priority = Some(50)`. |
 | **With Link Properties** | Bandwidth and delay. | `src/server.rs` | `{ ..., bandwidth_bps: 10G, delay_us: 500000 }` | Fields set. |
 
+### 3.25 Configuration Loading
+
+*Objective: Verify config loading, multi-format support, env override, and validation.*
+
+| Test Scenario | Description | Source File | Input | Expected Output |
+| ----- | ----- | ----- | ----- | ----- |
+| **Default Config (CFG-01)** | Verify valid defaults when no config provided. | `src/config.rs` | Empty config file. | Valid config: `bpa_address = "http://[::1]:50051"`, `agent_name = "hardy-tvr"`, `priority = 100`. |
+| **Multi-Format Parsing (CFG-02)** | Verify that YAML, TOML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
+| **Env Override (CFG-03)** | Verify environment variables take precedence over config file values. | `src/config.rs` | File + env `HARDY_TVR_LOG_LEVEL`. | Env var wins. |
+
+Additional validation tests cover: missing config file → error, invalid log level, malformed YAML/TOML, unknown fields ignored, contact plan path, watch disabled, and priority zero.
+
 ## 4. Execution & Pass Criteria
 
 * **Command:** `cargo test -p hardy-tvr`

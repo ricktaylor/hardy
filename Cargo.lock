@@ -2278,6 +2278,8 @@ dependencies = [
  "prost",
  "prost-types",
  "serde",
+ "serial_test",
+ "tempfile",
  "time",
  "tokio",
  "tokio-stream",
