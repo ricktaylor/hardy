@@ -6,6 +6,7 @@
 | **Module** | `hardy-tcpclv4-server` |
 | **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 3.x](../../docs/requirements.md#310-tcpclv4-parent-req-3) |
 | **Test Suite ID** | PLAN-TCPCL-SERVER-01 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 
@@ -24,7 +25,7 @@ Core protocol logic (RFC 9174 state machine, packet parsing) is verified by the 
 
 ## 2. Requirements Mapping
 
-The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the unit tests in this plan:
+The following requirements from **[requirements.md](../../docs/requirements.md)** are verified by the tests in this plan:
 
 | LLR ID | Description |
 | :--- | :--- |
@@ -58,13 +59,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 
 ### 4.2 Observability (REQ-19)
 
-*Objective: Verify integration with `hardy-otel` and the OTLP exporter.*
-
-| Test ID | Scenario | Procedure | Expected Result |
-| :--- | :--- | :--- | :--- |
-| **OTEL-01** | **Trace Export** | 1. Configure `otel_endpoint`.<br>2. Transfer a bundle.<br>3. Query Grafana Tempo for traces. | Spans exist for session + transfer. |
-| **OTEL-02** | **Metrics Export** | 1. Transfer bundles.<br>2. Query metrics endpoint. | Session and transfer counters increment. |
-| **OTEL-03** | **Log Export** | 1. Configure OTLP.<br>2. Trigger an error.<br>3. Query Loki. | Structured log with trace correlation. |
+OTEL integration is verified by [`PLAN-SERVER-01`](../../bpa-server/docs/test_plan.md) (OTEL-01..03). Both binaries use the same `hardy-otel::init()` call, so testing it once via `bpa-server` is sufficient. The `hardy-otel` crate has its own unit tests ([`UTP-OTEL-01`](../../otel/docs/unit_test_plan.md)) verifying the metrics bridge.
 
 ### 4.3 Performance (REQ-13)
 

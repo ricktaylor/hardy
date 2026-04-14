@@ -16,12 +16,13 @@ This document details the testing strategy for the `tcpclv4` crate. This crate p
 
 ## 2. Testing Strategy
 
-The verification strategy is two-fold:
+The verification strategy combines three layers:
 
-1. **Generic Trait Compliance:** The `tcpclv4` implementation is run against the generic test harness for the `Cla` trait ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)) to ensure it correctly interfaces with the BPA's routing and dispatch logic.
-2. **Protocol Compliance:** Specific component tests are defined to verify the on-the-wire behavior of the TCPCLv4 state machine, including session management, data segmentation, and TLS. These tests use a `duplex` harness to simulate a peer and inspect the byte stream.
+1. **Generic Trait Compliance:** The `tcpclv4` implementation is verified against the `Cla` trait contract ([`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md)).
+2. **Protocol Compliance:** Verified through interoperability testing ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) against 4 independent TCPCLv4 implementations (Hardy, dtn7-rs, HDTN, DTNME). This provides stronger verification than an in-process harness, as it exercises the full protocol stack including TCP, TLS, and session negotiation against real peers.
+3. **Robustness:** Fuzz testing ([`FUZZ-TCPCL-01`](fuzz_test_plan.md)) with adversarial byte streams verifies that malformed input (including protocol errors like bad magic, invalid messages, and truncated frames) is handled without panics or hangs.
 
-Currently, protocol compliance is verified through interoperability testing ([`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md)) against 4 TCPCLv4 peer implementations (Hardy, dtn7-rs, HDTN, DTNME). The `duplex` harness will provide isolated verification of edge cases not covered by interop (e.g. TCP-08 protocol errors).
+A `duplex`-based in-process harness was originally planned but is not needed — interop tests cover 9 of 10 component scenarios against real implementations, and fuzz tests cover the remaining scenario (TCP-08: protocol error handling) by verifying clean termination on arbitrary malformed input.
 
 ## 3. Generic Test Coverage
 
@@ -34,20 +35,20 @@ The following suites from the parent plan ([`PLAN-CLA-01`](../../bpa/docs/cla_in
 
 ## 4. Specific TCPCLv4 Tests
 
-These tests verify the RFC 9174 protocol logic using a dedicated component test harness.
+These scenarios verify RFC 9174 protocol logic. All are covered by interop testing or fuzz testing — no dedicated component test harness is required.
 
-| Test ID | Scenario | Description | LLR Ref |
+| Test ID | Scenario | LLR Ref | Covered By |
 | :--- | :--- | :--- | :--- |
-| **TCP-01** | **Active/Passive Handshake** | Verify the 3-way handshake (`CONTACT`, `SESS_INIT`, `SESS_ACK`) for both initiator and listener roles. | 3.1.1, 3.1.2 |
-| **TCP-02** | **Session Parameters** | Verify that parameters from the `SESS_INIT` header (Node ID, Keepalive) are correctly parsed and applied. | 3.1.4, 3.1.5 |
-| **TCP-03** | **Data Segmentation** | Verify a large bundle is correctly fragmented into multiple `XFER_SEGMENT` messages and reassembled by the peer. | N/A |
-| **TCP-04** | **Keepalive** | Verify that `KEEPALIVE` messages are sent during idle periods and that the session is dropped if they are not acknowledged. | 3.1.10 |
-| **TCP-05** | **TLS Handshake (Default)** | Verify that TLS is enabled by default and that a secure session is established using the provided certificates. | 3.1.7, 3.1.8 |
-| **TCP-06** | **TLS Disabled** | Verify that if TLS is explicitly disabled in the configuration, the session is established in plaintext. | 3.1.8 |
-| **TCP-07** | **Connection Pooling** | Verify that after a bundle is sent, the underlying TCP connection is returned to an idle pool and reused for a subsequent transfer. | 3.1.3 |
-| **TCP-08** | **Protocol Error** | Send an invalid header (e.g., bad magic number in `CONTACT`) and verify the connection is terminated immediately. | N/A |
-| **TCP-09** | **TLS Entity ID** | Verify the peer's certificate is validated against the expected DNS Name or Network Address. | 3.1.9 |
-| **TCP-10** | **Session Extensions** | Verify that unknown (but valid) extension items in the `SESS_INIT` header are ignored and do not cause a handshake failure. | 3.1.6 |
+| **TCP-01** | **Active/Passive Handshake** | 3.1.1, 3.1.2 | Interop: every test exercises both roles |
+| **TCP-02** | **Session Parameters** | 3.1.4, 3.1.5 | Interop: node ID + parameter exchange with all peers |
+| **TCP-03** | **Data Segmentation** | — | Interop: every bundle transfer exercises segmentation |
+| **TCP-04** | **Keepalive** | 3.1.10 | Interop: long-running tests |
+| **TCP-05** | **TLS Handshake (Default)** | 3.1.7, 3.1.8 | Interop: TLS-capable peers |
+| **TCP-06** | **TLS Disabled** | 3.1.8 | Interop: `--no-tls` configuration |
+| **TCP-07** | **Connection Pooling** | 3.1.3 | Interop: multi-ping connection reuse |
+| **TCP-08** | **Protocol Error** | — | Fuzz: adversarial byte streams (bad magic, invalid messages, truncated frames) |
+| **TCP-09** | **TLS Entity ID** | 3.1.9 | Interop: TLS peers with certificate validation |
+| **TCP-10** | **Session Extensions** | 3.1.6 | Interop: passively exercised (peers send extensions) |
 
 ## 5. Unit Test Coverage
 
@@ -72,7 +73,16 @@ These tests verify the RFC 9174 protocol logic using a dedicated component test 
 | **TCPCL-SCALE-03** | **Connection Churn** | Continuously connect/disconnect at 100 conn/sec for 10 minutes. | No connection failures. No resource leaks. |
 | **TCPCL-SCALE-04** | **TLS Handshake Throughput** | Measure TLS session establishment rate. | > 500 TLS handshakes/sec (single core). |
 
-## 7. Execution Strategy
+## 7. Deprecated: `duplex` Test Harness
+
+The original v1.0 plan proposed a `tokio::io::duplex`-based in-process harness to simulate a peer and inspect the byte stream for TCP-01 through TCP-10. This has been superseded by:
+
+- **Interop tests** (TCP-01..07, 09, 10): testing against 4 real TCPCLv4 implementations provides stronger verification than an in-process simulation, as it exercises the full TCP/TLS stack and real SESS_INIT negotiation.
+- **Fuzz tests** (TCP-08): adversarial byte streams exercise the same error-handling paths that crafted protocol frames would, with broader input coverage.
+
+The duplex harness is not planned for implementation.
+
+## 8. Execution Strategy
 
 * **Unit Tests:** `cargo test -p hardy-tcpclv4`
 * **Interop Tests:** `./tests/interop/run_all.sh`

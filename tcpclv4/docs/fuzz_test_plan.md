@@ -17,9 +17,9 @@ This document details the fuzz testing strategy for the `hardy-tcpclv4` module. 
 
 ## 2. Fuzz Target Definitions
 
-The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fuzz_targets/`.
+Two complementary fuzz targets located in `tcpclv4/fuzz/fuzz_targets/`.
 
-### 2.1 Target A: Protocol Stream — Passive (Listener)
+### 2.1 Passive (Listener)
 
 * **Source File:** `passive.rs`
 * **Status:** Implemented
@@ -41,7 +41,7 @@ The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fu
   * Unexpected message types (e.g., `XFER_ACK` before `SESS_INIT`).
   * Huge length fields (OOM protection).
 
-### 2.2 Target A: Protocol Stream — Active (Connector)
+### 2.2 Active (Connector)
 
 * **Source File:** `active.rs`
 * **Status:** Implemented
@@ -64,25 +64,11 @@ The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fu
   * Invalid SESS_INIT responses.
   * Unexpected messages during handshake.
 
-### 2.3 Target B: Service Logic (Structured)
+### 2.3 Deprecated: Service Logic (Structured)
 
-* **Source File:** `service_logic.rs`
+Originally planned as Target B — structured `TcpclMessage` fuzzing bypassing the parser to exercise the session state machine with valid messages in invalid orders.
 
-* **Input:** `Arbitrary` generation of `TcpclMessage` structs.
-
-* **Harness:**
-
-  1. Instantiate the `TcpclService` directly (bypassing the parser).
-
-  2. Feed it a sequence of valid message structs (e.g., `SessInit`, then `XferSegment`).
-
-* **Goal:** Verify **Logic robustness**:
-
-  * Does the session state machine handle valid messages in invalid orders?
-
-  * Does receiving a `MSG_REJECT` cause a panic?
-
-  * Does the logic handle `XFER_SEGMENT` flags correctly (Start/End/Middle)?
+This target is not needed. The raw byte fuzz targets (§2.1, §2.2) already exercise the session state machine through coverage-guided mutation that naturally discovers valid message sequences. The codec unit tests (UT-TCP-01) independently verify that the parser produces correct message structs from wire bytes.
 
 ## 3. Vulnerability Classes & Mitigation
 
@@ -98,14 +84,11 @@ The strategy utilizes two complementary fuzz targets located in `tcpclv4/fuzz/fu
 ### 4.1 Running the Fuzzer
 
 ```bash
-# Target A — Passive: Listener (Raw Bytes)
+# Passive: Listener (Raw Bytes)
 cargo +nightly fuzz run passive -- -max_total_time=1800
 
-# Target A — Active: Connector (Raw Bytes)
+# Active: Connector (Raw Bytes)
 cargo +nightly fuzz run active -- -max_total_time=1800
-
-# Target B: Service Logic (Structs) — not yet implemented
-# cargo +nightly fuzz run service_logic -- -max_total_time=1800
 ```
 
 ### 4.2 Sanitizer Configuration
@@ -114,26 +97,38 @@ AddressSanitizer (ASAN) is critical for detecting buffer over-reads during frame
 
 ```bash
 export RUSTFLAGS="-Zsanitizer=address"
-cargo fuzz run session_stream
+cargo +nightly fuzz run passive
+```
+
+### 4.3 Coverage
+
+```bash
+cargo +nightly fuzz coverage passive
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/passive/lcov.info
+
+cargo +nightly fuzz coverage active
+cargo +nightly cov -- export --format=lcov ...
+lcov --summary ./fuzz/coverage/active/lcov.info
 ```
 
 ## 5. Pass/Fail Criteria
 
 * **PASS:** Zero crashes (panics) and zero timeouts (>10s hang per iteration).
 * **FAIL:**
-* **Panic:** `index out of bounds` in buffer parsing.
-* **Timeout:** `await` on a read future that never completes (deadlock).
+  * **Panic:** `index out of bounds` in buffer parsing.
+  * **Timeout:** `await` on a read future that never completes (deadlock).
 
 ## 6. Shared Infrastructure
 
 * **Location:** `tcpclv4/fuzz/src/lib.rs`
 * **Provides:** `MockSink`, `MockBpa`, `setup_listener()`, `setup_connector()`, `FUZZ_ADDR`
 * **Session config:** 2s contact timeout, no keepalive, no TLS (tuned for fuzz throughput)
+* **Per-iteration timeouts:** 5s passive, 15s active (prevents libfuzzer slow-unit reports)
 
 ## 7. Corpus Management
 
 * **Location:** `tcpclv4/fuzz/corpus/{target_name}/`
-* **Seed Data** (to be created):
-  * **Passive:** Hex dump of a valid client contact header (`dtn!\x04\x00`).
-  * **Active:** Hex dump of a valid server contact header response.
-  * **Service:** Serialized sequence of `SessInit`, `XferSegment` structs.
+* **Seed Data:**
+  * **Passive:** Valid client contact header (`dtn!\x04\x00`).
+  * **Active:** Valid server contact header response.
