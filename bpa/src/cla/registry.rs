@@ -403,7 +403,7 @@ mod tests {
     // Registering a CLA with an already-in-use name should fail.
     #[tokio::test]
     async fn test_duplicate_registration() {
-        let bpa = Bpa::builder().build();
+        let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
         let cla1 = Arc::new(TestCla::new());
@@ -427,7 +427,7 @@ mod tests {
     // Adding a peer installs a RIB entry; removing it withdraws it.
     #[tokio::test]
     async fn test_peer_lifecycle() {
-        let bpa = Bpa::builder().build();
+        let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());
@@ -463,7 +463,7 @@ mod tests {
     // Unregistering a CLA should remove all its peers.
     #[tokio::test]
     async fn test_cascading_cleanup() {
-        let bpa = Bpa::builder().build();
+        let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());

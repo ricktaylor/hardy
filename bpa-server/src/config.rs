@@ -4,11 +4,13 @@ use hardy_bpa::filters::rfc9171;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::Level;
 
-use crate::bpa::clas::Cla;
+use crate::bpa::clas;
 use crate::bpa::grpc;
+use crate::bpa::policy;
 use crate::bpa::static_routes;
 use crate::bpa::storage;
 use crate::error::Error;
@@ -136,9 +138,13 @@ pub struct Config {
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
 
-    // Convergence Layer Adaptors (CLAs)
+    /// Named egress policies, referenced by CLAs
     #[serde(default)]
-    pub clas: Vec<Cla>,
+    pub policies: HashMap<String, policy::EgressPolicyConfig>,
+
+    /// Convergence Layer Adaptors (CLAs)
+    #[serde(default)]
+    pub clas: Vec<clas::Config>,
 }
 
 impl Config {

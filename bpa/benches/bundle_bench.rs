@@ -79,7 +79,7 @@ fn get_state() -> &'static BenchState {
             )
             .unwrap();
 
-            let bpa = Bpa::builder().node_ids(node_ids).build();
+            let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
             bpa.start(false);
 
             let (cla, arrival_rx) = BenchCla::new();

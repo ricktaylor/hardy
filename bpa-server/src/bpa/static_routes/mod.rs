@@ -271,16 +271,15 @@ impl RoutingAgent for StaticRoutesAgent {
     }
 }
 
-pub fn add_to_builder(
-    builder: hardy_bpa::builder::BpaBuilder,
-    config: &Config,
-) -> anyhow::Result<hardy_bpa::builder::BpaBuilder> {
-    // Ensure it's absolute
+pub fn new(
+    routes_file: &PathBuf,
+    priority: u32,
+    watch: bool,
+) -> anyhow::Result<Arc<dyn RoutingAgent>> {
     let routes_file = std::env::current_dir()
         .context("Failed to get current directory")?
-        .join(&config.routes_file);
+        .join(routes_file);
 
-    // Try to create canonical file path
     let routes_file = match routes_file.canonicalize() {
         Ok(path) => path,
         Err(e) => {
@@ -294,11 +293,8 @@ pub fn add_to_builder(
         }
     };
 
-    let agent = Arc::new(StaticRoutesAgent::new(
-        routes_file,
-        config.priority,
-        config.watch,
-    ));
+    let agent: Arc<dyn RoutingAgent> =
+        Arc::new(StaticRoutesAgent::new(routes_file, priority, watch));
 
-    Ok(builder.routing_agent(config.protocol_id.clone(), agent))
+    Ok(agent)
 }

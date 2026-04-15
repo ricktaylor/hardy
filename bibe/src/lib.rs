@@ -87,10 +87,7 @@ impl Bibe {
             .await?;
 
         // Register decapsulation service
-        let decap_service_id = self
-            .decap_service_id
-            .clone()
-            .unwrap_or(Service::Ipn(2048));
+        let decap_service_id = self.decap_service_id.clone().unwrap_or(Service::Ipn(2048));
         bpa.register_service(decap_service_id, self.decap_service.clone())
             .await?;
 

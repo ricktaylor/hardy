@@ -16,20 +16,14 @@ pub enum EgressPolicyConfig {
     Unknown,
 }
 
-// Instantiate the configured egress policy for a CLA, if recognised.
-pub async fn init(
-    cla_name: &str,
+pub fn new(
     config: &EgressPolicyConfig,
-) -> anyhow::Result<Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>> {
+) -> anyhow::Result<Arc<dyn hardy_bpa::policy::EgressPolicy>> {
     match config {
         // #[cfg(feature = "htb_policy")]
         // EgressPolicyConfig::Htb { config } => {
-        //     let policy = Arc::new(hardy_bpa::policy::htb_policy::HtbPolicy::new(config));
-        //     Ok(policy)
+        //     Ok(Arc::new(hardy_bpa::policy::htb_policy::HtbPolicy::new(config)))
         // }
-        EgressPolicyConfig::Unknown => {
-            warn!("Ignoring unknown policy type for CLA: {cla_name}");
-            Ok(None)
-        }
+        EgressPolicyConfig::Unknown => Err(anyhow::anyhow!("Unknown policy type")),
     }
 }
