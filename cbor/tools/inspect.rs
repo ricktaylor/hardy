@@ -1,6 +1,4 @@
-/*!
-Inspect command - display CBOR data in various formats
-*/
+// Inspect command - display CBOR data in various formats
 
 use super::cdn;
 use super::io::{Input, Output};
@@ -70,7 +68,7 @@ impl Command {
     }
 }
 
-/// Format CBOR as JSON (lossy conversion)
+// Format CBOR as JSON (lossy conversion)
 fn format_as_json(cbor_bytes: &[u8]) -> anyhow::Result<String> {
     let (json_value, _len) = decode::parse_value(cbor_bytes, |val, _shortest, _tags| {
         value_to_json(val, cbor_bytes)
@@ -79,7 +77,7 @@ fn format_as_json(cbor_bytes: &[u8]) -> anyhow::Result<String> {
     Ok(json_value)
 }
 
-/// Convert a CBOR value to JSON string (lossy)
+// Convert a CBOR value to JSON string (lossy)
 fn value_to_json(value: Value, data: &[u8]) -> Result<String, decode::Error> {
     match value {
         Value::UnsignedInteger(n) => Ok(n.to_string()),
@@ -147,7 +145,7 @@ fn value_to_json(value: Value, data: &[u8]) -> Result<String, decode::Error> {
     }
 }
 
-/// Escape special characters for JSON strings
+// Escape special characters for JSON strings
 fn escape_json_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
@@ -168,7 +166,7 @@ fn escape_json_string(s: &str) -> String {
     result
 }
 
-/// Wrapper type for parsing CBOR values as JSON strings
+// Wrapper type for parsing CBOR values as JSON strings
 struct JsonString(String);
 
 impl FromCbor for JsonString {

@@ -1,8 +1,6 @@
-/*!
-CDN parser using Chumsky 0.12
-
-Parses CBOR Diagnostic Notation (CDN) text into AST.
-*/
+// CDN parser using Chumsky 0.12
+//
+// Parses CBOR Diagnostic Notation (CDN) text into AST.
 
 use super::ast::CdnValue;
 use base64::prelude::*;
@@ -20,16 +18,16 @@ type BoxedParser<'a, T> = Boxed<'a, 'a, &'a str, T, Extra<'a>>;
 // Public API
 // ============================================================================
 
-/// Parse CDN text into a CDN AST value
-///
-/// # Examples
-///
-/// ```
-/// use hardy_cbor_tools::cdn::parse;
-///
-/// let cdn = "[1, 2, h'deadbeef']";
-/// let value = parse(cdn).unwrap();
-/// ```
+// Parse CDN text into a CDN AST value
+//
+// # Examples
+//
+// ```
+// use hardy_cbor_tools::cdn::parse;
+//
+// let cdn = "[1, 2, h'deadbeef']";
+// let value = parse(cdn).unwrap();
+// ```
 pub fn parse(input: &str) -> Result<CdnValue, Vec<Rich<'_, char, Span>>> {
     cdn_parser().parse(input).into_result()
 }
@@ -38,12 +36,12 @@ pub fn parse(input: &str) -> Result<CdnValue, Vec<Rich<'_, char, Span>>> {
 // Parser Implementation
 // ============================================================================
 
-/// Build the complete CDN parser
+// Build the complete CDN parser
 fn cdn_parser<'a>() -> BoxedParser<'a, CdnValue> {
     value_parser().then_ignore(end()).boxed()
 }
 
-/// Parse whitespace
+// Parse whitespace
 fn whitespace<'a>() -> BoxedParser<'a, ()> {
     any()
         .filter(|c: &char| c.is_whitespace())
@@ -52,7 +50,7 @@ fn whitespace<'a>() -> BoxedParser<'a, ()> {
         .boxed()
 }
 
-/// Parse a single CDN value (recursive)
+// Parse a single CDN value (recursive)
 fn value_parser<'a>() -> BoxedParser<'a, CdnValue> {
     recursive(|value| {
         let value_boxed: BoxedParser<'a, CdnValue> = value.clone().boxed();
@@ -80,7 +78,7 @@ fn value_parser<'a>() -> BoxedParser<'a, CdnValue> {
     .boxed()
 }
 
-/// Unsigned integer: 0, 42, 1000000
+// Unsigned integer: 0, 42, 1000000
 fn unsigned_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::int(10)
         .try_map(|s: &str, span| {
@@ -92,7 +90,7 @@ fn unsigned_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Negative integer: -1, -42, -1000000
+// Negative integer: -1, -42, -1000000
 fn negative_parser<'a>() -> BoxedParser<'a, CdnValue> {
     just('-')
         .ignore_then(text::int(10))
@@ -105,7 +103,7 @@ fn negative_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Float: 1.5, -3.14159, 1.0e10
+// Float: 1.5, -3.14159, 1.0e10
 fn float_parser<'a>() -> BoxedParser<'a, CdnValue> {
     let sign = just('-').or_not();
     let integer = text::int(10);
@@ -128,7 +126,7 @@ fn float_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Hex byte string: h'deadbeef'
+// Hex byte string: h'deadbeef'
 fn hex_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
     just("h'")
         .ignore_then(
@@ -147,7 +145,7 @@ fn hex_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Base64 byte string: b64'SGVsbG8='
+// Base64 byte string: b64'SGVsbG8='
 fn b64_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
     just("b64'")
         .ignore_then(
@@ -167,7 +165,7 @@ fn b64_bytes_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Text string: "hello world"
+// Text string: "hello world"
 fn text_string_parser<'a>() -> BoxedParser<'a, CdnValue> {
     // Parse escape sequences
     let escape = just('\\').ignore_then(any()).map(|c| format!("\\{}", c));
@@ -185,7 +183,7 @@ fn text_string_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Array: [1, 2, 3] or [_ 1, 2, 3]
+// Array: [1, 2, 3] or [_ 1, 2, 3]
 fn array_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
     just('[')
         .padded_by(whitespace())
@@ -209,7 +207,7 @@ fn array_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValu
         .boxed()
 }
 
-/// Map: {1: "a", 2: "b"} or {_ 1: "a"}
+// Map: {1: "a", 2: "b"} or {_ 1: "a"}
 fn map_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
     let map_entry = value
         .clone()
@@ -241,7 +239,7 @@ fn map_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue>
         .boxed()
 }
 
-/// Tagged value: 24(h'...')
+// Tagged value: 24(h'...')
 fn tagged_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnValue> {
     text::int(10)
         .try_map(|s: &str, span| {
@@ -256,7 +254,7 @@ fn tagged_parser<'a>(value: BoxedParser<'a, CdnValue>) -> BoxedParser<'a, CdnVal
         .boxed()
 }
 
-/// Boolean true
+// Boolean true
 fn bool_true_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::keyword("true")
         .to(CdnValue::Bool(true))
@@ -264,7 +262,7 @@ fn bool_true_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Boolean false
+// Boolean false
 fn bool_false_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::keyword("false")
         .to(CdnValue::Bool(false))
@@ -272,7 +270,7 @@ fn bool_false_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Null value
+// Null value
 fn null_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::keyword("null")
         .to(CdnValue::Null)
@@ -280,7 +278,7 @@ fn null_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Undefined value
+// Undefined value
 fn undefined_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::keyword("undefined")
         .to(CdnValue::Undefined)
@@ -288,7 +286,7 @@ fn undefined_parser<'a>() -> BoxedParser<'a, CdnValue> {
         .boxed()
 }
 
-/// Simple value: simple(22)
+// Simple value: simple(22)
 fn simple_parser<'a>() -> BoxedParser<'a, CdnValue> {
     text::keyword("simple")
         .ignore_then(just('(').padded_by(whitespace()))
@@ -307,7 +305,7 @@ fn simple_parser<'a>() -> BoxedParser<'a, CdnValue> {
 // Helper Functions
 // ============================================================================
 
-/// Unescape a string (handle \n, \t, \", etc.)
+// Unescape a string (handle \n, \t, \", etc.)
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars();

@@ -1,6 +1,4 @@
-/*!
-Compose command - convert various formats to CBOR
-*/
+// Compose command - convert various formats to CBOR
 
 use crate::cdn::{self, CdnValue};
 use crate::io::{Input, Output};
@@ -78,9 +76,9 @@ impl Command {
     }
 }
 
-/// Convert a JSON value to CDN AST
-///
-/// Note: This is a lossy conversion since JSON doesn't support all CBOR features
+// Convert a JSON value to CDN AST
+//
+// Note: This is a lossy conversion since JSON doesn't support all CBOR features
 fn json_to_cdn(value: serde_json::Value) -> anyhow::Result<CdnValue> {
     use serde_json::Value as J;
 

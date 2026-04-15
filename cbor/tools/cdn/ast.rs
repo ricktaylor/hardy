@@ -1,72 +1,70 @@
-/*!
-CBOR Diagnostic Notation (CDN) Abstract Syntax Tree
-
-This module defines the AST for CDN, representing all possible CBOR values
-in a way that preserves their exact encoding semantics.
-*/
+// CBOR Diagnostic Notation (CDN) Abstract Syntax Tree
+//
+// This module defines the AST for CDN, representing all possible CBOR values
+// in a way that preserves their exact encoding semantics.
 
 use hardy_cbor::encode::{self, Encoder, RuntimeTagged, ToCbor};
 
-/// A CDN value that can be converted to/from CBOR
+// A CDN value that can be converted to/from CBOR
 #[derive(Debug, Clone, PartialEq)]
 pub enum CdnValue {
-    /// Unsigned integer (CBOR major type 0)
-    /// Examples: 0, 42, 1000000
+    // Unsigned integer (CBOR major type 0)
+    // Examples: 0, 42, 1000000
     Unsigned(u64),
 
-    /// Negative integer (CBOR major type 1)
-    /// Examples: -1, -42, -1000000
-    /// Note: Stored as i64 but encoded as -(n+1) in CBOR
+    // Negative integer (CBOR major type 1)
+    // Examples: -1, -42, -1000000
+    // Note: Stored as i64 but encoded as -(n+1) in CBOR
     Negative(i64),
 
-    /// Floating point number (CBOR major type 7, additional info 25/26/27)
-    /// Examples: 1.5, -3.14159, 1.0e10
+    // Floating point number (CBOR major type 7, additional info 25/26/27)
+    // Examples: 1.5, -3.14159, 1.0e10
     Float(f64),
 
-    /// Byte string (CBOR major type 2)
-    /// CDN syntax: h'deadbeef' or b64'SGVsbG8='
+    // Byte string (CBOR major type 2)
+    // CDN syntax: h'deadbeef' or b64'SGVsbG8='
     ByteString(Vec<u8>),
 
-    /// Text string (CBOR major type 3)
-    /// CDN syntax: "hello world"
+    // Text string (CBOR major type 3)
+    // CDN syntax: "hello world"
     TextString(String),
 
-    /// Definite-length array (CBOR major type 4)
-    /// CDN syntax: [1, 2, 3]
+    // Definite-length array (CBOR major type 4)
+    // CDN syntax: [1, 2, 3]
     Array(Vec<CdnValue>),
 
-    /// Indefinite-length array (CBOR major type 4, additional info 31)
-    /// CDN syntax: [_ 1, 2, 3]
+    // Indefinite-length array (CBOR major type 4, additional info 31)
+    // CDN syntax: [_ 1, 2, 3]
     ArrayIndefinite(Vec<CdnValue>),
 
-    /// Definite-length map (CBOR major type 5)
-    /// CDN syntax: {1: "a", 2: "b"}
-    /// Note: Uses Vec to preserve insertion order for round-tripping
+    // Definite-length map (CBOR major type 5)
+    // CDN syntax: {1: "a", 2: "b"}
+    // Note: Uses Vec to preserve insertion order for round-tripping
     Map(Vec<(CdnValue, CdnValue)>),
 
-    /// Indefinite-length map (CBOR major type 5, additional info 31)
-    /// CDN syntax: {_ 1: "a", 2: "b"}
+    // Indefinite-length map (CBOR major type 5, additional info 31)
+    // CDN syntax: {_ 1: "a", 2: "b"}
     MapIndefinite(Vec<(CdnValue, CdnValue)>),
 
-    /// Tagged value (CBOR major type 6)
-    /// CDN syntax: 24(h'...')
+    // Tagged value (CBOR major type 6)
+    // CDN syntax: 24(h'...')
     Tagged(u64, Box<CdnValue>),
 
-    /// Simple value (CBOR major type 7)
-    /// CDN syntax: simple(22)
-    /// Note: Values 20-23 have special meanings (false, true, null, undefined)
+    // Simple value (CBOR major type 7)
+    // CDN syntax: simple(22)
+    // Note: Values 20-23 have special meanings (false, true, null, undefined)
     Simple(u8),
 
-    /// Boolean value (CBOR simple values 20 and 21)
-    /// CDN syntax: true, false
+    // Boolean value (CBOR simple values 20 and 21)
+    // CDN syntax: true, false
     Bool(bool),
 
-    /// Null value (CBOR simple value 22)
-    /// CDN syntax: null
+    // Null value (CBOR simple value 22)
+    // CDN syntax: null
     Null,
 
-    /// Undefined value (CBOR simple value 23)
-    /// CDN syntax: undefined
+    // Undefined value (CBOR simple value 23)
+    // CDN syntax: undefined
     Undefined,
 }
 

@@ -1,13 +1,11 @@
-/*!
-I/O utilities for reading and writing files or stdin/stdout
-*/
+// I/O utilities for reading and writing files or stdin/stdout
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-/// Input source - either stdin or a file
+// Input source - either stdin or a file
 #[derive(Debug, Clone)]
 pub enum Input {
     Stdin,
@@ -15,7 +13,7 @@ pub enum Input {
 }
 
 impl Input {
-    /// Read all bytes from the input source
+    // Read all bytes from the input source
     pub fn read_all(&self) -> io::Result<Vec<u8>> {
         match self {
             Input::Stdin => {
@@ -27,7 +25,7 @@ impl Input {
         }
     }
 
-    /// Read all data as a UTF-8 string
+    // Read all data as a UTF-8 string
     pub fn read_to_string(&self) -> io::Result<String> {
         match self {
             Input::Stdin => {
@@ -52,7 +50,7 @@ impl FromStr for Input {
     }
 }
 
-/// Output destination - either stdout or a file
+// Output destination - either stdout or a file
 #[derive(Debug, Clone)]
 pub enum Output {
     Stdout,
@@ -60,7 +58,7 @@ pub enum Output {
 }
 
 impl Output {
-    /// Write all bytes to the output destination
+    // Write all bytes to the output destination
     pub fn write_all(&self, data: &[u8]) -> io::Result<()> {
         match self {
             Output::Stdout => io::stdout().write_all(data),
@@ -68,7 +66,7 @@ impl Output {
         }
     }
 
-    /// Write a string to the output destination
+    // Write a string to the output destination
     pub fn write_str(&self, data: &str) -> io::Result<()> {
         self.write_all(data.as_bytes())
     }

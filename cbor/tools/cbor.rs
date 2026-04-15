@@ -1,39 +1,37 @@
-/*!
-CBOR Tools - A CLI for working with CBOR data
-
-This tool provides utilities for inspecting CBOR data and converting between
-CBOR binary format and CBOR Diagnostic Notation (CDN).
-
-# Commands
-
-- `inspect`: Display CBOR data in various formats (CDN, JSON, hex)
-- `compose`: Convert text formats (CDN, JSON) to CBOR binary
-
-# Examples
-
-```bash
-# Inspect a CBOR file (CDN format - lossless)
-cbor inspect bundle.cbor
-
-# Inspect with embedded CBOR decoding (decodes byte strings as CBOR - useful for BPv7!)
-cbor inspect -e bundle.cbor
-
-# Inspect as JSON (lossy)
-cbor inspect --format json data.cbor
-
-# Inspect as hex dump
-cbor inspect --format hex data.cbor
-
-# Convert CDN to CBOR (default)
-echo '[1, 2, h"deadbeef"]' | cbor compose -o data.cbor
-
-# Convert JSON to CBOR
-echo '{"name": "Alice", "age": 30}' | cbor compose --format json -o data.cbor
-
-# Round-trip test
-cbor inspect data.cbor | cbor compose | cbor inspect
-```
-*/
+// CBOR Tools - A CLI for working with CBOR data
+//
+// This tool provides utilities for inspecting CBOR data and converting between
+// CBOR binary format and CBOR Diagnostic Notation (CDN).
+//
+// # Commands
+//
+// - `inspect`: Display CBOR data in various formats (CDN, JSON, hex)
+// - `compose`: Convert text formats (CDN, JSON) to CBOR binary
+//
+// # Examples
+//
+// ```bash
+// # Inspect a CBOR file (CDN format - lossless)
+// cbor inspect bundle.cbor
+//
+// # Inspect with embedded CBOR decoding (decodes byte strings as CBOR - useful for BPv7!)
+// cbor inspect -e bundle.cbor
+//
+// # Inspect as JSON (lossy)
+// cbor inspect --format json data.cbor
+//
+// # Inspect as hex dump
+// cbor inspect --format hex data.cbor
+//
+// # Convert CDN to CBOR (default)
+// echo '[1, 2, h"deadbeef"]' | cbor compose -o data.cbor
+//
+// # Convert JSON to CBOR
+// echo '{"name": "Alice", "age": 30}' | cbor compose --format json -o data.cbor
+//
+// # Round-trip test
+// cbor inspect data.cbor | cbor compose | cbor inspect
+// ```
 
 use clap::{Parser, Subcommand};
 

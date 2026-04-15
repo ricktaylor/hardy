@@ -1,43 +1,41 @@
-/*!
-CBOR to CDN formatter
-
-Converts CBOR binary data to CBOR Diagnostic Notation (CDN) text format.
-*/
+// CBOR to CDN formatter
+//
+// Converts CBOR binary data to CBOR Diagnostic Notation (CDN) text format.
 
 use super::ast::CdnValue;
 use hardy_cbor::decode::{self, FromCbor, Value};
 
-/// Format CBOR bytes as CDN text
-///
-/// # Arguments
-///
-/// * `data` - The CBOR-encoded bytes to format
-/// * `decode_embedded` - If true, opportunistically decode byte strings as nested CBOR
-///
-/// When `decode_embedded` is true:
-/// - Tag 24 byte strings are decoded and shown as `24(decoded_content)`
-/// - Untagged byte strings are opportunistically decoded and shown as `<<decoded_content>>`
-/// - CBOR sequences (RFC 8742) are shown as `<<item1, item2, ...>>`
-/// - Invalid CBOR byte strings fall back to hex notation `h'...'`
-/// - Works recursively for nested embedded CBOR
-///
-/// # Examples
-///
-/// ```
-/// use hardy_cbor_tools::cdn::format_cbor;
-///
-/// let cbor = vec![0x83, 0x01, 0x02, 0x03]; // [1, 2, 3]
-/// let cdn = format_cbor(&cbor, false).unwrap();
-/// assert_eq!(cdn, "[1, 2, 3]");
-/// ```
+// Format CBOR bytes as CDN text
+//
+// # Arguments
+//
+// * `data` - The CBOR-encoded bytes to format
+// * `decode_embedded` - If true, opportunistically decode byte strings as nested CBOR
+//
+// When `decode_embedded` is true:
+// - Tag 24 byte strings are decoded and shown as `24(decoded_content)`
+// - Untagged byte strings are opportunistically decoded and shown as `<<decoded_content>>`
+// - CBOR sequences (RFC 8742) are shown as `<<item1, item2, ...>>`
+// - Invalid CBOR byte strings fall back to hex notation `h'...'`
+// - Works recursively for nested embedded CBOR
+//
+// # Examples
+//
+// ```
+// use hardy_cbor_tools::cdn::format_cbor;
+//
+// let cbor = vec![0x83, 0x01, 0x02, 0x03]; // [1, 2, 3]
+// let cdn = format_cbor(&cbor, false).unwrap();
+// assert_eq!(cdn, "[1, 2, 3]");
+// ```
 pub fn format_cbor(data: &[u8], decode_embedded: bool) -> Result<String, decode::Error> {
     let (value, _shortest, _len) = CdnValue::from_cbor(data)?;
     Ok(format_value(&value, decode_embedded))
 }
 
-/// Convert a hardy-cbor Value to CDN AST
-///
-/// Note: CdnValue is fully owned (no borrowing), so we copy all byte/string data
+// Convert a hardy-cbor Value to CDN AST
+//
+// Note: CdnValue is fully owned (no borrowing), so we copy all byte/string data
 fn value_to_ast(value: Value, data: &[u8]) -> Result<CdnValue, decode::Error> {
     match value {
         Value::UnsignedInteger(n) => Ok(CdnValue::Unsigned(n)),
@@ -111,9 +109,9 @@ fn value_to_ast(value: Value, data: &[u8]) -> Result<CdnValue, decode::Error> {
     }
 }
 
-/// Try to decode a byte string as a CBOR sequence (RFC 8742)
-///
-/// Returns the formatted string if successful, None if not valid CBOR
+// Try to decode a byte string as a CBOR sequence (RFC 8742)
+//
+// Returns the formatted string if successful, None if not valid CBOR
 fn try_decode_cbor_sequence(bytes: &[u8], decode_embedded: bool) -> Option<String> {
     // Use hardy_cbor's parse_sequence to decode CBOR sequences
     let result = decode::parse_sequence(bytes, |seq| {
@@ -151,20 +149,20 @@ fn try_decode_cbor_sequence(bytes: &[u8], decode_embedded: bool) -> Option<Strin
     }
 }
 
-/// Format a CDN AST value as text
-///
-/// # Arguments
-///
-/// * `value` - The CDN value to format
-/// * `decode_embedded` - If true, opportunistically decode byte strings as nested CBOR
-///
-/// # Embedded CBOR Notation
-///
-/// When `decode_embedded` is true:
-/// - Byte strings that decode as valid CBOR are shown as `<<content>>`
-/// - CBOR sequences (multiple items) are shown as `<<item1, item2, ...>>`
-/// - Tag 24 byte strings are decoded and shown as `24(content)`
-/// - Invalid CBOR byte strings are shown as `h'hexdata'`
+// Format a CDN AST value as text
+//
+// # Arguments
+//
+// * `value` - The CDN value to format
+// * `decode_embedded` - If true, opportunistically decode byte strings as nested CBOR
+//
+// # Embedded CBOR Notation
+//
+// When `decode_embedded` is true:
+// - Byte strings that decode as valid CBOR are shown as `<<content>>`
+// - CBOR sequences (multiple items) are shown as `<<item1, item2, ...>>`
+// - Tag 24 byte strings are decoded and shown as `24(content)`
+// - Invalid CBOR byte strings are shown as `h'hexdata'`
 fn format_value(value: &CdnValue, decode_embedded: bool) -> String {
     match value {
         CdnValue::Unsigned(n) => n.to_string(),
@@ -293,7 +291,7 @@ fn format_value(value: &CdnValue, decode_embedded: bool) -> String {
     }
 }
 
-/// Escape special characters in strings for CDN output
+// Escape special characters in strings for CDN output
 fn escape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {

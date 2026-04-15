@@ -8,7 +8,7 @@ enum JwkSetInput {
 }
 
 impl JwkSetInput {
-    /// Helper to always return a KeySet
+    // Helper to always return a KeySet
     fn into_key_set(self) -> KeySet {
         match self {
             JwkSetInput::Key(jwk) => KeySet::new(vec![jwk]),
@@ -87,10 +87,10 @@ impl TryFrom<KeyInput> for Key {
 }
 
 impl KeyInput {
-    /// Convert to both a KeySet (for parsing bundles) and the selected Key (for operations).
-    /// When --keys is used, the full keyset is available for parsing encrypted bundles,
-    /// and the key specified by --kid is used for the operation.
-    /// When --key is used, a keyset containing just that key is returned.
+    // Convert to both a KeySet (for parsing bundles) and the selected Key (for operations).
+    // When --keys is used, the full keyset is available for parsing encrypted bundles,
+    // and the key specified by --kid is used for the operation.
+    // When --key is used, a keyset containing just that key is returned.
     pub fn try_into_keyset_and_key(self) -> anyhow::Result<(KeySet, Key)> {
         if let Some(raw_key_str) = self.key {
             let key_content = if raw_key_str.trim_ascii_start().starts_with('{') {
