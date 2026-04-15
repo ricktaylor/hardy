@@ -433,7 +433,7 @@ fn test_specificity_ordering() {
     assert_eq!(ordered, vec![exact, svc_wild, node_wild, any]);
 }
 
-/// Helper to parse pattern and check subset relationship
+// Helper to parse pattern and check subset relationship
 fn is_subset(lhs: &str, rhs: &str) -> bool {
     let lhs_pattern: EidPattern = lhs.parse().expect("Failed to parse lhs");
     let rhs_pattern: EidPattern = rhs.parse().expect("Failed to parse rhs");

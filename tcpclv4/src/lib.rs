@@ -1,16 +1,18 @@
-//! TCPCLv4 Convergence Layer Adapter for the Bundle Protocol.
-//!
-//! This crate implements the TCP Convergence-Layer Protocol Version 4 (TCPCLv4)
-//! as defined in [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174). It provides
-//! a [`Cla`] that registers with the BPA to send and receive bundles over TCP
-//! connections, with optional TLS encryption.
-//!
-//! # Key types
-//!
-//! - [`Cla`] — the convergence layer adapter, created via [`Cla::new`] and
-//!   registered with a BPA instance via [`Cla::register`].
-//! - [`config::Config`] — top-level configuration (listen address, MRUs, TLS, session defaults).
-//! - [`Error`] — errors returned during CLA construction and registration.
+/*!
+TCPCLv4 Convergence Layer Adapter for the Bundle Protocol.
+
+This crate implements the TCP Convergence-Layer Protocol Version 4 (TCPCLv4)
+as defined in [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174). It provides
+a [`Cla`] that registers with the BPA to send and receive bundles over TCP
+connections, with optional TLS encryption.
+
+# Key types
+
+- [`Cla`] — the convergence layer adapter, created via [`Cla::new`] and
+  registered with a BPA instance via [`Cla::register`].
+- [`config::Config`] — top-level configuration (listen address, MRUs, TLS, session defaults).
+- [`Error`] — errors returned during CLA construction and registration.
+*/
 
 mod cla;
 mod codec;

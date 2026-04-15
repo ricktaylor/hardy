@@ -23,10 +23,10 @@ mod log_level_serde {
     }
 }
 
-/// Returns the default config directory, platform-specific:
-/// - Linux: /etc/hardy/
-/// - macOS: /etc/hardy/
-/// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
+// Returns the default config directory, platform-specific:
+// - Linux: /etc/hardy/
+// - macOS: /etc/hardy/
+// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
 fn default_config_dir() -> PathBuf {
     #[cfg(unix)]
     return PathBuf::from("/etc/hardy");
@@ -58,27 +58,47 @@ fn default_cla_name() -> String {
     env!("CARGO_PKG_NAME").to_string()
 }
 
+// Configuration for the standalone TCPCLv4 CLA server.
+//
+// Loaded from a TOML/YAML/JSON config file and/or environment variables
+// prefixed with `HARDY_TCPCLV4_`. Uses kebab-case field names in config files
+// and `__` as the nested-field separator for environment variables.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    /// Logging level (default: INFO)
+    // Logging level for the tracing subscriber.
+    //
+    // Default: `INFO`.
     #[serde(default = "default_log_level", with = "log_level_serde")]
     pub log_level: Level,
 
-    /// The address of the BPA gRPC server (e.g. "http://[::1]:50051")
+    // The gRPC endpoint of the BPA to register with.
+    //
+    // Default: `"http://[::1]:50051"`.
     #[serde(default = "default_bpa_address")]
     pub bpa_address: String,
 
-    /// The name of this CLA instance to register with the BPA
+    // The name used to identify this CLA instance when registering with the BPA.
+    //
+    // Default: the crate package name (`"tcpclv4-server"`).
     #[serde(default = "default_cla_name")]
     pub cla_name: String,
 
-    /// TCPCLv4 configuration
+    // TCPCLv4 transport-layer configuration (flattened into the top level).
     #[serde(flatten)]
     pub tcpcl: hardy_tcpclv4::config::Config,
 }
 
 impl Config {
+    // Load configuration from a file and environment variable overrides.
+    //
+    // Resolution order for the config file path:
+    // 1. The explicit `config_file` argument (if `Some`).
+    // 2. The `HARDY_TCPCLV4_CONFIG_FILE` environment variable (if set).
+    // 3. The platform-specific default path (e.g. `/etc/hardy/tcpclv4` on Linux).
+    //
+    // Environment variables prefixed with `HARDY_TCPCLV4_` override values
+    // from the config file.
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
         let config_file = config_file
             .or_else(|| {
@@ -112,7 +132,7 @@ mod tests {
     use serial_test::serial;
     use std::io::Write;
 
-    /// Helper: write a config file and load it.
+    // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);
@@ -120,7 +140,7 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
-    /// Empty config file produces sensible defaults.
+    // Empty config file produces sensible defaults.
     #[test]
     #[serial]
     fn empty_config_has_defaults() {
@@ -136,7 +156,7 @@ mod tests {
         assert!(!config.tcpcl.session_defaults.require_tls);
     }
 
-    /// TOML config file overrides defaults.
+    // TOML config file overrides defaults.
     #[test]
     #[serial]
     fn toml_overrides_defaults() {
@@ -162,7 +182,7 @@ keepalive-interval = 30
         assert_eq!(config.tcpcl.session_defaults.keepalive_interval, Some(30));
     }
 
-    /// YAML config file works identically to TOML.
+    // YAML config file works identically to TOML.
     #[test]
     #[serial]
     fn yaml_config() {
@@ -181,7 +201,7 @@ segment-mru: 4096
         assert_eq!(config.tcpcl.segment_mru, 4096);
     }
 
-    /// JSON config file works identically to TOML.
+    // JSON config file works identically to TOML.
     #[test]
     #[serial]
     fn json_config() {
@@ -198,7 +218,7 @@ segment-mru: 4096
         assert_eq!(config.log_level, Level::ERROR);
     }
 
-    /// Environment variables override config file values.
+    // Environment variables override config file values.
     #[test]
     #[serial]
     fn env_overrides_file() {
@@ -236,7 +256,7 @@ log-level = "warn"
         );
     }
 
-    /// Nested env vars with __ separator override flattened tcpclv4 fields.
+    // Nested env vars with __ separator override flattened tcpclv4 fields.
     #[test]
     #[serial]
     fn env_overrides_nested_fields() {
@@ -251,7 +271,7 @@ log-level = "warn"
         assert_eq!(config.tcpcl.segment_mru, 32768);
     }
 
-    /// Missing config file returns an error.
+    // Missing config file returns an error.
     #[test]
     #[serial]
     fn missing_config_file_errors() {
@@ -259,7 +279,7 @@ log-level = "warn"
         assert!(result.is_err());
     }
 
-    /// Invalid log level in config file returns an error.
+    // Invalid log level in config file returns an error.
     #[test]
     #[serial]
     fn invalid_log_level_errors() {
@@ -270,7 +290,7 @@ log-level = "warn"
         assert!(result.is_err());
     }
 
-    /// Negative segment-mru is rejected.
+    // Negative segment-mru is rejected.
     #[test]
     #[serial]
     fn negative_segment_mru_errors() {
@@ -281,7 +301,7 @@ log-level = "warn"
         assert!(result.is_err());
     }
 
-    /// Invalid address format is rejected.
+    // Invalid address format is rejected.
     #[test]
     #[serial]
     fn invalid_address_errors() {
@@ -292,7 +312,7 @@ log-level = "warn"
         assert!(result.is_err());
     }
 
-    /// TLS config with partial fields parses (cert without key is valid at config level).
+    // TLS config with partial fields parses (cert without key is valid at config level).
     #[test]
     #[serial]
     fn tls_partial_config() {
@@ -318,7 +338,7 @@ tls:
         assert!(tls.ca_certs.is_none());
     }
 
-    /// Malformed TOML returns an error.
+    // Malformed TOML returns an error.
     #[test]
     #[serial]
     fn malformed_toml_errors() {
@@ -329,7 +349,7 @@ tls:
         assert!(result.is_err());
     }
 
-    /// Malformed YAML returns an error.
+    // Malformed YAML returns an error.
     #[test]
     #[serial]
     fn malformed_yaml_errors() {
@@ -340,7 +360,7 @@ tls:
         assert!(result.is_err());
     }
 
-    /// Unknown fields are silently ignored.
+    // Unknown fields are silently ignored.
     #[test]
     #[serial]
     fn unknown_fields_ignored() {
@@ -354,7 +374,7 @@ this-does-not-exist = 42
         assert_eq!(config.log_level, Level::WARN);
     }
 
-    /// Large segment-mru value is accepted.
+    // Large segment-mru value is accepted.
     #[test]
     #[serial]
     fn large_segment_mru() {
@@ -362,7 +382,7 @@ this-does-not-exist = 42
         assert_eq!(config.tcpcl.segment_mru, 1073741824);
     }
 
-    /// Keepalive interval of 0 disables keepalives.
+    // Keepalive interval of 0 disables keepalives.
     #[test]
     #[serial]
     fn keepalive_zero() {

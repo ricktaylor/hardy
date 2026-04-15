@@ -365,7 +365,7 @@ mod tests {
         }
     }
 
-    /// Registering a CLA with an already-in-use name should fail.
+    // Registering a CLA with an already-in-use name should fail.
     #[tokio::test]
     async fn test_duplicate_registration() {
         let bpa = Bpa::builder().build();
@@ -389,7 +389,7 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    /// Adding a peer installs a RIB entry; removing it withdraws it.
+    // Adding a peer installs a RIB entry; removing it withdraws it.
     #[tokio::test]
     async fn test_peer_lifecycle() {
         let bpa = Bpa::builder().build();
@@ -425,7 +425,7 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    /// Unregistering a CLA should remove all its peers.
+    // Unregistering a CLA should remove all its peers.
     #[tokio::test]
     async fn test_cascading_cleanup() {
         let bpa = Bpa::builder().build();

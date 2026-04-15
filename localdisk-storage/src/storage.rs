@@ -341,7 +341,7 @@ mod tests {
         }
     }
 
-    /// LD-01: Files are created under the configured store_dir.
+    // LD-01: Files are created under the configured store_dir.
     #[tokio::test]
     async fn test_configuration_custom_store_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -355,7 +355,7 @@ mod tests {
         );
     }
 
-    /// LD-02: Recovery cleans up .tmp files, zero-byte placeholders, and empty dirs.
+    // LD-02: Recovery cleans up .tmp files, zero-byte placeholders, and empty dirs.
     #[tokio::test]
     async fn test_recovery_cleanup() {
         let dir = tempfile::tempdir().unwrap();
@@ -402,7 +402,7 @@ mod tests {
         assert!(!empty_dir.exists(), "empty directory should be removed");
     }
 
-    /// LD-03: Files are distributed in a two-level xx/yy/ directory structure.
+    // LD-03: Files are distributed in a two-level xx/yy/ directory structure.
     #[tokio::test]
     async fn test_filesystem_structure() {
         let dir = tempfile::tempdir().unwrap();
@@ -445,7 +445,7 @@ mod tests {
         }
     }
 
-    /// LD-04: With fsync=true, save writes to .tmp then renames (no .tmp left behind).
+    // LD-04: With fsync=true, save writes to .tmp then renames (no .tmp left behind).
     #[tokio::test]
     async fn test_atomic_save_no_tmp_residue() {
         let dir = tempfile::tempdir().unwrap();
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(&*loaded, b"atomic");
     }
 
-    /// LD-05: Save on a read-only directory returns an error, not a panic.
+    // LD-05: Save on a read-only directory returns an error, not a panic.
     #[tokio::test]
     async fn test_save_to_readonly_dir_returns_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -496,7 +496,7 @@ mod tests {
         }
     }
 
-    /// Recursively collect all file paths under a directory.
+    // Recursively collect all file paths under a directory.
     fn walkdir(dir: &Path) -> Vec<PathBuf> {
         let mut files = Vec::new();
         if let Ok(entries) = std::fs::read_dir(dir) {

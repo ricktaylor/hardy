@@ -14,7 +14,7 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A mock CLA that records lifecycle callbacks and forward requests.
+// A mock CLA that records lifecycle callbacks and forward requests.
 struct MockCla {
     registered: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
@@ -59,7 +59,7 @@ impl cla::Cla for MockCla {
     }
 }
 
-/// CLA-CLI-01: Register CLA, receive node IDs.
+// CLA-CLI-01: Register CLA, receive node IDs.
 #[tokio::test]
 async fn cla_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
@@ -94,7 +94,7 @@ async fn cla_cli_01_registration() {
     server_tasks.shutdown().await;
 }
 
-/// CLA-CLI-02: Dispatch bundle from CLA to BPA.
+// CLA-CLI-02: Dispatch bundle from CLA to BPA.
 #[tokio::test]
 async fn cla_cli_02_dispatch_bundle() {
     let bpa = Arc::new(MockBpa::new());
@@ -120,10 +120,10 @@ async fn cla_cli_02_dispatch_bundle() {
     server_tasks.shutdown().await;
 }
 
-/// CLA-CLI-03: Forward bundle from BPA to CLA.
-///
-/// The BPA calls `forward()` on the server-side RemoteCla, which
-/// proxies the request to the client-side MockCla.
+// CLA-CLI-03: Forward bundle from BPA to CLA.
+//
+// The BPA calls `forward()` on the server-side RemoteCla, which
+// proxies the request to the client-side MockCla.
 #[tokio::test]
 async fn cla_cli_03_forward_bundle() {
     let bpa = Arc::new(MockBpa::new());
@@ -173,7 +173,7 @@ async fn cla_cli_03_forward_bundle() {
     server_tasks.shutdown().await;
 }
 
-/// CLA-CLI-04: Add peer.
+// CLA-CLI-04: Add peer.
 #[tokio::test]
 async fn cla_cli_04_add_peer() {
     let bpa = Arc::new(MockBpa::new());
@@ -208,7 +208,7 @@ async fn cla_cli_04_add_peer() {
     server_tasks.shutdown().await;
 }
 
-/// CLA-CLI-05: Remove peer.
+// CLA-CLI-05: Remove peer.
 #[tokio::test]
 async fn cla_cli_05_remove_peer() {
     let bpa = Arc::new(MockBpa::new());

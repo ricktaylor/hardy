@@ -795,7 +795,7 @@ mod tests {
         }
     }
 
-    /// SQL-01: Database is created at the configured path.
+    // SQL-01: Database is created at the configured path.
     #[tokio::test]
     async fn test_configuration_custom_db_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -809,7 +809,7 @@ mod tests {
         );
     }
 
-    /// SQL-04: Concurrent writers do not panic or deadlock.
+    // SQL-04: Concurrent writers do not panic or deadlock.
     #[tokio::test]
     async fn test_concurrency_no_sqlite_busy() {
         let dir = tempfile::tempdir().unwrap();
@@ -839,10 +839,10 @@ mod tests {
         }
     }
 
-    /// SQL-05: Corrupt data in the DB does not panic.
-    ///
-    /// `get()` returns an error on corrupt blob data (deserialization failure).
-    /// `confirm_exists()` handles it gracefully by tombstoning the entry.
+    // SQL-05: Corrupt data in the DB does not panic.
+    //
+    // `get()` returns an error on corrupt blob data (deserialization failure).
+    // `confirm_exists()` handles it gracefully by tombstoning the entry.
     #[tokio::test]
     async fn test_corrupt_data_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
@@ -882,7 +882,7 @@ mod tests {
         assert!(result.is_none(), "tombstoned entry should return None");
     }
 
-    /// SQL-06: Waiting queue is invalidated when bundle status changes.
+    // SQL-06: Waiting queue is invalidated when bundle status changes.
     #[tokio::test]
     async fn test_waiting_queue_invalidation() {
         let dir = tempfile::tempdir().unwrap();

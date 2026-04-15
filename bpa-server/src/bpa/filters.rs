@@ -1,6 +1,6 @@
 use super::*;
 
-/// Register all filters with the BPA.
+// Register all filters with the BPA.
 pub fn register(
     rfc9171_validity: &hardy_bpa::filters::rfc9171::Config,
     #[cfg(feature = "ipn-legacy-filter")] ipn_legacy_nodes: &hardy_ipn_legacy_filter::Config,

@@ -1,10 +1,12 @@
-//! S3-compatible bundle storage backend for the Hardy BPA.
-//!
-//! Implements the [`BundleStorage`](hardy_bpa::storage::BundleStorage) trait
-//! using any S3-compatible object store (AWS S3, MinIO, LocalStack, etc.).
-//! Bundles are stored as individual objects keyed by UUID, with optional key
-//! prefixing for shared buckets. Large bundles are uploaded via the S3
-//! multipart upload API to bypass the 5 GiB single-object limit.
+/*!
+S3-compatible bundle storage backend for the Hardy BPA.
+
+Implements the [`BundleStorage`](hardy_bpa::storage::BundleStorage) trait
+using any S3-compatible object store (AWS S3, MinIO, LocalStack, etc.).
+Bundles are stored as individual objects keyed by UUID, with optional key
+prefixing for shared buckets. Large bundles are uploaded via the S3
+multipart upload API to bypass the 5 GiB single-object limit.
+*/
 
 mod config;
 mod storage;

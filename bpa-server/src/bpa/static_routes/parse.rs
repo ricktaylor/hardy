@@ -144,14 +144,12 @@ fn routes<'a>() -> impl Parser<'a, &'a str, Vec<StaticRoute>, Extra<'a>> {
         .then_ignore(end())
 }
 
-/// Format a parse error with line number, column, source context, and a caret.
-///
-/// Example output:
-/// ```text
-/// line 3: expected action
-///   ipn:*.*.* Broken
-///             ^
-/// ```
+// Format a parse error with line number, column, source context, and a caret.
+//
+// Example output:
+//   line 3: expected action
+//     ipn:*.*.* Broken
+//               ^
 fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
     let offset = error.span().start;
 

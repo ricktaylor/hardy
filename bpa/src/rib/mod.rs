@@ -132,7 +132,7 @@ pub(super) mod tests {
         Arc::new(Rib::new(node_ids, store))
     }
 
-    /// Add a route directly to the RIB's route table (sync, no store interaction).
+    // Add a route directly to the RIB's route table (sync, no store interaction).
     pub fn add_route(
         rib: &Rib,
         pattern: &str,
@@ -162,7 +162,7 @@ pub(super) mod tests {
         }
     }
 
-    /// Add a local forward entry directly (sync, no store interaction).
+    // Add a local forward entry directly (sync, no store interaction).
     pub fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {
         let pattern: EidPattern = node_id.into();
         let mut inner = rib.inner.write();

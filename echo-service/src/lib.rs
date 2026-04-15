@@ -1,13 +1,15 @@
-//! Bundle echo service for the Hardy BPA.
-//!
-//! Implements a simple echo (ping) service that reflects received bundles back
-//! to their source, as defined by the BPv7 bundle delivery model (RFC 9171 §5.6).
-//! Each incoming bundle is re-built with the source and destination swapped, then
-//! injected back into the BPA for forwarding.
-//!
-//! # Key types
-//!
-//! - [`EchoService`] — the service implementation, one instance per registered endpoint.
+/*!
+Bundle echo service for the Hardy BPA.
+
+Implements a simple echo (ping) service that reflects received bundles back
+to their source, as defined by the BPv7 bundle delivery model (RFC 9171 §5.6).
+Each incoming bundle is re-built with the source and destination swapped, then
+injected back into the BPA for forwarding.
+
+# Key types
+
+- [`EchoService`] — the service implementation, one instance per registered endpoint.
+*/
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;

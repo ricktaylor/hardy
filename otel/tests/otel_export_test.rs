@@ -1,10 +1,12 @@
-/// Test harness for OTEL export verification.
-///
-/// Initialises hardy_otel, emits traces, metrics, and logs,
-/// then shuts down cleanly to flush to the collector.
-///
-/// Run via: cargo test -p hardy-otel --test otel_export_test -- --ignored
-/// (or via otel/tests/test_otel_export.sh which starts a collector)
+/*
+Test harness for OTEL export verification.
+
+Initialises hardy_otel, emits traces, metrics, and logs,
+then shuts down cleanly to flush to the collector.
+
+Run via: cargo test -p hardy-otel --test otel_export_test -- --ignored
+(or via otel/tests/test_otel_export.sh which starts a collector)
+*/
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore] // Requires an OTLP collector — run via test_otel_export.sh

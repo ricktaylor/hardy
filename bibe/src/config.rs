@@ -7,10 +7,14 @@ pub struct Config {
     /// Source EID for outer bundles created by encapsulation.
     pub tunnel_source: Eid,
     /// Service ID for the decapsulation service endpoint.
+    ///
     /// If `None`, the BPA will auto-assign a service ID.
+    /// Defaults to `None`.
     #[cfg_attr(feature = "serde", serde(default))]
     pub decap_service_id: Option<Service>,
     /// Virtual peers to register as tunnel destinations.
+    ///
+    /// Defaults to an empty list (no tunnels).
     #[cfg_attr(feature = "serde", serde(default))]
     pub tunnels: Vec<Tunnel>,
 }

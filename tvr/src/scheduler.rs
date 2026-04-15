@@ -9,22 +9,32 @@ use tracing::{debug, info, warn};
 
 // ── Public types ────────────────────────────────────────────────────
 
+// Result of an add-contacts operation.
 #[derive(Debug)]
 pub struct AddResult {
+    // Number of contacts successfully added.
     pub added: u32,
+    // Number of added contacts that are immediately active.
     pub active: u32,
+    // Number of contacts skipped (e.g. already expired).
     pub skipped: u32,
 }
 
+// Result of a remove-contacts operation.
 #[derive(Debug)]
 pub struct RemoveResult {
+    // Number of contacts removed.
     pub removed: u32,
 }
 
+// Result of a replace-contacts operation (atomic diff-based update).
 #[derive(Debug)]
 pub struct ReplaceResult {
+    // Number of new contacts added.
     pub added: u32,
+    // Number of old contacts removed.
     pub removed: u32,
+    // Number of contacts unchanged by the replace.
     pub unchanged: u32,
 }
 
@@ -55,13 +65,15 @@ enum Command {
 
 // ── Handle ──────────────────────────────────────────────────────────
 
-/// Cloneable handle for sending commands to the scheduler.
+// Cloneable handle for sending commands to the scheduler.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     tx: flume::Sender<Command>,
 }
 
 impl SchedulerHandle {
+    // Submit contacts to the scheduler. Returns the result once processed,
+    // or `None` if the scheduler has shut down.
     pub async fn add_contacts(
         &self,
         source: &str,
@@ -81,6 +93,8 @@ impl SchedulerHandle {
         rx.await.ok()
     }
 
+    // Remove specific contacts from a source by content match.
+    // Returns the result once processed, or `None` if the scheduler has shut down.
     pub async fn remove_contacts(
         &self,
         source: &str,
@@ -98,6 +112,9 @@ impl SchedulerHandle {
         rx.await.ok()
     }
 
+    // Atomically replace all contacts for a source with a new set, computing
+    // the diff to minimize route churn. Returns the result once processed,
+    // or `None` if the scheduler has shut down.
     pub async fn replace_contacts(
         &self,
         source: &str,
@@ -117,6 +134,8 @@ impl SchedulerHandle {
         rx.await.ok()
     }
 
+    // Withdraw all contacts for a source, removing any active routes.
+    // Used on session close or file deletion for automatic cleanup.
     pub async fn withdraw_all(&self, source: &str) {
         let _ = self
             .tx
@@ -127,12 +146,12 @@ impl SchedulerHandle {
     }
 }
 
-/// The receive side of the scheduler channel (opaque).
+// The receive side of the scheduler channel (opaque).
 pub struct SchedulerReceiver {
     rx: flume::Receiver<Command>,
 }
 
-/// Create a scheduler handle/receiver pair.
+// Create a scheduler handle/receiver pair.
 pub fn channel() -> (SchedulerHandle, SchedulerReceiver) {
     let (tx, rx) = flume::unbounded();
     (SchedulerHandle { tx }, SchedulerReceiver { rx })
@@ -140,8 +159,8 @@ pub fn channel() -> (SchedulerHandle, SchedulerReceiver) {
 
 // ── Scheduler internals ─────────────────────────────────────────────
 
-/// Route identity for refcounting — two contacts produce the same route
-/// if they match on these three fields.
+// Route identity for refcounting — two contacts produce the same route
+// if they match on these three fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RouteKey {
     pattern: EidPattern,
@@ -149,7 +168,7 @@ struct RouteKey {
     priority: u32,
 }
 
-/// A contact managed by the scheduler, with resolved priority and state.
+// A contact managed by the scheduler, with resolved priority and state.
 struct ManagedContact {
     contact: Contact,
     priority: u32,
@@ -166,15 +185,15 @@ impl ManagedContact {
     }
 }
 
-/// Ordered: Deactivate (0) before Activate (1) at the same timestamp.
+// Ordered: Deactivate (0) before Activate (1) at the same timestamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EventKind {
     Deactivate,
     Activate,
 }
 
-/// A scheduled event. `Ord` gives: time ascending, then Deactivate before
-/// Activate, then by contact ID for determinism.
+// A scheduled event. `Ord` gives: time ascending, then Deactivate before
+// Activate, then by contact ID for determinism.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Event {
     time: OffsetDateTime,
@@ -197,7 +216,7 @@ impl PartialOrd for Event {
     }
 }
 
-/// A pending route operation to be awaited by the core loop.
+// A pending route operation to be awaited by the core loop.
 #[derive(Debug, Clone)]
 enum PendingRouteOp {
     Add {
@@ -213,15 +232,15 @@ enum PendingRouteOp {
 }
 
 struct Scheduler {
-    /// Source label → set of contact IDs from that source
+    // Source label → set of contact IDs from that source
     sources: HashMap<String, HashSet<u64>>,
-    /// All managed contacts by ID
+    // All managed contacts by ID
     contacts: HashMap<u64, ManagedContact>,
-    /// Event timeline — ordered by (time, kind, contact_id)
+    // Event timeline — ordered by (time, kind, contact_id)
     timeline: BTreeSet<Event>,
-    /// Route refcounts — how many active contacts provide each route
+    // Route refcounts — how many active contacts provide each route
     route_refs: HashMap<RouteKey, u32>,
-    /// Next contact ID
+    // Next contact ID
     next_id: u64,
 }
 
@@ -236,12 +255,12 @@ impl Scheduler {
         }
     }
 
-    /// Resolve a contact's priority from its own value or the default.
+    // Resolve a contact's priority from its own value or the default.
     fn resolve_priority(contact: &Contact, default: u32) -> u32 {
         contact.priority.unwrap_or(default)
     }
 
-    /// Allocate a new contact ID.
+    // Allocate a new contact ID.
     fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -250,9 +269,9 @@ impl Scheduler {
 
     // ── Ingestion ───────────────────────────────────────────────────
 
-    /// Ingest a single contact: create ManagedContact, schedule events,
-    /// activate if currently in window. Returns (added, active, skipped).
-    /// Ingest a single contact. Returns (added, active, optional route op).
+    // Ingest a single contact: create ManagedContact, schedule events,
+    // activate if currently in window. Returns (added, active, skipped).
+    // Ingest a single contact. Returns (added, active, optional route op).
     fn ingest(
         &mut self,
         source: &str,
@@ -360,7 +379,7 @@ impl Scheduler {
         (added, activated, op)
     }
 
-    /// Schedule the next occurrence of a recurring contact after `after`.
+    // Schedule the next occurrence of a recurring contact after `after`.
     fn schedule_next_occurrence(&mut self, id: u64, after: OffsetDateTime) {
         let mc = match self.contacts.get(&id) {
             Some(mc) => mc,
@@ -404,7 +423,7 @@ impl Scheduler {
         });
     }
 
-    /// Remove all pending events for a contact.
+    // Remove all pending events for a contact.
     fn cancel_events(&mut self, contact_id: u64) {
         self.timeline.retain(|e| e.contact_id != contact_id);
     }
@@ -459,7 +478,7 @@ impl Scheduler {
 
     // ── Removal ─────────────────────────────────────────────────────
 
-    /// Remove a contact by ID: cancel events, deactivate if active, clean up.
+    // Remove a contact by ID: cancel events, deactivate if active, clean up.
     fn remove_contact(&mut self, id: u64) -> Option<PendingRouteOp> {
         self.cancel_events(id);
         let op = self.deactivate_contact(id);
@@ -467,7 +486,7 @@ impl Scheduler {
         op
     }
 
-    /// Remove all contacts for a source.
+    // Remove all contacts for a source.
     fn withdraw_source(&mut self, source: &str) -> Vec<PendingRouteOp> {
         let Some(ids) = self.sources.remove(source) else {
             return Vec::new();
@@ -577,7 +596,7 @@ impl Scheduler {
 
     // ── Event processing ────────────────────────────────────────────
 
-    /// Process all events up to and including `now`.
+    // Process all events up to and including `now`.
     fn process_due_events(&mut self, now: OffsetDateTime) -> Vec<PendingRouteOp> {
         let mut ops = Vec::new();
         while let Some(event) = self.timeline.first().cloned() {
@@ -604,8 +623,8 @@ impl Scheduler {
     }
 }
 
-/// Two contacts match if they have the same pattern, action, and schedule.
-/// Used for diffing in Replace and matching in Remove.
+// Two contacts match if they have the same pattern, action, and schedule.
+// Used for diffing in Replace and matching in Remove.
 fn contacts_match(a: &Contact, b: &Contact) -> bool {
     a.pattern == b.pattern
         && a.action == b.action
@@ -648,7 +667,7 @@ fn update_gauges(sched: &Scheduler) {
     metrics::gauge!("tvr_timeline_depth").set(sched.timeline.len() as f64);
 }
 
-/// Start the scheduler task.
+// Start the scheduler task.
 pub fn start(
     receiver: SchedulerReceiver,
     sink: Arc<dyn RoutingSink>,
@@ -750,7 +769,7 @@ mod test {
     // ── Helpers ─────────────────────────────────────────────────────
 
     impl Scheduler {
-        /// Test helper: add contacts and collect ops.
+        // Test helper: add contacts and collect ops.
         fn add(
             &mut self,
             source: &str,

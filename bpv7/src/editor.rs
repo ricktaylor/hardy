@@ -987,7 +987,7 @@ impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
 mod test {
     use super::*;
 
-    /// Build a bundle, parse it, return (bundle, data) ready for editing.
+    // Build a bundle, parse it, return (bundle, data) ready for editing.
     fn make_bundle() -> (bundle::Bundle, Box<[u8]>) {
         builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
             .with_report_to("ipn:3.0".parse().unwrap())
@@ -996,7 +996,7 @@ mod test {
             .unwrap()
     }
 
-    /// Build a bundle with a hop count block, then re-parse so block keys match wire numbers.
+    // Build a bundle with a hop count block, then re-parse so block keys match wire numbers.
     fn make_bundle_with_hop_count() -> (bundle::Bundle, Box<[u8]>) {
         let (_, data) =
             builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -1011,12 +1011,12 @@ mod test {
         (bundle, data)
     }
 
-    /// Unwrap a Result<T, (Editor, Error)> — panics with the error on failure.
+    // Unwrap a Result<T, (Editor, Error)> — panics with the error on failure.
     fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
         result.unwrap_or_else(|(_, e)| panic!("Editor operation failed: {e}"))
     }
 
-    /// Edit a bundle, rebuild, re-parse, and return the parsed bundle.
+    // Edit a bundle, rebuild, re-parse, and return the parsed bundle.
     fn reparse(data: &[u8]) -> bundle::Bundle {
         let keys = bpsec::key::KeySet::new(vec![]);
         match bundle::RewrittenBundle::parse_with_keys(data, &keys).unwrap() {

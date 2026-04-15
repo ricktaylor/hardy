@@ -20,12 +20,17 @@ use crate::config::default_config_dir;
 
 mod parse;
 
+// Configuration for the static routes routing agent.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
+    // Path to the routes file (default: `/etc/hardy/static_routes`).
     pub routes_file: PathBuf,
+    // Default route priority when not specified per-route (default: `100`).
     pub priority: u32,
+    // Watch the routes file for changes and reload automatically (default: `true`).
     pub watch: bool,
+    // Protocol identifier used when registering with the BPA (default: `"static_routes"`).
     pub protocol_id: String,
 }
 
@@ -188,7 +193,7 @@ impl StaticRoutesAgent {
     }
 }
 
-/// Standalone refresh function for use in the watcher task (avoids needing &self).
+// Standalone refresh function for use in the watcher task (avoids needing &self).
 async fn refresh_routes_inner(
     routes_file: &PathBuf,
     priority: u32,

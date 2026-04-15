@@ -383,7 +383,7 @@ async fn handle_message(
     }
 }
 
-/// Create and start the TVR gRPC server.
+// Create and start the TVR gRPC server.
 pub async fn start(
     listen_addr: std::net::SocketAddr,
     agent: &Arc<TvrAgent>,
@@ -416,7 +416,7 @@ mod test {
         prost_types::Duration { seconds, nanos }
     }
 
-    /// Build a minimal valid proto Contact with the given action.
+    // Build a minimal valid proto Contact with the given action.
     fn proto_contact_via(pattern: &str, via: &str) -> proto::tvr::Contact {
         proto::tvr::Contact {
             eid_pattern: pattern.to_string(),

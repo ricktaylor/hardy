@@ -1,10 +1,12 @@
-//! OpenTelemetry integration for Hardy binaries.
-//!
-//! Provides one-call initialization of the full OpenTelemetry observability
-//! stack — distributed traces, metrics, and structured logs — exported via
-//! OTLP/gRPC. The [`init`] function wires up providers, installs a
-//! `tracing-subscriber` pipeline, and returns an [`OtelGuard`] whose [`Drop`]
-//! implementation flushes and shuts down every provider cleanly.
+/*!
+OpenTelemetry integration for Hardy binaries.
+
+Provides one-call initialization of the full OpenTelemetry observability
+stack — distributed traces, metrics, and structured logs — exported via
+OTLP/gRPC. The [`init`] function wires up providers, installs a
+`tracing-subscriber` pipeline, and returns an [`OtelGuard`] whose [`Drop`]
+implementation flushes and shuts down every provider cleanly.
+*/
 
 use opentelemetry::{KeyValue, global, metrics::MeterProvider, trace::TracerProvider};
 use opentelemetry_sdk::{

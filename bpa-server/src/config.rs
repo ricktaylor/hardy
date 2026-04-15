@@ -13,10 +13,10 @@ use crate::bpa::static_routes;
 use crate::bpa::storage;
 use crate::error::Error;
 
-/// Returns the default config directory, platform-specific:
-/// - Linux: /etc/hardy/
-/// - macOS: /etc/hardy/
-/// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
+// Returns the default config directory, platform-specific:
+// - Linux: /etc/hardy/
+// - macOS: /etc/hardy/
+// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
 pub(crate) fn default_config_dir() -> std::path::PathBuf {
     #[cfg(unix)]
     return std::path::PathBuf::from("/etc/hardy");
@@ -69,76 +69,84 @@ mod log_level_serde {
     }
 }
 
+// Configuration for built-in application services.
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct BuiltInServicesConfig {
-    /// Echo service: list of service identifiers (int = IPN, string = DTN).
+    // Echo service: list of service identifiers (int = IPN, string = DTN).
+    // Absent = service disabled.
     pub echo: Option<Vec<Service>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    /// Logging level (default: INFO)
+    // Logging level (default: INFO)
     #[serde(default = "default_log_level", with = "log_level_serde")]
     pub log_level: Level,
 
-    /// Whether to generate and dispatch bundle status reports (default: false)
+    // Whether to generate and dispatch bundle status reports (default: false)
     #[serde(default)]
     pub status_reports: bool,
 
-    /// Depth of the channel used for polling new bundles (default: 16)
+    // Depth of the channel used for polling new bundles (default: 16)
     #[serde(default = "default_poll_channel_depth")]
     pub poll_channel_depth: NonZeroUsize,
 
-    /// Maximum number of concurrent bundle processing tasks (default: 4 * CPU cores)
+    // Maximum number of concurrent bundle processing tasks (default: 4 * CPU cores)
     #[serde(default = "default_processing_pool_size")]
     pub processing_pool_size: NonZeroUsize,
 
-    /// Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
+    // Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
     #[serde(default)]
     pub node_ids: NodeIds,
 
-    /// Static Routes Configuration
+    // Static Routes Configuration
     #[serde(default)]
     pub static_routes: Option<static_routes::Config>,
 
-    /// gRPC options
+    // gRPC options
     #[serde(default)]
     pub grpc: Option<grpc::Config>,
 
-    /// Storage configuration (cache + metadata + bundle backends)
+    // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
     pub storage: storage::Config,
 
+    // IPN legacy node patterns for the egress rewriting filter.
     #[cfg(feature = "ipn-legacy-filter")]
     #[serde(default)]
     pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
 
-    /// RFC9171 validity filter configuration.
-    ///
-    /// Controls the RFC9171 bundle validity checks that are auto-registered
-    /// when the `rfc9171-filter` feature is enabled on the BPA.
-    ///
-    /// Set individual fields to `false` to disable specific checks:
-    /// - `primary_block_integrity`: Require CRC or BIB on primary block
-    /// - `bundle_age_required`: Require Bundle Age when creation time has no clock
+    // RFC9171 validity filter configuration.
+    //
+    // Controls the RFC9171 bundle validity checks that are auto-registered
+    // when the `rfc9171-filter` feature is enabled on the BPA.
+    //
+    // Set individual fields to `false` to disable specific checks:
+    // - `primary_block_integrity`: Require CRC or BIB on primary block
+    // - `bundle_age_required`: Require Bundle Age when creation time has no clock
     #[serde(default)]
     pub rfc9171_validity: rfc9171::Config,
 
-    /// Built-in application services to register.
-    /// Each service key maps to a list of service identifiers to register on.
-    /// Integers are IPN service numbers, strings are DTN service names.
-    /// Absent key = service disabled.
+    // Built-in application services to register.
+    // Each service key maps to a list of service identifiers to register on.
+    // Integers are IPN service numbers, strings are DTN service names.
+    // Absent key = service disabled.
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
 
-    /// Convergence Layer Adaptors (CLAs)
+    // Convergence Layer Adaptors (CLAs)
     #[serde(default)]
     pub clas: Vec<Cla>,
 }
 
 impl Config {
+    // Load the BPA server configuration.
+    //
+    // Resolution order: explicit `config_file` path, then `HARDY_BPA_SERVER_CONFIG_FILE`
+    // env var, then the platform default (`/etc/hardy/bpa` on Unix).
+    // Environment variables prefixed with `HARDY_BPA_SERVER_` override file values.
     pub fn load(config_file: Option<PathBuf>) -> Result<Config, Error> {
         let config_file = config_file
             .or_else(|| {
@@ -171,7 +179,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    /// Helper: write a config file and load it.
+    // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);
@@ -179,7 +187,7 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
-    /// Empty config file produces sensible defaults.
+    // Empty config file produces sensible defaults.
     #[test]
     #[serial]
     fn empty_config_has_defaults() {
@@ -192,7 +200,7 @@ mod tests {
         assert!(config.clas.is_empty());
     }
 
-    /// YAML config file overrides defaults.
+    // YAML config file overrides defaults.
     #[test]
     #[serial]
     fn yaml_overrides_defaults() {
@@ -211,7 +219,7 @@ node-ids:
         assert_eq!(config.poll_channel_depth.get(), 32);
     }
 
-    /// TOML config file works identically to YAML.
+    // TOML config file works identically to YAML.
     #[test]
     #[serial]
     fn toml_config() {
@@ -228,7 +236,7 @@ poll-channel-depth = 64
         assert_eq!(config.poll_channel_depth.get(), 64);
     }
 
-    /// JSON config file works identically to YAML.
+    // JSON config file works identically to YAML.
     #[test]
     #[serial]
     fn json_config() {
@@ -243,7 +251,7 @@ poll-channel-depth = 64
         assert!(config.status_reports);
     }
 
-    /// Environment variables override config file values.
+    // Environment variables override config file values.
     #[test]
     #[serial]
     fn env_overrides_file() {
@@ -268,7 +276,7 @@ poll-channel-depth = 64
         );
     }
 
-    /// Nested env vars with __ separator override nested config fields.
+    // Nested env vars with __ separator override nested config fields.
     #[test]
     #[serial]
     fn env_overrides_nested_fields() {
@@ -287,7 +295,7 @@ poll-channel-depth = 64
         assert_eq!(config.poll_channel_depth.get(), 128);
     }
 
-    /// Missing config file returns an error.
+    // Missing config file returns an error.
     #[test]
     #[serial]
     fn missing_config_file_errors() {
@@ -295,7 +303,7 @@ poll-channel-depth = 64
         assert!(result.is_err());
     }
 
-    /// Invalid log level in config file returns an error.
+    // Invalid log level in config file returns an error.
     #[test]
     #[serial]
     fn invalid_log_level_errors() {
@@ -306,7 +314,7 @@ poll-channel-depth = 64
         assert!(result.is_err());
     }
 
-    /// Zero value for NonZeroUsize fields is rejected.
+    // Zero value for NonZeroUsize fields is rejected.
     #[test]
     #[serial]
     fn zero_pool_size_errors() {
@@ -317,7 +325,7 @@ poll-channel-depth = 64
         assert!(result.is_err());
     }
 
-    /// Zero value for poll-channel-depth is rejected.
+    // Zero value for poll-channel-depth is rejected.
     #[test]
     #[serial]
     fn zero_poll_channel_depth_errors() {
@@ -328,7 +336,7 @@ poll-channel-depth = 64
         assert!(result.is_err());
     }
 
-    /// Negative values for unsigned fields are rejected.
+    // Negative values for unsigned fields are rejected.
     #[test]
     #[serial]
     fn negative_value_errors() {
@@ -339,7 +347,7 @@ poll-channel-depth = 64
         assert!(result.is_err());
     }
 
-    /// CLA list with one tcpclv4 entry parses correctly.
+    // CLA list with one tcpclv4 entry parses correctly.
     #[test]
     #[serial]
     fn cla_list_parsing() {
@@ -361,7 +369,7 @@ clas:
         assert_eq!(config.clas[1].name, "tcp-cla-2");
     }
 
-    /// Empty CLA list is valid.
+    // Empty CLA list is valid.
     #[test]
     #[serial]
     fn empty_cla_list() {
@@ -369,7 +377,7 @@ clas:
         assert!(config.clas.is_empty());
     }
 
-    /// Built-in echo service parses integer and string identifiers.
+    // Built-in echo service parses integer and string identifiers.
     #[test]
     #[serial]
     fn echo_service_parsing() {
@@ -386,7 +394,7 @@ built-in-services:
         assert_eq!(echo.len(), 2);
     }
 
-    /// Storage type selection parses correctly.
+    // Storage type selection parses correctly.
     #[test]
     #[serial]
     fn storage_memory_config() {
@@ -404,7 +412,7 @@ storage:
         assert_eq!(config.log_level, Level::INFO);
     }
 
-    /// Malformed YAML returns an error.
+    // Malformed YAML returns an error.
     #[test]
     #[serial]
     fn malformed_yaml_errors() {
@@ -415,7 +423,7 @@ storage:
         assert!(result.is_err());
     }
 
-    /// Malformed TOML returns an error.
+    // Malformed TOML returns an error.
     #[test]
     #[serial]
     fn malformed_toml_errors() {
@@ -426,7 +434,7 @@ storage:
         assert!(result.is_err());
     }
 
-    /// Malformed JSON returns an error.
+    // Malformed JSON returns an error.
     #[test]
     #[serial]
     fn malformed_json_errors() {
@@ -437,7 +445,7 @@ storage:
         assert!(result.is_err());
     }
 
-    /// Unknown fields are silently ignored (config-rs behavior).
+    // Unknown fields are silently ignored (config-rs behavior).
     #[test]
     #[serial]
     fn unknown_fields_ignored() {
@@ -453,7 +461,7 @@ another-unknown:
         assert_eq!(config.log_level, Level::WARN);
     }
 
-    /// Node IDs can be a single string.
+    // Node IDs can be a single string.
     #[test]
     #[serial]
     fn single_node_id() {
@@ -461,7 +469,7 @@ another-unknown:
         write_and_load("node.yaml", "node-ids: \"ipn:1.0\"\n");
     }
 
-    /// Node IDs can be a list with both schemes.
+    // Node IDs can be a list with both schemes.
     #[test]
     #[serial]
     fn multiple_node_ids() {

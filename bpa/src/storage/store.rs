@@ -284,7 +284,7 @@ mod tests {
         }
     }
 
-    /// Store a bundle and then store a duplicate — second insert should return false.
+    // Store a bundle and then store a duplicate — second insert should return false.
     #[tokio::test]
     async fn test_quota_enforcement() {
         let store = make_store();
@@ -302,7 +302,7 @@ mod tests {
         );
     }
 
-    /// Deleting a bundle that doesn't exist should not panic.
+    // Deleting a bundle that doesn't exist should not panic.
     #[tokio::test]
     async fn test_double_delete() {
         let store = make_store();
@@ -323,7 +323,7 @@ mod tests {
         assert!(store.load_data(&storage_name).await.is_none());
     }
 
-    /// When metadata insertion fails (duplicate), bundle data should be cleaned up.
+    // When metadata insertion fails (duplicate), bundle data should be cleaned up.
     #[tokio::test]
     async fn test_transaction_rollback() {
         let store = make_store();

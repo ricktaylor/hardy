@@ -264,8 +264,8 @@ mod tests {
         }
     }
 
-    /// A mock sink whose `unregister()` re-enters `agent.on_unregister()`,
-    /// simulating the BPA calling back into the agent during cleanup.
+    // A mock sink whose `unregister()` re-enters `agent.on_unregister()`,
+    // simulating the BPA calling back into the agent during cleanup.
     struct ReentrantSink {
         agent: Arc<RemoteRoutingAgent>,
     }
@@ -297,7 +297,7 @@ mod tests {
 
     // ── Tests ────────────────────────────────────────────────────────
 
-    /// SRV-02: After registration stores a sink, `sink()` returns it.
+    // SRV-02: After registration stores a sink, `sink()` returns it.
     #[test]
     fn srv_02_sink_available_after_register() {
         let agent = RemoteRoutingAgent {
@@ -315,8 +315,8 @@ mod tests {
         assert!(agent.sink().is_ok());
     }
 
-    /// SRV-03: After the sink is taken (unregistration), `sink()` returns
-    /// `Err(Unavailable)`.
+    // SRV-03: After the sink is taken (unregistration), `sink()` returns
+    // `Err(Unavailable)`.
     #[test]
     fn srv_03_sink_unavailable_after_unregister() {
         let agent = RemoteRoutingAgent {
@@ -333,12 +333,12 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::Unavailable);
     }
 
-    /// SRV-04: `unregister()` releases the spin lock before awaiting
-    /// `sink.unregister()`, so a re-entrant `on_unregister()` callback
-    /// does not deadlock.
-    ///
-    /// This is a regression test for a real bug where the spin lock was
-    /// held across `.await` in `if let Some(sink) = self.sink.lock().take()`.
+    // SRV-04: `unregister()` releases the spin lock before awaiting
+    // `sink.unregister()`, so a re-entrant `on_unregister()` callback
+    // does not deadlock.
+    //
+    // This is a regression test for a real bug where the spin lock was
+    // held across `.await` in `if let Some(sink) = self.sink.lock().take()`.
     #[tokio::test]
     async fn srv_04_spin_lock_not_held_across_await() {
         let agent = Arc::new(RemoteRoutingAgent {

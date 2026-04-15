@@ -118,7 +118,7 @@ pub struct Sender {
 
 #[cfg(test)]
 impl Sender {
-    /// Expose the current channel state for test assertions.
+    // Expose the current channel state for test assertions.
     fn state(&self) -> ChannelState {
         self.shared.load_state(Ordering::Acquire)
     }
@@ -368,7 +368,7 @@ mod tests {
         queue: None,
     };
 
-    /// Fill the memory channel beyond capacity to trigger Draining state.
+    // Fill the memory channel beyond capacity to trigger Draining state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_fast_path_saturation() {
         let store = make_store();
@@ -399,7 +399,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Send while Draining triggers Congested state.
+    // Send while Draining triggers Congested state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_congestion_signal() {
         let store = make_store();
@@ -428,7 +428,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// After draining completes and channel is <50% full, fast path re-opens.
+    // After draining completes and channel is <50% full, fast path re-opens.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_hysteresis_recovery() {
         let store = make_store();
@@ -505,7 +505,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Expired bundles should be filtered out during poll_once and not delivered.
+    // Expired bundles should be filtered out during poll_once and not delivered.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_lazy_expiry() {
         let store = make_store();
@@ -533,7 +533,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Sends should fail with SendError after close.
+    // Sends should fail with SendError after close.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_close_safety() {
         let store = make_store();
@@ -555,7 +555,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Bundles that overflow the fast path should eventually arrive via the poller.
+    // Bundles that overflow the fast path should eventually arrive via the poller.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_drop_to_storage_integrity() {
         let store = make_store();
@@ -591,9 +591,9 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// All sent bundles should arrive when the consumer tombstones them promptly.
-    /// The channel may re-deliver fast-path bundles via the poller (at-least-once),
-    /// but tombstoning prevents repeated re-delivery.
+    // All sent bundles should arrive when the consumer tombstones them promptly.
+    // The channel may re-deliver fast-path bundles via the poller (at-least-once),
+    // but tombstoning prevents repeated re-delivery.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_hybrid_duplication() {
         let store = make_store();
@@ -629,10 +629,10 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Bundles sent in sequence should all arrive, preserving the set.
-    /// Strict FIFO is guaranteed on the fast path (flume) and by received_at
-    /// ordering on the slow path, but the concurrent poller makes strict
-    /// ordering non-deterministic across paths in a test environment.
+    // Bundles sent in sequence should all arrive, preserving the set.
+    // Strict FIFO is guaranteed on the fast path (flume) and by received_at
+    // ordering on the slow path, but the concurrent poller makes strict
+    // ordering non-deterministic across paths in a test environment.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_ordering_preservation() {
         let store = make_store();
@@ -666,7 +666,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// Bundles with mismatched status should be filtered during poll_once.
+    // Bundles with mismatched status should be filtered during poll_once.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_status_consistency() {
         let store = make_store();
@@ -689,7 +689,7 @@ mod tests {
         store.shutdown().await;
     }
 
-    /// After closing, the receiver should eventually get None.
+    // After closing, the receiver should eventually get None.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_zombie_task_leak() {
         let store = make_store();

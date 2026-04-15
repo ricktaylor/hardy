@@ -652,7 +652,7 @@ mod tests {
     // Tests the negotiation logic from ConnectionContext::negotiate_keepalive().
     // The function returns min(local, peer) or 0 if local is None.
 
-    /// UT-TCP-03: Local < Peer → use local.
+    // UT-TCP-03: Local < Peer → use local.
     #[test]
     fn negotiate_keepalive_local_smaller() {
         let local: Option<u16> = Some(30);
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(result, 30);
     }
 
-    /// UT-TCP-03: Peer < Local → use peer.
+    // UT-TCP-03: Peer < Local → use peer.
     #[test]
     fn negotiate_keepalive_peer_smaller() {
         let local: Option<u16> = Some(60);
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(result, 30);
     }
 
-    /// UT-TCP-03: Equal values → use either.
+    // UT-TCP-03: Equal values → use either.
     #[test]
     fn negotiate_keepalive_equal() {
         let local: Option<u16> = Some(45);
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(result, 45);
     }
 
-    /// UT-TCP-03: Local is None (disabled) → result is 0 (disabled).
+    // UT-TCP-03: Local is None (disabled) → result is 0 (disabled).
     #[test]
     fn negotiate_keepalive_local_disabled() {
         let local: Option<u16> = None;
@@ -688,7 +688,7 @@ mod tests {
         assert_eq!(result, 0);
     }
 
-    /// UT-TCP-03: Peer sends 0 (disabled) → result is 0.
+    // UT-TCP-03: Peer sends 0 (disabled) → result is 0.
     #[test]
     fn negotiate_keepalive_peer_disabled() {
         let local: Option<u16> = Some(60);
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(result, 0);
     }
 
-    /// UT-TCP-03: Segment MRU negotiation uses min(local_mtu, peer_mru).
+    // UT-TCP-03: Segment MRU negotiation uses min(local_mtu, peer_mru).
     #[test]
     fn negotiate_segment_mtu() {
         let local_mtu: Option<usize> = Some(8192);
@@ -715,7 +715,7 @@ mod tests {
     // Tests the segmentation calculation used by Session::send_once().
     // The logic: while bundle.len() > segment_mtu, split_to(segment_mtu).
 
-    /// UT-TCP-04: Bundle smaller than MTU → 1 segment (START+END).
+    // UT-TCP-04: Bundle smaller than MTU → 1 segment (START+END).
     #[test]
     fn fragment_single_segment() {
         let bundle_len: usize = 500;
@@ -731,7 +731,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// UT-TCP-04: Bundle exactly equals MTU → 1 segment.
+    // UT-TCP-04: Bundle exactly equals MTU → 1 segment.
     #[test]
     fn fragment_exact_mtu() {
         let bundle_len: usize = 1000;
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// UT-TCP-04: 1000-byte payload with 100-byte MTU → 10 segments.
+    // UT-TCP-04: 1000-byte payload with 100-byte MTU → 10 segments.
     #[test]
     fn fragment_ten_segments() {
         let bundle_len: usize = 1000;
@@ -766,7 +766,7 @@ mod tests {
         assert_eq!(remaining, 100); // last segment is exactly MTU
     }
 
-    /// UT-TCP-04: Non-divisible payload → last segment is smaller.
+    // UT-TCP-04: Non-divisible payload → last segment is smaller.
     #[test]
     fn fragment_with_remainder() {
         let bundle_len: usize = 1050;
@@ -783,7 +783,7 @@ mod tests {
         assert_eq!(remaining, 50);
     }
 
-    /// UT-TCP-04: First segment has START flag, last has END flag.
+    // UT-TCP-04: First segment has START flag, last has END flag.
     #[test]
     fn fragment_flags() {
         let bundle_len: usize = 300;

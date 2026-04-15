@@ -1,34 +1,36 @@
-//! Runtime-agnostic async primitives for Hardy DTN.
-//!
-//! This crate provides abstractions over async runtime primitives to enable
-//! potential future support for alternative runtimes (smol, Embassy, etc.)
-//! while currently using tokio.
-//!
-//! # Features
-//!
-//! - **TaskPool**: Manages cancellable tasks with graceful shutdown
-//! - **BoundedTaskPool**: TaskPool with concurrency limits via semaphore
-//! - **JoinHandle**: Abstracted task handle type for runtime portability
-//!
-//! # Example
-//!
-//! ```no_run
-//! use hardy_async::TaskPool;
-//!
-//! let pool = TaskPool::new();
-//! let cancel = pool.cancel_token().clone();
-//!
-//! pool.spawn(async move {
-//!     loop {
-//!         tokio::select! {
-//!             _ = do_work() => {}
-//!             _ = cancel.cancelled() => break,
-//!         }
-//!     }
-//! });
-//!
-//! # async fn do_work() {}
-//! ```
+/*!
+Runtime-agnostic async primitives for Hardy DTN.
+
+This crate provides abstractions over async runtime primitives to enable
+potential future support for alternative runtimes (smol, Embassy, etc.)
+while currently using tokio.
+
+# Features
+
+- **TaskPool**: Manages cancellable tasks with graceful shutdown
+- **BoundedTaskPool**: TaskPool with concurrency limits via semaphore
+- **JoinHandle**: Abstracted task handle type for runtime portability
+
+# Example
+
+```no_run
+use hardy_async::TaskPool;
+
+let pool = TaskPool::new();
+let cancel = pool.cancel_token().clone();
+
+pool.spawn(async move {
+    loop {
+        tokio::select! {
+            _ = do_work() => {}
+            _ = cancel.cancelled() => break,
+        }
+    }
+});
+
+# async fn do_work() {}
+```
+*/
 
 extern crate alloc;
 

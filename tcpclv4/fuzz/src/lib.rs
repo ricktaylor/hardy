@@ -1,7 +1,7 @@
-//! Shared infrastructure for TCPCLv4 fuzz targets.
-//!
-//! Provides a mock BPA and CLA setup that can be used by both the passive
-//! (listener) and active (connector) fuzz targets.
+// Shared infrastructure for TCPCLv4 fuzz targets.
+//
+// Provides a mock BPA and CLA setup that can be used by both the passive
+// (listener) and active (connector) fuzz targets.
 
 use bytes::Bytes;
 use hardy_bpa::async_trait;
@@ -10,9 +10,9 @@ use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// A mock CLA Sink that accepts everything and discards it.
-///
-/// Dispatched bundles are silently dropped. Peer add/remove always succeeds.
+// A mock CLA Sink that accepts everything and discards it.
+//
+// Dispatched bundles are silently dropped. Peer add/remove always succeeds.
 pub struct MockSink;
 
 #[async_trait]
@@ -41,8 +41,8 @@ impl cla::Sink for MockSink {
     }
 }
 
-/// A mock BPA that registers CLAs by immediately calling `on_register` with a
-/// [`MockSink`] and a default node ID.
+// A mock BPA that registers CLAs by immediately calling `on_register` with a
+// `MockSink` and a default node ID.
 pub struct MockBpa;
 
 #[async_trait]
@@ -87,10 +87,10 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     }
 }
 
-/// The listen address for fuzz targets.
-///
-/// Defaults to `[::1]:4556`. Override with `FUZZ_LISTEN_ADDR` env var
-/// to avoid port conflicts in CI or parallel fuzzing (e.g., `FUZZ_LISTEN_ADDR=[::1]:0`).
+// The listen address for fuzz targets.
+//
+// Defaults to `[::1]:4556`. Override with `FUZZ_LISTEN_ADDR` env var
+// to avoid port conflicts in CI or parallel fuzzing (e.g., `FUZZ_LISTEN_ADDR=[::1]:0`).
 pub fn fuzz_addr() -> SocketAddr {
     std::env::var("FUZZ_LISTEN_ADDR")
         .ok()
@@ -103,7 +103,7 @@ pub fn fuzz_addr() -> SocketAddr {
         )))
 }
 
-/// Session config tuned for fuzzing — short timeouts to avoid blocking.
+// Session config tuned for fuzzing — short timeouts to avoid blocking.
 fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
     hardy_tcpclv4::config::SessionConfig {
         contact_timeout: 2,
@@ -112,8 +112,8 @@ fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
     }
 }
 
-/// Create a TCPCLv4 CLA with default config, registered against a mock BPA,
-/// listening on [`fuzz_addr()`].
+// Create a TCPCLv4 CLA with default config, registered against a mock BPA,
+// listening on `fuzz_addr()`.
 pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
     let config = hardy_tcpclv4::config::Config {
         address: Some(fuzz_addr()),
@@ -130,8 +130,8 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
     cla
 }
 
-/// Create a TCPCLv4 CLA with no listener (for active/connect fuzzing).
-/// The CLA is registered against a mock BPA and ready to `connect()`.
+// Create a TCPCLv4 CLA with no listener (for active/connect fuzzing).
+// The CLA is registered against a mock BPA and ready to `connect()`.
 pub async fn setup_connector() -> Arc<hardy_tcpclv4::Cla> {
     let config = hardy_tcpclv4::config::Config {
         address: None,
