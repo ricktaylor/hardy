@@ -76,7 +76,7 @@ This pattern verifies session establishment, bundle encoding/decoding, CLA frami
 | **HDTN** | TCPCLv4 | A, B | Passing | `HDTN/` |
 | **DTNME** | TCPCLv4 | A, B | Passing | `DTNME/` |
 | **ION** | STCP (via mtcp-cla) | A, B | Passing | `ION/` |
-| **D3TN/ud3tn** | MTCP (via mtcp-cla) | A, B | Passing | `ud3tn/` |
+| **ud3tn** | MTCP (via mtcp-cla) | A, B | Passing | `ud3tn/` |
 | **ESA BP** | STCP (via mtcp-cla) | A, B | Passing | `ESA-BP/` |
 | **NASA cFS** | STCP (via mtcp-cla) | B | Passing | `NASA-cFS/` |
 

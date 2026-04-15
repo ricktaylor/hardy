@@ -12,7 +12,7 @@ via gRPC.
 
 ## Wire Formats
 
-### MTCP (used by D3TN/ud3tn)
+### MTCP (used by ud3tn)
 
 CBOR byte string framing per `draft-ietf-dtn-mtcpcl-01`. Each bundle is
 encoded as a CBOR byte string (major type 2):

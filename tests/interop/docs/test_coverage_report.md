@@ -5,7 +5,7 @@
 | **Functional Area** | System Interoperability |
 | **Test Plan** | [`PLAN-INTEROP-01`](test_plan.md) |
 | **Requirements Ref** | [REQ-20](../../../docs/requirements.md#req-20-interoperability-with-existing-implementations) |
-| **Date** | 2026-04-14 |
+| **Date** | 2026-04-15 |
 
 ## 1. Requirements Coverage (Verification Matrix)
 
@@ -25,7 +25,7 @@ All results from `run_all.sh`, 20 pings per implementation, 2026-04-11.
 | **HDTN** | TCPCLv4 | Pass (avg 41ms) | Pass | 0% | Passing |
 | **DTNME** | TCPCLv4 | Pass (avg 44ms) | Pass | 0% | Passing |
 | **ION** | STCP (mtcp-cla) | Pass (avg 3ms) | Pass | 0% | Passing |
-| **D3TN/ud3tn** | MTCP (mtcp-cla) | Pass (avg 45ms) | Pass | 0% | Passing |
+| **ud3tn** | MTCP (mtcp-cla) | Pass (avg 45ms) | Pass | 0% | Passing |
 | **ESA BP** | STCP (mtcp-cla) | Pass (avg 33ms) | Pass | 0% | Passing |
 | **NASA cFS** | STCP (mtcp-cla) | Pass (avg 6ms) | Pass | 0% | Passing |
 

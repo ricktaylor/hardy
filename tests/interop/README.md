@@ -15,7 +15,7 @@ Hardy is tested against 7 peer implementations. Each test verifies bidirectional
 | [HDTN](HDTN/) | TCPCLv4 | Built-in (service 2047) | Passing | [README](HDTN/README.md) |
 | [DTNME](DTNME/) | TCPCLv4 | echo_me (service 7) | Passing | [README](DTNME/README.md) |
 | [ION](ION/) | STCP (via mtcp-cla) | bpecho (service 7) | Passing | [README](ION/README.md) |
-| [D3TN/ud3tn](ud3tn/) | MTCP (via mtcp-cla) | AAP2 echo agent (service 7) | Passing | [README](ud3tn/README.md) |
+| [ud3tn](ud3tn/) | MTCP (via mtcp-cla) | AAP2 echo agent (service 7) | Passing | [README](ud3tn/README.md) |
 | [ESA BP](ESA-BP/) | STCP (via mtcp-cla) | STCP CLE + echo (service 7) | Passing | [README](ESA-BP/README.md) |
 | [NASA cFS](NASA-cFS/) | STCP (custom PSP module) | SB routing echo (service 7) | Passing | [README](NASA-cFS/README.md) |
 
