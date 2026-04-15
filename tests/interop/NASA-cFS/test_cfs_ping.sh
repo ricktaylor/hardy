@@ -280,7 +280,7 @@ echo "============================================================"
 # Start Hardy bpa-server with echo service and gRPC for standalone CLA
 cat > "$TEST_DIR/hardy_config.toml" << EOF
 log-level = "info"
-status-reports = false
+status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
 
 [built-in-services]

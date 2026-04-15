@@ -39,19 +39,19 @@ Coverage is measured against [`PLAN-INTEROP-01`](test_plan.md).
 | :--- | :--- | :--- | :--- | :--- |
 | A: Transport Connectivity (IOP-01..03) | Session init, keepalive, graceful close | 3 | 3 | Exercised by all ping tests |
 | B: Bundle Exchange (IOP-04..06) | Hardy→Peer, Peer→Hardy, bidirectional load | 3 | 2 | IOP-04, IOP-05 covered; IOP-06 (100-bundle load) not implemented |
-| C: Administrative Logic (IOP-07..09) | Status reports, hop count, unknown blocks | 3 | 0 | Not implemented |
+| C: Administrative Logic (IOP-07..09) | Status reports, hop count, unknown blocks | 3 | 1 | IOP-07 exercised by all 8 ping tests (`status-reports = true`); IOP-08, IOP-09 not implemented |
 | D: BPSec (IOP-10) | BIB-HMAC-SHA256 verification | 1 | 0 | Not implemented |
 | E: Fragmentation (IOP-11) | Reassembly of fragmented bundles | 1 | 0 | Not implemented |
-| **Total** | | **11** | **5** | **45%** |
+| **Total** | | **11** | **6** | **55%** |
 
-Suites A and B are the core interoperability requirement. Suites C, D, and E require multi-hop topologies, shared key configuration, or peer-side fragmentation capability that not all implementations support.
+Suites A and B are the core interoperability requirement. IOP-07 (delivery status reports) is verified by all ping tests. The remaining gaps (IOP-08, IOP-09, IOP-10, IOP-11) require multi-hop topologies, shared key configuration, or peer-side fragmentation capability that not all implementations support.
 
 ## 4. Key Gaps
 
 | Suite | Gap | Notes |
 | :--- | :--- | :--- |
 | B | IOP-06: Bidirectional 100-bundle load test | Needs extended test script |
-| C | Status reports and extension block handling | Requires multi-hop topology; not all peers support reporting |
+| C | IOP-08 (hop count exceeded), IOP-09 (unknown block) | Requires multi-hop topology; not all peers support reporting |
 | D | BPSec integrity verification | Requires shared key configuration; few peers support RFC 9173 |
 | E | Fragment reassembly | Requires peer-side fragmentation capability |
 
