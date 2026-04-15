@@ -1,14 +1,16 @@
-# Hardy Design
+# Design: Hardy DTN Router
 
-**Cloud-based DTN Router for Ground Systems**
+| Document Info | Details |
+| ----- | ----- |
+| **Project** | Hardy DTN Router |
+| **Repository** | `github.com/ricktaylor/hardy` |
+| **Version** | 1.1 |
 
-## Introduction
+## 1. Introduction
 
-Hardy is a modular, high-performance implementation of the Bundle Protocol version 7 (RFC 9171) written in Rust. The project follows a microservices architecture with loosely-coupled components, enabling independent deployment, replication, and autoscaling in cloud environments.
+Hardy is a modular implementation of the Bundle Protocol version 7 (RFC 9171) written in Rust. The project follows a microservices architecture with loosely-coupled components that can be independently deployed, replicated, and autoscaled. This also allows each component to be developed and tested in isolation.
 
-This division into loosely coupled components is current best practice when developing software for cloud environments, as it allows independent parts of the solution to be deployed, replicated, and autoscaled in line with active load. It also has the additional benefit that each component can be largely developed and tested independently in isolation.
-
-## Design Goals
+## 2. Design Goals
 
 - **Modularity**: Components are separated into reusable library crates and application binaries
 - **Performance**: Lock-free algorithms, async I/O, and zero-copy parsing where possible
@@ -16,9 +18,9 @@ This division into loosely coupled components is current best practice when deve
 - **Extensibility**: Trait-based APIs allow pluggable implementations for storage, CLAs, and services
 - **Cloud-Native**: gRPC APIs, OpenTelemetry integration, and container-friendly configuration
 
-## Architecture Overview
+## 3. Architecture Overview
 
-### Bundle Node Structure (RFC 9171 Section 3)
+### 3.1. Bundle Node Structure (RFC 9171 Section 3)
 
 Hardy implements the bundle node architecture defined in RFC 9171 Section 3. A bundle node comprises an Application Agent, a Bundle Protocol Agent, and Convergence-Layer Adapters:
 
@@ -80,7 +82,7 @@ Key aspects of Hardy's implementation:
 
 The BPA exchanges **ADUs** (Application Data Units) with services above and **Bundles** with CLAs below.
 
-### BPA Internal Structure
+### 3.2. BPA Internal Structure
 
 The BPA is internally modular, with pluggable components for storage, routing, and filtering:
 
@@ -124,19 +126,22 @@ The BPA is internally modular, with pluggable components for storage, routing, a
 
 For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../bpa/docs/design.md).
 
-## Package Summary
+## 4. Package Summary
 
 | Package | Type | Purpose | Design Doc |
 |---------|------|---------|------------|
 | hardy-cbor | Library | CBOR encoding/decoding | [cbor/docs/design.md](../cbor/docs/design.md) |
 | hardy-bpv7 | Library | BPv7 bundle handling | [bpv7/docs/design.md](../bpv7/docs/design.md) |
-| hardy-bpv7-tools | Application | Bundle CLI (bundle) | [bpv7/tools/docs/design.md](../bpv7/tools/docs/design.md) |
+| hardy-bpv7-tools | Application | Bundle CLI (`bundle`) | [bpv7/tools/docs/design.md](../bpv7/tools/docs/design.md) |
+| hardy-cbor-tools | Application | CBOR CLI (`cbor`) | [cbor/tools/docs/design.md](../cbor/tools/docs/design.md) |
 | hardy-eid-patterns | Library | EID pattern matching | [eid-patterns/docs/design.md](../eid-patterns/docs/design.md) |
 | hardy-async | Library | Async runtime abstraction | [async/docs/design.md](../async/docs/design.md) |
 | hardy-bpa | Library | Core BPA functionality | [bpa/docs/design.md](../bpa/docs/design.md) |
 | hardy-proto | Library | gRPC definitions | [proto/docs/design.md](../proto/docs/design.md) |
 | hardy-localdisk-storage | Library | Filesystem bundle storage | [localdisk-storage/docs/design.md](../localdisk-storage/docs/design.md) |
 | hardy-sqlite-storage | Library | SQLite metadata storage | [sqlite-storage/docs/design.md](../sqlite-storage/docs/design.md) |
+| hardy-postgres-storage | Library | PostgreSQL metadata storage | [postgres-storage/docs/design.md](../postgres-storage/docs/design.md) |
+| hardy-s3-storage | Library | S3 bundle storage | [s3-storage/docs/design.md](../s3-storage/docs/design.md) |
 | hardy-tcpclv4 | Library | TCPCLv4 CLA | [tcpclv4/docs/design.md](../tcpclv4/docs/design.md) |
 | hardy-file-cla | Library | File-based CLA | [file-cla/docs/design.md](../file-cla/docs/design.md) |
 | hardy-echo-service | Library | Echo service | [echo-service/docs/design.md](../echo-service/docs/design.md) |
@@ -148,84 +153,53 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 | hardy-tcpclv4-server | Application | Standalone TCPCLv4 | [tcpclv4-server/docs/design.md](../tcpclv4-server/docs/design.md) |
 | hardy-tools | Application | CLI tools (bp) | [tools/docs/design.md](../tools/docs/design.md) |
 
-## Testing
+## 5. Testing
 
-- [Test Strategy](test_strategy.md) - Master test plan with document hierarchy
-- [Test Coverage Report](test_coverage_report.md) - Current test coverage status
-- [Interoperability Test Plan](../tests/interop/docs/test_plan.md) - Cross-implementation testing
+See the [Test Strategy](test_strategy.md) for the full verification approach, test plan inventory (32 plans), and tooling. The [Test Coverage Report](test_coverage_report.md) summarises current coverage across all crates.
 
-### Unit Tests
+## 6. Dependencies and Compatibility
 
-Each library includes unit tests for core functionality, with examples drawn from relevant RFCs.
-
-### Fuzz Testing
-
-Fuzz targets exist for:
-
-- CBOR parsing (`cbor/fuzz/`)
-- EID parsing (`eid-patterns/fuzz/`)
-- Bundle parsing (`bpv7/fuzz/`)
-- BPA APIs (`bpa/fuzz/`)
-- TCPCLv4 protocol parsing (`tcpclv4/fuzz/`)
-
-### Integration Testing
-
-- Cross-implementation testing with ION and other BPv7 implementations
-- End-to-end testing via hardy-tools
-
-## Dependencies and Compatibility
-
-### Rust Edition
+### 6.1. Rust Edition
 
 - Edition: 2024
 - Minimum Rust version: 1.86
 
-### Key External Dependencies
+### 6.2. External Dependencies
 
 | Crate | Purpose |
 |-------|---------|
 | tokio | Async runtime |
-| tonic | gRPC implementation |
+| tonic / prost | gRPC implementation and protobuf |
 | serde | Serialisation framework |
 | tracing | Instrumentation |
-| thiserror | Error handling |
+| opentelemetry | Metrics, traces, and logs export |
 | flume | Channel implementation |
 | rusqlite | SQLite bindings |
+| tokio-postgres | PostgreSQL client |
+| aws-sdk-s3 | S3-compatible object storage |
+| rustls | TLS implementation |
+| chumsky | Parser combinators (EID patterns, TVR) |
+| humantime | Duration parsing |
+| criterion | Performance benchmarking |
 
-### Platform Support
+### 6.3. Platform Support
 
 - **Full support**: Linux, macOS, Windows
 - **Partial support** (`no_std` libraries): Embedded platforms with heap allocator
 
-## Configuration
+## 7. Configuration
 
-Configuration follows cloud-native patterns:
+Configuration uses the `config` crate with kebab-case field names:
 
-1. **Configuration files**: TOML, JSON, or YAML format
-2. **Environment variables**: Override individual values
-3. **Defaults**: Derived from relevant RFC specifications
+1. **Configuration files**: YAML, TOML, or JSON format
+2. **Environment variables**: Override individual values (prefix per binary, `__` for nesting)
+3. **Defaults**: Sensible defaults derived from RFC specifications
 
-Example configuration structure:
+See the [User Guide](https://ricktaylor.github.io/hardy/configuration/bpa-server/) for the full configuration reference.
 
-```toml
-[node]
-node_id = "ipn:1.0"
+## 8. Deployment Models
 
-[storage]
-bundle_dir = "/var/spool/hardy/bundles"
-metadata_db = "/var/lib/hardy/metadata.db"
-
-[tcpclv4]
-listen_address = "0.0.0.0:4556"
-
-[grpc]
-enabled = true
-listen_address = "127.0.0.1:50051"
-```
-
-## Deployment Models
-
-### Standalone
+### 8.1. Standalone
 
 Single process with all components linked:
 
@@ -233,7 +207,7 @@ Single process with all components linked:
 hardy-bpa-server (with inline TCPCLv4)
 ```
 
-### Distributed
+### 8.2. Distributed
 
 Separate processes communicating via gRPC:
 
@@ -248,6 +222,6 @@ This model allows:
 - Multiple TCPCLv4 instances behind cloud load balancers, handling TCP/IP and CL processing before passing bundles to a single BPA
 - Each application service in its own container for reliability, so a failure in one service does not compromise the system as a whole
 
-### Embedded
+### 8.3. Embedded
 
 Core libraries (`hardy-cbor`, `hardy-bpv7`) in `no_std` configuration for resource-constrained devices.

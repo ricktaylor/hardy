@@ -2,9 +2,8 @@
 
 | Document Info | Details |
 | :--- | :--- |
-| **Project** | Hardy (Cloud-based DTN Router) |
+| **Project** | Hardy DTN Router |
 | **PICS Reference** | CCSDS 734.20-O-1 |
-| **Status** | DRAFT |
 
 ## 1. Introduction
 
@@ -79,9 +78,9 @@ This document provides traceability between the CCSDS PICS (Protocol Implementat
 
 ### 4.1 Implementation Gaps
 
-| PICS Item | Feature | Status | Impact | Action |
-| :--- | :--- | :--- | :--- | :--- |
-| 28 | BP Managed Information (Annex C) | M/N | Out of scope for initial phase | Documented as known limitation |
+| PICS Item | Feature | Status | Support | Impact | Action |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 28 | BP Managed Information (Annex C) | M | N | Out of scope for initial phase | Documented as known limitation |
 
 ### 4.2 Test Implementation Gaps
 

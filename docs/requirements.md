@@ -4,7 +4,7 @@
 
 | **Field** | **Value** |
 | :--- | :--- |
-| **Project** | Hardy (Cloud-based DTN Router for Ground Systems) |
+| **Project** | Hardy DTN Router |
 | **Version** | 3.1 (LLR parent traceability corrected) |
 
 ## Scope

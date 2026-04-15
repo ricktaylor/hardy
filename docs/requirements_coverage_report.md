@@ -1,109 +1,109 @@
 # Requirements Coverage Report
 
-> Maps every requirement from [requirements.md](requirements.md) to implementing crates and test evidence.
->
-> Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
->
-> Last updated: 2026-04-14
+| Document Info | Details |
+| :--- | :--- |
+| **Project** | Hardy DTN Router |
+| **Date** | 2026-04-15 |
 
-## Requirements Traceability Matrix
+## 1. Introduction
 
-| REQ | Description | Initial phase? | Test Evidence | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **1** | **Full compliance with RFC 9171** | Yes | [bpv7 coverage](../bpv7/docs/test_coverage_report.md), [bpa coverage](../bpa/docs/test_coverage_report.md), [cbor coverage](../cbor/docs/test_coverage_report.md) | **Done** |
-| 1.1 | Compliance verification matrix | Yes | [PICS Proforma](PICS_Proforma.md) (self-declaration), [PICS Test Mapping](PICS_Test_Mapping.md) | Done |
-| 1.2 | Test verification report | Yes | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1, [bpa coverage](../bpa/docs/test_coverage_report.md) §1, [cbor coverage](../cbor/docs/test_coverage_report.md) §1 | Done |
-| **2** | **Full compliance with RFC 9172/9173** | No | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | **Done** |
-| 2.1 | RFC 9172 compliance matrix | No | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | Done |
-| 2.2 | RFC 9173 compliance matrix | No | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | Done |
-| 2.3 | RFC 9172 test report | No | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1 | Done |
-| 2.4 | RFC 9173 test report | No | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1 | Done |
-| **3** | **Full compliance with RFC 9174** | Yes | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md), [tcpclv4-server coverage](../tcpclv4-server/docs/test_coverage_report.md) | **Done** |
-| 3.1 | Compliance verification matrix | Yes | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md) §1 | Done |
-| 3.2 | Test verification report | Yes | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md) §1, [interop coverage](../tests/interop/docs/test_coverage_report.md) | Done |
-| **4** | **Alignment with on-going DTN standardisation** | No | — | **Partial** |
-| 4.1 | UDP-CL profile | No | — | Not started (not initial phase) |
-| 4.2 | Custody Transfer profile | No | — | Not started (not initial phase) |
-| 4.3 | QoS profile | No | EgressPolicy framework in bpa (`policy/`) | In progress (not initial phase) |
-| 4.4 | Compressed Status Reporting profile | No | — | Not started (not initial phase) |
-| 4.5 | BIBE profile | No | `bibe/` crate ([design](../bibe/docs/design.md)) | In progress (not initial phase) |
-| 4.6–4.10 | Test reports for profiles | No | — | Not started (not initial phase) |
-| **5** | **Experimental support for QUIC** | No | — | **Not started (not initial phase)** |
-| 5.1–5.5 | QUIC specification, support, compliance, testing, config | No | — | Not started (not initial phase) |
-| **6** | **Time-variant Routing API** | Yes | [bpa coverage](../bpa/docs/test_coverage_report.md), [tvr coverage](../tvr/docs/test_coverage_report.md) | **Done** |
-| 6.1 | Specify contact start | Yes | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
-| 6.2 | Specify contact duration | Yes | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
-| 6.3 | Specify expected bandwidth | Yes | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
-| 6.4 | Specify contact periodicity | Yes | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
-| 6.5 | Store bundles for expected contact | Yes | [bpa coverage](../bpa/docs/test_coverage_report.md) | Done |
-| 6.6 | Update without restart | Yes | [tvr coverage](../tvr/docs/test_coverage_report.md), [bpa-server coverage](../bpa-server/docs/test_coverage_report.md) | Done |
-| **7** | **Local filesystem storage** | Yes | [localdisk coverage](../localdisk-storage/docs/test_coverage_report.md), [sqlite coverage](../sqlite-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Done** |
-| 7.1 | Local filesystem bundle storage | Yes | [localdisk coverage](../localdisk-storage/docs/test_coverage_report.md) | Done |
-| 7.2 | Local filesystem metadata storage | Yes | [sqlite coverage](../sqlite-storage/docs/test_coverage_report.md) | Done |
-| 7.3 | Recovery from local storage | Yes | [storage harness](../tests/storage/docs/test_plan.md) META-05, BLOB-04 | Done |
-| **8** | **PostgreSQL metadata storage** | No | [postgres coverage](../postgres-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Done** |
-| 8.1 | PostgreSQL metadata storage | No | [postgres coverage](../postgres-storage/docs/test_coverage_report.md) | Done |
-| 8.2 | Recovery from PostgreSQL | No | [storage harness](../tests/storage/docs/test_plan.md) META-05 | Done |
-| **9** | **Amazon S3 bundle storage** | Yes | [s3 coverage](../s3-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Done** |
-| 9.1 | S3 bundle storage | Yes | [s3 coverage](../s3-storage/docs/test_coverage_report.md) | Done |
-| 9.2 | Recovery from S3 | Yes | [storage harness](../tests/storage/docs/test_plan.md) BLOB-04 | Done |
-| **10** | **DynamoDB metadata storage** | No | — | **Not started (not initial phase)** |
-| 10.1–10.2 | DynamoDB storage + recovery | No | — | Not started (not initial phase) |
-| **11** | **Azure Blob Storage** | No | — | **Not started (not initial phase)** |
-| 11.1–11.2 | Azure Blob storage + recovery | No | — | Not started (not initial phase) |
-| **12** | **Azure SQL metadata storage** | No | — | **Not started (not initial phase)** |
-| 12.1–12.2 | Azure SQL storage + recovery | No | — | Not started (not initial phase) |
-| **13** | **Performance** | No | [bpa coverage](../bpa/docs/test_coverage_report.md) §3.3 | **Partial** |
-| 13.1 | 1000 bundles/sec | No | [bpa coverage](../bpa/docs/test_coverage_report.md) — criterion benchmark: ~8K/sec | Done |
-| 13.2 | 4GB reassembly | No | — | Not tested (not initial phase) |
-| 13.3 | 1TB storage for 1 month | No | — | Not tested (not initial phase) |
-| 13.4 | 10Gbit/s TCPCLv4 (10MB bundles) | No | — | Not tested (not initial phase) |
-| 13.5 | 10Gbit/s TCPCLv4 (1KB bundles) | No | — | Not tested (not initial phase) |
-| **14** | **Reliability** | No | Fuzz plans: [bpv7](../bpv7/docs/fuzz_test_plan.md), [cbor](../cbor/docs/fuzz_test_plan.md), [eid-patterns](../eid-patterns/docs/fuzz_test_plan.md), [bpa](../bpa/docs/fuzz_test_plan.md), [tcpclv4](../tcpclv4/docs/fuzz_test_plan.md) | **Partial** |
-| 14.1 | Fuzz test verification matrix | No | 5 crates with fuzz targets, 8 fuzz binaries total | Done |
-| **15** | **Independent component packaging** | Yes | CI workflows (`docker.yml`, `tools.yml`), [`tests/image_checks.sh`](../tests/image_checks.sh) | **Done** |
-| 15.1 | OCI container images | Yes | ghcr.io published (3 images) | Done |
-| 15.2 | Install/update/remove verification | Yes | [`tests/image_checks.sh`](../tests/image_checks.sh) | Done |
-| 15.3 | Installation documentation | Yes | [Quick Start](https://ricktaylor.github.io/hardy/getting-started/quick-start/), [Docker](https://ricktaylor.github.io/hardy/getting-started/docker/) | Done |
-| **16** | **Kubernetes packaging** | Stretch | — | **Not started (stretch)** |
-| 16.1 | Helm chart | Stretch | — | Not started (stretch) |
-| 16.2 | Installation documentation | Stretch | — | Not started (stretch) |
-| **17** | **Comprehensive usage documentation** | Yes | [User docs](https://ricktaylor.github.io/hardy/) | **Done** |
-| 17.1 | Overview documentation | Yes | [User Guide](https://ricktaylor.github.io/hardy/) | Done |
-| 17.2 | Quick-start guide | Yes | [Quick Start](https://ricktaylor.github.io/hardy/getting-started/quick-start/) | Done |
-| 17.3 | Configuration reference | Yes | [Configuration](https://ricktaylor.github.io/hardy/configuration/bpa-server/) | Done |
-| **18** | **Technical documentation and examples** | Yes | Design docs across all crates | **Partial** |
-| 18.1 | High-level design documentation | Yes | Per-crate `docs/design.md` | Done |
-| 18.2 | API documentation + sample code | Yes | — | Not started |
-| 18.3 | Failure-mode report | Yes | Planned for user docs (per-backend sections) | Not started |
-| 18.4 | Reliability report (MTBF) | No | — | Not started (not initial phase) |
-| **19** | **Management and monitoring tools** | Yes | [otel coverage](../otel/docs/test_coverage_report.md), [tools coverage](../tools/docs/test_coverage_report.md) | **Done** |
-| 19.1 | OpenTelemetry export | Yes | [otel coverage](../otel/docs/test_coverage_report.md), [`COMP-OTEL-01`](../otel/docs/component_test_plan.md) | Done |
-| 19.2 | Network testing tools | Yes | [tools coverage](../tools/docs/test_coverage_report.md) | Done |
-| **20** | **Interoperability** | Stretch | [interop coverage](../tests/interop/docs/test_coverage_report.md) | **Done** |
-| 20.1 | Interoperability verification matrix | Stretch | [interop coverage](../tests/interop/docs/test_coverage_report.md) §2 | Done |
-| 20.2 | Compliance verification matrix | Stretch | [interop coverage](../tests/interop/docs/test_coverage_report.md) §2 | Done |
-| **21** | **Permissive licence** | Yes | GitHub, Apache 2.0 | **Done** |
-| 21.1 | ESA-compatible licence | Yes | Apache 2.0 | Done |
-| 21.2 | Public documentation | Yes | GitHub Pages | Done |
-| 21.3 | Issue tracker | Yes | GitHub Issues + `SECURITY.md` | Done |
+This report maps every requirement from [requirements.md](requirements.md) to implementing crates and test evidence. It provides end-to-end traceability from top-level requirements (Part 2) through mid-level verification requirements (Part 4) to Low-Level Requirements (Part 3) and individual test results.
 
-## Summary
+Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
 
-| Category | Total | Done | Partial | Not Started |
-| :--- | :--- | :--- | :--- | :--- |
-| Initial phase scope (REQ-1,3,6,7,9,15,17,18,19,21) | 10 | 8 | 1 (REQ-18) | 0 |
-| Stretch (REQ-16, REQ-20) | 2 | 1 (REQ-20) | 0 | 1 (REQ-16) |
-| Full Activity (REQ-2,4,5,8,10,11,12,13,14) | 9 | 3 (REQ-2, REQ-8, REQ-14) | 2 (REQ-4, REQ-13) | 4 |
+**Overall status:**
 
-### Initial Phase Gaps
+* 11 of 21 top-level requirements Done
+  * 4 Partial
+  * 6 Not started
+* 71 of 78 LLRs Done
+  * 1 N/A
+  * 6 Not Tested
+* Gaps and implementation status detailed in [§4](#4-gaps)
 
-| REQ | Gap | Severity |
-| :--- | :--- | :--- |
-| REQ-18.2 | gRPC API usage guide + sample code | Medium |
-| REQ-18.3 | Storage failure-mode report | Medium |
+## 2. Requirements Traceability Matrix
 
-## Low-Level Requirements Traceability
+| REQ | Description | Test Evidence | Status |
+| :--- | :--- | :--- | :--- |
+| **1** | **Full compliance with RFC 9171** | [bpv7 coverage](../bpv7/docs/test_coverage_report.md), [bpa coverage](../bpa/docs/test_coverage_report.md), [cbor coverage](../cbor/docs/test_coverage_report.md) | **Done** |
+| 1.1 | Compliance verification matrix | [PICS Proforma](PICS_Proforma.md) (self-declaration), [PICS Test Mapping](PICS_Test_Mapping.md) | Done |
+| 1.2 | Test verification report | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1, [bpa coverage](../bpa/docs/test_coverage_report.md) §1, [cbor coverage](../cbor/docs/test_coverage_report.md) §1 | Done |
+| **2** | **Full compliance with RFC 9172/9173** | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | **Done** |
+| 2.1 | RFC 9172 compliance matrix | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | Done |
+| 2.2 | RFC 9173 compliance matrix | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) | Done |
+| 2.3 | RFC 9172 test report | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1 | Done |
+| 2.4 | RFC 9173 test report | [bpv7 coverage](../bpv7/docs/test_coverage_report.md) §1 | Done |
+| **3** | **Full compliance with RFC 9174** | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md), [tcpclv4-server coverage](../tcpclv4-server/docs/test_coverage_report.md) | **Done** |
+| 3.1 | Compliance verification matrix | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md) §1 | Done |
+| 3.2 | Test verification report | [tcpclv4 coverage](../tcpclv4/docs/test_coverage_report.md) §1, [interop coverage](../tests/interop/docs/test_coverage_report.md) | Done |
+| **4** | **Alignment with on-going DTN standardisation** | — | **Partial (not initial phase)** |
+| 4.1 | UDP-CL profile | — | Not started |
+| 4.2 | Custody Transfer profile | — | Not started |
+| 4.3 | QoS profile | EgressPolicy framework in bpa (`policy/`) | In progress |
+| 4.4 | Compressed Status Reporting profile | — | Not started |
+| 4.5 | BIBE profile | `bibe/` crate ([design](../bibe/docs/design.md)) | In progress |
+| 4.6–4.10 | Test reports for profiles | — | Not started |
+| **5** | **Experimental support for QUIC** | — | **Not started (not initial phase)** |
+| 5.1–5.5 | QUIC specification, support, compliance, testing, config | — | Not started |
+| **6** | **Time-variant Routing API** | [bpa coverage](../bpa/docs/test_coverage_report.md), [tvr coverage](../tvr/docs/test_coverage_report.md) | **Done** |
+| 6.1 | Specify contact start | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
+| 6.2 | Specify contact duration | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
+| 6.3 | Specify expected bandwidth | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
+| 6.4 | Specify contact periodicity | [tvr coverage](../tvr/docs/test_coverage_report.md) | Done |
+| 6.5 | Store bundles for expected contact | [bpa coverage](../bpa/docs/test_coverage_report.md) | Done |
+| 6.6 | Update without restart | [tvr coverage](../tvr/docs/test_coverage_report.md), [bpa-server coverage](../bpa-server/docs/test_coverage_report.md) | Done |
+| **7** | **Local filesystem storage** | [localdisk coverage](../localdisk-storage/docs/test_coverage_report.md), [sqlite coverage](../sqlite-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Done** |
+| 7.1 | Local filesystem bundle storage | [localdisk coverage](../localdisk-storage/docs/test_coverage_report.md) | Done |
+| 7.2 | Local filesystem metadata storage | [sqlite coverage](../sqlite-storage/docs/test_coverage_report.md) | Done |
+| 7.3 | Recovery from local storage | [storage harness](../tests/storage/docs/test_plan.md) META-05, BLOB-04 | Done |
+| **8** | **PostgreSQL metadata storage** | [postgres coverage](../postgres-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Done** |
+| 8.1 | PostgreSQL metadata storage | [postgres coverage](../postgres-storage/docs/test_coverage_report.md) | Done |
+| 8.2 | Recovery from PostgreSQL | [storage harness](../tests/storage/docs/test_plan.md) META-05 | Done |
+| **9** | **Amazon S3 bundle storage** | [s3 coverage](../s3-storage/docs/test_coverage_report.md), [storage harness](../tests/storage/docs/test_plan.md) | **Partial** |
+| 9.1 | S3 bundle storage | [s3 coverage](../s3-storage/docs/test_coverage_report.md) | Done |
+| 9.2 | Recovery from S3 | [storage harness](../tests/storage/docs/test_plan.md) BLOB-04 | Done |
+| **10** | **DynamoDB metadata storage** | — | **Not started (not initial phase)** |
+| 10.1–10.2 | DynamoDB storage + recovery | — | Not started |
+| **11** | **Azure Blob Storage** | — | **Not started (not initial phase)** |
+| 11.1–11.2 | Azure Blob storage + recovery | — | Not started |
+| **12** | **Azure SQL metadata storage** | — | **Not started (not initial phase)** |
+| 12.1–12.2 | Azure SQL storage + recovery | — | Not started |
+| **13** | **Performance** | [bpa coverage](../bpa/docs/test_coverage_report.md) §3.3 | **Partial (not initial phase)** |
+| 13.1 | 1000 bundles/sec | [bpa coverage](../bpa/docs/test_coverage_report.md) — criterion benchmark: ~8K/sec | Done |
+| 13.2 | 4GB reassembly | — | Not tested |
+| 13.3 | 1TB storage for 1 month | — | Not tested |
+| 13.4 | 10Gbit/s TCPCLv4 (10MB bundles) | — | Not tested |
+| 13.5 | 10Gbit/s TCPCLv4 (1KB bundles) | — | Not tested |
+| **14** | **Reliability** | Fuzz plans: [bpv7](../bpv7/docs/fuzz_test_plan.md), [cbor](../cbor/docs/fuzz_test_plan.md), [eid-patterns](../eid-patterns/docs/fuzz_test_plan.md), [bpa](../bpa/docs/fuzz_test_plan.md), [tcpclv4](../tcpclv4/docs/fuzz_test_plan.md) | **Partial (not initial phase)** |
+| 14.1 | Fuzz test verification matrix | 5 crates with fuzz targets, 8 fuzz binaries total | Done |
+| **15** | **Independent component packaging** | CI workflows (`docker.yml`, `tools.yml`), [`tests/image_checks.sh`](../tests/image_checks.sh) | **Done** |
+| 15.1 | OCI container images | ghcr.io published (3 images) | Done |
+| 15.2 | Install/update/remove verification | [`tests/image_checks.sh`](../tests/image_checks.sh) | Done |
+| 15.3 | Installation documentation | [Quick Start](https://ricktaylor.github.io/hardy/getting-started/quick-start/), [Docker](https://ricktaylor.github.io/hardy/getting-started/docker/) | Done |
+| **16** | **Kubernetes packaging** | — | **Not started (stretch)** |
+| 16.1 | Helm chart | — | Not started |
+| 16.2 | Installation documentation | — | Not started |
+| **17** | **Comprehensive usage documentation** | [User docs](https://ricktaylor.github.io/hardy/) | **Done** |
+| 17.1 | Overview documentation | [User Guide](https://ricktaylor.github.io/hardy/) | Done |
+| 17.2 | Quick-start guide | [Quick Start](https://ricktaylor.github.io/hardy/getting-started/quick-start/) | Done |
+| 17.3 | Configuration reference | [Configuration](https://ricktaylor.github.io/hardy/configuration/bpa-server/) | Done |
+| **18** | **Technical documentation and examples** | Design docs across all crates | **Done** |
+| 18.1 | High-level design documentation | Per-crate `docs/design.md` | Done |
+| 18.2 | API documentation + sample code | [proto README](../proto/README.md), [tvr README](../tvr/README.md), generated [API reference](../proto/docs/api_reference.md) | Done |
+| 18.3 | Failure-mode report | [Recovery guide](https://ricktaylor.github.io/hardy/recovery/) | Done |
+| 18.4 | Reliability report (MTBF) | — | Not started (not initial phase) |
+| **19** | **Management and monitoring tools** | [otel coverage](../otel/docs/test_coverage_report.md), [tools coverage](../tools/docs/test_coverage_report.md) | **Done** |
+| 19.1 | OpenTelemetry export | [otel coverage](../otel/docs/test_coverage_report.md), [`COMP-OTEL-01`](../otel/docs/component_test_plan.md) | Done |
+| 19.2 | Network testing tools | [tools coverage](../tools/docs/test_coverage_report.md) | Done |
+| **20** | **Interoperability** | [interop coverage](../tests/interop/docs/test_coverage_report.md) | **Done** |
+| 20.1 | Interoperability verification matrix | [interop coverage](../tests/interop/docs/test_coverage_report.md) §2 | Done |
+| 20.2 | Compliance verification matrix | [interop coverage](../tests/interop/docs/test_coverage_report.md) §2 | Done |
+| **21** | **Permissive licence** | GitHub, Apache 2.0 | **Done** |
+| 21.1 | ESA-compatible licence | Apache 2.0 | Done |
+| 21.2 | Public documentation | GitHub Pages | Done |
+| 21.3 | Issue tracker | GitHub Issues + `SECURITY.md` | Done |
+
+## 3. Low-Level Requirements Traceability
 
 This section maps every Low-Level Requirement (LLR) from Part 3 of [requirements.md](requirements.md) to the implementing crate and test evidence. Status is drawn from each crate's test coverage report (linked below).
 
@@ -270,7 +270,7 @@ Implementing crate: `localdisk-storage` — [coverage report](../localdisk-stora
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **7.1.1** | Configurable storage location | Done |
-| **7.1.2** | Configurable maximum total for stored bundle data | Not tested |
+| **7.1.2** | Configurable maximum total for stored bundle data | Not implemented |
 | **7.1.3** | Configurable discard mechanism at capacity | Done (via harness) |
 
 Note: LLR 7.1.2 enforcement is in the BPA layer, not the storage backend.
@@ -291,8 +291,8 @@ Implementing crate: `s3-storage` — [coverage report](../s3-storage/docs/test_c
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **9.1.1** | Configurable location and access credentials for S3 instance | Not tested |
-| **9.1.2** | Configurable maximum total for stored bundle data on S3 | Not tested |
-| **9.1.3** | Configurable discard mechanism at S3 capacity | Not tested |
+| **9.1.2** | Configurable maximum total for stored bundle data on S3 | Not implemented |
+| **9.1.3** | Configurable discard mechanism at S3 capacity | Not implemented |
 | **9.1.4** | Use common S3 APIs (not implementor-specific) | Done |
 
 Note: LLR 9.1.1 is planned (S3-01) but not yet implemented. LLR 9.1.2/9.1.3 enforcement is in the BPA layer. LLR 9.1.4 is verified by design (uses `aws-sdk-s3`).
@@ -314,22 +314,26 @@ Implementing crate: `tools` — [coverage report](../tools/docs/test_coverage_re
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **19.2.1** | Rate-controlled bundle sending tool | Done |
-| **19.2.2** | Bundle reception response reporting tool | Not tested |
+| **19.2.2** | Bundle reception response reporting tool | Done |
 | **19.2.3** | Round-trip communication time reporting tool | Done |
 | **19.2.4** | Tools do not rely on BPv7 status reports | Done |
 | **19.2.5** | Tools run without requiring a local BPA | Done |
 
-Note: LLR 19.2.2 (`bp perf` receive-side reporting) is planned but not yet implemented with dedicated test coverage.
+Note: LLR 19.2.2 is satisfied by the echo-service, which receives bundles and sends responses reported by `bp ping`.
 
-### Documentation (21.1, 21.2)
+### Licence (21.1)
+
+No LLRs — verified by visual inspection (Apache 2.0 licence).
+
+### Documentation (21.2)
 
 Verified by: visual inspection (GitHub, crates.io, docs.rs)
 
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **21.2.1** | Source, documentation, and examples on GitHub.com | Done |
-| **21.2.2** | Rust crates available on crates.io | Done |
-| **21.2.3** | RustDoc documentation on docs.rs | Done |
+| **21.2.2** | Rust crates available on crates.io | Not started |
+| **21.2.3** | RustDoc documentation on docs.rs | Not started |
 
 ### Issue Reporting and Tracking (21.3)
 
@@ -342,26 +346,61 @@ Verified by: visual inspection (GitHub)
 
 ### LLR Traceability Summary
 
-| Section | Mid-Level | Crate | Total LLRs | Done | N/A | Not Tested |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Standards Compliance | 1.1 | bpa | 1 | 1 | 0 | 0 |
-| CBOR Encoding | 1.1 | cbor | 4 | 4 | 0 | 0 |
-| CBOR Decoding | 1.1 | cbor | 6 | 6 | 0 | 0 |
-| CBOR General | 1.1 | cbor | 1 | 1 | 0 | 0 |
-| BPv7 Parsing | 1.1 | bpv7 | 11 | 11 | 0 | 0 |
-| BPv7 Bundle Generation | 1.1 | bpv7 | 5 | 5 | 0 | 0 |
-| BPv7 Bundle Processing | 1.1 | bpa | 5 | 5 | 0 | 0 |
-| BPSec | 2.1 | bpv7 | 3 | 2 | 1 | 0 |
-| RFC 9173 Security Contexts | 2.2 | bpv7 | 7 | 7 | 0 | 0 |
-| TCPCLv4 | 3.1 | tcpclv4 | 10 | 10 | 0 | 0 |
-| EID Patterns | 6.1 | eid-patterns | 2 | 2 | 0 | 0 |
-| CLA APIs | 6.1 | bpa | 2 | 2 | 0 | 0 |
-| Routing | 6.1 | bpa | 6 | 6 | 0 | 0 |
-| Local Disk Storage | 7.1 | localdisk-storage | 3 | 2 | 0 | 1 |
-| SQLite Storage | 7.2 | sqlite-storage | 2 | 2 | 0 | 0 |
-| S3 Storage | 9.1 | s3-storage | 4 | 1 | 0 | 3 |
-| OpenTelemetry | 19.1 | otel | 3 | 3 | 0 | 0 |
-| Tools | 19.2 | tools | 5 | 4 | 0 | 1 |
-| Documentation | 21.1, 21.2 | (GitHub/crates.io) | 3 | 3 | 0 | 0 |
-| Issue Reporting | 21.3 | (GitHub) | 2 | 2 | 0 | 0 |
-| **Total** | | | **78** | **72** | **1** | **5** |
+| Section | Total LLRs | Done | N/A | Not Tested |
+| :--- | :--- | :--- | :--- | :--- |
+| **1.1** Standards Compliance | 1 | 1 | 0 | 0 |
+| **1.1** CBOR Encoding | 4 | 4 | 0 | 0 |
+| **1.1** CBOR Decoding | 6 | 6 | 0 | 0 |
+| **1.1** CBOR General | 1 | 1 | 0 | 0 |
+| **1.1** BPv7 Parsing | 11 | 11 | 0 | 0 |
+| **1.1** BPv7 Bundle Generation | 5 | 5 | 0 | 0 |
+| **1.1** BPv7 Bundle Processing | 5 | 5 | 0 | 0 |
+| **2.1** BPSec | 3 | 2 | 1 | 0 |
+| **2.2** RFC 9173 Security Contexts | 7 | 7 | 0 | 0 |
+| **3.1** TCPCLv4 | 10 | 10 | 0 | 0 |
+| **6.1** EID Patterns | 2 | 2 | 0 | 0 |
+| **6.1** CLA APIs | 2 | 2 | 0 | 0 |
+| **6.1** Routing | 6 | 6 | 0 | 0 |
+| **7.1** Local Disk Storage | 3 | 2 | 0 | 1 |
+| **7.2** SQLite Storage | 2 | 2 | 0 | 0 |
+| **9.1** S3 Storage | 4 | 1 | 0 | 3 |
+| **19.1** OpenTelemetry | 3 | 3 | 0 | 0 |
+| **19.2** Tools | 5 | 5 | 0 | 0 |
+| **21.1** Documentation | 0 | 0 | 0 | 0 |
+| **21.2** Documentation | 3 | 1 | 0 | 2 |
+| **21.3** Issue Reporting | 2 | 2 | 0 | 0 |
+| **Total** | **78** | **71** | **1** | **6** |
+
+## 4. Gaps
+
+### 4.1. Initial Phase Gaps
+
+| REQ | Gap | Notes |
+| :--- | :--- | :--- |
+| REQ-9 | S3 capacity enforcement not implemented | LLR 9.1.2, 9.1.3 (BPA-layer enforcement planned) |
+| REQ-9 | S3 configuration not tested | LLR 9.1.1 |
+
+### 4.2. Not Implemented (Full Activity / Stretch)
+
+| Feature | Requirement | Notes |
+| :--- | :--- | :--- |
+| UDP Convergence Layer | REQ-4 | [UDPCLv2](https://datatracker.ietf.org/doc/draft-ietf-dtn-udpcl/) planned |
+| QUIC Convergence Layer | REQ-5 | [QUBICLE](https://datatracker.ietf.org/doc/draft-ek-dtn-qubicle/) planned |
+| Custody Transfer | REQ-4 | QoS + CBSR approach TBD |
+| Compressed Status Reporting | REQ-4 | Design doc exists |
+| DynamoDB Metadata | REQ-10 | Not started |
+| Azure Blob Storage | REQ-11 | Not started |
+| Azure SQL Metadata | REQ-12 | Not started |
+| Helm Charts | REQ-16 | Not started (stretch) |
+| Performance scale targets | REQ-13.2–13.5 | 4GB reassembly, 1TB storage, 10Gbps TCPCLv4 |
+| Reliability report (MTBF) | REQ-18.4 | Not started |
+
+### 4.3. PICS Compliance Gap
+
+| PICS Item | Feature | Status | Support | Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **28** | BP Managed Information (Annex C) | M | N | Only mandatory PICS item not implemented. See [PICS_Test_Mapping.md](PICS_Test_Mapping.md) §4.1. |
+
+## 5. Conclusion
+
+All initial phase requirements are Done except REQ-9 (Partial). Core protocol compliance (REQ-1, REQ-2, REQ-3), infrastructure (REQ-6, REQ-7, REQ-15, REQ-17, REQ-19, REQ-21), and documentation (REQ-18) are fully satisfied. REQ-9 (S3 storage) is Partial due to missing capacity enforcement (LLR 9.1.2, 9.1.3) and untested configuration (LLR 9.1.1). At the LLR level, 71 of 78 requirements are done, with the 6 untested items concentrated in S3 storage and documentation publishing (crates.io, docs.rs). Stretch goal REQ-20 (interoperability) is complete with 7 peer implementations verified.

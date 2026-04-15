@@ -1,11 +1,10 @@
-# Test Strategy: Cloud-based DTN Router (Hardy)
+# Test Strategy: Hardy DTN Router
 
 | Document Info | Details |
- | ----- | ----- |
-| **Project** | Hardy (Cloud-based DTN Router) |
+| ----- | ----- |
+| **Project** | Hardy DTN Router |
 | **Repository** | `github.com/ricktaylor/hardy` |
 | **Version** | 1.1 |
-| **Status** | DRAFT |
 
 ## 1. Introduction
 
@@ -42,104 +41,105 @@ This Strategy is the parent document. Verification is executed according to the 
 | **Storage** | Integration | [`PLAN-STORE-01`](../tests/storage/docs/test_plan.md) | Generic Storage Trait verification. |
 | **Storage** | Component | [`PLAN-SQLITE-01`](../sqlite-storage/docs/test_plan.md) | SQLite Metadata persistence. |
 | **Storage** | Component | [`PLAN-LD-01`](../localdisk-storage/docs/test_plan.md) | Local Disk Bundle persistence. |
+| **Storage** | Component | [`PLAN-PG-01`](../postgres-storage/docs/test_plan.md) | PostgreSQL Metadata persistence. |
+| **Storage** | Component | [`PLAN-S3-01`](../s3-storage/docs/test_plan.md) | S3 Bundle persistence. |
 | **API** | Component | [`COMP-GRPC-01`](../proto/docs/component_test_plan.md) | Streaming gRPC proxy interfaces (client & server). |
 | **TVR** | Unit | [`UTP-TVR-01`](../tvr/docs/unit_test_plan.md) | Contact scheduling (cron, parser, scheduler). |
 | **TVR** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | gRPC session lifecycle, file hot-reload, system integration. |
+| **Async** | Unit | [`UTP-ASYNC-01`](../async/docs/unit_test_plan.md) | TaskPool, sync primitives, cancellation. |
+| **Echo Service** | Component | [`PLAN-ECHO-01`](../echo-service/docs/test_plan.md) | Bundle echo service diagnostics. |
+| **IPN Legacy Filter** | Unit | [`UTP-IPN-LEGACY-01`](../ipn-legacy-filter/docs/unit_test_plan.md) | Legacy 2-element IPN EID encoding. |
+| **Tools** | Component | [`PLAN-TOOLS-01`](../tools/docs/test_plan.md) | CLI tools (`bp ping`, bundle operations). |
 | **System** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | Application lifecycle, config, OpenTelemetry. |
 | **System** | Interop | [`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md) | Interoperability with ION/DTNME/etc. (REQ-20). |
 
-## 3. Testing Levels (The Pyramid)
+## 3. Testing Levels
 
-We adhere to a risk-based testing pyramid:
+### 3.1 Unit Testing
 
-### 3.1 Level 1: Unit Testing (Automated)
+* **Scope:** Individual Rust functions and modules across all library crates.
+* **Goal:** Verify logic correctness, parsing rules against RFCs, and API contracts.
+* **Methodology:** Tests are mapped to LLRs. Parsing/format tests are separated from BPA policy tests. Builder/Editor tests verify round-trip correctness.
+* **Tooling:** `cargo test`, `cargo llvm-cov`.
+* **Examples:** CBOR encoding/decoding, BPv7 bundle parsing, EID pattern matching, BPA routing logic, TVR cron/parser/scheduler, OTEL metrics bridge.
 
-* **Scope:** Individual Rust functions and modules (`hardy-cbor`, `hardy-bpv7`, `hardy-eid-patterns`).
+### 3.2 Component & Integration Testing
 
-* **Goal:** Verify logic correctness, memory safety, and parsing rules against RFCs.
-
+* **Scope:** Cross-module interactions verified through harnesses and CLI drivers.
+* **Goal:** Black-box verification of state machines, storage backends, gRPC interfaces, and CLI tools.
 * **Methodology:**
-  * Tests are mapped explicitly to LLRs and RFC sections.
-  * Strict separation of "Syntax/Parsing" tests from "BPA/Policy" tests.
-  * Verification of "Factories" (Builders/Editors) to ensure API correctness.
+  * Shell-scripted test suites invoking the `bundle` and `cbor` CLIs.
+  * Tokio-based harnesses for async modules (TCPCLv4 duplex, gRPC proxy).
+  * Generic storage harness (`tests/storage/`) exercises CRUD, polling, and recovery across all backends.
+  * `grpcurl`-driven session tests for TVR and proto crates.
+* **Examples:** TCPCLv4 session negotiation, storage trait compliance, BPA pipeline end-to-end, TVR gRPC sessions and file hot-reload.
 
-* **Tooling:** `cargo test`, `cargo llvm-cov` (coverage).
+### 3.3 Fuzz Testing
 
-### 3.2 Level 2: Component Testing (CLI Driver & Harnesses)
+* **Scope:** Parsers (CBOR, Bundle, EID string/CBOR, EID patterns), protocol streams (TCPCLv4 passive/active), and the BPA async pipeline.
+* **Goal:** Identify panics, memory safety issues, and deadlocks from adversarial input.
+* **Methodology:** Dedicated fuzz plans per target using `cargo fuzz` (libFuzzer). Corpus-based regression via CI. Coverage measured separately from unit tests.
+* **Targets:** 11 fuzz binaries across 5 crates (cbor, bpv7, eid-patterns, bpa, tcpclv4).
 
-* **Scope:** `hardy-bpv7` via CLI, `hardy-tcpcl` via duplex pipes, Storage via real DBs.
+### 3.4 System & Interoperability Testing
 
-* **Goal:** Black-box verification of library logic and state machines without mocking internal implementation details.
-
-* **Methodology:**
-  * Shell-scripted test suites invoking the `bundle` binary.
-  * Rust integration tests using `tokio` harnesses for async modules.
-
-### 3.3 Level 3: Fuzzing & Security (Continuous)
-
-* **Scope:** Public-facing parsers (`CBOR`, `Bundle`, `EID`, `Pattern`) and Async Pipelines (`BPA`).
-
-* **Goal:** Identify crash-causing inputs, panics, memory vulnerabilities (OOM, Stack Overflow), and logic deadlocks.
-
-* **Methodology:**
-  * Dedicated Fuzz Plans for each target.
-  * Continuous execution using `cargo-fuzz` (libFuzzer).
-  * Sanitizer enabled (ASAN) runs to catch subtle memory violations.
-
-### 3.4 Level 4: System Integration (GCP)
-
-* **Scope:** Full system running in Docker/Kubernetes (`hardy-bpa-server`).
-
-* **Goal:** Verify component interaction (BPA <-> Storage <-> TCPCL) and Interoperability.
-
-* **Execution:** Pre-release verification in GCP Staging environment using `bping` and `tshark`.
+* **Scope:** Full system running in Docker (`hardy-bpa-server`, `hardy-tcpclv4-server`, `hardy-tvr`) with real storage and peer implementations.
+* **Goal:** Verify component interaction and bidirectional bundle exchange with other BPv7 implementations.
+* **Methodology:** Docker Compose topologies with `bp ping` for verification. Each peer runs in its own container connected via TCPCLv4, MTCP, or STCP.
+* **Peers:** dtn7-rs, HDTN, DTNME, ud3tn, ION, ESA-BP, NASA cFS (7 implementations, all passing).
 
 ## 4. Test Environment Architecture
 
 ### 4.1 Unit / CI Environment
 
 * **Runner:** Standard Linux x64 (GitHub Actions).
+* **Dependencies:** Rust Stable, Rust Nightly (fuzz only), OpenSSL, Protobuf compiler.
+* **Scope:** Unit tests, component tests, `cargo llvm-cov` coverage, `cargo fuzz` (corpus replay).
 
-* **Dependencies:** Rust Stable, OpenSSL.
+### 4.2 Local Docker Environment
 
-### 4.2 System Test Environment (GCP)
+Docker Compose is used for integration and interop testing with multiple nodes and storage backends.
 
-To simulate a realistic cloud deployment, the following architecture is required:
+* **Topology:** Hardy node(s) with echo service, peer implementation nodes (ION, HDTN, etc.) connected via TCPCLv4, MTCP, or STCP.
+* **Storage backends:** SQLite + local filesystem (default), PostgreSQL + MinIO (full stack).
+* **Observability:** Grafana LGTM stack for OpenTelemetry verification.
 
-* **Orchestration:** GKE Autopilot or Docker Compose.
+### 4.3 Interoperability Environment
 
-* **Topology:**
-  * `Node A` (Sender) -> `Node B` (Router/Hardy) -> `Node C` (Receiver).
-  * Simulated Latency: `tc` (Traffic Control) or `toxiproxy` injected between nodes.
+Each peer implementation runs in its own Docker container alongside a Hardy node. Tests use `bp ping` to verify bidirectional bundle exchange.
 
-* **Storage Backend:**
-  * S3 (Google CLoud Storage) for bundle persistence.
-  * PostgreSQL for metadata persistence.
+* **Peers:** dtn7-rs, HDTN, DTNME, ud3tn (TCPCLv4/MTCP), ION, ESA-BP, NASA cFS (STCP via `hardy-mtcp-cla`).
+* **Execution:** `tests/interop/run_all.sh` runs all peer tests and compares RTT.
 
 ## 5. Tools & Frameworks
 
 | Tool | Purpose | Source |
- | ----- | ----- | ----- |
-| **cargo test** | Unit test runner | Rust Standard Lib |
-| **cargo-fuzz** | Security/Fuzz testing | Rust Embedded |
-| **hardy-bpv7-tools** | Component Test Driver | Internal (`bin/bundle`) |
-| **bping** | DTN Traffic Generation | DTN Suite |
-| **Wireshark** | Protocol Analysis | Standard (with BPv7 plugins) |
-| **LocalStack** | AWS/GCP mocking | Docker Hub |
-| **Grafana LGTM** | Trace/Metric Analysis | Docker Hub (`grafana/otel-lgtm`) |
+| ----- | ----- | ----- |
+| **cargo test** | Unit and integration test runner | Rust toolchain |
+| **cargo fuzz** | Fuzz testing (libFuzzer) | [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) |
+| **cargo llvm-cov** | Line coverage measurement (lcov) | [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) |
+| **criterion** | Performance benchmarking | [criterion.rs](https://github.com/bheisler/criterion.rs) |
+| **hardy-bpv7-tools** | Component test driver (`bundle` CLI) | Internal |
+| **hardy-cbor-tools** | CBOR inspection and conversion (`cbor` CLI) | Internal |
+| **hardy-tools** | Network diagnostics (`bp ping`) | Internal |
+| **hardy-mtcp-cla** | MTCP/STCP interop CLA driver | Internal (`tests/interop/mtcp/`) |
+| **grpcurl** | gRPC session testing (TVR, proto) | [grpcurl](https://github.com/fullstorydev/grpcurl) |
+| **Grafana LGTM** | OpenTelemetry trace/metric analysis | Docker Hub (`grafana/otel-lgtm`) |
 
 ## 6. Risk Management
 
-| Risk | Impact | Mitigation Strategy |
+| Risk | Impact | Mitigation |
 | ----- | ----- | ----- |
-| **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Execute the full Interoperability Test Plan ([`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md)) against multiple reference implementations (ION, DTNME, etc.). |
-| **Parser Panics** | DoS vulnerability in production. | Enforce 100% fuzz coverage on all parsers (CBOR, Bundle, EID). |
-| **Key Wrapping Failures** | Data loss or Security breach. | Specific Unit Tests for RFC 9173 Key Wrapping (AES-KW). |
-| **Async Deadlocks** | Router hangs under load. | Property-based fuzzing of the BPA pipeline state machine. |
+| **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Interoperability verified against 7 implementations ([`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md)). |
+| **Parser Panics** | DoS vulnerability in production. | Fuzz testing on all public-facing parsers (11 targets across 5 crates). |
+| **Key Wrapping Failures** | Data loss or security breach. | Unit tests for RFC 9173 Key Wrapping (AES-KW, HMAC-SHA2). |
+| **Async Deadlocks** | Router hangs under load. | BPA pipeline fuzz target exercises concurrent message processing. |
+| **Storage Corruption** | Data loss after crash or restart. | Storage harness tests recovery and restart across all backends. |
 
-## 7. Performance Verification Strategy
+## 7. Performance Verification
 
-Performance verification (REQ-13) is distributed across the testing hierarchy to ensure bottlenecks are identified early:
+Performance verification (REQ-13) is distributed across the testing hierarchy:
 
-* **Component Level:** Micro-benchmarks for specific algorithms (e.g., Reassembly, Routing Table lookups) are defined in [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md).
-* **System Level:** End-to-end throughput, latency, and storage scalability tests (10Gbps, 1TB capacity) are defined in [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md).
+* **Micro-benchmarks:** Criterion benchmarks in [`PLAN-BPA-01`](../bpa/docs/component_test_plan.md) measure bundle processing throughput (~8K bundles/sec sustained).
+* **Interop RTT:** `tests/interop/run_all.sh` compares round-trip times across all peer implementations.
+* **Scale targets** (REQ-13.2–13.5): 4GB reassembly, 1TB storage, 10Gbps TCPCLv4 — not yet tested, planned for full activity phase.
