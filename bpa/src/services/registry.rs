@@ -193,7 +193,7 @@ impl ServiceRegistryBuilder {
         Ok(())
     }
 
-    pub async fn register_all(
+    pub async fn build(
         self,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,

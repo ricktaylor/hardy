@@ -10,18 +10,13 @@ use crate::filters::{Filter, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
-use crate::rib::Rib;
+use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
 use crate::storage::bundle_mem::BundleMemStorage;
 use crate::storage::metadata_mem::MetadataMemStorage;
 use crate::storage::{BundleStorage, MetadataStorage, Store};
-
-struct PendingRoutingAgent {
-    name: String,
-    agent: Arc<dyn RoutingAgent>,
-}
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
 ///
@@ -45,7 +40,7 @@ pub struct BpaBuilder {
     keys_registry: Arc<KeyRegistry>,
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
-    pending_routing_agents: Vec<PendingRoutingAgent>,
+    rib_builder: RibBuilder,
 }
 
 impl BpaBuilder {
@@ -136,10 +131,7 @@ impl BpaBuilder {
 
     /// Register a routing agent to be initialized when the BPA is built.
     pub fn routing_agent(mut self, name: impl Into<String>, agent: Arc<dyn RoutingAgent>) -> Self {
-        self.pending_routing_agents.push(PendingRoutingAgent {
-            name: name.into(),
-            agent,
-        });
+        self.rib_builder.insert(name.into(), agent);
         self
     }
 
@@ -169,17 +161,14 @@ impl BpaBuilder {
         ));
 
         let node_ids = Arc::new(self.node_ids);
-
-        let rib = Arc::new(Rib::new(node_ids.clone(), store.clone()));
-
+        let rib = self
+            .rib_builder
+            .build(node_ids.clone(), store.clone())
+            .await?;
         let filter_registry = self.filter_registry;
         let keys_registry = self.keys_registry;
-
-        for ra in self.pending_routing_agents {
-            rib.register_agent(ra.name, ra.agent).await?;
-        }
-
         let peers = Arc::new(cla::peers::PeerTable::new());
+
         let dispatcher = Dispatcher::new(
             self.status_reports,
             self.poll_channel_depth,
@@ -192,22 +181,19 @@ impl BpaBuilder {
             filter_registry.clone(),
         );
 
-        let service_registry = self
-            .service_registry_builder
-            .register_all(&node_ids, &rib, &dispatcher)
-            .await;
-
-        let cla_registry = self
-            .cla_registry_builder
-            .register_all(
+        let (service_registry, cla_registry) = futures::join!(
+            self.service_registry_builder
+                .build(&node_ids, &rib, &dispatcher),
+            self.cla_registry_builder.build(
                 &node_ids,
                 self.poll_channel_depth.into(),
                 &rib,
                 &store,
                 peers,
                 &dispatcher,
-            )
-            .await?;
+            ),
+        );
+        let cla_registry = cla_registry?;
 
         Ok(Bpa::from_parts(
             node_ids,
@@ -255,7 +241,7 @@ impl Default for BpaBuilder {
             keys_registry: Arc::new(KeyRegistry::new()),
             service_registry_builder: ServiceRegistryBuilder::new(),
             cla_registry_builder: ClaRegistryBuilder::new(),
-            pending_routing_agents: Vec::new(),
+            rib_builder: RibBuilder::new(),
         }
     }
 }

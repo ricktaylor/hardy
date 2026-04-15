@@ -42,8 +42,34 @@ pub struct Rib {
     store: Arc<storage::Store>,
 }
 
+pub(crate) struct RibBuilder {
+    agents: Vec<(String, Arc<dyn routes::RoutingAgent>)>,
+}
+
+impl RibBuilder {
+    pub fn new() -> Self {
+        Self { agents: Vec::new() }
+    }
+
+    pub fn insert(&mut self, name: String, agent: Arc<dyn routes::RoutingAgent>) {
+        self.agents.push((name, agent));
+    }
+
+    pub async fn build(
+        self,
+        node_ids: Arc<node_ids::NodeIds>,
+        store: Arc<storage::Store>,
+    ) -> routes::Result<Arc<Rib>> {
+        let rib = Arc::new(Rib::new(node_ids, store));
+        for (name, agent) in self.agents {
+            rib.register_agent(name, agent).await?;
+        }
+        Ok(rib)
+    }
+}
+
 impl Rib {
-    pub(crate) fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
+    fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(&node_ids),
