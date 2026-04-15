@@ -23,7 +23,7 @@
 //! # Platform Implementations
 //!
 //! - **std**: Wraps `std::sync::Mutex` / `std::sync::RwLock`
-//! - **embassy** (future): Wraps `embassy_sync::mutex::Mutex` / `embassy_sync::mutex::Mutex`
+//! - **embassy** (future): Wraps `embassy_sync::mutex::Mutex` / `embassy_sync::rwlock::RwLock`
 //!
 //! # Error Handling
 //!
