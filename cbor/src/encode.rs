@@ -3,7 +3,7 @@ A canonical CBOR encoder designed for performance and flexibility.
 
 This module provides tools for encoding Rust data structures into the
 Concise Binary Object Representation (CBOR) format, as specified in
-[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The encoder
+[RFC 8949]. The encoder
 prioritizes canonical output, ensuring that a given data structure always
 produces the same, shortest possible byte representation.
 
@@ -68,6 +68,8 @@ let (bytes, _) = encode::emit(&tagged_data);
 // Produces CBOR for `24(h'68656c6c6f')`
 assert_eq!(bytes, &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
 ```
+
+[RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
 use super::*;
 use core::ops::Range;
