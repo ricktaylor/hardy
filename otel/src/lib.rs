@@ -1,3 +1,11 @@
+//! OpenTelemetry integration for Hardy binaries.
+//!
+//! Provides one-call initialization of the full OpenTelemetry observability
+//! stack — distributed traces, metrics, and structured logs — exported via
+//! OTLP/gRPC. The [`init`] function wires up providers, installs a
+//! `tracing-subscriber` pipeline, and returns an [`OtelGuard`] whose [`Drop`]
+//! implementation flushes and shuts down every provider cleanly.
+
 use opentelemetry::{KeyValue, global, metrics::MeterProvider, trace::TracerProvider};
 use opentelemetry_sdk::{
     Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
@@ -74,6 +82,16 @@ fn init_logs(resource: &Resource) -> SdkLoggerProvider {
         .build()
 }
 
+/// Initialize OpenTelemetry tracing, metrics, and logging providers.
+///
+/// Sets up OTLP/gRPC exporters for traces, metrics, and logs, installs a
+/// `tracing-subscriber` with both a formatted console layer and an
+/// OpenTelemetry bridge layer, and registers a `metrics` recorder backed by
+/// OpenTelemetry. The returned [`OtelGuard`] must be held for the lifetime
+/// of the application; dropping it flushes and shuts down all providers.
+///
+/// The log level defaults to `level` but can be overridden via the
+/// `RUST_LOG` environment variable.
 pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level) -> OtelGuard {
     // Create a filter using RUST_LOG if set, falling back to the configured level
     let make_filter = || {
@@ -149,6 +167,10 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
     }
 }
 
+/// RAII guard that owns the OpenTelemetry trace, metric, and log providers.
+///
+/// Dropping this guard flushes all pending telemetry and shuts down each
+/// provider. Hold it in `main` until the application exits.
 pub struct OtelGuard {
     tracer_provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,

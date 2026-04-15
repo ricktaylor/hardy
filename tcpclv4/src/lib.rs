@@ -1,3 +1,17 @@
+//! TCPCLv4 Convergence Layer Adapter for the Bundle Protocol.
+//!
+//! This crate implements the TCP Convergence-Layer Protocol Version 4 (TCPCLv4)
+//! as defined in [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174). It provides
+//! a [`Cla`] that registers with the BPA to send and receive bundles over TCP
+//! connections, with optional TLS encryption.
+//!
+//! # Key types
+//!
+//! - [`Cla`] — the convergence layer adapter, created via [`Cla::new`] and
+//!   registered with a BPA instance via [`Cla::register`].
+//! - [`config::Config`] — top-level configuration (listen address, MRUs, TLS, session defaults).
+//! - [`Error`] — errors returned during CLA construction and registration.
+
 mod cla;
 mod codec;
 mod connect;
@@ -9,6 +23,7 @@ mod tls;
 mod transport;
 mod writer;
 
+/// Configuration types for the TCPCLv4 CLA.
 pub mod config;
 
 use hardy_async::sync::spin::Once;
@@ -21,14 +36,18 @@ use tracing::{debug, error, info, warn};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+/// Errors that can occur during CLA construction or registration.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// TLS is required by session configuration but no TLS config was provided.
     #[error("TLS is required but no TLS configuration has been provided")]
     TlsRequired,
 
+    /// Failed to load or validate TLS configuration (certificates, keys).
     #[error("TLS configuration error: {0}")]
     Tls(#[from] tls::TlsError),
 
+    /// BPA rejected the CLA registration.
     #[error("Registration failed: {0}")]
     Registration(#[from] hardy_bpa::cla::Error),
 }
@@ -39,6 +58,11 @@ struct Inner {
     node_ids: Arc<[NodeId]>,
 }
 
+/// TCPCLv4 Convergence Layer Adapter (RFC 9174).
+///
+/// Manages TCP connections to peer nodes, including listener and connector
+/// roles, optional TLS, keepalive, and transfer segmentation. Implements
+/// the BPA CLA trait so it can be registered with a BPA instance.
 pub struct Cla {
     // Config values
     session_config: config::SessionConfig,
@@ -176,6 +200,9 @@ impl Cla {
         })
     }
 
+    /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
+    ///
+    /// Retries up to 5 times on timeout before returning an error.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> hardy_bpa::cla::Result<()> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");

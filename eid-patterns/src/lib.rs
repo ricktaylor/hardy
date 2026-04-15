@@ -1,4 +1,13 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+
+//! EID pattern matching for BPv7 Endpoint Identifiers.
+//!
+//! Provides wildcard and glob-based pattern matching over `ipn` and `dtn` scheme
+//! EIDs as defined in RFC 9171. Patterns can be parsed from text representations
+//! such as `ipn:*.*`, `dtn://**`, or union sets like `ipn:1.1|ipn:2.*`. The
+//! crate supports subset testing, specificity scoring for route selection, and
+//! conversion to/from exact EIDs.
+
 extern crate alloc;
 
 use alloc::{
@@ -21,21 +30,30 @@ mod dtn_pattern;
 #[cfg(test)]
 mod str_tests;
 
+/// Errors produced by EID pattern parsing and conversion.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// The input string could not be parsed as a valid EID pattern.
     #[error("Parse error: {0}")]
     ParseError(String),
 
+    /// The pattern is not an exact EID (contains wildcards or multiple items).
     #[error("Not an exact Eid")]
     NotExact,
 }
 
+/// A pattern that matches one or more BPv7 Endpoint Identifiers.
+///
+/// `Any` matches every EID. `Set` holds one or more [`EidPatternItem`]s joined
+/// as a union (pipe-separated in text form, e.g. `ipn:1.*|dtn://node/**`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(into = "String"))]
 #[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
 pub enum EidPattern {
+    /// Matches any EID (displayed as `*:**`).
     Any,
+    /// A union of one or more pattern items; matches if any item matches.
     Set(Box<[EidPatternItem]>),
 }
 
@@ -63,6 +81,7 @@ impl Ord for EidPattern {
 }
 
 impl EidPattern {
+    /// Returns `true` if the pattern matches the given EID.
     #[inline]
     pub fn matches(&self, eid: &Eid) -> bool {
         match self {
@@ -83,7 +102,7 @@ impl EidPattern {
         }
     }
 
-    /// Is `self`` a subset (or equal to) `other`
+    /// Returns `true` if `self` is a subset of (or equal to) `other`.
     pub fn is_subset(&self, other: &Self) -> bool {
         match (self, other) {
             (_, EidPattern::Any) => true,
@@ -257,11 +276,16 @@ impl core::fmt::Display for EidPattern {
     }
 }
 
+/// A single scheme-specific EID pattern within an [`EidPattern`] union set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EidPatternItem {
+    /// Matches any EID using the given numeric scheme code (e.g. `2:**`).
     AnyNumericScheme(u64),
+    /// Matches any EID using the given text scheme name (e.g. `dtn:**`).
     AnyTextScheme(String),
+    /// A pattern over the `ipn` scheme with optional wildcards on each component.
     IpnPatternItem(ipn_pattern::IpnPatternItem),
+    /// A pattern over the `dtn` scheme using glob-style matching.
     #[cfg(feature = "dtn-pat-item")]
     DtnPatternItem(dtn_pattern::DtnPatternItem),
 }
