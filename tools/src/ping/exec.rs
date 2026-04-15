@@ -279,8 +279,8 @@ async fn exec_inner(
         .and_then(|eid| eid.service())
         .unwrap_or(hardy_bpv7::eid::Service::Ipn(1));
     bpa.register_service(service_id, service.clone())
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;

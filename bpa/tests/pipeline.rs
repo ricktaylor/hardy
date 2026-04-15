@@ -294,7 +294,7 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 /// to the correct CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_to_cla_routing() {
-    let bpa = Bpa::builder().build();
+    let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false);
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
@@ -318,7 +318,7 @@ async fn app_to_cla_routing() {
     // Register an application to send from
     let (app, _app_rx) = TestApp::new();
     let source_eid = bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .unwrap();
 
@@ -370,12 +370,12 @@ async fn echo_round_trip() {
     let node_ids =
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
 
     // Register echo service on service number 7
     let echo = EchoService::new();
-    bpa.register_service(Some(hardy_bpv7::eid::Service::Ipn(7)), echo)
+    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), echo)
         .await
         .unwrap();
 
@@ -453,12 +453,12 @@ async fn local_delivery() {
     let node_ids =
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
 
     // Register an application on service number 42
     let (app, app_rx) = TestApp::new();
-    bpa.register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .unwrap();
 
@@ -514,7 +514,7 @@ async fn throughput() {
     let node_ids =
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();
@@ -611,7 +611,7 @@ async fn forwarding_latency() {
     let node_ids =
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
-    let bpa = Bpa::builder().node_ids(node_ids).build();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();

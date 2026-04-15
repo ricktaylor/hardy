@@ -78,7 +78,7 @@ async fn app_cli_01_registration_ipn() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let endpoint: Eid = remote_bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
 
@@ -103,10 +103,7 @@ async fn app_cli_02_registration_dtn() {
 
     // MockBpa always returns ipn:1.42 regardless of service_id
     let endpoint: Eid = remote_bpa
-        .register_application(
-            Some(hardy_bpv7::eid::Service::Dtn("sensor".into())),
-            app.clone(),
-        )
+        .register_application(hardy_bpv7::eid::Service::Dtn("sensor".into()), app.clone())
         .await
         .expect("registration should succeed");
 
@@ -129,7 +126,7 @@ async fn app_cli_03_send_payload() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
 
@@ -161,7 +158,7 @@ async fn app_cli_04_receive_payload() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
 
@@ -205,7 +202,7 @@ async fn app_cli_05_status_notify() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
 
@@ -255,7 +252,7 @@ async fn app_cli_06_cancel() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_application(Some(hardy_bpv7::eid::Service::Ipn(42)), app.clone())
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
         .await
         .expect("registration should succeed");
 

@@ -71,7 +71,7 @@ impl BpaRegistration for MockBpa {
 
     async fn register_service(
         &self,
-        _service_id: Option<hardy_bpv7::eid::Service>,
+        _service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
@@ -85,7 +85,7 @@ impl BpaRegistration for MockBpa {
 
     async fn register_application(
         &self,
-        _service_id: Option<hardy_bpv7::eid::Service>,
+        _service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();

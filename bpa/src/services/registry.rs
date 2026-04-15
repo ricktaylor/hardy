@@ -391,19 +391,19 @@ mod tests {
     // Registering two applications with the same explicit IPN service number should fail.
     #[tokio::test]
     async fn test_duplicate_reg() {
-        let bpa = Bpa::builder().build();
+        let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
         let svc_id = hardy_bpv7::eid::Service::Ipn(42);
 
         // First registration should succeed
         let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(Some(svc_id.clone()), app1).await;
+        let result = bpa.register_application(svc_id.clone(), app1).await;
         assert!(result.is_ok(), "First registration should succeed");
 
         // Second registration with the same service number should fail
         let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(Some(svc_id), app2).await;
+        let result = bpa.register_application(svc_id, app2).await;
         assert!(
             matches!(result, Err(services::Error::IpnServiceInUse(42))),
             "Duplicate registration should return IpnServiceInUse, got: {result:?}"
@@ -416,16 +416,14 @@ mod tests {
     // for re-registration.
     #[tokio::test]
     async fn test_cleanup() {
-        let bpa = Bpa::builder().build();
+        let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
         let svc_id = hardy_bpv7::eid::Service::Ipn(99);
 
         // Register
         let app1 = Arc::new(TestApp::new());
-        let result = bpa
-            .register_application(Some(svc_id.clone()), app1.clone())
-            .await;
+        let result = bpa.register_application(svc_id.clone(), app1.clone()).await;
         assert!(result.is_ok());
 
         // Unregister via the sink
@@ -440,7 +438,7 @@ mod tests {
 
         // Re-registration with the same service number should now succeed
         let app2 = Arc::new(TestApp::new());
-        let result = bpa.register_application(Some(svc_id), app2).await;
+        let result = bpa.register_application(svc_id, app2).await;
         assert!(
             result.is_ok(),
             "Re-registration after cleanup should succeed, got: {result:?}"

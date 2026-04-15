@@ -6,7 +6,6 @@ for peers that require the older encoding.
 */
 
 use hardy_bpa::async_trait;
-use std::sync::Arc;
 
 /// Configuration for IPN 2-element legacy encoding filter
 #[derive(Debug, Clone)]
@@ -23,12 +22,12 @@ pub struct Config(
 /// # Example
 ///
 /// ```ignore
-/// let filter = IpnLegacyFilter::new(&config);
+/// let filter = IpnLegacyFilter::new(peer_patterns);
 /// bpa.register_filter(
 ///     hardy_bpa::filters::Hook::Egress,
 ///     "ipn-legacy",
 ///     &[],
-///     hardy_bpa::filters::Filter::Write(filter),
+///     hardy_bpa::filters::Filter::Write(Arc::new(filter)),
 /// )?;
 /// ```
 pub struct IpnLegacyFilter {
@@ -38,15 +37,10 @@ pub struct IpnLegacyFilter {
 impl IpnLegacyFilter {
     /// Create a new IPN legacy encoding filter.
     ///
-    /// Returns `None` if the config has no peer patterns (filter not needed).
-    pub fn new(config: &Config) -> Option<Arc<Self>> {
-        if config.0.is_empty() {
-            None
-        } else {
-            Some(Arc::new(Self {
-                peer_patterns: config.0.clone(),
-            }))
-        }
+    /// The caller should check that `peer_patterns` is not empty before
+    /// constructing the filter (an empty filter would be a no-op).
+    pub fn new(peer_patterns: Vec<hardy_eid_patterns::EidPattern>) -> Self {
+        Self { peer_patterns }
     }
 }
 
@@ -142,17 +136,14 @@ mod tests {
         (bundle, data.into())
     }
 
-    // IPNF-06: Empty config returns None (filter not needed).
-    #[test]
-    fn test_empty_config() {
-        let config = Config::default();
-        assert!(IpnLegacyFilter::new(&config).is_none());
+    fn make_filter(patterns: &[&str]) -> IpnLegacyFilter {
+        IpnLegacyFilter::new(make_config(patterns).0)
     }
 
     // IPNF-06b: No next-hop — no rewrite.
     #[tokio::test]
     async fn test_no_next_hop() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
+        let filter = make_filter(&["ipn:*.*"]);
         let (bundle, data) = make_bundle("ipn:1.1.1", "ipn:1.2.1", None);
 
         let result = filter.filter(&bundle, &data).await.unwrap();
@@ -165,7 +156,7 @@ mod tests {
     // IPNF-06c: DTN source and destination — no rewrite even with matching next-hop.
     #[tokio::test]
     async fn test_dtn_no_rewrite() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
+        let filter = make_filter(&["ipn:*.*"]);
         let (bundle, data) = make_bundle("dtn://node-a/svc", "dtn://node-b/svc", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
@@ -182,7 +173,7 @@ mod tests {
     // IPNF-01: allocator_id=0, non-matching next-hop — no rewrite.
     #[tokio::test]
     async fn test_alloc0_non_matching() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:0.99.*"])).unwrap();
+        let filter = make_filter(&["ipn:0.99.*"]);
         let (bundle, data) = make_bundle("ipn:0.1.1", "ipn:0.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
@@ -197,7 +188,7 @@ mod tests {
     // encoding when allocator_id=0.
     #[tokio::test]
     async fn test_alloc0_matching() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
+        let filter = make_filter(&["ipn:*.*"]);
         let (bundle, data) = make_bundle("ipn:0.1.1", "ipn:0.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
@@ -217,7 +208,7 @@ mod tests {
     // IPNF-03: allocator_id!=0, non-matching next-hop — no rewrite.
     #[tokio::test]
     async fn test_alloc1_non_matching() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:0.99.*"])).unwrap();
+        let filter = make_filter(&["ipn:0.99.*"]);
         let (bundle, data) = make_bundle("ipn:1.1.1", "ipn:1.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
@@ -231,7 +222,7 @@ mod tests {
     // 3-element [2, [1, 1, 1]] is rewritten to legacy 2-element.
     #[tokio::test]
     async fn test_alloc1_matching() {
-        let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
+        let filter = make_filter(&["ipn:*.*"]);
         let (bundle, data) = make_bundle("ipn:1.1.1", "ipn:1.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();

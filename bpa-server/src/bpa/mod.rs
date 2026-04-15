@@ -1,14 +1,15 @@
 use hardy_async::TaskPool;
+use hardy_bpa::bpa::Bpa;
+use hardy_bpa::filters::{Filter, Hook};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::config;
 
-mod filters;
-mod policy;
-
 pub(crate) mod clas;
 pub(crate) mod grpc;
+pub(crate) mod policy;
 pub(crate) mod static_routes;
 pub(crate) mod storage;
 
@@ -26,7 +27,15 @@ pub(crate) async fn run(
         .processing_pool_size(config.processing_pool_size)
         .node_ids(config.node_ids)
         .metadata_storage(backends.metadata)
-        .bundle_storage(backends.bundle);
+        .bundle_storage(backends.bundle)
+        .filter(
+            Hook::Ingress,
+            "rfc9171-validity",
+            &[],
+            Filter::Read(Arc::new(
+                hardy_bpa::filters::rfc9171::Rfc9171ValidityFilter::new(&config.rfc9171_validity),
+            )),
+        );
 
     if config.storage.uses_cache() {
         builder = builder
@@ -36,27 +45,27 @@ pub(crate) async fn run(
         builder = builder.no_cache();
     }
 
-    // Filters
-    builder = builder.filter(
-        Hook::Ingress,
-        "rfc9171-validity",
-        &[],
-        Filter::Read(Arc::new(
-            hardy_bpa::filters::rfc9171::Rfc9171ValidityFilter::new(&config.rfc9171_validity),
-        )),
-    );
-
     #[cfg(feature = "ipn-legacy-filter")]
-    if let Some(filter) = hardy_ipn_legacy_filter::IpnLegacyFilter::new(&config.ipn_legacy_nodes) {
-        builder = builder.filter(Hook::Egress, "ipn-legacy", &[], Filter::Write(filter));
+    if !config.ipn_legacy_nodes.0.is_empty() {
+        let filter = hardy_ipn_legacy_filter::IpnLegacyFilter::new(config.ipn_legacy_nodes.0);
+        builder = builder.filter(
+            Hook::Egress,
+            "ipn-legacy",
+            &[],
+            Filter::Write(Arc::new(filter)),
+        );
     }
 
-    // Static routes
     if let Some(sr_config) = &config.static_routes {
-        builder = static_routes::add_to_builder(builder, sr_config)?;
+        let protocol_id = &sr_config.protocol_id;
+        let routes_file = &sr_config.routes_file;
+        let priority = sr_config.priority;
+        let watch = sr_config.watch;
+
+        let agent = static_routes::new(routes_file, priority, watch)?;
+        builder = builder.routing_agent(protocol_id, agent);
     }
 
-    // Services
     #[cfg(feature = "echo")]
     if let Some(services) = &config.built_in_services.echo {
         if services.is_empty() {
@@ -76,15 +85,33 @@ pub(crate) async fn run(
         warn!("Ignoring built-in-services.echo: echo feature is disabled at compile time");
     }
 
-    // CLAs
-    builder = clas::add_to_builder(builder, &config.clas).await?;
+    let mut policies = HashMap::new();
+    for (name, policy_config) in &config.policies {
+        policies.insert(name.clone(), policy::new(policy_config)?);
+    }
 
-    let bpa = Arc::new(
-        builder
-            .build()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-    );
+    for cla_config in &config.clas {
+        let Some((cla, address_type)) = clas::new(&cla_config.name, &cla_config.cla_type)? else {
+            continue;
+        };
+
+        let egress_policy = cla_config
+            .policy
+            .as_ref()
+            .map(|name| {
+                policies.get(name).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "CLA '{}' references unknown policy '{name}'",
+                        cla_config.name
+                    )
+                })
+            })
+            .transpose()?;
+
+        builder = builder.cla(cla_config.name.clone(), cla, address_type, egress_policy);
+    }
+
+    let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
 
     // --- Start ---
     bpa.start(recover_storage);

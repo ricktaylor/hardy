@@ -72,7 +72,7 @@ async fn svc_cli_01_registration() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let endpoint: Eid = remote_bpa
-        .register_service(Some(hardy_bpv7::eid::Service::Ipn(42)), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
 
@@ -96,7 +96,7 @@ async fn svc_cli_02_send_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(Some(hardy_bpv7::eid::Service::Ipn(42)), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
 
@@ -121,7 +121,7 @@ async fn svc_cli_03_receive_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(Some(hardy_bpv7::eid::Service::Ipn(42)), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
 
@@ -159,7 +159,7 @@ async fn svc_cli_04_status_notify() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(Some(hardy_bpv7::eid::Service::Ipn(42)), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
 
@@ -209,7 +209,7 @@ async fn svc_cli_05_cancel() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _endpoint: Eid = remote_bpa
-        .register_service(Some(hardy_bpv7::eid::Service::Ipn(42)), svc.clone())
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
         .await
         .expect("registration should succeed");
 
