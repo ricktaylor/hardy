@@ -109,6 +109,7 @@ pub trait Application: Send + Sync {
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     async fn on_unregister(&self);
 
+    /// Called when a bundle payload is delivered to this application.
     async fn on_receive(
         &self,
         source: Eid,
@@ -117,6 +118,7 @@ pub trait Application: Send + Sync {
         payload: Bytes,
     );
 
+    /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -174,6 +176,7 @@ pub trait ApplicationSink: Send + Sync {
         options: Option<SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id>;
 
+    /// Cancels transmission of a previously sent bundle. Returns `true` if the bundle was found and cancelled.
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }
 

@@ -50,12 +50,12 @@ use crate::{Arc, otel_metrics, services};
 ///
 /// ```ignore
 /// pub struct MyComponent {
-///     sink: spin::Once<Arc<dyn Sink>>,
+///     sink: spin::Once<Box<dyn Sink>>,
 ///     // ... other fields
 /// }
 ///
 /// impl MyTrait for MyComponent {
-///     fn on_register(&self, sink: Arc<dyn Sink>) {
+///     fn on_register(&self, sink: Box<dyn Sink>) {
 ///         // MUST store the sink - dropping it triggers unregistration
 ///         self.sink.set(sink);
 ///     }
