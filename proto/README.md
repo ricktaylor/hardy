@@ -35,11 +35,55 @@ use hardy_proto::server;
 server::init(&config, &bpa, &tasks);
 ```
 
+## Proto Definitions
+
+The gRPC APIs are defined in the following `.proto` files:
+
+| File | Package | Description |
+|------|---------|-------------|
+| [`cla.proto`](cla.proto) | `cla` | CLA registration and bundle exchange |
+| [`service.proto`](service.proto) | `service` | Application service registration and ADU delivery |
+| [`routing.proto`](routing.proto) | `routing` | Routing agent registration and route management |
+
+The TVR agent defines its own proto: [`tvr/tvr.proto`](../tvr/tvr.proto).
+
+### Generating API Reference
+
+A Markdown or HTML API reference can be generated from the proto files using [protoc-gen-doc](https://github.com/pseudomuto/protoc-gen-doc):
+
+```bash
+docker run --rm \
+  -v $(pwd)/proto:/protos \
+  -v $(pwd)/proto/docs:/out \
+  pseudomuto/protoc-gen-doc \
+  --doc_opt=markdown,api_reference.md \
+  cla.proto \
+  routing.proto \
+  service.proto
+```
+
+### Connecting with grpcurl
+
+The BPA server listens on gRPC (default `[::]:50051`). Available services depend on the `grpc.services` configuration. Examples:
+
+```bash
+# List available services
+grpcurl -plaintext [::1]:50051 list
+
+# List RPCs for the CLA service
+grpcurl -plaintext [::1]:50051 list cla.Cla
+
+# Describe a message type
+grpcurl -plaintext [::1]:50051 describe cla.ClaToBpa
+```
+
+For a full gRPC session example (bidirectional streaming), see the [TVR documentation](../tvr/docs/component_test_plan.md).
+
 ## Documentation
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
-- [API Documentation](https://docs.rs/hardy-proto)
+- [API Reference](docs/api_reference.md) (generated)
 
 ## Licence
 
