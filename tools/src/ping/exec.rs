@@ -273,14 +273,12 @@ async fn exec_inner(
     cancel_token: &tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<service::Statistics> {
     let service = std::sync::Arc::new(service::Service::new(args));
-    let service_id = args
-        .source
-        .as_ref()
-        .and_then(|eid| eid.service())
-        .unwrap_or(hardy_bpv7::eid::Service::Ipn(1));
-    bpa.register_service(service_id, service.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
+    if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
+        bpa.register_service(service_id, service.clone()).await
+    } else {
+        bpa.register_dynamic_service(service.clone()).await
+    }
+    .map_err(|e| anyhow::anyhow!("Failed to register service: {e}"))?;
 
     for seq_no in 0..args.count.unwrap_or(u32::MAX) {
         service.send(args, seq_no).await?;

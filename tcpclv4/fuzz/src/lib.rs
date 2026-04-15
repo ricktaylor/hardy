@@ -85,6 +85,20 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
         unimplemented!("not needed for CLA fuzzing")
     }
+
+    async fn register_dynamic_service(
+        &self,
+        _service: Arc<dyn hardy_bpa::services::Service>,
+    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        unimplemented!("not needed for CLA fuzzing")
+    }
+
+    async fn register_dynamic_application(
+        &self,
+        _application: Arc<dyn hardy_bpa::services::Application>,
+    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        unimplemented!("not needed for CLA fuzzing")
+    }
 }
 
 // The listen address for fuzz targets.

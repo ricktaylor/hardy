@@ -97,6 +97,22 @@ impl BpaRegistration for MockBpa {
         Ok(endpoint)
     }
 
+    async fn register_dynamic_service(
+        &self,
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.register_service(hardy_bpv7::eid::Service::Ipn(0), service)
+            .await
+    }
+
+    async fn register_dynamic_application(
+        &self,
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.register_application(hardy_bpv7::eid::Service::Ipn(0), application)
+            .await
+    }
+
     async fn register_routing_agent(
         &self,
         _name: String,
