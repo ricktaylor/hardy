@@ -1,5 +1,6 @@
 use super::*;
 
+/// A no-op egress policy that uses a single FIFO queue with no prioritization.
 pub mod null_policy;
 
 // #[cfg(feature = "htb_policy")]
@@ -42,9 +43,10 @@ pub trait EgressPolicy: Send + Sync {
     ) -> Arc<dyn EgressController>;
 }
 
+/// A single egress queue that a CLA pulls bundles from for transmission.
 #[async_trait]
 pub trait EgressQueue: Send + Sync {
-    /// Forwards a bundle.
+    /// Enqueues a bundle for transmission on this queue.
     async fn forward(&self, bundle: bundle::Bundle);
 }
 

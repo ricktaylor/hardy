@@ -6,10 +6,16 @@ use time::{Duration, OffsetDateTime};
 
 use super::metadata::BundleMetadata;
 
+/// A bundle together with its BPA-local processing metadata.
+///
+/// Pairs the on-the-wire BPv7 bundle with [`BundleMetadata`] that tracks
+/// ingress context, processing status, and filter annotations.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Bundle {
+    /// The parsed BPv7 bundle (primary block, extension blocks, payload).
     pub bundle: Bpv7Bundle,
+    /// BPA-local metadata: ingress info, processing status, annotations.
     pub metadata: BundleMetadata,
 }
 

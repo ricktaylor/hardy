@@ -9,35 +9,44 @@ mod filter;
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
 pub mod rfc9171;
 
+/// Errors related to filter registration and dependency management.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A filter with the given name is already registered.
     #[error("Filter with name '{0}' already exists")]
     AlreadyExists(String),
 
+    /// A filter declares a dependency on another filter that has not been registered.
     #[error("Filter dependency '{0}' not found")]
     DependencyNotFound(String),
 
+    /// Cannot remove a filter because other filters depend on it.
     #[error("Filter '{0}' has dependants: {1:?}")]
     HasDependants(String, Vec<String>),
 }
 
 // Result types
 
+/// Outcome of a read-only filter evaluation.
 #[derive(Debug, Default)]
 pub enum FilterResult {
+    /// Allow the bundle to proceed to the next filter or processing stage.
     #[default]
     Continue,
+    /// Drop the bundle, optionally providing a status-report reason code.
     Drop(Option<hardy_bpv7::status_report::ReasonCode>),
 }
 
+/// Outcome of a read-write filter evaluation, which may modify the bundle.
 #[derive(Debug)]
 pub enum RewriteResult {
-    /// Continue processing, optionally with modified metadata and/or bundle data
-    /// - (None, None): no change
-    /// - (Some(meta), None): metadata changed, bundle bytes unchanged
-    /// - (None, Some(data)): bundle bytes changed (rare)
-    /// - (Some(meta), Some(data)): both changed
+    /// Continue processing, optionally with modified metadata and/or bundle data.
+    /// - `(None, None)`: no change
+    /// - `(Some(meta), None)`: metadata changed, bundle bytes unchanged
+    /// - `(None, Some(data))`: bundle bytes changed (rare)
+    /// - `(Some(meta), Some(data))`: both changed
     Continue(Option<bundle::WritableMetadata>, Option<Box<[u8]>>),
+    /// Drop the bundle, optionally providing a status-report reason code.
     Drop(Option<hardy_bpv7::status_report::ReasonCode>),
 }
 
@@ -83,6 +92,7 @@ pub enum Hook {
 }
 
 impl Hook {
+    /// Returns the lowercase string label for this hook point (e.g. `"ingress"`).
     pub fn label(&self) -> &'static str {
         match self {
             Hook::Ingress => "ingress",

@@ -12,11 +12,16 @@ use lru::LruCache;
 // Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
 // they perform O(n) iteration while holding the lock.
 
+/// Boxed error type used by storage trait methods.
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
+/// Result alias for storage operations.
 pub type Result<T> = core::result::Result<T, Error>;
+/// Channel sender used to stream results from storage polling methods.
 pub type Sender<T> = flume::Sender<T>;
 
+/// In-memory [`BundleStorage`] backend, suitable for testing and ephemeral deployments.
 pub mod bundle_mem;
+/// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
 pub mod metadata_mem;
 
 pub(crate) mod adu_reassembly;
@@ -227,6 +232,7 @@ pub trait MetadataStorage: Send + Sync {
     ) -> storage::Result<()>;
 }
 
+/// A recovered bundle entry: `(storage_name, creation_time)`.
 pub type RecoveryResponse = (Arc<str>, time::OffsetDateTime);
 
 /// The `BundleStorage` trait defines the interface for storing and managing the binary data of bundles.

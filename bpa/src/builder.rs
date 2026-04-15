@@ -13,6 +13,14 @@ use crate::storage::bundle_mem::BundleMemStorage;
 use crate::storage::metadata_mem::MetadataMemStorage;
 use crate::storage::{BundleStorage, MetadataStorage, Store};
 
+/// Builder for constructing a [`Bpa`] with custom configuration.
+///
+/// Provides fluent setters for storage backends, processing pool size,
+/// node identifiers, bundle cache parameters, and status report generation.
+/// Call [`build()`](BpaBuilder::build) to produce the final [`Bpa`].
+///
+/// Defaults: in-memory storage, no LRU cache, status reports disabled,
+/// processing pool = 4x available parallelism.
 pub struct BpaBuilder {
     status_reports: bool,
     poll_channel_depth: NonZeroUsize,

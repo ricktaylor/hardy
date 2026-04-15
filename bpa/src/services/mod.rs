@@ -4,49 +4,69 @@ use super::*;
 use hardy_bpv7::eid::Eid;
 use thiserror::Error;
 
+/// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// Errors that can occur during service registration and bundle sending.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The requested IPN service number is already registered by another service.
     #[error("There is already a service using ipn service number {0}")]
     IpnServiceInUse(u32),
 
+    /// The requested DTN service demux string is already registered by another service.
     #[error("There is already a service using dtn service demux {0}")]
     DtnServiceInUse(String),
 
+    /// The provided DTN service name is syntactically invalid.
     #[error("Invalid dtn service name {0}")]
     DtnInvalidServiceName(String),
 
+    /// No IPN node ID is configured on this BPA, so IPN services cannot register.
     #[error("There is no ipn node id configured")]
     NoIpnNodeId,
 
+    /// No DTN node ID is configured on this BPA, so DTN services cannot register.
     #[error("There is no dtn node id configured")]
     NoDtnNodeId,
 
+    /// The sink has been dropped or the BPA has shut down.
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// The bundle's destination EID is not valid for sending.
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle was dropped by a processing filter, with an optional reason code.
     #[error("Bundle dropped by filter: {0:?}")]
     Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
 
+    /// A bundle with the same identity already exists in storage.
     #[error("Duplicate bundle already exists")]
     DuplicateBundle,
 
+    /// The bundle failed BPv7 validation during parsing or construction.
     #[error(transparent)]
     InvalidBundle(#[from] hardy_bpv7::Error),
 
+    /// An internal error from an underlying subsystem.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
+/// The kind of bundle status event being reported to a service.
+///
+/// These correspond to the four status assertions defined in RFC 9171 Section 6.1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusNotify {
+    /// The bundle was received by the reporting node.
     Received,
+    /// The bundle was forwarded by the reporting node.
     Forwarded,
+    /// The bundle was delivered to its destination endpoint.
     Delivered,
+    /// The bundle was deleted by the reporting node.
     Deleted,
 }
 
@@ -107,14 +127,24 @@ pub trait Application: Send + Sync {
     );
 }
 
+/// Options controlling bundle construction when sending via [`ApplicationSink::send`].
+///
+/// All fields default to `false`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SendOptions {
+    /// Set the "do not fragment" bundle processing flag (RFC 9171 Section 4.2.3).
     pub do_not_fragment: bool,
+    /// Request an application-level acknowledgement from the destination.
     pub request_ack: bool,
+    /// Include timestamps in status reports (RFC 9171 Section 6.1.1).
     pub report_status_time: bool,
+    /// Request a "received" status report from each forwarding node.
     pub notify_reception: bool,
+    /// Request a "forwarded" status report from each forwarding node.
     pub notify_forwarding: bool,
+    /// Request a "delivered" status report when the bundle reaches its destination.
     pub notify_delivery: bool,
+    /// Request a "deleted" status report if the bundle is deleted.
     pub notify_deletion: bool,
 }
 
