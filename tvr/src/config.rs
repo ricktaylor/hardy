@@ -23,10 +23,10 @@ mod log_level_serde {
     }
 }
 
-/// Returns the default config directory, platform-specific:
-/// - Linux: /etc/hardy/
-/// - macOS: /etc/hardy/
-/// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
+// Returns the default config directory, platform-specific:
+// - Linux: /etc/hardy/
+// - macOS: /etc/hardy/
+// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
 fn default_config_dir() -> PathBuf {
     #[cfg(unix)]
     return PathBuf::from("/etc/hardy");
@@ -70,39 +70,53 @@ fn default_watch() -> bool {
     true
 }
 
+// TVR agent configuration, loaded from a TOML/YAML/JSON config file
+// with environment variable overrides (`HARDY_TVR_` prefix).
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    /// Logging level (default: INFO)
+    // Logging level. Default: `INFO`.
     #[serde(default = "default_log_level", with = "log_level_serde")]
     pub log_level: Level,
 
-    /// The address of the BPA gRPC server (e.g. "http://[::1]:50051")
+    // The address of the BPA gRPC server. Default: `"http://[::1]:50051"`.
     #[serde(default = "default_bpa_address")]
     pub bpa_address: String,
 
-    /// Agent name registered with BPA (route source in FIB)
+    // Agent name registered with BPA (used as the route source in the FIB).
+    // Default: `"hardy-tvr"`.
     #[serde(default = "default_agent_name")]
     pub agent_name: String,
 
-    /// Default priority for contacts without explicit priority
+    // Default priority for contacts that do not specify an explicit priority.
+    // Default: `100`.
     #[serde(default = "default_priority")]
     pub priority: u32,
 
-    /// Path to contact plan file. If omitted, no file source.
+    // Path to a contact plan file. Default: `None` (no file source).
     #[serde(default)]
     pub contact_plan: Option<PathBuf>,
 
-    /// Monitor contact plan file for changes
+    // Whether to monitor the contact plan file for changes and auto-reload.
+    // Default: `true`.
     #[serde(default = "default_watch")]
     pub watch: bool,
 
-    /// TVR gRPC service listen address
+    // Socket address for the TVR gRPC session service.
+    // Default: `[::1]:50052`.
     #[serde(default = "default_grpc_listen")]
     pub grpc_listen: std::net::SocketAddr,
 }
 
 impl Config {
+    // Load configuration from file and environment variables.
+    //
+    // Resolution order (highest priority first):
+    // 1. Environment variables (`HARDY_TVR_<FIELD>`)
+    // 2. Config file (path from argument, `HARDY_TVR_CONFIG_FILE` env var,
+    //    or platform default)
+    //
+    // Supports TOML, YAML, and JSON formats (detected by file extension).
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
         let config_file = config_file
             .or_else(|| {
@@ -135,7 +149,7 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
-    /// Helper: write a config file and load it.
+    // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(name);
@@ -143,7 +157,7 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
-    /// Empty config file produces sensible defaults.
+    // Empty config file produces sensible defaults.
     #[test]
     #[serial]
     fn empty_config_has_defaults() {
@@ -160,7 +174,7 @@ mod tests {
         );
     }
 
-    /// YAML config file overrides defaults.
+    // YAML config file overrides defaults.
     #[test]
     #[serial]
     fn yaml_overrides_defaults() {
@@ -187,7 +201,7 @@ grpc-listen: "[::]:9999"
         assert!(!config.watch);
     }
 
-    /// TOML config file works identically to YAML.
+    // TOML config file works identically to YAML.
     #[test]
     #[serial]
     fn toml_config() {
@@ -206,7 +220,7 @@ priority = 50
         assert_eq!(config.priority, 50);
     }
 
-    /// JSON config file works identically to YAML.
+    // JSON config file works identically to YAML.
     #[test]
     #[serial]
     fn json_config() {
@@ -223,7 +237,7 @@ priority = 50
         assert_eq!(config.priority, 1);
     }
 
-    /// Environment variables override config file values.
+    // Environment variables override config file values.
     #[test]
     #[serial]
     fn env_overrides_file() {
@@ -248,7 +262,7 @@ priority = 50
         );
     }
 
-    /// Missing config file returns an error.
+    // Missing config file returns an error.
     #[test]
     #[serial]
     fn missing_config_file_errors() {
@@ -256,7 +270,7 @@ priority = 50
         assert!(result.is_err());
     }
 
-    /// Invalid log level in config file returns an error.
+    // Invalid log level in config file returns an error.
     #[test]
     #[serial]
     fn invalid_log_level_errors() {
@@ -267,7 +281,7 @@ priority = 50
         assert!(result.is_err());
     }
 
-    /// Malformed YAML returns an error.
+    // Malformed YAML returns an error.
     #[test]
     #[serial]
     fn malformed_yaml_errors() {
@@ -278,7 +292,7 @@ priority = 50
         assert!(result.is_err());
     }
 
-    /// Malformed TOML returns an error.
+    // Malformed TOML returns an error.
     #[test]
     #[serial]
     fn malformed_toml_errors() {
@@ -289,7 +303,7 @@ priority = 50
         assert!(result.is_err());
     }
 
-    /// Unknown fields are silently ignored.
+    // Unknown fields are silently ignored.
     #[test]
     #[serial]
     fn unknown_fields_ignored() {
@@ -303,7 +317,7 @@ this-field-does-not-exist: 42
         assert_eq!(config.log_level, Level::WARN);
     }
 
-    /// Contact plan path is preserved.
+    // Contact plan path is preserved.
     #[test]
     #[serial]
     fn contact_plan_path() {
@@ -314,7 +328,7 @@ this-field-does-not-exist: 42
         );
     }
 
-    /// Watch can be disabled.
+    // Watch can be disabled.
     #[test]
     #[serial]
     fn watch_disabled() {
@@ -322,7 +336,7 @@ this-field-does-not-exist: 42
         assert!(!config.watch);
     }
 
-    /// Priority zero is valid.
+    // Priority zero is valid.
     #[test]
     #[serial]
     fn priority_zero() {

@@ -1,33 +1,33 @@
-/// Cron expression with optional seconds field.
-///
-/// Accepts 5 fields (`minute hour dom month dow`) or 6 fields
-/// (`second minute hour dom month dow`), plus `@` shortcuts.
-///
-/// Each field is a bitset of matching values, giving O(1) match checks.
-///
-/// All evaluation is in UTC — there are no daylight-saving transitions,
-/// so hours are never skipped or repeated.
-///
-/// Supports:
-/// - Numeric values, ranges, steps, lists: `*`, `N`, `N-M`, `*/S`, `N-M/S`, `N,M,...`
-/// - Named weekdays: `SUN`–`SAT` (case-insensitive)
-/// - Named months: `JAN`–`DEC` (case-insensitive)
-/// - Shortcuts: `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight`, `@hourly`
+// Cron expression with optional seconds field.
+//
+// Accepts 5 fields (minute hour dom month dow) or 6 fields
+// (second minute hour dom month dow), plus @ shortcuts.
+//
+// Each field is a bitset of matching values, giving O(1) match checks.
+//
+// All evaluation is in UTC — there are no daylight-saving transitions,
+// so hours are never skipped or repeated.
+//
+// Supports:
+// - Numeric values, ranges, steps, lists: *, N, N-M, */S, N-M/S, N,M,...
+// - Named weekdays: SUN-SAT (case-insensitive)
+// - Named months: JAN-DEC (case-insensitive)
+// - Shortcuts: @yearly, @annually, @monthly, @weekly, @daily, @midnight, @hourly
 #[derive(Debug, Clone, Eq)]
 pub struct CronExpr {
-    /// Matching seconds (bits 0–59)
+    // Matching seconds (bits 0–59)
     pub second: u64,
-    /// Matching minutes (bits 0–59)
+    // Matching minutes (bits 0–59)
     pub minute: u64,
-    /// Matching hours (bits 0–23)
+    // Matching hours (bits 0–23)
     pub hour: u32,
-    /// Matching days of month (bits 1–31)
+    // Matching days of month (bits 1–31)
     pub dom: u32,
-    /// Matching months (bits 1–12)
+    // Matching months (bits 1–12)
     pub month: u16,
-    /// Matching days of week (bits 0–6, 0 = Sunday)
+    // Matching days of week (bits 0–6, 0 = Sunday)
     pub dow: u8,
-    /// Original expression for display (excluded from equality)
+    // Original expression for display (excluded from equality)
     source: String,
 }
 
@@ -55,21 +55,21 @@ const MONTH_NAMES: [&str; 12] = [
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
 
-/// Bitsets covering all values for a field
+// Bitsets covering all values for a field
 const ALL_HOURS: u32 = (1 << 24) - 1;
 const ALL_DOM: u32 = !1u32; // bits 1-31 (excludes bit 0)
 const ALL_MONTHS: u16 = 0x1FFE; // bits 1-12
 const ALL_DOW: u8 = 0x7F; // bits 0-6
 
 impl CronExpr {
-    /// Parse a cron expression.
-    ///
-    /// Accepts:
-    /// - 5 fields: `minute hour dom month dow`
-    /// - 6 fields: `second minute hour dom month dow`
-    /// - Shortcuts: `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`
-    ///
-    /// Returns a human-readable error message on failure.
+    // Parse a cron expression.
+    //
+    // Accepts:
+    // - 5 fields: `minute hour dom month dow`
+    // - 6 fields: `second minute hour dom month dow`
+    // - Shortcuts: `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`
+    //
+    // Returns a human-readable error message on failure.
     pub fn parse(s: &str) -> Result<Self, String> {
         let trimmed = s.trim();
 
@@ -176,16 +176,15 @@ impl CronExpr {
         Ok(expr)
     }
 
-    /// Does this expression match the given datetime?
-    /// Whether this expression has second-level granularity.
+    // Whether this expression has second-level granularity.
     fn has_seconds(&self) -> bool {
         self.second != 1 // anything other than "only second 0"
     }
 
-    /// Find the next datetime at or after `after` that matches this expression.
-    ///
-    /// Returns `None` if no match is found within ~4 years (to prevent
-    /// infinite loops on impossible expressions like dom=31 + month=Feb).
+    // Find the next datetime at or after `after` that matches this expression.
+    //
+    // Returns `None` if no match is found within ~4 years (to prevent
+    // infinite loops on impossible expressions like dom=31 + month=Feb).
     pub fn next_after(&self, after: time::OffsetDateTime) -> Option<time::OffsetDateTime> {
         let mut dt = after.replace_nanosecond(0).ok()?;
         if !self.has_seconds() {
@@ -225,9 +224,9 @@ impl CronExpr {
         None
     }
 
-    /// Find the last datetime at or before `before` that matches this expression.
-    ///
-    /// Returns `None` if no match is found within ~4 years back.
+    // Find the last datetime at or before `before` that matches this expression.
+    //
+    // Returns `None` if no match is found within ~4 years back.
     pub fn prev_before(&self, before: time::OffsetDateTime) -> Option<time::OffsetDateTime> {
         let mut dt = before.replace_nanosecond(0).ok()?;
         if !self.has_seconds() {
@@ -270,10 +269,10 @@ impl CronExpr {
 
 // ── Field parsing ───────────────────────────────────────────────────
 
-/// Parse a single cron field into a bitset.
-///
-/// `names` provides optional named aliases (e.g. `JAN`–`DEC` for months).
-/// Names are 1-indexed: the first name maps to value `min`.
+// Parse a single cron field into a bitset.
+//
+// `names` provides optional named aliases (e.g. `JAN`–`DEC` for months).
+// Names are 1-indexed: the first name maps to value `min`.
 fn parse_field(field: &str, min: u32, max: u32, name: &str, names: &[&str]) -> Result<u64, String> {
     let mut bits: u64 = 0;
 
@@ -291,7 +290,7 @@ fn parse_field(field: &str, min: u32, max: u32, name: &str, names: &[&str]) -> R
     Ok(bits)
 }
 
-/// Try to parse a value as a number or a named alias.
+// Try to parse a value as a number or a named alias.
 fn parse_value(s: &str, min: u32, _max: u32, name: &str, names: &[&str]) -> Result<u32, String> {
     // Try named alias first
     if !names.is_empty() {
@@ -359,7 +358,7 @@ fn parse_item(item: &str, min: u32, max: u32, name: &str, names: &[&str]) -> Res
     Ok(bits)
 }
 
-/// Parse day-of-week field with special handling for Sunday alias (0 and 7 both valid).
+// Parse day-of-week field with special handling for Sunday alias (0 and 7 both valid).
 fn parse_dow(field: &str) -> Result<u8, String> {
     let bits = parse_field(field, 0, 7, "dow", &DOW_NAMES)?;
     // Normalize: bit 7 (Sunday alias) folds into bit 0

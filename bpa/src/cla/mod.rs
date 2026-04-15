@@ -287,7 +287,7 @@ pub trait Sink: Send + Sync {
 mod tests {
     use super::*;
 
-    /// ClaAddress round-trips through (ClaAddressType, Bytes) conversion.
+    // ClaAddress round-trips through (ClaAddressType, Bytes) conversion.
     #[test]
     fn test_address_parsing() {
         // TCP address: parse from string representation

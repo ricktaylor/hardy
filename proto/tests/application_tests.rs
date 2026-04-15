@@ -14,7 +14,7 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A mock Application that records lifecycle callbacks and incoming payloads.
+// A mock Application that records lifecycle callbacks and incoming payloads.
 struct MockApplication {
     registered: AtomicBool,
     received: AtomicBool,
@@ -68,7 +68,7 @@ impl Application for MockApplication {
     }
 }
 
-/// APP-CLI-01: Register application (IPN), receive endpoint ID.
+// APP-CLI-01: Register application (IPN), receive endpoint ID.
 #[tokio::test]
 async fn app_cli_01_registration_ipn() {
     let bpa = Arc::new(MockBpa::new());
@@ -92,7 +92,7 @@ async fn app_cli_01_registration_ipn() {
     server_tasks.shutdown().await;
 }
 
-/// APP-CLI-02: Register application (DTN), receive endpoint ID.
+// APP-CLI-02: Register application (DTN), receive endpoint ID.
 #[tokio::test]
 async fn app_cli_02_registration_dtn() {
     let bpa = Arc::new(MockBpa::new());
@@ -119,7 +119,7 @@ async fn app_cli_02_registration_dtn() {
     server_tasks.shutdown().await;
 }
 
-/// APP-CLI-03: Send payload via sink.
+// APP-CLI-03: Send payload via sink.
 #[tokio::test]
 async fn app_cli_03_send_payload() {
     let bpa = Arc::new(MockBpa::new());
@@ -151,7 +151,7 @@ async fn app_cli_03_send_payload() {
     server_tasks.shutdown().await;
 }
 
-/// APP-CLI-04: Receive payload (BPA pushes to application).
+// APP-CLI-04: Receive payload (BPA pushes to application).
 #[tokio::test]
 async fn app_cli_04_receive_payload() {
     let bpa = Arc::new(MockBpa::new());
@@ -195,7 +195,7 @@ async fn app_cli_04_receive_payload() {
     server_tasks.shutdown().await;
 }
 
-/// APP-CLI-05: Status notification (BPA pushes to application).
+// APP-CLI-05: Status notification (BPA pushes to application).
 #[tokio::test]
 async fn app_cli_05_status_notify() {
     let bpa = Arc::new(MockBpa::new());
@@ -245,7 +245,7 @@ async fn app_cli_05_status_notify() {
     server_tasks.shutdown().await;
 }
 
-/// APP-CLI-06: Cancel pending send.
+// APP-CLI-06: Cancel pending send.
 #[tokio::test]
 async fn app_cli_06_cancel() {
     let bpa = Arc::new(MockBpa::new());

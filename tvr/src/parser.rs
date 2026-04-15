@@ -26,7 +26,7 @@ fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
         })
 }
 
-/// A non-whitespace token (used for EIDs, patterns, etc.)
+// A non-whitespace token (used for EIDs, patterns, etc.)
 fn non_ws_token<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
     any()
         .filter(|c: &char| !c.is_whitespace())
@@ -102,7 +102,7 @@ fn priority_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
         .labelled("priority")
 }
 
-/// RFC 3339 timestamp (e.g. "2026-03-27T08:00:00Z")
+// RFC 3339 timestamp (e.g. "2026-03-27T08:00:00Z")
 fn rfc3339_timestamp<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>> {
     non_ws_token()
         .try_map(|s: &str, span| {
@@ -139,7 +139,7 @@ fn until_field<'a>() -> impl Parser<'a, &'a str, time::OffsetDateTime, Extra<'a>
         .labelled("until time")
 }
 
-/// Quoted string (for cron expressions): `"0 8 * * *"`
+// Quoted string (for cron expressions): `"0 8 * * *"`
 fn quoted_string<'a>() -> impl Parser<'a, &'a str, &'a str, Extra<'a>> {
     just('"')
         .ignore_then(
@@ -166,7 +166,7 @@ fn cron_field<'a>() -> impl Parser<'a, &'a str, CronExpr, Extra<'a>> {
         .labelled("cron")
 }
 
-/// Duration value: e.g. "90m", "2h", "4h30m", "1h15m30s"
+// Duration value: e.g. "90m", "2h", "4h30m", "1h15m30s"
 fn duration_value<'a>() -> impl Parser<'a, &'a str, std::time::Duration, Extra<'a>> {
     non_ws_token()
         .try_map(|s: &str, span| {
@@ -219,11 +219,11 @@ fn delay_field<'a>() -> impl Parser<'a, &'a str, u32, Extra<'a>> {
         .labelled("delay")
 }
 
-/// Parse a bandwidth value with optional SI suffix.
-///
-/// Accepts: `10G`, `256K`, `1M`, `9600` (bare = bps).
-/// Case-insensitive suffixes: `K` (×1,000), `M` (×1,000,000),
-/// `G` (×1,000,000,000), `T` (×1,000,000,000,000).
+// Parse a bandwidth value with optional SI suffix.
+//
+// Accepts: `10G`, `256K`, `1M`, `9600` (bare = bps).
+// Case-insensitive suffixes: `K` (×1,000), `M` (×1,000,000),
+// `G` (×1,000,000,000), `T` (×1,000,000,000,000).
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
     let s_upper = s.to_ascii_uppercase();
     let (num_part, multiplier) =
@@ -251,7 +251,7 @@ fn parse_bandwidth(s: &str) -> Result<u64, String> {
 
 // ── Contact fields (order-independent keyword fields) ───────────────
 
-/// All optional fields that can appear after the action, in any order.
+// All optional fields that can appear after the action, in any order.
 #[derive(Default)]
 struct ContactFields {
     priority: Option<u32>,
@@ -264,7 +264,7 @@ struct ContactFields {
     delay: Option<u32>,
 }
 
-/// A single optional field — parsed one at a time, accumulated into ContactFields.
+// A single optional field — parsed one at a time, accumulated into ContactFields.
 enum Field {
     Priority(u32),
     Start(time::OffsetDateTime),
@@ -380,8 +380,8 @@ fn contact<'a>() -> impl Parser<'a, &'a str, Contact, Extra<'a>> {
         .labelled("contact")
 }
 
-/// Resolve schedule from parsed fields. Validates mutual exclusivity of
-/// one-shot (start/end) vs recurring (cron/duration/until).
+// Resolve schedule from parsed fields. Validates mutual exclusivity of
+// one-shot (start/end) vs recurring (cron/duration/until).
 fn resolve_schedule<'a>(
     fields: &ContactFields,
     span: Span,
@@ -458,7 +458,7 @@ fn contacts<'a>() -> impl Parser<'a, &'a str, Vec<Contact>, Extra<'a>> {
 
 // ── Error formatting ────────────────────────────────────────────────
 
-/// Format a parse error with line number, column, source context, and a caret.
+// Format a parse error with line number, column, source context, and a caret.
 fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
     let offset = error.span().start;
 
@@ -488,7 +488,7 @@ fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Parse a contact plan string into a list of contacts.
+// Parse a contact plan string into a list of contacts.
 pub fn parse_contacts(input: &str) -> Result<Vec<Contact>, Vec<String>> {
     contacts()
         .parse(input)
@@ -496,7 +496,7 @@ pub fn parse_contacts(input: &str) -> Result<Vec<Contact>, Vec<String>> {
         .map_err(|errors| errors.iter().map(|e| format_error(input, e)).collect())
 }
 
-/// Load and parse a contact plan file.
+// Load and parse a contact plan file.
 pub async fn load_contacts(
     path: &PathBuf,
     ignore_errors: bool,

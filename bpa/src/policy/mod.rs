@@ -54,7 +54,7 @@ pub trait EgressQueue: Send + Sync {
 mod tests {
     use super::*;
 
-    /// NullPolicy.classify() should always return None (single-queue FIFO).
+    // NullPolicy.classify() should always return None (single-queue FIFO).
     #[test]
     fn test_flow_classification() {
         let policy = null_policy::EgressPolicy::new();
@@ -69,8 +69,8 @@ mod tests {
         assert_eq!(policy.classify(Some(u32::MAX)), None);
     }
 
-    /// Queue indices beyond queue_count should be treated as invalid.
-    /// For NullPolicy with 0 queues, classify always returns None.
+    // Queue indices beyond queue_count should be treated as invalid.
+    // For NullPolicy with 0 queues, classify always returns None.
     #[test]
     fn test_queue_bounds() {
         let policy = null_policy::EgressPolicy::new();

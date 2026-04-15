@@ -13,7 +13,7 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Path to configuration file
+    // Path to configuration file
     #[arg(short, long)]
     config: Option<PathBuf>,
 }

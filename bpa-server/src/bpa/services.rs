@@ -1,5 +1,6 @@
 use super::*;
 
+// Register all enabled built-in application services with the BPA.
 #[allow(unused_variables)]
 pub async fn register(
     config: &config::BuiltInServicesConfig,

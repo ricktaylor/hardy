@@ -1194,7 +1194,7 @@ mod test {
         bpsec::key::KeySet::new(vec![])
     }
 
-    /// Build a minimal valid bundle and return its serialised bytes.
+    // Build a minimal valid bundle and return its serialised bytes.
     fn build_minimal_bundle() -> Box<[u8]> {
         builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
             .with_payload("Hello".as_bytes().into())

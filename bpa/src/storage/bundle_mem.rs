@@ -150,7 +150,7 @@ mod tests {
         }
     }
 
-    /// When capacity is exceeded, the LRU (oldest-accessed) bundle is evicted.
+    // When capacity is exceeded, the LRU (oldest-accessed) bundle is evicted.
     #[tokio::test]
     async fn test_eviction_policy_fifo() {
         // 100 bytes capacity, min 0 bundles (so eviction is purely capacity-driven)
@@ -172,8 +172,8 @@ mod tests {
         assert!(storage.load(&name3).await.unwrap().is_some());
     }
 
-    /// BundleMemStorage uses insertion-order LRU. load() uses peek() so does NOT
-    /// promote entries. Eviction is strictly FIFO by insertion order.
+    // BundleMemStorage uses insertion-order LRU. load() uses peek() so does NOT
+    // promote entries. Eviction is strictly FIFO by insertion order.
     #[tokio::test]
     async fn test_eviction_policy_priority() {
         let storage = BundleMemStorage::new(&small_config(100, 0));
@@ -197,8 +197,8 @@ mod tests {
         assert!(storage.load(&name3).await.unwrap().is_some());
     }
 
-    /// When min_bundles is set, eviction should not reduce count below that threshold
-    /// even if byte capacity is exceeded.
+    // When min_bundles is set, eviction should not reduce count below that threshold
+    // even if byte capacity is exceeded.
     #[tokio::test]
     async fn test_min_bundles_protection() {
         // 100 bytes capacity, but min 3 bundles — count protection overrides byte quota
@@ -218,7 +218,7 @@ mod tests {
         assert!(storage.load(&name3).await.unwrap().is_some());
     }
 
-    /// Verify NonZeroUsize handles >1TB capacity values without overflow.
+    // Verify NonZeroUsize handles >1TB capacity values without overflow.
     #[test]
     fn test_large_quota_config() {
         let two_tb: usize = 2_000_000_000_000;

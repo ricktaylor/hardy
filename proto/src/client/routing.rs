@@ -237,7 +237,7 @@ mod tests {
         (grpc_addr, handle)
     }
 
-    /// Mock server that closes the stream immediately after registration.
+    // Mock server that closes the stream immediately after registration.
     struct PrematureCloseServer;
 
     #[async_trait]
@@ -272,7 +272,7 @@ mod tests {
         }
     }
 
-    /// Mock server that sends the registration response twice.
+    // Mock server that sends the registration response twice.
     struct DuplicateRegisterServer;
 
     #[async_trait]
@@ -314,7 +314,7 @@ mod tests {
         }
     }
 
-    /// Mock server that sends an out-of-sequence message during handshake.
+    // Mock server that sends an out-of-sequence message during handshake.
     struct OutOfSequenceServer;
 
     #[async_trait]
@@ -350,13 +350,13 @@ mod tests {
 
     // ── Tests ────────────────────────────────────────────────────────
 
-    /// ERR-CLI-02: Client receives synthetic on_unregister when server
-    /// closes the stream immediately after the registration handshake.
-    ///
-    /// A custom mock server sends a valid registration response then
-    /// immediately drops the channel, closing the stream. The client
-    /// proxy's reader detects the closure and delivers a synthetic
-    /// `on_unregister()` via `on_close`.
+    // ERR-CLI-02: Client receives synthetic on_unregister when server
+    // closes the stream immediately after the registration handshake.
+    //
+    // A custom mock server sends a valid registration response then
+    // immediately drops the channel, closing the stream. The client
+    // proxy's reader detects the closure and delivers a synthetic
+    // `on_unregister()` via `on_close`.
     #[tokio::test]
     async fn err_cli_02_premature_stream_end() {
         let (grpc_addr, server_handle) = start_bad_server(PrematureCloseServer).await;
@@ -381,13 +381,13 @@ mod tests {
         server_handle.abort();
     }
 
-    /// ERR-CLI-03: Client handles duplicate registration response without panic.
-    ///
-    /// A custom mock server sends `RegisterRoutingAgentResponse` twice.
-    /// The first response completes the handshake normally. The second
-    /// arrives as an unsolicited message — the reader finds no pending
-    /// entry for msg_id 0 and dispatches it to `on_notify`, which logs
-    /// a warning and ignores it.
+    // ERR-CLI-03: Client handles duplicate registration response without panic.
+    //
+    // A custom mock server sends `RegisterRoutingAgentResponse` twice.
+    // The first response completes the handshake normally. The second
+    // arrives as an unsolicited message — the reader finds no pending
+    // entry for msg_id 0 and dispatches it to `on_notify`, which logs
+    // a warning and ignores it.
     #[tokio::test]
     async fn err_cli_03_duplicate_register_response() {
         let (grpc_addr, server_handle) = start_bad_server(DuplicateRegisterServer).await;
@@ -414,13 +414,13 @@ mod tests {
         server_handle.abort();
     }
 
-    /// ERR-CLI-04: Client returns error on out-of-sequence message during
-    /// handshake.
-    ///
-    /// A custom mock server sends an `AddRouteResponse` with msg_id 5
-    /// instead of the expected `RegisterRoutingAgentResponse` with msg_id 0.
-    /// `RpcProxy::send()` detects the wrong msg_id and returns
-    /// `Err(Status::aborted("Out of sequence response"))`.
+    // ERR-CLI-04: Client returns error on out-of-sequence message during
+    // handshake.
+    //
+    // A custom mock server sends an `AddRouteResponse` with msg_id 5
+    // instead of the expected `RegisterRoutingAgentResponse` with msg_id 0.
+    // `RpcProxy::send()` detects the wrong msg_id and returns
+    // `Err(Status::aborted("Out of sequence response"))`.
     #[tokio::test]
     async fn err_cli_04_invalid_message_sequence() {
         let (grpc_addr, server_handle) = start_bad_server(OutOfSequenceServer).await;

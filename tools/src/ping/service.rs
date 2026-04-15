@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-/// Statistics for ping session, following IP ping conventions.
+// Statistics for ping session, following IP ping conventions.
 #[derive(Default, Clone)]
 pub struct Statistics {
     pub sent: u32,
@@ -63,32 +63,32 @@ impl Statistics {
     }
 }
 
-/// Entry for tracking a sent bundle, with timestamp for aging out old entries.
+// Entry for tracking a sent bundle, with timestamp for aging out old entries.
 struct SentBundle {
     seqno: u32,
     send_time: time::OffsetDateTime,
 }
 
-/// A hop in the bundle's path, discovered via status reports.
+// A hop in the bundle's path, discovered via status reports.
 struct PathHop {
     node: Eid,
     elapsed: std::time::Duration,
     kind: hardy_bpa::services::StatusNotify,
-    /// Whether this hop is from the return-trip (pong) path vs outbound (ping) path.
+    // Whether this hop is from the return-trip (pong) path vs outbound (ping) path.
     is_return_trip: bool,
 }
 
-/// Shared mutable state protected by a single mutex.
+// Shared mutable state protected by a single mutex.
 struct SharedState {
     sent_bundles: HashMap<hardy_bpv7::bundle::Id, SentBundle>,
     expected_responses: HashMap<u32, time::OffsetDateTime>,
     stats: Statistics,
-    /// Path hops discovered via status reports, keyed by sequence number.
+    // Path hops discovered via status reports, keyed by sequence number.
     path_hops: HashMap<u32, Vec<PathHop>>,
-    /// Sequence numbers that received echo replies (to filter "Lost" display).
+    // Sequence numbers that received echo replies (to filter "Lost" display).
     replied: std::collections::HashSet<u32>,
-    /// Reverse lookup: creation timestamp -> (seqno, send_time).
-    /// Used to match return-trip status reports where bundle_id.source is the echo service.
+    // Reverse lookup: creation timestamp -> (seqno, send_time).
+    // Used to match return-trip status reports where bundle_id.source is the echo service.
     creation_to_seqno: HashMap<CreationTimestamp, (u32, time::OffsetDateTime)>,
 }
 
@@ -98,7 +98,7 @@ pub struct Service {
     destination: Eid,
     lifetime: std::time::Duration,
     quiet: bool,
-    /// Random ephemeral key for BIB signing/verification (None if --no-sign)
+    // Random ephemeral key for BIB signing/verification (None if --no-sign)
     signing_key: Option<bpsec::key::Key>,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
@@ -147,7 +147,7 @@ impl Service {
         }
     }
 
-    /// Remove entries older than bundle lifetime to prevent unbounded memory growth.
+    // Remove entries older than bundle lifetime to prevent unbounded memory growth.
     fn cleanup_expired(&self, now: time::OffsetDateTime) {
         let cutoff = now - self.lifetime;
         let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
@@ -162,8 +162,8 @@ impl Service {
             .retain(|_, (_, send_time)| *send_time > cutoff);
     }
 
-    /// Print and clear the discovered path for a sequence number.
-    /// Shows outbound (ping) and return (pong) paths as a hairpin visualization.
+    // Print and clear the discovered path for a sequence number.
+    // Shows outbound (ping) and return (pong) paths as a hairpin visualization.
     fn print_path(&self, seqno: u32) {
         let hops = self
             .state
@@ -243,7 +243,7 @@ impl Service {
         }
     }
 
-    /// Sign the payload block with BIB-HMAC-SHA2.
+    // Sign the payload block with BIB-HMAC-SHA2.
     fn sign_bundle(
         &self,
         bundle_bytes: &[u8],
@@ -279,7 +279,7 @@ impl Service {
         Ok(signed_bytes)
     }
 
-    /// Get a copy of the current statistics.
+    // Get a copy of the current statistics.
     pub fn statistics(&self) -> Statistics {
         self.state
             .lock()
@@ -288,7 +288,7 @@ impl Service {
             .clone()
     }
 
-    /// Print summary statistics in IP ping format.
+    // Print summary statistics in IP ping format.
     pub fn print_summary(&self) {
         let state = self.state.lock().trace_expect("Failed to lock state mutex");
 
@@ -606,7 +606,7 @@ impl hardy_bpa::services::Service for Service {
 }
 
 impl Service {
-    /// Handle incoming status reports (admin records).
+    // Handle incoming status reports (admin records).
     fn handle_status_report(&self, payload_data: &[u8], from: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
 

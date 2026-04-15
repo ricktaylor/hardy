@@ -233,7 +233,7 @@ mod tests {
         }
     }
 
-    /// CacheEntry BTreeSet should sort by expiry time (soonest first).
+    // CacheEntry BTreeSet should sort by expiry time (soonest first).
     #[test]
     fn test_cache_ordering() {
         let mut set = BTreeSet::new();
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(entries[2].expiry, later.expiry);
     }
 
-    /// When cache is full, inserting a sooner entry should evict the latest.
+    // When cache is full, inserting a sooner entry should evict the latest.
     #[test]
     fn test_cache_saturation() {
         let mut cache = BTreeSet::new();
@@ -283,7 +283,7 @@ mod tests {
         assert!(!cache.contains(&e300));
     }
 
-    /// When cache is full, an entry with later expiry than the worst should be rejected.
+    // When cache is full, an entry with later expiry than the worst should be rejected.
     #[test]
     fn test_cache_rejection() {
         let mut cache = BTreeSet::new();
@@ -317,7 +317,7 @@ mod tests {
         assert!(!cache.contains(&e400));
     }
 
-    /// Wakeup should trigger when a newly inserted entry is sooner than the current soonest.
+    // Wakeup should trigger when a newly inserted entry is sooner than the current soonest.
     #[test]
     fn test_wakeup_trigger() {
         let e200 = make_entry(200, 1);

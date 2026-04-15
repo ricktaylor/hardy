@@ -1,11 +1,13 @@
-//! File-based Convergence Layer Adapter (CLA) for the Bundle Protocol Agent.
-//!
-//! This crate provides a CLA that uses the local filesystem as a transport mechanism
-//! for DTN bundles. Bundles arriving in a watched "outbox" directory are dispatched
-//! to the BPA, while bundles forwarded by the BPA are written as files into
-//! per-peer "inbox" directories. This is useful for testing, bridging air-gapped
-//! networks via removable media, or integrating with external tools that produce
-//! or consume raw bundle files.
+/*!
+File-based Convergence Layer Adapter (CLA) for the Bundle Protocol Agent.
+
+This crate provides a CLA that uses the local filesystem as a transport mechanism
+for DTN bundles. Bundles arriving in a watched "outbox" directory are dispatched
+to the BPA, while bundles forwarded by the BPA are written as files into
+per-peer "inbox" directories. This is useful for testing, bridging air-gapped
+networks via removable media, or integrating with external tools that produce
+or consume raw bundle files.
+*/
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::bpa::BpaRegistration;

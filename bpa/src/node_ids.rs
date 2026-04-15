@@ -241,7 +241,7 @@ mod tests {
         })
     }
 
-    /// Two different IPN node IDs should be rejected.
+    // Two different IPN node IDs should be rejected.
     #[test]
     fn test_single_scheme_enforce() {
         let ids = [ipn(0, 1), ipn(0, 2)];
@@ -258,7 +258,7 @@ mod tests {
         assert!(matches!(result, Err(Error::MultipleDtnNodeIds)));
     }
 
-    /// LocalNode should be rejected.
+    // LocalNode should be rejected.
     #[test]
     fn test_invalid_types() {
         let ids = [NodeId::LocalNode];
@@ -271,7 +271,7 @@ mod tests {
         assert!(matches!(result, Err(Error::LocalNode)));
     }
 
-    /// Admin EID for IPN destination should use the IPN node ID with service 0.
+    // Admin EID for IPN destination should use the IPN node ID with service 0.
     #[test]
     fn test_admin_resolution_ipn() {
         let node_ids = NodeIds {
@@ -319,7 +319,7 @@ mod tests {
         );
     }
 
-    /// Admin EID for DTN destination should use the DTN node ID.
+    // Admin EID for DTN destination should use the DTN node ID.
     #[test]
     fn test_admin_resolution_dtn() {
         let node_ids = NodeIds {

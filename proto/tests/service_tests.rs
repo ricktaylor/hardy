@@ -14,7 +14,7 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A mock Service that records lifecycle callbacks and incoming bundles.
+// A mock Service that records lifecycle callbacks and incoming bundles.
 struct MockService {
     registered: AtomicBool,
     received: AtomicBool,
@@ -62,7 +62,7 @@ impl Service for MockService {
     }
 }
 
-/// SVC-CLI-01: Register service, receive endpoint ID.
+// SVC-CLI-01: Register service, receive endpoint ID.
 #[tokio::test]
 async fn svc_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
@@ -86,7 +86,7 @@ async fn svc_cli_01_registration() {
     server_tasks.shutdown().await;
 }
 
-/// SVC-CLI-02: Send raw bundle via sink.
+// SVC-CLI-02: Send raw bundle via sink.
 #[tokio::test]
 async fn svc_cli_02_send_bundle() {
     let bpa = Arc::new(MockBpa::new());
@@ -111,7 +111,7 @@ async fn svc_cli_02_send_bundle() {
     server_tasks.shutdown().await;
 }
 
-/// SVC-CLI-03: Receive raw bundle (BPA pushes to service).
+// SVC-CLI-03: Receive raw bundle (BPA pushes to service).
 #[tokio::test]
 async fn svc_cli_03_receive_bundle() {
     let bpa = Arc::new(MockBpa::new());
@@ -149,7 +149,7 @@ async fn svc_cli_03_receive_bundle() {
     server_tasks.shutdown().await;
 }
 
-/// SVC-CLI-04: Status notification (BPA pushes to service).
+// SVC-CLI-04: Status notification (BPA pushes to service).
 #[tokio::test]
 async fn svc_cli_04_status_notify() {
     let bpa = Arc::new(MockBpa::new());
@@ -199,7 +199,7 @@ async fn svc_cli_04_status_notify() {
     server_tasks.shutdown().await;
 }
 
-/// SVC-CLI-05: Cancel pending send.
+// SVC-CLI-05: Cancel pending send.
 #[tokio::test]
 async fn svc_cli_05_cancel() {
     let bpa = Arc::new(MockBpa::new());

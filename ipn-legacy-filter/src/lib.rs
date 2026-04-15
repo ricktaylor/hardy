@@ -1,8 +1,9 @@
-//! IPN 2-element legacy encoding filter
-//!
-//! This Egress WriteFilter rewrites IPN 3-element EIDs to legacy 2-element format
-//! for peers that require the older encoding.
-//!
+/*!
+IPN 2-element legacy encoding filter
+
+This Egress WriteFilter rewrites IPN 3-element EIDs to legacy 2-element format
+for peers that require the older encoding.
+*/
 
 use hardy_bpa::async_trait;
 use std::sync::Arc;
@@ -141,14 +142,14 @@ mod tests {
         (bundle, data.into())
     }
 
-    /// IPNF-06: Empty config returns None (filter not needed).
+    // IPNF-06: Empty config returns None (filter not needed).
     #[test]
     fn test_empty_config() {
         let config = Config::default();
         assert!(IpnLegacyFilter::new(&config).is_none());
     }
 
-    /// IPNF-06b: No next-hop — no rewrite.
+    // IPNF-06b: No next-hop — no rewrite.
     #[tokio::test]
     async fn test_no_next_hop() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
@@ -161,7 +162,7 @@ mod tests {
         );
     }
 
-    /// IPNF-06c: DTN source and destination — no rewrite even with matching next-hop.
+    // IPNF-06c: DTN source and destination — no rewrite even with matching next-hop.
     #[tokio::test]
     async fn test_dtn_no_rewrite() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
@@ -178,7 +179,7 @@ mod tests {
     // Core 4 tests: allocator_id × matching/non-matching
     // -------------------------------------------------------------------
 
-    /// IPNF-01: allocator_id=0, non-matching next-hop — no rewrite.
+    // IPNF-01: allocator_id=0, non-matching next-hop — no rewrite.
     #[tokio::test]
     async fn test_alloc0_non_matching() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:0.99.*"])).unwrap();
@@ -191,9 +192,9 @@ mod tests {
         );
     }
 
-    /// IPNF-02: allocator_id=0, matching next-hop — filter runs but bytes
-    /// are unchanged because the Builder already uses legacy 2-element
-    /// encoding when allocator_id=0.
+    // IPNF-02: allocator_id=0, matching next-hop — filter runs but bytes
+    // are unchanged because the Builder already uses legacy 2-element
+    // encoding when allocator_id=0.
     #[tokio::test]
     async fn test_alloc0_matching() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();
@@ -213,7 +214,7 @@ mod tests {
         );
     }
 
-    /// IPNF-03: allocator_id!=0, non-matching next-hop — no rewrite.
+    // IPNF-03: allocator_id!=0, non-matching next-hop — no rewrite.
     #[tokio::test]
     async fn test_alloc1_non_matching() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:0.99.*"])).unwrap();
@@ -226,8 +227,8 @@ mod tests {
         );
     }
 
-    /// IPNF-04: allocator_id!=0, matching next-hop — bytes change because
-    /// 3-element [2, [1, 1, 1]] is rewritten to legacy 2-element.
+    // IPNF-04: allocator_id!=0, matching next-hop — bytes change because
+    // 3-element [2, [1, 1, 1]] is rewritten to legacy 2-element.
     #[tokio::test]
     async fn test_alloc1_matching() {
         let filter = IpnLegacyFilter::new(&make_config(&["ipn:*.*"])).unwrap();

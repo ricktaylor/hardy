@@ -869,7 +869,7 @@ mod tests {
 
     // ---- UT-TCP-01: Message SerDes ----
 
-    /// UT-TCP-01: KEEPALIVE round-trip (simplest message — single byte).
+    // UT-TCP-01: KEEPALIVE round-trip (simplest message — single byte).
     #[test]
     fn serdes_keepalive() {
         let buf = encode_msg(Message::Keepalive);
@@ -879,7 +879,7 @@ mod tests {
         assert!(matches!(msg, Message::Keepalive));
     }
 
-    /// UT-TCP-01: SESS_TERM round-trip with reason code and reply flag.
+    // UT-TCP-01: SESS_TERM round-trip with reason code and reply flag.
     #[test]
     fn serdes_sess_term() {
         let original = SessionTermMessage {
@@ -904,7 +904,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: SESS_INIT round-trip with node ID and no extensions.
+    // UT-TCP-01: SESS_INIT round-trip with node ID and no extensions.
     #[test]
     fn serdes_sess_init_basic() {
         let original = SessionInitMessage {
@@ -931,7 +931,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: SESS_INIT round-trip with no node ID.
+    // UT-TCP-01: SESS_INIT round-trip with no node ID.
     #[test]
     fn serdes_sess_init_no_node_id() {
         let original = SessionInitMessage {
@@ -953,7 +953,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: SESS_INIT round-trip with a session extension item.
+    // UT-TCP-01: SESS_INIT round-trip with a session extension item.
     #[test]
     fn serdes_sess_init_with_extension() {
         let ext_data = Bytes::from_static(b"\x01\x02\x03\x04");
@@ -988,7 +988,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: XFER_SEGMENT round-trip (START+END, single segment).
+    // UT-TCP-01: XFER_SEGMENT round-trip (START+END, single segment).
     #[test]
     fn serdes_xfer_segment() {
         let payload = Bytes::from_static(b"hello bundle");
@@ -1018,7 +1018,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: XFER_ACK round-trip.
+    // UT-TCP-01: XFER_ACK round-trip.
     #[test]
     fn serdes_xfer_ack() {
         let buf = encode_msg(Message::TransferAck(TransferAckMessage {
@@ -1043,7 +1043,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: XFER_REFUSE round-trip.
+    // UT-TCP-01: XFER_REFUSE round-trip.
     #[test]
     fn serdes_xfer_refuse() {
         let buf = encode_msg(Message::TransferRefuse(TransferRefuseMessage {
@@ -1065,7 +1065,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-01: Invalid message type byte returns error.
+    // UT-TCP-01: Invalid message type byte returns error.
     #[test]
     fn serdes_invalid_message_type() {
         let mut codec = MessageCodec {};
@@ -1074,7 +1074,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// UT-TCP-01: Incomplete message returns None (needs more data).
+    // UT-TCP-01: Incomplete message returns None (needs more data).
     #[test]
     fn serdes_incomplete_returns_none() {
         // SESS_TERM needs 3 bytes, give it 2
@@ -1084,7 +1084,7 @@ mod tests {
 
     // ---- UT-TCP-05: Reason Codes ----
 
-    /// UT-TCP-05: SessionTermReasonCode round-trip for all defined values.
+    // UT-TCP-05: SessionTermReasonCode round-trip for all defined values.
     #[test]
     fn reason_code_sess_term_round_trip() {
         let cases = [
@@ -1103,7 +1103,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-05: TransferRefuseReasonCode round-trip for all defined values.
+    // UT-TCP-05: TransferRefuseReasonCode round-trip for all defined values.
     #[test]
     fn reason_code_xfer_refuse_round_trip() {
         let cases: Vec<(u8, TransferRefuseReasonCode)> = vec![
@@ -1123,7 +1123,7 @@ mod tests {
         }
     }
 
-    /// UT-TCP-05: Unassigned and private reason code ranges preserved.
+    // UT-TCP-05: Unassigned and private reason code ranges preserved.
     #[test]
     fn reason_code_unassigned_and_private() {
         // Unassigned range (7..=0xEF)

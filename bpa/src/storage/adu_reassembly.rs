@@ -394,7 +394,7 @@ mod tests {
         );
     }
 
-    /// Two fragments covering the full ADU reassemble into a complete bundle.
+    // Two fragments covering the full ADU reassemble into a complete bundle.
     #[tokio::test]
     async fn reassemble_basic_happy_path() {
         let store = make_store();

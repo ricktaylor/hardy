@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
+// Parsed command-line arguments for the BPA server.
 pub struct Args {
+    // Path to a custom configuration file, overriding the default location.
     pub config_file: Option<PathBuf>,
+    // If set, upgrade the bundle store to the current schema before starting.
     pub upgrade_storage: bool,
+    // If set, attempt to recover damaged records in the store before starting.
     pub recover_storage: bool,
 }
 
@@ -24,7 +28,9 @@ fn options() -> getopts::Options {
     opts
 }
 
-// Returns None if help or version was printed and the process should exit.
+// Parse command-line arguments.
+//
+// Returns `None` if `--help` or `--version` was printed and the process should exit.
 pub fn parse() -> Option<Args> {
     let opts = options();
     let argv: Vec<String> = std::env::args().collect();

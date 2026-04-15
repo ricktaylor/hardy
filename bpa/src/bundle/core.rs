@@ -87,8 +87,8 @@ mod tests {
         }
     }
 
-    /// When creation timestamp is zero (unknown), creation_time() should
-    /// fall back to received_at minus bundle age.
+    // When creation timestamp is zero (unknown), creation_time() should
+    // fall back to received_at minus bundle age.
     #[test]
     fn test_age_fallback() {
         let age = core::time::Duration::from_secs(60);
@@ -116,7 +116,7 @@ mod tests {
         );
     }
 
-    /// Expiry = creation_time + lifetime
+    // Expiry = creation_time + lifetime
     #[test]
     fn test_expiry_calculation() {
         let lifetime = core::time::Duration::from_secs(3600);

@@ -147,7 +147,7 @@ mod tests {
         rusqlite::Connection::open_in_memory().unwrap()
     }
 
-    /// SQL-02: Fresh migration creates schema and records version.
+    // SQL-02: Fresh migration creates schema and records version.
     #[test]
     fn test_migration_creates_schema() {
         let mut conn = open_memory_db();
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(table_count, 1, "bundles table should exist");
     }
 
-    /// SQL-02: Re-running migration on an already-migrated DB is a no-op.
+    // SQL-02: Re-running migration on an already-migrated DB is a no-op.
     #[test]
     fn test_migration_reopen_is_noop() {
         let mut conn = open_memory_db();
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(count_before, count_after);
     }
 
-    /// SQL-02: Migration with upgrade=false on a fresh DB returns UpdateRequired.
+    // SQL-02: Migration with upgrade=false on a fresh DB returns UpdateRequired.
     #[test]
     fn test_migration_upgrade_required() {
         let mut conn = open_memory_db();
@@ -200,10 +200,10 @@ mod tests {
         );
     }
 
-    /// SQL-03: Detect missing historic migration.
-    ///
-    /// Renaming the file_name in the DB means the code expects a file that
-    /// doesn't match any record — triggering MissingHistoric.
+    // SQL-03: Detect missing historic migration.
+    //
+    // Renaming the file_name in the DB means the code expects a file that
+    // doesn't match any record — triggering MissingHistoric.
     #[test]
     fn test_migration_detects_missing_historic() {
         let mut conn = open_memory_db();
@@ -223,7 +223,7 @@ mod tests {
         );
     }
 
-    /// SQL-03: Detect extra historic migration.
+    // SQL-03: Detect extra historic migration.
     #[test]
     fn test_migration_detects_extra_historic() {
         let mut conn = open_memory_db();
@@ -243,7 +243,7 @@ mod tests {
         );
     }
 
-    /// SQL-03: Detect altered historic migration (hash mismatch).
+    // SQL-03: Detect altered historic migration (hash mismatch).
     #[test]
     fn test_migration_detects_altered_historic() {
         let mut conn = open_memory_db();

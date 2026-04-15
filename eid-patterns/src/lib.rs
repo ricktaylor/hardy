@@ -1,12 +1,14 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-//! EID pattern matching for BPv7 Endpoint Identifiers.
-//!
-//! Provides wildcard and glob-based pattern matching over `ipn` and `dtn` scheme
-//! EIDs as defined in RFC 9171. Patterns can be parsed from text representations
-//! such as `ipn:*.*`, `dtn://**`, or union sets like `ipn:1.1|ipn:2.*`. The
-//! crate supports subset testing, specificity scoring for route selection, and
-//! conversion to/from exact EIDs.
+/*!
+EID pattern matching for BPv7 Endpoint Identifiers.
+
+Provides wildcard and glob-based pattern matching over `ipn` and `dtn` scheme
+EIDs as defined in RFC 9171. Patterns can be parsed from text representations
+such as `ipn:*.*` or union sets like `ipn:1.1|ipn:2.*`. The
+crate supports subset testing, specificity scoring for route selection, and
+conversion to/from exact EIDs.
+*/
 
 extern crate alloc;
 

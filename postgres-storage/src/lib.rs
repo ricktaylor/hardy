@@ -1,10 +1,12 @@
-//! PostgreSQL-backed metadata storage for the Hardy BPA.
-//!
-//! This crate implements the [`hardy_bpa::storage::MetadataStorage`] trait using
-//! PostgreSQL as the persistent store.  Bundle metadata is stored as JSON blobs
-//! alongside typed, indexed columns for status, expiry, and keyset-paginated
-//! polling.  Schema migrations are managed by `sqlx::migrate!` and can be
-//! applied automatically on startup or validated against the running database.
+/*!
+PostgreSQL-backed metadata storage for the Hardy BPA.
+
+This crate implements the [`hardy_bpa::storage::MetadataStorage`] trait using
+PostgreSQL as the persistent store.  Bundle metadata is stored as JSON blobs
+alongside typed, indexed columns for status, expiry, and keyset-paginated
+polling.  Schema migrations are managed by `sqlx::migrate!` and can be
+applied automatically on startup or validated against the running database.
+*/
 
 mod config;
 mod status;

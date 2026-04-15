@@ -14,7 +14,7 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A mock RoutingAgent that stores the sink for test use.
+// A mock RoutingAgent that stores the sink for test use.
 struct MockRoutingAgent {
     registered: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn RoutingSink>>>,
@@ -43,11 +43,11 @@ impl RoutingAgent for MockRoutingAgent {
     async fn on_unregister(&self) {}
 }
 
-/// RTE-CLI-01: Register routing agent, receive node IDs.
-///
-/// The client registers a routing agent via RemoteBpa. The mock BPA
-/// calls on_register with a sink and node IDs. The client receives
-/// the node IDs and the agent receives the sink.
+// RTE-CLI-01: Register routing agent, receive node IDs.
+//
+// The client registers a routing agent via RemoteBpa. The mock BPA
+// calls on_register with a sink and node IDs. The client receives
+// the node IDs and the agent receives the sink.
 #[tokio::test]
 async fn rte_cli_01_registration() {
     let bpa = Arc::new(MockBpa::new());
@@ -77,11 +77,11 @@ async fn rte_cli_01_registration() {
     server_tasks.shutdown().await;
 }
 
-/// RTE-CLI-02: Add route via sink.
-///
-/// After registration, the agent uses its sink to add a route. The
-/// request goes through the gRPC proxy to the mock BPA's RoutingSink,
-/// which returns success.
+// RTE-CLI-02: Add route via sink.
+//
+// After registration, the agent uses its sink to add a route. The
+// request goes through the gRPC proxy to the mock BPA's RoutingSink,
+// which returns success.
 #[tokio::test]
 async fn rte_cli_02_add_route() {
     let bpa = Arc::new(MockBpa::new());
@@ -111,11 +111,11 @@ async fn rte_cli_02_add_route() {
     server_tasks.shutdown().await;
 }
 
-/// RTE-CLI-03: Remove route via sink.
-///
-/// After registration, the agent uses its sink to remove a route. The
-/// request goes through the gRPC proxy to the mock BPA's RoutingSink,
-/// which returns success.
+// RTE-CLI-03: Remove route via sink.
+//
+// After registration, the agent uses its sink to remove a route. The
+// request goes through the gRPC proxy to the mock BPA's RoutingSink,
+// which returns success.
 #[tokio::test]
 async fn rte_cli_03_remove_route() {
     let bpa = Arc::new(MockBpa::new());

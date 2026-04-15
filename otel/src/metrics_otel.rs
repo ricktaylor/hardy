@@ -460,9 +460,9 @@ mod tests {
     //       → OpenTelemetryRecorder::register_*()
     //         → InnerCounter/InnerGauge/InnerHistogram
 
-    /// Helper: look up the gauge's tracked value from the recorder's cache.
-    /// The metrics macros use Key hashing internally, so we reconstruct the
-    /// key the same way the macro would to find the cached instrument.
+    // Helper: look up the gauge's tracked value from the recorder's cache.
+    // The metrics macros use Key hashing internally, so we reconstruct the
+    // key the same way the macro would to find the cached instrument.
     fn recorder_gauge_value(recorder: &OpenTelemetryRecorder, name: &str) -> f64 {
         let key = Key::from_name(name.to_string());
         let inner = recorder

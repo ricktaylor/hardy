@@ -514,7 +514,7 @@ mod tests {
         }
     }
 
-    /// Registering two applications with the same explicit IPN service number should fail.
+    // Registering two applications with the same explicit IPN service number should fail.
     #[tokio::test]
     async fn test_duplicate_reg() {
         let bpa = Bpa::builder().build();
@@ -538,8 +538,8 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    /// After an application drops its sink (unregisters), the service ID should be freed
-    /// for re-registration.
+    // After an application drops its sink (unregisters), the service ID should be freed
+    // for re-registration.
     #[tokio::test]
     async fn test_cleanup() {
         let bpa = Bpa::builder().build();

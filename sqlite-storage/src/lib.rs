@@ -1,14 +1,16 @@
-//! SQLite-backed metadata storage for the Hardy BPA.
-//!
-//! This crate provides a persistent [`MetadataStorage`](hardy_bpa::storage::MetadataStorage)
-//! implementation that stores bundle metadata in a SQLite database. It handles
-//! schema migrations, connection pooling, serialized write access, and the
-//! startup recovery protocol (mark-unconfirmed / confirm / sweep).
-//!
-//! # Key types
-//!
-//! - [`Config`] -- database directory and filename settings (serde-deserializable).
-//! - [`new()`] -- constructs an `Arc<dyn MetadataStorage>` ready for use by the BPA.
+/*!
+SQLite-backed metadata storage for the Hardy BPA.
+
+This crate provides a persistent [`MetadataStorage`](hardy_bpa::storage::MetadataStorage)
+implementation that stores bundle metadata in a SQLite database. It handles
+schema migrations, connection pooling, serialized write access, and the
+startup recovery protocol (mark-unconfirmed / confirm / sweep).
+
+# Key types
+
+- [`Config`] -- database directory and filename settings (serde-deserializable).
+- [`new()`] -- constructs an `Arc<dyn MetadataStorage>` ready for use by the BPA.
+*/
 
 mod config;
 mod migrate;

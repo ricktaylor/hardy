@@ -10,10 +10,10 @@ use notify_debouncer_full::{
 use std::path::PathBuf;
 use tracing::{error, info};
 
-/// Start a file watcher that reloads the contact plan on changes.
-///
-/// On file create/modify: re-parse → `replace_contacts` into scheduler.
-/// On file delete: withdraw all contacts from this source.
+// Start a file watcher that reloads the contact plan on changes.
+//
+// On file create/modify: re-parse → `replace_contacts` into scheduler.
+// On file delete: withdraw all contacts from this source.
 pub fn start(
     contact_plan: PathBuf,
     priority: u32,

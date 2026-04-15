@@ -4,18 +4,18 @@ use hardy_bpv7::{
 };
 use hardy_cbor::{decode, encode};
 
-/// CBOR payload format per PING_SPEC.md Appendix C.
-///
-/// Structure: `[sequence, options_map]`
-///
-/// Options map keys:
-/// - 0: Padding (bstr) - for MTU testing
+// CBOR payload format per PING_SPEC.md Appendix C.
+//
+// Structure: `[sequence, options_map]`
+//
+// Options map keys:
+// - 0: Padding (bstr) - for MTU testing
 #[repr(u64)]
 enum OptionKey {
     Padding = 0,
 }
 
-/// Parsed ping payload.
+// Parsed ping payload.
 pub struct Payload {
     pub seqno: u32,
     pub padding_len: usize,
@@ -102,13 +102,13 @@ impl decode::FromCbor for Payload {
     }
 }
 
-/// Build a bundle with the payload, optionally targeting a specific total bundle size.
-///
-/// If `args.size` is specified, uses binary search to find the exact padding needed
-/// to achieve the target bundle size. This accounts for all overhead including:
-/// - CBOR length field encoding (variable 1/2/4/8 bytes)
-/// - Bundle primary block
-/// - Extension blocks (HopCount)
+// Build a bundle with the payload, optionally targeting a specific total bundle size.
+//
+// If `args.size` is specified, uses binary search to find the exact padding needed
+// to achieve the target bundle size. This accounts for all overhead including:
+// - CBOR length field encoding (variable 1/2/4/8 bytes)
+// - Bundle primary block
+// - Extension blocks (HopCount)
 fn build_bundle_with_padding(
     args: &Command,
     seq_no: u32,

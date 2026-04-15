@@ -1,7 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-/// The EgressPolicy enum separates the type from its configuration.
+// The EgressPolicy enum separates the type from its configuration.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
 pub enum EgressPolicyConfig {
@@ -11,11 +11,12 @@ pub enum EgressPolicyConfig {
     // #[cfg(feature = "tbf_policy")]
     // Tbf { config: hardy_bpa::policy::tbf_policy::TbfConfig },
 
-    // Catch unknown values
+    // Catch-all for unrecognised policy types (logged as a warning).
     #[serde(other)]
     Unknown,
 }
 
+// Instantiate the configured egress policy for a CLA, if recognised.
 pub async fn init(
     cla_name: &str,
     config: &EgressPolicyConfig,

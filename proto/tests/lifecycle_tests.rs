@@ -14,7 +14,7 @@ use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// A mock RoutingAgent that records lifecycle callbacks.
+// A mock RoutingAgent that records lifecycle callbacks.
 struct MockRoutingAgent {
     registered: AtomicBool,
     unregister_count: AtomicUsize,
@@ -59,12 +59,12 @@ impl RoutingAgent for MockRoutingAgent {
     }
 }
 
-/// LIFE-01: Client-initiated unregister via stream close.
-///
-/// The client calls `Sink::unregister()` which shuts down the proxy,
-/// closing the stream. The server detects the close via `on_close`,
-/// unregisters the component from the mock BPA, and cancels the proxy.
-/// The client receives a synthetic `on_unregister()` callback.
+// LIFE-01: Client-initiated unregister via stream close.
+//
+// The client calls `Sink::unregister()` which shuts down the proxy,
+// closing the stream. The server detects the close via `on_close`,
+// unregisters the component from the mock BPA, and cancels the proxy.
+// The client receives a synthetic `on_unregister()` callback.
 #[tokio::test]
 async fn life_01_client_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -114,11 +114,11 @@ async fn life_01_client_initiated_unregister() {
     server_tasks.shutdown().await;
 }
 
-/// LIFE-02: BPA-initiated unregister.
-///
-/// The BPA calls `on_unregister()` on the server-side RemoteRoutingAgent
-/// (simulating BPA shutdown). The server shuts down the proxy, closing the
-/// stream. The client receives a synthetic `on_unregister()` via `on_close`.
+// LIFE-02: BPA-initiated unregister.
+//
+// The BPA calls `on_unregister()` on the server-side RemoteRoutingAgent
+// (simulating BPA shutdown). The server shuts down the proxy, closing the
+// stream. The client receives a synthetic `on_unregister()` via `on_close`.
 #[tokio::test]
 async fn life_02_bpa_initiated_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -156,12 +156,12 @@ async fn life_02_bpa_initiated_unregister() {
     server_tasks.shutdown().await;
 }
 
-/// LIFE-03: Client drops proxy without calling unregister.
-///
-/// The client drops its sink (and thus the proxy) without calling
-/// `unregister()`. The proxy's `Drop` impl cancels the tasks, closing
-/// the stream. The server detects the close via `on_close`, unregisters
-/// the component from the BPA, and cancels the server-side proxy.
+// LIFE-03: Client drops proxy without calling unregister.
+//
+// The client drops its sink (and thus the proxy) without calling
+// `unregister()`. The proxy's `Drop` impl cancels the tasks, closing
+// the stream. The server detects the close via `on_close`, unregisters
+// the component from the BPA, and cancels the server-side proxy.
 #[tokio::test]
 async fn life_03_drop_without_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -201,11 +201,11 @@ async fn life_03_drop_without_unregister() {
     server_tasks.shutdown().await;
 }
 
-/// LIFE-04: Server crashes while client is connected.
-///
-/// The server-side BPA forcefully unregisters all agents (simulating a
-/// crash or abrupt shutdown). The client detects the stream close and
-/// delivers a synthetic `on_unregister()` to the trait impl via `on_close`.
+// LIFE-04: Server crashes while client is connected.
+//
+// The server-side BPA forcefully unregisters all agents (simulating a
+// crash or abrupt shutdown). The client detects the stream close and
+// delivers a synthetic `on_unregister()` to the trait impl via `on_close`.
 #[tokio::test]
 async fn life_04_server_crash() {
     let bpa = Arc::new(MockBpa::new());
@@ -238,11 +238,11 @@ async fn life_04_server_crash() {
     server_tasks.shutdown().await;
 }
 
-/// LIFE-05: Client and BPA unregister simultaneously.
-///
-/// Both the client and BPA initiate unregister concurrently. The
-/// `Mutex<Option>.take()` on the server ensures exactly one path
-/// takes the sink. No double-unregister, no deadlock.
+// LIFE-05: Client and BPA unregister simultaneously.
+//
+// Both the client and BPA initiate unregister concurrently. The
+// `Mutex<Option>.take()` on the server ensures exactly one path
+// takes the sink. No double-unregister, no deadlock.
 #[tokio::test]
 async fn life_05_simultaneous_unregister() {
     let bpa = Arc::new(MockBpa::new());
@@ -276,10 +276,10 @@ async fn life_05_simultaneous_unregister() {
     server_tasks.shutdown().await;
 }
 
-/// LIFE-06: Client receives on_unregister exactly once.
-///
-/// After BPA-initiated unregister (which closes the stream), the client
-/// must receive exactly one `on_unregister()` call — not zero, not two.
+// LIFE-06: Client receives on_unregister exactly once.
+//
+// After BPA-initiated unregister (which closes the stream), the client
+// must receive exactly one `on_unregister()` call — not zero, not two.
 #[tokio::test]
 async fn life_06_exactly_once_unregister() {
     let bpa = Arc::new(MockBpa::new());

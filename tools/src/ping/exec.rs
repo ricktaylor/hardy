@@ -1,19 +1,19 @@
 use super::*;
 use hardy_bpa::bpa::BpaRegistration;
 
-/// Exit codes matching Linux/BSD ping conventions.
+// Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitCode {
-    /// At least one response was received
+    // At least one response was received
     Success = 0,
-    /// No responses received (100% packet loss)
+    // No responses received (100% packet loss)
     NoResponse = 1,
-    /// Other error (connection failure, invalid arguments, etc.)
+    // Other error (connection failure, invalid arguments, etc.)
     Error = 2,
 }
 
-/// Returns true if the --cla value looks like a file path (external binary)
-/// rather than a built-in CLA name.
+// Returns true if the --cla value looks like a file path (external binary)
+// rather than a built-in CLA name.
 fn is_external_cla(cla: &str) -> bool {
     cla.contains('/') || cla.contains('\\')
 }

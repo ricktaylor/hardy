@@ -1,5 +1,5 @@
-/// Checks for Administrator privileges on Windows.
-/// This function is only compiled on Windows.
+// Checks for Administrator privileges on Windows.
+// This function is only compiled on Windows.
 #[cfg(target_os = "windows")]
 pub fn has_required_privileges() -> bool {
     // This crate provides a simple, safe, and direct way to check
@@ -8,8 +8,8 @@ pub fn has_required_privileges() -> bool {
     check_elevation::is_elevated().unwrap_or(false)
 }
 
-/// Checks for root OR the CAP_NET_ADMIN capability on Linux.
-/// This function is only compiled on Linux.
+// Checks for root OR the CAP_NET_ADMIN capability on Linux.
+// This function is only compiled on Linux.
 #[cfg(target_os = "linux")]
 pub fn has_required_privileges() -> bool {
     use caps::{CapSet, Capability};
@@ -34,10 +34,10 @@ pub fn has_required_privileges() -> bool {
     false
 }
 
-/// Fallback for other Unix-like systems (e.g., macOS, BSD).
-/// These systems do not have the Linux capabilities model, so we must
-/// check if the effective user ID is 0 (root).
-/// This function is only compiled on non-Windows and non-Linux platforms.
+// Fallback for other Unix-like systems (e.g., macOS, BSD).
+// These systems do not have the Linux capabilities model, so we must
+// check if the effective user ID is 0 (root).
+// This function is only compiled on non-Windows and non-Linux platforms.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub fn has_required_privileges() -> bool {
     // This is the classic and safest way to check for root on a Unix system.
