@@ -184,7 +184,7 @@ Hardy is tested for bidirectional bundle exchange against multiple BPv7 implemen
 | [NASA HDTN](https://github.com/nasa/HDTN) | TCPCLv4 | GitHub |
 | [NASA DTNME](https://github.com/nasa/DTNME) | TCPCLv4 | GitHub |
 | [JPL ION](https://github.com/nasa-jpl/ION-DTN) | STCP | GitHub |
-| [D3TN/ud3tn](https://gitlab.com/d3tn/ud3tn) | MTCP | GitLab |
+| [ud3tn](https://gitlab.com/d3tn/ud3tn) | MTCP | GitLab |
 | ESA BP | STCP | ESA ESSR |
 | [NASA cFS BPNode](https://github.com/nasa/bp) | STCP | GitHub |
 
