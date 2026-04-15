@@ -171,10 +171,10 @@ impl BoundedTaskPool {
 }
 
 impl Default for BoundedTaskPool {
-    /// Creates a bounded task pool with concurrency equal to available parallelism.
-    ///
-    /// Uses [`crate::available_parallelism()`] to determine the limit,
-    /// which queries the OS when the `std` feature is enabled, or returns 1 otherwise.
+    // Creates a bounded task pool with concurrency equal to available parallelism.
+    //
+    // Uses [`crate::available_parallelism()`] to determine the limit,
+    // which queries the OS when the `std` feature is enabled, or returns 1 otherwise.
     fn default() -> Self {
         Self::new(crate::available_parallelism())
     }
