@@ -291,7 +291,7 @@ impl Dispatcher {
             }
         };
 
-        self.process_bundle(bundle, data).await;
+        self.process_bundle(bundle, data, self.cla_registry()).await;
     }
 
     /// Queue a bundle for dispatch processing
@@ -321,7 +321,9 @@ impl Dispatcher {
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
-                    dispatcher.process_bundle(bundle, data).await;
+                    dispatcher
+                        .process_bundle(bundle, data, dispatcher.cla_registry())
+                        .await;
                 } else {
                     // Bundle data was deleted while queued
                     dispatcher
@@ -350,7 +352,12 @@ impl Dispatcher {
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    async fn process_bundle(&self, mut bundle: bundle::Bundle, data: Bytes) {
+    async fn process_bundle(
+        &self,
+        mut bundle: bundle::Bundle,
+        data: Bytes,
+        cla_registry: &cla::registry::ClaRegistry,
+    ) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
             Some(rib::FindResult::Drop(reason)) => {
@@ -373,7 +380,7 @@ impl Dispatcher {
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = self.peers.forward(peer, bundle).await {
+                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
                     debug!("CLA forward failed, returning bundle to watch queue");
                     self.store.watch_bundle(bundle).await;
                 }
@@ -417,7 +424,7 @@ impl Dispatcher {
                             let dispatcher = dispatcher.clone();
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
                                 if let Some(data) = dispatcher.load_data(&bundle).await {
-                                    dispatcher.process_bundle(bundle, data).await
+                                    dispatcher.process_bundle(bundle, data, dispatcher.cla_registry()).await
                                 } else {
                                     // Bundle data was deleted sometime while we waited, drop the bundle
                                     dispatcher.drop_bundle(bundle, Some(ReasonCode::DepletedStorage)).await

@@ -14,10 +14,10 @@ pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
     store: Arc<storage::Store>,
-    peers: Arc<cla::peers::PeerTable>,
     rib: Arc<rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_registry: Arc<filters::registry::Registry>,
+    cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
@@ -36,7 +36,6 @@ impl Dispatcher {
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
-        peers: Arc<cla::peers::PeerTable>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_registry: Arc<filters::registry::Registry>,
@@ -47,7 +46,6 @@ impl Dispatcher {
             processing_pool_size,
             node_ids,
             store,
-            peers,
             rib,
             keys_registry,
             filter_registry,
@@ -63,7 +61,6 @@ impl Dispatcher {
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
-        peers: Arc<cla::peers::PeerTable>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_registry: Arc<filters::registry::Registry>,
@@ -82,10 +79,10 @@ impl Dispatcher {
             tasks: hardy_async::TaskPool::new(),
             processing_pool: hardy_async::BoundedTaskPool::new(processing_pool_size),
             store,
-            peers,
             rib,
             keys_registry,
             filter_registry,
+            cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports,
             node_ids,
@@ -98,6 +95,16 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
+    }
+
+    pub fn set_cla_registry(&self, cla_registry: Arc<cla::registry::ClaRegistry>) {
+        self.cla_registry.call_once(|| cla_registry);
+    }
+
+    fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {
+        self.cla_registry
+            .get()
+            .trace_expect("CLA registry not initialized")
     }
 
     pub async fn shutdown(&self) {

@@ -3,7 +3,7 @@ use core::num::NonZeroUsize;
 use crate::Arc;
 use crate::bpa::Bpa;
 use crate::cla::registry::ClaRegistryBuilder;
-use crate::cla::{self, Cla, ClaAddressType};
+use crate::cla::{Cla, ClaAddressType};
 use crate::dispatcher::Dispatcher;
 use crate::filters::registry::Registry as FilterRegistry;
 use crate::filters::{Filter, Hook};
@@ -167,7 +167,6 @@ impl BpaBuilder {
             .await?;
         let filter_registry = self.filter_registry;
         let keys_registry = self.keys_registry;
-        let peers = Arc::new(cla::peers::PeerTable::new());
 
         let dispatcher = Dispatcher::new(
             self.status_reports,
@@ -175,7 +174,6 @@ impl BpaBuilder {
             self.processing_pool_size,
             node_ids.clone(),
             store.clone(),
-            peers.clone(),
             rib.clone(),
             keys_registry,
             filter_registry.clone(),
@@ -189,11 +187,13 @@ impl BpaBuilder {
                 self.poll_channel_depth.into(),
                 &rib,
                 &store,
-                peers,
                 &dispatcher,
             ),
         );
         let cla_registry = cla_registry?;
+
+        // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
+        dispatcher.set_cla_registry(cla_registry.clone());
 
         Ok(Bpa::from_parts(
             node_ids,

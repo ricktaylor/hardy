@@ -154,9 +154,9 @@ impl ClaRegistryBuilder {
         poll_channel_depth: usize,
         rib: &Arc<rib::Rib>,
         store: &Arc<storage::Store>,
-        peers: Arc<peers::PeerTable>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<Arc<ClaRegistry>> {
+        let peers = Arc::new(cla::peers::PeerTable::new());
         let registry = Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
@@ -195,6 +195,14 @@ pub(crate) struct ClaRegistry {
 }
 
 impl ClaRegistry {
+    pub async fn forward(
+        &self,
+        peer_id: u32,
+        bundle: bundle::Bundle,
+    ) -> core::result::Result<(), bundle::Bundle> {
+        self.peers.forward(peer_id, bundle).await
+    }
+
     pub async fn shutdown(&self) {
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
