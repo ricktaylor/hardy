@@ -202,9 +202,9 @@ dtn://**/** reflect priority 1200
 ### Time-Variant Routing (TVR)
 
 For scheduled contact windows (satellite passes, maintenance windows,
-recurring links), the TVR agent provides cron-based route scheduling.
-TVR runs as a separate process and connects to the BPA as a routing
-agent via gRPC — ensure `routing` is included in `grpc.services`.
+recurring links), TVR runs as a separate process and connects to the
+BPA as a routing agent via gRPC — ensure `routing` is included in
+`grpc.services`.
 
 See the [TVR configuration reference](tvr.md) for configuration,
 contact plan format, gRPC service, and hot-reload.

@@ -30,11 +30,13 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 
 - Full RFC 9171 BPv7 bundle protocol support
 - BPSec (RFC 9172/9173) for bundle security with HMAC-SHA and AES-GCM
-- Multiple convergence layer options (TCPCLv4, file-based, BIBE tunneling)
-- Pluggable storage backends (SQLite, local filesystem)
+- RFC 9174 TCPCLv4 convergence layer with TLS
+- Pluggable storage backends (local filesystem, SQLite, PostgreSQL, S3)
+- Time-Variant Routing with recurring schedule support
 - Configurable ingress/egress filter pipeline
-- gRPC API for application integration
-- OpenTelemetry integration for observability
+- gRPC API for application and CLA integration
+- OpenTelemetry integration for observability (traces, metrics, logs)
+- Interoperability verified against 7 independent BPv7 implementations
 - `no_std` compatible core libraries for embedded use
 
 ## Components
@@ -198,14 +200,17 @@ Each test verifies ping/echo in both directions. A benchmark script compares RTT
 
 See [tests/interop/README.md](./tests/interop/README.md) for details.
 
-## Key Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
+| [**User Guide**](https://ricktaylor.github.io/hardy/) | Getting started, configuration reference, and deployment guide. |
 | [**Architecture Overview**](./docs/design.md) | High-level system architecture and design principles. |
 | [**Requirements**](./docs/requirements.md) | High-level and low-level requirements with RFC traceability. |
 | [**Test Strategy**](./docs/test_strategy.md) | Overall testing approach including unit, integration, and fuzz testing. |
-| [**Interop Tests**](./tests/interop/README.md) | Interoperability test suite for other BPv7 implementations. |
+| [**Test Coverage**](./docs/test_coverage_report.md) | Project-wide test plan inventory and coverage metrics. |
+| [**Requirements Coverage**](./docs/requirements_coverage_report.md) | Requirements traceability matrix and LLR verification status. |
+| [**Interop Tests**](./tests/interop/README.md) | Interoperability test suite for 7 BPv7 implementations. |
 
 ## Contributing
 

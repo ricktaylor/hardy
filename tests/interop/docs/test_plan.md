@@ -7,7 +7,6 @@
 | **Requirements Ref** | [REQ-20](../../../docs/requirements.md#req-20-interoperability-with-existing-implementations) |
 | **Test Suite ID** | PLAN-INTEROP-01 |
 | **Version** | 1.1 |
-| **Status** | DRAFT |
 
 ## 1. Introduction
 

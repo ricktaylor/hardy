@@ -8,7 +8,6 @@
 | **Requirements Ref** | [REQ-7](../../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [REQ-8](../../../docs/requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage), [REQ-9](../../../docs/requirements.md#req-9-support-for-amazon-s3-storage-for-bundle-storage) |
 | **Test Suite ID** | PLAN-STORE-01 |
 | **Version** | 1.1 |
-| **Status** | DRAFT |
 
 ## 1. Introduction
 

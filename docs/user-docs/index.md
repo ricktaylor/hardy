@@ -21,7 +21,7 @@ networks.
 - **Bundle security** -- BPSec ([RFC 9172](https://datatracker.ietf.org/doc/html/rfc9172)/[9173](https://datatracker.ietf.org/doc/html/rfc9173)) with HMAC-SHA and AES-GCM
 - **Multiple transport options** -- TCPCLv4 ([RFC 9174](https://datatracker.ietf.org/doc/html/rfc9174)), file-based, BIBE tunnelling
 - **Pluggable storage** -- SQLite, PostgreSQL, local filesystem, Amazon S3
-- **Time-variant routing** -- Contact scheduling with cron-based recurrence
+- **Time-variant routing** -- Contact scheduling with recurring schedule support
 - **Cloud-native** -- gRPC APIs, OpenTelemetry observability, OCI container images
 - **Interoperable** -- Tested against 7+ BPv7 implementations (ION, HDTN, ud3tn, dtn7-rs, and others)
 - **Extensible** -- Trait-based plugin architecture for CLAs, services, storage, and routing

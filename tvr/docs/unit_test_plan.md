@@ -10,7 +10,7 @@
 
 ## 1. Introduction
 
-This document details the unit testing strategy for the `hardy-tvr` functional area. This module is responsible for ingesting contact schedules (from files and gRPC sessions), evaluating cron-based recurrence, and projecting time-variant routes into the BPA.
+This document details the unit testing strategy for the `hardy-tvr` functional area. This module is responsible for ingesting contact schedules (from files and gRPC sessions), evaluating recurring schedules, and projecting time-variant routes into the BPA.
 
 **Scope:**
 
