@@ -382,7 +382,7 @@ where
     }
 }
 
-/// A wrapper to write the CBOR descriminator bytes of an array directly into the stream
+/// A wrapper to write the CBOR discriminator bytes of a byte string directly into the stream
 ///
 /// This is useful for embedding pre-encoded CBOR data or other byte-oriented
 /// formats within a CBOR stream.  Use with `Raw`.

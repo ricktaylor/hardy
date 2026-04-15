@@ -39,9 +39,9 @@ impl FromCbor for Point {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         decode::parse_array(data, |a, shortest, _| {
-            let (x, sx) = a.parse()?;
-            let (y, sy) = a.parse()?;
-            Ok((Point { x, y }, shortest && sx && sy))
+            let x = a.parse()?;
+            let y = a.parse()?;
+            Ok((Point { x, y }, shortest))
         }).map(|((v, s), len)| (v, s, len))
     }
 }
@@ -455,7 +455,7 @@ where
             m.complete(r).map_err(Into::into)
         }
         (5, minor) => {
-            /* Known length array */
+            /* Known length map */
             let (count, s, len) = parse_uint_minor(minor, &data[offset..])?;
             offset += len;
             if count > (usize::MAX as u64) / 2 {
