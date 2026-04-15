@@ -148,7 +148,7 @@ impl ClaRegistryBuilder {
     }
 
     /// Transition to the running registry by registering all inserted CLAs.
-    pub async fn register_all(
+    pub async fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,

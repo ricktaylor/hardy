@@ -90,7 +90,7 @@ pub(crate) async fn run(
         policies.insert(name.clone(), policy::new(policy_config)?);
     }
 
-    for cla_config in &config.clas {
+    for cla_config in config.clas {
         let Some((cla, address_type)) = clas::new(&cla_config.name, &cla_config.cla_type)? else {
             continue;
         };
@@ -108,7 +108,8 @@ pub(crate) async fn run(
             })
             .transpose()?;
 
-        builder = builder.cla(cla_config.name.clone(), cla, address_type, egress_policy);
+        let name = cla_config.name;
+        builder = builder.cla(name, cla, address_type, egress_policy);
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
