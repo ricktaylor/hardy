@@ -943,6 +943,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Set the payload data for this block.
     pub fn with_data(mut self, data: Cow<'a, [u8]>) -> Self {
         self.template.data = Some(data);
         self

@@ -2,20 +2,26 @@ use super::*;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+/// Errors that can occur during bundle signing.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The target block number is not a valid signing target (e.g., it is a BPSec block).
     #[error("Invalid block target {0}, either BCB or BIB block")]
     InvalidTarget(u64),
 
+    /// The target block already has integrity protection from another BIB.
     #[error("Block target {0} is already signed with another BIB")]
     AlreadySigned(u64),
 
+    /// The target block is encrypted by a BCB; sign before encrypting.
     #[error("Block target {0} is already the target of a BCB")]
     EncryptedTarget(u64),
 
+    /// Signing fragmented bundles is not supported (RFC 9172 Section 5).
     #[error("Bundle is a fragment")]
     FragmentedBundle,
 
+    /// An error occurred while editing the bundle.
     #[error(transparent)]
     Editor(#[from] editor::Error),
 }
@@ -28,10 +34,12 @@ impl From<bpsec::Error> for Error {
     }
 }
 
+/// Integrity security context to apply when creating a BIB.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum Context {
+    /// BIB-HMAC-SHA2 context with the specified IPPT scope flags (RFC 9173 Section 3).
     #[cfg(feature = "rfc9173")]
     HMAC_SHA2(rfc9173::ScopeFlags),
 
@@ -46,6 +54,7 @@ struct BlockTemplate<'a> {
     key: &'a key::Key,
 }
 
+/// Accumulates BIB signing operations and rebuilds the bundle with integrity blocks.
 pub struct Signer<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
@@ -53,6 +62,7 @@ pub struct Signer<'a> {
 }
 
 impl<'a> Signer<'a> {
+    /// Creates a new signer for the given parsed bundle and its raw wire bytes.
     pub fn new(original: &'a bundle::Bundle, source_data: &'a [u8]) -> Self {
         Self {
             original,
@@ -110,6 +120,7 @@ impl<'a> Signer<'a> {
         Ok(self)
     }
 
+    /// Applies all queued signing operations and rebuilds the bundle as raw bytes.
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
         if self.templates.is_empty() {
             // No signing to do

@@ -2,17 +2,22 @@ use super::*;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+/// Errors that can occur during bundle encryption.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The target block number is not a valid encryption target (e.g., it is a BPSec block).
     #[error("Invalid block target {0}, BCB block")]
     InvalidTarget(u64),
 
+    /// The target block is already encrypted by another BCB.
     #[error("Block target {0} is already the target of a BCB")]
     AlreadyEncrypted(u64),
 
+    /// Encryption of fragmented bundles is not supported (RFC 9172 Section 5).
     #[error("Bundle is a fragment")]
     FragmentedBundle,
 
+    /// An error occurred while editing the bundle.
     #[error(transparent)]
     Editor(#[from] editor::Error),
 }
@@ -29,10 +34,12 @@ impl From<bpsec::Error> for Error {
     }
 }
 
+/// Encryption security context to apply when creating a BCB.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub enum Context {
+    /// BCB-AES-GCM context with the specified IPPT scope flags (RFC 9173 Section 4).
     #[cfg(feature = "rfc9173")]
     AES_GCM(rfc9173::ScopeFlags),
 
@@ -47,6 +54,7 @@ struct BlockTemplate<'a> {
     key: &'a key::Key,
 }
 
+/// Accumulates BCB encryption operations and rebuilds the bundle with encrypted blocks.
 pub struct Encryptor<'a> {
     original: &'a bundle::Bundle,
     source_data: &'a [u8],
@@ -54,6 +62,7 @@ pub struct Encryptor<'a> {
 }
 
 impl<'a> Encryptor<'a> {
+    /// Creates a new encryptor for the given parsed bundle and its raw wire bytes.
     pub fn new(original: &'a bundle::Bundle, source_data: &'a [u8]) -> Self {
         Self {
             original,
@@ -169,6 +178,7 @@ impl<'a> Encryptor<'a> {
         Ok(self)
     }
 
+    /// Applies all queued encryption operations and rebuilds the bundle as raw bytes.
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
         if self.templates.is_empty() {
             // No signing to do
