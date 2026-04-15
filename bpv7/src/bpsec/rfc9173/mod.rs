@@ -19,11 +19,16 @@ fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
 #[cfg(all(test, feature = "serde"))]
 mod test;
 
+/// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct ScopeFlags {
+    /// Include the primary block in the Integrity-Protected Plaintext (bit 0).
     pub include_primary_block: bool,
+    /// Include the target block header in the IPPT (bit 1).
     pub include_target_header: bool,
+    /// Include the security block header in the IPPT (bit 2).
     pub include_security_header: bool,
+    /// Any unrecognized scope flag bits, preserved for forward compatibility.
     pub unrecognised: Option<u64>,
 }
 

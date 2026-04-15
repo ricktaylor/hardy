@@ -1,23 +1,32 @@
 use super::*;
 use smallvec::SmallVec;
 
+/// A parsed BCB (Block Confidentiality Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub enum Operation {
+    /// AES-GCM encryption operation (RFC 9173).
     #[cfg(feature = "rfc9173")]
     AES_GCM(rfc9173::bcb_aes_gcm::Operation),
+    /// An unrecognised security context (context ID, raw parameters/results).
     Unrecognised(u64, parse::UnknownOperation),
 }
 
+/// Arguments passed to a BCB decryption operation.
 pub struct OperationArgs<'a> {
+    /// The EID of the security source that created this BCB.
     pub bpsec_source: &'a eid::Eid,
+    /// The block number of the block being decrypted.
     pub target: u64,
+    /// The block number of the BCB itself.
     pub source: u64,
+    /// A view of the bundle's blocks for accessing related data during decryption.
     pub blocks: &'a dyn BlockSet<'a>,
 }
 
 impl Operation {
+    /// Returns `true` if this operation uses an unrecognised security context.
     pub fn is_unsupported(&self) -> bool {
         match self {
             #[cfg(feature = "rfc9173")]
@@ -44,6 +53,7 @@ impl Operation {
         }
     }
 
+    /// Decrypts the target block using the provided key source.
     #[allow(unused_variables)]
     pub fn decrypt<K>(
         &self,
@@ -85,13 +95,17 @@ impl Operation {
     }
 }
 
+/// A set of BCB operations sharing a common security source.
 #[derive(Debug)]
 pub struct OperationSet {
+    /// The EID of the security source.
     pub source: eid::Eid,
+    /// Operations keyed by target block number.
     pub operations: HashMap<u64, Operation>,
 }
 
 impl OperationSet {
+    /// Returns `true` if any operation in this set uses an unrecognised context.
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
     }

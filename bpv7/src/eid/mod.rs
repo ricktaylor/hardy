@@ -24,9 +24,15 @@ mod cbor_tests;
 #[cfg(test)]
 mod roundtrip_tests;
 
+/// A fully qualified node number in the `ipn` EID scheme (RFC 9171 Section 4.2.5.1.2).
+///
+/// Encoded as `ipn:<allocator_id>.<node_number>.<service_number>`, where
+/// a zero `allocator_id` is omitted from the display form.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IpnNodeId {
+    /// The allocator identifier. Zero indicates the default allocator.
     pub allocator_id: u32,
+    /// The node number within the allocator's namespace.
     pub node_number: u32,
 }
 
@@ -55,8 +61,12 @@ impl core::fmt::Display for IpnNodeId {
     }
 }
 
+/// A node identifier in the `dtn` EID scheme (RFC 9171 Section 4.2.5.1.3).
+///
+/// Displayed as `dtn://<node_name>/`.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DtnNodeId {
+    /// The authority component of the `dtn` URI.
     pub node_name: Box<str>,
 }
 
@@ -75,6 +85,7 @@ impl core::fmt::Display for DtnNodeId {
     }
 }
 
+/// The node identity component of an [`Eid`], without any service demultiplexer.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
@@ -82,8 +93,11 @@ impl core::fmt::Display for DtnNodeId {
     serde(into = "String", try_from = "Cow<str>")
 )]
 pub enum NodeId {
+    /// The local node (self-referential sentinel).
     LocalNode,
+    /// An `ipn`-scheme node (RFC 9171 Section 4.2.5.1.2).
     Ipn(IpnNodeId),
+    /// A `dtn`-scheme node (RFC 9171 Section 4.2.5.1.3).
     Dtn(DtnNodeId),
 }
 
@@ -122,9 +136,12 @@ impl core::fmt::Display for NodeId {
     }
 }
 
+/// The service demultiplexer for the `ipn` EID scheme (RFC 9171 Section 4.2.5.1.2).
 pub type IpnServiceNumber = u32;
+/// The service demultiplexer for the `dtn` EID scheme (RFC 9171 Section 4.2.5.1.3).
 pub type DtnServiceName = Box<str>;
 
+/// The service demultiplexer component of an [`Eid`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
@@ -132,7 +149,9 @@ pub type DtnServiceName = Box<str>;
     serde(untagged)
 )]
 pub enum Service {
+    /// A numeric service number from the `ipn` scheme.
     Ipn(IpnServiceNumber),
+    /// A named service path from the `dtn` scheme.
     Dtn(DtnServiceName),
 }
 
@@ -145,6 +164,7 @@ impl core::fmt::Display for Service {
     }
 }
 
+/// A Bundle Protocol Endpoint Identifier (EID) as defined in RFC 9171 Section 4.2.5.1.
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
     feature = "serde",
@@ -152,23 +172,37 @@ impl core::fmt::Display for Service {
     serde(into = "String", try_from = "Cow<str>")
 )]
 pub enum Eid {
+    /// The null endpoint `dtn:none`, indicating no endpoint (RFC 9171 Section 4.2.5.1.1).
     #[default]
     Null,
+    /// A service on the local node, used as a self-referential sentinel.
     LocalNode(IpnServiceNumber),
+    /// An `ipn`-scheme EID decoded from the legacy two-element CBOR array encoding.
     LegacyIpn {
+        /// The fully qualified node number.
         fqnn: IpnNodeId,
+        /// The service number demultiplexer.
         service_number: IpnServiceNumber,
     },
+    /// An `ipn`-scheme EID (RFC 9171 Section 4.2.5.1.2).
     Ipn {
+        /// The fully qualified node number.
         fqnn: IpnNodeId,
+        /// The service number demultiplexer.
         service_number: IpnServiceNumber,
     },
+    /// A `dtn`-scheme EID (RFC 9171 Section 4.2.5.1.3).
     Dtn {
+        /// The node authority component.
         node_name: DtnNodeId,
+        /// The service path demultiplexer.
         service_name: DtnServiceName,
     },
+    /// An EID with an unrecognised scheme code, preserved as raw CBOR bytes.
     Unknown {
+        /// The numeric scheme code.
         scheme: u64,
+        /// The scheme-specific content as raw CBOR.
         data: Box<[u8]>,
     },
 }
@@ -180,6 +214,7 @@ impl Eid {
         matches!(self, Eid::Null)
     }
 
+    /// Returns the service component of this EID, or `None` if it is the admin endpoint or null.
     pub fn service(&self) -> Option<Service> {
         match self {
             Eid::LocalNode(service_number)
@@ -194,6 +229,7 @@ impl Eid {
         }
     }
 
+    /// Returns `true` if this EID refers to the administrative endpoint of a node.
     #[inline]
     pub fn is_admin_endpoint(&self) -> bool {
         match self {
@@ -205,6 +241,7 @@ impl Eid {
         }
     }
 
+    /// Converts this EID into a [`NodeId`], discarding the service component.
     pub fn try_to_node_id(self) -> Result<NodeId, Error> {
         match self {
             Eid::LocalNode(_) => Ok(NodeId::LocalNode),

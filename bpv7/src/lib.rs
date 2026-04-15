@@ -1,5 +1,5 @@
 /*!
-A Rust implementation of the Bundle Protocol Version 7 (BPv7), as defined in [RFC 9171](https://www.rfc-editor.org/rfc/rfc9171.html).
+A Rust implementation of the Bundle Protocol Version 7 (BPv7), as defined in [RFC 9171].
 
 This crate provides the building blocks for working with BPv7 bundles, including creation, parsing, and manipulation.
 
@@ -85,6 +85,7 @@ supported out of the box. See `getrandom` v0.4 documentation for the target-spec
 configuration required (typically a `RUSTFLAGS` override or a platform crate dependency).
 
 [`getrandom`]: https://docs.rs/getrandom/0.4
+[RFC 9171]: https://www.rfc-editor.org/rfc/rfc9171.html
 */
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;

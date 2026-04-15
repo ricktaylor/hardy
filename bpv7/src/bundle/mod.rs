@@ -670,8 +670,11 @@ pub enum RewrittenBundle {
 /// canonical form, and the presence of security features.
 #[derive(Debug)]
 pub struct ParsedBundle {
+    /// The parsed bundle structure.
     pub bundle: Bundle,
+    /// Whether an unsupported block was encountered that requests a status report.
     pub report_unsupported: bool,
+    /// Whether the original CBOR encoding was not in canonical form.
     pub non_canonical: bool,
 }
 
