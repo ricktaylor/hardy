@@ -87,9 +87,13 @@ impl Bibe {
             .await?;
 
         // Register decapsulation service
-        let decap_service_id = self.decap_service_id.clone().unwrap_or(Service::Ipn(2048));
-        bpa.register_service(decap_service_id, self.decap_service.clone())
-            .await?;
+        if let Some(service_id) = self.decap_service_id.clone() {
+            bpa.register_service(service_id, self.decap_service.clone())
+                .await?;
+        } else {
+            bpa.register_dynamic_service(self.decap_service.clone())
+                .await?;
+        }
 
         // Register configured tunnel destinations
         let tunnel_count = self.tunnels.len();

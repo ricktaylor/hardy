@@ -201,6 +201,7 @@ impl ServiceRegistryBuilder {
     ) -> Arc<ServiceRegistry> {
         let registry = Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(self.services),
+            next_dynamic: core::sync::atomic::AtomicU32::new(DYNAMIC_SERVICE_BASE),
             tasks: hardy_async::TaskPool::new(),
         });
 
@@ -213,8 +214,13 @@ impl ServiceRegistryBuilder {
     }
 }
 
+/// Base for dynamically assigned IPN service numbers.
+/// Starts high to avoid collisions with explicitly assigned IDs.
+const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
+
 pub(crate) struct ServiceRegistry {
     services: hardy_async::sync::spin::Mutex<ServiceMap>,
+    next_dynamic: core::sync::atomic::AtomicU32,
     tasks: hardy_async::TaskPool,
 }
 
@@ -262,6 +268,39 @@ impl ServiceRegistry {
         self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
         self.register(&service_id, node_ids, rib, dispatcher).await;
         Ok(node_ids.resolve_eid(&service_id))
+    }
+
+    /// Register a service with a dynamically assigned IPN service number.
+    pub async fn register_dynamic_service(
+        self: &Arc<Self>,
+        service: Arc<dyn services::Service>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> services::Result<Eid> {
+        let service_id = self.allocate_dynamic_id();
+        self.register_service(service_id, service, node_ids, rib, dispatcher)
+            .await
+    }
+
+    /// Register an application with a dynamically assigned IPN service number.
+    pub async fn register_dynamic_application(
+        self: &Arc<Self>,
+        application: Arc<dyn services::Application>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<rib::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) -> services::Result<Eid> {
+        let service_id = self.allocate_dynamic_id();
+        self.register_application(service_id, application, node_ids, rib, dispatcher)
+            .await
+    }
+
+    fn allocate_dynamic_id(&self) -> hardy_bpv7::eid::Service {
+        let id = self
+            .next_dynamic
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        hardy_bpv7::eid::Service::Ipn(id)
     }
 
     fn insert_inner(
@@ -405,8 +444,8 @@ mod tests {
         let app2 = Arc::new(TestApp::new());
         let result = bpa.register_application(svc_id, app2).await;
         assert!(
-            matches!(result, Err(services::Error::IpnServiceInUse(42))),
-            "Duplicate registration should return IpnServiceInUse, got: {result:?}"
+            matches!(result, Err(services::Error::ServiceIdInUse(ref id)) if id == "42"),
+            "Duplicate registration should return ServiceIdInUse, got: {result:?}"
         );
 
         bpa.shutdown().await;

@@ -77,6 +77,20 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
         .await
     }
 
+    async fn register_dynamic_service(
+        &self,
+        service: Arc<dyn hardy_bpa::services::Service>,
+    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
+    }
+
+    async fn register_dynamic_application(
+        &self,
+        application: Arc<dyn hardy_bpa::services::Application>,
+    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
+        application::register_application_service(self.grpc_addr.clone(), None, application).await
+    }
+
     async fn register_routing_agent(
         &self,
         name: String,

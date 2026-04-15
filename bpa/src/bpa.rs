@@ -164,6 +164,18 @@ pub trait BpaRegistration: Send + Sync {
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid>;
 
+    /// Register a low-level Service with a dynamically assigned service ID.
+    async fn register_dynamic_service(
+        &self,
+        service: Arc<dyn Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid>;
+
+    /// Register a high-level Application with a dynamically assigned service ID.
+    async fn register_dynamic_application(
+        &self,
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<hardy_bpv7::eid::Eid>;
+
     /// Register a Routing Agent with the BPA.
     ///
     /// The routing agent will receive a [`routes::RoutingSink`] via
@@ -333,6 +345,26 @@ impl BpaRegistration for Bpa {
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
             .register(name, address_type, cla, &self.dispatcher, policy)
+            .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]
+    async fn register_dynamic_service(
+        &self,
+        service: Arc<dyn services::Service>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.service_registry
+            .register_dynamic_service(service, &self.node_ids, &self.rib, &self.dispatcher)
+            .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, application)))]
+    async fn register_dynamic_application(
+        &self,
+        application: Arc<dyn services::Application>,
+    ) -> services::Result<hardy_bpv7::eid::Eid> {
+        self.service_registry
+            .register_dynamic_application(application, &self.node_ids, &self.rib, &self.dispatcher)
             .await
     }
 
