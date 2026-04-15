@@ -1,3 +1,11 @@
+//! S3-compatible bundle storage backend for the Hardy BPA.
+//!
+//! Implements the [`BundleStorage`](hardy_bpa::storage::BundleStorage) trait
+//! using any S3-compatible object store (AWS S3, MinIO, LocalStack, etc.).
+//! Bundles are stored as individual objects keyed by UUID, with optional key
+//! prefixing for shared buckets. Large bundles are uploaded via the S3
+//! multipart upload API to bypass the 5 GiB single-object limit.
+
 mod config;
 mod storage;
 
@@ -10,8 +18,11 @@ const DEFAULT_MULTIPART_THRESHOLD: usize = 8 * 1024 * 1024;
 const DEFAULT_PART_SIZE: usize = 8 * 1024 * 1024;
 const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 
+/// Errors returned during S3 storage construction.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The supplied [`Config`] is invalid (e.g. empty bucket name or part size
+    /// below the S3 minimum).
     #[error("invalid configuration: {0}")]
     Config(String),
 }

@@ -76,11 +76,21 @@ impl ConnectionPool {
     }
 }
 
+/// SQLite-backed implementation of [`MetadataStorage`](storage::MetadataStorage).
+///
+/// Manages a pool of read connections and a single serialized write lock to
+/// avoid SQLite busy errors. Bundle metadata is stored as JSON blobs alongside
+/// typed status columns for efficient status-based queries.
 pub struct Storage {
     pool: Arc<ConnectionPool>,
 }
 
 impl Storage {
+    /// Opens or creates the SQLite database and runs schema migrations.
+    ///
+    /// If the database file does not exist it is created and `upgrade` is
+    /// forced to `true`. When `upgrade` is `true`, pending schema migrations
+    /// are applied.
     pub fn new(config: &Config, mut upgrade: bool) -> Self {
         // Ensure directory exists
         std::fs::create_dir_all(&config.db_dir).trace_expect(&format!(

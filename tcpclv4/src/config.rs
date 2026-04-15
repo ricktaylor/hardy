@@ -1,16 +1,20 @@
 use std::path::PathBuf;
 
+/// Per-session parameters for TCPCLv4 connections (RFC 9174 Section 4).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct SessionConfig {
-    // Seconds to wait for the initial contact header
-    pub contact_timeout: u16, // default 15
+    /// Seconds to wait for the peer's contact header before aborting.
+    /// RFC 9174 Section 4.2 recommends at most 60 seconds. Default: `15`.
+    pub contact_timeout: u16,
 
-    // Keepalive interval in seconds
-    pub keepalive_interval: Option<u16>, // default 60
+    /// Keepalive interval in seconds, or `None`/`Some(0)` to disable.
+    /// RFC 9174 Section 5.1.1 recommends 30..=600 on shared networks. Default: `Some(60)`.
+    pub keepalive_interval: Option<u16>,
 
-    // Whether to enforce TLS for encrypting the connection
+    /// When `true`, refuse sessions that do not negotiate TLS.
+    /// Default: `false`.
     pub require_tls: bool,
 }
 
@@ -24,63 +28,73 @@ impl Default for SessionConfig {
     }
 }
 
+/// TLS configuration for TCPCLv4 connections (RFC 9174 Section 4.4).
+///
+/// When present, enables TLS negotiation during the contact header exchange.
+/// All paths default to `None`.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct TlsConfig {
-    // Path to the local certificate file (PEM). Required when acting as a TLS server.
+    /// Path to the local certificate file (PEM). Required for the TLS server role.
     pub cert_file: Option<PathBuf>,
 
-    // Path to the local private key file (PEM). Required when acting as a TLS server.
+    /// Path to the local private key file (PEM). Required for the TLS server role.
     pub private_key_file: Option<PathBuf>,
 
-    // Path to directory containing CA certificate files (all .crt/.pem files loaded).
-    // Required only if acting as a TLS client (connecting to remote servers).
+    /// Path to a directory of CA certificates (`.crt`/`.pem`). Used to verify
+    /// the peer's certificate when connecting as a TLS client.
     pub ca_certs: Option<PathBuf>,
 
-    // Optional server name for TLS SNI (overrides IP-based logic).
-    // Use this when connecting via IP but the certificate is issued for a domain name.
+    /// Override the TLS SNI server name (useful when connecting by IP address
+    /// to a host whose certificate is issued for a domain name).
     pub server_name: Option<String>,
 
     // TODO(mTLS): Client certificate and key for mutual TLS authentication
     // pub client_cert_file: Option<PathBuf>,
     // pub client_key_file: Option<PathBuf>,
-
-    // Debug options (development only)
+    /// Debug/development TLS options. Default: all disabled.
     pub debug: TlsDebugConfig,
 }
 
+/// Debug-only TLS options. Not intended for production use.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct TlsDebugConfig {
-    // Accept self-signed certificates when no CA is configured (for testing)
+    /// Accept self-signed certificates when no CA is configured. Default: `false`.
     pub accept_self_signed: bool,
 }
 
+/// Top-level configuration for the TCPCLv4 CLA.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
-    // The TCP address:port to listen for TCP connections
-    pub address: Option<std::net::SocketAddr>, // default = [::]:4556
+    /// TCP address and port to listen on, or `None` to disable the listener.
+    /// Default: `[::]:4556` (RFC 9174 Section 3.1).
+    pub address: Option<std::net::SocketAddr>,
 
-    // Largest allowable single-segment data payload size to be received
+    /// Maximum receivable segment payload size in bytes (RFC 9174 Section 4.3).
+    /// Default: `16384`.
     pub segment_mru: u64,
 
-    // Largest allowable total-bundle data size to be received
+    /// Maximum receivable total transfer (bundle) size in bytes (RFC 9174 Section 4.3).
+    /// Default: `0x4000_0000` (1 GiB).
     pub transfer_mru: u64,
 
-    // Maximum number of idle connections, per remote address
+    /// Maximum number of idle connections retained per remote address. Default: `6`.
     pub max_idle_connections: usize,
 
-    // Maximum incoming connection rate (connections per second)
+    /// Maximum inbound connection rate in connections per second. Default: `64`.
     pub connection_rate_limit: u32,
 
+    /// Session-level defaults (contact timeout, keepalive, TLS requirement).
+    /// Flattened into the parent when deserialised with serde.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub session_defaults: SessionConfig,
 
-    // TLS configuration
+    /// Optional TLS configuration. When `None`, all connections are unencrypted.
     pub tls: Option<TlsConfig>,
 }
 
