@@ -81,6 +81,7 @@ nav:
   - Operations:
     - CLI Tools: operations/tools.md
     - Observability: operations/observability.md
+  - Recovery: recovery/index.md
 
 extra:
   social:

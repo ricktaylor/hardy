@@ -44,6 +44,10 @@ New to Hardy? Start here:
 - [**CLI Tools**](operations/tools.md) -- `bp ping`, `bundle`, and `cbor` commands
 - [**Observability**](operations/observability.md) -- Metrics, traces, and structured logging
 
+## Recovery
+
+- [**Recovery**](recovery/index.md) -- Crash recovery, storage backend behavior, and operator actions
+
 ## Other Documentation
 
 - [**Design & Architecture**](https://github.com/ricktaylor/hardy/blob/main/docs/design.md) -- System architecture and design decisions (GitHub)
