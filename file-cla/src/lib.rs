@@ -1,3 +1,12 @@
+//! File-based Convergence Layer Adapter (CLA) for the Bundle Protocol Agent.
+//!
+//! This crate provides a CLA that uses the local filesystem as a transport mechanism
+//! for DTN bundles. Bundles arriving in a watched "outbox" directory are dispatched
+//! to the BPA, while bundles forwarded by the BPA are written as files into
+//! per-peer "inbox" directories. This is useful for testing, bridging air-gapped
+//! networks via removable media, or integrating with external tools that produce
+//! or consume raw bundle files.
+
 use hardy_async::sync::spin::Once;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpv7::eid::NodeId;
@@ -13,40 +22,60 @@ mod cla;
 mod watcher;
 
 /// Configuration for the file-based Convergence Layer Adapter (CLA).
+///
+/// All fields have sensible defaults (via `Default`): no outbox and no peers,
+/// meaning the CLA is inert until explicitly configured.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct Config {
     /// The directory to watch for new files to be sent as bundles.
+    ///
     /// Each file in this directory is treated as a complete bundle and will be
-    /// dispatched to the BPA. After dispatch, the file is deleted.
+    /// dispatched to the BPA. After successful dispatch the file is deleted.
+    ///
+    /// Default: `None` (no outbox; inbound file ingestion is disabled).
     pub outbox: Option<PathBuf>,
     /// A map of peer Endpoint IDs (EIDs) to their corresponding inbox directories.
+    ///
     /// When a bundle is to be forwarded to a peer, it will be written as a file
-    /// in the directory associated with that peer's EID.
+    /// in the directory associated with that peer's EID. The filename is derived
+    /// from the bundle's source EID, timestamp, and optional fragment offset.
+    ///
+    /// Default: empty map (no peers configured).
     pub peers: HashMap<NodeId, PathBuf>,
 }
 
+/// Errors that can occur during CLA initialisation or registration.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// A configured path is not valid UTF-8.
     #[error("Invalid path '{0}'")]
     InvalidPath(String),
 
+    /// A required directory could not be created.
     #[error("Failed to create directory '{path}': {source}")]
     CreateDir {
+        /// The path that could not be created.
         path: String,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
 
+    /// A path could not be canonicalized to an absolute form.
     #[error("Failed to canonicalize path '{path}': {source}")]
     Canonicalize {
+        /// The path that could not be canonicalized.
         path: String,
+        /// The underlying I/O error.
         source: std::io::Error,
     },
 
+    /// The current working directory could not be determined.
     #[error("Failed to get current working directory: {0}")]
     CurrentDir(std::io::Error),
 
+    /// CLA registration with the BPA failed.
     #[error("Failed to register CLA: {0}")]
     Registration(#[from] hardy_bpa::cla::Error),
 }
