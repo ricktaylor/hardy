@@ -3,11 +3,15 @@ use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
 
+/// The action to take when a route matches a bundle's destination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>), // Drop the bundle
-    Reflect,                                             // Return to last hop
-    Via(hardy_bpv7::eid::Eid),                           // Recursive lookup
+    /// Drop the bundle, optionally reporting a reason code.
+    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    /// Return the bundle to the previous hop (last-hop reflection).
+    Reflect,
+    /// Forward the bundle via the specified next-hop EID (recursive lookup).
+    Via(hardy_bpv7::eid::Eid),
 }
 
 impl core::fmt::Display for Action {
@@ -154,6 +158,10 @@ pub struct StaticRoutingAgent {
 }
 
 impl StaticRoutingAgent {
+    /// Creates a new static routing agent with the given set of routes.
+    ///
+    /// Each route is a tuple of (pattern, action, priority). All routes are
+    /// installed atomically on registration via [`RoutingAgent::on_register`].
     pub fn new(routes: &[(EidPattern, Action, u32)]) -> Self {
         Self {
             routes: routes.to_vec(),

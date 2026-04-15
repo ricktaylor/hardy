@@ -8,20 +8,24 @@ use super::status::BundleStatus;
 use crate::Arc;
 use crate::cla::ClaAddress;
 
+/// Immutable ingress context captured when a bundle is first received.
+///
+/// These fields are set once at ingress and never modified during
+/// processing. Transient fields (`ingress_cla`, `next_hop`) are not
+/// persisted to storage.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ReadOnlyMetadata {
-    /// When the bundle was received
+    /// Wall-clock time when the bundle was received by this BPA.
     pub received_at: OffsetDateTime,
-    /// The node that sent this bundle
+    /// Node ID of the peer that forwarded this bundle (from CLA handshake).
     pub ingress_peer_node: Option<NodeId>,
-    /// The CLA address of the peer
+    /// Convergence-layer address of the ingress peer.
     pub ingress_peer_addr: Option<ClaAddress>,
-    /// The CLA that received this bundle (transient)
+    /// Name of the CLA instance that received this bundle (transient, not persisted).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
-
-    // Transient routing context (not persisted, set during RIB lookup)
+    /// Next-hop EID resolved by the RIB during forwarding (transient, not persisted).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub next_hop: Option<Eid>,
 }
@@ -38,26 +42,31 @@ impl Default for ReadOnlyMetadata {
     }
 }
 
+/// Mutable annotations that filters may modify during bundle processing.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct WritableMetadata {
-    /// Flow label for QoS
+    /// Optional flow label for QoS differentiation.
     pub flow_label: Option<u32>,
     // TODO: Add a 'trace' mark that will trigger local feedback
 }
 
+/// Combined metadata for a bundle held in the BPA.
+///
+/// Groups the storage key, processing status, immutable ingress context,
+/// and filter-writable annotations into a single structure.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BundleMetadata {
-    /// Storage identifier for bundle data
+    /// Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Current processing status
+    /// Current processing status of this bundle within the BPA pipeline.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub status: BundleStatus,
-    /// Immutable ingress context
+    /// Immutable ingress context set at reception time.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub read_only: ReadOnlyMetadata,
-    /// Filter-modifiable annotations
+    /// Mutable annotations that filters may update during processing.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub writable: WritableMetadata,
 }

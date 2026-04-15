@@ -208,6 +208,13 @@ pub trait BpaRegistration: Send + Sync {
     ) -> routes::Result<Vec<hardy_bpv7::eid::NodeId>>;
 }
 
+/// The core Bundle Processing Agent (RFC 9171).
+///
+/// Holds references to the store, RIB, CLA/service/filter registries, and
+/// dispatcher. Construct via [`BpaBuilder`] (obtained from [`Bpa::builder()`]).
+///
+/// After construction, call [`start()`](Bpa::start) to begin processing and
+/// [`shutdown()`](Bpa::shutdown) for ordered teardown.
 pub struct Bpa {
     store: Arc<Store>,
     rib: Arc<Rib>,

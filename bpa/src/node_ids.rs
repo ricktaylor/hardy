@@ -23,6 +23,14 @@ pub enum Error {
     InvalidEid(#[from] hardy_bpv7::eid::Error),
 }
 
+/// The BPA's configured node identifiers.
+///
+/// A BPA may operate with an `ipn`-scheme node ID, a `dtn`-scheme node ID,
+/// or both. At least one must be present. These are used to derive
+/// administrative endpoints and to identify the local node in routing.
+///
+/// When no explicit identifiers are provided, [`Default`] generates a
+/// random IPN node ID in the private allocator range.
 #[derive(Debug, Clone)]
 pub struct NodeIds {
     pub(crate) ipn: Option<IpnNodeId>,

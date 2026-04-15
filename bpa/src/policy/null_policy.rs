@@ -1,5 +1,6 @@
 use super::*;
 
+/// A pass-through egress controller that forwards all bundles to a single queue.
 pub struct EgressController {
     queue: Arc<dyn policy::EgressQueue>,
 }
@@ -18,10 +19,12 @@ impl policy::EgressQueue for EgressController {
     }
 }
 
+/// A no-op egress policy: zero priority queues, all bundles go to the default FIFO queue.
 #[derive(Default)]
 pub struct EgressPolicy {}
 
 impl EgressPolicy {
+    /// Creates a new null egress policy with default settings.
     pub fn new() -> Self {
         Default::default()
     }
