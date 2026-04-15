@@ -2,8 +2,9 @@
 # A Canonical CBOR Encoder and Decoder
 
 This crate provides tools for encoding and decoding data in the Concise Binary
-Object Representation (CBOR) format, as specified in
-[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html).
+Object Representation (CBOR) format, as specified in [RFC 8949].
+
+[RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 
 The library is designed with a focus on:
 - **Canonical Encoding:** It ensures that any given data structure always

@@ -2,8 +2,7 @@
 A canonical CBOR decoder for parsing byte streams.
 
 This module provides tools for decoding data from the Concise Binary Object
-Representation (CBOR) format, as specified in
-[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html). The decoder is
+Representation (CBOR) format, as specified in [RFC 8949]. The decoder is
 designed to handle both simple and complex CBOR structures, including
 definite and indefinite-length items, and semantic tags.
 
@@ -76,6 +75,8 @@ let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
 
 assert_eq!(len, bytes.len());
 ```
+
+[RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
 use super::*;
 use core::{ops::Range, str::Utf8Error};
@@ -146,6 +147,7 @@ pub enum Error {
 /// The library provides implementations for most primitive types, `String`, `Box<[u8]>`,
 /// and tuples.
 pub trait FromCbor: Sized {
+    /// The error type returned when decoding fails.
     type Error;
 
     /// Decodes an instance of the type from the beginning of a CBOR byte slice.
@@ -168,19 +170,33 @@ pub use super::decode_seq::Series;
 
 /// Represents a single, decoded CBOR data item.
 pub enum Value<'a, 'b: 'a> {
+    /// An unsigned integer (CBOR major type 0).
     UnsignedInteger(u64),
+    /// A negative integer (CBOR major type 1), stored as the raw value `n` where the actual value is `-1 - n`.
     NegativeInteger(u64),
+    /// A byte string (CBOR major type 2) as a byte range into the source buffer.
     Bytes(Range<usize>),
+    /// An indefinite-length byte string (CBOR major type 2) as a sequence of chunk ranges.
     ByteStream(Vec<Range<usize>>),
+    /// A text string (CBOR major type 3).
     Text(&'b str),
+    /// An indefinite-length text string (CBOR major type 3) as a sequence of chunks.
     TextStream(&'a [&'b str]),
+    /// A CBOR array (major type 4).
     Array(&'a mut Array<'b>),
+    /// A CBOR map (major type 5).
     Map(&'a mut Map<'b>),
+    /// The boolean value `false` (CBOR simple value 20).
     False,
+    /// The boolean value `true` (CBOR simple value 21).
     True,
+    /// The null value (CBOR simple value 22).
     Null,
+    /// The undefined value (CBOR simple value 23).
     Undefined,
+    /// An unassigned simple value (CBOR simple values 0–19, 24–31).
     Simple(u8),
+    /// A floating-point value (CBOR major type 7).
     Float(f64),
 }
 
