@@ -18,6 +18,7 @@ The `Cla` type registers with any `BpaRegistration` implementation (local or rem
 - **Keepalive**: Configurable keepalive interval with RFC-compliant range warnings
 - **Codec**: Encoder/decoder for all TCPCLv4 message types (XFER_SEGMENT, XFER_ACK, XFER_REFUSE, KEEPALIVE, SESS_TERM, MSG_REJECT, SESS_INIT)
 - **Connection registry**: Idle connection pooling per remote address
+- **Metrics**: 11 OpenTelemetry metrics for sessions, transfers, segments, throughput, and pool utilisation
 - Feature flag: `serde` -- enables serialization for configuration structs
 - Feature flag: `instrument` -- enables `tracing` span instrumentation
 

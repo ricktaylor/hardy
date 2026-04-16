@@ -131,6 +131,42 @@ Metrics are exported every 60 seconds to the collector.
 | `bpa.restart.orphan` | counter | Bundle data without matching metadata |
 | `bpa.restart.junk` | counter | Unreadable data cleaned up during recovery |
 
+### TCPCLv4 Metrics
+
+When TCPCLv4 is enabled (embedded or standalone), the following metrics
+are available:
+
+#### Sessions
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tcpclv4.session.established` | counter | | Sessions successfully established |
+| `tcpclv4.session.terminated` | counter | `reason` | Sessions terminated (by reason code, hangup, codec error, or I/O error) |
+
+#### Transfers
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `tcpclv4.transfers.sent` | counter | | Complete bundles forwarded to peers |
+| `tcpclv4.transfers.received` | counter | | Complete bundles received from peers |
+| `tcpclv4.transfers.refused` | counter | `reason` | Transfers refused by peer (by refuse reason code) |
+| `tcpclv4.segments.sent` | counter | | XFER_SEGMENT messages sent |
+| `tcpclv4.segments.received` | counter | | XFER_SEGMENT messages received |
+
+#### Throughput
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `tcpclv4.session.bytes.sent` | counter | Total bytes written to TCP connections |
+| `tcpclv4.session.bytes.received` | counter | Total bytes read from TCP connections |
+
+#### Connection Pool
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `tcpclv4.pool.idle` | gauge | Idle connections available for reuse |
+| `tcpclv4.pool.reused` | counter | Connections reused from the idle pool |
+
 ### TVR Metrics
 
 When the [TVR agent](https://github.com/ricktaylor/hardy/blob/main/tvr/README.md)
