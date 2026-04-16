@@ -18,6 +18,7 @@ mod cla;
 mod codec;
 mod connect;
 mod connection;
+mod otel_metrics;
 mod context;
 mod listen;
 mod session;
@@ -97,6 +98,9 @@ impl Cla {
     /// Returns an error if TLS is required but not configured, or if TLS
     /// configuration files cannot be loaded.
     pub fn new(config: &config::Config) -> Result<Self, Error> {
+        // Register metric descriptions with the global recorder
+        otel_metrics::init();
+
         // Validate TLS requirement
         if config.session_defaults.require_tls && config.tls.is_none() {
             return Err(Error::TlsRequired);
