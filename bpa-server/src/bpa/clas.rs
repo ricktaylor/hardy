@@ -62,7 +62,10 @@ pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<Arc<dyn hard
             );
             Ok(Some(cla))
         }
-        ClaType::Other { cla_type, config: _ } => {
+        ClaType::Other {
+            cla_type,
+            config: _,
+        } => {
             warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
             Ok(None)
         }
