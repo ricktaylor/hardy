@@ -81,41 +81,66 @@ IAM roles.
 See [Storage Backends](../configuration/storage.md) for full S3
 configuration options.
 
-## Distributed Deployment
+## Production Deployment
 
-For higher throughput or separation of concerns, Hardy components can
-run as separate containers communicating via gRPC.
+The [hardy-infra](https://github.com/ricktaylor/hardy-infra) repository
+provides ready-to-use Docker Compose files with full observability
+(OpenTelemetry Collector, Prometheus, Grafana):
 
-!!! note "TODO"
-    Distributed compose example with separate BPA, TCPCLv4, and TVR
-    containers.
+```bash
+git clone https://github.com/ricktaylor/hardy-infra.git
+cd hardy-infra
 
-### Deployment Topology
+# Persistent storage (PostgreSQL + S3)
+docker compose up
+
+# In-memory storage (ephemeral, no external deps)
+docker compose -f compose.mem.yml up
+```
+
+The default deployment runs the BPA with an embedded TCPCLv4 CLA:
 
 ```mermaid
 graph LR
-    UP_PEERS["Uplink peers"] <-->|:4556| UPLINK["tcpclv4-server<br/>(uplink CLA)"]
-    UPLINK <-->|gRPC| BPA["bpa-server<br/>(core)"]
-    TVR["hardy-tvr<br/>(routing)"] -->|gRPC| BPA
-    BPA <-->|gRPC| DOWNLINK["tcpclv4-server<br/>(downlink CLA)"]
-    DOWNLINK <-->|:4557| DOWN_PEERS["Downlink peers"]
+    PEERS["DTN peers"] <-->|:4556| BPA["bpa-server<br/>(embedded TCPCLv4)"]
+    BPA --- DB["PostgreSQL"]
+    BPA --- S3["MinIO (S3)"]
+    BPA --- OTEL["OTEL Collector"]
 ```
 
-In this model:
+### Standalone TCPCLv4
 
-- **BPA server** handles bundle processing, storage, and routing
-- **TCPCLv4 servers** handle TCP connections independently, scaling
-  with load
-- **TVR agent** manages time-variant contact schedules
+To run TCPCLv4 as a separate container, use the `tcpcl` profile:
 
-Each component connects to the BPA via gRPC. The BPA's gRPC service
-must be enabled with the appropriate service types:
+```bash
+docker compose --profile tcpcl up
+```
+
+This adds a standalone TCPCLv4 server that connects to the BPA via
+gRPC, allowing the CLA to be scaled or restarted independently:
+
+```mermaid
+graph LR
+    PEERS["DTN peers"] <-->|:4556| TCPCL["tcpclv4-server"]
+    TCPCL <-->|gRPC| BPA["bpa-server"]
+```
+
+### Additional Components
+
+Hardy's gRPC architecture allows additional components to connect to
+the same BPA node — multiple CLAs, a TVR routing agent, or custom
+application services. Enable the required gRPC service types in the
+BPA configuration:
 
 ```yaml
 grpc:
   address: "[::]:50051"
   services: ["cla", "service", "routing"]
 ```
+
+See the [BPA server configuration](../configuration/bpa-server.md) and
+[hardy-infra README](https://github.com/ricktaylor/hardy-infra/blob/main/README.md)
+for details.
 
 ## Configuration
 

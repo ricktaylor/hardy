@@ -75,8 +75,61 @@ Metrics are exported every 60 seconds to the collector.
 
 ### BPA Metrics
 
-!!! note "TODO"
-    BPA metrics table — pending merge of metrics PR.
+#### Bundle Processing
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `bpa.bundle.received` | counter | | Bundles received from CLAs |
+| `bpa.bundle.received.bytes` | counter | | Total bytes received |
+| `bpa.bundle.received.dropped` | counter | | Bundles dropped during ingress (validation, filter, expiry) |
+| `bpa.bundle.received.duplicate` | counter | | Duplicate bundles detected |
+| `bpa.bundle.originated` | counter | | Bundles originated by local services |
+| `bpa.bundle.originated.bytes` | counter | | Total bytes originated |
+| `bpa.bundle.forwarded` | counter | | Bundles successfully forwarded to CLAs |
+| `bpa.bundle.forwarding.failed` | counter | | Forward attempts that failed |
+| `bpa.bundle.delivered` | counter | | Bundles delivered to local services |
+| `bpa.bundle.dropped` | counter | `reason` | Bundles deleted (labelled by reason code) |
+| `bpa.bundle.reassembled` | counter | | ADUs successfully reassembled from fragments |
+| `bpa.bundle.reassembly.failed` | counter | | Reassembly failures |
+| `bpa.bundle.status` | gauge | `state` | Current bundles by processing state (new, dispatching, forward_pending, waiting, etc.) |
+
+#### Status Reports
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `bpa.status_report.sent` | counter | `type` | Status reports generated (reception, forwarding, delivery, deletion) |
+| `bpa.status_report.received` | counter | `type` | Status reports received from peers |
+| `bpa.admin_record.received` | counter | | Administrative records received |
+| `bpa.admin_record.unknown` | counter | | Unrecognised administrative record types |
+
+#### Routing (RIB)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `bpa.rib.agents` | gauge | | Registered routing agents |
+| `bpa.rib.entries` | gauge | `source` | Route entries by source agent |
+
+#### Storage
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bpa.store.cache.hits` | counter | LRU cache hits |
+| `bpa.store.cache.misses` | counter | LRU cache misses |
+| `bpa.store.cache.oversized` | counter | Bundles too large for LRU cache |
+| `bpa.mem_store.bundles` | gauge | In-memory bundle store entry count |
+| `bpa.mem_store.bytes` | gauge | In-memory bundle store total bytes |
+| `bpa.mem_store.evictions` | counter | LRU evictions from in-memory store |
+| `bpa.mem_metadata.entries` | gauge | In-memory metadata store entries |
+| `bpa.mem_metadata.tombstones` | gauge | In-memory metadata store tombstones |
+
+#### Restart Recovery
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bpa.restart.lost` | counter | Bundles lost during recovery (missing from both stores) |
+| `bpa.restart.duplicate` | counter | Duplicate bundles found during recovery |
+| `bpa.restart.orphan` | counter | Bundle data without matching metadata |
+| `bpa.restart.junk` | counter | Unreadable data cleaned up during recovery |
 
 ### TVR Metrics
 

@@ -118,7 +118,7 @@ Directories are created automatically if they do not exist.
 
 For distributed deployments, CLAs can run as separate processes
 connecting to the BPA via gRPC. See the
-[distributed deployment](../getting-started/docker.md#distributed-deployment)
+[production deployment](../getting-started/docker.md#production-deployment)
 guide.
 
 The standalone TCPCLv4 server (`hardy-tcpclv4-server`) uses the
