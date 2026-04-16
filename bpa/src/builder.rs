@@ -190,6 +190,7 @@ impl BpaBuilder {
                 &dispatcher,
             ),
         );
+        let service_registry = service_registry?;
         let cla_registry = cla_registry?;
 
         // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
