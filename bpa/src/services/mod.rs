@@ -10,15 +10,8 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Errors that can occur during service registration and bundle sending.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The requested IPN service number is already registered by another service.
-    #[error("There is already a service using ipn service number {0}")]
-    IpnServiceInUse(u32),
-
-    /// The requested DTN service demux string is already registered by another service.
-    #[error("There is already a service using dtn service demux {0}")]
-    DtnServiceInUse(String),
-
-    #[error("There is already a service registered with ID {0}")]
+    /// The requested service id is already registered by another service.
+    #[error("There is already a service registered as {0}")]
     ServiceIdInUse(String),
 
     /// The provided DTN service name is syntactically invalid.
