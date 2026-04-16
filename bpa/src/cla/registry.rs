@@ -114,7 +114,7 @@ impl Drop for Sink {
     }
 }
 
-/// CLA registry in the building phase — only insert() is available.
+// CLA registry in the building phase — only insert() is available.
 pub(crate) struct ClaRegistryBuilder {
     clas: ClaMap,
 }
@@ -147,7 +147,7 @@ impl ClaRegistryBuilder {
         Ok(())
     }
 
-    /// Transition to the running registry by registering all inserted CLAs.
+    // Transition to the running registry by registering all inserted CLAs.
     pub async fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
@@ -183,7 +183,7 @@ impl ClaRegistryBuilder {
     }
 }
 
-/// CLA registry in the running phase — full register/unregister available.
+// CLA registry in the running phase — full register/unregister available.
 pub(crate) struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
@@ -217,7 +217,7 @@ impl ClaRegistry {
         self.tasks.shutdown().await;
     }
 
-    /// Full registration in one step (for runtime dynamic registration via gRPC).
+    // Full registration in one step (for runtime dynamic registration via gRPC).
     pub async fn register(
         self: &Arc<Self>,
         name: String,
