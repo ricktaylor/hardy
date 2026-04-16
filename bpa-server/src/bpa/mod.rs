@@ -89,7 +89,7 @@ pub(crate) async fn run(
     }
 
     for cla_config in config.clas {
-        let Some((cla, address_type)) = clas::new(&cla_config.name, &cla_config.cla_type)? else {
+        let Some(cla) = clas::new(&cla_config.name, &cla_config.cla_type)? else {
             continue;
         };
 
@@ -107,7 +107,7 @@ pub(crate) async fn run(
             .transpose()?;
 
         let name = cla_config.name;
-        builder = builder.cla(name, cla, address_type, egress_policy);
+        builder = builder.cla(name, cla, egress_policy);
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);

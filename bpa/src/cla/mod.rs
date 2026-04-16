@@ -194,6 +194,11 @@ pub trait Cla: Send + Sync {
     /// and release resources. After this returns, the Sink is no longer functional.
     async fn on_unregister(&self);
 
+    /// Returns the address type this CLA handles, if any.
+    fn address_type(&self) -> Option<ClaAddressType> {
+        None
+    }
+
     /// Returns the number of egress queues this policy manages.
     /// The default is 0, for simple FIFO behavior.
     /// Any value > 0 indicates multiple priority queues with 0 highest

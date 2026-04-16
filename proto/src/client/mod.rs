@@ -48,12 +48,11 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
     async fn register_cla(
         &self,
         name: String,
-        address_type: Option<hardy_bpa::cla::ClaAddressType>,
         cla: Arc<dyn hardy_bpa::cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
         // Note: policy is not supported over gRPC currently
-        cla::register_cla(self.grpc_addr.clone(), name, address_type, cla).await
+        cla::register_cla(self.grpc_addr.clone(), name, cla).await
     }
 
     async fn register_service(

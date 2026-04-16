@@ -5,7 +5,7 @@ use tracing::instrument;
 
 use crate::builder::BpaBuilder;
 use crate::cla::registry::ClaRegistry;
-use crate::cla::{self, Cla, ClaAddressType};
+use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filters::registry::Registry as FilterRegistry;
 use crate::filters::{self, Filter, Hook};
@@ -135,7 +135,6 @@ pub trait BpaRegistration: Send + Sync {
     /// # Arguments
     ///
     /// * `name` - Unique name for this CLA instance
-    /// * `address_type` - The address type this CLA handles (e.g., TCP)
     /// * `cla` - The CLA implementation
     /// * `policy` - Optional egress policy for traffic shaping
     ///
@@ -145,7 +144,6 @@ pub trait BpaRegistration: Send + Sync {
     async fn register_cla(
         &self,
         name: String,
-        address_type: Option<ClaAddressType>,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
@@ -339,12 +337,11 @@ impl BpaRegistration for Bpa {
     async fn register_cla(
         &self,
         name: String,
-        address_type: Option<ClaAddressType>,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
-            .register(name, address_type, cla, &self.dispatcher, policy)
+            .register(name, cla, &self.dispatcher, policy)
             .await
     }
 

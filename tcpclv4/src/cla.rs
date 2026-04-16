@@ -29,6 +29,10 @@ impl Cla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
+    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
+        Some(hardy_bpa::cla::ClaAddressType::Tcp)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
         // Store sink and node_ids in single atomic operation

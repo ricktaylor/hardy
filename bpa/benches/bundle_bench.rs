@@ -83,7 +83,7 @@ fn get_state() -> &'static BenchState {
             bpa.start(false);
 
             let (cla, arrival_rx) = BenchCla::new();
-            bpa.register_cla("bench".to_string(), None, cla.clone(), None)
+            bpa.register_cla("bench".to_string(), cla.clone(), None)
                 .await
                 .unwrap();
 

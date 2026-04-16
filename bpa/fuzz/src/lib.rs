@@ -130,7 +130,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             })
             .expect("Failed to create file CLA"),
         );
-        bpa.register_cla("file-cla".to_string(), None, cla, None)
+        bpa.register_cla("file-cla".to_string(), cla, None)
             .await
             .expect("Failed to register CLA");
     }
@@ -148,7 +148,7 @@ impl Msg {
                 let bpa = new_bpa("fuzz").await;
 
                 let cla = std::sync::Arc::new(cla::NullCla::new());
-                bpa.register_cla("fuzz".to_string(), None, cla.clone(), None)
+                bpa.register_cla("fuzz".to_string(), cla.clone(), None)
                     .await
                     .expect("Failed to register CLA");
 

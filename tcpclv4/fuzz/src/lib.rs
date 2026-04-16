@@ -5,6 +5,7 @@
 
 use bytes::Bytes;
 use hardy_bpa::async_trait;
+use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::cla;
 use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;
@@ -50,7 +51,6 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     async fn register_cla(
         &self,
         _name: String,
-        _address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
@@ -137,7 +137,8 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
 
     let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
 
-    cla.register(&MockBpa, "fuzz-tcpclv4".to_string(), None)
+    MockBpa
+        .register_cla("fuzz-tcpclv4".to_string(), cla.clone(), None)
         .await
         .expect("CLA registration should not fail");
 
@@ -155,7 +156,8 @@ pub async fn setup_connector() -> Arc<hardy_tcpclv4::Cla> {
 
     let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
 
-    cla.register(&MockBpa, "fuzz-tcpclv4-active".to_string(), None)
+    MockBpa
+        .register_cla("fuzz-tcpclv4-active".to_string(), cla.clone(), None)
         .await
         .expect("CLA registration should not fail");
 
