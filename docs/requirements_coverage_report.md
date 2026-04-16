@@ -93,7 +93,7 @@ Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
 | 18.3 | Failure-mode report | [Recovery guide](https://ricktaylor.github.io/hardy/recovery/) | Done |
 | 18.4 | Reliability report (MTBF) | — | Not started (not initial phase) |
 | **19** | **Management and monitoring tools** | [otel coverage](../otel/docs/test_coverage_report.md), [tools coverage](../tools/docs/test_coverage_report.md) | **Done** |
-| 19.1 | OpenTelemetry export | [otel coverage](../otel/docs/test_coverage_report.md), [`COMP-OTEL-01`](../otel/docs/component_test_plan.md) | Done |
+| 19.1 | OpenTelemetry export | [otel coverage](../otel/docs/test_coverage_report.md), [`COMP-OTEL-01`](../otel/docs/component_test_plan.md). Metrics: BPA (33), TCPCLv4 (11), TVR (7) | Done |
 | 19.2 | Network testing tools | [tools coverage](../tools/docs/test_coverage_report.md) | Done |
 | **20** | **Interoperability** | [interop coverage](../tests/interop/docs/test_coverage_report.md) | **Done** |
 | 20.1 | Interoperability verification matrix | [interop coverage](../tests/interop/docs/test_coverage_report.md) §2 | Done |
