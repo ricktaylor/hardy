@@ -13,18 +13,25 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 
 ## Table of Contents
 
-- [Features](#features)
-- [Components](#components)
-  - [Core Libraries](#core-libraries)
-  - [Storage Engines](#storage-engines)
-  - [Convergence Layer Adapters](#convergence-layer-adapters)
-  - [Services & Filters](#services--filters)
-  - [Servers & Tools](#servers--tools)
-- [Getting Started](#getting-started)
-  - [Running with Docker](#running-with-docker)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
+- [Hardy](#hardy)
+  - [Overview](#overview)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Components](#components)
+    - [Core Libraries](#core-libraries)
+    - [Storage Engines](#storage-engines)
+    - [Convergence Layer Adapters](#convergence-layer-adapters)
+    - [Services \& Filters](#services--filters)
+    - [Servers \& Tools](#servers--tools)
+  - [Getting Started](#getting-started)
+    - [Prerequisites](#prerequisites)
+    - [Building](#building)
+    - [Running the BPA Server](#running-the-bpa-server)
+    - [CLI Tools](#cli-tools)
+  - [Interoperability](#interoperability)
+  - [Documentation](#documentation)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 ## Features
 
