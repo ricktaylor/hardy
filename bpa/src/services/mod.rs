@@ -30,6 +30,10 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// The node ID configuration doesn't support the requested service scheme.
+    #[error(transparent)]
+    NodeId(#[from] crate::node_ids::Error),
+
     /// The bundle's destination EID is not valid for sending.
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),

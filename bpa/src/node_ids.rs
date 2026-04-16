@@ -19,6 +19,12 @@ pub enum Error {
     #[error("Multiple dtn scheme Node Ids")]
     MultipleDtnNodeIds,
 
+    #[error("No IPN node ID configured")]
+    NoIpnNodeId,
+
+    #[error("No DTN node ID configured")]
+    NoDtnNodeId,
+
     #[error(transparent)]
     InvalidEid(#[from] hardy_bpv7::eid::Error),
 }
@@ -53,24 +59,16 @@ impl NodeIds {
     }
 
     /// Resolve a service identifier to a full EID using this node's identity.
-    pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Eid {
+    pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
         match service_id {
-            hardy_bpv7::eid::Service::Ipn(n) => Eid::Ipn {
-                fqnn: self
-                    .ipn
-                    .as_ref()
-                    .expect("No IPN node ID configured")
-                    .clone(),
+            hardy_bpv7::eid::Service::Ipn(n) => Ok(Eid::Ipn {
+                fqnn: self.ipn.clone().ok_or(Error::NoIpnNodeId)?,
                 service_number: *n,
-            },
-            hardy_bpv7::eid::Service::Dtn(name) => Eid::Dtn {
-                node_name: self
-                    .dtn
-                    .as_ref()
-                    .expect("No DTN node ID configured")
-                    .clone(),
+            }),
+            hardy_bpv7::eid::Service::Dtn(name) => Ok(Eid::Dtn {
+                node_name: self.dtn.clone().ok_or(Error::NoDtnNodeId)?,
                 service_name: name.clone(),
-            },
+            }),
         }
     }
 }

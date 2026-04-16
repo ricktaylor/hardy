@@ -90,9 +90,13 @@ struct Sink {
 impl Sink {
     async fn unregister_inner(&self) {
         if let Some(service) = self.service.upgrade() {
-            self.registry
+            if let Err(e) = self
+                .registry
                 .unregister(service, &self.node_ids, &self.rib)
                 .await
+            {
+                error!("Failed to unregister service: {e}");
+            }
         }
     }
 
@@ -157,7 +161,9 @@ impl Drop for Sink {
             let node_ids = self.node_ids.clone();
             let rib = self.rib.clone();
             hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
-                registry.unregister(service, &node_ids, &rib).await;
+                if let Err(e) = registry.unregister(service, &node_ids, &rib).await {
+                    error!("Failed to unregister service: {e}");
+                }
             });
         }
     }
@@ -198,7 +204,7 @@ impl ServiceRegistryBuilder {
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> Arc<ServiceRegistry> {
+    ) -> services::Result<Arc<ServiceRegistry>> {
         let registry = Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(self.services),
             next_dynamic: core::sync::atomic::AtomicU32::new(DYNAMIC_SERVICE_BASE),
@@ -207,10 +213,10 @@ impl ServiceRegistryBuilder {
 
         let ids: Vec<_> = registry.services.lock().keys().cloned().collect();
         for id in ids {
-            registry.register(&id, node_ids, rib, dispatcher).await;
+            registry.register(&id, node_ids, rib, dispatcher).await?;
         }
 
-        registry
+        Ok(registry)
     }
 }
 
@@ -238,7 +244,9 @@ impl ServiceRegistry {
         }
 
         for service in services {
-            self.unregister_service(service, node_ids, rib).await
+            if let Err(e) = self.unregister_service(service, node_ids, rib).await {
+                error!("Failed to unregister service: {e}");
+            }
         }
 
         self.tasks.shutdown().await;
@@ -253,8 +261,7 @@ impl ServiceRegistry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
-        self.register(&service_id, node_ids, rib, dispatcher).await;
-        Ok(node_ids.resolve_eid(&service_id))
+        self.register(&service_id, node_ids, rib, dispatcher).await
     }
 
     pub async fn register_application(
@@ -266,8 +273,7 @@ impl ServiceRegistry {
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
-        self.register(&service_id, node_ids, rib, dispatcher).await;
-        Ok(node_ids.resolve_eid(&service_id))
+        self.register(&service_id, node_ids, rib, dispatcher).await
     }
 
     /// Register a service with a dynamically assigned IPN service number.
@@ -326,9 +332,9 @@ impl ServiceRegistry {
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) {
+    ) -> services::Result<Eid> {
         let service = self.services.lock().get(service_id).cloned().unwrap();
-        let eid = node_ids.resolve_eid(service_id);
+        let eid = node_ids.resolve_eid(service_id)?;
 
         rib.add_service(eid.clone(), service.clone()).await;
 
@@ -346,6 +352,7 @@ impl ServiceRegistry {
         }
         dispatcher.poll_service_waiting(&eid).await;
         metrics::gauge!("bpa.service.registered").increment(1.0);
+        Ok(eid)
     }
 
     async fn unregister(
@@ -353,13 +360,14 @@ impl ServiceRegistry {
         service: Arc<Service>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-    ) {
+    ) -> services::Result<()> {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
             metrics::gauge!("bpa.service.registered").decrement(1.0);
-            self.unregister_service(service, node_ids, rib).await
+            self.unregister_service(service, node_ids, rib).await?;
         }
+        Ok(())
     }
 
     async fn unregister_service(
@@ -367,8 +375,8 @@ impl ServiceRegistry {
         service: Arc<Service>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-    ) {
-        let eid = node_ids.resolve_eid(&service.service_id);
+    ) -> services::Result<()> {
+        let eid = node_ids.resolve_eid(&service.service_id)?;
         rib.remove_service(&eid, &service);
 
         match &service.service {
@@ -377,6 +385,7 @@ impl ServiceRegistry {
         }
 
         info!("Unregistered service: {eid}");
+        Ok(())
     }
 }
 
