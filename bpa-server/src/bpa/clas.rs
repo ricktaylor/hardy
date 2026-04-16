@@ -33,14 +33,11 @@ pub enum ClaType {
     #[serde(rename = "file-cla")]
     File(hardy_file_cla::Config),
 
-    // Any unrecognised `type` value. When `dynamic-plugins` is enabled,
-    // this is treated as a path to a plugin shared library and the
-    // remaining fields are captured as JSON for the plugin factory.
-    // Otherwise it's ignored with a warning.
+    // Fallback for unrecognised `type` values — logged as a warning.
     #[serde(untagged)]
     Other {
         #[serde(rename = "type")]
-        plugin_path: String,
+        cla_type: String,
         #[serde(flatten)]
         config: serde_json::Value,
     },
@@ -51,12 +48,13 @@ type NewClaResult = (
     Option<hardy_bpa::cla::ClaAddressType>,
 );
 
+// Create a CLA instance from config. Returns None for unrecognised types.
 #[allow(unused_variables)]
 pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<NewClaResult>> {
     match cla_type {
         #[cfg(feature = "tcpclv4")]
         ClaType::TcpClv4(config) => {
-            let cla: Arc<dyn hardy_bpa::cla::Cla> = Arc::new(
+            let cla = Arc::new(
                 hardy_tcpclv4::Cla::new(config)
                     .map_err(|e| anyhow::anyhow!("Failed to create CLA '{name}': {e}"))?,
             );
@@ -64,17 +62,14 @@ pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<NewClaResult
         }
         #[cfg(feature = "file-cla")]
         ClaType::File(config) => {
-            let cla: Arc<dyn hardy_bpa::cla::Cla> = Arc::new(
+            let cla = Arc::new(
                 hardy_file_cla::Cla::new(config)
                     .map_err(|e| anyhow::anyhow!("Failed to create CLA '{name}': {e}"))?,
             );
             Ok(Some((cla, None)))
         }
-        ClaType::Other {
-            plugin_path,
-            config,
-        } => {
-            warn!("Ignoring CLA '{name}' with unknown type '{plugin_path}'");
+        ClaType::Other { cla_type, config } => {
+            warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
             Ok(None)
         }
     }
