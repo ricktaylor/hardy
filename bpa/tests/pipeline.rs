@@ -299,7 +299,7 @@ async fn app_to_cla_routing() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), None, cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 
@@ -381,7 +381,7 @@ async fn echo_round_trip() {
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), None, cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 
@@ -464,7 +464,7 @@ async fn local_delivery() {
 
     // Register CLA (needed for dispatch)
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), None, cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 
@@ -518,7 +518,7 @@ async fn throughput() {
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), None, cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 
@@ -615,7 +615,7 @@ async fn forwarding_latency() {
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), None, cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None)
         .await
         .unwrap();
 

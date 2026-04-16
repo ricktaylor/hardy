@@ -43,14 +43,8 @@ pub enum ClaType {
     },
 }
 
-type NewClaResult = (
-    Arc<dyn hardy_bpa::cla::Cla>,
-    Option<hardy_bpa::cla::ClaAddressType>,
-);
-
 // Create a CLA instance from config. Returns None for unrecognised types.
-#[allow(unused_variables)]
-pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<NewClaResult>> {
+pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<Arc<dyn hardy_bpa::cla::Cla>>> {
     match cla_type {
         #[cfg(feature = "tcpclv4")]
         ClaType::TcpClv4(config) => {
@@ -58,7 +52,7 @@ pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<NewClaResult
                 hardy_tcpclv4::Cla::new(config)
                     .map_err(|e| anyhow::anyhow!("Failed to create CLA '{name}': {e}"))?,
             );
-            Ok(Some((cla, Some(hardy_bpa::cla::ClaAddressType::Tcp))))
+            Ok(Some(cla))
         }
         #[cfg(feature = "file-cla")]
         ClaType::File(config) => {
@@ -66,9 +60,9 @@ pub fn new(name: &str, cla_type: &ClaType) -> anyhow::Result<Option<NewClaResult
                 hardy_file_cla::Cla::new(config)
                     .map_err(|e| anyhow::anyhow!("Failed to create CLA '{name}': {e}"))?,
             );
-            Ok(Some((cla, None)))
+            Ok(Some(cla))
         }
-        ClaType::Other { cla_type, config } => {
+        ClaType::Other { cla_type, config: _ } => {
             warn!("Ignoring CLA '{name}' with unknown type '{cla_type}'");
             Ok(None)
         }

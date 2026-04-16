@@ -6,6 +6,7 @@ type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
 struct Cla {
     sink: Mutex<Option<ClaSink>>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
+    address_type: std::sync::OnceLock<Option<hardy_bpa::cla::ClaAddressType>>,
 }
 
 impl Cla {
@@ -118,6 +119,10 @@ impl hardy_bpa::cla::Cla for Cla {
         }
     }
 
+    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
+        self.address_type.get().copied().flatten()
+    }
+
     async fn forward(
         &self,
         queue: Option<u32>,
@@ -225,26 +230,25 @@ async fn run_cla_session(
     let cla = Arc::new(Cla {
         sink: Mutex::new(None),
         proxy: Once::new(),
+        address_type: std::sync::OnceLock::new(),
     });
 
     // Wait for the client's registration message and process it
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
             cla_to_bpa::Msg::Register(request) => {
+                let address_type =
+                    request
+                        .address_type
+                        .map(|address_type| match address_type.try_into() {
+                            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
+                            Err(_) | Ok(ClaAddressType::Private) => {
+                                hardy_bpa::cla::ClaAddressType::Private
+                            }
+                        });
+                let _ = cla.address_type.set(address_type);
                 let node_ids = bpa
-                    .register_cla(
-                        request.name,
-                        request
-                            .address_type
-                            .map(|address_type| match address_type.try_into() {
-                                Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
-                                Err(_) | Ok(ClaAddressType::Private) => {
-                                    hardy_bpa::cla::ClaAddressType::Private
-                                }
-                            }),
-                        cla.clone(),
-                        None,
-                    )
+                    .register_cla(request.name, cla.clone(), None)
                     .await
                     .map_err(|e| tonic::Status::from_error(e.into()))?
                     .into_iter()

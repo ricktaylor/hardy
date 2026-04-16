@@ -147,7 +147,6 @@ impl ProxyHandler for Handler {
 pub async fn register_cla(
     grpc_addr: String,
     name: String,
-    address_type: Option<hardy_bpa::cla::ClaAddressType>,
     cla: Arc<dyn hardy_bpa::cla::Cla>,
 ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
     let mut cla_client = cla_client::ClaClient::connect(grpc_addr.clone())
@@ -176,7 +175,7 @@ pub async fn register_cla(
         &mut channel_receiver,
         cla_to_bpa::Msg::Register(RegisterClaRequest {
             name: name.clone(),
-            address_type: address_type.map(|a| {
+            address_type: cla.address_type().map(|a| {
                 match a {
                     hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
                     hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,

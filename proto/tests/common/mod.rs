@@ -58,7 +58,6 @@ impl BpaRegistration for MockBpa {
     async fn register_cla(
         &self,
         _name: String,
-        _address_type: Option<cla::ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {

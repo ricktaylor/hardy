@@ -17,7 +17,6 @@ pub struct Cla {
     // Value: (known EIDs for the peer, peer_id in PeerTable)
     // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
     peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
-    address_type: Option<ClaAddressType>,
 }
 
 impl PartialEq for Cla {
@@ -50,7 +49,6 @@ impl core::fmt::Debug for Cla {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Cla")
             .field("name", &self.name)
-            .field("address_type", &self.address_type)
             .field("peers", &self.peers)
             .finish_non_exhaustive()
     }
@@ -129,7 +127,6 @@ impl ClaRegistryBuilder {
     pub fn insert(
         &mut self,
         name: String,
-        address_type: Option<ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<()> {
@@ -141,7 +138,6 @@ impl ClaRegistryBuilder {
             cla,
             peers: Default::default(),
             name,
-            address_type,
             policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
         }));
         Ok(())
@@ -171,7 +167,6 @@ impl ClaRegistryBuilder {
             registry
                 .register(
                     cla.name.clone(),
-                    cla.address_type,
                     cla.cla.clone(),
                     dispatcher,
                     Some(cla.policy.clone()),
@@ -221,11 +216,11 @@ impl ClaRegistry {
     pub async fn register(
         self: &Arc<Self>,
         name: String,
-        address_type: Option<ClaAddressType>,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
+        let address_type = cla.address_type();
         {
             let mut clas = self.clas.lock();
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
@@ -235,7 +230,6 @@ impl ClaRegistry {
                 cla,
                 peers: Default::default(),
                 name: name.clone(),
-                address_type,
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
             }));
@@ -277,8 +271,8 @@ impl ClaRegistry {
     async fn unregister_cla(&self, cla: Arc<Cla>) {
         cla.cla.on_unregister().await;
 
-        if let Some(address_type) = &cla.address_type {
-            self.rib.remove_address_type(address_type);
+        if let Some(address_type) = cla.cla.address_type() {
+            self.rib.remove_address_type(&address_type);
         }
 
         let peers = core::mem::take(&mut *cla.peers.lock());
@@ -415,15 +409,11 @@ mod tests {
         bpa.start(false);
 
         let cla1 = Arc::new(TestCla::new());
-        let result = bpa
-            .register_cla("test-cla".to_string(), None, cla1, None)
-            .await;
+        let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
         assert!(result.is_ok(), "First CLA registration should succeed");
 
         let cla2 = Arc::new(TestCla::new());
-        let result = bpa
-            .register_cla("test-cla".to_string(), None, cla2, None)
-            .await;
+        let result = bpa.register_cla("test-cla".to_string(), cla2, None).await;
         assert!(
             matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
             "Duplicate CLA name should return AlreadyExists, got: {result:?}"
@@ -439,7 +429,7 @@ mod tests {
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("lifecycle-cla".to_string(), None, cla.clone(), None)
+        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
             .await
             .unwrap();
 
@@ -475,7 +465,7 @@ mod tests {
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("cascade-cla".to_string(), None, cla.clone(), None)
+        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)
             .await
             .unwrap();
 
@@ -502,7 +492,7 @@ mod tests {
         // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());
         let result = bpa
-            .register_cla("cascade-cla".to_string(), None, cla2, None)
+            .register_cla("cascade-cla".to_string(), cla2, None)
             .await;
         assert!(
             result.is_ok(),

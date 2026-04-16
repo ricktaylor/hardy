@@ -41,7 +41,7 @@ let bpa = Bpa::builder()
 bpa.start(false);
 
 // Register components via the BpaRegistration trait
-bpa.register_cla(name, address_type, cla, policy).await?;
+bpa.register_cla(name, cla, policy).await?;
 bpa.register_routing_agent(name, agent).await?;
 bpa.register_application(service_id, app).await?;
 

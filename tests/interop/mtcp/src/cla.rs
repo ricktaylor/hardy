@@ -26,6 +26,10 @@ impl Cla {
 
 #[hardy_bpa::async_trait]
 impl hardy_bpa::cla::Cla for Cla {
+    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
+        Some(hardy_bpa::cla::ClaAddressType::Tcp)
+    }
+
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         self.sink.call_once(|| sink.clone());

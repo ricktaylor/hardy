@@ -155,29 +155,6 @@ impl Cla {
         })
     }
 
-    /// Registers this CLA with the BPA.
-    ///
-    /// # Arguments
-    ///
-    /// * `bpa` - The BPA registration interface (local Bpa or remote via gRPC).
-    /// * `name` - The name to register this CLA under.
-    /// * `policy` - Optional egress policy for this CLA.
-    pub async fn register(
-        self: &Arc<Self>,
-        bpa: &dyn hardy_bpa::bpa::BpaRegistration,
-        name: String,
-        policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
-    ) -> Result<(), Error> {
-        bpa.register_cla(
-            name,
-            Some(hardy_bpa::cla::ClaAddressType::Tcp),
-            self.clone(),
-            policy,
-        )
-        .await?;
-        Ok(())
-    }
-
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         if let Some(inner) = self.inner.get() {

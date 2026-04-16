@@ -2,8 +2,8 @@ use core::num::NonZeroUsize;
 
 use crate::Arc;
 use crate::bpa::Bpa;
+use crate::cla::Cla;
 use crate::cla::registry::ClaRegistryBuilder;
-use crate::cla::{Cla, ClaAddressType};
 use crate::dispatcher::Dispatcher;
 use crate::filters::registry::Registry as FilterRegistry;
 use crate::filters::{Filter, Hook};
@@ -105,11 +105,10 @@ impl BpaBuilder {
         mut self,
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
-        address_type: Option<ClaAddressType>,
         policy: Option<Arc<dyn EgressPolicy>>,
     ) -> Self {
         self.cla_registry_builder
-            .insert(name.into(), address_type, cla, policy)
+            .insert(name.into(), cla, policy)
             .expect("Failed to insert CLA");
         self
     }

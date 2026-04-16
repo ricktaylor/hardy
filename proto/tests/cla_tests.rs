@@ -69,12 +69,7 @@ async fn cla_cli_01_registration() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            Some(cla::ClaAddressType::Tcp),
-            cla.clone(),
-            None,
-        )
+        .register_cla("test-cla".to_string(), cla.clone(), None)
         .await
         .expect("registration should succeed");
 
@@ -104,7 +99,7 @@ async fn cla_cli_02_dispatch_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), None, cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone(), None)
         .await
         .expect("registration should succeed");
 
@@ -133,12 +128,7 @@ async fn cla_cli_03_forward_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            Some(cla::ClaAddressType::Tcp),
-            cla.clone(),
-            None,
-        )
+        .register_cla("test-cla".to_string(), cla.clone(), None)
         .await
         .expect("registration should succeed");
 
@@ -183,12 +173,7 @@ async fn cla_cli_04_add_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            Some(cla::ClaAddressType::Tcp),
-            cla.clone(),
-            None,
-        )
+        .register_cla("test-cla".to_string(), cla.clone(), None)
         .await
         .expect("registration should succeed");
 
@@ -218,12 +203,7 @@ async fn cla_cli_05_remove_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla(
-            "test-cla".to_string(),
-            Some(cla::ClaAddressType::Tcp),
-            cla.clone(),
-            None,
-        )
+        .register_cla("test-cla".to_string(), cla.clone(), None)
         .await
         .expect("registration should succeed");
 
