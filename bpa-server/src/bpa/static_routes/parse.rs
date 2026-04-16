@@ -2,7 +2,7 @@ use chumsky::prelude::*;
 use hardy_bpa::routes::Action;
 use hardy_eid_patterns::EidPattern;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::Path;
 use tracing::{debug, error};
 
 use super::StaticRoute;
@@ -181,7 +181,7 @@ fn format_error(input: &str, error: &Rich<'_, char, Span>) -> String {
 }
 
 pub async fn load_routes(
-    routes_file: &PathBuf,
+    routes_file: &Path,
     ignore_errors: bool,
     watching: bool,
 ) -> anyhow::Result<Vec<StaticRoute>> {

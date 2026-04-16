@@ -9,7 +9,7 @@ use notify_debouncer_full::notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, new_debouncer};
 use serde::{Deserialize, Serialize};
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use trace_err::*;
@@ -194,7 +194,7 @@ impl StaticRoutesAgent {
 
 // Standalone refresh function for use in the watcher task (avoids needing &self).
 async fn refresh_routes_inner(
-    routes_file: &PathBuf,
+    routes_file: &Path,
     priority: u32,
     sink: &dyn RoutingSink,
     routes: &Mutex<Vec<StaticRoute>>,
@@ -272,7 +272,7 @@ impl RoutingAgent for StaticRoutesAgent {
 }
 
 pub fn new(
-    routes_file: &PathBuf,
+    routes_file: PathBuf,
     priority: u32,
     watch: bool,
 ) -> anyhow::Result<Arc<dyn RoutingAgent>> {
