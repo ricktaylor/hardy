@@ -56,9 +56,9 @@ pub(crate) async fn run(
         );
     }
 
-    if let Some(sr_config) = &config.static_routes {
-        let protocol_id = &sr_config.protocol_id;
-        let routes_file = &sr_config.routes_file;
+    if let Some(sr_config) = config.static_routes {
+        let protocol_id = sr_config.protocol_id;
+        let routes_file = sr_config.routes_file;
         let priority = sr_config.priority;
         let watch = sr_config.watch;
 
@@ -67,15 +67,13 @@ pub(crate) async fn run(
     }
 
     #[cfg(feature = "echo")]
-    if let Some(services) = &config.built_in_services.echo {
+    if let Some(services) = config.built_in_services.echo {
         if services.is_empty() {
             warn!("built-in-services.echo: no endpoints configured, skipping");
         } else {
             for service_id in services {
-                builder = builder.service(
-                    Arc::new(hardy_echo_service::EchoService::new()),
-                    service_id.clone(),
-                );
+                builder =
+                    builder.service(Arc::new(hardy_echo_service::EchoService::new()), service_id);
             }
         }
     }
@@ -86,8 +84,8 @@ pub(crate) async fn run(
     }
 
     let mut policies = HashMap::new();
-    for (name, policy_config) in &config.policies {
-        policies.insert(name.clone(), policy::new(policy_config)?);
+    for (name, policy_config) in config.policies {
+        policies.insert(name, policy::new(policy_config)?);
     }
 
     for cla_config in config.clas {
@@ -118,9 +116,9 @@ pub(crate) async fn run(
     bpa.start(recover_storage);
 
     let tasks = TaskPool::new();
-    if let Some(config) = &config.grpc {
+    if let Some(config) = config.grpc {
         let bpa_reg: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
-        grpc::init(config, &bpa_reg, &tasks);
+        grpc::init(config, bpa_reg, &tasks);
     }
     hardy_async::signal::listen_for_cancel(&tasks);
 

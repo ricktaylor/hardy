@@ -26,23 +26,23 @@ impl Default for Config {
 // Start the gRPC server and register it with the BPA task pool.
 #[cfg(feature = "grpc")]
 pub fn init(
-    config: &Config,
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    config: Config,
+    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) {
     let proto_config = hardy_proto::server::Config {
         address: config.address,
-        services: config.services.clone(),
+        services: config.services,
     };
 
-    hardy_proto::server::init(&proto_config, bpa, tasks);
+    hardy_proto::server::init(&proto_config, &bpa, tasks);
 }
 
 // No-op stub when the `grpc` feature is disabled; logs a warning.
 #[cfg(not(feature = "grpc"))]
 pub fn init(
-    _config: &Config,
-    _bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    _config: Config,
+    _bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
     _tasks: &hardy_async::TaskPool,
 ) {
     warn!("Ignoring gRPC configuration as it is disabled at compile time");

@@ -16,9 +16,7 @@ pub enum EgressPolicyConfig {
     Unknown,
 }
 
-pub fn new(
-    config: &EgressPolicyConfig,
-) -> anyhow::Result<Arc<dyn hardy_bpa::policy::EgressPolicy>> {
+pub fn new(config: EgressPolicyConfig) -> anyhow::Result<Arc<dyn hardy_bpa::policy::EgressPolicy>> {
     match config {
         // #[cfg(feature = "htb_policy")]
         // EgressPolicyConfig::Htb { config } => {
