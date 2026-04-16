@@ -146,6 +146,8 @@ where
         bundle.extend_from_slice(&msg.data);
         let acknowledged_length = bundle.len() as u64;
 
+        metrics::counter!("tcpclv4.segments.received").increment(1);
+
         if msg.message_flags.end {
             // Clear the ingress bundle
             let bundle = self.ingress_bundle.take().unwrap();
@@ -164,6 +166,8 @@ where
                     debug!("CLA dispatch failed: {e:?}");
                     Error::Shutdown(codec::SessionTermReasonCode::Unknown)
                 })?;
+
+            metrics::counter!("tcpclv4.transfers.received").increment(1);
         }
 
         // Per RFC9174 Section 5.2.3: "A receiving TCPCL entity SHALL send a
@@ -206,6 +210,8 @@ where
                 },
             ))
             .await?;
+
+        metrics::counter!("tcpclv4.segments.sent").increment(1);
 
         if last {
             // Make sure we flush
@@ -264,6 +270,7 @@ where
                                     ack.transfer_id,msg.transfer_id
                                 );
                             } else {
+                                metrics::counter!("tcpclv4.transfers.refused", "reason" => format!("{:?}", msg.reason_code)).increment(1);
                                 return Ok(Some(msg.reason_code));
                             }
                         } else {
@@ -361,6 +368,7 @@ where
         loop {
             match self.send_once(bundle.clone()).await? {
                 None | Some(codec::TransferRefuseReasonCode::Completed) => {
+                    metrics::counter!("tcpclv4.transfers.sent").increment(1);
                     _ = result.send(hardy_bpa::cla::ForwardBundleResult::Sent);
                     return Ok(());
                 }
@@ -611,6 +619,16 @@ where
                 break e;
             }
         };
+
+        // Record session termination reason
+        let reason = match &e {
+            Error::Terminate(msg) => format!("{:?}", msg.reason_code),
+            Error::Shutdown(code) => format!("{:?}", code),
+            Error::Codec(_) => "codec_error".to_string(),
+            Error::Hangup => "hangup".to_string(),
+            Error::Io(_) => "io_error".to_string(),
+        };
+        metrics::counter!("tcpclv4.session.terminated", "reason" => reason).increment(1);
 
         match e {
             Error::Terminate(session_term_message) => {

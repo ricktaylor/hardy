@@ -2185,6 +2185,7 @@ dependencies = [
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
+ "metrics",
  "rand 0.10.1",
  "rustls",
  "rustls-pemfile",

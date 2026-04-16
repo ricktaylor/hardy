@@ -37,6 +37,7 @@ impl ConnectionPool {
         remote_addr: SocketAddr,
         max_idle: usize,
     ) -> Self {
+        metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
         Self {
             inner: Mutex::new(ConnectionPoolInner {
                 active: HashMap::new(),
@@ -55,6 +56,7 @@ impl ConnectionPool {
             .trace_expect("Failed to lock mutex")
             .idle
             .push(conn);
+        metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -86,7 +88,12 @@ impl ConnectionPool {
         let remove_addr = {
             let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
             inner.active.remove(local_addr);
+            let before = inner.idle.len();
             inner.idle.retain(|c| &c.local_addr != local_addr);
+            let removed = before - inner.idle.len();
+            if removed > 0 {
+                metrics::gauge!("tcpclv4.pool.idle").decrement(removed as f64);
+            }
 
             inner.active.is_empty() && inner.idle.is_empty()
         };
@@ -112,6 +119,8 @@ impl ConnectionPool {
                 let conn = inner.idle.pop();
                 if let Some(conn) = &conn {
                     inner.active.insert(conn.local_addr, conn.tx.clone());
+                    metrics::gauge!("tcpclv4.pool.idle").decrement(1.0);
+                    metrics::counter!("tcpclv4.pool.reused").increment(1);
                 }
                 conn
             } {
@@ -122,6 +131,7 @@ impl ConnectionPool {
                         inner.active.remove(&conn.local_addr);
                         if inner.idle.len() + inner.active.len() <= self.max_idle {
                             inner.idle.push(conn);
+                            metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
                         }
                         return Ok(r);
                     }
