@@ -221,7 +221,7 @@ impl ClaRegistry {
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
-        {
+        let entry = {
             let mut clas = self.clas.lock();
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(cla::Error::AlreadyExists(name));
@@ -232,20 +232,21 @@ impl ClaRegistry {
                 name: name.clone(),
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
-            }));
-        }
+            }))
+            .clone()
+        };
 
-        let cla = self.clas.lock().get(&name).cloned().unwrap();
-
+        // Register that the CLA is a handler for the address type
         if let Some(address_type) = address_type {
-            self.rib.add_address_type(address_type, cla.clone());
+            self.rib.add_address_type(address_type, entry.clone());
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
-        cla.cla
+        entry
+            .cla
             .on_register(
                 Box::new(Sink {
-                    cla: Arc::downgrade(&cla),
+                    cla: Arc::downgrade(&entry),
                     registry: self.clone(),
                     dispatcher: dispatcher.clone(),
                 }),
@@ -276,8 +277,8 @@ impl ClaRegistry {
         }
 
         let peers = core::mem::take(&mut *cla.peers.lock());
-
         for (_, (node_ids, peer_id)) in peers {
+            // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
                 metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
