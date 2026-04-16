@@ -149,6 +149,7 @@ impl BpaBuilder {
         self
     }
 
+    /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
         let store = Arc::new(Store::new(
             self.lru_capacity,
