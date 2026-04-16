@@ -1,10 +1,18 @@
 [package]
 name = "hardy-s3-storage"
+description = "S3-compatible bundle storage backend for Hardy BPA"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "storage", "s3", "aws"]
+categories = ["network-programming"]
+exclude = ["docs/"]
 
 [features]
+default = []
 instrument = ["tracing/attributes"]
 serde = ["dep:serde"]
 

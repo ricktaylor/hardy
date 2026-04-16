@@ -4,6 +4,15 @@ OpenTelemetry metrics, tracing, and logging bridge for Hardy server binaries.
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-otel = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-otel).
+
 ## Overview
 
 hardy-otel bridges the [`metrics`](https://docs.rs/metrics) crate facade to

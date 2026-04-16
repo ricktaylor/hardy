@@ -3,6 +3,13 @@ name = "hardy-ipn-legacy-filter"
 description = "A rewriting bundle filter to support ipn 2-element encoding"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "ipn", "filter", "interoperability"]
+categories = ["network-programming"]
+exclude = ["docs/"]
 
 [lib]
 path = "src/lib.rs"

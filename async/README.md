@@ -4,6 +4,15 @@ Async runtime abstraction for the Hardy DTN implementation.
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-async = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-async).
+
 ## Overview
 
 hardy-async provides runtime-agnostic async primitives used by all Hardy crates that spawn tasks or require synchronisation. It abstracts over tokio today, with the architecture designed for future no\_std/Embassy support via feature flags. By routing all async primitive usage through this crate, switching runtimes becomes a feature flag change rather than a codebase-wide refactor.

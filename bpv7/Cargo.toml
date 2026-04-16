@@ -1,8 +1,15 @@
 [package]
 name = "hardy-bpv7"
-version = "0.1.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "bundle-protocol", "rfc9171", "cbor"]
+categories = ["network-programming", "encoding", "no-std::no-alloc"]
+exclude = ["docs/"]
+description = "BPv7 bundle format library implementing RFC 9171"
 
 [lib]
 path = "src/lib.rs"

@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpv7"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-cbor"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "half",
  "hex-literal",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-eid-patterns"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "glob",
  "hardy-bpv7",
@@ -2070,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-localdisk-storage"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "directories",
  "flume",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-sqlite-storage"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "directories",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-tcpclv4"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "hardy-async",

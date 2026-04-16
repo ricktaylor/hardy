@@ -4,6 +4,15 @@ A canonical CBOR encoder and decoder implementing [RFC 8949](https://www.rfc-edi
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-cbor = "1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-cbor).
+
 ## Overview
 
 hardy-cbor provides `no_std`-compatible CBOR encoding and decoding with a focus on canonical (deterministic) output. It is the serialisation layer used by hardy-bpv7 for bundle wire format and by hardy-tvr for contact plan serialisation.

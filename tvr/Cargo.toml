@@ -3,6 +3,10 @@ name = "hardy-tvr"
 version = "0.1.0"
 description = "Time-Variant Routing agent for Hardy DTN"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [[bin]]
 name = "hardy-tvr"

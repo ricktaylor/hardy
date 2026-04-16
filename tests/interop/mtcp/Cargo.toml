@@ -3,6 +3,8 @@ name = "hardy-mtcp-cla"
 description = "MTCP/STCP CLA binary for interop testing (not a standards-track protocol)"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.87"
+publish = false
 
 [[bin]]
 name = "mtcp-cla"

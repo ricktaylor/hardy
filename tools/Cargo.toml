@@ -2,6 +2,11 @@
 name = "hardy-tools"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DTN network diagnostic tools"
+publish = false
 
 [lib]
 path = "lib/lib.rs"
@@ -12,6 +17,7 @@ name = "bp"
 path = "src/bp.rs"
 
 [features]
+default = []
 instrument = ["hardy-bpa/instrument","hardy-tcpclv4/instrument"]
 
 [dependencies]

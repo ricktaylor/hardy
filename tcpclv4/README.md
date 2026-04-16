@@ -4,6 +4,15 @@ TCP Convergence Layer Protocol Version 4 library implementing [RFC 9174](https:/
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-tcpclv4 = "0.3"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-tcpclv4).
+
 ## Overview
 
 This crate implements TCPCLv4 as a CLA library for the Hardy BPA. It handles active and passive TCP session establishment, contact header exchange, SESS_INIT negotiation, bundle transfer segmentation, and keepalive management. TLS support is provided via `rustls` for encrypted connections.

@@ -4,6 +4,15 @@ Core Bundle Processing Agent library implementing [RFC 9171](https://datatracker
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-bpa = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-bpa).
+
 ## Overview
 
 This crate provides the bundle processing logic, storage abstractions, routing infrastructure, and component registries for a DTN node. It defines the traits that Convergence Layer Adapters (CLAs), services, applications, and routing agents implement to plug into the BPA, and coordinates bundle flow through ingress/egress filter pipelines.

@@ -1,7 +1,15 @@
 [package]
 name = "hardy-sqlite-storage"
-version = "0.1.0"
+version = "0.5.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "storage", "sqlite"]
+categories = ["network-programming", "database"]
+exclude = ["docs/"]
+description = "SQLite metadata storage backend for Hardy BPA"
 
 [lib]
 path = "src/lib.rs"
