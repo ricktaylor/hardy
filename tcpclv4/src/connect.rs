@@ -306,6 +306,8 @@ impl Connector {
                 )
                 .await;
 
+            metrics::counter!("tcpclv4.session.established").increment(1);
+
             session.run().await;
 
             debug!(%local_addr, %remote_addr, "Session closed");

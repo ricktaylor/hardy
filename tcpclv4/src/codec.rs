@@ -812,9 +812,11 @@ impl tokio_util::codec::Decoder for MessageCodec {
             return Ok(None);
         }
 
+        let before = src.len();
+
         // Peek at message type without consuming it - sub-decoders will handle
         // consuming the header byte only when the full message is available
-        match src[0].try_into()? {
+        let result = match src[0].try_into()? {
             MessageType::XFER_SEGMENT => TransferSegmentMessage::decode(src),
             MessageType::XFER_ACK => TransferAckMessage::decode(src),
             MessageType::XFER_REFUSE => TransferRefuseMessage::decode(src),
@@ -826,7 +828,14 @@ impl tokio_util::codec::Decoder for MessageCodec {
             MessageType::SESS_TERM => SessionTermMessage::decode(src),
             MessageType::MSG_REJECT => MessageRejectMessage::decode(src),
             MessageType::SESS_INIT => SessionInitMessage::decode(src),
+        };
+
+        if let Ok(Some(_)) = &result {
+            metrics::counter!("tcpclv4.session.bytes.received")
+                .increment((before - src.len()) as u64);
         }
+
+        result
     }
 }
 
@@ -834,7 +843,8 @@ impl tokio_util::codec::Encoder<Message> for MessageCodec {
     type Error = Error;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        match item {
+        let before = dst.len();
+        let result = match item {
             Message::SessionInit(m) => m.encode(dst),
             Message::SessionTerm(m) => m.encode(dst),
             Message::Keepalive => {
@@ -845,7 +855,11 @@ impl tokio_util::codec::Encoder<Message> for MessageCodec {
             Message::TransferAck(m) => m.encode(dst),
             Message::TransferRefuse(m) => m.encode(dst),
             Message::Reject(m) => m.encode(dst),
+        };
+        if result.is_ok() {
+            metrics::counter!("tcpclv4.session.bytes.sent").increment((dst.len() - before) as u64);
         }
+        result
     }
 }
 
