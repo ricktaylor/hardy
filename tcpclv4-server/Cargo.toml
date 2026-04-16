@@ -3,6 +3,10 @@ name = "hardy-tcpclv4-server"
 version = "0.1.0"
 description = "Standalone TCPCLv4 Server executable"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [features]
 default = []

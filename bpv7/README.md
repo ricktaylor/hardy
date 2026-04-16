@@ -5,6 +5,15 @@ BPSec (RFC 9172/9173) integrity and confidentiality support.
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-bpv7 = "0.5"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-bpv7).
+
 ## Overview
 
 hardy-bpv7 provides the core data structures and wire-format handling for

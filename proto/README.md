@@ -4,6 +4,15 @@ gRPC proxy infrastructure for connecting remote CLAs, services, applications, an
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-proto = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-proto).
+
 ## Overview
 
 This crate provides Protobuf v3 definitions and tonic-based client/server implementations that allow BPA components to run in separate processes and communicate over gRPC. The server side plugs into a local `Bpa` instance; the client side exposes the same `BpaRegistration` trait so that components do not need to know whether the BPA is local or remote.

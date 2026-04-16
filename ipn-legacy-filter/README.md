@@ -7,6 +7,15 @@ Implements the `WriteFilter` trait from hardy-bpa. On egress, rewrites IPN 3-ele
 to the legacy 2-element format for next-hop peers that require the older encoding.
 Peer selection is driven by configurable EID patterns.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-ipn-legacy-filter = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-ipn-legacy-filter).
+
 ## Documentation
 
 - [Design](docs/design.md)

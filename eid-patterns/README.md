@@ -4,6 +4,15 @@ EID pattern parsing and matching for [draft-ietf-dtn-eid-pattern](https://datatr
 
 Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol implementation.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-eid-patterns = "0.3"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-eid-patterns).
+
 ## Overview
 
 hardy-eid-patterns implements the EID Pattern specification used to match Bundle Protocol Endpoint Identifiers. It supports both `ipn` and `dtn` URI schemes, providing pattern parsing from text, EID matching, specificity scoring for route selection, and subset operations for pattern comparison.

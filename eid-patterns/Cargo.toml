@@ -1,8 +1,15 @@
 [package]
 name = "hardy-eid-patterns"
-version = "0.1.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "eid", "pattern-matching", "no-std"]
+categories = ["network-programming", "no-std::no-alloc"]
+exclude = ["docs/"]
+description = "EID pattern matching for BPv7 Endpoint Identifiers"
 
 [lib]
 path = "src/lib.rs"

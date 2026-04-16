@@ -7,6 +7,15 @@ Implements the `BundleStorage` trait from hardy-bpa, storing bundles as S3 objec
 SigV4a authentication and multipart upload for large bundles. Compatible with MinIO and
 other S3-compatible stores via configurable endpoint URL and path-style addressing.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-s3-storage = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-s3-storage).
+
 ## Documentation
 
 - [Design](docs/design.md)

@@ -1,7 +1,15 @@
 [package]
 name = "hardy-localdisk-storage"
-version = "0.1.0"
+version = "0.5.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "storage", "filesystem"]
+categories = ["network-programming", "filesystem"]
+exclude = ["docs/"]
+description = "Local filesystem bundle storage backend for Hardy BPA"
 
 [lib]
 path = "src/lib.rs"

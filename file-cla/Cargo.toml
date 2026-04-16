@@ -3,6 +3,13 @@ name = "hardy-file-cla"
 description = "A File-based convergence layer"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dtn", "bpv7", "convergence-layer", "file"]
+categories = ["network-programming"]
+exclude = ["docs/"]
 
 [lib]
 path = "src/lib.rs"

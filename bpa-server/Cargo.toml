@@ -3,6 +3,10 @@ name = "hardy-bpa-server"
 description = "A BPv7 DTN Bundle processing agent"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
 
 [features]
 default = ["localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]

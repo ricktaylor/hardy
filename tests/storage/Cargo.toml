@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [features]
+default = []
 postgres = ["dep:hardy-postgres-storage", "dep:sqlx", "dep:uuid"]
 s3 = ["dep:hardy-s3-storage", "dep:uuid"]
 

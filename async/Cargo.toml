@@ -2,6 +2,13 @@
 name = "hardy-async"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["async", "task-pool", "cancellation", "no-std"]
+categories = ["asynchronous", "concurrency"]
+exclude = ["docs/"]
 description = "Runtime-agnostic async primitives for the Hardy DTN implementation"
 
 [lib]

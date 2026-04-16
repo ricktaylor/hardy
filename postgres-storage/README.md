@@ -6,6 +6,15 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 Implements the `MetadataStorage` trait from hardy-bpa, persisting bundle metadata in
 PostgreSQL with connection pooling and automatic schema migration via sqlx.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-postgres-storage = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-postgres-storage).
+
 ## Documentation
 
 - [Design](docs/design.md)

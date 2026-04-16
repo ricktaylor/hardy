@@ -7,6 +7,15 @@ Implements the `Service` trait from hardy-bpa. Parses each incoming bundle, swap
 source and destination EIDs via the bpv7 Editor, and sends the bundle back to the
 originator. Used by `bp ping` and interoperability testing.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-echo-service = "0.1"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-echo-service).
+
 ## Documentation
 
 - [Design](docs/design.md)

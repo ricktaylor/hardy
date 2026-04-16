@@ -2,6 +2,14 @@
 name = "hardy-otel"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["opentelemetry", "metrics", "tracing", "observability"]
+categories = ["development-tools::profiling"]
+exclude = ["docs/"]
+description = "OpenTelemetry integration for Hardy DTN components"
 
 [lib]
 path = "src/lib.rs"
