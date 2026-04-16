@@ -173,6 +173,7 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
 ///
 /// Dropping this guard flushes all pending telemetry and shuts down each
 /// provider. Hold it in `main` until the application exits.
+#[must_use = "dropping the OtelGuard immediately shuts down all telemetry exporters"]
 pub struct OtelGuard {
     tracer_provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,

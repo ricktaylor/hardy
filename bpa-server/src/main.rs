@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let config = config::Config::load(args.config_file)?;
-    let _ = configure_tracing(config.log_level);
+    let _guard = configure_tracing(config.log_level);
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
