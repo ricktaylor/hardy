@@ -6,6 +6,15 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 Implements the `MetadataStorage` trait from hardy-bpa, persisting bundle metadata and
 forwarding state in a local SQLite database with automatic schema migration.
 
+## Installation
+
+```toml
+[dependencies]
+hardy-sqlite-storage = "0.5"
+```
+
+Published on [crates.io](https://crates.io/crates/hardy-sqlite-storage).
+
 ## Documentation
 
 - [Design](docs/design.md)
