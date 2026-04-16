@@ -18,7 +18,7 @@ Static routes bridge a configuration file to the BPA's routing system:
                                    ┌─────────────────────────────────┐
   /etc/.../static_routes           │              BPA                │
   ─────────────────────            │                                 │
-  ipn:2.*.* via ipn:0.1.0  ──────► │  ┌─────────────────────────┐    │
+  ipn:2.*.* via ipn:2.1.0  ──────► │  ┌─────────────────────────┐    │
   ipn:3.*.* drop           ──────► │  │  Routing Information    │    │
   dtn://**/** reflect      ──────► │  │  Base (RIB)             │    │
                                    │  │                         │    │

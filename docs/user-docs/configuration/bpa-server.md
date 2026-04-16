@@ -199,6 +199,9 @@ ipn:3.*.* via ipn:3.1.0 priority 10
 dtn://**/** reflect priority 1200
 ```
 
+A full example is available at
+[`examples/static_routes`](https://github.com/ricktaylor/hardy/blob/main/bpa-server/examples/static_routes).
+
 ### Time-Variant Routing (TVR)
 
 For scheduled contact windows (satellite passes, maintenance windows,

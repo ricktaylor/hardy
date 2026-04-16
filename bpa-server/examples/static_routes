@@ -1,9 +1,38 @@
-# Route all IPN bundles to a specific node
-ipn:1.*.* via ipn:0.1.0
-# Drop bundles matching a specific pattern
-ipn:4.5.6 drop
-# Low priority rule to reflect bundles that match the pattern
-dtn://test/* reflect priority 1200
-# Route to another node
-ipn:7.8.9 via ipn:0.2.0
+# Static Routes Configuration
+#
+# Each line defines a routing rule: <pattern> <action> [priority <n>]
+#
+# Patterns:
+#   ipn:<alloc>.<node>.<service>   Exact or wildcard IPN EID
+#   dtn://<node>/<path>            Exact or glob DTN EID
+#   Wildcards: * matches any value, [N-M] matches a range
+#
+# Actions:
+#   via <eid>       Forward to next-hop node
+#   drop [<code>]   Discard bundle (optional BPv7 reason code)
+#   reflect         Return bundle to previous node
+#
+# Priority:
+#   Lower values are checked first. Default from config (typically 100).
+#   Use higher values for catch-all rules.
+#
+# Lines starting with # are comments. Blank lines are ignored.
+# Keywords (via, drop, reflect, priority) are case-insensitive.
 
+# Forward all traffic for node 2 via a specific next-hop
+ipn:2.*.* via ipn:2.1.0
+
+# Forward all traffic for allocator 3 via a specific peer
+ipn:3.*.* via ipn:3.1.0 priority 50
+
+# Drop traffic to a decommissioned node
+ipn:4.*.* drop
+
+# Drop with a specific BPv7 reason code (3 = NoKnownRouteToDestinationFromHere)
+ipn:99.*.* drop 3
+
+# Reflect unroutable DTN bundles back to sender (low priority catch-all)
+dtn://**/** reflect priority 1000
+
+# Route DTN traffic for a specific node
+dtn://relay.example/** via dtn://gateway.example/
