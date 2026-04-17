@@ -16,12 +16,14 @@ Consolidated OpenTelemetry integration providing logs, traces, and metrics expor
 
 The library bridges Rust's telemetry crates to OpenTelemetry exporters:
 
-```
-Rust Crates                    OpenTelemetry
-───────────                    ─────────────
-tracing events ──► OpenTelemetryTracingBridge ──► LogExporter ──┐
-tracing spans  ──► OpenTelemetryLayer ──────────► SpanExporter ─┼──► OTLP/gRPC
-metrics facade ──► OpenTelemetryRecorder ───────► MetricExporter┘
+```mermaid
+graph LR
+    TE["tracing events"] --> Bridge["OpenTelemetryTracingBridge"] --> LE["LogExporter"]
+    TS["tracing spans"] --> Layer["OpenTelemetryLayer"] --> SE["SpanExporter"]
+    MF["metrics facade"] --> Rec["OpenTelemetryRecorder"] --> ME["MetricExporter"]
+    LE --> OTLP["OTLP/gRPC"]
+    SE --> OTLP
+    ME --> OTLP
 ```
 
 Each signal type has its own SDK provider:

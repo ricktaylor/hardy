@@ -241,26 +241,14 @@ When `FindResult::Forward(peer_id)` is returned, the bundle enters the policy su
 
 When routes change, affected bundles are re-routed. See [Bundle State Machine Design: CLA Forwarding Failures](bundle_state_machine_design.md#error-handling-and-recovery) for the `reset_peer_queue` mechanism.
 
-```
-RIB::add() or RIB::remove()
-        │
-        ▼
-Find impacted peers (via find_peers)
-        │
-        ▼
-Store::reset_peer_queue(peer)
-        │
-        ▼
-ForwardPending { peer, _ } → Waiting
-        │
-        ▼
-poll_waiting_notify.notify()
-        │
-        ▼
-Dispatcher::poll_waiting()
-        │
-        ▼
-Re-run process_bundle() with new routes
+```mermaid
+flowchart TD
+    A["RIB::add() or RIB::remove()"] --> B["Find impacted peers (via find_peers)"]
+    B --> C["Store::reset_peer_queue(peer)"]
+    C --> D["ForwardPending { peer, _ } → Waiting"]
+    D --> E["poll_waiting_notify.notify()"]
+    E --> F["Dispatcher::poll_waiting()"]
+    F --> G["Re-run process_bundle() with new routes"]
 ```
 
 ## Example: Complete Forwarding Flow
@@ -320,18 +308,15 @@ The Sink automatically injects the agent's registered name as the route `source`
 
 ### Registration Flow
 
-```
-Agent                         BPA
-  │                            │
-  │  register_routing_agent()  │
-  │ ──────────────────────────►│
-  │                            │ create Agent + Sink
-  │  on_register(sink, ids)    │
-  │ ◄──────────────────────────│
-  │                            │
-  │  sink.add_route(...)       │
-  │ ──────────────────────────►│ RIB::add()
-  │                            │
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant BPA
+    Agent->>BPA: register_routing_agent()
+    Note right of BPA: create Agent + Sink
+    BPA->>Agent: on_register(sink, ids)
+    Agent->>BPA: sink.add_route(...)
+    Note right of BPA: RIB::add()
 ```
 
 ### Built-in Agents

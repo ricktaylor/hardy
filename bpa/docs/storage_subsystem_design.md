@@ -269,32 +269,23 @@ See `src/storage/recover.rs` for implementation details.
 
 ### Recovery Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Phase 1: start_metadata_storage_recovery()                      │
-│                                                                 │
-│ Mark all metadata entries as "unconfirmed"                      │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Phase 2: bundle_storage_recovery()                              │
-│                                                                 │
-│ For each bundle data file:                                      │
-│   ├─ Parse bundle                                               │
-│   ├─ Check metadata exists?                                     │
-│   │   ├─ Yes: confirm_exists(), resume from status              │
-│   │   └─ No: insert metadata, re-ingest as orphan               │
-│   └─ Mark metadata as "confirmed"                               │
-└─────────────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Phase 3: metadata_storage_recovery()                            │
-│                                                                 │
-│ For each still-unconfirmed metadata entry:                      │
-│   └─ Report deletion (data was lost)                            │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Phase1["Phase 1: start_metadata_storage_recovery()\nMark all metadata entries as 'unconfirmed'"]
+    Phase1 --> Phase2
+
+    subgraph Phase2["Phase 2: bundle_storage_recovery()"]
+        direction TB
+        ForEach["For each bundle data file:"]
+        ForEach --> Parse["Parse bundle"]
+        Parse --> CheckMeta{"Metadata exists?"}
+        CheckMeta -->|"Yes"| Confirm["confirm_exists()\nResume from status"]
+        CheckMeta -->|"No"| Insert["Insert metadata\nRe-ingest as orphan"]
+        Confirm --> Mark["Mark metadata as 'confirmed'"]
+        Insert --> Mark
+    end
+
+    Phase2 --> Phase3["Phase 3: metadata_storage_recovery()\nFor each still-unconfirmed metadata entry:\nReport deletion (data was lost)"]
 ```
 
 ## Crash Safety Properties

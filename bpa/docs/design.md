@@ -20,8 +20,9 @@ Core bundle processing agent library implementing RFC 9171.
 
 The BPA processes bundles through a pipeline with several stages. Each bundle flows from ingress through routing decisions to either local delivery or forwarding.
 
-```
-Ingress → Validation → Filtering → Routing → Storage/Dispatch → Egress
+```mermaid
+graph LR
+    Ingress --> Validation --> Filtering --> Routing --> Storage/Dispatch --> Egress
 ```
 
 The `Bpa` struct coordinates the major subsystems:
