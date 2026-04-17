@@ -38,6 +38,7 @@ extern crate alloc;
 
 mod dispatcher;
 mod otel_metrics;
+mod recover;
 mod rib;
 
 pub mod bpa;

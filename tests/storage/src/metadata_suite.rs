@@ -65,7 +65,7 @@ pub async fn meta_04_tombstone(store: Arc<dyn MetadataStorage>) {
 /// META-05: Confirm Exists (recovery protocol)
 ///
 /// Tests the startup recovery flow: bundles inserted before recovery are
-/// marked unconfirmed by `start_recovery()`, then selectively confirmed
+/// marked unconfirmed by `mark_unconfirmed()`, then selectively confirmed
 /// via `confirm_exists()`. Only applicable to persistent backends.
 pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
     let bundle = fixtures::random_bundle();
@@ -75,7 +75,7 @@ pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle).await.unwrap());
 
     // Start recovery — marks all existing entries as unconfirmed
-    store.start_recovery().await;
+    store.mark_unconfirmed().await;
 
     // Confirm the bundle we know about
     let exists = store.confirm_exists(&bundle.bundle.id).await.unwrap();
@@ -402,7 +402,7 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
 
 /// META-12: Recovery
 pub async fn meta_12_recovery(store: Arc<dyn MetadataStorage>) {
-    store.start_recovery().await;
+    store.mark_unconfirmed().await;
     // Should complete without panic or error
 }
 

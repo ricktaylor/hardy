@@ -114,12 +114,9 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 
     let bpa = builder.build().await.expect("Failed to build BPA");
 
-    bpa.start(
-        #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]
-        true,
-        #[cfg(not(all(feature = "localdisk-storage", feature = "sqlite-storage")))]
-        false,
-    );
+    #[cfg(all(feature = "localdisk-storage", feature = "sqlite-storage"))]
+    bpa.recover();
+    bpa.start();
 
     #[cfg(feature = "file-cla")]
     {

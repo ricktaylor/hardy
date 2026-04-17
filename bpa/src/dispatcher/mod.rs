@@ -8,7 +8,6 @@ mod forward;
 mod local;
 mod reassemble;
 mod report;
-mod restart;
 
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
@@ -162,7 +161,7 @@ impl Dispatcher {
         });
     }
 
-    fn key_provider(
+    pub(crate) fn key_provider(
         &self,
     ) -> impl Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone
     {

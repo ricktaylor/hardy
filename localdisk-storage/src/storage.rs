@@ -153,7 +153,7 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn walk(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 
@@ -295,9 +295,10 @@ impl BundleStorage for Storage {
             .await
             .trace_expect("Failed to spawn write_atomic thread")?
         } else {
-            let storage_name = random_file_path(&self.store_root)?;
+            let mut storage_name = random_file_path(&self.store_root)?;
 
-            // Just use tokio write and hope for the best
+            // Use .tmp rename protocol for crash-safe partial-write detection
+            storage_name.set_extension("tmp");
             tokio::fs::write(&storage_name, &data)
                 .await
                 .inspect_err(|e| {
@@ -305,7 +306,15 @@ impl BundleStorage for Storage {
                     _ = std::fs::remove_file(&storage_name);
                 })?;
 
-            storage_name
+            let final_name = storage_name.with_extension("");
+            tokio::fs::rename(&storage_name, &final_name)
+                .await
+                .inspect_err(|e| {
+                    error!("Failed to rename temporary bundle data file to final name: {e}");
+                    _ = std::fs::remove_file(&storage_name);
+                })?;
+
+            final_name
         };
 
         Ok(storage_name
@@ -435,7 +444,7 @@ mod tests {
 
         // Run recovery
         let (tx, rx) = flume::unbounded();
-        store.recover(tx).await.unwrap();
+        store.walk(tx).await.unwrap();
 
         // Collect recovered entries
         let recovered: Vec<_> = rx.drain().collect();

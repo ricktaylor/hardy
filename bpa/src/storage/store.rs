@@ -60,6 +60,39 @@ impl Store {
         });
     }
 
+    /// Mark all active metadata entries as unconfirmed.
+    pub(crate) async fn mark_unconfirmed(&self) {
+        self.metadata_storage.mark_unconfirmed().await;
+    }
+
+    /// Walk all persisted bundle data, streaming each entry to the channel.
+    pub(crate) async fn walk_bundles(
+        &self,
+        tx: storage::Sender<storage::RecoveryResponse>,
+    ) -> storage::Result<()> {
+        self.bundle_storage.walk(tx).await
+    }
+
+    /// Remove and stream all unconfirmed metadata entries.
+    pub(crate) async fn purge_unconfirmed(
+        &self,
+        tx: storage::Sender<bundle::Bundle>,
+    ) -> storage::Result<()> {
+        self.metadata_storage.remove_unconfirmed(tx).await
+    }
+
+    pub(crate) fn tasks(&self) -> &hardy_async::TaskPool {
+        &self.tasks
+    }
+
+    pub(crate) fn cancel_token(&self) -> &hardy_async::CancellationToken {
+        self.tasks.cancel_token()
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.tasks.is_cancelled()
+    }
+
     pub async fn shutdown(&self) {
         self.tasks.shutdown().await;
     }

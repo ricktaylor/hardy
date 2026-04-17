@@ -144,7 +144,7 @@ impl Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn walk(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
 
         loop {
