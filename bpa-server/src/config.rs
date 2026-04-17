@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use tracing::Level;
 
 use crate::bpa::clas;
-use crate::bpa::grpc;
 use crate::bpa::policy;
 use crate::bpa::static_routes;
 use crate::bpa::storage;
@@ -109,7 +108,8 @@ pub struct Config {
 
     // gRPC options
     #[serde(default)]
-    pub grpc: Option<grpc::Config>,
+    #[cfg(feature = "grpc")]
+    pub grpc: Option<hardy_proto::server::Config>,
 
     // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
@@ -201,6 +201,7 @@ mod tests {
         assert_eq!(config.log_level, Level::INFO);
         assert!(!config.status_reports);
         assert_eq!(config.poll_channel_depth.get(), 16);
+        #[cfg(feature = "grpc")]
         assert!(config.grpc.is_none());
         assert!(config.static_routes.is_none());
         assert!(config.clas.is_empty());

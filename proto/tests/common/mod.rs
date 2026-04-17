@@ -236,7 +236,14 @@ pub async fn start_server(
         services: service_names.iter().map(|s| s.to_string()).collect(),
     };
 
-    hardy_proto::server::init(&config, &(bpa.clone() as Arc<dyn BpaRegistration>), &tasks);
+    let server = hardy_proto::server::GrpcServer::new(&config, bpa.clone())
+        .expect("Failed to create gRPC server");
+    let cancel = tasks.cancel_token().clone();
+    hardy_async::spawn!(tasks, "grpc_server", async move {
+        if let Err(e) = server.serve(cancel).await {
+            tracing::error!("gRPC server failed: {e}");
+        }
+    });
 
     // Give the server a moment to bind
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

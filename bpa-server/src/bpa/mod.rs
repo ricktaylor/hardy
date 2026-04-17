@@ -1,26 +1,23 @@
-use hardy_async::TaskPool;
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::filters::{Filter, Hook};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::config;
 
 pub(crate) mod clas;
-pub(crate) mod grpc;
 pub(crate) mod policy;
 pub(crate) mod static_routes;
 pub(crate) mod storage;
 
-pub(crate) async fn run(
+/// Build a BPA from the given configuration.
+pub(crate) async fn build(
     config: config::Config,
     upgrade_storage: bool,
-    recover_storage: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Arc<Bpa>> {
     let backends = storage::Storage::try_new(&config.storage, upgrade_storage).await?;
 
-    // --- Build ---
     let mut builder = Bpa::builder()
         .status_reports(config.status_reports)
         .poll_channel_depth(config.poll_channel_depth)
@@ -57,13 +54,8 @@ pub(crate) async fn run(
     }
 
     if let Some(sr_config) = config.static_routes {
-        let protocol_id = sr_config.protocol_id;
-        let routes_file = sr_config.routes_file;
-        let priority = sr_config.priority;
-        let watch = sr_config.watch;
-
-        let agent = static_routes::new(routes_file, priority, watch)?;
-        builder = builder.routing_agent(protocol_id, agent);
+        let agent = static_routes::new(sr_config.routes_file, sr_config.priority, sr_config.watch)?;
+        builder = builder.routing_agent(sr_config.protocol_id, agent);
     }
 
     #[cfg(feature = "echo")]
@@ -111,27 +103,5 @@ pub(crate) async fn run(
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
-
-    // --- Start ---
-    bpa.start(recover_storage);
-
-    let tasks = TaskPool::new();
-    if let Some(config) = config.grpc {
-        let bpa_reg: Arc<dyn hardy_bpa::bpa::BpaRegistration> = bpa.clone();
-        grpc::init(config, bpa_reg, &tasks);
-    }
-    hardy_async::signal::listen_for_cancel(&tasks);
-
-    info!("Started successfully");
-
-    // --- Wait for shutdown signal ---
-    tasks.cancel_token().cancelled().await;
-
-    // --- Shutdown ---
-    tasks.shutdown().await;
-    bpa.shutdown().await;
-
-    info!("Stopped");
-
-    Ok(())
+    Ok(bpa)
 }
