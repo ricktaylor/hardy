@@ -59,4 +59,4 @@ serde = { version = "1", default-features = false, features = ["alloc","derive"]
 [dev-dependencies]
 hex-literal = "1"
 serde_json = "1"
-hardy-bpv7 = { version = "0.5", path = ".", features = ["serde", "std"] }
+hardy-bpv7 = { path = ".", features = ["serde", "std"] }

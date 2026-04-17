@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-eid-patterns = { version = "0.3", path = ".." }
+hardy-eid-patterns = { path = ".." }
 
 [[bin]]
 name = "eid_pattern_str"

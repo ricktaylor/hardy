@@ -21,7 +21,7 @@ libfuzzer-sys = "0.4"
 hardy-otel = { version = "0.1", path = "../../otel" }
 hardy-async = { version = "0.1", path = "../../async" }
 hardy-bpv7 = { version = "0.5", path = "../../bpv7" }
-hardy-bpa = { version = "0.1", path = ".." }
+hardy-bpa = { path = ".." }
 hardy-postgres-storage = { version = "0.1", path = "../../postgres-storage", optional = true }
 hardy-sqlite-storage = { version = "0.5", path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { version = "0.5", path = "../../localdisk-storage", optional = true }
