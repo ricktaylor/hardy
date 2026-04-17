@@ -16,8 +16,8 @@ default = []
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa", features = ["serde", "tokio"] }
-hardy-bpv7 = { path = "../bpv7", features = ["std", "serde"] }
+hardy-bpa = { version = "0.1", path = "../bpa", features = ["serde", "tokio"] }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["std", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros", "time", "json"] }

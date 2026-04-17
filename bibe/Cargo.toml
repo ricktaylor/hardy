@@ -19,10 +19,10 @@ serde = ["dep:serde", "hardy-bpa/serde", "hardy-bpv7/serde"]
 
 [dependencies]
 time = { version = "0.3", default-features = false }
-hardy-async = { path = "../async", default-features = false }
-hardy-bpa = { path = "../bpa", default-features = false }
-hardy-bpv7 = { path = "../bpv7", default-features = false }
-hardy-cbor = { path = "../cbor" }
+hardy-async = { version = "0.1", path = "../async", default-features = false }
+hardy-bpa = { version = "0.1", path = "../bpa", default-features = false }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", default-features = false }
+hardy-cbor = { version = "1", path = "../cbor" }
 thiserror = "2"
 tracing = { version = "0.1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }

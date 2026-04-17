@@ -20,9 +20,9 @@ default = []
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa", features = ["serde"] }
-hardy-bpv7 = { path = "../bpv7", features = ["std","serde"] }
-hardy-cbor = { path = "../cbor" }
+hardy-bpa = { version = "0.1", path = "../bpa", features = ["serde"] }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["std","serde"] }
+hardy-cbor = { version = "1", path = "../cbor" }
 rusqlite = { version = "0.39", features = ["array", "bundled", "time"] }
 tokio = "1"
 thiserror = "2"

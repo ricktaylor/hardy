@@ -34,20 +34,20 @@ instrument = [
 ]
 
 [dependencies]
-hardy-async = { path = "../async" }
-hardy-bpv7 = { path = "../bpv7", features = ["serde"] }
-hardy-bpa = { path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
-hardy-eid-patterns = { path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
-hardy-proto = { path = "../proto", optional = true }
-hardy-sqlite-storage = { path = "../sqlite-storage", optional = true }
-hardy-postgres-storage = { path = "../postgres-storage", optional = true }
-hardy-localdisk-storage = { path = "../localdisk-storage", features = ["serde"], optional = true }
-hardy-s3-storage = { path = "../s3-storage", features = ["serde"], optional = true }
-hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"], optional = true }
-hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
-hardy-otel = { path = "../otel", optional = true }
-hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
-hardy-echo-service = { path = "../echo-service", optional = true }
+hardy-async = { version = "0.1", path = "../async" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
+hardy-bpa = { version = "0.1", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
+hardy-eid-patterns = { version = "0.3", path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
+hardy-proto = { version = "0.1", path = "../proto", optional = true }
+hardy-sqlite-storage = { version = "0.5", path = "../sqlite-storage", optional = true }
+hardy-postgres-storage = { version = "0.1", path = "../postgres-storage", optional = true }
+hardy-localdisk-storage = { version = "0.5", path = "../localdisk-storage", features = ["serde"], optional = true }
+hardy-s3-storage = { version = "0.1", path = "../s3-storage", features = ["serde"], optional = true }
+hardy-tcpclv4 = { version = "0.3", path = "../tcpclv4", features = ["serde"], optional = true }
+hardy-file-cla = { version = "0.1", path = "../file-cla", features = ["serde"], optional = true }
+hardy-otel = { version = "0.1", path = "../otel", optional = true }
+hardy-ipn-legacy-filter = { version = "0.1", path = "../ipn-legacy-filter", features = ["serde"], optional = true }
+hardy-echo-service = { version = "0.1", path = "../echo-service", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 serde = { version = "1", features = ["derive"] }

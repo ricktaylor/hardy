@@ -13,8 +13,8 @@ name = "bundle"
 path = "bundle.rs"
 
 [dependencies]
-hardy-bpv7 = { path = "..", features = ["std","serde","rfc9173"] }
-hardy-cbor = { path = "../../cbor" }
+hardy-bpv7 = { version = "0.5", path = "..", features = ["std","serde","rfc9173"] }
+hardy-cbor = { version = "1", path = "../../cbor" }
 clap = { version = "4", features = ["derive"] }
 humantime = "2"
 anyhow = "1"

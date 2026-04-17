@@ -22,7 +22,7 @@ serde = ["dep:serde","hardy-bpa/serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa" }
+hardy-bpa = { version = "0.1", path = "../bpa" }
 tokio = { version = "1", features = ["fs"] }
 rand = "0.10"
 directories = "6"
