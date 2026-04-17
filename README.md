@@ -99,7 +99,7 @@ Hardy is a modular implementation of the Bundle Protocol Version 7 (BPv7) as def
 
 ### Prerequisites
 
-- Rust 2024 edition (1.85+)
+- Rust 2024 edition (1.87+)
 - Cargo
 
 ### Building

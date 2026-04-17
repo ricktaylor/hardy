@@ -162,7 +162,7 @@ See the [Test Strategy](test_strategy.md) for the full verification approach, te
 ### 6.1. Rust Edition
 
 - Edition: 2024
-- Minimum Rust version: 1.86
+- Minimum Rust version: 1.87
 
 ### 6.2. External Dependencies
 
