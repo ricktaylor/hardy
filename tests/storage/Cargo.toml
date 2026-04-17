@@ -17,7 +17,7 @@ hardy-sqlite-storage = { path = "../../sqlite-storage" }
 hardy-localdisk-storage = { path = "../../localdisk-storage", features = ["serde"] }
 hardy-postgres-storage = { path = "../../postgres-storage", optional = true }
 hardy-s3-storage = { path = "../../s3-storage", features = ["serde"], optional = true }
-sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio"], optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }

@@ -26,13 +26,13 @@ hardy-postgres-storage = { path = "../../postgres-storage", optional = true }
 hardy-sqlite-storage = { path = "../../sqlite-storage", optional = true }
 hardy-localdisk-storage = { path = "../../localdisk-storage", optional = true }
 hardy-file-cla = { path = "../../file-cla", optional = true }
-tokio = { version = "1.51.1", features = ["rt-multi-thread", "time"] }
-time = { version = "0.3.47", features = ["parsing"] }
-tracing = { version = "0.1.44", default-features = false }
-arbitrary = { version = "1.4.2", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+time = { version = "0.3", features = ["parsing"] }
+tracing = { version = "0.1", default-features = false }
+arbitrary = { version = "1", features = ["derive"] }
 cfg-if = "1"
-flume = "0.12.0"
-percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc"] }
+flume = "0.12"
+percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
 
 [lib]
 path = "src/lib.rs"

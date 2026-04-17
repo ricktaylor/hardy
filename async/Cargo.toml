@@ -22,13 +22,13 @@ tokio = ["std", "dep:tokio", "dep:tokio-util"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-time = { version = "0.3.47", default-features = false }
-async-trait = "0.1.89"
-tokio = { version = "1.51.1", optional = true, features = ["rt", "macros", "time", "signal"] }
-tokio-util = { version = "0.7.18", optional = true, features = ["rt"] }
-tracing = { version = "0.1.44", default-features = false }
-spin = "0.10.0"
-trace-err = "1.0.0"
+time = { version = "0.3", default-features = false }
+async-trait = "0.1"
+tokio = { version = "1", optional = true, features = ["rt", "macros", "time", "signal"] }
+tokio-util = { version = "0.7", optional = true, features = ["rt"] }
+tracing = { version = "0.1", default-features = false }
+spin = "0.10"
+trace-err = "1"
 
 # Future runtime support
 # smol = ["dep:async-executor", "dep:async-channel"]

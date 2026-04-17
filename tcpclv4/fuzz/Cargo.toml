@@ -17,7 +17,7 @@ libfuzzer-sys = "0.4"
 hardy-tcpclv4 = { path = "..", features = ["serde"] }
 hardy-bpa = { path = "../../bpa" }
 hardy-bpv7 = { path = "../../bpv7" }
-tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "time", "io-util", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "net"] }
 bytes = "1"
 
 

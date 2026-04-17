@@ -24,16 +24,16 @@ instrument = ["tracing/attributes"]
 hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7" }
-tracing = { version = "0.1.44", default-features = false }
-tokio = { version = "1.51.1", features = ["macros", "time", "net", "io-util"] }
-tokio-util = { version = "0.7.18", features = ["codec"] }
-tower = { version = "0.5.3", features = ["util", "limit"] }
+tracing = { version = "0.1", default-features = false }
+tokio = { version = "1", features = ["macros", "time", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 metrics = "0.24"
-trace-err = "1.0.0"
-thiserror = "2.0.18"
+trace-err = "1"
+thiserror = "2"
 futures = "0.3"
-rand = "0.10.0"
-serde = { version = "1.0.228", features = ["derive"], optional = true }
-rustls = "0.23.37"
-tokio-rustls = "0.26.4"
-rustls-pemfile = "2.2.0"
+rand = "0.10"
+serde = { version = "1", features = ["derive"], optional = true }
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"

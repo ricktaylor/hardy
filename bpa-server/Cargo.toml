@@ -48,20 +48,20 @@ hardy-file-cla = { path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { path = "../echo-service", optional = true }
-tokio = { version = "1.51.1", features = ["rt-multi-thread", "macros", "signal"] }
-config = { version = "0.15.22", features = ["yaml", "toml", "json"] }
-serde = { version = "1.0.228", features = ["derive"] }
-directories = "6.0.0"
-getopts = "0.2.24"
-tracing = { version = "0.1.44", default-features = false }
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-notify-debouncer-full = "0.7.0"
-notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
-trace-err = "1.0.0"
-chumsky = "0.12.0"
-anyhow = "1.0.102"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+config = { version = "0.15", features = ["yaml", "toml", "json"] }
+serde = { version = "1", features = ["derive"] }
+directories = "6"
+getopts = "0.2"
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+notify-debouncer-full = "0.7"
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+trace-err = "1"
+chumsky = "0.12"
+anyhow = "1"
 thiserror = "2"
-flume = "0.12.0"
+flume = "0.12"
 serde_json = "1"
 
 [dev-dependencies]
