@@ -5,7 +5,7 @@
 | **Field** | **Value** |
 | :--- | :--- |
 | **Project** | Hardy DTN Router |
-| **Version** | 3.1 (LLR parent traceability corrected) |
+| **Version** | 1.2 |
 
 ## Scope
 

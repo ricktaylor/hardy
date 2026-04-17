@@ -8,7 +8,7 @@
 | **Parent Plan** | [`PLAN-CLA-01`](../../bpa/docs/cla_integration_test_plan.md) |
 | **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [LLR 3.1.x](../../docs/requirements.md#tcpclv4-31) |
 | **Test Suite ID** | `PLAN-TCPCL-01` |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 
 ## 1. Introduction
 

@@ -6,7 +6,7 @@
 | **Module** | `hardy-proto` (Client & Server Proxies) |
 | **Requirements Ref** | [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples) |
 | **Test Suite ID** | COMP-GRPC-01 |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 

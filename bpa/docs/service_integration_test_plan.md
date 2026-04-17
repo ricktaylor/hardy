@@ -7,7 +7,7 @@
 | **Interface** | `crate::services::Application`, `crate::services::Service` |
 | **Requirements Ref** | [REQ-6](../../docs/requirements.md#req-6-time-variant-routing-api), [REQ-17](../../docs/requirements.md#req-17-comprehensive-usage-documentation), [REQ-18](../../docs/requirements.md#req-18-comprehensive-technical-documentation-and-examples), [LLR 6.x](../../docs/requirements.md#cla-apis-61) |
 | **Test Suite ID** | PLAN-SVC-01 |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 

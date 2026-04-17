@@ -9,7 +9,7 @@
 | **Standard Ref** | RFC 9171 (BPv7), RFC 9172 (BPSec), RFC 9173 (Contexts) |
 | **Scope** | Verification of Library Parsing, Serialization, and Security Logic using the CLI harness. |
 | **Test Suite ID** | COMP-BPV7-CLI-01 |
-| **Version** | 1.0 |
+| **Version** | 1.2 |
 
 ## 1. Introduction
 

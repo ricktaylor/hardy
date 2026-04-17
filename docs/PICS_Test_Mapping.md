@@ -4,6 +4,7 @@
 | :--- | :--- |
 | **Project** | Hardy DTN Router |
 | **PICS Reference** | CCSDS 734.20-O-1 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 

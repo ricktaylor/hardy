@@ -7,7 +7,7 @@
 | **Requirements Ref** | [REQ-7](../../docs/requirements.md#req-7-support-for-local-filesystem-for-bundle-and-metadata-storage), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-14](../../docs/requirements.md#req-14-reliability), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 7.1.x](../../docs/requirements.md#local-disk-storage-71), [LLR 19.x](../../docs/requirements.md#opentelemetry-191) |
 | **Standard Ref** | OpenTelemetry (OTLP) |
 | **Test Suite ID** | PLAN-SERVER-01 |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 
 ## 1. Introduction
 

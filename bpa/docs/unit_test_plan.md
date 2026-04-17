@@ -8,7 +8,7 @@
 | **Parent Plan** | `bpa/docs/component_test_plan.md` |
 | **Test Suite ID** | UTP-BPA-01 |
 | **Revision** | Rev 3 (2026-04-13) — Source file paths updated; §3.12/§3.13 delegated to bpv7 suite |
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 
 ## 1. Introduction
 

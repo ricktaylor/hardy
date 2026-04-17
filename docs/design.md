@@ -4,7 +4,7 @@
 | ----- | ----- |
 | **Project** | Hardy DTN Router |
 | **Repository** | `github.com/ricktaylor/hardy` |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 
 ## 1. Introduction
 
