@@ -21,7 +21,7 @@ std = ["hardy-async/std", "hardy-bpa/std", "hardy-bpv7/std"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-async = { version = "0.1", path = "../async", default-features = false }
+hardy-async = { version = "0.1", path = "../async" }
 hardy-bpa = { version = "0.1", path = "../bpa", default-features = false }
 hardy-bpv7 = { version = "0.5", path = "../bpv7", default-features = false }
 tracing = { version = "0.1", default-features = false }
