@@ -63,7 +63,7 @@ impl BundleMemStorage {
 
 #[async_trait]
 impl BundleStorage for BundleMemStorage {
-    async fn recover(&self, tx: Sender<RecoveryResponse>) -> Result<()> {
+    async fn walk(&self, tx: Sender<RecoveryResponse>) -> Result<()> {
         let snapshot = self
             .inner
             .lock()

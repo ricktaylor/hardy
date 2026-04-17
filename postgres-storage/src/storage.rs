@@ -380,7 +380,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn start_recovery(&self) {
+    async fn mark_unconfirmed(&self) {
         if let Err(e) = sqlx::query(
             "INSERT INTO unconfirmed (id) SELECT id FROM metadata ON CONFLICT DO NOTHING",
         )

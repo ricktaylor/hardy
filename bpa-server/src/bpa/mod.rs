@@ -113,7 +113,10 @@ pub(crate) async fn run(
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
 
     // --- Start ---
-    bpa.start(recover_storage);
+    if recover_storage {
+        bpa.recover();
+    }
+    bpa.start();
 
     let tasks = TaskPool::new();
     if let Some(config) = config.grpc {

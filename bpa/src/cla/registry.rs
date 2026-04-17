@@ -407,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_registration() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start();
 
         let cla1 = Arc::new(TestCla::new());
         let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
@@ -427,7 +427,7 @@ mod tests {
     #[tokio::test]
     async fn test_peer_lifecycle() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start();
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
@@ -463,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn test_cascading_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start();
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)

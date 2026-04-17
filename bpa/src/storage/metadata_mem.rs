@@ -105,7 +105,7 @@ impl MetadataStorage for MetadataMemStorage {
         self.put(bundle_id.clone(), None)
     }
 
-    async fn start_recovery(&self) {
+    async fn mark_unconfirmed(&self) {
         // No-op for in-memory store
     }
 
