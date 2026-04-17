@@ -113,7 +113,7 @@ lcov --summary lcov.info
 ```
 
 ```
-  lines......: 24.9% (593 of 2386 lines)
+  lines......: 25.0% (593 of 2374 lines)
   functions..: 24.3% (55 of 226 functions)
 ```
 
@@ -135,10 +135,10 @@ Results (2026-04-14):
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- |
-| `passive` | 8.0% (167/2078) | 7.2% (21/293) |
-| `active` | 48.1% (1000/2078) | 21.4% (92/429) |
+| `passive` | 48.5% (1003/2066) | 7.2% (21/293) |
+| `active` | 47.5% (981/2066) | 21.4% (92/429) |
 
-The `active` target achieves significantly higher coverage because it exercises the full connector → session → transfer path. The `passive` target covers the listener acceptance and early contact header parsing. Combined with unit tests (24.9%), the crate has broad coverage across codec, negotiation, and session management.
+Both targets achieve similar coverage (~48%) as they now exercise the full session paths. The `passive` target (listener acceptance) and `active` target (connector session) are complementary. Combined with unit tests (25.0%), the crate has broad coverage across codec, negotiation, and session management.
 
 ## 5. Test Infrastructure
 

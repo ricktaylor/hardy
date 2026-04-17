@@ -116,7 +116,7 @@ lcov --summary lcov.info
 Results (2026-04-14):
 
 ```
-  lines......: 81.2% (1268 of 1562 lines)
+  lines......: 80.4% (1259 of 1566 lines)
   functions..: 31.3% (377 of 1204 functions)
 ```
 
@@ -134,7 +134,7 @@ Results (2026-04-14):
 | `server/mod.rs` | 44 / 56 | 78.6% |
 | `server/routing.rs` | 158 / 179 | 88.3% |
 | `server/service.rs` | 110 / 136 | 80.9% |
-| **Total** | **1354 / 1736** | **78.0%** |
+| **Total** | **1259 / 1566** | **80.4%** |
 
 The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_receive`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
 
@@ -164,4 +164,4 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 ## 7. Conclusion
 
-The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 78.0% (1354/1736 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
+The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1259/1566 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.

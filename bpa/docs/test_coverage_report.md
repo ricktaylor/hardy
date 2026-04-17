@@ -158,7 +158,7 @@ Covered by interop test suite (`tests/interop/`). All 7 implementations passing 
 | `TickTimer(u64)` | No | Cannot test expiry paths |
 | `UpdateRoute(Vec<Updates>)` | No | Cannot test dynamic route changes |
 
-3 of 5 message variants implemented. 61,673 corpus inputs.
+3 of 5 message variants implemented.
 
 ### 3.3 Component Test Plan (PLAN-BPA-01)
 
@@ -181,7 +181,7 @@ cargo llvm-cov test --package hardy-bpa --lcov --output-path lcov.info --html
 Results (2026-04-14):
 
 ```
-  lines......: 64.0% (3131 of 4890 lines)
+  lines......: 65.4% (3228 of 4937 lines)
   functions..: 16.5% (588 of 3561 functions)
 ```
 
@@ -241,11 +241,10 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/bpa/lcov.info
 ```
 
-Results (61,673 corpus inputs, 2026-04-14):
+Results (2026-04-17):
 
 ```
-  lines......: 57.0% (2067 of 3624 lines)
-  functions..: 47.9% (237 of 495 functions)
+  lines......: 56.4% (2113 of 3748 lines)
 ```
 
 Key files where fuzz coverage exceeds unit+pipeline coverage:
@@ -291,6 +290,6 @@ Inline mock types (`TestApp`, `TestCla`) implement the `Application`/`Cla` trait
 
 ## 7. Conclusion
 
-The BPA crate has **complete LLR coverage** (7 pass, 3 pass via bpv7, 1 N/A; Part 4 refs 1.2, 2.3, 2.4, 6.6, 7.1) with 55 unit test functions covering 93% of in-scope plan scenarios (55/59), 5 pipeline integration tests, a criterion benchmark, 57.0% unit+pipeline line coverage (3125/5478), and 49.7% fuzz line coverage (5006/10068) from 61,673 corpus inputs. The fuzz coverage is highly complementary — it achieves 98% on `dispatcher/report.rs` and 85% on `dispatcher/admin.rs`, areas untouched by unit tests. Four scenarios (§3.12 BPSec Policy, §3.13 Canonicalization) are delegated to the bpv7 test suite. One fuzz target exercises the full pipeline with random events. Integration-level coverage is provided by interoperability testing with 7 independent Bundle Protocol implementations.
+The BPA crate has **complete LLR coverage** (7 pass, 3 pass via bpv7, 1 N/A; Part 4 refs 1.2, 2.3, 2.4, 6.6, 7.1) with 55 unit test functions covering 93% of in-scope plan scenarios (55/59), 5 pipeline integration tests, a criterion benchmark, 65.4% unit+pipeline line coverage (3228/4937), and 56.4% fuzz line coverage (2113/3748). The fuzz coverage is highly complementary — it achieves 98% on `dispatcher/report.rs` and 85% on `dispatcher/admin.rs`, areas untouched by unit tests. Four scenarios (§3.12 BPSec Policy, §3.13 Canonicalization) are delegated to the bpv7 test suite. One fuzz target exercises the full pipeline with random events. Integration-level coverage is provided by interoperability testing with 7 independent Bundle Protocol implementations.
 
 The pipeline tests (`tests/pipeline.rs`) exercise the dispatcher end-to-end: app-to-CLA routing, echo round-trip, local delivery, throughput (5,130 bundles/sec, REQ-13 target >1,000), and forwarding latency (P50=536µs, P95=1.19ms, P99=1.31ms). The criterion benchmark (`benches/bundle_bench.rs`) provides statistically rigorous throughput measurement at ~8K bundles/sec with in-memory storage. The `Bpa::builder()` pattern proved effective for both unit tests and integration tests with inline mock types.
