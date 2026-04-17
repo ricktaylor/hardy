@@ -158,15 +158,20 @@ async fn exec_external_cla(
     args: &Command,
     bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
-    let bpa_reg: std::sync::Arc<dyn BpaRegistration> = bpa.clone();
-
     // Start gRPC server with CLA service
     let tasks = hardy_async::TaskPool::new();
     let grpc_config = hardy_proto::server::Config {
         address: args.grpc_listen,
         services: vec!["cla".to_string()],
     };
-    hardy_proto::server::init(&grpc_config, &bpa_reg, &tasks);
+    let server = hardy_proto::server::GrpcServer::new(&grpc_config, bpa.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to create gRPC server: {e}"))?;
+    let cancel = tasks.cancel_token().clone();
+    hardy_async::spawn!(tasks, "grpc_server", async move {
+        if let Err(e) = server.serve(cancel).await {
+            tracing::error!("gRPC server failed: {e}");
+        }
+    });
 
     // Yield to let the gRPC server task bind and start listening
     tokio::task::yield_now().await;

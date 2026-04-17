@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod error;
 
+use hardy_async::TaskPool;
 use tracing::{error, info};
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
@@ -32,12 +33,40 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let config = config::Config::load(args.config_file)?;
+    let mut config = config::Config::load(args.config_file)?;
     let _guard = configure_tracing(config.log_level);
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
-    bpa::run(config, args.upgrade_storage, args.recover_storage)
-        .await
-        .inspect_err(|e| error!("{e}"))
+    #[cfg(feature = "grpc")]
+    let grpc_config = config.grpc.take();
+
+    let bpa = bpa::build(config, args.upgrade_storage).await?;
+
+    bpa.start(args.recover_storage);
+
+    let tasks = TaskPool::new();
+    hardy_async::signal::listen_for_cancel(&tasks);
+
+    #[cfg(feature = "grpc")]
+    if let Some(grpc_config) = grpc_config {
+        let server = hardy_proto::server::GrpcServer::new(&grpc_config, bpa.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to create gRPC server: {e}"))?;
+        let cancel = tasks.cancel_token().clone();
+        hardy_async::spawn!(tasks, "grpc_server", async move {
+            if let Err(e) = server.serve(cancel).await {
+                error!("gRPC server failed: {e}");
+            }
+        });
+    }
+
+    info!("Started successfully");
+
+    tasks.cancel_token().cancelled().await;
+    tasks.shutdown().await;
+    bpa.shutdown().await;
+
+    info!("Stopped");
+
+    Ok(())
 }

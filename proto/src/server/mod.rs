@@ -42,62 +42,75 @@ impl Default for Config {
     }
 }
 
-/// Initialize and start the gRPC server.
+/// A gRPC server that exposes BPA registration services to remote clients.
 ///
-/// # Arguments
-///
-/// * `config` - Server configuration
-/// * `bpa` - BPA registration interface (can be local Bpa or remote)
-/// * `tasks` - Task pool for spawning server task and cancellation
-pub fn init(
-    config: &Config,
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
-    tasks: &hardy_async::TaskPool,
-) {
-    if config.services.is_empty() {
-        return;
-    }
+/// The server does not spawn any tasks itself — call [`serve()`](GrpcServer::serve)
+/// to get a future, and spawn it in your own runtime.
+pub struct GrpcServer {
+    routes: tonic::service::Routes,
+    address: std::net::SocketAddr,
+    session_tasks: hardy_async::TaskPool,
+}
 
-    // Add gRPC services to HTTP router
-    let mut routes = tonic::service::Routes::builder();
-    for service in &config.services {
-        match service.as_str() {
-            "application" => {
-                routes.add_service(application::new_application_service(bpa, tasks));
-            }
-            "cla" => {
-                routes.add_service(cla::new_cla_service(bpa, tasks));
-            }
-            "service" => {
-                routes.add_service(service::new_endpoint_service(bpa, tasks));
-            }
-            "routing" => {
-                routes.add_service(routing::new_routing_agent_service(bpa, tasks));
-            }
-            s => {
-                warn!("Ignoring unknown gRPC service {s}");
+impl GrpcServer {
+    /// Build a gRPC server with the configured services.
+    pub fn new(
+        config: &Config,
+        bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        if config.services.is_empty() {
+            return Err("No gRPC services configured".into());
+        }
+
+        let tasks = hardy_async::TaskPool::new();
+        let mut routes = tonic::service::Routes::builder();
+        for svc in &config.services {
+            match svc.as_str() {
+                "application" => {
+                    routes.add_service(application::new_application_service(&bpa, &tasks));
+                }
+                "cla" => {
+                    routes.add_service(cla::new_cla_service(&bpa, &tasks));
+                }
+                "service" => {
+                    routes.add_service(service::new_endpoint_service(&bpa, &tasks));
+                }
+                "routing" => {
+                    routes.add_service(routing::new_routing_agent_service(&bpa, &tasks));
+                }
+                s => {
+                    warn!("Ignoring unknown gRPC service {s}");
+                }
             }
         }
+
+        info!(
+            "gRPC server hosting {:?}, listening on {}",
+            config.services, config.address
+        );
+
+        Ok(Self {
+            routes: routes.routes(),
+            address: config.address,
+            session_tasks: tasks,
+        })
     }
 
-    let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    // Start serving
-    let addr = config.address;
-    let cancel_token = tasks.cancel_token().clone();
-    hardy_async::spawn!(tasks, "grpc_server", async move {
+    /// Serve until cancelled, then shut down session tasks.
+    pub async fn serve(
+        self,
+        cancel: hardy_async::CancellationToken,
+    ) -> Result<(), tonic::transport::Error> {
+        let (health_reporter, health_service) = tonic_health::server::health_reporter();
         health_reporter
             .set_service_status("", tonic_health::ServingStatus::Serving)
             .await;
         tonic::transport::Server::builder()
-            .add_routes(routes.routes())
+            .add_routes(self.routes)
             .add_service(health_service)
-            .serve_with_shutdown(addr, cancel_token.cancelled())
-            .await
-            .expect("Failed to start gRPC server")
-    });
-
-    info!(
-        "gRPC server hosting {:?}, listening on {}",
-        config.services, config.address
-    )
+            .serve_with_shutdown(self.address, cancel.cancelled())
+            .await?;
+        self.session_tasks.shutdown().await;
+        Ok(())
+    }
 }

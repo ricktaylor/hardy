@@ -38,7 +38,7 @@ hardy-async = { version = "0.1", path = "../async" }
 hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
 hardy-bpa = { version = "0.1", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
 hardy-eid-patterns = { version = "0.3", path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
-hardy-proto = { version = "0.1", path = "../proto", optional = true }
+hardy-proto = { version = "0.1", path = "../proto", features = ["serde"], optional = true }
 hardy-sqlite-storage = { version = "0.5", path = "../sqlite-storage", optional = true }
 hardy-postgres-storage = { version = "0.1", path = "../postgres-storage", optional = true }
 hardy-localdisk-storage = { version = "0.5", path = "../localdisk-storage", features = ["serde"], optional = true }
