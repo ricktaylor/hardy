@@ -1,14 +1,15 @@
-name: Docker
+name: Images
 
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - "**/Dockerfile"
-      - ".github/workflows/docker.yml"
+      - ".github/workflows/images.yml"
       - "proto/**"
 
 env:
@@ -32,6 +33,9 @@ jobs:
           - image: hardy-tvr
             dockerfile: ./tvr/Dockerfile
             build-args: ""
+          - image: hardy-tools
+            dockerfile: ./tools/Dockerfile
+            build-args: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -52,6 +56,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}
           tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha
             type=raw,value=latest
 
