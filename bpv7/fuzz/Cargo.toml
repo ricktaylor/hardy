@@ -10,8 +10,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-bpv7 = { path = "..", features = ["serde"] }
-hardy-cbor = { path = "../../cbor" }
+hardy-bpv7 = { version = "0.5", path = "..", features = ["serde"] }
+hardy-cbor = { version = "1", path = "../../cbor" }
 serde_json = "1"
 
 [lib]

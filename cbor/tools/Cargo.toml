@@ -13,7 +13,7 @@ name = "cbor"
 path = "cbor.rs"
 
 [dependencies]
-hardy-cbor = { path = ".." }
+hardy-cbor = { version = "1", path = ".." }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 chumsky = "0.12"

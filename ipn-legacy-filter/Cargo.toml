@@ -20,9 +20,9 @@ default = []
 serde = ["dep:serde","hardy-bpa/serde","hardy-bpv7/serde"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa" }
-hardy-bpv7 = { path = "../bpv7" }
-hardy-eid-patterns = { path = "../eid-patterns" }
+hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7" }
+hardy-eid-patterns = { version = "0.3", path = "../eid-patterns" }
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]

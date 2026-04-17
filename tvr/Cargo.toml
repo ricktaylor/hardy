@@ -18,12 +18,12 @@ otel = ["dep:hardy-otel"]
 instrument = ["hardy-async/instrument"]
 
 [dependencies]
-hardy-bpa = { path = "../bpa" }
-hardy-bpv7 = { path = "../bpv7" }
-hardy-proto = { path = "../proto" }
-hardy-async = { path = "../async" }
-hardy-eid-patterns = { path = "../eid-patterns" }
-hardy-otel = { path = "../otel", optional = true }
+hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7" }
+hardy-proto = { version = "0.1", path = "../proto" }
+hardy-async = { version = "0.1", path = "../async" }
+hardy-eid-patterns = { version = "0.3", path = "../eid-patterns" }
+hardy-otel = { version = "0.1", path = "../otel", optional = true }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }

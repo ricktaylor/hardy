@@ -11,12 +11,12 @@ postgres = ["dep:hardy-postgres-storage", "dep:sqlx", "dep:uuid"]
 s3 = ["dep:hardy-s3-storage", "dep:uuid"]
 
 [dependencies]
-hardy-bpa = { path = "../../bpa" }
-hardy-bpv7 = { path = "../../bpv7", features = ["std"] }
-hardy-sqlite-storage = { path = "../../sqlite-storage" }
-hardy-localdisk-storage = { path = "../../localdisk-storage", features = ["serde"] }
-hardy-postgres-storage = { path = "../../postgres-storage", optional = true }
-hardy-s3-storage = { path = "../../s3-storage", features = ["serde"], optional = true }
+hardy-bpa = { version = "0.1", path = "../../bpa" }
+hardy-bpv7 = { version = "0.5", path = "../../bpv7", features = ["std"] }
+hardy-sqlite-storage = { version = "0.5", path = "../../sqlite-storage" }
+hardy-localdisk-storage = { version = "0.5", path = "../../localdisk-storage", features = ["serde"] }
+hardy-postgres-storage = { version = "0.1", path = "../../postgres-storage", optional = true }
+hardy-s3-storage = { version = "0.1", path = "../../s3-storage", features = ["serde"], optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"], optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
 tempfile = "3"

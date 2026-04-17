@@ -21,9 +21,9 @@ serde = ["dep:serde","hardy-bpa/serde","hardy-bpv7/serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-async = { path = "../async" }
-hardy-bpa = { path = "../bpa" }
-hardy-bpv7 = { path = "../bpv7" }
+hardy-async = { version = "0.1", path = "../async" }
+hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7" }
 tracing = { version = "0.1", default-features = false }
 tokio = { version = "1", features = ["macros", "fs"] }
 tokio-util = "0.7"

@@ -22,7 +22,7 @@ dtn-pat-item = ["std","dep:percent-encoding","dep:glob"]
 serde = ["dep:serde","hardy-bpv7/serde"]
 
 [dependencies]
-hardy-bpv7 = { path = "../bpv7", default-features = false }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", default-features = false }
 thiserror = { version = "2", default-features = false }
 winnow = { version = "1", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2", default-features = false, features = ["alloc"], optional = true }
@@ -31,4 +31,4 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 
 [dev-dependencies]
 hex-literal = "1"
-hardy-eid-patterns = { path = ".", features = ["dtn-pat-item"] }
+hardy-eid-patterns = { version = "0.3", path = ".", features = ["dtn-pat-item"] }

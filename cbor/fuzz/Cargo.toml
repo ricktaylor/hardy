@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-cbor = { path = ".." }
+hardy-cbor = { version = "1", path = ".." }
 
 [[bin]]
 name = "decode"

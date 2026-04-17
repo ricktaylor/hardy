@@ -37,10 +37,10 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-hardy-async = { path = "../async", default-features = false }
-hardy-bpv7 = { path = "../bpv7", default-features = false }
-hardy-cbor = { path = "../cbor" }
-hardy-eid-patterns = { path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
+hardy-async = { version = "0.1", path = "../async", default-features = false }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", default-features = false }
+hardy-cbor = { version = "1", path = "../cbor" }
+hardy-eid-patterns = { version = "0.3", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
 time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }
 bytes = "1"
 tracing = { version = "0.1", default-features = false }

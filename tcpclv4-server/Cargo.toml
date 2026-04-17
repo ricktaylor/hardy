@@ -19,11 +19,11 @@ instrument = [
 ]
 
 [dependencies]
-hardy-tcpclv4 = { path = "../tcpclv4", features = ["serde"] }
-hardy-bpa = { path = "../bpa" }
-hardy-proto = { path = "../proto" }
-hardy-async = { path = "../async" }
-hardy-otel = { path = "../otel", optional = true }
+hardy-tcpclv4 = { version = "0.3", path = "../tcpclv4", features = ["serde"] }
+hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-proto = { version = "0.1", path = "../proto" }
+hardy-async = { version = "0.1", path = "../async" }
+hardy-otel = { version = "0.1", path = "../otel", optional = true }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }
