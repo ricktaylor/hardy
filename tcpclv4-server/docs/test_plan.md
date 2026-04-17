@@ -6,7 +6,7 @@
 | **Module** | `hardy-tcpclv4-server` |
 | **Requirements Ref** | [REQ-3](../../docs/requirements.md#req-3-full-compliance-with-rfc9174), [REQ-13](../../docs/requirements.md#req-13-performance), [REQ-15](../../docs/requirements.md#req-15-independent-component-packaging), [REQ-16](../../docs/requirements.md#req-16-kubernetes-packaging), [REQ-19](../../docs/requirements.md#req-19-a-well-featured-suite-of-management-and-monitoring-tools), [LLR 3.x](../../docs/requirements.md#tcpclv4-31) |
 | **Test Suite ID** | PLAN-TCPCL-SERVER-01 |
-| **Version** | 1.1 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 

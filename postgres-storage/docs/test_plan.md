@@ -8,7 +8,7 @@
 | **Requirements Ref** | [REQ-8](../../docs/requirements.md#req-8-support-for-postgresql-for-bundle-metadata-storage), Part 4 ref 8.1, 8.2 |
 | **Parent Plan** | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
 | **Test Suite ID** | PLAN-PG-01 |
-| **Version** | 1.1 |
+| **Version** | 1.0 |
 
 ## 1. Introduction
 
