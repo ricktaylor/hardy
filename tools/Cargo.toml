@@ -21,31 +21,31 @@ default = []
 instrument = ["hardy-bpa/instrument","hardy-tcpclv4/instrument"]
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1"
 hardy-async = { path = "../async" }
 hardy-bpa = { path = "../bpa" }
 hardy-bpv7 = { path = "../bpv7", features = ["std"] }
 hardy-cbor = { path = "../cbor" }
 hardy-proto = { path = "../proto" }
 hardy-tcpclv4 = { path = "../tcpclv4" }
-clap = { version = "4.6.0", features = ["derive"] }
-humantime = "2.3.0"
-tokio = { version = "1.51.1", features = ["rt-multi-thread", "time", "signal", "process"] }
-tokio-util = "0.7.18"
-time = { version = "0.3.47", features = ["parsing"] }
-rand = "0.10.0"
-tracing = { version = "0.1.44", default-features = false }
-tracing-subscriber = "0.3.23"
-trace-err = "1.0.0"
+clap = { version = "4", features = ["derive"] }
+humantime = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "signal", "process"] }
+tokio-util = "0.7"
+time = { version = "0.3", features = ["parsing"] }
+rand = "0.10"
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = "0.3"
+trace-err = "1"
 
 # --- Linux-specific dependencies ---
 [target.'cfg(target_os = "linux")'.dependencies]
-caps = "0.5.6"
+caps = "0.5"
 
 # --- Windows-specific dependencies ---
 [target.'cfg(target_os = "windows")'.dependencies]
-check_elevation = "0.2.7"
+check_elevation = "0.2"
 
 # --- Other Unix (e.g., macOS, BSD) dependencies ---
 [target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
-libc = "0.2.184"
+libc = "0.2"
