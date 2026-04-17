@@ -51,7 +51,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.session_cancel_token.cancel();
 
         // Shutdown all pooled connections (drops tx senders)
-        self.registry.shutdown().await;
+        self.registry.shutdown();
 
         // Wait for all session tasks to complete
         self.tasks.shutdown().await;

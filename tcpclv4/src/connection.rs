@@ -50,6 +50,14 @@ impl ConnectionPool {
         }
     }
 
+    fn idle_count(&self) -> usize {
+        self.inner
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .idle
+            .len()
+    }
+
     fn add(&self, conn: Connection) {
         self.inner
             .lock()
@@ -198,12 +206,17 @@ impl ConnectionRegistry {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub async fn shutdown(&self) {
+    pub fn shutdown(&self) {
+        let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
+
+        // Count remaining idle connections before clearing
+        let idle: usize = pools.values().map(|pool| pool.idle_count()).sum();
+        if idle > 0 {
+            metrics::gauge!("tcpclv4.pool.idle").decrement(idle as f64);
+        }
+
         // Closing tx channels causes session::run tasks to exit
-        self.pools
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .clear();
+        pools.clear();
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
