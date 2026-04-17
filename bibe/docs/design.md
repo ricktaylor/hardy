@@ -16,27 +16,23 @@ Bundle-in-Bundle Encapsulation (BIBE) for the Hardy BPA.
 
 BIBE uses a **hybrid architecture**: a CLA for encapsulation, a Service for decapsulation.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  BIBE Package                                                   │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  BibeCla (encapsulation)                                 │   │
-│  │                                                          │   │
-│  │  forward(cla_addr, bundle):                              │   │
-│  │    outer_dest = parse(cla_addr)   # ClaAddress::Private  │   │
-│  │    outer = encapsulate(bundle, outer_dest)               │   │
-│  │    dispatch(outer)                # Re-inject to BPA     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  DecapService (decapsulation)                            │   │
-│  │                                                          │   │
-│  │  on_receive(outer_bundle):                               │   │
-│  │    inner = decapsulate(outer_bundle)                     │   │
-│  │    cla.dispatch(inner)            # Re-inject to BPA     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant RIB as BPA RIB
+    participant CLA as BibeCla
+    participant BPA as BPA Pipeline
+    participant SVC as DecapService
+
+    Note over RIB,SVC: Encapsulation (outbound)
+    RIB->>CLA: forward(cla_addr, inner_bundle)
+    CLA->>CLA: outer_dest = parse(cla_addr)
+    CLA->>CLA: outer = encapsulate(inner, outer_dest)
+    CLA->>BPA: dispatch(outer_bundle)
+
+    Note over RIB,SVC: Decapsulation (inbound)
+    BPA->>SVC: on_receive(outer_bundle)
+    SVC->>SVC: inner = decapsulate(outer_bundle)
+    SVC->>BPA: dispatch(inner_bundle)
 ```
 
 Encapsulation is triggered via `CLA.forward()` when the RIB routes a bundle to a virtual peer. Decapsulation occurs when outer bundles are delivered to the registered decap service endpoint.
@@ -120,31 +116,26 @@ Two architectures were evaluated for BIBE. A pure CLA approach was also consider
 
 **Encapsulation flow:**
 
-```
-# static_routes: ipn:200.* via ipn:1.10
-#                (route to service EID, not CLA)
-
-Inner bundle ──→ Ingress ──→ Route ──→ Deliver ──→ EncapService
-                                         │              │
-                                    [Deliver filters]   │ encapsulate
-                                                        ▼
-Outer bundle ◄── Ingress ◄────────────────────── CLA.dispatch()
-     │
-     ▼
-Route ──→ Egress ──→ Real CLA ──→ Network
+```mermaid
+flowchart LR
+    IB["Inner bundle"] --> Ingress1["Ingress"] --> Route1["Route"] --> Deliver1["Deliver"]
+    Deliver1 -->|"Deliver filters"| EncapService
+    EncapService -->|"encapsulate"| Dispatch1["CLA.dispatch()"]
+    Dispatch1 --> Ingress2["Ingress"]
+    Ingress2 --> OB["Outer bundle"]
+    OB --> Route2["Route"] --> Egress1["Egress"] --> RealCLA["Real CLA"] --> Network
 ```
 
 **Decapsulation flow:**
 
-```
-Outer bundle ──→ Ingress ──→ Route ──→ Deliver ──→ DecapService
-                                         │              │
-                                    [Deliver filters]   │ decapsulate
-                                                        ▼
-Inner bundle ◄── Ingress ◄────────────────────── CLA.dispatch()
-     │
-     ▼
-Route ──→ (local delivery or forward)
+```mermaid
+flowchart LR
+    OB["Outer bundle"] --> Ingress1["Ingress"] --> Route1["Route"] --> Deliver1["Deliver"]
+    Deliver1 -->|"Deliver filters"| DecapService
+    DecapService -->|"decapsulate"| Dispatch1["CLA.dispatch()"]
+    Dispatch1 --> Ingress2["Ingress"]
+    Ingress2 --> IB["Inner bundle"]
+    IB --> Route2["Route"] --> Out1["local delivery or forward"]
 ```
 
 **Characteristics:**
@@ -165,32 +156,26 @@ Route ──→ (local delivery or forward)
 
 **Encapsulation flow:**
 
-```
-# static_routes: ipn:200.* via dtn://tunnel1
-#                (tunnel is a virtual peer with ClaAddress encoding decap endpoint)
-
-Inner bundle ──→ Ingress ──→ Route ──→ Egress ──→ BibeCla.forward(cla_addr, bundle)
-                                         │              │
-                                    [Egress filters]    │ encapsulate
-                                                        │ (parse cla_addr → outer dest)
-                                                        ▼
-Outer bundle ◄── Ingress ◄────────────────────── CLA.dispatch()
-     │
-     ▼
-Route ──→ Egress ──→ Real CLA ──→ Network
+```mermaid
+flowchart LR
+    IB["Inner bundle"] --> Ingress1["Ingress"] --> Route1["Route"] --> Egress1["Egress"]
+    Egress1 -->|"Egress filters"| Fwd["BibeCla.forward(cla_addr, bundle)"]
+    Fwd -->|"encapsulate\n(parse cla_addr -> outer dest)"| Dispatch1["CLA.dispatch()"]
+    Dispatch1 --> Ingress2["Ingress"]
+    Ingress2 --> OB["Outer bundle"]
+    OB --> Route2["Route"] --> Egress2["Egress"] --> RealCLA["Real CLA"] --> Network
 ```
 
 **Decapsulation flow:**
 
-```
-Outer bundle ──→ Ingress ──→ Route ──→ Deliver ──→ DecapService
-                                         │              │
-                                    [Deliver filters]   │ decapsulate
-                                                        ▼
-Inner bundle ◄── Ingress ◄────────────────────── CLA.dispatch()
-     │
-     ▼
-Route ──→ (local delivery or forward)
+```mermaid
+flowchart LR
+    OB["Outer bundle"] --> Ingress1["Ingress"] --> Route1["Route"] --> Deliver1["Deliver"]
+    Deliver1 -->|"Deliver filters"| DecapService
+    DecapService -->|"decapsulate"| Dispatch1["CLA.dispatch()"]
+    Dispatch1 --> Ingress2["Ingress"]
+    Ingress2 --> IB["Inner bundle"]
+    IB --> Route2["Route"] --> Out1["local delivery or forward"]
 ```
 
 **Characteristics:**
@@ -254,15 +239,13 @@ Linux handles tunnel interfaces (GRE, IPIP, IPsec) with a clear model:
 
 **Outgoing (encapsulation):**
 
-```
-Inner packet ──→ OUTPUT ──→ Routing ──→ POSTROUTING ──→ Tunnel driver
-                                                             │
-                                                        encapsulate
-                                                             ▼
-Outer packet ◄── OUTPUT ◄── Routing ◄───────────────────────┘
-     │
-     ▼
-POSTROUTING ──→ Physical NIC
+```mermaid
+flowchart LR
+    IP["Inner packet"] --> OUTPUT1["OUTPUT"] --> Routing1["Routing"] --> POSTROUTING1["POSTROUTING"] --> TD["Tunnel driver"]
+    TD -->|"encapsulate"| Routing2["Routing"]
+    Routing2 --> OUTPUT2["OUTPUT"]
+    OUTPUT2 --> OP["Outer packet"]
+    OP --> POSTROUTING2["POSTROUTING"] --> NIC["Physical NIC"]
 ```
 
 - Inner packet goes through OUTPUT/POSTROUTING (egress path)
@@ -271,15 +254,12 @@ POSTROUTING ──→ Physical NIC
 
 **Incoming (decapsulation):**
 
-```
-Outer packet ──→ PREROUTING ──→ Routing ──→ INPUT ──→ Tunnel driver
-                                                           │
-                                                      decapsulate
-                                                           ▼
-Inner packet ◄── PREROUTING ◄──────────────────────────────┘
-     │
-     ▼
-Routing ──→ INPUT/FORWARD
+```mermaid
+flowchart LR
+    OP["Outer packet"] --> PREROUTING1["PREROUTING"] --> Routing1["Routing"] --> INPUT1["INPUT"] --> TD["Tunnel driver"]
+    TD -->|"decapsulate"| PREROUTING2["PREROUTING"]
+    PREROUTING2 --> IPkt["Inner packet"]
+    IPkt --> Routing2["Routing"] --> IF["INPUT/FORWARD"]
 ```
 
 - Outer packet goes through INPUT (local delivery to tunnel driver)
@@ -349,22 +329,12 @@ Before finalizing the architecture, we examined how the BPA's routing and peer i
 
 ### Current RIB Flow
 
-```
-Route Table                          Local Table
-───────────────                      ───────────
-pattern → Via(Eid)                   Eid → Forward(peer_id)
-         └─ recursive lookup ──────────────┘
-
-                    │
-                    ▼
-           FindResult::Forward(peer_id)
-                    │
-                    ▼
-              EgressQueue
-           (ClaAddress stored in Shared struct)
-                    │
-                    ▼
-         cla.forward(queue, cla_addr, data)
+```mermaid
+flowchart TB
+    RT["Route Table\npattern -> Via(Eid)"] -->|"recursive lookup"| LT["Local Table\nEid -> Forward(peer_id)"]
+    LT --> FR["FindResult::Forward(peer_id)"]
+    FR --> EQ["EgressQueue\n(ClaAddress stored in Shared struct)"]
+    EQ --> FWD["cla.forward(queue, cla_addr, data)"]
 ```
 
 **Key structures:**
@@ -506,46 +476,34 @@ With mGRE, the encapsulation destination is resolved per-packet using NHRP.
 
 ### NHRP Resolution Model
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  mGRE Interface                                             │
-│  - Local endpoint: 192.168.1.1                              │
-│  - Remote endpoint: DYNAMIC (resolved per-destination)      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  NHRP Cache                                                 │
-│                                                             │
-│  Protocol Address    →    NBMA Address (tunnel endpoint)    │
-│  ─────────────────────────────────────────────────────────  │
-│  10.0.1.0/24         →    203.0.113.10                      │
-│  10.0.2.0/24         →    203.0.113.20                      │
-│  10.0.3.0/24         →    203.0.113.30                      │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    mGRE["mGRE Interface\nLocal endpoint: 192.168.1.1\nRemote endpoint: DYNAMIC (resolved per-destination)"]
+    mGRE --> NHRP
+
+    subgraph NHRP["NHRP Cache"]
+        direction LR
+        E1["10.0.1.0/24 -> 203.0.113.10"]
+        E2["10.0.2.0/24 -> 203.0.113.20"]
+        E3["10.0.3.0/24 -> 203.0.113.30"]
+    end
 ```
 
 **Flow**: Route lookup → mGRE interface → NHRP resolution → encapsulate to resolved endpoint
 
 ### BIBE Virtual Peers Model
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  BIBE CLA                                                   │
-│  - Local source: ipn:1.0                                    │
-│  - Remote endpoint: DYNAMIC (resolved per-destination)      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Local Table + EgressQueue                                  │
-│                                                             │
-│  NodeId (Via)        →    ClaAddress (tunnel endpoint)      │
-│  ─────────────────────────────────────────────────────────  │
-│  dtn://tunnel-a      →    Private(<CBOR: ipn:100.12>)       │
-│  dtn://tunnel-b      →    Private(<CBOR: ipn:101.12>)       │
-│  dtn://tunnel-c      →    Private(<CBOR: ipn:102.12>)       │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    BIBE["BIBE CLA\nLocal source: ipn:1.0\nRemote endpoint: DYNAMIC (resolved per-destination)"]
+    BIBE --> LT
+
+    subgraph LT["Local Table + EgressQueue"]
+        direction LR
+        E1["dtn://tunnel-a -> Private(CBOR: ipn:100.12)"]
+        E2["dtn://tunnel-b -> Private(CBOR: ipn:101.12)"]
+        E3["dtn://tunnel-c -> Private(CBOR: ipn:102.12)"]
+    end
 ```
 
 **Flow**: Route lookup → Via(Eid) → Local table resolution → encapsulate to resolved endpoint
@@ -578,32 +536,22 @@ This parallel validates the virtual peers approach:
 
 ### Components
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  BIBE Package                                                   │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  BibeCla                                                 │   │
-│  │                                                          │   │
-│  │  forward(addr, bundle) ──→ encapsulate ──→ dispatch()   │   │
-│  │                              │                           │   │
-│  │                              ▼                           │   │
-│  │                    Parse addr for outer dest             │   │
-│  │                    Build outer bundle                    │   │
-│  │                    Inject via dispatch()                 │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  DecapService                                            │   │
-│  │                                                          │   │
-│  │  on_receive(bundle) ──→ decapsulate ──→ cla.dispatch()  │   │
-│  │                              │                           │   │
-│  │                              ▼                           │   │
-│  │                    Extract payload (inner bundle)        │   │
-│  │                    Validate inner bundle                 │   │
-│  │                    Inject via CLA dispatch()             │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph BIBE["BIBE Package"]
+        subgraph CLA["BibeCla"]
+            C1["forward(addr, bundle)"] --> C2["encapsulate"]
+            C2 --> C3["Parse addr for outer dest"]
+            C3 --> C4["Build outer bundle"]
+            C4 --> C5["Inject via dispatch()"]
+        end
+        subgraph SVC["DecapService"]
+            S1["on_receive(bundle)"] --> S2["decapsulate"]
+            S2 --> S3["Extract payload (inner bundle)"]
+            S3 --> S4["Validate inner bundle"]
+            S4 --> S5["Inject via CLA dispatch()"]
+        end
+    end
 ```
 
 ### CLA Address Format

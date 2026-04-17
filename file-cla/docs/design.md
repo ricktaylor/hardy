@@ -16,16 +16,24 @@ This CLA is primarily intended for interoperability testing and development, not
 
 The file CLA operates on directories rather than network connections:
 
-```
-External System                     Hardy BPA
-      │                                 │
-      │  writes file to                 │
-      └─────────────────► [outbox] ─────┼──► dispatch()
-                          (watched)     │
-                                        │
-      ┌───────────────────────────────  │
-      │  reads file from                │
-[peer inbox] ◄────────────── forward() ◄┘
+```mermaid
+sequenceDiagram
+    participant Ext as External System
+    participant Outbox as Outbox (watched)
+    participant CLA as File CLA
+    participant BPA as Hardy BPA
+    participant Inbox as Peer Inbox
+
+    Note over Ext,Inbox: Ingress
+    Ext->>Outbox: Write bundle file
+    CLA->>Outbox: Detect new file
+    CLA->>BPA: dispatch(bundle)
+    CLA->>Outbox: Delete file
+
+    Note over Ext,Inbox: Egress
+    BPA->>CLA: forward(bundle)
+    CLA->>Inbox: Write bundle file
+    Ext->>Inbox: Read bundle file
 ```
 
 - **Ingress (outbox)**: External systems write bundle files to a watched directory. The CLA reads each file, dispatches it to the BPA, then deletes the file.

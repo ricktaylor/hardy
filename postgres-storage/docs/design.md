@@ -16,10 +16,9 @@ PostgreSQL-based storage implementing **`MetadataStorage` only**.
 
 ## Architecture Overview
 
-```
-BPA
- │
- └─ MetadataStorage ──► sqlx::PgPool ──► PostgreSQL
+```mermaid
+graph LR
+    BPA --> MetadataStorage --> sqlx::PgPool --> PostgreSQL
 ```
 
 `MetadataStorage` is implemented by a single `Storage` struct backed by a `sqlx::PgPool`. The pool manages connections transparently; there is no application-level write lock.
@@ -378,12 +377,12 @@ If a checksum mismatches on startup, the storage refuses to open. The `upgrade` 
 
 `MetadataStorage` methods execute concurrently on different pool connections. There is no application-level write lock or ordering constraint.
 
-```
-MetadataStorage::poll_waiting()  ──► SELECT metadata   ──► MVCC snapshot ──► Returns
-MetadataStorage::insert()        ──► INSERT bundles
-                                     INSERT metadata    ──► MVCC snapshot ──► Commit  (CTE, atomic)
-MetadataStorage::replace()       ──► UPDATE metadata    ──► MVCC snapshot ──► Commit
-MetadataStorage::tombstone()     ──► DELETE metadata    ──► MVCC snapshot ──► Commit
+```mermaid
+graph LR
+    poll["MetadataStorage::poll_waiting()"] --> sel["SELECT metadata"] --> snap1["MVCC snapshot"] --> ret["Returns"]
+    ins["MetadataStorage::insert()"] --> insB["INSERT bundles\nINSERT metadata"] --> snap2["MVCC snapshot"] --> com1["Commit (CTE, atomic)"]
+    rep["MetadataStorage::replace()"] --> upd["UPDATE metadata"] --> snap3["MVCC snapshot"] --> com2["Commit"]
+    tomb["MetadataStorage::tombstone()"] --> del["DELETE metadata"] --> snap4["MVCC snapshot"] --> com3["Commit"]
 ```
 
 All operations run under `READ COMMITTED` isolation except:

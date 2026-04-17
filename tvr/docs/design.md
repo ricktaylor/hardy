@@ -47,21 +47,26 @@ hardy-tvr is simultaneously a gRPC client (to the BPA) and a gRPC
 server (exposing the TVR contact ingestion service). Internally it is
 structured as three layers:
 
-```
-                                                  ┌──────────────────────────┐
-  ┌────────────────┐                              │       hardy-tvr          │
-  │  DPP Speaker   │──┐                           │                          │
-  └────────────────┘  │  gRPC streaming           │  ┌───────────────────┐   │  routes
-  ┌────────────────┐  │  sessions                 │  │   TVR Service     │   │──────────►┌─────┐
-  │  Orchestrator  │──┤                           │  │   (gRPC server)   │   │ add_route │ BPA │
-  └────────────────┘  │  Session open = register  │  └─────────┬─────────┘   │ remove_   │ RIB │
-  ┌────────────────┐  │  Session close = cleanup  │            │             │ route     └─────┘
-  │  grpcurl / CLI │──┘                           │  ┌─────────▼─────────┐   │
-  └────────────────┘                              │  │    Scheduler      │   │
-  ┌────────────────┐                              │  │    (clock loop)   │   │
-  │ Contact Plan   │  file watch                  │  └───────────────────┘   │
-  │ File           │─────────────────────────────►│  (internal, no session) │
-  └────────────────┘                              └──────────────────────────┘
+```mermaid
+graph LR
+    DPP["DPP Speaker"]
+    Orch["Orchestrator"]
+    CLI["grpcurl / CLI"]
+    File["Contact Plan\nFile"]
+
+    subgraph tvr ["hardy-tvr"]
+        Service["TVR Service\n(gRPC server)"]
+        Sched["Scheduler\n(clock loop)"]
+        Service --> Sched
+    end
+
+    DPP -- "gRPC streaming\nsessions" --> Service
+    Orch -- "gRPC streaming\nsessions" --> Service
+    CLI -- "gRPC streaming\nsessions" --> Service
+    File -- "file watch\n(internal, no session)" --> Sched
+
+    BPA["BPA RIB"]
+    Sched -- "add_route /\nremove_route" --> BPA
 ```
 
 The **TVR gRPC service** accepts contact sessions from external clients.
