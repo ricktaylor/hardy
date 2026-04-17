@@ -18,18 +18,14 @@ Command-line diagnostic and testing tools for Bundle Protocol networks.
 
 The `bp` binary embeds a minimal BPA and TCPCLv4 CLA:
 
-```
-┌────────────────────────────────────────────────────────┐
-│                    bp ping                             │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  hardy-bpa (no storage)                        │    │
-│  │  ┌─────────────┐  ┌──────────────────────────┐ │    │
-│  │  │ PingService │  │ hardy-tcpclv4            │ │    │
-│  │  │ (Service    │  │ (direct TCP connection)  │ │    │
-│  │  │  trait)     │  │                          │ │    │
-│  │  └─────────────┘  └──────────────────────────┘ │    │
-│  └────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph bp_ping["bp ping"]
+        subgraph bpa["hardy-bpa (no storage)"]
+            ping["PingService (Service trait)"]
+            tcpclv4["hardy-tcpclv4 (direct TCP connection)"]
+        end
+    end
 ```
 
 This architecture enables testing without deploying a full BPA server. The BPA has no storage backend - bundles exist only transiently during the ping operation.

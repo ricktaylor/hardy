@@ -16,21 +16,17 @@ TCP Convergence Layer Protocol Version 4 implementation for DTN bundle transport
 
 The implementation follows the RFC's conceptual separation between TCPCL entities, sessions, and transfer streams:
 
-```
-TCPCL Entity (Cla struct)
-    │
-    ├── Passive Listener (listen.rs)
-    │       └── Accepts incoming TCP connections
-    │
-    ├── Active Connector (connect.rs)
-    │       └── Initiates outbound TCP connections
-    │
-    └── Connection Registry (connection.rs)
-            │
-            └── Connection Pool (per peer address)
-                    │
-                    └── Session Tasks (session.rs)
-                            └── Transfer Streams (bidirectional)
+```mermaid
+graph TD
+    entity["TCPCL Entity (Cla struct)"]
+    entity --> listener["Passive Listener (listen.rs)"]
+    listener --> accepts["Accepts incoming TCP connections"]
+    entity --> connector["Active Connector (connect.rs)"]
+    connector --> initiates["Initiates outbound TCP connections"]
+    entity --> registry["Connection Registry (connection.rs)"]
+    registry --> pool["Connection Pool (per peer address)"]
+    pool --> sessions["Session Tasks (session.rs)"]
+    sessions --> transfers["Transfer Streams (bidirectional)"]
 ```
 
 ### Layered Design

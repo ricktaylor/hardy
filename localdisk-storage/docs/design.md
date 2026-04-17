@@ -16,13 +16,17 @@ Local filesystem bundle storage implementing the BundleStorage trait.
 
 The storage maps bundle identifiers to files on the local filesystem:
 
-```
-BPA
- │
- ├─ save(bundle_data)  ──► write .tmp file ──► fsync ──► atomic rename
- ├─ load(storage_name) ──► mmap file (or read)
- ├─ delete(storage_name) ──► unlink file
- └─ recover() ──► parallel directory walk ──► emit (name, timestamp) pairs
+```mermaid
+flowchart LR
+    BPA --> save["save(bundle_data)"]
+    BPA --> load["load(storage_name)"]
+    BPA --> delete["delete(storage_name)"]
+    BPA --> recover["recover()"]
+
+    save --> tmp["write .tmp file"] --> fsync["fsync"] --> rename["atomic rename"]
+    load --> mmap["mmap file (or read)"]
+    delete --> unlink["unlink file"]
+    recover --> walk["parallel directory walk"] --> emit["emit (name, timestamp) pairs"]
 ```
 
 Bundles are stored in a two-level directory hierarchy (256 x 256 directories) with random filenames. This distribution prevents any single directory from accumulating too many entries.

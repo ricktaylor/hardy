@@ -16,14 +16,17 @@ SQLite-based metadata storage implementing the MetadataStorage trait.
 
 The storage layer sits between the BPA and a SQLite database file:
 
-```
-BPA
- │
- ├─ store_bundle()     ─┐
- ├─ poll_for_*()        │
- ├─ update_status()     ├──► ConnectionPool ──► SQLite (WAL mode)
- ├─ get_bundle()        │         │
- └─ remove_bundle()    ─┘         └── write_lock (serialises writes)
+```mermaid
+flowchart LR
+    BPA --> store["store_bundle()"]
+    BPA --> poll["poll_for_*()"]
+    BPA --> update["update_status()"]
+    BPA --> get["get_bundle()"]
+    BPA --> remove["remove_bundle()"]
+
+    store & poll & update & get & remove --> pool["ConnectionPool"]
+    pool --> sqlite["SQLite (WAL mode)"]
+    pool --- lock["write_lock (serialises writes)"]
 ```
 
 Bundle metadata is serialised as JSON and stored alongside indexed columns that enable efficient querying without deserialising every row. The connection pool manages SQLite connections, with a dedicated write lock ensuring serialised writes while allowing concurrent reads.

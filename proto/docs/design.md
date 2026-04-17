@@ -33,9 +33,9 @@ The package provides two main components:
 │  │   └── application.rs - Implements services::Application  │
 │  └── client/        - Remote-side proxy implementations     │
 │      ├── cla.rs     - register_cla()                        │
-│      ├── routing.rs - register_routing_agent()               │
-│      ├── service.rs - register_endpoint_service()            │
-│      └── application.rs - register_application_service()     │
+│      ├── routing.rs - register_routing_agent()              │
+│      ├── service.rs - register_endpoint_service()           │
+│      └── application.rs - register_application_service()    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,23 +68,26 @@ Each direction has a wrapper message containing:
 
 **Protocol flow:**
 
-```
-Client                                    Server
-   │                                         │
-   │─── Register() RPC ─────────────────────>│
-   │<══════════ Bidirectional Stream ═══════>│
-   │                                         │
-   │─── RegisterRequest (msg_id=0) ─────────>│
-   │<── RegisterResponse (msg_id=0) ─────────│
-   │                                         │
-   │─── DispatchBundle (msg_id=1) ──────────>│  Client-initiated
-   │─── AddPeer (msg_id=2) ─────────────────>│  (concurrent)
-   │<── DispatchResponse (msg_id=1) ─────────│
-   │<── AddPeerResponse (msg_id=2) ──────────│
-   │                                         │
-   │<── ForwardBundleRequest (msg_id=3) ─────│  Server-initiated
-   │─── ForwardBundleResponse (msg_id=3) ───>│
-   │                                         │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    Client->>Server: Register() RPC
+    Note over Client,Server: Bidirectional Stream established
+
+    Client->>Server: RegisterRequest (msg_id=0)
+    Server->>Client: RegisterResponse (msg_id=0)
+
+    Client->>Server: DispatchBundle (msg_id=1)
+    Note right of Client: Client-initiated (concurrent)
+    Client->>Server: AddPeer (msg_id=2)
+    Server->>Client: DispatchResponse (msg_id=1)
+    Server->>Client: AddPeerResponse (msg_id=2)
+
+    Server->>Client: ForwardBundleRequest (msg_id=3)
+    Note left of Server: Server-initiated
+    Client->>Server: ForwardBundleResponse (msg_id=3)
 ```
 
 The first message must always be a registration request with `msg_id=0`. After registration succeeds, either side can initiate messages. The sender assigns a unique `msg_id`; the receiver echoes it in the response, allowing the sender to match responses to requests even when multiple operations are in flight.
@@ -114,22 +117,22 @@ This symmetry allows the proxy module to implement the same traits used for in-p
 The `RpcProxy` struct manages the bidirectional stream using independent reader and writer tasks, following the pattern established by TCPCLv4:
 
 ```
-                  ┌─────────────────────┐
-                  │    Writer Task      │
+                 ┌─────────────────────┐
+                 │    Writer Task      │
  write_tx ──────►│  write_rx → stream  │──► gRPC outbound
-                  └─────────────────────┘
+                 └─────────────────────┘
                         ▲
                         │ write_tx.send()
                         │
-                  ┌─────┴───────────────┐
-                  │    Reader Task      │
+                 ┌──────┴──────────────┐
+                 │    Reader Task      │
  gRPC inbound ──►│  stream → dispatch  │
-                  │                     │
-                  │  if response:       │
-                  │    complete oneshot  │
-                  │  if request:        │
-                  │    spawn handler    │──► TaskPool
-                  └─────────────────────┘
+                 │                     │
+                 │  if response:       │
+                 │    complete oneshot │
+                 │  if request:        │
+                 │    spawn handler    │──► TaskPool
+                 └─────────────────────┘
 ```
 
 **Writer task**: Dedicated task owning the outbound stream direction. Anyone sends by cloning `write_tx`. Exits on parent cancellation or when all senders drop.
@@ -184,25 +187,18 @@ The gRPC layer is the **security boundary** for the BPA. Two deployment modes ex
 
 **Remote components** (connecting via gRPC) are authenticated and authorized at the gRPC layer:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  bpa-server process                                             │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  bpa (core) - trusts all callers                          │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                              ▲                                  │
-│                              │ (direct Rust calls)              │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  gRPC handlers ◄── TRUST BOUNDARY                         │  │
-│  │  ├─ mTLS authentication (certificate = identity)          │  │
-│  │  ├─ Namespace validation at registration                  │  │
-│  │  └─ Policy enforcement (rate limits, quotas)              │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                              ▲                                  │
-│                              │ gRPC + mTLS                      │
-└──────────────────────────────┼──────────────────────────────────┘
-                               │
-                    Remote CLA / Service / App
+```mermaid
+graph BT
+    remote["Remote CLA / Service / App"] -- "gRPC + mTLS" --> grpc
+
+    subgraph bpa_server["bpa-server process"]
+        subgraph grpc["gRPC handlers — TRUST BOUNDARY"]
+            mtls["mTLS authentication (certificate = identity)"]
+            ns["Namespace validation at registration"]
+            policy["Policy enforcement (rate limits, quotas)"]
+        end
+        grpc -- "direct Rust calls" --> core["bpa (core) — trusts all callers"]
+    end
 ```
 
 **Resource ownership** is enforced structurally by the Sink pattern (see [BPA design](../../bpa/docs/design.md#authorization-and-ownership)). Each gRPC connection receives a Sink bound to its own resources—a client cannot affect another client's registrations because it has no reference to them.
