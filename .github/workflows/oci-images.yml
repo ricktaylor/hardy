@@ -9,7 +9,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - "**/Dockerfile"
-      - ".github/workflows/images.yml"
+      - ".github/workflows/oci-images.yml"
       - "proto/**"
 
 env:
