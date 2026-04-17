@@ -13,8 +13,8 @@ To complete this PICS, the implementer is to provide the requested information i
 | Implementation Information | Response |
 | :---- | :---- |
 | **Supplier** | Aalyria Technologies Inc. |
-| **Contact Point for Queries** | Rick Taylor (rtaylor@aalyria.com) |
-| **Implementation Name(s) and Version(s)** | Hardy, version 0.1.0, commit bb21b55 |
+| **Contact Point for Queries** | Rick Taylor (<rtaylor@aalyria.com>) |
+| **Implementation Name(s) and Version(s)** | Hardy, version 0.1.0, tag v0.1.0 |
 | **Hardware/Software Environment** | GCP/KVM, Linux 6.1.0-40-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.153-1 (2025-09-20) x86_64 GNU/Linux |
 | **Other Information** |  |
 
