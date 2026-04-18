@@ -281,6 +281,10 @@ impl Dispatcher {
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
+                // Delete old data after metadata points to new
+                if let Some(old_name) = old_storage_name {
+                    self.store.delete_data(&old_name).await;
+                }
                 (bundle, data)
             }
             filters::ExecResult::Drop(bundle, reason) => {
