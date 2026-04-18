@@ -271,19 +271,27 @@ impl Dispatcher {
             .trace_expect("Ingress filter execution failed")
         {
             filters::registry::ExecResult::Continue(mutation, mut bundle, data) => {
-                // Persist any bundle data mutations
-                if mutation.bundle {
+                // Order: save new -> update metadata -> delete old.
+                // If crash after save but before update: new data orphaned (harmless).
+                // If crash after update but before delete: old data orphaned (harmless).
+                // Metadata always points to valid data.
+                let old_storage_name = if mutation.bundle {
                     let new_storage_name = self.store.save_data(&data).await;
-                    if let Some(old_storage_name) = bundle.metadata.storage_name.take() {
-                        self.store.delete_data(&old_storage_name).await;
-                    }
+                    let old = bundle.metadata.storage_name.take();
                     bundle.metadata.storage_name = Some(new_storage_name);
-                }
-                // Always checkpoint to Dispatching (crash safety)
+                    old
+                } else {
+                    None
+                };
+                // Checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
+                // Delete old data after metadata points to new
+                if let Some(old_name) = old_storage_name {
+                    self.store.delete_data(&old_name).await;
+                }
                 (bundle, data)
             }
             filters::registry::ExecResult::Drop(bundle, reason) => {
