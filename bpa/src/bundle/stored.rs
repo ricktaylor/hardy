@@ -15,6 +15,11 @@ pub struct Stored {
 }
 
 impl Bundle<Stored> {
+    /// Returns the storage key for this bundle's data.
+    pub fn storage_name(&self) -> &Arc<str> {
+        &self.state.storage_name
+    }
+
     /// Load this bundle's data from storage.
     pub async fn get_data(&self, store: &Store) -> Option<Bytes> {
         store.load_data(&self.state.storage_name).await

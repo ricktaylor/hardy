@@ -102,6 +102,11 @@ pub struct Bundle<S = Idle> {
 }
 
 impl<S> Bundle<S> {
+    /// Returns the bundle's unique identifier.
+    pub fn id(&self) -> &hardy_bpv7::bundle::Id {
+        &self.bundle.id
+    }
+
     pub fn creation_time(&self) -> OffsetDateTime {
         self.bundle.id.timestamp.as_datetime().unwrap_or_else(|| {
             self.metadata
