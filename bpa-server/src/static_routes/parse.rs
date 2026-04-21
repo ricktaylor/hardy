@@ -1,8 +1,9 @@
+use std::io::ErrorKind;
+use std::path::Path;
+
 use chumsky::prelude::*;
 use hardy_bpa::routes::Action;
 use hardy_eid_patterns::EidPattern;
-use std::io::ErrorKind;
-use std::path::Path;
 use tracing::{debug, error};
 
 use super::StaticRoute;

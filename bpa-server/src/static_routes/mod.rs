@@ -1,4 +1,7 @@
-use anyhow::Context;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
@@ -8,11 +11,7 @@ use notify_debouncer_full::notify::event::{CreateKind, RemoveKind};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, new_debouncer};
 use serde::{Deserialize, Serialize};
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use trace_err::*;
+use trace_err::{TraceErrOption, TraceErrResult};
 use tracing::{error, info};
 
 use crate::config::default_config_dir;
@@ -61,7 +60,7 @@ pub struct StaticRoutesAgent {
 }
 
 impl StaticRoutesAgent {
-    fn new(routes_file: PathBuf, priority: u32, watch: bool) -> Self {
+    pub fn new(routes_file: PathBuf, priority: u32, watch: bool) -> Self {
         Self {
             routes_file,
             priority,
@@ -269,32 +268,4 @@ impl RoutingAgent for StaticRoutesAgent {
     async fn on_unregister(&self) {
         self.tasks.shutdown().await;
     }
-}
-
-pub fn new(
-    routes_file: PathBuf,
-    priority: u32,
-    watch: bool,
-) -> anyhow::Result<Arc<dyn RoutingAgent>> {
-    let routes_file = std::env::current_dir()
-        .context("Failed to get current directory")?
-        .join(routes_file);
-
-    let routes_file = match routes_file.canonicalize() {
-        Ok(path) => path,
-        Err(e) => {
-            if e.kind() != ErrorKind::NotFound {
-                return Err(anyhow::anyhow!(
-                    "Failed to canonicalise routes_file '{}': {e}'",
-                    routes_file.display()
-                ));
-            }
-            routes_file
-        }
-    };
-
-    let agent: Arc<dyn RoutingAgent> =
-        Arc::new(StaticRoutesAgent::new(routes_file, priority, watch));
-
-    Ok(agent)
 }
