@@ -313,8 +313,16 @@ impl Dispatcher {
             Some(rib::FindResult::Deliver(Some(service))) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
-                    // Reassemble the bundle before delivery
-                    self.reassemble(bundle).await
+                    match crate::fragmentation::Reassembler::new(&self.store, self.key_provider())
+                        .run(bundle)
+                        .await
+                    {
+                        crate::fragmentation::ReassemblerResult::Complete(bundle, data) => {
+                            Box::pin(self.ingest_bundle_inner(*bundle, data)).await;
+                        }
+                        crate::fragmentation::ReassemblerResult::Pending
+                        | crate::fragmentation::ReassemblerResult::Failed => {}
+                    }
                 } else {
                     // Bundle is for a local service
                     self.deliver_bundle(service, bundle, data).await

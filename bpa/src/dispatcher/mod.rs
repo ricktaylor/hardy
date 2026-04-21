@@ -6,7 +6,6 @@ mod admin;
 mod dispatch;
 mod forward;
 mod local;
-mod reassemble;
 mod report;
 mod restart;
 

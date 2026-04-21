@@ -23,7 +23,6 @@ mod store;
 
 use reaper::Reaper;
 
-pub(crate) mod adu_reassembly;
 pub(crate) mod channel;
 pub(crate) mod recover;
 
