@@ -1,24 +1,26 @@
 use core::num::NonZeroUsize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use hardy_async::available_parallelism;
 use hardy_bpa::filters::rfc9171;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 use tracing::Level;
 
-use crate::bpa::clas;
-use crate::bpa::policy;
-use crate::bpa::static_routes;
-use crate::bpa::storage;
+pub mod cla;
+pub mod policy;
+pub mod storage;
+
 use crate::error::Error;
+use crate::static_routes;
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
 // - macOS: /etc/hardy/
 // - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
-pub(crate) fn default_config_dir() -> std::path::PathBuf {
+pub fn default_config_dir() -> std::path::PathBuf {
     #[cfg(unix)]
     return std::path::PathBuf::from("/etc/hardy");
 
@@ -144,7 +146,7 @@ pub struct Config {
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
-    pub clas: Vec<clas::Config>,
+    pub clas: Vec<cla::Config>,
 }
 
 impl Config {
