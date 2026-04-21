@@ -81,14 +81,14 @@ impl BundleStorage for CachedBundleStorage {
         Ok(storage_name)
     }
 
-    async fn overwrite(&self, storage_name: &str, data: Bytes) -> Result<()> {
+    async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()> {
         if self.is_cacheable(&data) {
             self.lru.lock().put(storage_name.into(), data.clone());
         } else {
             self.lru.lock().pop(storage_name);
         }
 
-        self.inner.overwrite(storage_name, data).await
+        self.inner.replace(storage_name, data).await
     }
 
     async fn delete(&self, storage_name: &str) -> Result<()> {

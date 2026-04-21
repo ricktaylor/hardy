@@ -316,7 +316,7 @@ impl BundleStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    async fn overwrite(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
+    async fn replace(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
         let final_path = self.store_root.join(PathBuf::from_str(storage_name)?);
         let tmp_path = final_path.with_extension("tmp");
 
@@ -355,7 +355,7 @@ impl BundleStorage for Storage {
                 storage::Result::Ok(())
             })
             .await
-            .trace_expect("Failed to spawn overwrite thread")?;
+            .trace_expect("Failed to spawn replace thread")?;
             Ok(())
         } else {
             tokio::fs::write(&tmp_path, &data).await.inspect_err(|e| {

@@ -238,7 +238,7 @@ impl storage::BundleStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    async fn overwrite(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
+    async fn replace(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
         let key = self.full_key(storage_name);
         if data.len() >= self.multipart_threshold {
             self.save_multipart(&key, data).await?;
