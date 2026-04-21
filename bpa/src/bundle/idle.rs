@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 
 use super::{Bundle, BundleMetadata, ReadOnlyMetadata, Stored};
 use crate::cla::ClaAddress;
-use crate::storage::Store;
+use crate::storage::{self, Store};
 use crate::{Arc, Bytes};
 
 /// Typestate: bundle has been parsed and validated but not yet persisted.
@@ -53,19 +53,20 @@ impl Bundle<Idle> {
     /// Metadata never points to missing data.
     ///
     /// Returns `None` if a bundle with the same ID already exists (duplicate).
-    pub async fn store(self, store: &Store) -> Option<Bundle<Stored>> {
-        let storage_name = store.save_data(&self.state.data).await;
-        let inserted = store.insert_metadata(&self).await;
+    pub async fn store(self, store: &Store) -> storage::Result<Option<Bundle<Stored>>> {
+        let storage_name = store.save_data(&self.state.data).await?;
 
-        if !inserted {
-            store.delete_data(&storage_name).await;
-            return None;
-        }
-
-        Some(Bundle {
+        let stored = Bundle {
             bundle: self.bundle,
             metadata: self.metadata,
             state: Stored { storage_name },
-        })
+        };
+
+        if !store.insert_metadata(&stored).await? {
+            store.delete_data(stored.storage_name()).await?;
+            return Ok(None);
+        }
+
+        Ok(Some(stored))
     }
 }

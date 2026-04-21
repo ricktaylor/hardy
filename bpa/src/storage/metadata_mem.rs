@@ -1,28 +1,32 @@
-use hardy_async::{async_trait, sync::Mutex};
-use hardy_bpv7::{bundle::Id, eid::Eid};
+use core::num::{NonZero, NonZeroUsize};
+use flume::Sender;
+use hardy_async::async_trait;
+use hardy_async::sync::Mutex;
+use hardy_bpv7::bundle::Id;
+use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 use tracing::info;
 
-use super::{MetadataStorage, Result, Sender};
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use super::{MetadataStorage, Result};
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus, Stored};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
-    pub max_bundles: core::num::NonZeroUsize,
+    pub max_bundles: NonZeroUsize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_bundles: core::num::NonZero::new(1_048_576).unwrap(),
+            max_bundles: NonZero::new(1_048_576).unwrap(),
         }
     }
 }
 
 pub struct MetadataMemStorage {
-    entries: Mutex<LruCache<Id, Option<Bundle>>>,
+    entries: Mutex<LruCache<Id, Option<Bundle<Stored>>>>,
 }
 
 impl MetadataMemStorage {
@@ -38,7 +42,7 @@ impl MetadataMemStorage {
     }
 
     /// Account for an entry leaving the LRU (eviction or replacement).
-    fn on_remove(value: &Option<Bundle>) {
+    fn on_remove(value: &Option<Bundle<Stored>>) {
         match value {
             Some(_) => metrics::gauge!("bpa.mem_metadata.entries").decrement(1.0),
             None => metrics::gauge!("bpa.mem_metadata.tombstones").decrement(1.0),
@@ -46,7 +50,7 @@ impl MetadataMemStorage {
     }
 
     /// Account for an entry entering the LRU.
-    fn on_add(value: &Option<Bundle>) {
+    fn on_add(value: &Option<Bundle<Stored>>) {
         match value {
             Some(_) => metrics::gauge!("bpa.mem_metadata.entries").increment(1.0),
             None => metrics::gauge!("bpa.mem_metadata.tombstones").increment(1.0),
@@ -55,7 +59,7 @@ impl MetadataMemStorage {
 
     /// Insert or replace a value in the LRU, updating metrics for all transitions:
     /// added, replaced, evicted.
-    fn put(&self, key: Id, value: Option<Bundle>) -> Result<()> {
+    fn put(&self, key: Id, value: Option<Bundle<Stored>>) -> Result<()> {
         let prev = { self.entries.lock().put(key, value.clone()) };
         if let Some(prev) = prev {
             Self::on_remove(&prev);
@@ -66,7 +70,7 @@ impl MetadataMemStorage {
 
     /// Insert a new entry only if the key is absent. Returns false if already present.
     /// Accounts for LRU eviction of a different entry.
-    fn push(&self, key: Id, value: Option<Bundle>) -> Result<bool> {
+    fn push(&self, key: Id, value: Option<Bundle<Stored>>) -> Result<bool> {
         let evicted = {
             let mut entries = self.entries.lock();
             if entries.get(&key).is_some() {
@@ -85,19 +89,19 @@ impl MetadataMemStorage {
 
 #[async_trait]
 impl MetadataStorage for MetadataMemStorage {
-    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>> {
+    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle<Stored>>> {
         Ok(self.entries.lock().peek(bundle_id).cloned().flatten())
     }
 
-    async fn insert(&self, bundle: &Bundle) -> Result<bool> {
+    async fn insert(&self, bundle: &Bundle<Stored>) -> Result<bool> {
         self.push(bundle.bundle.id.clone(), Some(bundle.clone()))
     }
 
-    async fn replace(&self, bundle: &Bundle) -> Result<()> {
+    async fn replace(&self, bundle: &Bundle<Stored>) -> Result<()> {
         self.put(bundle.bundle.id.clone(), Some(bundle.clone()))
     }
 
-    async fn update_status(&self, bundle: &Bundle) -> Result<()> {
+    async fn update_status(&self, bundle: &Bundle<Stored>) -> Result<()> {
         self.replace(bundle).await
     }
 
@@ -109,14 +113,11 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Result<Option<BundleMetadata>> {
+    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<BundleMetadata>> {
         Ok(None)
     }
 
-    async fn remove_unconfirmed(&self, _tx: Sender<Bundle>) -> Result<()> {
+    async fn remove_unconfirmed(&self, _tx: Sender<Bundle<Stored>>) -> Result<()> {
         Ok(())
     }
 
@@ -134,8 +135,8 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
-    async fn poll_expiry(&self, tx: Sender<Bundle>, limit: usize) -> Result<()> {
-        let mut entries: Vec<Bundle> = self
+    async fn poll_expiry(&self, tx: Sender<Bundle<Stored>>, limit: usize) -> Result<()> {
+        let mut entries: Vec<Bundle<Stored>> = self
             .entries
             .lock()
             .iter()
@@ -154,8 +155,8 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn poll_waiting(&self, tx: Sender<Bundle>) -> Result<()> {
-        let mut entries: Vec<Bundle> = self
+    async fn poll_waiting(&self, tx: Sender<Bundle<Stored>>) -> Result<()> {
+        let mut entries: Vec<Bundle<Stored>> = self
             .entries
             .lock()
             .iter()
@@ -174,8 +175,8 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) -> Result<()> {
-        let mut entries: Vec<Bundle> = self
+    async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle<Stored>>) -> Result<()> {
+        let mut entries: Vec<Bundle<Stored>> = self
             .entries
             .lock()
             .iter()
@@ -196,8 +197,12 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn poll_adu_fragments(&self, tx: Sender<Bundle>, status: &BundleStatus) -> Result<()> {
-        let mut entries: Vec<(u64, Bundle)> = self
+    async fn poll_adu_fragments(
+        &self,
+        tx: Sender<Bundle<Stored>>,
+        status: &BundleStatus,
+    ) -> Result<()> {
+        let mut entries: Vec<(u64, Bundle<Stored>)> = self
             .entries
             .lock()
             .iter()
@@ -224,16 +229,16 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn poll_pending(
         &self,
-        tx: Sender<Bundle>,
-        state: &BundleStatus,
+        tx: Sender<Bundle<Stored>>,
+        status: &BundleStatus,
         limit: usize,
     ) -> Result<()> {
-        let mut entries: Vec<Bundle> = self
+        let mut entries: Vec<Bundle<Stored>> = self
             .entries
             .lock()
             .iter()
             .filter_map(|(_, v)| v.as_ref())
-            .filter(|v| &v.metadata.status == state)
+            .filter(|v| &v.metadata.status == status)
             .cloned()
             .collect();
 

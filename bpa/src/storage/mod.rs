@@ -1,34 +1,29 @@
-use super::*;
-use hardy_async::sync::Mutex;
+use flume::Sender;
+use hardy_async::async_trait;
+use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
-use lru::LruCache;
+use time::OffsetDateTime;
 
-// For bundle_cache we use hardy_async::sync::spin::Mutex because:
-// 1. All operations are O(1): peek, put, pop
-// 2. Critical sections are very short (LRU HashMap lookups)
-// 3. No blocking/sleeping/syscalls while holding lock
-// 4. Avoids OS mutex overhead on hot path
-//
-// Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
-// they perform O(n) iteration while holding the lock.
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus, Stored};
+use crate::{Arc, Bytes};
 
-/// Boxed error type used by storage trait methods.
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
-/// Result alias for storage operations.
 pub type Result<T> = core::result::Result<T, Error>;
-/// Channel sender used to stream results from storage polling methods.
-pub type Sender<T> = flume::Sender<T>;
+
+mod cached;
+mod reaper;
+mod store;
 
 /// In-memory [`BundleStorage`] backend, suitable for testing and ephemeral deployments.
 pub mod bundle_mem;
+pub(crate) mod channel;
 /// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
 pub mod metadata_mem;
 
-pub(crate) mod adu_reassembly;
-pub(crate) mod channel;
-pub(crate) mod store;
-
-mod reaper;
+pub use bundle_mem::BundleMemStorage;
+pub use cached::CachedBundleStorage;
+pub use metadata_mem::MetadataMemStorage;
+pub(crate) use store::Store;
 
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
@@ -51,18 +46,12 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// A `Result` containing an `Option<bundle::Bundle>`. `Some(bundle)` if the bundle is found,
     /// `None` if it is not.
-    async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<Option<bundle::Bundle>>;
+    async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle<Stored>>>;
 
     /// Inserts a new bundle's metadata into the storage.
     ///
-    /// # Arguments
-    ///
-    /// * `bundle` - The bundle to insert.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a boolean indicating whether the insertion was successful.
-    async fn insert(&self, bundle: &bundle::Bundle) -> Result<bool>;
+    /// Returns `true` if inserted, `false` if a bundle with the same ID already exists.
+    async fn insert(&self, bundle: &Bundle<Stored>) -> Result<bool>;
 
     /// Replaces an existing bundle's metadata in the storage.
     ///
@@ -73,13 +62,13 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the replacement was successful.
-    async fn replace(&self, bundle: &bundle::Bundle) -> Result<()>;
+    async fn replace(&self, bundle: &Bundle<Stored>) -> Result<()>;
 
     /// Updates only the typed status columns for an existing bundle's metadata.
     ///
     /// Cheaper than `replace` because the bundle blob is not written. Use this
     /// for pure state-machine transitions where no other metadata has changed.
-    async fn update_status(&self, bundle: &bundle::Bundle) -> Result<()>;
+    async fn update_status(&self, bundle: &Bundle<Stored>) -> Result<()>;
 
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     /// A tombstone marks the bundle as deleted, preventing it from being re-inserted
@@ -92,7 +81,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<()>;
+    async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
 
     /// Part of the startup recovery protocol. Called once per bundle after
     /// `mark_unconfirmed()` as the BPA walks the bundle store and finds data on
@@ -115,10 +104,7 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// A `Result` containing an `Option<metadata::BundleMetadata>`. `Some(metadata)` if the
     /// bundle exists, `None` if it does not.
-    async fn confirm_exists(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Result<Option<bundle::BundleMetadata>>;
+    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
 
     /// Begins the startup recovery protocol by marking all existing metadata
     /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
@@ -142,7 +128,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn remove_unconfirmed(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
+    async fn remove_unconfirmed(&self, tx: Sender<Bundle<Stored>>) -> Result<()>;
 
     /// Resets all bundles with the status `BundleStatus::ForwardPending { peer, _ }` to `Waiting`.
     /// This allows the dispatcher to re-evaluate the forwarding decision for these bundles.
@@ -167,7 +153,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_expiry(&self, tx: Sender<bundle::Bundle>, limit: usize) -> Result<()>;
+    async fn poll_expiry(&self, tx: Sender<Bundle<Stored>>, limit: usize) -> Result<()>;
 
     /// Returns all bundles with `BundleStatus::Waiting` status, snapshotted at the time of the call,
     /// ordered by received time. The receiver will hang up when it has enough bundles.
@@ -179,7 +165,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_waiting(&self, tx: Sender<bundle::Bundle>) -> Result<()>;
+    async fn poll_waiting(&self, tx: Sender<Bundle<Stored>>) -> Result<()>;
 
     /// Returns bundles currently in `BundleStatus::WaitingForService` for the specified service source,
     /// ordered by received time. The receiver will hang up when it has enough bundles.
@@ -192,7 +178,7 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_service_waiting(&self, source: Eid, tx: Sender<bundle::Bundle>) -> Result<()>;
+    async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle<Stored>>) -> Result<()>;
 
     /// Returns all bundles matching the `BundleStatus::AduFragment` status, preferably ordered by fragment offset.
     /// The receiver will hang up when it has enough bundles.
@@ -207,8 +193,8 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn poll_adu_fragments(
         &self,
-        tx: Sender<bundle::Bundle>,
-        status: &bundle::BundleStatus,
+        tx: Sender<Bundle<Stored>>,
+        status: &BundleStatus,
     ) -> Result<()>;
 
     /// Returns the next `limit` bundles waiting in a particular status, ordered by received time.
@@ -225,14 +211,14 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn poll_pending(
         &self,
-        tx: storage::Sender<bundle::Bundle>,
-        status: &bundle::BundleStatus,
+        tx: Sender<Bundle<Stored>>,
+        status: &BundleStatus,
         limit: usize,
-    ) -> storage::Result<()>;
+    ) -> Result<()>;
 }
 
 /// A recovered bundle entry: `(storage_name, creation_time)`.
-pub type RecoveryResponse = (Arc<str>, time::OffsetDateTime);
+pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 
 /// The `BundleStorage` trait defines the interface for storing and managing the binary data of bundles.
 ///
@@ -281,6 +267,12 @@ pub trait BundleStorage: Send + Sync {
     /// A `Result` containing the name of the saved bundle.
     async fn save(&self, data: Bytes) -> Result<Arc<str>>;
 
+    /// Overwrites existing bundle data at the given storage name.
+    ///
+    /// The implementation must ensure atomicity: readers see either the
+    /// old data or the new data, never a partial write.
+    async fn overwrite(&self, storage_name: &str, data: Bytes) -> Result<()>;
+
     /// Deletes a bundle from the bundle storage.
     ///
     /// # Arguments
@@ -291,36 +283,4 @@ pub trait BundleStorage: Send + Sync {
     ///
     /// A `Result` indicating whether the operation was successful.
     async fn delete(&self, storage_name: &str) -> Result<()>;
-}
-
-/// Default LRU cache capacity (number of entries).
-pub const DEFAULT_LRU_CAPACITY: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(1024).unwrap();
-
-/// Default maximum bundle size (in bytes) eligible for caching.
-pub const DEFAULT_MAX_CACHED_BUNDLE_SIZE: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(16 * 1024).unwrap();
-
-/// Bundles the LRU and its size threshold together so that
-/// [`Store`] only needs a single `Option` field.
-struct BundleCache {
-    // Using sync::spin::Mutex - see comment at top of file
-    lru: hardy_async::sync::spin::Mutex<LruCache<Arc<str>, Bytes>>,
-    max_bundle_size: usize,
-}
-
-// Storage helper
-pub(crate) struct Store {
-    tasks: hardy_async::TaskPool,
-    metadata_storage: Arc<dyn storage::MetadataStorage>,
-    bundle_storage: Arc<dyn storage::BundleStorage>,
-
-    // None when the bundle storage backend is already in-memory (avoids double-caching).
-    bundle_cache: Option<BundleCache>,
-
-    reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
-    reaper_wakeup: Arc<hardy_async::Notify>,
-
-    // Config
-    reaper_cache_size: usize,
 }
