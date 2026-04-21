@@ -1,8 +1,7 @@
 use core::num::NonZeroUsize;
 
 use flume::Sender;
-use hardy_async::sync::Mutex;
-use hardy_async::{Notify, TaskPool};
+use hardy_async::TaskPool;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 use trace_err::*;
@@ -10,19 +9,17 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, reaper};
+use super::reaper::Reaper;
+use super::{BundleStorage, MetadataStorage};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
-use crate::{Arc, BTreeSet, Bytes};
+use crate::{Arc, Bytes};
 
 pub(crate) struct Store {
     pub(super) tasks: TaskPool,
     pub(super) metadata_storage: Arc<dyn MetadataStorage>,
     pub(super) bundle_storage: Arc<dyn BundleStorage>,
-
-    pub(super) reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
-    pub(super) reaper_wakeup: Arc<Notify>,
-    pub(super) reaper_cache_size: usize,
+    pub(super) reaper: Reaper,
 }
 
 impl Store {
@@ -36,17 +33,13 @@ impl Store {
         bundle_storage: Arc<dyn BundleStorage>,
     ) -> Self {
         let tasks = TaskPool::new();
-        let reaper_cache = Arc::new(Mutex::new(BTreeSet::new()));
-        let reaper_wakeup = Arc::new(Notify::new());
-        let reaper_cache_size = reaper_cache_size.into();
+        let reaper = Reaper::new(reaper_cache_size.into());
 
         Self {
             tasks,
             metadata_storage,
             bundle_storage,
-            reaper_cache,
-            reaper_wakeup,
-            reaper_cache_size,
+            reaper,
         }
     }
 
@@ -59,15 +52,19 @@ impl Store {
             self.recover(&dispatcher);
         }
 
-        // Start the reaper
         let store = self.clone();
         hardy_async::spawn!(self.tasks, "reaper_task", async move {
-            store.run_reaper(dispatcher).await
+            store.reaper.run(store.clone(), dispatcher).await
         });
     }
 
     pub async fn shutdown(&self) {
         self.tasks.shutdown().await;
+    }
+
+    /// Add a bundle to the reaper's expiry watch list.
+    pub async fn watch_bundle(&self, bundle: Bundle) {
+        self.reaper.watch(&bundle, true);
     }
 
     /// Store bundle data and metadata atomically.
