@@ -8,7 +8,7 @@ use lru::LruCache;
 use tracing::info;
 
 use super::{MetadataStorage, Result};
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus, Stored};
+use crate::bundle::{Bundle, BundleStatus, Stored};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -113,7 +113,7 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<BundleMetadata>> {
+    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<Bundle<Stored>>> {
         Ok(None)
     }
 

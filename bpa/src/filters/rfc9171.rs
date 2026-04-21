@@ -11,7 +11,12 @@ These checks are separated from the parser because:
 3. Different deployments may have different interoperability requirements
 */
 
-use super::*;
+use hardy_async::async_trait;
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::debug;
+
+use super::{FilterResult, ReadFilter};
+use crate::bundle;
 
 /// Configuration for the RFC9171 validity filter.
 ///
@@ -115,9 +120,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                         bundle_id = %bundle.bundle.id,
                         "Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)"
                     );
-                    return Ok(FilterResult::Drop(Some(
-                        hardy_bpv7::status_report::ReasonCode::BlockUnintelligible,
-                    )));
+                    return Ok(FilterResult::Drop(Some(ReasonCode::BlockUnintelligible)));
                 }
             }
         }
@@ -131,9 +134,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                 bundle_id = %bundle.bundle.id,
                 "Rejecting bundle: no clock in creation timestamp and no Bundle Age block"
             );
-            return Ok(FilterResult::Drop(Some(
-                hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
-            )));
+            return Ok(FilterResult::Drop(Some(ReasonCode::LifetimeExpired)));
         }
 
         Ok(FilterResult::Continue)

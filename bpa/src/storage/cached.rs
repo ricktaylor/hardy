@@ -9,11 +9,6 @@ use lru::LruCache;
 use super::{BundleStorage, RecoveryResponse, Result};
 use crate::{Arc, Bytes};
 
-/// Default LRU cache capacity (number of entries).
-pub const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
-/// Default maximum bundle size (in bytes) eligible for caching.
-pub const DEFAULT_MAX_CACHED_BUNDLE_SIZE: NonZeroUsize = NonZeroUsize::new(16 * 1024).unwrap();
-
 /// Wraps a `BundleStorage` backend with an in-memory LRU cache.
 ///
 /// Bundles smaller than `max_bundle_size` are cached on save/load.

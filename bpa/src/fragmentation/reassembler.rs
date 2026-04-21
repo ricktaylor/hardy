@@ -8,8 +8,7 @@ use tracing::debug;
 
 use super::{Fragment, FragmentSet};
 use crate::Bytes;
-use crate::bundle::Stored;
-use crate::bundle::{Bundle, BundleStatus};
+use crate::bundle::{Bundle, BundleStatus, Stored};
 use crate::storage::Store;
 
 /// Result of a reassembly attempt.
@@ -53,8 +52,8 @@ where
         };
 
         let Some(fragments) = self.collect(&bundle, &status).await else {
-            self.store.update_status(&mut bundle, &status).await;
-            self.store.watch_bundle(bundle).await;
+            let _ = self.store.update_status(&mut bundle, &status).await;
+            self.store.watch_bundle(&bundle);
             return ReassemblerResult::Pending;
         };
 
@@ -62,8 +61,8 @@ where
 
         // Remove fragment data and metadata regardless of outcome
         for frag in fragments.0.values() {
-            self.store.delete_data(&frag.storage_name).await;
-            self.store.tombstone_metadata(&frag.id).await;
+            let _ = self.store.delete_data(&frag.storage_name).await;
+            let _ = self.store.tombstone_metadata(&frag.id).await;
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&status))
                 .decrement(1.0);
         }
@@ -85,9 +84,13 @@ where
 
         let idle = Bundle::new(bundle, data, None, None, None);
 
-        let Some(bundle) = idle.store(self.store).await else {
-            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
-            return ReassemblerResult::Failed;
+        let bundle = match idle.store(self.store).await {
+            Ok(Some(bundle)) => bundle,
+            Ok(None) => {
+                metrics::counter!("bpa.bundle.received.duplicate").increment(1);
+                return ReassemblerResult::Failed;
+            }
+            Err(_) => return ReassemblerResult::Failed,
         };
 
         ReassemblerResult::Complete(bundle)
@@ -130,7 +133,7 @@ where
 
         let (tx, rx) = flume::bounded::<Bundle<Stored>>(16);
 
-        join!(self.store.poll_adu_fragments(tx, status), async {
+        join!(async { let _ = self.store.poll_adu_fragments(tx, status).await; }, async {
             loop {
                 select_biased! {
                     bundle = rx.recv_async().fuse() => {
@@ -181,7 +184,7 @@ where
             None
         })?;
 
-        let old_data = self.store.load_data(&first.storage_name).await?;
+        let old_data = self.store.load_data(&first.storage_name).await.ok().flatten()?;
         let total_adu_length = first
             .id
             .fragment_info
@@ -217,7 +220,9 @@ where
             let adu = self
                 .store
                 .load_data(&frag.storage_name)
-                .await?
+                .await
+                .ok()
+                .flatten()?
                 .slice(frag.payload_range.clone());
             new_data[offset..offset + len].copy_from_slice(adu.as_ref());
             bytes_written = bytes_written.saturating_add(len as u64);
@@ -273,12 +278,10 @@ mod tests {
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
 
     use super::*;
-    use crate::storage::{self, bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
+    use crate::storage::{bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
 
     fn make_store() -> Store {
         Store::new(
-            None,
-            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(MetadataMemStorage::new(&Default::default())),
             Arc::new(BundleMemStorage::new(&Default::default())),
@@ -297,7 +300,7 @@ mod tests {
     }
 
     async fn store_bytes(store: &Store, data: &[u8]) -> Arc<str> {
-        store.save_data(&Bytes::from(data.to_vec())).await
+        store.save_data(&Bytes::from(data.to_vec())).await.unwrap()
     }
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id) {
@@ -313,7 +316,7 @@ mod tests {
             None,
             None,
         );
-        store.insert_metadata(&idle).await;
+        idle.store(store).await.unwrap();
     }
 
     fn make_reassembler(
@@ -529,7 +532,7 @@ mod tests {
         let name1 = store_bytes(&store, &frag1_data).await;
 
         let meta_bundle = Bundle::new(bundle0.clone(), Bytes::new(), None, None, None);
-        store.insert_metadata(&meta_bundle).await;
+        meta_bundle.store(&store).await.unwrap();
 
         let payload0_range = bundle0.blocks.get(&1).unwrap().payload_range();
         let payload1_range = bundle1.blocks.get(&1).unwrap().payload_range();

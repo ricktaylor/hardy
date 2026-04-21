@@ -36,7 +36,9 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
+mod cbor;
 mod dispatcher;
+mod fragmentation;
 mod otel_metrics;
 mod recover;
 mod rib;
@@ -49,6 +51,7 @@ pub mod filters;
 pub mod keys;
 pub mod node_ids;
 pub mod policy;
+pub mod registration;
 pub mod routes;
 pub mod services;
 pub mod storage;

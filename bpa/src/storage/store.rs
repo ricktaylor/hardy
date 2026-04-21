@@ -1,11 +1,12 @@
 use core::num::NonZeroUsize;
+use flume::Sender;
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 
 use super::reaper::Reaper;
 use super::{BundleStorage, MetadataStorage};
-use crate::bundle::{self, Bundle, BundleStatus, Stored};
+use crate::bundle::{Bundle, BundleStatus, Stored};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
 
@@ -58,6 +59,13 @@ impl Store {
     }
 
     // -- Bundle data operations (delegated to BundleStorage) --
+
+    pub(crate) async fn walk_bundles(
+        &self,
+        tx: Sender<super::RecoveryResponse>,
+    ) -> super::Result<()> {
+        self.bundle_storage.walk(tx).await
+    }
 
     pub async fn save_data(&self, data: &Bytes) -> super::Result<Arc<str>> {
         self.bundle_storage.save(data.clone()).await
@@ -128,7 +136,7 @@ impl Store {
     pub(crate) async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> super::Result<Option<bundle::BundleMetadata>> {
+    ) -> super::Result<Option<Bundle<Stored>>> {
         self.metadata_storage.confirm_exists(bundle_id).await
     }
 

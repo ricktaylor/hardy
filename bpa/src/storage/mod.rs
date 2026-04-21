@@ -4,7 +4,7 @@ use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
 
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus, Stored};
+use crate::bundle::{Bundle, BundleStatus, Stored};
 use crate::{Arc, Bytes};
 
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
@@ -104,7 +104,7 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// A `Result` containing an `Option<metadata::BundleMetadata>`. `Some(metadata)` if the
     /// bundle exists, `None` if it does not.
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
+    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<Bundle<Stored>>>;
 
     /// Begins the startup recovery protocol by marking all existing metadata
     /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
