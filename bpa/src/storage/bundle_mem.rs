@@ -128,7 +128,7 @@ impl BundleStorage for BundleMemStorage {
         }
     }
 
-    async fn overwrite(&self, storage_name: &str, data: Bytes) -> Result<()> {
+    async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()> {
         let mut inner = self.inner.lock();
         let new_len = data.len();
         let old_len = inner

@@ -274,7 +274,7 @@ pub trait BundleStorage: Send + Sync {
     ///
     /// The implementation must ensure atomicity: readers see either the
     /// old data or the new data, never a partial write.
-    async fn overwrite(&self, storage_name: &str, data: Bytes) -> Result<()>;
+    async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()>;
 
     /// Deletes a bundle from the bundle storage.
     ///
