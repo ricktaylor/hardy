@@ -1,5 +1,8 @@
-use super::*;
 use hardy_async::sync::RwLock;
+
+use super::{Error, Filter, Hook, filter};
+use crate::Bytes;
+use crate::bundle;
 
 #[derive(Default)]
 pub struct Mutation {
@@ -102,8 +105,7 @@ impl Registry {
     ) -> Result<ExecResult, crate::Error>
     where
         F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+            + Clone + Send,
     {
         let hook_label = hook.label();
 

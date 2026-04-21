@@ -1,4 +1,10 @@
-use super::*;
+use hardy_bpv7::bpsec::key::KeySource;
+use trace_err::*;
+use tracing::debug;
+
+use super::{Error, Filter, FilterResult, ReadFilter, RewriteResult, WriteFilter, registry};
+use crate::bundle;
+use crate::{Arc, Bytes, HashSet};
 
 // A single node's worth of filters, ready for execution (just Arc clones)
 struct PreparedNode {
@@ -249,9 +255,7 @@ impl PreparedFilters {
         key_provider: F,
     ) -> Result<registry::ExecResult, crate::Error>
     where
-        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>
-            + Clone
-            + Send,
+        F: Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         // Capture what has changed
         let mut mutation = registry::Mutation::default();
@@ -281,7 +285,6 @@ impl PreparedFilters {
                     {
                         debug!("ReadFilter dropped bundle: {reason:?}");
 
-                        // Create a drop_bundle with just enough of the Bundle that we can reply with something suitable for dispatcher::drop_bundle() if needed.  See report_bundle_deletion() for details.
                         let drop_bundle = bundle::Bundle {
                             bundle: hardy_bpv7::bundle::Bundle {
                                 id: bd.0.bundle.id.clone(),
@@ -289,10 +292,8 @@ impl PreparedFilters {
                                 report_to: bd.0.bundle.report_to.clone(),
                                 ..Default::default()
                             },
-                            metadata: bundle::BundleMetadata {
-                                storage_name: bd.0.metadata.storage_name.clone(),
-                                ..Default::default()
-                            },
+                            metadata: Default::default(),
+                            state: bundle::Idle { data: Bytes::new() },
                         };
                         return Ok(registry::ExecResult::Drop(drop_bundle, reason));
                     }
@@ -308,49 +309,26 @@ impl PreparedFilters {
                     RewriteResult::Continue(None, None) => (bundle, data),
                     RewriteResult::Continue(Some(writable), None) => {
                         debug!("WriteFilter rewrote bundle metadata");
-
                         mutation.metadata = true;
-
-                        (
-                            bundle::Bundle {
-                                bundle: bundle.bundle,
-                                metadata: bundle::BundleMetadata {
-                                    storage_name: bundle.metadata.storage_name,
-                                    status: bundle.metadata.status,
-                                    read_only: bundle.metadata.read_only,
-                                    writable,
-                                },
-                            },
-                            data,
-                        )
+                        bundle.metadata.writable = writable;
+                        (bundle, data)
                     }
-                    RewriteResult::Continue(metadata, Some(new_data)) => {
-                        let metadata = if let Some(writable) = metadata {
+                    RewriteResult::Continue(new_writable, Some(new_data)) => {
+                        if let Some(writable) = new_writable {
                             debug!("WriteFilter rewrote bundle data and metadata");
                             mutation.metadata = true;
-                            bundle::BundleMetadata {
-                                storage_name: bundle.metadata.storage_name,
-                                status: bundle.metadata.status,
-                                read_only: bundle.metadata.read_only,
-                                writable,
-                            }
+                            bundle.metadata.writable = writable;
                         } else {
                             debug!("WriteFilter rewrote bundle data");
-                            bundle.metadata
-                        };
+                        }
 
                         mutation.bundle = true;
 
                         let parsed =
                             hardy_bpv7::bundle::CheckedBundle::parse(&new_data, &key_provider)?;
                         let data = Bytes::from(parsed.new_data.unwrap_or(new_data));
-                        (
-                            bundle::Bundle {
-                                bundle: parsed.bundle,
-                                metadata,
-                            },
-                            data,
-                        )
+                        bundle.bundle = parsed.bundle;
+                        (bundle, data)
                     }
                     RewriteResult::Drop(reason) => {
                         debug!("WriteFilter dropped bundle: {reason:?}");

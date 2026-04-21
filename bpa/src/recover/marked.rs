@@ -5,7 +5,7 @@ use trace_err::*;
 use tracing::warn;
 
 use super::{Confirmed, Marked, Recovery};
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata, Stored};
 use crate::otel_metrics::{reason_label, status_label};
 use crate::storage::RecoveryResponse;
 use crate::{Arc, Bytes};
@@ -45,7 +45,7 @@ impl<'a> Recovery<'a, Marked> {
 
     /// Recover a single bundle found during the storage walk.
     async fn recover_bundle(&self, storage_name: Arc<str>, file_time: time::OffsetDateTime) {
-        let Some(data) = self.store.load_data(&storage_name).await else {
+        let Some(data) = self.store.load_data(&storage_name).await.ok().flatten() else {
             metrics::counter!("bpa.restart.lost").increment(1);
             return;
         };
@@ -96,12 +96,12 @@ impl<'a> Recovery<'a, Marked> {
         data: Bytes,
         file_time: time::OffsetDateTime,
     ) {
-        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
-            if metadata.storage_name.as_ref() != Some(&storage_name) {
-                self.delete_duplicate(&storage_name, &metadata.storage_name)
+        if let Some(existing) = self.store.confirm_exists(&bundle.id).await.ok().flatten() {
+            if existing.storage_name() != &storage_name {
+                self.delete_duplicate(&storage_name, existing.storage_name())
                     .await;
             } else {
-                self.resume(metadata, bundle, data).await;
+                self.resume(existing, data).await;
             }
         } else {
             self.ingest_orphan(bundle, report_unsupported, storage_name, data, file_time)
@@ -110,26 +110,24 @@ impl<'a> Recovery<'a, Marked> {
     }
 
     /// Resume processing a bundle that has existing metadata.
-    async fn resume(&self, metadata: BundleMetadata, bundle: Bpv7Bundle, data: Bytes) {
-        match &metadata.status {
+    async fn resume(&self, mut bundle: Bundle<Stored>, data: Bytes) {
+        match &bundle.metadata.status {
             BundleStatus::New => {
-                let bundle = Bundle { metadata, bundle };
                 self.dispatcher.ingest_bundle(bundle, data).await;
             }
             BundleStatus::Dispatching => {
-                let bundle = Bundle { metadata, bundle };
                 metrics::gauge!("bpa.bundle.status", "state" => status_label(&bundle.metadata.status)).increment(1.0);
                 self.dispatcher.dispatch_bundle(bundle).await;
             }
             BundleStatus::ForwardPending { .. } => {
-                let mut bundle = Bundle { metadata, bundle };
                 metrics::gauge!("bpa.bundle.status", "state" => status_label(&bundle.metadata.status)).increment(1.0);
-                self.store
+                let _ = self
+                    .store
                     .update_status(&mut bundle, &BundleStatus::Waiting)
                     .await;
             }
             _ => {
-                metrics::gauge!("bpa.bundle.status", "state" => status_label(&metadata.status))
+                metrics::gauge!("bpa.bundle.status", "state" => status_label(&bundle.metadata.status))
                     .increment(1.0);
             }
         }
@@ -146,7 +144,6 @@ impl<'a> Recovery<'a, Marked> {
     ) {
         let bundle = Bundle {
             metadata: BundleMetadata {
-                storage_name: Some(storage_name),
                 read_only: ReadOnlyMetadata {
                     received_at: file_time,
                     ..Default::default()
@@ -154,12 +151,11 @@ impl<'a> Recovery<'a, Marked> {
                 ..Default::default()
             },
             bundle,
+            state: Stored { storage_name },
         };
 
-        if !self.store.insert_metadata(&bundle).await {
-            if let Some(name) = &bundle.metadata.storage_name {
-                self.store.delete_data(name).await;
-            }
+        if !self.store.insert_metadata(&bundle).await.unwrap_or(false) {
+            let _ = self.store.delete_data(bundle.storage_name()).await;
             metrics::counter!("bpa.restart.orphan_tombstoned").increment(1);
             return;
         }
@@ -188,32 +184,34 @@ impl<'a> Recovery<'a, Marked> {
     ) {
         warn!("Bundle in non-canonical format found: {storage_name}");
 
-        self.store.delete_data(&storage_name).await;
+        let _ = self.store.delete_data(&storage_name).await;
 
-        let exists = if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
-            if metadata.storage_name.as_ref() != Some(&storage_name) {
-                if metadata.storage_name.is_none() {
-                    warn!("Non-canonical copy of processed bundle data found: {storage_name}");
-                } else {
-                    warn!(
-                        "Duplicate non-canonical bundle data found: {storage_name} != {:?}",
-                        metadata.storage_name.as_ref()
-                    );
+        let exists =
+            if let Some(existing) = self.store.confirm_exists(&bundle.id).await.ok().flatten() {
+                if existing.storage_name() != &storage_name {
+                    if existing.storage_name().is_empty() {
+                        warn!("Non-canonical copy of processed bundle data found: {storage_name}");
+                    } else {
+                        warn!(
+                            "Duplicate non-canonical bundle data found: {storage_name} != {}",
+                            existing.storage_name()
+                        );
+                    }
+                    metrics::counter!("bpa.restart.duplicate").increment(1);
+                    return;
                 }
-                metrics::counter!("bpa.restart.duplicate").increment(1);
-                return;
-            }
-            true
-        } else {
-            false
-        };
+                true
+            } else {
+                false
+            };
 
         let data = Bytes::from(new_data);
-        let new_storage_name = self.store.save_data(&data).await;
+        let Ok(new_storage_name) = self.store.save_data(&data).await else {
+            return;
+        };
 
         let bundle = Bundle {
             metadata: BundleMetadata {
-                storage_name: Some(new_storage_name),
                 read_only: ReadOnlyMetadata {
                     received_at: file_time,
                     ..Default::default()
@@ -221,13 +219,14 @@ impl<'a> Recovery<'a, Marked> {
                 ..Default::default()
             },
             bundle,
+            state: Stored {
+                storage_name: new_storage_name,
+            },
         };
 
         if !exists {
-            if !self.store.insert_metadata(&bundle).await {
-                if let Some(name) = &bundle.metadata.storage_name {
-                    self.store.delete_data(name).await;
-                }
+            if !self.store.insert_metadata(&bundle).await.unwrap_or(false) {
+                let _ = self.store.delete_data(bundle.storage_name()).await;
                 metrics::counter!("bpa.restart.orphan_tombstoned").increment(1);
                 return;
             }
@@ -241,7 +240,7 @@ impl<'a> Recovery<'a, Marked> {
                 .report_bundle_reception(&bundle, reason)
                 .await;
         } else {
-            self.store.update_metadata(&bundle).await;
+            let _ = self.store.update_metadata(&bundle).await;
         }
 
         self.dispatcher.ingest_bundle(bundle, data).await;
@@ -259,17 +258,17 @@ impl<'a> Recovery<'a, Marked> {
     ) {
         warn!("Invalid bundle found: {storage_name}, {error}");
 
-        self.store.delete_data(&storage_name).await;
+        let _ = self.store.delete_data(&storage_name).await;
         metrics::counter!("bpa.restart.junk").increment(1);
 
-        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
-            if metadata.storage_name.as_ref() != Some(&storage_name) {
-                if metadata.storage_name.is_none() {
+        if let Some(existing) = self.store.confirm_exists(&bundle.id).await.ok().flatten() {
+            if existing.storage_name() != &storage_name {
+                if existing.storage_name().is_empty() {
                     warn!("Invalid copy of processed bundle data found: {storage_name}");
                 } else {
                     warn!(
-                        "Duplicate invalid bundle data found: {storage_name} != {:?}",
-                        metadata.storage_name.as_ref()
+                        "Duplicate invalid bundle data found: {storage_name} != {}",
+                        existing.storage_name()
                     );
                 }
             } else {
@@ -282,6 +281,7 @@ impl<'a> Recovery<'a, Marked> {
                         ..Default::default()
                     },
                     bundle,
+                    state: Stored { storage_name },
                 };
 
                 metrics::counter!("bpa.bundle.dropped", "reason" => reason_label(&reason))
@@ -289,7 +289,7 @@ impl<'a> Recovery<'a, Marked> {
                 self.dispatcher
                     .report_bundle_deletion(&bundle, reason)
                     .await;
-                self.store.tombstone_metadata(&bundle.bundle.id).await;
+                let _ = self.store.tombstone_metadata(&bundle.bundle.id).await;
             }
         }
     }
@@ -297,21 +297,18 @@ impl<'a> Recovery<'a, Marked> {
     /// Discard unparseable data from storage.
     async fn discard_junk(&self, storage_name: &str, error: impl core::fmt::Display) {
         warn!("Junk data found: {storage_name}, {error}");
-        self.store.delete_data(storage_name).await;
+        let _ = self.store.delete_data(storage_name).await;
         metrics::counter!("bpa.restart.junk").increment(1);
     }
 
     /// Delete duplicate bundle data and log the reason.
-    async fn delete_duplicate(&self, storage_name: &str, existing_name: &Option<Arc<str>>) {
-        if existing_name.is_none() {
+    async fn delete_duplicate(&self, storage_name: &str, existing_name: &Arc<str>) {
+        if existing_name.is_empty() {
             warn!("Duplicate processed bundle data found: {storage_name}");
         } else {
-            warn!(
-                "Duplicate valid bundle data found: {storage_name} != {:?}",
-                existing_name.as_ref()
-            );
+            warn!("Duplicate valid bundle data found: {storage_name} != {existing_name}",);
         }
-        self.store.delete_data(storage_name).await;
+        let _ = self.store.delete_data(storage_name).await;
         metrics::counter!("bpa.restart.duplicate").increment(1);
     }
 }

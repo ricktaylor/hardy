@@ -1,10 +1,9 @@
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
-use trace_err::*;
 use tracing::info;
 
 use super::{Confirmed, Recovery};
-use crate::bundle::Bundle;
+use crate::bundle::{Bundle, Stored};
 
 impl Recovery<'_, Confirmed> {
     /// Phase 3: Purge orphaned metadata entries with no matching bundle data.
@@ -14,14 +13,13 @@ impl Recovery<'_, Confirmed> {
         }
 
         let cancel_token = self.store.cancel_token().clone();
-        let (tx, rx) = flume::bounded::<Bundle>(16);
+        let (tx, rx) = flume::bounded::<Bundle<Stored>>(16);
 
         join!(
             async {
-                self.store
-                    .purge_unconfirmed(tx)
-                    .await
-                    .trace_expect("Remove unconfirmed bundles failed");
+                if let Err(e) = self.store.remove_unconfirmed(tx).await {
+                    tracing::error!("Remove unconfirmed bundles failed: {e}");
+                }
             },
             async {
                 loop {

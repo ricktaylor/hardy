@@ -14,9 +14,15 @@ use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
-use crate::storage::bundle_mem::BundleMemStorage;
-use crate::storage::metadata_mem::MetadataMemStorage;
-use crate::storage::{BundleStorage, MetadataStorage, Store};
+use crate::storage::{
+    BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
+    Store,
+};
+
+/// Default LRU cache capacity (number of entries).
+pub const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
+/// Default maximum bundle size (in bytes) eligible for caching.
+pub const DEFAULT_MAX_CACHED_BUNDLE_SIZE: NonZeroUsize = NonZeroUsize::new(16 * 1024).unwrap();
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
 ///
@@ -53,8 +59,7 @@ impl BpaBuilder {
         // Auto-enable cache for non-default (presumably persistent) storage,
         // unless the caller has explicitly disabled caching.
         if !self.cache_disabled {
-            self.lru_capacity
-                .get_or_insert(crate::storage::DEFAULT_LRU_CAPACITY);
+            self.lru_capacity.get_or_insert(DEFAULT_LRU_CAPACITY);
         }
         self
     }
@@ -150,14 +155,28 @@ impl BpaBuilder {
 
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+        let metadata_storage = self
+            .metadata_storage
+            .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));
+
+        let bundle_storage: Arc<dyn BundleStorage> = {
+            let raw = self
+                .bundle_storage
+                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default())));
+            match self.lru_capacity {
+                Some(capacity) => Arc::new(CachedBundleStorage::new(
+                    raw,
+                    capacity,
+                    self.max_cached_bundle_size,
+                )),
+                None => raw,
+            }
+        };
+
         let store = Arc::new(Store::new(
-            self.lru_capacity,
-            self.max_cached_bundle_size,
             self.poll_channel_depth,
-            self.metadata_storage
-                .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default()))),
-            self.bundle_storage
-                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default()))),
+            metadata_storage,
+            bundle_storage,
         ));
 
         let node_ids = Arc::new(self.node_ids);
@@ -175,7 +194,7 @@ impl BpaBuilder {
             node_ids.clone(),
             store.clone(),
             rib.clone(),
-            keys_registry,
+            keys_registry.clone(),
             filter_registry.clone(),
         );
 
@@ -203,6 +222,9 @@ impl BpaBuilder {
             cla_registry,
             service_registry,
             filter_registry,
+            keys_registry,
+            hardy_async::BoundedTaskPool::new(self.processing_pool_size),
+            self.status_reports,
             dispatcher,
         ))
     }
@@ -211,6 +233,16 @@ impl BpaBuilder {
 impl Default for BpaBuilder {
     fn default() -> Self {
         let filter_registry = Arc::new(FilterRegistry::new());
+
+        // Auto-register bundle validity filter (lifetime, hop-count)
+        filter_registry
+            .register(
+                Hook::Ingress,
+                "bundle-validity",
+                &[],
+                Filter::Read(Arc::new(crate::filters::validity::BundleValidityFilter)),
+            )
+            .expect("Failed to register bundle validity filter");
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
@@ -221,7 +253,7 @@ impl Default for BpaBuilder {
                 .register(
                     Hook::Ingress,
                     "rfc9171-validity",
-                    &[],
+                    &["bundle-validity"],
                     Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
                 )
                 .expect("Failed to register RFC9171 validity filter");
@@ -233,7 +265,7 @@ impl Default for BpaBuilder {
             processing_pool_size: NonZeroUsize::new(hardy_async::available_parallelism().get() * 4)
                 .unwrap(),
             lru_capacity: None,
-            max_cached_bundle_size: crate::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+            max_cached_bundle_size: DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
