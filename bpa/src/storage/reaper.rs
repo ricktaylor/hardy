@@ -15,8 +15,21 @@
 //! See [Storage Subsystem Design](../../docs/storage_subsystem_design.md)
 //! for architectural context.
 
-use super::*;
+use core::cmp::Ordering;
+
 use futures::{FutureExt, join, select_biased};
+use hardy_async::JoinHandle;
+use hardy_async::time::sleep;
+use hardy_bpv7::bundle::Id;
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+use time::OffsetDateTime;
+use tracing::{debug, error};
+
+use super::store::Store;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleStatus};
+use crate::dispatcher::Dispatcher;
 
 /// Cache entry for the reaper's expiry monitoring.
 ///
@@ -24,19 +37,19 @@ use futures::{FutureExt, join, select_biased};
 /// BTreeSet ordering when expiry times collide).
 #[derive(Clone, Eq, PartialEq)]
 pub struct CacheEntry {
-    expiry: time::OffsetDateTime,
-    id: hardy_bpv7::bundle::Id,
-    destination: hardy_bpv7::eid::Eid,
+    expiry: OffsetDateTime,
+    id: Id,
+    destination: Eid,
 }
 
 impl PartialOrd for CacheEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for CacheEntry {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.expiry
             .cmp(&other.expiry)
             .then_with(|| self.destination.cmp(&other.destination))
@@ -47,11 +60,11 @@ impl Ord for CacheEntry {
 impl Store {
     /// Adds a bundle to the Reaper's cache to be monitored.
     /// If a new bundle has the soonest expiry, the background task is notified.
-    pub async fn watch_bundle(&self, bundle: bundle::Bundle) {
+    pub async fn watch_bundle(&self, bundle: Bundle) {
         self.watch_bundle_inner(bundle, true).await;
     }
 
-    async fn watch_bundle_inner(&self, bundle: bundle::Bundle, cap: bool) {
+    async fn watch_bundle_inner(&self, bundle: Bundle, cap: bool) {
         let new_entry = CacheEntry {
             expiry: bundle.expiry(),
             id: bundle.bundle.id,
@@ -107,15 +120,15 @@ impl Store {
     /// 4. Spawn `refill_cache()` if cache is depleted
     ///
     /// Uses `select_biased!` to prioritize shutdown handling.
-    pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
-        let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
+    pub async fn run_reaper(self: Arc<Self>, dispatcher: Arc<Dispatcher>) {
+        let mut repopulation_task: Option<JoinHandle<()>> = None;
 
         loop {
             let sleep_duration = self
                 .reaper_cache
                 .lock()
                 .first()
-                .map(|entry| entry.expiry - time::OffsetDateTime::now_utc())
+                .map(|entry| entry.expiry - OffsetDateTime::now_utc())
                 .unwrap_or(time::Duration::MAX);
 
             select_biased! {
@@ -125,14 +138,14 @@ impl Store {
                     break;
                 }
                 _ = self.reaper_wakeup.notified().fuse() => {},
-                _ = hardy_async::time::sleep(sleep_duration).fuse() => {},
+                _ = sleep(sleep_duration).fuse() => {},
             }
 
             let mut dead_bundle_ids = Vec::new();
             let check_store = {
                 let mut cache = self.reaper_cache.lock();
 
-                let now = time::OffsetDateTime::now_utc();
+                let now = OffsetDateTime::now_utc();
                 while let Some(entry) = cache.first() {
                     if entry.expiry >= now {
                         break;
@@ -151,10 +164,7 @@ impl Store {
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
                     dispatcher
-                        .drop_bundle(
-                            bundle,
-                            Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
-                        )
+                        .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
                         .await;
                 }
             }
@@ -182,7 +192,7 @@ impl Store {
     async fn refill_cache(self: Arc<Self>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let reaper = self.clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.reaper_cache_size);
+        let (tx, rx) = flume::bounded::<Bundle>(self.reaper_cache_size);
 
         join!(
             // Producer: poll for expiring bundles
@@ -202,7 +212,7 @@ impl Store {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.metadata.status != bundle::BundleStatus::New {
+                            if bundle.metadata.status != BundleStatus::New {
                                 reaper.watch_bundle_inner(bundle, false).await;
                             }
                         },
@@ -223,8 +233,8 @@ mod tests {
 
     fn make_entry(secs_from_now: i64, node: u32) -> CacheEntry {
         CacheEntry {
-            expiry: time::OffsetDateTime::now_utc() + time::Duration::seconds(secs_from_now),
-            id: hardy_bpv7::bundle::Id {
+            expiry: OffsetDateTime::now_utc() + time::Duration::seconds(secs_from_now),
+            id: Id {
                 source: format!("ipn:0.{node}.1").parse().unwrap(),
                 timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
                 fragment_info: None,
@@ -325,7 +335,7 @@ mod tests {
         let e300 = make_entry(300, 3);
 
         // Simulate the wakeup logic from watch_bundle_inner
-        let old_expiry: Option<time::OffsetDateTime> = None;
+        let old_expiry: Option<OffsetDateTime> = None;
 
         // First entry into empty cache — should trigger wakeup
         let needs_wakeup = match old_expiry {

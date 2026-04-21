@@ -1,6 +1,6 @@
 use core::num::{NonZero, NonZeroUsize};
 
-use bytes::Bytes;
+use flume::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use rand::distr::{Alphanumeric, SampleString};
@@ -8,8 +8,8 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::{BundleStorage, RecoveryResponse, Result, Sender};
-use crate::Arc;
+use super::{BundleStorage, RecoveryResponse, Result};
+use crate::{Arc, Bytes};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -126,6 +126,25 @@ impl BundleStorage for BundleMemStorage {
 
             return Ok(storage_name.into());
         }
+    }
+
+    async fn overwrite(&self, storage_name: &str, data: Bytes) -> Result<()> {
+        let mut inner = self.inner.lock();
+        let new_len = data.len();
+        let old_len = inner
+            .cache
+            .put(
+                storage_name.to_string(),
+                (time::OffsetDateTime::now_utc(), data),
+            )
+            .map(|(_, d)| d.len())
+            .unwrap_or(0);
+        inner.capacity = inner
+            .capacity
+            .saturating_sub(old_len)
+            .saturating_add(new_len);
+        metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
+        Ok(())
     }
 
     async fn delete(&self, storage_name: &str) -> Result<()> {

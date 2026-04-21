@@ -68,8 +68,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             ));
         } else {
             builder = builder.bundle_storage(std::sync::Arc::new(
-                hardy_bpa::storage::bundle_mem::BundleMemStorage::new(
-                    &hardy_bpa::storage::bundle_mem::Config {
+                hardy_bpa::storage::BundleMemStorage::new(
+                    &hardy_bpa::storage::BundleMemStorageConfig {
                         capacity: core::num::NonZero::new(1_048_576).unwrap(), // 1 MB
                         min_bundles: 4,
                     },
@@ -102,8 +102,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             );
         } else {
             builder = builder.metadata_storage(std::sync::Arc::new(
-                hardy_bpa::storage::metadata_mem::MetadataMemStorage::new(
-                    &hardy_bpa::storage::metadata_mem::Config {
+                hardy_bpa::storage::MetadataMemStorage::new(
+                    &hardy_bpa::storage::MetadataMemStorageConfig {
                         max_bundles: core::num::NonZero::new(256).unwrap(),
 
                     },

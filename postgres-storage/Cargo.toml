@@ -16,6 +16,7 @@ default = []
 instrument = ["tracing/attributes"]
 
 [dependencies]
+flume = "0.12"
 hardy-bpa = { version = "0.1", path = "../bpa", features = ["serde", "tokio"] }
 hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["std", "serde"] }
 serde = { version = "1.0", features = ["derive"] }

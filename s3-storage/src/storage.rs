@@ -144,7 +144,7 @@ impl Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn recover(&self, tx: flume::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
 
         loop {
@@ -235,6 +235,24 @@ impl storage::BundleStorage for Storage {
         }
 
         Ok(storage_name.into())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
+    async fn overwrite(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
+        let key = self.full_key(storage_name);
+        if data.len() >= self.multipart_threshold {
+            self.save_multipart(&key, data).await?;
+        } else {
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(&key)
+                .content_type("application/octet-stream")
+                .body(ByteStream::from(data))
+                .send()
+                .await?;
+        }
+        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]

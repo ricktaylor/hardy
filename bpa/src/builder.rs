@@ -14,9 +14,10 @@ use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
-use crate::storage::bundle_mem::BundleMemStorage;
-use crate::storage::metadata_mem::MetadataMemStorage;
-use crate::storage::{BundleStorage, MetadataStorage, Store};
+use crate::storage::{
+    BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
+    Store,
+};
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
 ///
@@ -150,14 +151,28 @@ impl BpaBuilder {
 
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+        let metadata_storage = self
+            .metadata_storage
+            .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));
+
+        let bundle_storage = {
+            let raw = self
+                .bundle_storage
+                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default())));
+            match self.lru_capacity {
+                Some(capacity) => Arc::new(CachedBundleStorage::new(
+                    raw,
+                    capacity,
+                    self.max_cached_bundle_size,
+                )),
+                None => raw,
+            }
+        };
+
         let store = Arc::new(Store::new(
-            self.lru_capacity,
-            self.max_cached_bundle_size,
             self.poll_channel_depth,
-            self.metadata_storage
-                .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default()))),
-            self.bundle_storage
-                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default()))),
+            metadata_storage,
+            bundle_storage,
         ));
 
         let node_ids = Arc::new(self.node_ids);

@@ -1,26 +1,52 @@
-use super::*;
+use core::num::NonZeroUsize;
+
+use flume::Sender;
+use hardy_async::sync::Mutex;
+use hardy_async::{Notify, TaskPool};
+use hardy_bpv7::bundle::Id;
+use hardy_bpv7::eid::Eid;
+use trace_err::*;
+use tracing::error;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::{BundleStorage, MetadataStorage, reaper};
+use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::dispatcher::Dispatcher;
+use crate::{Arc, BTreeSet, Bytes};
+
+pub(crate) struct Store {
+    pub(super) tasks: TaskPool,
+    pub(super) metadata_storage: Arc<dyn MetadataStorage>,
+    pub(super) bundle_storage: Arc<dyn BundleStorage>,
+
+    pub(super) reaper_cache: Arc<Mutex<BTreeSet<reaper::CacheEntry>>>,
+    pub(super) reaper_wakeup: Arc<Notify>,
+    pub(super) reaper_cache_size: usize,
+}
 
 impl Store {
     /// Create a new Store with the configured storage backends.
-    /// Uses in-memory storage if no backends are provided.
+    ///
+    /// The `bundle_storage` may be wrapped in a [`CachedBundleStorage`](super::cached::CachedBundleStorage)
+    /// decorator before being passed here.
     pub fn new(
-        lru_capacity: Option<core::num::NonZeroUsize>,
-        max_cached_bundle_size: core::num::NonZeroUsize,
-        reaper_cache_size: core::num::NonZeroUsize,
-        metadata_storage: Arc<dyn storage::MetadataStorage>,
-        bundle_storage: Arc<dyn storage::BundleStorage>,
+        reaper_cache_size: NonZeroUsize,
+        metadata_storage: Arc<dyn MetadataStorage>,
+        bundle_storage: Arc<dyn BundleStorage>,
     ) -> Self {
+        let tasks = TaskPool::new();
+        let reaper_cache = Arc::new(Mutex::new(BTreeSet::new()));
+        let reaper_wakeup = Arc::new(Notify::new());
+        let reaper_cache_size = reaper_cache_size.into();
+
         Self {
-            tasks: hardy_async::TaskPool::new(),
+            tasks,
             metadata_storage,
             bundle_storage,
-            bundle_cache: lru_capacity.map(|capacity| storage::BundleCache {
-                lru: hardy_async::sync::spin::Mutex::new(LruCache::new(capacity)),
-                max_bundle_size: max_cached_bundle_size.into(),
-            }),
-            reaper_cache: Arc::new(Mutex::new(BTreeSet::new())),
-            reaper_wakeup: Arc::new(hardy_async::Notify::new()),
-            reaper_cache_size: reaper_cache_size.into(),
+            reaper_cache,
+            reaper_wakeup,
+            reaper_cache_size,
         }
     }
 
@@ -28,7 +54,7 @@ impl Store {
     ///
     /// Optionally runs crash recovery, then starts the reaper background task
     /// for bundle lifetime monitoring.
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>, recover_storage: bool) {
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
         if recover_storage {
             self.recover(&dispatcher);
         }
@@ -49,7 +75,7 @@ impl Store {
     /// Updates the storage_name field after saving data.
     /// Returns false if duplicate bundle already exists.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn store(&self, bundle: &mut bundle::Bundle, data: &Bytes) -> bool {
+    pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data).await;
 
@@ -83,61 +109,22 @@ impl Store {
     /// Load bundle data by storage name (read-through cache).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
-        if let Some(cache) = &self.bundle_cache {
-            if let Some(data) = cache.lru.lock().get(storage_name) {
-                metrics::counter!("bpa.store.cache.hits").increment(1);
-                return Some(data.clone());
-            }
-            metrics::counter!("bpa.store.cache.misses").increment(1);
-        }
-
-        let data = self
-            .bundle_storage
+        self.bundle_storage
             .load(storage_name)
             .await
-            .trace_expect("Failed to load bundle data")?;
-
-        if let Some(cache) = &self.bundle_cache {
-            if data.len() < cache.max_bundle_size {
-                cache.lru.lock().put(Arc::from(storage_name), data.clone());
-            }
-        }
-
-        Some(data)
+            .trace_expect("Failed to load bundle data")
     }
 
-    /// Save bundle data (persist-first, then cache small bundles).
-    ///
-    /// Always persists to the bundle storage backend first, then caches
-    /// in the LRU if the data size is below `max_cached_bundle_size`.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn save_data(&self, data: &Bytes) -> Arc<str> {
-        let storage_name = self
-            .bundle_storage
+        self.bundle_storage
             .save(data.clone())
             .await
-            .trace_expect("Failed to save bundle data");
-
-        if let Some(cache) = &self.bundle_cache {
-            if data.len() < cache.max_bundle_size {
-                cache.lru.lock().put(storage_name.clone(), data.clone());
-            } else {
-                metrics::counter!("bpa.store.cache.oversized").increment(1);
-            }
-        }
-
-        storage_name
+            .trace_expect("Failed to save bundle data")
     }
 
-    /// Delete bundle data from cache and storage backend.
-    ///
-    /// Removes from the LRU cache first, then deletes from the backend.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
-        if let Some(cache) = &self.bundle_cache {
-            cache.lru.lock().pop(storage_name);
-        }
-
         self.bundle_storage
             .delete(storage_name)
             .await
@@ -145,7 +132,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn insert_metadata(&self, bundle: &bundle::Bundle) -> bool {
+    pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
             .await
@@ -153,7 +140,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn get_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Option<bundle::Bundle> {
+    pub async fn get_metadata(&self, bundle_id: &Id) -> Option<Bundle> {
         let m = self
             .metadata_storage
             .get(bundle_id)
@@ -172,7 +159,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn tombstone_metadata(&self, bundle_id: &hardy_bpv7::bundle::Id) {
+    pub async fn tombstone_metadata(&self, bundle_id: &Id) {
         self.metadata_storage
             .tombstone(bundle_id)
             .await
@@ -180,10 +167,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn confirm_exists(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Option<bundle::BundleMetadata> {
+    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<BundleMetadata> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
@@ -191,7 +175,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_metadata(&self, bundle: &bundle::Bundle) {
+    pub async fn update_metadata(&self, bundle: &Bundle) {
         self.metadata_storage
             .replace(bundle)
             .await
@@ -199,7 +183,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn update_status(&self, bundle: &mut bundle::Bundle, status: &bundle::BundleStatus) {
+    pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
         if bundle.metadata.status != *status {
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
@@ -213,7 +197,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_waiting(&self, tx: storage::Sender<bundle::Bundle>) {
+    pub async fn poll_waiting(&self, tx: Sender<Bundle>) {
         self.metadata_storage
             .poll_waiting(tx)
             .await
@@ -221,7 +205,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_service_waiting(&self, source: Eid, tx: storage::Sender<bundle::Bundle>) {
+    pub async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) {
         self.metadata_storage
             .poll_service_waiting(source, tx)
             .await
@@ -237,9 +221,9 @@ impl Store {
             .trace_expect("Failed to reset peer queue");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle::BundleStatus::ForwardPending { peer, queue: None }))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: None }))
                 .decrement(reset as f64);
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle::BundleStatus::Waiting))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
         }
 
@@ -254,18 +238,16 @@ mod tests {
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
-            None,
-            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(metadata_mem::MetadataMemStorage::new(&Default::default())),
             Arc::new(bundle_mem::BundleMemStorage::new(&Default::default())),
         ))
     }
 
-    fn make_bundle(dest: &str) -> bundle::Bundle {
-        bundle::Bundle {
+    fn make_bundle(dest: &str) -> Bundle {
+        Bundle {
             bundle: hardy_bpv7::bundle::Bundle {
-                id: hardy_bpv7::bundle::Id {
+                id: Id {
                     source: "ipn:0.99.1".parse().unwrap(),
                     timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
                     fragment_info: None,

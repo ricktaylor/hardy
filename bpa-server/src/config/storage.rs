@@ -1,10 +1,9 @@
 use core::num::NonZeroUsize;
 use std::sync::Arc;
 
-use hardy_bpa::storage::bundle_mem::BundleMemStorage;
-use hardy_bpa::storage::metadata_mem::MetadataMemStorage;
 use hardy_bpa::storage::{
-    BundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_BUNDLE_SIZE, MetadataStorage,
+    BundleMemStorage, BundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+    MetadataMemStorage, MetadataStorage,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 pub enum MetadataStorageConfig {
     #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::metadata_mem::Config),
+    Memory(hardy_bpa::storage::MetadataMemStorageConfig),
 
     #[cfg(feature = "sqlite-storage")]
     #[serde(rename = "sqlite")]
@@ -35,7 +34,7 @@ impl Default for MetadataStorageConfig {
 #[serde(tag = "type")]
 pub enum BundleStorageConfig {
     #[serde(rename = "memory")]
-    Memory(hardy_bpa::storage::bundle_mem::Config),
+    Memory(hardy_bpa::storage::BundleMemStorageConfig),
 
     #[cfg(feature = "localdisk-storage")]
     #[serde(rename = "localdisk")]

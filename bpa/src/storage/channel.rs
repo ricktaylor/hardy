@@ -21,9 +21,17 @@
 //!
 //! Uses lock-free CAS operations for state transitions on the hot path.
 
-use super::*;
 use core::result::Result;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use flume::{Receiver, TrySendError};
+use hardy_async::Notify;
+use trace_err::*;
+use tracing::debug;
+
+use super::store::Store;
+use crate::Arc;
+use crate::bundle::{Bundle, BundleStatus};
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
@@ -72,9 +80,9 @@ impl ChannelState {
 /// Shared state between Sender and the background poller task.
 struct Shared {
     state: AtomicUsize,
-    tx: flume::Sender<Option<bundle::Bundle>>,
-    status: bundle::BundleStatus,
-    notify: Arc<hardy_async::Notify>,
+    tx: flume::Sender<Option<Bundle>>,
+    status: BundleStatus,
+    notify: Arc<Notify>,
 }
 
 impl Shared {
@@ -126,11 +134,11 @@ impl Sender {
 
 /// Error returned when a bundle cannot be sent.
 #[derive(Debug)]
-pub struct SendError(pub bundle::Bundle);
+pub struct SendError(pub Bundle);
 
 impl Sender {
     /// Send a bundle, updating its status to match the channel's target status.
-    pub async fn send(&self, mut bundle: bundle::Bundle) -> Result<(), SendError> {
+    pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
         self.store
             .update_status(&mut bundle, &self.shared.status)
             .await;
@@ -145,17 +153,17 @@ impl Sender {
                     // Success! The bundle is sent, and we can return immediately.
                     Ok(()) => return Ok(()),
 
-                    Err(flume::TrySendError::Disconnected(Some(b))) => {
+                    Err(TrySendError::Disconnected(Some(b))) => {
                         // Wake up the poller task so it can exit
                         self.shared.notify.notify_one();
                         return Err(SendError(b));
                     }
 
-                    Err(flume::TrySendError::Disconnected(None)) => {
+                    Err(TrySendError::Disconnected(None)) => {
                         unreachable!("sent Some but got None back");
                     }
 
-                    Err(flume::TrySendError::Full(_)) => {
+                    Err(TrySendError::Full(_)) => {
                         // Channel full - trigger slow path
                         let _ = self.shared.compare_exchange_state(
                             ChannelState::Open,
@@ -195,23 +203,20 @@ impl Sender {
     }
 }
 
-///// Receiver handle. Receives `Some(bundle)` for data, `None` signals channel close.
-pub type Receiver = flume::Receiver<Option<bundle::Bundle>>;
-
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
     pub fn channel(
         self: &Arc<Self>,
-        status: bundle::BundleStatus,
+        status: BundleStatus,
         cap: usize,
-    ) -> (Sender, Receiver) {
-        let (tx, rx) = flume::bounded::<Option<bundle::Bundle>>(cap);
+    ) -> (Sender, Receiver<Option<Bundle>>) {
+        let (tx, rx) = flume::bounded::<Option<Bundle>>(cap);
 
         let shared = Arc::new(Shared {
             state: AtomicUsize::new(ChannelState::Open.as_usize()),
             tx,
             status: status.clone(),
-            notify: Arc::new(hardy_async::Notify::new()),
+            notify: Arc::new(Notify::new()),
         });
 
         let store = self.clone();
@@ -287,7 +292,7 @@ impl Store {
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (inner_tx, inner_rx) = flume::bounded::<bundle::Bundle>(cap);
+        let (inner_tx, inner_rx) = flume::bounded::<Bundle>(cap);
         let shared_cloned = shared.clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
@@ -319,21 +324,21 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
-    use crate::storage::{self, bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
+    use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
-            None,
-            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(MetadataMemStorage::new(&Default::default())),
             Arc::new(BundleMemStorage::new(&Default::default())),
         ))
     }
 
-    fn make_bundle(n: u32) -> bundle::Bundle {
-        bundle::Bundle {
+    fn make_bundle(n: u32) -> Bundle {
+        Bundle {
             bundle: hardy_bpv7::bundle::Bundle {
                 id: hardy_bpv7::bundle::Id {
                     source: format!("ipn:0.{n}.1").parse().unwrap(),
@@ -354,7 +359,7 @@ mod tests {
         }
     }
 
-    fn make_expired_bundle(n: u32) -> bundle::Bundle {
+    fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
         b.bundle.lifetime = core::time::Duration::from_secs(0);
         // Set received_at in the past so expiry is already passed
@@ -363,7 +368,7 @@ mod tests {
         b
     }
 
-    const STATUS: bundle::BundleStatus = bundle::BundleStatus::ForwardPending {
+    const STATUS: BundleStatus = BundleStatus::ForwardPending {
         peer: 1,
         queue: None,
     };

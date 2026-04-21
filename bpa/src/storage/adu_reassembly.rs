@@ -1,6 +1,5 @@
-use alloc::sync::Arc;
-use bytes::Bytes;
 use core::ops::Range;
+
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::bundle::Id as Bpv7Id;
 use hardy_bpv7::editor::Editor;
@@ -8,8 +7,9 @@ use time::OffsetDateTime;
 use trace_err::*;
 use tracing::{debug, error};
 
-use super::{HashMap, Store};
+use super::store::Store;
 use crate::bundle::{Bundle, BundleStatus};
+use crate::{Arc, Bytes, HashMap};
 
 pub enum ReassemblyResult {
     /// Not all sibling fragments have arrived; fragment data is still in storage.
@@ -255,12 +255,10 @@ mod tests {
 
     use super::*;
     use crate::bundle::BundleMetadata;
-    use crate::storage::{self, bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
+    use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Store {
         Store::new(
-            None,
-            storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(MetadataMemStorage::new(&Default::default())),
             Arc::new(BundleMemStorage::new(&Default::default())),
