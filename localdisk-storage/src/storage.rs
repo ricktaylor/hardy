@@ -67,7 +67,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &storage::Sender<storage::RecoveryResponse>,
+    tx: &flume::Sender<storage::RecoveryResponse>,
 ) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
@@ -153,7 +153,7 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn recover(&self, tx: flume::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 
@@ -313,6 +313,63 @@ impl BundleStorage for Storage {
             .strip_prefix(&self.store_root)?
             .to_string_lossy()
             .into())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
+    async fn overwrite(&self, storage_name: &str, data: Bytes) -> storage::Result<()> {
+        let final_path = self.store_root.join(PathBuf::from_str(storage_name)?);
+        let tmp_path = final_path.with_extension("tmp");
+
+        if self.fsync {
+            let final_path = final_path.clone();
+            let tmp_path = tmp_path.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create(true).truncate(true);
+
+                #[cfg(unix)]
+                options.custom_flags(libc::O_SYNC);
+
+                #[cfg(windows)]
+                options.custom_flags(winapi::um::winbase::FILE_FLAG_WRITE_THROUGH);
+
+                let mut file = options.open(&tmp_path)?;
+                file.write_all(&data).inspect_err(|e| {
+                    error!("Failed to write bundle data: {e}");
+                    _ = std::fs::remove_file(&tmp_path);
+                })?;
+                file.sync_data().inspect_err(|e| {
+                    error!("Failed to sync bundle file data: {e}");
+                    _ = std::fs::remove_file(&tmp_path);
+                })?;
+                std::fs::rename(&tmp_path, &final_path).inspect_err(|e| {
+                    error!("Failed to rename temporary bundle data file: {e}");
+                    _ = std::fs::remove_file(&tmp_path);
+                })?;
+                if let Some(parent_dir) = final_path.parent()
+                    && let Ok(dir_handle) = std::fs::File::open(parent_dir)
+                    && let Err(e) = dir_handle.sync_all()
+                {
+                    warn!("Failed to sync parent directory: {e}");
+                }
+                storage::Result::Ok(())
+            })
+            .await
+            .trace_expect("Failed to spawn overwrite thread")?;
+            Ok(())
+        } else {
+            tokio::fs::write(&tmp_path, &data).await.inspect_err(|e| {
+                error!("Failed to write bundle data: {e}");
+                _ = std::fs::remove_file(&tmp_path);
+            })?;
+            tokio::fs::rename(&tmp_path, &final_path)
+                .await
+                .inspect_err(|e| {
+                    error!("Failed to rename temporary bundle data file: {e}");
+                    _ = std::fs::remove_file(&tmp_path);
+                })?;
+            Ok(())
+        }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]

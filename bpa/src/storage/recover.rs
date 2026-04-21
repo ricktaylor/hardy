@@ -1,8 +1,18 @@
-use super::*;
 use futures::{FutureExt, join, select_biased};
+use hardy_bpv7::status_report::ReasonCode;
+use trace_err::*;
+use tracing::info;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::RecoveryResponse;
+use super::store::Store;
+use crate::Arc;
+use crate::bundle::Bundle;
+use crate::dispatcher::Dispatcher;
 
 impl Store {
-    pub fn recover(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
+    pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
         // Start the store - this can take a while as the store is walked
         let store = self.clone();
         let dispatcher = dispatcher.clone();
@@ -30,9 +40,9 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (tx, rx) = flume::bounded::<storage::RecoveryResponse>(16);
+        let (tx, rx) = flume::bounded::<RecoveryResponse>(16);
 
         join!(
             // Producer: recover bundles from storage
@@ -64,9 +74,9 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(16);
+        let (tx, rx) = flume::bounded::<Bundle>(16);
 
         join!(
             // Producer: find unconfirmed bundles
@@ -88,7 +98,7 @@ impl Store {
                                 // The data associated with `bundle` has gone!
                                 dispatcher.report_bundle_deletion(
                                     &bundle,
-                                    hardy_bpv7::status_report::ReasonCode::DepletedStorage,
+                                    ReasonCode::DepletedStorage,
                                 )
                                 .await
                             }

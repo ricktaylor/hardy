@@ -308,7 +308,7 @@ impl Dispatcher {
     /// Consumer task for the dispatch queue
     pub(super) async fn run_dispatch_queue(
         self: Arc<Self>,
-        dispatch_rx: storage::channel::Receiver,
+        dispatch_rx: flume::Receiver<Option<bundle::Bundle>>,
     ) {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
