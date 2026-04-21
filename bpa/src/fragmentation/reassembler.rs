@@ -1,15 +1,14 @@
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
-use hardy_bpv7::bundle::ParsedBundle;
+use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, ParsedBundle};
 use hardy_bpv7::editor::Editor;
 use trace_err::*;
 use tracing::debug;
 
 use super::{Fragment, FragmentSet};
-use crate::Bytes;
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::storage::Store;
+use crate::{Arc, Bytes};
 
 /// Result of a reassembly attempt.
 pub(crate) enum ReassemblerResult {
@@ -23,29 +22,27 @@ pub(crate) enum ReassemblerResult {
 
 /// Drives the reassembly of a fragmented bundle.
 ///
-/// Holds the store reference and key provider needed to collect fragments,
-/// stitch the ADU, validate the result, and persist it.
-pub(crate) struct Reassembler<'a, F> {
-    store: &'a Store,
-    key_provider: F,
+/// Holds the store needed to collect fragments, stitch the ADU,
+/// validate the result, and persist it.
+///
+/// Construct once and reuse for multiple reassembly attempts.
+pub(crate) struct Reassembler {
+    store: Arc<Store>,
 }
 
-impl<'a, F> Reassembler<'a, F>
-where
-    F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
-{
-    pub fn new(store: &'a Store, key_provider: F) -> Self {
-        Self {
-            store,
-            key_provider,
-        }
+impl Reassembler {
+    pub fn new(store: Arc<Store>) -> Self {
+        Self { store }
     }
 
     /// Attempt to reassemble a fragmented bundle.
     ///
     /// Collects sibling fragments from storage, stitches the ADU, rebuilds
     /// the bundle, and stores the result.
-    pub async fn run(self, mut bundle: Bundle) -> ReassemblerResult {
+    pub async fn run<F>(&self, mut bundle: Bundle, key_provider: F) -> ReassemblerResult
+    where
+        F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
+    {
         let status = BundleStatus::AduFragment {
             source: bundle.bundle.id.source.clone(),
             timestamp: bundle.bundle.id.timestamp.clone(),
@@ -73,7 +70,7 @@ where
         };
 
         // Parse and validate the reassembled bundle
-        let parsed = ParsedBundle::parse(&data, self.key_provider);
+        let parsed = ParsedBundle::parse(&data, key_provider);
         let Ok(ParsedBundle { bundle, .. }) = parsed else {
             metrics::counter!("bpa.bundle.reassembly.failed").increment(1);
             debug!("Reassembled bundle is invalid: {}", parsed.unwrap_err());
@@ -308,7 +305,11 @@ mod tests {
     use crate::Arc;
     use crate::storage::{self, bundle_mem::BundleMemStorage, metadata_mem::MetadataMemStorage};
 
-    fn make_store() -> Store {
+    fn make_store() -> Arc<Store> {
+        Arc::new(make_store_inner())
+    }
+
+    fn make_store_inner() -> Store {
         Store::new(
             None,
             storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
@@ -349,10 +350,8 @@ mod tests {
         store.insert_metadata(&bundle).await;
     }
 
-    fn make_reassembler(
-        store: &Store,
-    ) -> Reassembler<'_, impl Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>> {
-        Reassembler::new(store, hardy_bpv7::bpsec::no_keys)
+    fn make_reassembler(store: &Arc<Store>) -> Reassembler {
+        Reassembler::new(store.clone())
     }
 
     #[tokio::test]
@@ -696,7 +695,7 @@ mod tests {
         store.insert_metadata(&bundle).await;
 
         let reassembler = make_reassembler(&store);
-        let result = reassembler.run(bundle).await;
+        let result = reassembler.run(bundle, hardy_bpv7::bpsec::no_keys).await;
 
         assert!(
             matches!(result, ReassemblerResult::Pending),
@@ -837,7 +836,7 @@ mod tests {
         store.update_metadata(&frag1_bundle).await;
 
         let reassembler = make_reassembler(&store);
-        let result = reassembler.run(trigger).await;
+        let result = reassembler.run(trigger, hardy_bpv7::bpsec::no_keys).await;
 
         match result {
             ReassemblerResult::Complete(_bundle, data) => {
