@@ -2,12 +2,11 @@
 
 use core::num::NonZeroUsize;
 
-use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::spin::Mutex;
 use lru::LruCache;
 
-use super::{BundleStorage, RecoveryResponse, Result};
+use super::{BundleStorage, RecoveryResponse, Result, Sender};
 use crate::{Arc, Bytes};
 
 /// Default LRU cache capacity (number of entries).

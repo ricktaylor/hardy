@@ -1,6 +1,5 @@
 use core::num::{NonZero, NonZeroUsize};
 
-use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use rand::distr::{Alphanumeric, SampleString};
@@ -8,7 +7,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::{BundleStorage, RecoveryResponse, Result};
+use super::{BundleStorage, RecoveryResponse, Result, Sender};
 use crate::{Arc, Bytes};
 
 #[derive(Debug)]

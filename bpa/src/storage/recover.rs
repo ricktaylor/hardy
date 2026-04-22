@@ -5,8 +5,7 @@ use tracing::info;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::RecoveryResponse;
-use super::store::Store;
+use super::{RecoveryResponse, Store};
 use crate::Arc;
 use crate::bundle::Bundle;
 use crate::dispatcher::Dispatcher;
