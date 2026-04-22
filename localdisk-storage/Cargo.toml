@@ -31,7 +31,6 @@ time = "0.3"
 trace-err = "1"
 memmap2 = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-flume = "0.12"
 
 [dev-dependencies]
 flume = "0.12"

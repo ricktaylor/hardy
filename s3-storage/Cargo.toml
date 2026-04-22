@@ -17,7 +17,6 @@ instrument = ["tracing/attributes"]
 serde = ["dep:serde"]
 
 [dependencies]
-flume = "0.12"
 hardy-bpa = { version = "0.1", path = "../bpa" }
 aws-config = "1"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
