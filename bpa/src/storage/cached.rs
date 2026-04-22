@@ -82,13 +82,15 @@ impl BundleStorage for CachedBundleStorage {
     }
 
     async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()> {
+        self.inner.replace(storage_name, data.clone()).await?;
+
         if self.is_cacheable(&data) {
-            self.lru.lock().put(storage_name.into(), data.clone());
+            self.lru.lock().put(storage_name.into(), data);
         } else {
             self.lru.lock().pop(storage_name);
         }
 
-        self.inner.replace(storage_name, data).await
+        Ok(())
     }
 
     async fn delete(&self, storage_name: &str) -> Result<()> {
