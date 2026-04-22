@@ -1,5 +1,6 @@
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
+use time::OffsetDateTime;
 
 use crate::{Arc, Bytes};
 mod coverage;
@@ -16,13 +17,14 @@ pub struct FragmentDescriptor<'a> {
     pub offset: u64,
     pub length: u64,
     pub extension_blocks: Option<&'a Bytes>,
+    pub expiry: OffsetDateTime,
 }
 
 /// Result returned by `Store::receive_fragment`.
 pub enum ReassemblyStatus {
     /// Fragment recorded, waiting for more.
     Pending,
-    /// All bytes covered, ready to finalize.
+    /// All bytes written, ready to finalize.
     Complete {
         /// Storage name of the completed ADU.
         storage_name: Arc<str>,

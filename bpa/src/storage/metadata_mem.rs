@@ -1,12 +1,15 @@
+use core::num::{NonZero, NonZeroUsize};
+
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 use lru::LruCache;
+use time::OffsetDateTime;
 use tracing::info;
 
-use super::{MetadataStorage, Result, Sender, UpsertResult};
+use super::{CompletionInfo, MetadataStorage, Result, Sender, UpsertResult};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::fragmentation::{Coverage, FragmentDescriptor};
 use crate::{Arc, Bytes, HashMap};
@@ -15,13 +18,13 @@ use crate::{Arc, Bytes, HashMap};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct Config {
-    pub max_bundles: core::num::NonZeroUsize,
+    pub max_bundles: NonZeroUsize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_bundles: core::num::NonZero::new(1_048_576).unwrap(),
+            max_bundles: NonZero::new(1_048_576).unwrap(),
         }
     }
 }
@@ -29,8 +32,11 @@ impl Default for Config {
 /// In-memory reassembly tracker entry.
 struct ReassemblyEntry {
     storage_name: Option<Arc<str>>,
+    total_adu_length: u64,
     coverage: Coverage,
+    finalized: bool,
     extension_blocks: Option<Bytes>,
+    expiry: OffsetDateTime,
 }
 
 pub struct MetadataMemStorage {
@@ -267,23 +273,59 @@ impl MetadataStorage for MetadataMemStorage {
         let key = (fragment.source.clone(), fragment.timestamp.clone());
         let mut map = self.reassembly.lock();
 
+        let created = !map.contains_key(&key);
         let entry = map.entry(key).or_insert_with(|| ReassemblyEntry {
             storage_name: None,
+            total_adu_length: fragment.total_adu_length,
             coverage: Coverage::new(),
+            finalized: false,
             extension_blocks: None,
+            expiry: fragment.expiry,
         });
 
-        entry.coverage.insert(fragment.offset, fragment.length);
+        if entry.total_adu_length != fragment.total_adu_length {
+            return Err(format!(
+                "Fragment total_adu_length mismatch: expected {}, got {}",
+                entry.total_adu_length, fragment.total_adu_length
+            )
+            .into());
+        }
 
-        if let Some(blocks) = fragment.extension_blocks {
-            entry.extension_blocks = Some(blocks.clone());
+        // Only store extension blocks once (from fragment 0)
+        if entry.extension_blocks.is_none() {
+            if let Some(blocks) = fragment.extension_blocks {
+                entry.extension_blocks = Some(blocks.clone());
+            }
         }
 
         Ok(UpsertResult {
             storage_name: entry.storage_name.clone(),
-            complete: entry.coverage.is_complete(fragment.total_adu_length),
-            extension_blocks: entry.extension_blocks.clone(),
+            created,
         })
+    }
+
+    async fn confirm_fragment_write(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        offset: u64,
+        length: u64,
+        total_adu_length: u64,
+    ) -> Result<Option<CompletionInfo>> {
+        let key = (source.clone(), timestamp.clone());
+        let mut map = self.reassembly.lock();
+        let entry = map.get_mut(&key).ok_or("Reassembly entry not found")?;
+
+        entry.coverage.insert(offset, length);
+
+        if !entry.finalized && entry.coverage.is_complete(total_adu_length) {
+            entry.finalized = true;
+            Ok(Some(CompletionInfo {
+                extension_blocks: entry.extension_blocks.clone(),
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn set_reassembly_name(
@@ -291,15 +333,19 @@ impl MetadataStorage for MetadataMemStorage {
         source: &Eid,
         timestamp: &CreationTimestamp,
         name: Arc<str>,
-    ) -> Result<()> {
-        if let Some(entry) = self
-            .reassembly
-            .lock()
+    ) -> Result<Arc<str>> {
+        let mut map = self.reassembly.lock();
+        let entry = map
             .get_mut(&(source.clone(), timestamp.clone()))
-        {
+            .ok_or("Reassembly entry not found")?;
+
+        // CAS: only set if currently None
+        if entry.storage_name.is_none() {
             entry.storage_name = Some(name);
         }
-        Ok(())
+
+        // Return the winning name (ours or the pre-existing one)
+        Ok(entry.storage_name.clone().unwrap())
     }
 
     async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) -> Result<()> {
@@ -307,5 +353,29 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .remove(&(source.clone(), timestamp.clone()));
         Ok(())
+    }
+
+    async fn poll_expired_reassemblies(&self) -> Result<Vec<super::ExpiredReassembly>> {
+        let now = time::OffsetDateTime::now_utc();
+        let mut map = self.reassembly.lock();
+
+        let expired_keys: Vec<_> = map
+            .iter()
+            .filter(|(_, entry)| entry.expiry <= now)
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        let mut result = Vec::with_capacity(expired_keys.len());
+        for key in expired_keys {
+            if let Some(entry) = map.remove(&key) {
+                result.push(super::ExpiredReassembly {
+                    source: key.0,
+                    timestamp: key.1,
+                    storage_name: entry.storage_name,
+                });
+            }
+        }
+
+        Ok(result)
     }
 }

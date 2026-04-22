@@ -53,7 +53,10 @@ where
     let total_adu_length = fi.total_adu_length;
     let payload = data.slice(payload_block.payload_range());
 
-    if offset + payload.len() as u64 > total_adu_length {
+    if offset
+        .checked_add(payload.len() as u64)
+        .is_none_or(|end| end > total_adu_length)
+    {
         debug!(
             "Fragment extends beyond ADU: offset={offset}, len={}, total={total_adu_length}",
             payload.len()
@@ -72,9 +75,16 @@ where
         offset,
         length: payload.len() as u64,
         extension_blocks: frag0_data.as_ref(),
+        expiry: bundle.expiry(),
     };
 
-    let status = store.receive_fragment(&descriptor, &payload).await;
+    let status = match store.receive_fragment(&descriptor, &payload).await {
+        Ok(s) => s,
+        Err(e) => {
+            debug!("Fragment rejected: {e}");
+            return FragmentResult::Failed;
+        }
+    };
 
     match status {
         ReassemblyStatus::Pending => FragmentResult::Pending,
@@ -82,11 +92,19 @@ where
             storage_name,
             extension_blocks,
         } => {
+            metrics::gauge!("bpa.reassembly.pending").decrement(1.0);
+
             let result = finalize(store, &storage_name, extension_blocks, key_provider).await;
 
             store
                 .delete_reassembly(&bundle.bundle.id.source, &bundle.bundle.id.timestamp)
                 .await;
+
+            // Clean up the intermediate ADU blob on failure
+            // (on success, finalize already cleans it up)
+            if matches!(result, FragmentResult::Failed) {
+                store.delete_data(&storage_name).await;
+            }
 
             result
         }

@@ -26,31 +26,19 @@ impl Coverage {
         }
 
         let end = start + len;
-        let mut new_start = start;
-        let mut new_end = end;
 
-        // Find all intervals that overlap or are adjacent to [start, end)
-        let mut first = self.ranges.len();
-        let mut last = 0;
-
-        for (i, &(s, e)) in self.ranges.iter().enumerate() {
-            // Overlaps or is adjacent if: s <= new_end && e >= new_start
-            if s <= new_end && e >= new_start {
-                if first > i {
-                    first = i;
-                }
-                last = i + 1;
-                new_start = new_start.min(s);
-                new_end = new_end.max(e);
-            }
-        }
+        // Binary search for the merge window in O(log n).
+        // Ranges are sorted and non-overlapping, so ends are strictly increasing.
+        let first = self.ranges.partition_point(|&(_, e)| e < start);
+        let last = self.ranges.partition_point(|&(s, _)| s <= end);
 
         if first >= last {
-            // No overlap — find insertion point to keep sorted
-            let pos = self.ranges.partition_point(|&(s, _)| s < start);
-            self.ranges.insert(pos, (new_start, new_end));
+            // No overlap — insert at position
+            self.ranges.insert(first, (start, end));
         } else {
-            // Replace overlapping range(s) with merged interval
+            // Merge with overlapping/adjacent ranges
+            let new_start = start.min(self.ranges[first].0);
+            let new_end = end.max(self.ranges[last - 1].1);
             self.ranges[first] = (new_start, new_end);
             if last > first + 1 {
                 self.ranges.drain((first + 1)..last);

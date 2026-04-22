@@ -805,12 +805,23 @@ impl storage::MetadataStorage for Storage {
         todo!("Progressive reassembly not yet implemented for Postgres")
     }
 
+    async fn confirm_fragment_write(
+        &self,
+        _source: &hardy_bpv7::eid::Eid,
+        _timestamp: &hardy_bpv7::creation_timestamp::CreationTimestamp,
+        _offset: u64,
+        _length: u64,
+        _total_adu_length: u64,
+    ) -> storage::Result<Option<storage::CompletionInfo>> {
+        todo!("Progressive reassembly not yet implemented for Postgres")
+    }
+
     async fn set_reassembly_name(
         &self,
         _source: &hardy_bpv7::eid::Eid,
         _timestamp: &hardy_bpv7::creation_timestamp::CreationTimestamp,
         _name: std::sync::Arc<str>,
-    ) -> storage::Result<()> {
+    ) -> storage::Result<std::sync::Arc<str>> {
         todo!("Progressive reassembly not yet implemented for Postgres")
     }
 
@@ -819,6 +830,10 @@ impl storage::MetadataStorage for Storage {
         _source: &hardy_bpv7::eid::Eid,
         _timestamp: &hardy_bpv7::creation_timestamp::CreationTimestamp,
     ) -> storage::Result<()> {
+        todo!("Progressive reassembly not yet implemented for Postgres")
+    }
+
+    async fn poll_expired_reassemblies(&self) -> storage::Result<Vec<storage::ExpiredReassembly>> {
         todo!("Progressive reassembly not yet implemented for Postgres")
     }
 }

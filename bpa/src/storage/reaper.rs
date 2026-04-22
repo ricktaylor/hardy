@@ -23,8 +23,10 @@ use hardy_async::{Notify, TaskPool};
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
+use trace_err::*;
 use tracing::{debug, error};
 
+use super::{BundleStorage, MetadataStorage};
 use crate::bundle::{Bundle, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, BTreeSet};
@@ -60,7 +62,8 @@ impl Ord for CacheEntry {
 /// expiry times, refilling from storage when depleted.
 pub(super) struct Reaper {
     tasks: TaskPool,
-    metadata_storage: Arc<dyn super::MetadataStorage>,
+    metadata_storage: Arc<dyn MetadataStorage>,
+    bundle_storage: Arc<dyn BundleStorage>,
     cache: Mutex<BTreeSet<CacheEntry>>,
     wakeup: Notify,
     cache_size: usize,
@@ -69,12 +72,14 @@ pub(super) struct Reaper {
 impl Reaper {
     pub fn new(
         tasks: TaskPool,
-        metadata_storage: Arc<dyn super::MetadataStorage>,
+        metadata_storage: Arc<dyn MetadataStorage>,
+        bundle_storage: Arc<dyn BundleStorage>,
         cache_size: usize,
     ) -> Self {
         Self {
             tasks,
             metadata_storage,
+            bundle_storage,
             cache: Mutex::new(BTreeSet::new()),
             wakeup: Notify::new(),
             cache_size,
@@ -117,6 +122,25 @@ impl Reaper {
             Some(old) => new_expiry < old,
         } {
             self.wakeup.notify_one();
+        }
+    }
+
+    /// Clean up expired reassembly entries and their ADU storage objects.
+    pub async fn reap_expired_reassemblies(&self) {
+        let expired = self
+            .metadata_storage
+            .poll_expired_reassemblies()
+            .await
+            .trace_expect("Failed to poll expired reassemblies");
+
+        for entry in expired {
+            if let Some(name) = &entry.storage_name {
+                let _ = self.bundle_storage.delete(name).await.inspect_err(|e| {
+                    error!("Failed to delete expired reassembly data: {e}");
+                });
+            }
+            metrics::gauge!("bpa.reassembly.pending").decrement(1.0);
+            metrics::counter!("bpa.reassembly.expired").increment(1);
         }
     }
 
@@ -178,6 +202,9 @@ impl Reaper {
                         .await;
                 }
             }
+
+            // Clean up expired reassemblies
+            self.reap_expired_reassemblies().await;
 
             if check_store {
                 if let Some(handle) = &repopulation_task

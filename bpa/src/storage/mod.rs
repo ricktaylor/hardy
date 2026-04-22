@@ -8,6 +8,15 @@ use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 pub use crate::fragmentation::{FragmentDescriptor, ReassemblyStatus};
 use crate::{Arc, Bytes};
 
+// For bundle_cache we use hardy_async::sync::spin::Mutex because:
+// 1. All operations are O(1): peek, put, pop
+// 2. Critical sections are very short (LRU HashMap lookups)
+// 3. No blocking/sleeping/syscalls while holding lock
+// 4. Avoids OS mutex overhead on hot path
+//
+// Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
+// they perform O(n) iteration while holding the lock.
+
 /// Boxed error type used by storage trait methods.
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 /// Result alias for storage operations.
@@ -39,10 +48,21 @@ pub(crate) use store::Store;
 pub struct UpsertResult {
     /// Storage name of the ADU object. `None` if this is the first fragment.
     pub storage_name: Option<Arc<str>>,
-    /// Whether all byte ranges are covered (ADU is complete).
-    pub complete: bool,
+    /// `true` only for the first fragment that created this reassembly entry.
+    pub created: bool,
+}
+
+/// Returned by `confirm_fragment_write` when all bytes have been written.
+pub struct CompletionInfo {
     /// Fragment 0's wire data (extension blocks), if available.
     pub extension_blocks: Option<Bytes>,
+}
+
+/// An expired reassembly entry returned by the reaper scan.
+pub struct ExpiredReassembly {
+    pub source: Eid,
+    pub timestamp: CreationTimestamp,
+    pub storage_name: Option<Arc<str>>,
 }
 
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
@@ -241,20 +261,46 @@ pub trait MetadataStorage: Send + Sync {
     /// Record a fragment for progressive reassembly.
     ///
     /// Creates or updates the reassembly tracker for the given bundle.
-    /// Returns the current reassembly state: storage name (empty if first fragment),
-    /// whether all bytes are covered, and fragment 0's extension blocks if available.
+    /// Returns the storage name (if already set) and whether this call created
+    /// a new entry. Does NOT update coverage — call `confirm_fragment_write`
+    /// after the data has been written to storage.
     async fn upsert_reassembly(&self, fragment: &FragmentDescriptor<'_>) -> Result<UpsertResult>;
 
-    /// Associate a storage name with a reassembly entry.
+    /// Confirm that a fragment's data has been written to storage.
+    ///
+    /// Updates the coverage tracking and checks completeness.
+    /// Must be called AFTER `write_at` succeeds, so that completeness
+    /// is only reported when all bytes are actually persisted.
+    /// Returns `Some(CompletionInfo)` when the ADU is fully covered.
+    async fn confirm_fragment_write(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        offset: u64,
+        length: u64,
+        total_adu_length: u64,
+    ) -> Result<Option<CompletionInfo>>;
+
+    /// Associate a storage name with a reassembly entry (compare-and-swap).
+    ///
+    /// Only sets the name if the entry currently has no storage name.
+    /// Returns the name that is now active — either the one just set,
+    /// or the pre-existing one if another task won the race.
+    /// The caller must clean up the orphaned ADU when the returned name
+    /// differs from the one passed in.
     async fn set_reassembly_name(
         &self,
         source: &Eid,
         timestamp: &CreationTimestamp,
         name: Arc<str>,
-    ) -> Result<()>;
+    ) -> Result<Arc<str>>;
 
     /// Delete a reassembly tracker after finalization or failure.
     async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) -> Result<()>;
+
+    /// Return expired reassembly entries for cleanup.
+    /// The reaper calls this periodically to find stale reassemblies.
+    async fn poll_expired_reassemblies(&self) -> Result<Vec<ExpiredReassembly>>;
 }
 
 /// A recovered bundle entry: `(storage_name, creation_time)`.

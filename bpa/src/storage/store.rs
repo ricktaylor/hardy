@@ -9,7 +9,7 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, Reaper, Sender};
+use super::{BundleStorage, MetadataStorage, Reaper, Result, Sender};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::fragmentation::{FragmentDescriptor, ReassemblyStatus};
@@ -36,6 +36,7 @@ impl Store {
         let reaper = Arc::new(Reaper::new(
             tasks.clone(),
             metadata_storage.clone(),
+            bundle_storage.clone(),
             reaper_cache_size.into(),
         ));
 
@@ -243,49 +244,64 @@ impl Store {
     ///
     /// Creates the ADU storage object on the first fragment,
     /// writes the payload at its offset, and tracks coverage.
-    /// Returns the reassembly status after this fragment.
+    /// Completeness is checked AFTER the write, so finalize only
+    /// runs when all fragment data is actually persisted.
     pub async fn receive_fragment(
         &self,
         descriptor: &FragmentDescriptor<'_>,
         payload: &Bytes,
-    ) -> ReassemblyStatus {
-        let result = self
-            .metadata_storage
-            .upsert_reassembly(descriptor)
-            .await
-            .trace_expect("Failed to upsert reassembly");
+    ) -> Result<ReassemblyStatus> {
+        let result = self.metadata_storage.upsert_reassembly(descriptor).await?;
 
-        // First fragment: create the ADU storage object and set its name
+        if result.created {
+            metrics::gauge!("bpa.reassembly.pending").increment(1.0);
+        }
+
         let adu_name = if let Some(name) = result.storage_name {
             name
         } else {
-            let name = self
+            let new_name = self
                 .bundle_storage
                 .create(descriptor.total_adu_length)
-                .await
-                .trace_expect("Failed to create ADU storage object");
+                .await?;
 
-            self.metadata_storage
-                .set_reassembly_name(descriptor.source, descriptor.timestamp, name.clone())
-                .await
-                .trace_expect("Failed to set reassembly storage name");
+            // CAS: only the first task to set the name wins.
+            // If another task already set a name, use theirs and clean up ours.
+            let actual_name = self
+                .metadata_storage
+                .set_reassembly_name(descriptor.source, descriptor.timestamp, new_name.clone())
+                .await?;
 
-            name
+            if actual_name != new_name {
+                self.bundle_storage.delete(&new_name).await?;
+            }
+
+            actual_name
         };
 
         self.bundle_storage
             .write_at(&adu_name, descriptor.offset, payload.clone())
-            .await
-            .trace_expect("Failed to write fragment data");
+            .await?;
 
-        if result.complete {
-            ReassemblyStatus::Complete {
+        // Check completeness AFTER the data is written
+        let completion = self
+            .metadata_storage
+            .confirm_fragment_write(
+                descriptor.source,
+                descriptor.timestamp,
+                descriptor.offset,
+                descriptor.length,
+                descriptor.total_adu_length,
+            )
+            .await?;
+
+        Ok(match completion {
+            Some(info) => ReassemblyStatus::Complete {
                 storage_name: adu_name,
-                extension_blocks: result.extension_blocks,
-            }
-        } else {
-            ReassemblyStatus::Pending
-        }
+                extension_blocks: info.extension_blocks,
+            },
+            None => ReassemblyStatus::Pending,
+        })
     }
 
     /// Delete a reassembly tracker.
