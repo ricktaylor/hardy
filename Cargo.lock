@@ -2120,7 +2120,6 @@ dependencies = [
 name = "hardy-postgres-storage"
 version = "0.1.0"
 dependencies = [
- "flume",
  "hardy-bpa",
  "hardy-bpv7",
  "serde",
@@ -2159,7 +2158,6 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
- "flume",
  "hardy-bpa",
  "serde",
  "thiserror",

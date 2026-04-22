@@ -32,7 +32,6 @@ time = "0.3"
 trace-err = "1"
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = "1"
-flume = "0.12"
 
 [dev-dependencies]
 flume = "0.12"
