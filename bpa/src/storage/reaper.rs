@@ -1,15 +1,29 @@
 //! Bundle lifetime expiration monitoring (Reaper).
+//!
+//! The reaper monitors bundle lifetimes and triggers deletion when bundles
+//! expire. It maintains a bounded in-memory cache of the bundles with the
+//! soonest expiry times, refilling from storage when depleted.
+//!
+//! # Two-Level Architecture
+//!
+//! - **In-memory cache**: BTreeSet of `CacheEntry` ordered by expiry time
+//! - **Persistent storage**: MetadataStorage.poll_expiry() for refill
+//!
+//! The cache keeps bundles with the soonest expiry. When full, entries with
+//! later expiry times are evicted to make room for sooner ones.
+//!
+//! See [Storage Subsystem Design](../../docs/storage_subsystem_design.md)
+//! for architectural context.
 
 use core::cmp::Ordering;
 use futures::{FutureExt, join, select_biased};
-use hardy_async::Notify;
 use hardy_async::sync::Mutex;
+use hardy_async::{Notify, TaskPool};
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
 use tracing::{debug, error};
 
-use super::store::Store;
 use crate::bundle::{Bundle, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, BTreeSet};
@@ -44,14 +58,22 @@ impl Ord for CacheEntry {
 /// Maintains a bounded in-memory cache of bundles with the soonest
 /// expiry times, refilling from storage when depleted.
 pub(super) struct Reaper {
+    tasks: TaskPool,
+    metadata_storage: Arc<dyn super::MetadataStorage>,
     cache: Mutex<BTreeSet<CacheEntry>>,
     wakeup: Notify,
     cache_size: usize,
 }
 
 impl Reaper {
-    pub fn new(cache_size: usize) -> Self {
+    pub fn new(
+        tasks: TaskPool,
+        metadata_storage: Arc<dyn super::MetadataStorage>,
+        cache_size: usize,
+    ) -> Self {
         Self {
+            tasks,
+            metadata_storage,
             cache: Mutex::new(BTreeSet::new()),
             wakeup: Notify::new(),
             cache_size,
@@ -98,7 +120,16 @@ impl Reaper {
     }
 
     /// Background task for bundle lifetime monitoring.
-    pub async fn run(&self, store: Arc<Store>, dispatcher: Arc<Dispatcher>) {
+    ///
+    /// # Behavior
+    ///
+    /// 1. Sleep until the next bundle expiry (or indefinitely if cache empty)
+    /// 2. Wake on: shutdown signal, new bundle notification, or expiry timeout
+    /// 3. Expire all bundles past their lifetime via `drop_bundle()`
+    /// 4. Spawn `refill_cache()` if cache is depleted
+    ///
+    /// Uses `select_biased!` to prioritize shutdown handling.
+    pub async fn run(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 
         loop {
@@ -110,7 +141,7 @@ impl Reaper {
                 .unwrap_or(time::Duration::MAX);
 
             select_biased! {
-                _ = store.tasks.cancel_token().cancelled().fuse() => {
+                _ = self.tasks.cancel_token().cancelled().fuse() => {
                     debug!("Reaper task complete");
                     break;
                 }
@@ -132,7 +163,7 @@ impl Reaper {
             };
 
             for id in dead_bundle_ids {
-                if let Ok(Some(bundle)) = store
+                if let Ok(Some(bundle)) = self
                     .metadata_storage
                     .get(&id)
                     .await
@@ -154,23 +185,23 @@ impl Reaper {
                     continue;
                 }
 
-                let store_clone = store.clone();
+                let reaper = self.clone();
                 repopulation_task = Some(hardy_async::spawn!(
-                    store.tasks,
+                    self.tasks,
                     "refill_cache_task",
-                    async move { store_clone.reaper.refill_cache(&store_clone).await }
+                    async move { reaper.refill_cache().await }
                 ));
             }
         }
     }
 
-    async fn refill_cache(&self, store: &Store) {
-        let cancel_token = store.tasks.cancel_token().clone();
+    async fn refill_cache(&self) {
+        let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<Bundle>(self.cache_size);
 
         join!(
             async {
-                let _ = store
+                let _ = self
                     .metadata_storage
                     .poll_expiry(tx, self.cache_size)
                     .await

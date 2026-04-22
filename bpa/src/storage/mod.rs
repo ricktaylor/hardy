@@ -1,4 +1,3 @@
-use flume::Sender;
 use hardy_async::async_trait;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
@@ -11,6 +10,10 @@ use crate::{Arc, Bytes};
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 /// Result alias for storage operations.
 pub type Result<T> = core::result::Result<T, Error>;
+/// Channel sender used to stream results from storage polling methods.
+pub type Sender<T> = flume::Sender<T>;
+/// Receiver handle. Receives `Some(bundle)` for data, `None` signals channel close.
+pub type Receiver = flume::Receiver<Option<Bundle>>;
 
 mod bundle_mem;
 mod cached;

@@ -1,6 +1,6 @@
 use core::num::NonZeroUsize;
 
-use flume::Sender;
+use super::Sender;
 use hardy_async::TaskPool;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
@@ -15,11 +15,11 @@ use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
 
-pub(crate) struct Store {
+pub struct Store {
     pub(super) tasks: TaskPool,
     pub(super) metadata_storage: Arc<dyn MetadataStorage>,
     pub(super) bundle_storage: Arc<dyn BundleStorage>,
-    pub(super) reaper: Reaper,
+    pub(super) reaper: Arc<Reaper>,
 }
 
 impl Store {
@@ -33,7 +33,11 @@ impl Store {
         bundle_storage: Arc<dyn BundleStorage>,
     ) -> Self {
         let tasks = TaskPool::new();
-        let reaper = Reaper::new(reaper_cache_size.into());
+        let reaper = Arc::new(Reaper::new(
+            tasks.clone(),
+            metadata_storage.clone(),
+            reaper_cache_size.into(),
+        ));
 
         Self {
             tasks,
@@ -52,9 +56,9 @@ impl Store {
             self.recover(&dispatcher);
         }
 
-        let store = self.clone();
+        let reaper = self.reaper.clone();
         hardy_async::spawn!(self.tasks, "reaper_task", async move {
-            store.reaper.run(store.clone(), dispatcher).await
+            reaper.run(dispatcher).await
         });
     }
 

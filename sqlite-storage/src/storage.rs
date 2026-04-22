@@ -428,7 +428,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn remove_unconfirmed(
         &self,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         loop {
             let bundles = self
@@ -515,7 +515,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_expiry(
         &self,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         limit: usize,
     ) -> storage::Result<()> {
         debug_assert!(
@@ -568,7 +568,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn poll_waiting(
         &self,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::Waiting).0 == 1,
@@ -642,7 +642,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_service_waiting(
         &self,
         source: hardy_bpv7::eid::Eid,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::WaitingForService {
@@ -686,7 +686,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_adu_fragments(
         &self,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         status: &BundleStatus,
     ) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) = from_status(status);
@@ -725,7 +725,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_pending(
         &self,
-        tx: flume::Sender<hardy_bpa::bundle::Bundle>,
+        tx: storage::Sender<hardy_bpa::bundle::Bundle>,
         status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
