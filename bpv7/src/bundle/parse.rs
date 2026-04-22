@@ -276,11 +276,8 @@ impl<'a> BlockParse<'a> {
                     block::Type::BlockSecurity | block::Type::Primary => {
                         return Err(bpsec::Error::InvalidBCBTarget.into());
                     }
-                    block::Type::Payload => {
-                        // Check flags
-                        if !bcb_block.flags.must_replicate {
-                            return Err(bpsec::Error::BCBMustReplicate.into());
-                        }
+                    block::Type::Payload if !bcb_block.flags.must_replicate => {
+                        return Err(bpsec::Error::BCBMustReplicate.into());
                     }
                     _ => {}
                 }
