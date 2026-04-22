@@ -67,7 +67,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &flume::Sender<storage::RecoveryResponse>,
+    tx: &storage::Sender<storage::RecoveryResponse>,
 ) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
@@ -153,7 +153,7 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: flume::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
         let before = SystemTime::now();
         let mut dirs = vec![self.store_root.clone()];
 
@@ -284,11 +284,10 @@ impl BundleStorage for Storage {
                 })?;
 
                 // And now sync the parent directory, i.e. metadata
-                if let Some(parent_dir) = storage_name.parent()
-                    && let Ok(dir_handle) = std::fs::File::open(parent_dir)
-                    && let Err(e) = dir_handle.sync_all()
-                {
-                    warn!("Failed to sync parent directory: {e}");
+                if let Some(parent_dir) = storage_name.parent() {
+                    if let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all()) {
+                        warn!("Failed to sync parent directory: {e}");
+                    }
                 }
 
                 storage::Result::Ok(storage_name)
@@ -346,11 +345,10 @@ impl BundleStorage for Storage {
                     error!("Failed to rename temporary bundle data file: {e}");
                     _ = std::fs::remove_file(&tmp_path);
                 })?;
-                if let Some(parent_dir) = final_path.parent()
-                    && let Ok(dir_handle) = std::fs::File::open(parent_dir)
-                    && let Err(e) = dir_handle.sync_all()
-                {
-                    warn!("Failed to sync parent directory: {e}");
+                if let Some(parent_dir) = final_path.parent() {
+                    if let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all()) {
+                        warn!("Failed to sync parent directory: {e}");
+                    }
                 }
                 storage::Result::Ok(())
             })

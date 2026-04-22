@@ -2,7 +2,7 @@
 
 use core::num::NonZeroUsize;
 
-use flume::Sender;
+use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::spin::Mutex;
 use lru::LruCache;

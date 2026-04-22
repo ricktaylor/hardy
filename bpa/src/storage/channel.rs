@@ -24,12 +24,12 @@
 use core::result::Result;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use flume::{Receiver, TrySendError};
+use flume::TrySendError;
 use hardy_async::Notify;
 use trace_err::*;
 use tracing::debug;
 
-use super::store::Store;
+use super::{Receiver, Store};
 use crate::Arc;
 use crate::bundle::{Bundle, BundleStatus};
 
@@ -205,11 +205,7 @@ impl Sender {
 
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
-    pub fn channel(
-        self: &Arc<Self>,
-        status: BundleStatus,
-        cap: usize,
-    ) -> (Sender, Receiver<Option<Bundle>>) {
+    pub fn channel(self: &Arc<Self>, status: BundleStatus, cap: usize) -> (Sender, Receiver) {
         let (tx, rx) = flume::bounded::<Option<Bundle>>(cap);
 
         let shared = Arc::new(Shared {

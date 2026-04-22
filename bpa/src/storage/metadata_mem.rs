@@ -1,4 +1,4 @@
-use flume::Sender;
+use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use hardy_bpv7::bundle::Id;

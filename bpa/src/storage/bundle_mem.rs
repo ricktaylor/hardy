@@ -1,6 +1,6 @@
 use core::num::{NonZero, NonZeroUsize};
 
-use flume::Sender;
+use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use rand::distr::{Alphanumeric, SampleString};
