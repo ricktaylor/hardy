@@ -1,4 +1,3 @@
-use super::Sender;
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use hardy_bpv7::bundle::Id;
@@ -6,7 +5,7 @@ use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 use tracing::info;
 
-use super::{MetadataStorage, Result};
+use super::{MetadataStorage, Result, Sender};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 
 #[derive(Debug)]

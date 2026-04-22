@@ -1,6 +1,5 @@
 use core::num::NonZeroUsize;
 
-use super::Sender;
 use hardy_async::TaskPool;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
@@ -9,8 +8,7 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::reaper::Reaper;
-use super::{BundleStorage, MetadataStorage};
+use super::{BundleStorage, MetadataStorage, Reaper, Sender};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
