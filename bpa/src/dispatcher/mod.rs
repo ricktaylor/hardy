@@ -3,7 +3,6 @@ use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::ReasonCode;
 
 use super::*;
-use crate::fragmentation::Reassembler;
 
 mod admin;
 mod dispatch;
@@ -20,7 +19,6 @@ pub(crate) struct Dispatcher {
     keys_registry: Arc<keys::registry::Registry>,
     filter_engine: Arc<filter::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
-    reassembler: Reassembler,
 
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
@@ -78,8 +76,6 @@ impl Dispatcher {
         let (dispatch_tx, dispatch_rx) =
             store.channel(bundle::BundleStatus::Dispatching, poll_channel_depth_usize);
 
-        let reassembler = Reassembler::new(store.clone());
-
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
             processing_pool: hardy_async::BoundedTaskPool::new(processing_pool_size),
@@ -88,7 +84,6 @@ impl Dispatcher {
             keys_registry,
             filter_engine,
             cla_registry: hardy_async::sync::spin::Once::new(),
-            reassembler,
             dispatch_tx,
             status_reports,
             node_ids,

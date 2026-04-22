@@ -2,6 +2,7 @@ use core::num::NonZeroUsize;
 
 use hardy_async::TaskPool;
 use hardy_bpv7::bundle::Id;
+use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 use trace_err::*;
 use tracing::error;
@@ -11,6 +12,7 @@ use tracing::instrument;
 use super::{BundleStorage, MetadataStorage, Reaper, Sender};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
+use crate::fragmentation::{FragmentDescriptor, ReassemblyStatus};
 use crate::{Arc, Bytes};
 
 pub struct Store {
@@ -235,6 +237,63 @@ impl Store {
         }
 
         reset != 0
+    }
+
+    /// Receive a fragment for progressive reassembly.
+    ///
+    /// Creates the ADU storage object on the first fragment,
+    /// writes the payload at its offset, and tracks coverage.
+    /// Returns the reassembly status after this fragment.
+    pub async fn receive_fragment(
+        &self,
+        descriptor: &FragmentDescriptor<'_>,
+        payload: &Bytes,
+    ) -> ReassemblyStatus {
+        let result = self
+            .metadata_storage
+            .upsert_reassembly(descriptor)
+            .await
+            .trace_expect("Failed to upsert reassembly");
+
+        // First fragment: create the ADU storage object and set its name
+        let adu_name = if let Some(name) = result.storage_name {
+            name
+        } else {
+            let name = self
+                .bundle_storage
+                .create(descriptor.total_adu_length)
+                .await
+                .trace_expect("Failed to create ADU storage object");
+
+            self.metadata_storage
+                .set_reassembly_name(descriptor.source, descriptor.timestamp, name.clone())
+                .await
+                .trace_expect("Failed to set reassembly storage name");
+
+            name
+        };
+
+        self.bundle_storage
+            .write_at(&adu_name, descriptor.offset, payload.clone())
+            .await
+            .trace_expect("Failed to write fragment data");
+
+        if result.complete {
+            ReassemblyStatus::Complete {
+                storage_name: adu_name,
+                extension_blocks: result.extension_blocks,
+            }
+        } else {
+            ReassemblyStatus::Pending
+        }
+    }
+
+    /// Delete a reassembly tracker.
+    pub async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) {
+        self.metadata_storage
+            .delete_reassembly(source, timestamp)
+            .await
+            .trace_expect("Failed to delete reassembly")
     }
 }
 

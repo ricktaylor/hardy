@@ -1,12 +1,15 @@
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use hardy_bpv7::bundle::Id;
+use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 use tracing::info;
 
-use super::{MetadataStorage, Result, Sender};
+use super::{MetadataStorage, Result, Sender, UpsertResult};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::fragmentation::{Coverage, FragmentDescriptor};
+use crate::{Arc, Bytes, HashMap};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -23,8 +26,16 @@ impl Default for Config {
     }
 }
 
+/// In-memory reassembly tracker entry.
+struct ReassemblyEntry {
+    storage_name: Option<Arc<str>>,
+    coverage: Coverage,
+    extension_blocks: Option<Bytes>,
+}
+
 pub struct MetadataMemStorage {
     entries: Mutex<LruCache<Id, Option<Bundle>>>,
+    reassembly: Mutex<HashMap<(Eid, CreationTimestamp), ReassemblyEntry>>,
 }
 
 impl MetadataMemStorage {
@@ -36,7 +47,10 @@ impl MetadataMemStorage {
 
         let entries = Mutex::new(LruCache::new(config.max_bundles));
 
-        Self { entries }
+        Self {
+            entries,
+            reassembly: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Account for an entry leaving the LRU (eviction or replacement).
@@ -246,6 +260,52 @@ impl MetadataStorage for MetadataMemStorage {
                 break;
             }
         }
+        Ok(())
+    }
+
+    async fn upsert_reassembly(&self, fragment: &FragmentDescriptor<'_>) -> Result<UpsertResult> {
+        let key = (fragment.source.clone(), fragment.timestamp.clone());
+        let mut map = self.reassembly.lock();
+
+        let entry = map.entry(key).or_insert_with(|| ReassemblyEntry {
+            storage_name: None,
+            coverage: Coverage::new(),
+            extension_blocks: None,
+        });
+
+        entry.coverage.insert(fragment.offset, fragment.length);
+
+        if let Some(blocks) = fragment.extension_blocks {
+            entry.extension_blocks = Some(blocks.clone());
+        }
+
+        Ok(UpsertResult {
+            storage_name: entry.storage_name.clone(),
+            complete: entry.coverage.is_complete(fragment.total_adu_length),
+            extension_blocks: entry.extension_blocks.clone(),
+        })
+    }
+
+    async fn set_reassembly_name(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        name: Arc<str>,
+    ) -> Result<()> {
+        if let Some(entry) = self
+            .reassembly
+            .lock()
+            .get_mut(&(source.clone(), timestamp.clone()))
+        {
+            entry.storage_name = Some(name);
+        }
+        Ok(())
+    }
+
+    async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) -> Result<()> {
+        self.reassembly
+            .lock()
+            .remove(&(source.clone(), timestamp.clone()));
         Ok(())
     }
 }

@@ -1,9 +1,11 @@
 use hardy_async::async_trait;
 use hardy_bpv7::bundle::Id;
+use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
 
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+pub use crate::fragmentation::{FragmentDescriptor, ReassemblyStatus};
 use crate::{Arc, Bytes};
 
 /// Boxed error type used by storage trait methods.
@@ -32,6 +34,16 @@ pub use cached::{CachedBundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_B
 /// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
 pub use metadata_mem::{Config as MetadataMemStorageConfig, MetadataMemStorage};
 pub(crate) use store::Store;
+
+/// Result of upserting a fragment into the metadata reassembly tracker.
+pub struct UpsertResult {
+    /// Storage name of the ADU object. `None` if this is the first fragment.
+    pub storage_name: Option<Arc<str>>,
+    /// Whether all byte ranges are covered (ADU is complete).
+    pub complete: bool,
+    /// Fragment 0's wire data (extension blocks), if available.
+    pub extension_blocks: Option<Bytes>,
+}
 
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
@@ -225,6 +237,24 @@ pub trait MetadataStorage: Send + Sync {
         status: &BundleStatus,
         limit: usize,
     ) -> Result<()>;
+
+    /// Record a fragment for progressive reassembly.
+    ///
+    /// Creates or updates the reassembly tracker for the given bundle.
+    /// Returns the current reassembly state: storage name (empty if first fragment),
+    /// whether all bytes are covered, and fragment 0's extension blocks if available.
+    async fn upsert_reassembly(&self, fragment: &FragmentDescriptor<'_>) -> Result<UpsertResult>;
+
+    /// Associate a storage name with a reassembly entry.
+    async fn set_reassembly_name(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        name: Arc<str>,
+    ) -> Result<()>;
+
+    /// Delete a reassembly tracker after finalization or failure.
+    async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) -> Result<()>;
 }
 
 /// A recovered bundle entry: `(storage_name, creation_time)`.
@@ -279,6 +309,21 @@ pub trait BundleStorage: Send + Sync {
     /// The implementation must ensure atomicity: readers see either the
     /// old data or the new data, never a partial write.
     async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()>;
+
+    /// Create an empty storage object of the given size.
+    ///
+    /// Returns the storage name for the new object.
+    /// For disk: creates a file of the given size.
+    /// For S3: initiates a multipart upload.
+    /// For memory: allocates a zeroed buffer.
+    async fn create(&self, total_length: u64) -> Result<Arc<str>>;
+
+    /// Write data at a specific offset within an existing storage object.
+    ///
+    /// The storage object must have been created with `create()`.
+    /// Writes are idempotent: writing the same data at the same offset
+    /// produces the same result.
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> Result<()>;
 
     /// Deletes a bundle from the bundle storage.
     ///

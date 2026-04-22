@@ -256,6 +256,49 @@ impl storage::BundleStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn create(&self, total_length: u64) -> storage::Result<Arc<str>> {
+        // Create an empty object of the given size
+        let data = Bytes::from(vec![0u8; total_length as usize]);
+        self.save(data).await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> storage::Result<()> {
+        // S3 doesn't support partial writes natively.
+        // For now, load the full object, patch it, and re-upload.
+        // TODO: Use S3 multipart upload for truly large objects.
+        let key = self.full_key(storage_name);
+
+        let existing = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await?
+            .body
+            .collect()
+            .await?
+            .into_bytes();
+
+        let offset = offset as usize;
+        let end = offset + data.len();
+        let mut buf = existing.to_vec();
+        buf[offset..end].copy_from_slice(&data);
+
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .content_type("application/octet-stream")
+            .body(ByteStream::from(Bytes::from(buf)))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         self.client
             .delete_object()

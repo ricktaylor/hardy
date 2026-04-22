@@ -2,7 +2,7 @@ use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 
 use super::*;
-use crate::fragmentation::ReassemblerResult;
+use crate::fragmentation::FragmentResult;
 
 impl Dispatcher {
     /// Entry point for bundles received from CLAs.
@@ -315,11 +315,18 @@ impl Dispatcher {
             Some(rib::FindResult::Deliver(Some(service))) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
-                    match self.reassembler.run(bundle, self.key_provider()).await {
-                        ReassemblerResult::Complete(bundle, data) => {
+                    match crate::fragmentation::process_fragment(
+                        &bundle,
+                        &data,
+                        &self.store,
+                        self.key_provider(),
+                    )
+                    .await
+                    {
+                        FragmentResult::Complete(bundle, data) => {
                             Box::pin(self.ingest_bundle_inner(*bundle, data)).await;
                         }
-                        ReassemblerResult::Pending | ReassemblerResult::Failed => {}
+                        FragmentResult::Pending | FragmentResult::Failed => {}
                     }
                 } else {
                     // Bundle is for a local service

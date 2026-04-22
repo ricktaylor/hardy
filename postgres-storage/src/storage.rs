@@ -797,4 +797,28 @@ impl storage::MetadataStorage for Storage {
         sqlx::query("COMMIT").execute(&mut *conn).await?;
         Ok(())
     }
+
+    async fn upsert_reassembly(
+        &self,
+        _fragment: &storage::FragmentDescriptor<'_>,
+    ) -> storage::Result<storage::UpsertResult> {
+        todo!("Progressive reassembly not yet implemented for Postgres")
+    }
+
+    async fn set_reassembly_name(
+        &self,
+        _source: &hardy_bpv7::eid::Eid,
+        _timestamp: &hardy_bpv7::creation_timestamp::CreationTimestamp,
+        _name: std::sync::Arc<str>,
+    ) -> storage::Result<()> {
+        todo!("Progressive reassembly not yet implemented for Postgres")
+    }
+
+    async fn delete_reassembly(
+        &self,
+        _source: &hardy_bpv7::eid::Eid,
+        _timestamp: &hardy_bpv7::creation_timestamp::CreationTimestamp,
+    ) -> storage::Result<()> {
+        todo!("Progressive reassembly not yet implemented for Postgres")
+    }
 }

@@ -1,19 +1,32 @@
-use core::ops::Range;
+use hardy_bpv7::creation_timestamp::CreationTimestamp;
+use hardy_bpv7::eid::Eid;
 
-use hardy_bpv7::bundle::Id as Bpv7Id;
+use crate::{Arc, Bytes};
+mod coverage;
+mod reassembly;
 
-use crate::{Arc, HashMap};
+pub(crate) use coverage::Coverage;
+pub(crate) use reassembly::{FragmentResult, process_fragment};
 
-mod reassembler;
-
-pub(crate) use reassembler::{Reassembler, ReassemblerResult};
-
-/// A single collected fragment: its bundle ID, storage key, and payload byte range.
-pub(crate) struct Fragment {
-    pub id: Bpv7Id,
-    pub storage_name: Arc<str>,
-    pub payload_range: Range<usize>,
+/// Describes a fragment being recorded for reassembly.
+pub struct FragmentDescriptor<'a> {
+    pub source: &'a Eid,
+    pub timestamp: &'a CreationTimestamp,
+    pub total_adu_length: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub extension_blocks: Option<&'a Bytes>,
 }
 
-/// Collected fragments keyed by ADU offset.
-pub(crate) struct FragmentSet(pub HashMap<u64, Fragment>);
+/// Result returned by `Store::receive_fragment`.
+pub enum ReassemblyStatus {
+    /// Fragment recorded, waiting for more.
+    Pending,
+    /// All bytes covered, ready to finalize.
+    Complete {
+        /// Storage name of the completed ADU.
+        storage_name: Arc<str>,
+        /// Fragment 0's wire data for primary block reconstruction.
+        extension_blocks: Option<Bytes>,
+    },
+}
