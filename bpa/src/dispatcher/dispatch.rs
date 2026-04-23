@@ -234,7 +234,7 @@ impl Dispatcher {
             }
         };
 
-        self.process_bundle(bundle, data, self.cla_registry()).await;
+        self.process_bundle(bundle, data, self.cla_engine()).await;
     }
 
     /// Queue a bundle for dispatch processing
@@ -262,7 +262,7 @@ impl Dispatcher {
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
                     dispatcher
-                        .process_bundle(bundle, data, dispatcher.cla_registry())
+                        .process_bundle(bundle, data, dispatcher.cla_engine())
                         .await;
                 } else {
                     // Bundle data was deleted while queued
@@ -296,7 +296,7 @@ impl Dispatcher {
         &self,
         mut bundle: bundle::Bundle,
         data: Bytes,
-        cla_registry: &cla::registry::ClaRegistry,
+        cla_engine: &cla::engine::ClaEngine,
     ) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
@@ -320,7 +320,7 @@ impl Dispatcher {
             }
             Some(rib::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
+                if let Err(bundle) = cla_engine.forward(peer, bundle).await {
                     debug!("CLA forward failed, returning bundle to watch queue");
                     self.store.watch_bundle(bundle).await;
                 }
@@ -364,7 +364,7 @@ impl Dispatcher {
                             let dispatcher = dispatcher.clone();
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
                                 if let Some(data) = dispatcher.load_data(&bundle).await {
-                                    dispatcher.process_bundle(bundle, data, dispatcher.cla_registry()).await
+                                    dispatcher.process_bundle(bundle, data, dispatcher.cla_engine()).await
                                 } else {
                                     // Bundle data was deleted sometime while we waited, drop the bundle
                                     dispatcher.drop_bundle(bundle, Some(ReasonCode::DepletedStorage)).await

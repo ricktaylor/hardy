@@ -4,7 +4,7 @@ use hardy_bpv7::eid::NodeId;
 use tracing::instrument;
 
 use crate::builder::BpaBuilder;
-use crate::cla::registry::ClaRegistry;
+use crate::cla::engine::ClaEngine;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
@@ -204,7 +204,7 @@ pub struct Bpa {
     node_ids: Arc<crate::node_ids::NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
-    cla_registry: Arc<ClaRegistry>,
+    cla_engine: Arc<ClaEngine>,
     service_registry: Arc<ServiceRegistry>,
     filter_engine: Arc<FilterEngine>,
     dispatcher: Arc<Dispatcher>,
@@ -215,7 +215,7 @@ impl Bpa {
         node_ids: Arc<crate::node_ids::NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
-        cla_registry: Arc<ClaRegistry>,
+        cla_engine: Arc<ClaEngine>,
         service_registry: Arc<ServiceRegistry>,
         filter_engine: Arc<FilterEngine>,
         dispatcher: Arc<Dispatcher>,
@@ -224,7 +224,7 @@ impl Bpa {
             node_ids,
             store,
             rib,
-            cla_registry,
+            cla_engine,
             service_registry,
             filter_engine,
             dispatcher,
@@ -263,7 +263,7 @@ impl Bpa {
         // blocked on CLA forwarding or waiting for service responses.
 
         self.rib.shutdown_agents().await;
-        self.cla_registry.shutdown().await;
+        self.cla_engine.shutdown().await;
         self.service_registry
             .shutdown(&self.node_ids, &self.rib)
             .await;
@@ -339,7 +339,7 @@ impl BpaRegistration for Bpa {
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
-        self.cla_registry
+        self.cla_engine
             .register(name, cla, &self.dispatcher, policy)
             .await
     }

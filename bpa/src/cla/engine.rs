@@ -1,5 +1,17 @@
-use super::*;
 use hardy_bpv7::eid::NodeId;
+use tracing::{debug, info};
+
+use super::entry::ClaEntry;
+use super::peers::{Peer, PeerTable};
+use super::sink::ClaCallback;
+use super::{Cla, ClaAddress};
+use crate::bundle::Bundle;
+use crate::dispatcher::Dispatcher;
+use crate::node_ids::NodeIds;
+use crate::policy::EgressPolicy;
+use crate::rib::Rib;
+use crate::storage::Store;
+use crate::{Arc, HashMap, hash_map};
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -7,117 +19,14 @@ use hardy_bpv7::eid::NodeId;
 // 3. No blocking/RNG/iteration while holding lock
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
 
-pub struct Cla {
-    pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::EgressPolicy>,
-
-    name: String,
-    // sync::spin::Mutex for O(1) peer HashMap operations
-    // Key: ClaAddress (primary key for a link-layer adjacency)
-    // Value: (known EIDs for the peer, peer_id in PeerTable)
-    // An empty EID vec means a Neighbour (EID not yet known; no RIB entry installed)
-    peers: hardy_async::sync::spin::Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
-}
-
-impl PartialEq for Cla {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-
-impl Eq for Cla {}
-
-impl PartialOrd for Cla {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Cla {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.name.cmp(&other.name)
-    }
-}
-
-impl core::hash::Hash for Cla {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-    }
-}
-
-impl core::fmt::Debug for Cla {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Cla")
-            .field("name", &self.name)
-            .field("peers", &self.peers)
-            .finish_non_exhaustive()
-    }
-}
-
-type ClaMap = HashMap<String, Arc<Cla>>;
-
-struct Sink {
-    cla: Weak<Cla>,
-    registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-}
-
-#[async_trait]
-impl cla::Sink for Sink {
-    async fn unregister(&self) {
-        if let Some(cla) = self.cla.upgrade() {
-            self.registry.unregister(cla).await;
-        }
-    }
-
-    async fn dispatch(
-        &self,
-        bundle: Bytes,
-        peer_node: Option<&NodeId>,
-        peer_addr: Option<&ClaAddress>,
-    ) -> cla::Result<()> {
-        let cla_name = self.cla.upgrade().map(|c| c.name.clone().into());
-        self.dispatcher
-            .receive_bundle(bundle, cla_name, peer_node.cloned(), peer_addr.cloned())
-            .await
-    }
-
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        Ok(self
-            .registry
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
-            .await)
-    }
-
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
-        Ok(self
-            .registry
-            .remove_peer(
-                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                cla_addr,
-            )
-            .await)
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(cla) = self.cla.upgrade() {
-            let registry = self.registry.clone();
-            hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
-                registry.unregister(cla).await;
-            });
-        }
-    }
-}
+type ClaMap = HashMap<String, Arc<ClaEntry>>;
 
 // CLA registry in the building phase — only insert() is available.
-pub(crate) struct ClaRegistryBuilder {
+pub(crate) struct ClaEngineBuilder {
     clas: ClaMap,
 }
 
-impl ClaRegistryBuilder {
+impl ClaEngineBuilder {
     pub fn new() -> Self {
         Self {
             clas: Default::default(),
@@ -127,18 +36,19 @@ impl ClaRegistryBuilder {
     pub fn insert(
         &mut self,
         name: String,
-        cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<()> {
+        cla: Arc<dyn Cla>,
+        policy: Option<Arc<dyn EgressPolicy>>,
+    ) -> super::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
-            return Err(cla::Error::AlreadyExists(name));
+            return Err(super::Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
-        e.insert(Arc::new(Cla {
+        e.insert(Arc::new(ClaEntry {
             cla,
             peers: Default::default(),
             name,
-            policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+            policy: policy
+                .unwrap_or_else(|| Arc::new(crate::policy::null_policy::EgressPolicy::new())),
         }));
         Ok(())
     }
@@ -146,14 +56,14 @@ impl ClaRegistryBuilder {
     // Transition to the running registry by registering all inserted CLAs.
     pub async fn build(
         self,
-        node_ids: &Arc<node_ids::NodeIds>,
+        node_ids: &Arc<NodeIds>,
         poll_channel_depth: usize,
-        rib: &Arc<rib::Rib>,
-        store: &Arc<storage::Store>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> cla::Result<Arc<ClaRegistry>> {
-        let peers = Arc::new(cla::peers::PeerTable::new());
-        let registry = Arc::new(ClaRegistry {
+        rib: &Arc<Rib>,
+        store: &Arc<Store>,
+        dispatcher: &Arc<Dispatcher>,
+    ) -> super::Result<Arc<ClaEngine>> {
+        let peers = Arc::new(PeerTable::new());
+        let registry = Arc::new(ClaEngine {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
             rib: rib.clone(),
@@ -179,22 +89,18 @@ impl ClaRegistryBuilder {
 }
 
 // CLA registry in the running phase — full register/unregister available.
-pub(crate) struct ClaRegistry {
-    node_ids: Arc<node_ids::NodeIds>,
+pub(crate) struct ClaEngine {
+    node_ids: Arc<NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
-    rib: Arc<rib::Rib>,
-    store: Arc<storage::Store>,
-    peers: Arc<peers::PeerTable>,
+    rib: Arc<Rib>,
+    store: Arc<Store>,
+    peers: Arc<PeerTable>,
     poll_channel_depth: usize,
-    tasks: hardy_async::TaskPool,
+    pub(super) tasks: hardy_async::TaskPool,
 }
 
-impl ClaRegistry {
-    pub async fn forward(
-        &self,
-        peer_id: u32,
-        bundle: bundle::Bundle,
-    ) -> core::result::Result<(), bundle::Bundle> {
+impl ClaEngine {
+    pub async fn forward(&self, peer_id: u32, bundle: Bundle) -> core::result::Result<(), Bundle> {
         self.peers.forward(peer_id, bundle).await
     }
 
@@ -216,22 +122,22 @@ impl ClaRegistry {
     pub async fn register(
         self: &Arc<Self>,
         name: String,
-        cla: Arc<dyn cla::Cla>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
-    ) -> cla::Result<Vec<NodeId>> {
+        cla: Arc<dyn Cla>,
+        dispatcher: &Arc<Dispatcher>,
+        policy: Option<Arc<dyn EgressPolicy>>,
+    ) -> super::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
         let entry = {
             let mut clas = self.clas.lock();
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
-                return Err(cla::Error::AlreadyExists(name));
+                return Err(super::Error::AlreadyExists(name));
             };
-            e.insert(Arc::new(Cla {
+            e.insert(Arc::new(ClaEntry {
                 cla,
                 peers: Default::default(),
                 name: name.clone(),
                 policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                    .unwrap_or_else(|| Arc::new(crate::policy::null_policy::EgressPolicy::new())),
             }))
             .clone()
         };
@@ -245,9 +151,9 @@ impl ClaRegistry {
         entry
             .cla
             .on_register(
-                Box::new(Sink {
+                Box::new(ClaCallback {
                     cla: Arc::downgrade(&entry),
-                    registry: self.clone(),
+                    engine: self.clone(),
                     dispatcher: dispatcher.clone(),
                 }),
                 &node_ids,
@@ -260,7 +166,7 @@ impl ClaRegistry {
         Ok(node_ids)
     }
 
-    async fn unregister(&self, cla: Arc<Cla>) {
+    pub(super) async fn unregister(&self, cla: Arc<ClaEntry>) {
         let cla = self.clas.lock().remove(&cla.name);
 
         if let Some(cla) = cla {
@@ -269,7 +175,7 @@ impl ClaRegistry {
         }
     }
 
-    async fn unregister_cla(&self, cla: Arc<Cla>) {
+    async fn unregister_cla(&self, cla: Arc<ClaEntry>) {
         cla.cla.on_unregister().await;
 
         if let Some(address_type) = cla.cla.address_type() {
@@ -289,14 +195,14 @@ impl ClaRegistry {
         info!("Unregistered CLA: {}", cla.name);
     }
 
-    async fn add_peer(
+    pub(super) async fn add_peer(
         &self,
-        cla: Arc<Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        cla: Arc<ClaEntry>,
+        dispatcher: Arc<Dispatcher>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
+        let peer = Arc::new(Peer::new(Arc::downgrade(&cla)));
 
         // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
         // If the cla.peers entry already exists, we clean up the orphaned peer_id.
@@ -350,7 +256,7 @@ impl ClaRegistry {
         true
     }
 
-    async fn remove_peer(&self, cla: Arc<Cla>, cla_addr: &ClaAddress) -> bool {
+    pub(super) async fn remove_peer(&self, cla: Arc<ClaEntry>, cla_addr: &ClaAddress) -> bool {
         let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
@@ -369,12 +275,14 @@ impl ClaRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Arc;
     use crate::bpa::{Bpa, BpaRegistration};
+    use crate::cla::{self, Cla, ClaAddress, ForwardBundleResult, Sink};
+    use hardy_async::async_trait;
     use hardy_async::sync::spin::Once;
 
     struct TestCla {
-        sink: Once<Box<dyn cla::Sink>>,
+        sink: Once<Box<dyn Sink>>,
     }
 
     impl TestCla {
@@ -384,12 +292,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl cla::Cla for TestCla {
-        async fn on_register(
-            &self,
-            sink: Box<dyn cla::Sink>,
-            _node_ids: &[hardy_bpv7::eid::NodeId],
-        ) {
+    impl Cla for TestCla {
+        async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[hardy_bpv7::eid::NodeId]) {
             self.sink.call_once(|| sink);
         }
         async fn on_unregister(&self) {}
@@ -398,8 +302,8 @@ mod tests {
             _queue: Option<u32>,
             _cla_addr: &ClaAddress,
             _bundle: bytes::Bytes,
-        ) -> cla::Result<cla::ForwardBundleResult> {
-            Ok(cla::ForwardBundleResult::Sent)
+        ) -> cla::Result<ForwardBundleResult> {
+            Ok(ForwardBundleResult::Sent)
         }
     }
 

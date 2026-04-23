@@ -1,10 +1,14 @@
-use super::*;
+use hardy_async::async_trait;
 use thiserror::Error;
 
+use crate::Bytes;
+
+pub(crate) mod engine;
 pub(crate) mod peers;
-pub(crate) mod registry;
 
 mod egress_queue;
+pub(crate) mod entry;
+mod sink;
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;
