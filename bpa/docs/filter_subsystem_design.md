@@ -22,9 +22,9 @@ The design draws heavily from Linux netfilter's architecture—see the "Netfilte
 | **Hooks** | 4 hooks: Ingress, Deliver, Originate, Egress |
 | **Filter Types** | 2 async traits: `ReadFilter` (read-only), `WriteFilter` (read-write) |
 | **Registration** | `Filter` enum with trait object variants, `register(hook, name, after, filter)` |
-| **Ordering** | DAG-based via `after` dependencies (not numeric priorities) |
+| **Ordering** | Level-based via `after` dependencies (not numeric priorities) |
 | **Parallelism** | ReadFilters: parallel within a level; WriteFilters: sequential |
-| **Execution** | `FilterChain` per hook; `prepare()/exec()` split for lock-free async |
+| **Execution** | `FilterChainBuilder` per hook; pre-built `FilterChain` shared via `Arc` for lock-free async |
 | **Result Semantics** | `Continue` = "no objection"; `Drop` = veto (stops processing) |
 
 **Hook naming:**
@@ -57,7 +57,7 @@ Separating `ReadFilter` and `WriteFilter` enables different execution models opt
 
 This separation mirrors netfilter's distinction between the `filter` table (accept/drop decisions) and `mangle` table (packet modification). The key insight is that read-only operations can be parallelised, while mutations require ordering.
 
-### Why DAG-Based Ordering?
+### Why Dependency-Based Ordering?
 
 Netfilter uses numeric priorities (e.g., `-300` for conntrack, `-150` for mangle, `0` for filter) to order callbacks. This approach has significant drawbacks:
 
@@ -86,19 +86,16 @@ Filters may need to perform operations that shouldn't block the executor:
 
 Synchronous filter traits would force these operations to block, reducing throughput and potentially causing executor starvation. Async traits (via `#[async_trait]`) allow filters to yield while waiting, enabling the executor to process other bundles concurrently.
 
-### Why prepare()/exec() Split?
+### Why Pre-Built Chains?
 
 The filter registry uses a sync `RwLock` to protect filter storage. This creates a problem for async execution:
 
 1. **Send-safety**: `std::sync::RwLockReadGuard` is not `Send`. Holding it across `.await` points would make the future non-Send, incompatible with multi-threaded async runtimes like Tokio.
 2. **Writer starvation**: If filters hold the read lock during execution (which may take milliseconds for gRPC calls), registration and unregistration operations would be blocked for extended periods.
 
-The solution is a two-phase execution model:
+The solution is to pre-build immutable `FilterChain`s and share them via `Arc`. The registry rebuilds the chains only when filters are registered or removed. On each `exec` call, the read lock is held only long enough to clone the `Arc` (one atomic increment), then execution proceeds without any lock.
 
-1. **`prepare()`**: Acquire the read lock briefly, clone only the `Arc` references to the filters (cheap refcount increments), then release the lock immediately.
-2. **`exec()`**: Run the prepared filters without holding any lock.
-
-This keeps lock hold times in the microsecond range regardless of filter execution time, and produces a Send-safe future suitable for any async runtime.
+This keeps lock hold times in the nanosecond range regardless of filter count or execution time, and produces a Send-safe future suitable for any async runtime.
 
 ### Why Continue/Drop Semantics?
 
@@ -127,10 +124,10 @@ See `bpa/src/filters/mod.rs` for trait definitions and result types.
 
 Two async traits with identical signatures, differing only in return type:
 
-- **`ReadFilter`**: Read-only inspection, returns `FilterResult` (`Continue` or `Drop`)
-- **`WriteFilter`**: May modify bundle, returns `RewriteResult` with optional new metadata/data
+- **`ReadFilter`**: Read-only inspection, returns `ReadResult` (`Continue` or `Drop`)
+- **`WriteFilter`**: May modify bundle, returns `WriteResult` with optional new metadata/data
 
-The `RewriteResult::Continue` variant carries optional modifications:
+The `WriteResult::Continue` variant carries optional modifications:
 
 - `(None, None)` — no change
 - `(Some(meta), None)` — metadata changed, bundle bytes unchanged
@@ -139,13 +136,13 @@ The `RewriteResult::Continue` variant carries optional modifications:
 
 ### Persistence
 
-The bundle and data always flow through the filter chain. WriteFilters mutate the bundle in place. The `ExecResult` carries the final bundle and data — no separate mutation tracking.
+The bundle and data flow through the filter chain. WriteFilters mutate the bundle in place. The `ExecResult` carries the final bundle, data, and a `Mutation` struct that tracks whether any WriteFilter modified the data or metadata.
 
 Persistence depends on the hook (see [Bundle State Machine Design](bundle_state_machine_design.md) for checkpoint semantics):
 
 | Hook | Persistence Strategy |
 |------|---------------------|
-| **Ingress** | Always persist bundle data, then checkpoint to `Dispatching` status |
+| **Ingress** | Persist bundle data only if `mutation.data` is true (in-place overwrite), then checkpoint to `Dispatching` status |
 | **Originate** | No persistence (bundle stored after filter) |
 | **Deliver** | No persistence (bundle consumed immediately after) |
 | **Egress** | No persistence (bundle leaving node, may re-run on retry) |
@@ -154,7 +151,7 @@ Persistence depends on the hook (see [Bundle State Machine Design](bundle_state_
 
 ## Registration API
 
-See `bpa/src/filters/mod.rs` for the `Filter` enum and `Hook` enum, and `bpa/src/filters/registry.rs` for the `Registry` and `ExecResult` types.
+See `bpa/src/filters/mod.rs` for the `Filter` enum, `Hook` enum, and `ExecResult` type, and `bpa/src/filters/registry.rs` for the `Registry`.
 
 The `Filter` enum wraps either a `ReadFilter` or `WriteFilter` trait object in an `Arc`. The `Hook` enum identifies which hook point to register at.
 
@@ -168,17 +165,17 @@ The `Filter` enum wraps either a `ReadFilter` or `WriteFilter` trait object in a
 
 See `bpa/src/bpa.rs:register_filter()` and `unregister_filter()` for the public interface.
 
-Filters are registered with a unique name and optional `after` dependencies. Filter names must be unique within a hook (not globally), since each hook maintains its own `FilterChain` and `after` dependencies are resolved per-hook. Unregistration checks for dependants and fails if other filters would be orphaned.
+Filters are registered with a unique name and optional `after` dependencies. Filter names must be unique within a hook (not globally), since each hook maintains its own `FilterChainBuilder` and `after` dependencies are resolved per-hook. Unregistration checks for dependants and fails if other filters would be orphaned.
 
 ---
 
 ## Execution Model
 
-### FilterChain and Levels
+### FilterChainBuilder and FilterChain
 
-Each hook has a `FilterChain` — a flat `Vec<Level>`. Each `Level` groups filters with no mutual dependencies. At registration time, a filter is placed at the level after the last level containing one of its dependencies.
+Each hook has a `FilterChainBuilder` for registration and a `FilterChain` for execution. The builder holds a flat `Vec<LevelBuilder>` where each level groups filters with no mutual dependencies. At registration time, a filter is placed at the level after the last level containing one of its dependencies. When filters are registered or removed, the builder produces a new immutable `FilterChain` containing only the filter references, stripped of registration metadata.
 
-Filters declare dependencies via `after`. The executor:
+Filters declare dependencies via `after`. The system:
 
 1. Resolves dependencies at registration time
 2. Groups filters into levels (same dependencies satisfied)
@@ -211,12 +208,9 @@ Example: Egress hook
 
 ### Lock-Free Async Execution
 
-The `prepare()/exec()` split avoids holding sync locks across await points:
+The registry holds pre-built `FilterChain`s wrapped in an `Arc`. On each `exec` call, the read lock is held only long enough to clone the `Arc` (one atomic increment), then released. Execution proceeds without any lock held.
 
-1. **`prepare()`**: Briefly holds read lock, clones `Arc` refs only
-2. **`exec()`**: Runs without any lock, safe for async
-
-This prevents writer starvation and is Send-safe for async runtimes.
+This prevents writer starvation, is Send-safe for async runtimes, and avoids per-bundle rebuilds of the execution structure.
 
 ### Rate-Limited Execution
 
@@ -383,7 +377,7 @@ The BPA filter design draws from Linux netfilter's architecture.
 ### Patterns Not Adopted
 
 1. **Numeric priorities** — Replaced with explicit `after` dependencies (self-documenting, no collisions)
-2. **Tables** — Single DAG per hook instead of table hierarchy
+2. **Tables** — Single leveled chain per hook instead of table hierarchy
 3. **FORWARD hook** — Multi-topology routing handled via metadata, not a filter hook
 
 ### References
