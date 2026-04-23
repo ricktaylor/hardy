@@ -38,7 +38,7 @@ pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
     let name_b = store.save(data_b).await.unwrap();
 
     let (tx, rx) = flume::unbounded();
-    store.recover(tx).await.unwrap();
+    store.walk(tx).await.unwrap();
     let mut results: Vec<_> = rx.try_iter().collect();
 
     assert!(

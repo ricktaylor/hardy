@@ -440,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_reg() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start();
 
         let svc_id = hardy_bpv7::eid::Service::Ipn(42);
 
@@ -465,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start();
 
         let svc_id = hardy_bpv7::eid::Service::Ipn(99);
 

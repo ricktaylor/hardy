@@ -8,7 +8,6 @@ mod forward;
 mod local;
 mod reassemble;
 mod report;
-mod restart;
 
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
@@ -141,11 +140,13 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn delete_bundle(&self, bundle: bundle::Bundle) {
-        // Delete the bundle from the bundle store
+        // Tombstone metadata first, then delete data.
+        // If crash between them: data file is orphaned (harmless, cleaned by background scan).
+        // Reverse order would leave metadata pointing to missing data.
+        self.store.tombstone_metadata(&bundle.bundle.id).await;
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
         }
-        self.store.tombstone_metadata(&bundle.bundle.id).await;
 
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
     }
@@ -162,7 +163,7 @@ impl Dispatcher {
         });
     }
 
-    fn key_provider(
+    pub(crate) fn key_provider(
         &self,
     ) -> impl Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone
     {

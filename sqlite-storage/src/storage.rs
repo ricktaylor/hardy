@@ -364,7 +364,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn start_recovery(&self) {
+    async fn mark_unconfirmed(&self) {
         self
             .write(move |conn| {
                 conn.execute_batch("INSERT OR IGNORE INTO unconfirmed_bundles (id) SELECT id FROM bundles WHERE bundle IS NOT NULL")
@@ -384,15 +384,17 @@ impl storage::MetadataStorage for Storage {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {
-                conn.prepare_cached(
+                let tx = conn.transaction()?;
+
+                tx.prepare_cached(
                     "DELETE FROM unconfirmed_bundles WHERE id = (SELECT id FROM bundles WHERE bundle_id = ?1)",
                 )?
                 .execute((&id,))?;
 
-                conn.prepare_cached(
-                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 LIMIT 1",
+                let result = tx.prepare_cached(
+                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
-                .query_row((id,), |row| {
+                .query_row((&id,), |row| {
                      Ok((
                             row.get::<_, Vec<u8>>(0)?,
                             row.get::<_, i64>(1)?,
@@ -401,8 +403,10 @@ impl storage::MetadataStorage for Storage {
                             row.get::<_, Option<String>>(4)?,
                         ))
                 })
-                .optional()
-                .map_err(Into::into)
+                .optional()?;
+
+                tx.commit()?;
+                Ok(result)
             })
             .await? else {
             return Ok(None);
@@ -870,7 +874,7 @@ mod tests {
         assert!(result.is_err(), "get() should return Err for corrupt data");
 
         // confirm_exists() handles it gracefully — tombstones the entry
-        store.start_recovery().await;
+        store.mark_unconfirmed().await;
         let result = store.confirm_exists(&bundle.bundle.id).await.unwrap();
         assert!(
             result.is_none(),

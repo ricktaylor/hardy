@@ -236,12 +236,31 @@ impl Bpa {
         BpaBuilder::new()
     }
 
+    /// Reconcile storage after an unclean shutdown.
+    ///
+    /// Spawns the three-phase recovery protocol as a background task.
+    /// Call before [`start()`](Bpa::start).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub fn start(&self, recover_storage: bool) {
+    pub fn recover(&self) {
+        let store = self.store.clone();
+        let dispatcher = self.dispatcher.clone();
+        hardy_async::spawn!(self.store.tasks(), "recovery", async move {
+            crate::recover::Recovery::new(&store, &dispatcher)
+                .mark()
+                .await
+                .reconcile()
+                .await
+                .purge()
+                .await;
+        });
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    pub fn start(&self) {
         otel_metrics::init();
 
         // Start the store
-        self.store.start(self.dispatcher.clone(), recover_storage);
+        self.store.start(self.dispatcher.clone());
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());

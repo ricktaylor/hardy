@@ -203,7 +203,7 @@ impl Dispatcher {
     ///
     /// Because this returns before the Ingress filter completes, bundles remain
     /// in `New` status until `ingest_bundle_inner()` checkpoints to `Dispatching`.
-    pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
+    pub(crate) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
         let dispatcher = self.clone();
@@ -281,6 +281,10 @@ impl Dispatcher {
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
+                // Delete old data after metadata points to new
+                if let Some(old_name) = old_storage_name {
+                    self.store.delete_data(&old_name).await;
+                }
                 (bundle, data)
             }
             filters::ExecResult::Drop(bundle, reason) => {
@@ -292,7 +296,7 @@ impl Dispatcher {
     }
 
     /// Queue a bundle for dispatch processing
-    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
+    pub(crate) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
         self.store
             .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
             .await;

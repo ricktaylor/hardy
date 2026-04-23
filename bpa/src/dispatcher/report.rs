@@ -5,7 +5,7 @@ use hardy_bpv7::status_report::{
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn report_bundle_reception(
+    pub(crate) async fn report_bundle_reception(
         &self,
         bundle: &bundle::Bundle,
         reason: ReasonCode,

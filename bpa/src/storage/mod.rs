@@ -98,21 +98,13 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
 
-    /// Begins the startup recovery protocol by marking all existing metadata
-    /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
-    /// bundle it finds in the bundle store, and finally calls
-    /// `remove_unconfirmed()` to clean up any orphaned metadata.
-    ///
-    /// Non-persistent backends should treat this as a no-op.
-    async fn start_recovery(&self);
-
     /// Part of the startup recovery protocol. Called once per bundle after
-    /// `start_recovery()` as the BPA walks the bundle store and finds data on
+    /// `mark_unconfirmed()` as the BPA walks the bundle store and finds data on
     /// disk. Confirms that the metadata entry for this bundle is still wanted,
     /// and returns its metadata so the BPA can resume processing.
     ///
     /// For persistent backends (e.g. SQLite), this removes the bundle from the
-    /// "unconfirmed" set populated by `start_recovery()`. Any entries still in
+    /// "unconfirmed" set populated by `mark_unconfirmed()`. Any entries still in
     /// that set when `remove_unconfirmed()` is called are metadata records
     /// whose corresponding bundle data was lost.
     ///
@@ -129,9 +121,17 @@ pub trait MetadataStorage: Send + Sync {
     /// bundle exists, `None` if it does not.
     async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
 
+    /// Begins the startup recovery protocol by marking all existing metadata
+    /// entries as unconfirmed. The BPA then calls `confirm_exists()` for each
+    /// bundle it finds in the bundle store, and finally calls
+    /// `remove_unconfirmed()` to clean up any orphaned metadata.
+    ///
+    /// Non-persistent backends should treat this as a no-op.
+    async fn mark_unconfirmed(&self);
+
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last
-    /// `start_recovery()` call, and sends the removed bundles to `tx` so the
+    /// `mark_unconfirmed()` call, and sends the removed bundles to `tx` so the
     /// BPA can perform any necessary cleanup (e.g. deleting bundle data).
     ///
     /// Non-persistent backends should treat this as a no-op.
@@ -241,16 +241,19 @@ pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 /// of these methods.
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    /// Recovers bundles from the bundle storage and sends them to the provided sender.
+    /// Walk all persisted bundle data and stream each entry to the channel.
+    ///
+    /// Sends `(storage_name, file_time)` for every bundle found. Skips
+    /// incomplete writes (`.tmp` files, zero-byte placeholders).
     ///
     /// # Arguments
     ///
-    /// * `tx` - The sender to which the recovered bundles will be sent.
+    /// * `tx` - The channel sender to which each `(storage_name, file_time)` pair is sent.
     ///
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn recover(&self, tx: Sender<RecoveryResponse>) -> Result<()>;
+    async fn walk(&self, tx: Sender<RecoveryResponse>) -> Result<()>;
 
     /// Loads a bundle from the bundle storage.
     ///

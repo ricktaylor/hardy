@@ -295,7 +295,7 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn app_to_cla_routing() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start();
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
@@ -371,7 +371,7 @@ async fn echo_round_trip() {
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start();
 
     // Register echo service on service number 7
     let echo = EchoService::new();
@@ -454,7 +454,7 @@ async fn local_delivery() {
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start();
 
     // Register an application on service number 42
     let (app, app_rx) = TestApp::new();
@@ -515,7 +515,7 @@ async fn throughput() {
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start();
 
     let (cla, arrival_rx) = TimedCla::new();
     bpa.register_cla("test".to_string(), cla.clone(), None)
@@ -612,7 +612,7 @@ async fn forwarding_latency() {
         hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start();
 
     let (cla, arrival_rx) = TimedCla::new();
     bpa.register_cla("test".to_string(), cla.clone(), None)
