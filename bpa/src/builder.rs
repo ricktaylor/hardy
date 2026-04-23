@@ -5,8 +5,8 @@ use crate::bpa::Bpa;
 use crate::cla::Cla;
 use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
-use crate::filters::validity::BundleValidityFilter;
-use crate::filters::{Filter, FilterEngine, Hook};
+use crate::filter::validity::BundleValidityFilter;
+use crate::filter::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
@@ -249,7 +249,7 @@ impl Default for BpaBuilder {
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
         {
-            use crate::filters::rfc9171::Rfc9171ValidityFilter;
+            use crate::filter::rfc9171::Rfc9171ValidityFilter;
 
             filter_engine
                 .register(

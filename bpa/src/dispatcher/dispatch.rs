@@ -206,7 +206,7 @@ impl Dispatcher {
         (bundle, data) = match self
             .filter_engine
             .exec(
-                filters::Hook::Ingress,
+                filter::Hook::Ingress,
                 bundle,
                 data,
                 self.key_provider(),
@@ -216,7 +216,7 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Ingress filter execution failed")
         {
-            filters::ExecResult::Continue(mutation, mut bundle, data) => {
+            filter::ExecResult::Continue(mutation, mut bundle, data) => {
                 if mutation.data {
                     if let Some(storage_name) = &bundle.metadata.storage_name {
                         self.store.replace_data(storage_name, &data).await;
@@ -229,7 +229,7 @@ impl Dispatcher {
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
-            filters::ExecResult::Drop(bundle, reason) => {
+            filter::ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };
