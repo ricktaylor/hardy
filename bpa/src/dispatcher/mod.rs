@@ -16,7 +16,7 @@ pub(crate) struct Dispatcher {
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
-    filter_registry: Arc<filters::registry::Registry>,
+    filter_engine: Arc<filters::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
@@ -38,7 +38,7 @@ impl Dispatcher {
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
-        filter_registry: Arc<filters::registry::Registry>,
+        filter_engine: Arc<filters::FilterEngine>,
     ) -> Arc<Self> {
         let (dispatcher, start) = Self::new_inner(
             status_reports,
@@ -48,7 +48,7 @@ impl Dispatcher {
             store,
             rib,
             keys_registry,
-            filter_registry,
+            filter_engine,
         );
         start(&dispatcher);
         dispatcher
@@ -63,7 +63,7 @@ impl Dispatcher {
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
-        filter_registry: Arc<filters::registry::Registry>,
+        filter_engine: Arc<filters::FilterEngine>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
         if status_reports {
             warn!("Bundle status reports are enabled");
@@ -81,7 +81,7 @@ impl Dispatcher {
             store,
             rib,
             keys_registry,
-            filter_registry,
+            filter_engine,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports,

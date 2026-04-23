@@ -14,7 +14,7 @@ impl Dispatcher {
         data: Bytes,
     ) -> Result<Option<(bundle::Bundle, Bytes)>, crate::Error> {
         match self
-            .filter_registry
+            .filter_engine
             .exec(
                 filters::Hook::Originate,
                 bundle,
@@ -170,7 +170,7 @@ impl Dispatcher {
     ) {
         // Deliver filter hook
         let (bundle, data) = match self
-            .filter_registry
+            .filter_engine
             .exec(
                 filters::Hook::Deliver,
                 bundle,

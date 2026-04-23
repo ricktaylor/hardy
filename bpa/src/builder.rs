@@ -5,8 +5,7 @@ use crate::bpa::Bpa;
 use crate::cla::Cla;
 use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
-use crate::filters::registry::Registry as FilterRegistry;
-use crate::filters::{Filter, Hook};
+use crate::filters::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
@@ -37,7 +36,7 @@ pub struct BpaBuilder {
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
-    filter_registry: Arc<FilterRegistry>,
+    filter_engine: Arc<FilterEngine>,
     keys_registry: Arc<KeyRegistry>,
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
@@ -143,7 +142,7 @@ impl BpaBuilder {
         after: &[&str],
         filter: Filter,
     ) -> Self {
-        self.filter_registry
+        self.filter_engine
             .register(hook, &name.into(), after, filter)
             .expect("Failed to register filter");
         self
@@ -180,7 +179,7 @@ impl BpaBuilder {
             .rib_builder
             .build(node_ids.clone(), store.clone())
             .await?;
-        let filter_registry = self.filter_registry;
+        let filter_engine = self.filter_engine;
         let keys_registry = self.keys_registry;
 
         let dispatcher = Dispatcher::new(
@@ -191,7 +190,7 @@ impl BpaBuilder {
             store.clone(),
             rib.clone(),
             keys_registry,
-            filter_registry.clone(),
+            filter_engine.clone(),
         );
 
         let (service_registry, cla_registry) = futures::join!(
@@ -217,7 +216,7 @@ impl BpaBuilder {
             rib,
             cla_registry,
             service_registry,
-            filter_registry,
+            filter_engine,
             dispatcher,
         ))
     }
@@ -225,18 +224,28 @@ impl BpaBuilder {
 
 impl Default for BpaBuilder {
     fn default() -> Self {
-        let filter_registry = Arc::new(FilterRegistry::new());
+        let filter_engine = Arc::new(FilterEngine::new());
+
+        // Auto-register bundle validity filter (lifetime, hop-count)
+        filter_engine
+            .register(
+                Hook::Ingress,
+                "bundle-validity",
+                &[],
+                Filter::Read(Arc::new(crate::filters::validity::BundleValidityFilter)),
+            )
+            .expect("Failed to register bundle validity filter");
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
         {
             use crate::filters::rfc9171::Rfc9171ValidityFilter;
 
-            filter_registry
+            filter_engine
                 .register(
                     Hook::Ingress,
                     "rfc9171-validity",
-                    &[],
+                    &["bundle-validity"],
                     Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
                 )
                 .expect("Failed to register RFC9171 validity filter");
@@ -253,7 +262,7 @@ impl Default for BpaBuilder {
             node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
-            filter_registry,
+            filter_engine,
             keys_registry: Arc::new(KeyRegistry::new()),
             service_registry_builder: ServiceRegistryBuilder::new(),
             cla_registry_builder: ClaRegistryBuilder::new(),
