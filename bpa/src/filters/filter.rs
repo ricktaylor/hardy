@@ -1,14 +1,12 @@
-use bytes::Bytes;
 use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
-use hardy_bpv7::bundle::CheckedBundle;
+use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
 use trace_err::*;
 use tracing::debug;
 
-use super::registry::ExecResult;
+use super::registry::{ExecResult, Mutation};
 use super::{Error, Filter, FilterResult, ReadFilter, RewriteResult, WriteFilter};
 use crate::bundle::Bundle;
-use crate::{Arc, HashSet};
+use crate::{Arc, Bytes, HashSet};
 
 struct FilterEntry {
     name: String,
@@ -185,7 +183,7 @@ impl PreparedFilters {
     where
         F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
-        let mut data_changed = false;
+        let mut mutation = Mutation::default();
 
         for level in self.levels {
             if !level.readers.is_empty() {
@@ -224,11 +222,12 @@ impl PreparedFilters {
                     RewriteResult::Continue(writable, new_data) => {
                         if let Some(writable) = writable {
                             debug!("WriteFilter rewrote bundle metadata");
+                            mutation.metadata = true;
                             bundle.metadata.writable = writable;
                         }
                         if let Some(new_data) = new_data {
                             debug!("WriteFilter rewrote bundle data");
-                            data_changed = true;
+                            mutation.data = true;
                             let parsed = CheckedBundle::parse(&new_data, &key_provider)?;
                             data = Bytes::from(parsed.new_data.unwrap_or(new_data));
                             bundle.bundle = parsed.bundle;
@@ -242,11 +241,7 @@ impl PreparedFilters {
             }
         }
 
-        Ok(registry::ExecResult::Continue(
-            registry::Mutation::default(),
-            bundle,
-            data,
-        ))
+        Ok(ExecResult::Continue(mutation, bundle, data))
     }
 }
 
@@ -254,6 +249,7 @@ impl PreparedFilters {
 mod tests {
     use super::*;
     use hardy_async::async_trait;
+    use hardy_bpv7::status_report::ReasonCode;
 
     struct PassFilter;
 
@@ -277,7 +273,7 @@ mod tests {
             _bundle: &Bundle,
             _data: &[u8],
         ) -> Result<FilterResult, crate::Error> {
-            Ok(FilterResult::Drop(None))
+            Ok(FilterResult::Drop(ReasonCode::NoAdditionalInformation))
         }
     }
 

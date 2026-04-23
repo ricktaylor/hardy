@@ -35,8 +35,8 @@ pub enum FilterResult {
     /// Allow the bundle to proceed to the next filter or processing stage.
     #[default]
     Continue,
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
+    /// Drop the bundle with a status-report reason code.
+    Drop(ReasonCode),
 }
 
 /// Outcome of a read-write filter evaluation, which may modify the bundle.
@@ -48,8 +48,8 @@ pub enum RewriteResult {
     /// - (None, Some(data)): bundle bytes changed (rare)
     /// - (Some(meta), Some(data)): both changed
     Continue(Option<WritableMetadata>, Option<Box<[u8]>>),
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
+    /// Drop the bundle with a status-report reason code.
+    Drop(ReasonCode),
 }
 
 // Filter traits
