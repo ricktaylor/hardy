@@ -1,5 +1,7 @@
+use hardy_async::BoundedTaskPool;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
+use hardy_bpv7::status_report::ReasonCode;
 use trace_err::*;
 use tracing::debug;
 
@@ -14,14 +16,12 @@ struct FilterEntry {
     after: HashSet<String>,
 }
 
-// Filters at the same level have no mutual dependencies.
-// Readers run in parallel, writers run sequentially.
-struct Level {
+struct LevelBuilder {
     readers: Vec<(FilterEntry, Arc<dyn ReadFilter>)>,
     writers: Vec<(FilterEntry, Arc<dyn WriteFilter>)>,
 }
 
-impl Level {
+impl LevelBuilder {
     fn is_empty(&self) -> bool {
         self.readers.is_empty() && self.writers.is_empty()
     }
@@ -41,13 +41,18 @@ impl Level {
     }
 }
 
-/// The filter DAG for a single hook, stored as a flat list of levels.
+/// Mutable filter registration for a single hook.
+///
+/// Filters are organized into levels based on dependencies. Filters at the
+/// same level have no mutual dependencies: readers run in parallel, writers
+/// run sequentially. Call [`build`](Self::build) to produce an immutable
+/// [`FilterChain`] for execution.
 #[derive(Default)]
-pub struct FilterChain {
-    levels: Vec<Level>,
+pub struct FilterChainBuilder {
+    levels: Vec<LevelBuilder>,
 }
 
-impl FilterChain {
+impl FilterChainBuilder {
     #[cfg(test)]
     pub fn level_count(&self) -> usize {
         self.levels.len()
@@ -96,7 +101,7 @@ impl FilterChain {
         };
 
         if insert_at >= self.levels.len() {
-            self.levels.push(Level {
+            self.levels.push(LevelBuilder {
                 readers: Vec::new(),
                 writers: Vec::new(),
             });
@@ -144,13 +149,12 @@ impl FilterChain {
         Ok(removed)
     }
 
-    /// Clone Arc references for lock-free async execution.
-    pub fn prepare(&self) -> PreparedFilters {
-        PreparedFilters {
+    pub fn build(&self) -> FilterChain {
+        FilterChain {
             levels: self
                 .levels
                 .iter()
-                .map(|level| PreparedLevel {
+                .map(|level| Level {
                     readers: level.readers.iter().map(|(_, f)| f.clone()).collect(),
                     writers: level.writers.iter().map(|(_, f)| f.clone()).collect(),
                 })
@@ -159,18 +163,106 @@ impl FilterChain {
     }
 }
 
-struct PreparedLevel {
+/// Execution level: readers run in parallel, then writers run sequentially.
+struct Level {
     readers: Vec<Arc<dyn ReadFilter>>,
     writers: Vec<Arc<dyn WriteFilter>>,
 }
 
-pub struct PreparedFilters {
-    levels: Vec<PreparedLevel>,
+impl Level {
+    /// Run all readers in parallel. Takes ownership to avoid cloning,
+    /// returns the bundle and data back via `Arc::try_unwrap`.
+    async fn run_readers(
+        &self,
+        pool: &BoundedTaskPool,
+        bundle: Bundle,
+        data: Bytes,
+    ) -> Result<(Bundle, Bytes, Option<ReasonCode>), crate::Error> {
+        if self.readers.is_empty() {
+            return Ok((bundle, data, None));
+        }
+
+        let shared = Arc::new((bundle, data));
+
+        let mut handles = Vec::new();
+        for filter in &self.readers {
+            let shared = shared.clone();
+            let filter = filter.clone();
+            handles.push(
+                hardy_async::spawn!(pool, "filter_task", async move {
+                    let (bundle, data) = &*shared;
+                    filter.filter(bundle, data.as_ref()).await
+                })
+                .await,
+            );
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.trace_expect("filter spawn failed!")?);
+        }
+
+        let (bundle, data) = Arc::try_unwrap(shared).trace_expect("Lingering filter tasks?!?");
+
+        for result in results {
+            if let ReadResult::Drop(reason) = result {
+                debug!("ReadFilter dropped bundle: {reason:?}");
+                return Ok((bundle, data, Some(reason)));
+            }
+        }
+
+        Ok((bundle, data, None))
+    }
+
+    /// Run all writers sequentially. Returns `Some(reason)` if any writer drops the bundle.
+    async fn run_writers<F>(
+        &self,
+        bundle: &mut Bundle,
+        data: &mut Bytes,
+        mutation: &mut Mutation,
+        key_provider: &F,
+    ) -> Result<Option<ReasonCode>, crate::Error>
+    where
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
+    {
+        for filter in &self.writers {
+            match filter.filter(bundle, data).await? {
+                WriteResult::Continue(writable, new_data) => {
+                    if let Some(writable) = writable {
+                        debug!("WriteFilter rewrote bundle metadata");
+                        mutation.metadata = true;
+                        bundle.metadata.writable = writable;
+                    }
+                    if let Some(new_data) = new_data {
+                        debug!("WriteFilter rewrote bundle data");
+                        mutation.data = true;
+                        let parsed = CheckedBundle::parse(&new_data, key_provider)?;
+                        *data = Bytes::from(parsed.new_data.map(Vec::from).unwrap_or(new_data));
+                        bundle.bundle = parsed.bundle;
+                    }
+                }
+                WriteResult::Drop(reason) => {
+                    debug!("WriteFilter dropped bundle: {reason:?}");
+                    return Ok(Some(reason));
+                }
+            }
+        }
+
+        Ok(None)
+    }
 }
 
-impl PreparedFilters {
+/// Immutable filter chain, ready to execute.
+///
+/// Built from a [`FilterChainBuilder`] and cached for repeated execution.
+#[derive(Default)]
+pub struct FilterChain {
+    levels: Vec<Level>,
+}
+
+impl FilterChain {
     pub async fn exec<F>(
-        self,
+        &self,
         pool: &hardy_async::BoundedTaskPool,
         mut bundle: Bundle,
         mut data: Bytes,
@@ -181,59 +273,17 @@ impl PreparedFilters {
     {
         let mut mutation = Mutation::default();
 
-        for level in self.levels {
-            if !level.readers.is_empty() {
-                let bd = Arc::new((bundle, data));
-
-                let mut handles = Vec::new();
-                for filter in level.readers {
-                    let bd = bd.clone();
-                    handles.push(
-                        hardy_async::spawn!(pool, "filter_task", async move {
-                            let (bundle, data) = &*bd;
-                            filter.filter(bundle, data.as_ref()).await
-                        })
-                        .await,
-                    );
-                }
-
-                // Await all tasks so we can recover the original bundle from the Arc
-                let mut results = Vec::new();
-                for handle in handles {
-                    results.push(handle.await.trace_expect("filter spawn failed!")?);
-                }
-
-                (bundle, data) = Arc::try_unwrap(bd).trace_expect("Lingering filter tasks?!?");
-
-                for result in results {
-                    if let ReadResult::Drop(reason) = result {
-                        debug!("ReadFilter dropped bundle: {reason:?}");
-                        return Ok(ExecResult::Drop(bundle, reason));
-                    }
-                }
+        for level in &self.levels {
+            let reason;
+            (bundle, data, reason) = level.run_readers(pool, bundle, data).await?;
+            if let Some(reason) = reason {
+                return Ok(ExecResult::Drop(bundle, reason));
             }
-
-            for filter in level.writers {
-                match filter.filter(&bundle, &data).await? {
-                    WriteResult::Continue(writable, new_data) => {
-                        if let Some(writable) = writable {
-                            debug!("WriteFilter rewrote bundle metadata");
-                            mutation.metadata = true;
-                            bundle.metadata.writable = writable;
-                        }
-                        if let Some(new_data) = new_data {
-                            debug!("WriteFilter rewrote bundle data");
-                            mutation.data = true;
-                            let parsed = CheckedBundle::parse(&new_data, &key_provider)?;
-                            data = Bytes::from(parsed.new_data.map(Vec::from).unwrap_or(new_data));
-                            bundle.bundle = parsed.bundle;
-                        }
-                    }
-                    WriteResult::Drop(reason) => {
-                        debug!("WriteFilter dropped bundle: {reason:?}");
-                        return Ok(ExecResult::Drop(bundle, reason));
-                    }
-                }
+            if let Some(reason) = level
+                .run_writers(&mut bundle, &mut data, &mut mutation, &key_provider)
+                .await?
+            {
+                return Ok(ExecResult::Drop(bundle, reason));
             }
         }
 
@@ -278,13 +328,13 @@ mod tests {
         }
     }
 
-    fn read(name: &str, after: &[&str], chain: &mut FilterChain) {
+    fn read(name: &str, after: &[&str], chain: &mut FilterChainBuilder) {
         chain
             .add_filter(name, Filter::Read(Arc::new(PassFilter)), after)
             .unwrap();
     }
 
-    fn write(name: &str, after: &[&str], chain: &mut FilterChain) {
+    fn write(name: &str, after: &[&str], chain: &mut FilterChainBuilder) {
         chain
             .add_filter(name, Filter::Write(Arc::new(NoopWriter)), after)
             .unwrap();
@@ -294,7 +344,7 @@ mod tests {
 
     #[test]
     fn add_no_deps() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &[], &mut chain);
         write("c", &[], &mut chain);
@@ -308,7 +358,7 @@ mod tests {
 
     #[test]
     fn add_linear_deps() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         write("b", &["a"], &mut chain);
         read("c", &["b"], &mut chain);
@@ -321,7 +371,7 @@ mod tests {
 
     #[test]
     fn add_parallel_at_same_level() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         write("root", &[], &mut chain);
         read("a", &["root"], &mut chain);
         read("b", &["root"], &mut chain);
@@ -337,7 +387,7 @@ mod tests {
 
     #[test]
     fn add_multiple_deps() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &[], &mut chain);
         write("c", &["a", "b"], &mut chain);
@@ -348,7 +398,7 @@ mod tests {
 
     #[test]
     fn add_deps_across_non_adjacent_levels() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &["a"], &mut chain);
         read("c", &["b"], &mut chain);
@@ -361,7 +411,7 @@ mod tests {
 
     #[test]
     fn add_duplicate_name_errors() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
 
         let err = chain
@@ -372,7 +422,7 @@ mod tests {
 
     #[test]
     fn add_missing_dep_errors() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
 
         let err = chain
             .add_filter("a", Filter::Read(Arc::new(PassFilter)), &["missing"])
@@ -384,7 +434,7 @@ mod tests {
 
     #[test]
     fn remove_filter() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         write("b", &[], &mut chain);
 
@@ -396,14 +446,14 @@ mod tests {
 
     #[test]
     fn remove_not_found() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         let removed = chain.remove_filter("x").unwrap();
         assert!(removed.is_none());
     }
 
     #[test]
     fn remove_with_dependants_errors() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &["a"], &mut chain);
 
@@ -415,7 +465,7 @@ mod tests {
 
     #[test]
     fn remove_cleans_empty_levels() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &["a"], &mut chain);
 
@@ -431,7 +481,7 @@ mod tests {
 
     #[test]
     fn clear_empties_chain() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         write("b", &["a"], &mut chain);
 
@@ -439,25 +489,25 @@ mod tests {
         assert_eq!(chain.level_count(), 0);
     }
 
-    // --- Prepare ---
+    // --- Build ---
 
     #[test]
-    fn prepare_empty_chain() {
-        let chain = FilterChain::default();
-        let prepared = chain.prepare();
-        assert_eq!(prepared.levels.len(), 0);
+    fn build_empty_chain() {
+        let builder = FilterChainBuilder::default();
+        let chain = builder.build();
+        assert!(chain.levels.is_empty());
     }
 
     // --- Exec ---
 
-    async fn run_chain(chain: &FilterChain) -> ExecResult {
-        let prepared = chain.prepare();
+    async fn run_chain(builder: &FilterChainBuilder) -> ExecResult {
+        let chain = builder.build();
         let pool = hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
         let bundle = Bundle {
             bundle: Default::default(),
             metadata: Default::default(),
         };
-        prepared
+        chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)
             .await
             .unwrap()
@@ -465,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_all_continue() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         read("a", &[], &mut chain);
         read("b", &[], &mut chain);
 
@@ -477,7 +527,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_read_filter_drops() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         chain
             .add_filter("pass", Filter::Read(Arc::new(PassFilter)), &[])
             .unwrap();
@@ -490,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_writer_noop() {
-        let mut chain = FilterChain::default();
+        let mut chain = FilterChainBuilder::default();
         write("w", &[], &mut chain);
 
         assert!(matches!(
@@ -501,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_empty_chain() {
-        let chain = FilterChain::default();
+        let chain = FilterChainBuilder::default();
         assert!(matches!(
             run_chain(&chain).await,
             ExecResult::Continue(_, _, _)
