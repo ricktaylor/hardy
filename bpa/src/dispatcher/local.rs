@@ -186,7 +186,7 @@ impl Dispatcher {
         {
             filters::registry::ExecResult::Continue(_, bundle, data) => (bundle, data),
             filters::registry::ExecResult::Drop(bundle, reason) => {
-                return self.drop_bundle(bundle, reason).await;
+                return self.drop_bundle(bundle, Some(reason)).await;
             }
         };
 

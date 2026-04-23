@@ -118,7 +118,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                         bundle_id = %bundle.bundle.id,
                         "Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)"
                     );
-                    return Ok(FilterResult::Drop(Some(ReasonCode::BlockUnintelligible)));
+                    return Ok(FilterResult::Drop(ReasonCode::BlockUnintelligible));
                 }
             }
         }
@@ -132,7 +132,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                 bundle_id = %bundle.bundle.id,
                 "Rejecting bundle: no clock in creation timestamp and no Bundle Age block"
             );
-            return Ok(FilterResult::Drop(Some(ReasonCode::LifetimeExpired)));
+            return Ok(FilterResult::Drop(ReasonCode::LifetimeExpired));
         }
 
         Ok(FilterResult::Continue)
