@@ -17,7 +17,7 @@ use hardy_bpv7::crc::CrcType;
 use hardy_bpv7::status_report::ReasonCode;
 use tracing::debug;
 
-use super::{FilterResult, ReadFilter};
+use super::{ReadFilter, ReadResult};
 use crate::bundle::Bundle;
 
 /// Configuration for the RFC9171 validity filter.
@@ -106,7 +106,7 @@ impl Rfc9171ValidityFilter {
 
 #[async_trait]
 impl ReadFilter for Rfc9171ValidityFilter {
-    async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<FilterResult, crate::Error> {
+    async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
         // RFC9171 §4.3.1: Primary block integrity check
         if self.config.primary_block_integrity {
             if let Some(primary_block) = bundle.bundle.blocks.get(&0) {
@@ -118,7 +118,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
                         bundle_id = %bundle.bundle.id,
                         "Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)"
                     );
-                    return Ok(FilterResult::Drop(ReasonCode::BlockUnintelligible));
+                    return Ok(ReadResult::Drop(ReasonCode::BlockUnintelligible));
                 }
             }
         }
@@ -132,9 +132,9 @@ impl ReadFilter for Rfc9171ValidityFilter {
                 bundle_id = %bundle.bundle.id,
                 "Rejecting bundle: no clock in creation timestamp and no Bundle Age block"
             );
-            return Ok(FilterResult::Drop(ReasonCode::LifetimeExpired));
+            return Ok(ReadResult::Drop(ReasonCode::LifetimeExpired));
         }
 
-        Ok(FilterResult::Continue)
+        Ok(ReadResult::Continue)
     }
 }

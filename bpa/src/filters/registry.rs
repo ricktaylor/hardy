@@ -1,26 +1,11 @@
 use hardy_async::sync::RwLock;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
-use hardy_bpv7::status_report::ReasonCode;
 
-use super::filter::FilterChain;
-use super::{Error, Filter, Hook};
+use super::chain::FilterChain;
+use super::{Error, ExecResult, Filter, Hook};
 use crate::Bytes;
 use crate::bundle::Bundle;
-
-/// Tracks whether filters modified the bundle or its metadata.
-#[derive(Default)]
-pub struct Mutation {
-    pub data: bool,
-    pub metadata: bool,
-}
-
-/// Result of executing the filter chain on a bundle.
-#[allow(clippy::large_enum_variant)]
-pub enum ExecResult {
-    Continue(Mutation, Bundle, Bytes),
-    Drop(Bundle, ReasonCode),
-}
 
 #[derive(Default)]
 struct RegistryInner {
@@ -62,11 +47,7 @@ impl Registry {
     }
 
     pub fn clear(&self) {
-        let mut inner = self.inner.write();
-        inner.ingress.clear();
-        inner.deliver.clear();
-        inner.originate.clear();
-        inner.egress.clear();
+        *self.inner.write() = RegistryInner::default();
     }
 
     pub fn register(

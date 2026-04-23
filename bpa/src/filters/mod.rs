@@ -2,12 +2,12 @@ use hardy_async::async_trait;
 use hardy_bpv7::status_report::ReasonCode;
 use thiserror::Error;
 
-use crate::Arc;
 use crate::bundle::{Bundle, WritableMetadata};
+use crate::{Arc, Bytes};
 
 pub(crate) mod registry;
 
-mod filter;
+mod chain;
 
 /// RFC9171 validity filter - always available, auto-registered by default.
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
@@ -31,7 +31,7 @@ pub enum Error {
 
 /// Outcome of a read-only filter evaluation.
 #[derive(Debug, Default)]
-pub enum FilterResult {
+pub enum ReadResult {
     /// Allow the bundle to proceed to the next filter or processing stage.
     #[default]
     Continue,
@@ -41,15 +41,29 @@ pub enum FilterResult {
 
 /// Outcome of a read-write filter evaluation, which may modify the bundle.
 #[derive(Debug)]
-pub enum RewriteResult {
+pub enum WriteResult {
     /// Continue processing, optionally with modified metadata and/or bundle data
     /// - (None, None): no change
     /// - (Some(meta), None): metadata changed, bundle bytes unchanged
     /// - (None, Some(data)): bundle bytes changed (rare)
     /// - (Some(meta), Some(data)): both changed
-    Continue(Option<WritableMetadata>, Option<Box<[u8]>>),
+    Continue(Option<WritableMetadata>, Option<Vec<u8>>),
     /// Drop the bundle with a status-report reason code.
     Drop(ReasonCode),
+}
+
+/// Tracks whether filters modified the bundle or its metadata.
+#[derive(Default)]
+pub struct Mutation {
+    pub data: bool,
+    pub metadata: bool,
+}
+
+/// Result of executing the filter chain on a bundle.
+#[allow(clippy::large_enum_variant)]
+pub enum ExecResult {
+    Continue(Mutation, Bundle, Bytes),
+    Drop(Bundle, ReasonCode),
 }
 
 // Filter traits
@@ -57,13 +71,13 @@ pub enum RewriteResult {
 /// Read-only filter: can run in parallel with other ReadFilters
 #[async_trait]
 pub trait ReadFilter: Send + Sync {
-    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<FilterResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<ReadResult, crate::Error>;
 }
 
 /// Read-write filter: runs sequentially, may modify metadata or bundle data
 #[async_trait]
 pub trait WriteFilter: Send + Sync {
-    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<RewriteResult, crate::Error>;
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<WriteResult, crate::Error>;
 }
 
 /// Filter wrapper enum for registration

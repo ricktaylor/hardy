@@ -3,8 +3,9 @@ use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
 use trace_err::*;
 use tracing::debug;
 
-use super::registry::{ExecResult, Mutation};
-use super::{Error, Filter, FilterResult, ReadFilter, RewriteResult, WriteFilter};
+use super::{
+    Error, ExecResult, Filter, Mutation, ReadFilter, ReadResult, WriteFilter, WriteResult,
+};
 use crate::bundle::Bundle;
 use crate::{Arc, Bytes, HashSet};
 
@@ -58,10 +59,6 @@ impl FilterChain {
             .get(level)
             .map(|l| l.names().collect())
             .unwrap_or_default()
-    }
-
-    pub fn clear(&mut self) {
-        self.levels.clear();
     }
 
     pub fn add_filter(&mut self, name: &str, filter: Filter, after: &[&str]) -> Result<(), Error> {
@@ -153,7 +150,6 @@ impl FilterChain {
             levels: self
                 .levels
                 .iter()
-                .filter(|level| !level.is_empty())
                 .map(|level| PreparedLevel {
                     readers: level.readers.iter().map(|(_, f)| f.clone()).collect(),
                     writers: level.writers.iter().map(|(_, f)| f.clone()).collect(),
@@ -210,7 +206,7 @@ impl PreparedFilters {
                 (bundle, data) = Arc::try_unwrap(bd).trace_expect("Lingering filter tasks?!?");
 
                 for result in results {
-                    if let FilterResult::Drop(reason) = result {
+                    if let ReadResult::Drop(reason) = result {
                         debug!("ReadFilter dropped bundle: {reason:?}");
                         return Ok(ExecResult::Drop(bundle, reason));
                     }
@@ -219,7 +215,7 @@ impl PreparedFilters {
 
             for filter in level.writers {
                 match filter.filter(&bundle, &data).await? {
-                    RewriteResult::Continue(writable, new_data) => {
+                    WriteResult::Continue(writable, new_data) => {
                         if let Some(writable) = writable {
                             debug!("WriteFilter rewrote bundle metadata");
                             mutation.metadata = true;
@@ -229,11 +225,11 @@ impl PreparedFilters {
                             debug!("WriteFilter rewrote bundle data");
                             mutation.data = true;
                             let parsed = CheckedBundle::parse(&new_data, &key_provider)?;
-                            data = Bytes::from(parsed.new_data.unwrap_or(new_data));
+                            data = Bytes::from(parsed.new_data.map(Vec::from).unwrap_or(new_data));
                             bundle.bundle = parsed.bundle;
                         }
                     }
-                    RewriteResult::Drop(reason) => {
+                    WriteResult::Drop(reason) => {
                         debug!("WriteFilter dropped bundle: {reason:?}");
                         return Ok(ExecResult::Drop(bundle, reason));
                     }
@@ -255,12 +251,8 @@ mod tests {
 
     #[async_trait]
     impl ReadFilter for PassFilter {
-        async fn filter(
-            &self,
-            _bundle: &Bundle,
-            _data: &[u8],
-        ) -> Result<FilterResult, crate::Error> {
-            Ok(FilterResult::Continue)
+        async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
+            Ok(ReadResult::Continue)
         }
     }
 
@@ -268,12 +260,8 @@ mod tests {
 
     #[async_trait]
     impl ReadFilter for DropFilter {
-        async fn filter(
-            &self,
-            _bundle: &Bundle,
-            _data: &[u8],
-        ) -> Result<FilterResult, crate::Error> {
-            Ok(FilterResult::Drop(ReasonCode::NoAdditionalInformation))
+        async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
+            Ok(ReadResult::Drop(ReasonCode::NoAdditionalInformation))
         }
     }
 
@@ -285,8 +273,8 @@ mod tests {
             &self,
             _bundle: &Bundle,
             _data: &[u8],
-        ) -> Result<RewriteResult, crate::Error> {
-            Ok(RewriteResult::Continue(None, None))
+        ) -> Result<WriteResult, crate::Error> {
+            Ok(WriteResult::Continue(None, None))
         }
     }
 
@@ -447,7 +435,7 @@ mod tests {
         read("a", &[], &mut chain);
         write("b", &["a"], &mut chain);
 
-        chain.clear();
+        chain.levels.clear();
         assert_eq!(chain.level_count(), 0);
     }
 
