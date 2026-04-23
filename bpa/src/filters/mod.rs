@@ -35,8 +35,8 @@ pub enum ReadResult {
     /// Allow the bundle to proceed to the next filter or processing stage.
     #[default]
     Continue,
-    /// Drop the bundle with a status-report reason code.
-    Drop(ReasonCode),
+    /// Drop the bundle, optionally providing a status-report reason code.
+    Drop(Option<ReasonCode>),
 }
 
 /// Outcome of a read-write filter evaluation, which may modify the bundle.
@@ -48,8 +48,8 @@ pub enum WriteResult {
     /// - (None, Some(data)): bundle bytes changed (rare)
     /// - (Some(meta), Some(data)): both changed
     Continue(Option<WritableMetadata>, Option<Vec<u8>>),
-    /// Drop the bundle with a status-report reason code.
-    Drop(ReasonCode),
+    /// Drop the bundle, optionally providing a status-report reason code.
+    Drop(Option<ReasonCode>),
 }
 
 /// Tracks whether filters modified the bundle or its metadata.
@@ -63,7 +63,7 @@ pub struct Mutation {
 #[allow(clippy::large_enum_variant)]
 pub enum ExecResult {
     Continue(Mutation, Bundle, Bytes),
-    Drop(Bundle, ReasonCode),
+    Drop(Bundle, Option<ReasonCode>),
 }
 
 // Filter traits
