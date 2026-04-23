@@ -284,7 +284,7 @@ impl Dispatcher {
                 (bundle, data)
             }
             filters::ExecResult::Drop(bundle, reason) => {
-                return self.drop_bundle(bundle, Some(reason)).await;
+                return self.drop_bundle(bundle, reason).await;
             }
         };
 

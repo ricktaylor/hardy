@@ -1,3 +1,5 @@
+use core::ops::ControlFlow;
+
 use hardy_async::BoundedTaskPool;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
@@ -8,6 +10,7 @@ use tracing::debug;
 use super::{
     Error, ExecResult, Filter, Mutation, ReadFilter, ReadResult, WriteFilter, WriteResult,
 };
+
 use crate::bundle::Bundle;
 use crate::{Arc, Bytes, HashSet};
 
@@ -177,9 +180,9 @@ impl Level {
         pool: &BoundedTaskPool,
         bundle: Bundle,
         data: Bytes,
-    ) -> Result<(Bundle, Bytes, Option<ReasonCode>), crate::Error> {
+    ) -> Result<(Bundle, Bytes, ControlFlow<Option<ReasonCode>>), crate::Error> {
         if self.readers.is_empty() {
-            return Ok((bundle, data, None));
+            return Ok((bundle, data, ControlFlow::Continue(())));
         }
 
         let shared = Arc::new((bundle, data));
@@ -207,21 +210,21 @@ impl Level {
         for result in results {
             if let ReadResult::Drop(reason) = result {
                 debug!("ReadFilter dropped bundle: {reason:?}");
-                return Ok((bundle, data, Some(reason)));
+                return Ok((bundle, data, ControlFlow::Break(reason)));
             }
         }
 
-        Ok((bundle, data, None))
+        Ok((bundle, data, ControlFlow::Continue(())))
     }
 
-    /// Run all writers sequentially. Returns `Some(reason)` if any writer drops the bundle.
+    /// Run all writers sequentially.
     async fn run_writers<F>(
         &self,
         bundle: &mut Bundle,
         data: &mut Bytes,
         mutation: &mut Mutation,
         key_provider: &F,
-    ) -> Result<Option<ReasonCode>, crate::Error>
+    ) -> Result<ControlFlow<Option<ReasonCode>>, crate::Error>
     where
         F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
     {
@@ -243,12 +246,12 @@ impl Level {
                 }
                 WriteResult::Drop(reason) => {
                     debug!("WriteFilter dropped bundle: {reason:?}");
-                    return Ok(Some(reason));
+                    return Ok(ControlFlow::Break(reason));
                 }
             }
         }
 
-        Ok(None)
+        Ok(ControlFlow::Continue(()))
     }
 }
 
@@ -274,12 +277,11 @@ impl FilterChain {
         let mut mutation = Mutation::default();
 
         for level in &self.levels {
-            let reason;
-            (bundle, data, reason) = level.run_readers(pool, bundle, data).await?;
-            if let Some(reason) = reason {
-                return Ok(ExecResult::Drop(bundle, reason));
+            match level.run_readers(pool, bundle, data).await? {
+                (b, d, ControlFlow::Continue(())) => (bundle, data) = (b, d),
+                (b, _, ControlFlow::Break(reason)) => return Ok(ExecResult::Drop(b, reason)),
             }
-            if let Some(reason) = level
+            if let ControlFlow::Break(reason) = level
                 .run_writers(&mut bundle, &mut data, &mut mutation, &key_provider)
                 .await?
             {
@@ -311,7 +313,7 @@ mod tests {
     #[async_trait]
     impl ReadFilter for DropFilter {
         async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
-            Ok(ReadResult::Drop(ReasonCode::NoAdditionalInformation))
+            Ok(ReadResult::Drop(Some(ReasonCode::NoAdditionalInformation)))
         }
     }
 
