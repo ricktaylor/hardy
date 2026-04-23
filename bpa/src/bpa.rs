@@ -7,8 +7,7 @@ use crate::builder::BpaBuilder;
 use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
-use crate::filters::registry::Registry as FilterRegistry;
-use crate::filters::{self, Filter, Hook};
+use crate::filters::{self, Filter, FilterEngine, Hook};
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -207,7 +206,7 @@ pub struct Bpa {
     rib: Arc<Rib>,
     cla_registry: Arc<ClaRegistry>,
     service_registry: Arc<ServiceRegistry>,
-    filter_registry: Arc<FilterRegistry>,
+    filter_engine: Arc<FilterEngine>,
     dispatcher: Arc<Dispatcher>,
 }
 
@@ -218,7 +217,7 @@ impl Bpa {
         rib: Arc<Rib>,
         cla_registry: Arc<ClaRegistry>,
         service_registry: Arc<ServiceRegistry>,
-        filter_registry: Arc<FilterRegistry>,
+        filter_engine: Arc<FilterEngine>,
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
         Self {
@@ -227,7 +226,7 @@ impl Bpa {
             rib,
             cla_registry,
             service_registry,
-            filter_registry,
+            filter_engine,
             dispatcher,
         }
     }
@@ -271,7 +270,7 @@ impl Bpa {
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
-        self.filter_registry.clear();
+        self.filter_engine.clear();
     }
 
     /// Register a filter at a hook point
@@ -283,7 +282,7 @@ impl Bpa {
         after: &[&str],
         filter: Filter,
     ) -> Result<(), filters::Error> {
-        self.filter_registry.register(hook, name, after, filter)
+        self.filter_engine.register(hook, name, after, filter)
     }
 
     /// Unregister a filter by name from a hook point
@@ -293,7 +292,7 @@ impl Bpa {
         hook: Hook,
         name: &str,
     ) -> Result<Option<Filter>, filters::Error> {
-        self.filter_registry.unregister(hook, name)
+        self.filter_engine.unregister(hook, name)
     }
 }
 

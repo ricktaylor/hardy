@@ -5,13 +5,16 @@ use thiserror::Error;
 use crate::bundle::{Bundle, WritableMetadata};
 use crate::{Arc, Bytes};
 
-pub(crate) mod registry;
-
 mod chain;
+mod engine;
 
+pub(crate) use engine::FilterEngine;
 /// RFC9171 validity filter - always available, auto-registered by default.
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
 pub mod rfc9171;
+
+/// Bundle validity filter - lifetime and hop-count checks.
+pub mod validity;
 
 /// Errors related to filter registration and dependency management.
 #[derive(Debug, Error)]

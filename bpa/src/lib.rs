@@ -43,6 +43,7 @@ mod rib;
 pub mod bpa;
 pub mod builder;
 pub mod bundle;
+pub(crate) mod cbor;
 pub mod cla;
 pub mod filters;
 pub mod keys;

@@ -35,7 +35,7 @@ impl Dispatcher {
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         // - On Drop result: call drop_bundle() and return early
         let (bundle, data) = match self
-            .filter_registry
+            .filter_engine
             .exec(
                 filters::Hook::Egress,
                 bundle,

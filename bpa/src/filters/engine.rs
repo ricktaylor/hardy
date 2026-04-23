@@ -56,13 +56,13 @@ impl Builders {
     }
 }
 
-pub struct Registry {
+pub struct FilterEngine {
     builders: Mutex<Builders>,
     /// Lock-free access to the current built filter chains.
     filters: ArcSwap<Filters>,
 }
 
-impl Registry {
+impl FilterEngine {
     pub fn new() -> Self {
         let builders = Mutex::new(Builders::default());
         let filters = ArcSwap::from_pointee(Filters::default());

@@ -32,42 +32,10 @@ impl Dispatcher {
         // Capture received_at as soon as possible
         let received_at = time::OffsetDateTime::now_utc();
 
-        // Do a fast pre-check
-        match data.first() {
-            None => {
-                metrics::counter!("bpa.bundle.received.dropped").increment(1);
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::NeedMoreData(1),
-                )
-                .into());
-            }
-            Some(0x06) => {
-                debug!("Data looks like a BPv6 bundle");
-                metrics::counter!("bpa.bundle.received.dropped").increment(1);
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::IncorrectType(
-                        "BPv7 bundle".to_string(),
-                        "Possible BPv6 bundle".to_string(),
-                    ),
-                )
-                .into());
-            }
-            Some(0x80..=0x9F) => {}
-            Some(b) => {
-                debug!(
-                    "Invalid CBOR: first byte 0x{b:02X}, expected 0x80-0x9F. Data ({} bytes): {:02X?}",
-                    data.len(),
-                    &data[..data.len().min(32)]
-                );
-                metrics::counter!("bpa.bundle.received.dropped").increment(1);
-                return Err(hardy_bpv7::Error::InvalidCBOR(
-                    hardy_cbor::decode::Error::IncorrectType(
-                        "BPv7 bundle".to_string(),
-                        "Invalid CBOR".to_string(),
-                    ),
-                )
-                .into());
-            }
+        // Fast pre-check: reject empty, BPv6, and non-CBOR-array data
+        if let Err(e) = crate::cbor::precheck(&data) {
+            metrics::counter!("bpa.bundle.received.dropped").increment(1);
+            return Err(e.into());
         }
 
         // Parse the bundle
@@ -234,31 +202,9 @@ impl Dispatcher {
     /// filter execution details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn ingest_bundle_inner(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
-        if let Some(u) = bundle.bundle.flags.unrecognised {
-            debug!("Bundle primary block has unrecognised flag bits set: {u:#x}");
-        }
-
-        // Check lifetime first
-        if bundle.has_expired() {
-            debug!("Bundle lifetime has expired");
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
-                .await;
-        }
-
-        // Check hop count exceeded
-        if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
-            && hop_info.count > hop_info.limit
-        {
-            debug!("Bundle hop-limit {} exceeded", hop_info.limit);
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::HopLimitExceeded))
-                .await;
-        }
-
-        // Ingress filter hook
+        // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
         (bundle, data) = match self
-            .filter_registry
+            .filter_engine
             .exec(
                 filters::Hook::Ingress,
                 bundle,
