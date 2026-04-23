@@ -187,9 +187,6 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
     match status {
         BundleStatus::New => (0, None, None, None),
         BundleStatus::Waiting => (1, None, None, None),
-        BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer as i64), queue.map(|q| q as i64), None)
-        }
         BundleStatus::AduFragment { source, timestamp } => (
             3,
             Some(
@@ -200,7 +197,6 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
             Some(timestamp.sequence_number() as i64),
             Some(source.to_string()),
         ),
-        BundleStatus::Dispatching => (4, None, None, None),
         BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
     }
 }
@@ -214,10 +210,9 @@ fn to_status(
     match code {
         0 => Some(BundleStatus::New),
         1 => Some(BundleStatus::Waiting),
-        2 => Some(BundleStatus::ForwardPending {
-            peer: param1? as u32,
-            queue: param2.map(|q| q as u32),
-        }),
+        // 2 (ForwardPending) and 4 (Dispatching) are no longer used.
+        // Migration resets them to New (0). Treat any remaining as New.
+        2 | 4 => Some(BundleStatus::New),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
             let creation_time = param1
@@ -230,7 +225,6 @@ fn to_status(
             );
             Some(BundleStatus::AduFragment { source, timestamp })
         }
-        4 => Some(BundleStatus::Dispatching),
         5 => Some(BundleStatus::WaitingForService {
             service: param3?.parse().ok()?,
         }),
@@ -484,32 +478,6 @@ impl storage::MetadataStorage for Storage {
                 }
             }
         }
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
-        // Ensure status codes match
-        debug_assert!(
-            from_status(&BundleStatus::Waiting).0 == 1,
-            "Status code mismatch"
-        );
-        debug_assert!(
-            from_status(&BundleStatus::ForwardPending {
-                peer,
-                queue: Some(0)
-            }) == (2, Some(peer as i64), Some(0), None),
-            "Status code mismatch"
-        );
-
-        self.write(move |conn| {
-            conn.prepare_cached(
-                "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
-            )?
-            .execute((Some(peer),))
-            .map(|c| c as u64)
-            .map_err(Into::into)
-        })
-        .await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
@@ -900,8 +868,8 @@ mod tests {
         let polled: Vec<_> = rx.drain().collect();
         assert_eq!(polled.len(), 1, "should poll 1 waiting bundle");
 
-        // Update status to Dispatching
-        bundle.metadata.status = BundleStatus::Dispatching;
+        // Update status to New (no longer Waiting)
+        bundle.metadata.status = BundleStatus::New;
         store.replace(&bundle).await.unwrap();
 
         // Poll waiting again — should return nothing

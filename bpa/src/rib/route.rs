@@ -187,14 +187,10 @@ impl Rib {
         }
     }
 
-    async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
-        let mut updated = false;
-        for p in peers {
-            if self.store.reset_peer_queue(p).await {
-                updated = true;
-            }
-        }
-        updated
+    async fn reset_peer_queues(&self, _peers: HashSet<u32>) -> bool {
+        // No-op: ForwardPending status no longer exists.
+        // Bundles in Waiting status are re-routed by the cold path poll.
+        true
     }
 }
 

@@ -77,10 +77,7 @@ impl Peer {
         peer: u32,
         queue: Option<u32>,
     ) -> storage::channel::Sender {
-        let (tx, rx) = store.channel(
-            bundle::BundleStatus::ForwardPending { peer, queue },
-            poll_channel_depth,
-        );
+        let (tx, rx) = store.channel(bundle::BundleStatus::Waiting, poll_channel_depth);
 
         hardy_async::spawn!(
             tasks,

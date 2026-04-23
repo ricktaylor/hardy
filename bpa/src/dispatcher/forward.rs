@@ -34,7 +34,7 @@ impl Dispatcher {
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         // - On Drop result: call drop_bundle() and return early
-        let (bundle, data) = match self
+        let (mut bundle, data) = match self
             .filter_engine
             .exec(
                 filter::Hook::Egress,
@@ -76,7 +76,11 @@ impl Dispatcher {
             }
         }
 
-        self.store.reset_peer_queue(peer).await;
+        // Forwarding failed — set bundle to Waiting for retry
+        self.store
+            .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+            .await;
+        self.store.watch_bundle(bundle).await;
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]

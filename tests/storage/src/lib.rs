@@ -216,7 +216,7 @@ macro_rules! storage_meta_tests {
             meta_test!(meta_08_poll_pending_limit);
             meta_test!(meta_09_poll_pending_exact_match);
             meta_test!(meta_10_poll_adu_fragments);
-            meta_test!(meta_11_reset_peer_queue);
+
             meta_test!(meta_14_poll_service_waiting);
             meta_test!(meta_12_recovery);
             meta_test!(meta_13_remove_unconfirmed);
@@ -274,7 +274,7 @@ macro_rules! storage_meta_tests_async {
             meta_test!(meta_08_poll_pending_limit);
             meta_test!(meta_09_poll_pending_exact_match);
             meta_test!(meta_10_poll_adu_fragments);
-            meta_test!(meta_11_reset_peer_queue);
+
             meta_test!(meta_14_poll_service_waiting);
             meta_test!(meta_12_recovery);
             meta_test!(meta_13_remove_unconfirmed);

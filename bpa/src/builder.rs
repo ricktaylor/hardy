@@ -176,10 +176,7 @@ impl BpaBuilder {
         ));
 
         let node_ids = Arc::new(self.node_ids);
-        let rib = self
-            .rib_builder
-            .build(node_ids.clone(), store.clone())
-            .await?;
+        let rib = self.rib_builder.build(node_ids.clone()).await?;
         let filter_engine = self.filter_engine;
         let keys_registry = self.keys_registry;
 

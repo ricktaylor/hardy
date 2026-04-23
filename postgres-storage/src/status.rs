@@ -8,8 +8,6 @@ use hardy_bpa::bundle::BundleStatus;
 pub enum BundleStatusKind {
     New,
     Waiting,
-    Dispatching,
-    ForwardPending,
     AduFragment,
     WaitingForService,
 }
@@ -17,10 +15,6 @@ pub enum BundleStatusKind {
 /// Error returned when a `BundleStatus` value cannot be represented in the postgres schema.
 #[derive(Debug, thiserror::Error)]
 pub enum StatusConversionError {
-    #[error("peer ID {0} exceeds i32::MAX and cannot be stored")]
-    PeerId(u32),
-    #[error("queue ID {0} exceeds i32::MAX and cannot be stored")]
-    QueueId(u32),
     #[error("ADU timestamp {0}ms exceeds i64::MAX and cannot be stored")]
     Timestamp(u64),
     #[error("ADU sequence number {0} exceeds i64::MAX and cannot be stored")]
@@ -33,8 +27,6 @@ pub enum StatusConversionError {
 #[derive(sqlx::FromRow)]
 pub struct StatusFields {
     pub status: BundleStatusKind,
-    pub peer_id: Option<i32>,
-    pub queue_id: Option<i32>,
     pub adu_source: Option<String>,
     /// Milliseconds since DTN epoch, or 0 when no DTN creation clock.
     pub adu_ts_ms: Option<i64>,
@@ -46,8 +38,6 @@ impl StatusFields {
     fn with_kind(status: BundleStatusKind) -> Self {
         Self {
             status,
-            peer_id: None,
-            queue_id: None,
             adu_source: None,
             adu_ts_ms: None,
             adu_ts_seq: None,
@@ -59,11 +49,6 @@ impl StatusFields {
         match self.status {
             BundleStatusKind::New => Some(BundleStatus::New),
             BundleStatusKind::Waiting => Some(BundleStatus::Waiting),
-            BundleStatusKind::Dispatching => Some(BundleStatus::Dispatching),
-            BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
-                peer: u32::try_from(self.peer_id?).ok()?,
-                queue: self.queue_id.and_then(|q| u32::try_from(q).ok()),
-            }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
                 let creation_time = self
@@ -85,7 +70,7 @@ impl StatusFields {
     }
 }
 
-/// Fallible because peer/queue IDs (u32) must fit in postgres `int4` (i32).
+/// Fallible because ADU timestamps (u64) must fit in postgres `int8` (i64).
 impl TryFrom<&BundleStatus> for StatusFields {
     type Error = StatusConversionError;
 
@@ -93,16 +78,6 @@ impl TryFrom<&BundleStatus> for StatusFields {
         Ok(match status {
             BundleStatus::New => Self::with_kind(BundleStatusKind::New),
             BundleStatus::Waiting => Self::with_kind(BundleStatusKind::Waiting),
-            BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
-            BundleStatus::ForwardPending { peer, queue } => Self {
-                peer_id: Some(
-                    i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
-                ),
-                queue_id: queue
-                    .map(|q| i32::try_from(q).map_err(|_| StatusConversionError::QueueId(q)))
-                    .transpose()?,
-                ..Self::with_kind(BundleStatusKind::ForwardPending)
-            },
             BundleStatus::AduFragment { source, timestamp } => {
                 let ms = timestamp.creation_time().map_or(0, |t| t.millisecs());
                 let seq = timestamp.sequence_number();

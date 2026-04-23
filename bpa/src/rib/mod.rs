@@ -39,7 +39,6 @@ pub struct Rib {
     ecmp_hash_state: foldhash::quality::RandomState,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::Store>,
 }
 
 pub(crate) struct RibBuilder {
@@ -55,12 +54,8 @@ impl RibBuilder {
         self.agents.push((name, agent));
     }
 
-    pub async fn build(
-        self,
-        node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
-    ) -> routes::Result<Arc<Rib>> {
-        let rib = Arc::new(Rib::new(node_ids, store));
+    pub async fn build(self, node_ids: Arc<node_ids::NodeIds>) -> routes::Result<Arc<Rib>> {
+        let rib = Arc::new(Rib::new(node_ids));
         for (name, agent) in self.agents {
             rib.register_agent(name, agent).await?;
         }
@@ -69,7 +64,7 @@ impl RibBuilder {
 }
 
 impl Rib {
-    fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
+    fn new(node_ids: Arc<node_ids::NodeIds>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(&node_ids),
@@ -81,7 +76,6 @@ impl Rib {
             ecmp_hash_state: foldhash::quality::RandomState::default(),
             tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
-            store,
         }
     }
 
@@ -143,13 +137,7 @@ pub(super) mod tests {
             dtn: None,
         });
 
-        let store = Arc::new(storage::Store::new(
-            core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(storage::MetadataMemStorage::new(&Default::default())),
-            Arc::new(storage::BundleMemStorage::new(&Default::default())),
-        ));
-
-        Arc::new(Rib::new(node_ids, store))
+        Arc::new(Rib::new(node_ids))
     }
 
     // Add a route directly to the RIB's route table (sync, no store interaction).

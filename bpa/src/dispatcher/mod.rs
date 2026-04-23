@@ -73,7 +73,7 @@ impl Dispatcher {
 
         // Create the dispatch queue channel
         let (dispatch_tx, dispatch_rx) =
-            store.channel(bundle::BundleStatus::Dispatching, poll_channel_depth_usize);
+            store.channel(bundle::BundleStatus::Waiting, poll_channel_depth_usize);
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),

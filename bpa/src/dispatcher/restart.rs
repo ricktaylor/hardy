@@ -38,23 +38,9 @@ impl Dispatcher {
                         // Resume processing based on checkpoint status
                         match &metadata.status {
                             bundle::BundleStatus::New => {
-                                // Ingress filter not yet complete - run full ingestion
+                                // Re-run full pipeline (filter + route + forward)
                                 let bundle = bundle::Bundle { metadata, bundle };
                                 self.ingest_bundle(bundle, data).await;
-                            }
-                            bundle::BundleStatus::Dispatching => {
-                                // Ingress filter done - enqueue for routing
-                                let bundle = bundle::Bundle { metadata, bundle };
-                                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
-                                self.dispatch_bundle(bundle).await;
-                            }
-                            bundle::BundleStatus::ForwardPending { .. } => {
-                                // Peer ID is stale after restart — reset to Waiting
-                                let mut bundle = bundle::Bundle { metadata, bundle };
-                                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
-                                self.store
-                                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                                    .await;
                             }
                             // Other statuses are handled by their respective recovery mechanisms:
                             // - Waiting: poll_waiting recovery

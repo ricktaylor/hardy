@@ -364,10 +364,7 @@ mod tests {
         b
     }
 
-    const STATUS: BundleStatus = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: None,
-    };
+    const STATUS: BundleStatus = BundleStatus::Waiting;
 
     // Fill the memory channel beyond capacity to trigger Draining state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

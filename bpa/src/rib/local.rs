@@ -144,9 +144,7 @@ impl Rib {
             return false;
         }
 
-        if self.store.reset_peer_queue(peer).await {
-            self.notify_updated().await;
-        }
+        self.notify_updated().await;
         true
     }
 

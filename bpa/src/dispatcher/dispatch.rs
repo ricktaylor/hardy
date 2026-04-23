@@ -216,17 +216,16 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Ingress filter execution failed")
         {
-            filter::ExecResult::Continue(mutation, mut bundle, data) => {
+            filter::ExecResult::Continue(mutation, bundle, data) => {
+                // Persist filter mutations if any (bundle stays New in storage)
                 if mutation.data {
                     if let Some(storage_name) = &bundle.metadata.storage_name {
                         self.store.replace_data(storage_name, &data).await;
                     }
                 }
-                // Always checkpoint to Dispatching (crash safety)
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
-                bundle.metadata.status = bundle::BundleStatus::Dispatching;
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
-                self.store.update_metadata(&bundle).await;
+                if mutation.metadata {
+                    self.store.update_metadata(&bundle).await;
+                }
                 (bundle, data)
             }
             filter::ExecResult::Drop(bundle, reason) => {
@@ -238,11 +237,7 @@ impl Dispatcher {
     }
 
     /// Queue a bundle for dispatch processing
-    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
-        self.store
-            .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-            .await;
-
+    pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
         }
