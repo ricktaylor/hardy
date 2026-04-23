@@ -228,23 +228,23 @@ impl Default for BpaBuilder {
         let filter_engine = Arc::new(FilterEngine::new());
 
         // Auto-register bundle validity filter (lifetime, hop-count)
+        let validity = Arc::new(BundleValidityFilter);
         filter_engine
             .register(
                 Hook::Ingress,
                 "bundle-validity",
                 &[],
-                Filter::Read(Arc::new(BundleValidityFilter)),
+                Filter::Read(validity.clone()),
             )
-            .expect("Failed to register bundle validity filter for ingress");
-
+            .expect("Failed to register bundle validity filter");
         filter_engine
             .register(
                 Hook::Originate,
                 "bundle-validity",
                 &[],
-                Filter::Read(Arc::new(BundleValidityFilter)),
+                Filter::Read(validity),
             )
-            .expect("Failed to register bundle validity filter for originate");
+            .expect("Failed to register bundle validity filter");
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
