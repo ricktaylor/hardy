@@ -26,10 +26,8 @@ impl Dispatcher {
             .inspect_err(|_e| {
                 error!("Originate filter execution failed");
             })? {
-            filters::registry::ExecResult::Continue(_mutation, bundle, data) => {
-                Ok(Some((bundle, data)))
-            }
-            filters::registry::ExecResult::Drop(_bundle, _reason) => Ok(None),
+            filters::ExecResult::Continue(_mutation, bundle, data) => Ok(Some((bundle, data))),
+            filters::ExecResult::Drop(_bundle, _reason) => Ok(None),
         }
     }
 
@@ -184,8 +182,8 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Deliver filter execution failed")
         {
-            filters::registry::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filters::registry::ExecResult::Drop(bundle, reason) => {
+            filters::ExecResult::Continue(_, bundle, data) => (bundle, data),
+            filters::ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, Some(reason)).await;
             }
         };

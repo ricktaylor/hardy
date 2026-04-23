@@ -50,14 +50,14 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
         &self,
         bundle: &hardy_bpa::bundle::Bundle,
         data: &[u8],
-    ) -> Result<hardy_bpa::filters::RewriteResult, hardy_bpa::Error> {
+    ) -> Result<hardy_bpa::filters::WriteResult, hardy_bpa::Error> {
         // Check if next-hop requires legacy encoding
         let Some(next_hop) = &bundle.metadata.read_only.next_hop else {
-            return Ok(hardy_bpa::filters::RewriteResult::Continue(None, None));
+            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
         };
 
         if !self.peer_patterns.iter().any(|p| p.matches(next_hop)) {
-            return Ok(hardy_bpa::filters::RewriteResult::Continue(None, None));
+            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
         }
 
         // Check if rewriting is needed
@@ -65,7 +65,7 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
         let needs_dest = matches!(bundle.bundle.destination, hardy_bpv7::eid::Eid::Ipn { .. });
 
         if !needs_source && !needs_dest {
-            return Ok(hardy_bpa::filters::RewriteResult::Continue(None, None));
+            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
         }
 
         // Use Editor to rewrite EIDs
@@ -99,9 +99,9 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
 
         let new_data = editor.rebuild()?;
 
-        Ok(hardy_bpa::filters::RewriteResult::Continue(
+        Ok(hardy_bpa::filters::WriteResult::Continue(
             None,
-            Some(new_data),
+            Some(new_data.into()),
         ))
     }
 }
@@ -110,7 +110,7 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
 mod tests {
     use super::*;
     use hardy_bpa::bundle::{Bundle, BundleMetadata};
-    use hardy_bpa::filters::{RewriteResult, WriteFilter};
+    use hardy_bpa::filters::{WriteFilter, WriteResult};
     use hardy_bpv7::eid::Eid;
 
     fn make_config(patterns: &[&str]) -> Config {
@@ -148,7 +148,7 @@ mod tests {
 
         let result = filter.filter(&bundle, &data).await.unwrap();
         assert!(
-            matches!(result, RewriteResult::Continue(None, None)),
+            matches!(result, WriteResult::Continue(None, None)),
             "No next-hop should mean no rewrite"
         );
     }
@@ -161,7 +161,7 @@ mod tests {
 
         let result = filter.filter(&bundle, &data).await.unwrap();
         assert!(
-            matches!(result, RewriteResult::Continue(None, None)),
+            matches!(result, WriteResult::Continue(None, None)),
             "DTN EIDs should not be rewritten"
         );
     }
@@ -178,7 +178,7 @@ mod tests {
 
         let result = filter.filter(&bundle, &data).await.unwrap();
         assert!(
-            matches!(result, RewriteResult::Continue(None, None)),
+            matches!(result, WriteResult::Continue(None, None)),
             "Non-matching next-hop should mean no rewrite"
         );
     }
@@ -192,7 +192,7 @@ mod tests {
         let (bundle, data) = make_bundle("ipn:0.1.1", "ipn:0.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
-        let RewriteResult::Continue(None, Some(new_data)) = result else {
+        let WriteResult::Continue(None, Some(new_data)) = result else {
             panic!("Expected rewrite path, got {result:?}");
         };
 
@@ -200,7 +200,7 @@ mod tests {
         // so the output should be identical (idempotent rewrite).
         assert_eq!(
             data,
-            new_data.as_ref(),
+            new_data.as_slice(),
             "allocator_id=0: rewrite should be idempotent"
         );
     }
@@ -213,7 +213,7 @@ mod tests {
 
         let result = filter.filter(&bundle, &data).await.unwrap();
         assert!(
-            matches!(result, RewriteResult::Continue(None, None)),
+            matches!(result, WriteResult::Continue(None, None)),
             "Non-matching next-hop should mean no rewrite"
         );
     }
@@ -226,14 +226,14 @@ mod tests {
         let (bundle, data) = make_bundle("ipn:1.1.1", "ipn:1.2.1", Some("ipn:0.3.0"));
 
         let result = filter.filter(&bundle, &data).await.unwrap();
-        let RewriteResult::Continue(None, Some(new_data)) = result else {
+        let WriteResult::Continue(None, Some(new_data)) = result else {
             panic!("Expected rewrite path, got {result:?}");
         };
 
         // Wire format should change: 3-element → 2-element encoding
         assert_ne!(
             data,
-            new_data.as_ref(),
+            new_data.as_slice(),
             "allocator_id!=0: 3-element should be rewritten to 2-element"
         );
 
