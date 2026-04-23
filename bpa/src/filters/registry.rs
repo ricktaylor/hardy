@@ -1,4 +1,5 @@
-use hardy_async::sync::RwLock;
+use arc_swap::ArcSwap;
+use hardy_async::sync::Mutex;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
 
@@ -27,30 +28,16 @@ impl Filters {
     }
 }
 
-struct RegistryInner {
+#[derive(Default)]
+struct Builders {
     ingress: FilterChainBuilder,
     deliver: FilterChainBuilder,
     originate: FilterChainBuilder,
     egress: FilterChainBuilder,
-
-    /// Current filter chain state, rebuilt on register/unregister.
-    filters: Arc<Filters>,
 }
 
-impl Default for RegistryInner {
-    fn default() -> Self {
-        Self {
-            ingress: FilterChainBuilder::default(),
-            deliver: FilterChainBuilder::default(),
-            originate: FilterChainBuilder::default(),
-            egress: FilterChainBuilder::default(),
-            filters: Arc::new(Filters::default()),
-        }
-    }
-}
-
-impl RegistryInner {
-    fn builder_mut(&mut self, hook: &Hook) -> &mut FilterChainBuilder {
+impl Builders {
+    fn get_mut(&mut self, hook: &Hook) -> &mut FilterChainBuilder {
         match hook {
             Hook::Ingress => &mut self.ingress,
             Hook::Deliver => &mut self.deliver,
@@ -59,29 +46,34 @@ impl RegistryInner {
         }
     }
 
-    fn rebuild(&mut self) {
-        self.filters = Arc::new(Filters {
+    fn build(&self) -> Filters {
+        Filters {
             ingress: self.ingress.build(),
             deliver: self.deliver.build(),
             originate: self.originate.build(),
             egress: self.egress.build(),
-        });
+        }
     }
 }
 
 pub struct Registry {
-    inner: RwLock<RegistryInner>,
+    builders: Mutex<Builders>,
+    /// Lock-free access to the current built filter chains.
+    filters: ArcSwap<Filters>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self {
-            inner: RwLock::new(RegistryInner::default()),
-        }
+        let builders = Mutex::new(Builders::default());
+        let filters = ArcSwap::from_pointee(Filters::default());
+
+        Self { builders, filters }
     }
 
     pub fn clear(&self) {
-        *self.inner.write() = RegistryInner::default();
+        let builders = Builders::default();
+        self.filters.store(Arc::new(builders.build()));
+        *self.builders.lock() = builders;
     }
 
     pub fn register(
@@ -91,28 +83,27 @@ impl Registry {
         after: &[&str],
         filter: Filter,
     ) -> Result<(), Error> {
-        let mut inner = self.inner.write();
-        inner.builder_mut(&hook).add_filter(name, filter, after)?;
-        inner.rebuild();
+        let mut builders = self.builders.lock();
+        builders.get_mut(&hook).add_filter(name, filter, after)?;
+        self.filters.store(Arc::new(builders.build()));
 
         metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).increment(1.0);
         Ok(())
     }
 
     pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
-        let mut inner = self.inner.write();
-        let result = inner.builder_mut(&hook).remove_filter(name)?;
+        let mut builders = self.builders.lock();
+        let result = builders.get_mut(&hook).remove_filter(name)?;
 
         if result.is_some() {
-            inner.rebuild();
+            self.filters.store(Arc::new(builders.build()));
             metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).decrement(1.0);
         }
 
         Ok(result)
     }
 
-    /// Grabs the current filters (single Arc clone), then executes
-    /// without holding any lock.
+    /// Load the current filters lock-free, then execute.
     pub async fn exec<F>(
         &self,
         hook: Hook,
@@ -125,7 +116,7 @@ impl Registry {
         F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let hook_label = hook.label();
-        let filters = self.inner.read().filters.clone();
+        let filters = self.filters.load();
         let result = filters
             .chain(&hook)
             .exec(pool, bundle, data, key_provider)
