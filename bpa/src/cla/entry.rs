@@ -1,4 +1,6 @@
 use core::cmp::Ordering;
+use core::fmt::{Debug, Formatter, Result};
+use core::hash::{Hash, Hasher};
 
 use hardy_async::sync::spin::Mutex;
 use hardy_bpv7::eid::NodeId;
@@ -11,7 +13,7 @@ use crate::{Arc, HashMap};
 pub struct ClaEntry {
     pub(super) cla: Arc<dyn Cla>,
     pub(super) policy: Arc<dyn EgressPolicy>,
-    pub(super) name: String,
+    pub(super) name: Arc<str>,
     pub(super) peers: Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
 }
 
@@ -35,14 +37,14 @@ impl Ord for ClaEntry {
     }
 }
 
-impl core::hash::Hash for ClaEntry {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+impl Hash for ClaEntry {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl core::fmt::Debug for ClaEntry {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for ClaEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         f.debug_struct("ClaEntry")
             .field("name", &self.name)
             .field("peers", &self.peers)

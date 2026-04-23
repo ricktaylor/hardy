@@ -7,46 +7,29 @@ use crate::dispatcher::Dispatcher;
 use crate::{Arc, HashMap, Weak};
 use crate::{bundle, policy, storage};
 
-// PeerTable uses hardy_async::sync::spin::RwLock because:
-// 1. All operations are O(1) HashMap lookups/inserts
-// 2. Read-heavy pattern (forward is called frequently)
-// 3. No blocking/iteration while holding lock
-// 4. Avoids OS rwlock overhead on hot forwarding path
-
-struct PeerInner {
+/// A fully initialized peer with its egress queues.
+pub struct Peer {
+    cla: Weak<ClaEntry>,
     queues: HashMap<Option<u32>, storage::channel::Sender>,
 }
 
-pub struct Peer {
-    cla: Weak<ClaEntry>,
-    inner: std::sync::OnceLock<PeerInner>,
-}
-
 impl Peer {
-    pub fn new(cla: Weak<ClaEntry>) -> Self {
-        Self {
-            cla,
-            inner: std::sync::OnceLock::new(),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn start(
-        &self,
-        poll_channel_depth: usize,
+    /// Create a new peer, set up its queues, and spawn queue pollers.
+    pub async fn new(
         cla: Arc<ClaEntry>,
-        peer: u32,
+        peer_id: u32,
         cla_addr: ClaAddress,
+        poll_channel_depth: usize,
         store: Arc<storage::Store>,
         dispatcher: Arc<Dispatcher>,
         tasks: &hardy_async::TaskPool,
-    ) {
+    ) -> Self {
         let controller: Arc<dyn policy::EgressController> = cla
             .policy
             .new_controller(egress_queue::new_queue_set(
                 cla.cla.clone(),
                 dispatcher,
-                peer,
+                peer_id,
                 cla_addr,
                 cla.cla.queue_count(),
             ))
@@ -61,7 +44,7 @@ impl Peer {
                 controller.clone(),
                 store.clone(),
                 tasks,
-                peer,
+                peer_id,
                 None,
             ),
         );
@@ -74,13 +57,16 @@ impl Peer {
                     controller.clone(),
                     store.clone(),
                     tasks,
-                    peer,
+                    peer_id,
                     Some(q),
                 ),
             );
         }
 
-        self.inner.get_or_init(|| PeerInner { queues });
+        Self {
+            cla: Arc::downgrade(&cla),
+            queues,
+        }
     }
 
     fn start_queue_poller(
@@ -123,10 +109,10 @@ impl Peer {
             None
         };
 
-        let queues = &self.inner.wait().queues;
-        let queue = queues
+        let queue = self
+            .queues
             .get(&queue)
-            .unwrap_or_else(|| queues.get(&None).trace_expect("No None queue?!?"));
+            .unwrap_or_else(|| self.queues.get(&None).trace_expect("No None queue?!?"));
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
@@ -135,11 +121,17 @@ impl Peer {
     }
 
     async fn close(&self) {
-        for tx in self.inner.wait().queues.values() {
+        for tx in self.queues.values() {
             tx.close().await;
         }
     }
 }
+
+// PeerTable uses hardy_async::sync::spin::RwLock because:
+// 1. All operations are O(1) HashMap lookups/inserts
+// 2. Read-heavy pattern (forward is called frequently)
+// 3. No blocking/iteration while holding lock
+// 4. Avoids OS rwlock overhead on hot forwarding path
 
 #[derive(Default)]
 struct PeerTableInner {
@@ -158,18 +150,20 @@ impl PeerTable {
         }
     }
 
-    pub fn insert(&self, peer: Arc<Peer>) -> u32 {
-        // sync::spin::RwLock::write() returns guard directly (no Result)
+    /// Reserve a peer_id without inserting a peer yet.
+    pub fn reserve(&self) -> u32 {
         let mut inner = self.inner.write();
-        let peer_id = loop {
+        loop {
             inner.next = inner.next.wrapping_add(1);
             if !inner.peers.contains_key(&inner.next) {
-                break inner.next;
+                return inner.next;
             }
-        };
+        }
+    }
 
-        inner.peers.insert(peer_id, peer);
-        peer_id
+    /// Activate a previously reserved peer_id with a fully initialized peer.
+    pub fn activate(&self, peer_id: u32, peer: Arc<Peer>) {
+        self.inner.write().peers.insert(peer_id, peer);
     }
 
     pub async fn remove(&self, peer_id: u32) {
@@ -185,28 +179,10 @@ impl PeerTable {
         peer_id: u32,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        // sync::spin::RwLock::read() returns guard directly (no Result)
         let Some(peer) = self.inner.read().peers.get(&peer_id).cloned() else {
             return Err(bundle);
         };
 
         peer.forward(bundle).await
     }
-}
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-
-    // // TODO: Implement test for 'Queue Selection' (Verify Policy maps to correct CLA queue)
-    // #[test]
-    // fn test_queue_selection() {
-    //     todo!("Verify Policy maps to correct CLA queue");
-    // }
-
-    // // TODO: Implement test for 'Queue Fallback' (Verify fallback to default queue on invalid index)
-    // #[test]
-    // fn test_queue_fallback() {
-    //     todo!("Verify fallback to default queue on invalid index");
-    // }
 }

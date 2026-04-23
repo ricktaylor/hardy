@@ -1,3 +1,5 @@
+use hardy_async::TaskPool;
+use hardy_async::sync::spin::Mutex;
 use hardy_bpv7::eid::NodeId;
 use tracing::{debug, info};
 
@@ -9,21 +11,19 @@ use crate::bundle::Bundle;
 use crate::dispatcher::Dispatcher;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
+use crate::policy::null_policy::EgressPolicy as NullEgressPolicy;
 use crate::rib::Rib;
 use crate::storage::Store;
 use crate::{Arc, HashMap, hash_map};
-
-// CLA registry uses hardy_async::sync::spin::Mutex because:
+// CLA engine uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
 // 2. No read-only access pattern (RwLock not needed)
 // 3. No blocking/RNG/iteration while holding lock
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
-
-type ClaMap = HashMap<String, Arc<ClaEntry>>;
-
-// CLA registry in the building phase — only insert() is available.
+//
+// CLA engine in the building phase — only insert() is available.
 pub(crate) struct ClaEngineBuilder {
-    clas: ClaMap,
+    clas: HashMap<String, Arc<ClaEntry>>,
 }
 
 impl ClaEngineBuilder {
@@ -46,9 +46,8 @@ impl ClaEngineBuilder {
         e.insert(Arc::new(ClaEntry {
             cla,
             peers: Default::default(),
-            name,
-            policy: policy
-                .unwrap_or_else(|| Arc::new(crate::policy::null_policy::EgressPolicy::new())),
+            name: name.into(),
+            policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy::new())),
         }));
         Ok(())
     }
@@ -63,20 +62,20 @@ impl ClaEngineBuilder {
         dispatcher: &Arc<Dispatcher>,
     ) -> super::Result<Arc<ClaEngine>> {
         let peers = Arc::new(PeerTable::new());
-        let registry = Arc::new(ClaEngine {
+        let engine = Arc::new(ClaEngine {
             node_ids: node_ids.clone(),
-            clas: hardy_async::sync::spin::Mutex::new(Default::default()),
+            clas: Mutex::new(Default::default()),
             rib: rib.clone(),
             store: store.clone(),
             peers,
             poll_channel_depth,
-            tasks: hardy_async::TaskPool::new(),
+            tasks: TaskPool::new(),
         });
 
         for (_, cla) in self.clas {
-            registry
+            engine
                 .register(
-                    cla.name.clone(),
+                    cla.name.to_string(),
                     cla.cla.clone(),
                     dispatcher,
                     Some(cla.policy.clone()),
@@ -84,19 +83,19 @@ impl ClaEngineBuilder {
                 .await?;
         }
 
-        Ok(registry)
+        Ok(engine)
     }
 }
 
 // CLA registry in the running phase — full register/unregister available.
 pub(crate) struct ClaEngine {
     node_ids: Arc<NodeIds>,
-    clas: hardy_async::sync::spin::Mutex<ClaMap>,
+    clas: Mutex<HashMap<String, Arc<ClaEntry>>>,
     rib: Arc<Rib>,
     store: Arc<Store>,
     peers: Arc<PeerTable>,
     poll_channel_depth: usize,
-    pub(super) tasks: hardy_async::TaskPool,
+    pub(super) tasks: TaskPool,
 }
 
 impl ClaEngine {
@@ -135,9 +134,8 @@ impl ClaEngine {
             e.insert(Arc::new(ClaEntry {
                 cla,
                 peers: Default::default(),
-                name: name.clone(),
-                policy: policy
-                    .unwrap_or_else(|| Arc::new(crate::policy::null_policy::EgressPolicy::new())),
+                name: Arc::from(name.as_str()),
+                policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy::new())),
             }))
             .clone()
         };
@@ -167,7 +165,7 @@ impl ClaEngine {
     }
 
     pub(super) async fn unregister(&self, cla: Arc<ClaEntry>) {
-        let cla = self.clas.lock().remove(&cla.name);
+        let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
             metrics::gauge!("bpa.cla.registered").decrement(1.0);
@@ -202,13 +200,28 @@ impl ClaEngine {
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(Peer::new(Arc::downgrade(&cla)));
+        // Check if peer already exists (without holding lock across async)
+        if cla.peers.lock().contains_key(&cla_addr) {
+            return false;
+        }
 
-        // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
-        // If the cla.peers entry already exists, we clean up the orphaned peer_id.
-        let peer_id = self.peers.insert(peer.clone());
+        // Reserve a peer_id first, then create a fully initialized peer
+        let peer_id = self.peers.reserve();
+        let peer = Arc::new(
+            Peer::new(
+                cla.clone(),
+                peer_id,
+                cla_addr.clone(),
+                self.poll_channel_depth,
+                self.store.clone(),
+                dispatcher,
+                &self.tasks,
+            )
+            .await,
+        );
+        self.peers.activate(peer_id, peer);
 
-        // Now try to insert into cla.peers (separate lock acquisition, no nesting)
+        // Insert into cla.peers — if it was added concurrently, clean up
         let inserted = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
@@ -216,35 +229,17 @@ impl ClaEngine {
                     e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
-                hash_map::Entry::Occupied(_) => false, // Already exists
+                hash_map::Entry::Occupied(_) => false,
             }
         };
 
-        // If entry already existed, clean up the orphaned peer_id
-        // TODO: This deadlocks — PeerTable::remove() calls Peer::close() which calls
-        // self.inner.wait() on an OnceLock that was never initialised (start() was never
-        // called on the orphan). Fix: either check inner.is_initialized() in close(), or
-        // remove directly from the PeerTable HashMap without calling close().
         if !inserted {
             self.peers.remove(peer_id).await;
             return false;
         }
 
         let cla_name = cla.name.clone();
-
         debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
-
-        // Start the peer polling the queue
-        peer.start(
-            self.poll_channel_depth,
-            cla,
-            peer_id,
-            cla_addr,
-            self.store.clone(),
-            dispatcher,
-            &self.tasks,
-        )
-        .await;
 
         // Add RIB entry for each known EID.
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
