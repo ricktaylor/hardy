@@ -51,6 +51,7 @@ hashbrown = "0.17"
 foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.17", default-features = false }
 thiserror = { version = "2", default-features = false }
+arc-swap = "1"
 flume = "0.12"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 serde = { version = "1", default-features = false, features = ["derive","rc","alloc"], optional = true }
