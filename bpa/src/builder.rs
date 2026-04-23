@@ -5,6 +5,7 @@ use crate::bpa::Bpa;
 use crate::cla::Cla;
 use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
+use crate::filters::validity::BundleValidityFilter;
 use crate::filters::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
@@ -14,8 +15,8 @@ use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
 use crate::storage::{
-    BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
-    Store,
+    BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+    MetadataMemStorage, MetadataStorage, Store,
 };
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
@@ -232,9 +233,18 @@ impl Default for BpaBuilder {
                 Hook::Ingress,
                 "bundle-validity",
                 &[],
-                Filter::Read(Arc::new(crate::filters::validity::BundleValidityFilter)),
+                Filter::Read(Arc::new(BundleValidityFilter)),
             )
-            .expect("Failed to register bundle validity filter");
+            .expect("Failed to register bundle validity filter for ingress");
+
+        filter_engine
+            .register(
+                Hook::Originate,
+                "bundle-validity",
+                &[],
+                Filter::Read(Arc::new(BundleValidityFilter)),
+            )
+            .expect("Failed to register bundle validity filter for originate");
 
         // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
@@ -245,25 +255,29 @@ impl Default for BpaBuilder {
                 .register(
                     Hook::Ingress,
                     "rfc9171-validity",
-                    &["bundle-validity"],
+                    &[],
                     Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
                 )
                 .expect("Failed to register RFC9171 validity filter");
         }
 
+        let poll_channel_depth = NonZeroUsize::new(16).unwrap();
+        let processing_pool_size =
+            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
+        let keys_registry = Arc::new(KeyRegistry::new());
+
         Self {
+            poll_channel_depth,
+            processing_pool_size,
+            filter_engine,
+            keys_registry,
             status_reports: false,
-            poll_channel_depth: NonZeroUsize::new(16).unwrap(),
-            processing_pool_size: NonZeroUsize::new(hardy_async::available_parallelism().get() * 4)
-                .unwrap(),
             lru_capacity: None,
-            max_cached_bundle_size: crate::storage::DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+            max_cached_bundle_size: DEFAULT_MAX_CACHED_BUNDLE_SIZE,
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
             bundle_storage: None,
-            filter_engine,
-            keys_registry: Arc::new(KeyRegistry::new()),
             service_registry_builder: ServiceRegistryBuilder::new(),
             cla_registry_builder: ClaRegistryBuilder::new(),
             rib_builder: RibBuilder::new(),
