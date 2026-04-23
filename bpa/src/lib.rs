@@ -45,7 +45,7 @@ pub mod builder;
 pub mod bundle;
 pub(crate) mod cbor;
 pub mod cla;
-pub mod filters;
+pub mod filter;
 pub mod keys;
 pub mod node_ids;
 pub mod policy;

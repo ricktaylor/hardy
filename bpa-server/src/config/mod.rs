@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hardy_async::available_parallelism;
-use hardy_bpa::filters::rfc9171;
+use hardy_bpa::filter::rfc9171;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};

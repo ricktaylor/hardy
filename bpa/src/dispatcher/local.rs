@@ -16,7 +16,7 @@ impl Dispatcher {
         match self
             .filter_engine
             .exec(
-                filters::Hook::Originate,
+                filter::Hook::Originate,
                 bundle,
                 data,
                 self.key_provider(),
@@ -26,8 +26,8 @@ impl Dispatcher {
             .inspect_err(|_e| {
                 error!("Originate filter execution failed");
             })? {
-            filters::ExecResult::Continue(_mutation, bundle, data) => Ok(Some((bundle, data))),
-            filters::ExecResult::Drop(_bundle, _reason) => Ok(None),
+            filter::ExecResult::Continue(_mutation, bundle, data) => Ok(Some((bundle, data))),
+            filter::ExecResult::Drop(_bundle, _reason) => Ok(None),
         }
     }
 
@@ -172,7 +172,7 @@ impl Dispatcher {
         let (bundle, data) = match self
             .filter_engine
             .exec(
-                filters::Hook::Deliver,
+                filter::Hook::Deliver,
                 bundle,
                 data,
                 self.key_provider(),
@@ -182,8 +182,8 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Deliver filter execution failed")
         {
-            filters::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filters::ExecResult::Drop(bundle, reason) => {
+            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
+            filter::ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };

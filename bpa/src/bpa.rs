@@ -7,7 +7,7 @@ use crate::builder::BpaBuilder;
 use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
-use crate::filters::{self, Filter, FilterEngine, Hook};
+use crate::filter::{self, Filter, FilterEngine, Hook};
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -281,7 +281,7 @@ impl Bpa {
         name: &str,
         after: &[&str],
         filter: Filter,
-    ) -> Result<(), filters::Error> {
+    ) -> Result<(), filter::Error> {
         self.filter_engine.register(hook, name, after, filter)
     }
 
@@ -291,7 +291,7 @@ impl Bpa {
         &self,
         hook: Hook,
         name: &str,
-    ) -> Result<Option<Filter>, filters::Error> {
+    ) -> Result<Option<Filter>, filter::Error> {
         self.filter_engine.unregister(hook, name)
     }
 }

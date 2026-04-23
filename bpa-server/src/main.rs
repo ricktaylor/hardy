@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_bpa::bpa::Bpa;
-use hardy_bpa::filters::rfc9171::Rfc9171ValidityFilter;
-use hardy_bpa::filters::{Filter, Hook};
+use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
+use hardy_bpa::filter::{Filter, Hook};
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "grpc")]

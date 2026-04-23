@@ -6,6 +6,10 @@ for peers that require the older encoding.
 */
 
 use hardy_bpa::async_trait;
+use hardy_bpa::bundle::Bundle;
+use hardy_bpa::filter::{WriteFilter, WriteResult};
+use hardy_bpv7::editor::Editor;
+use hardy_bpv7::eid::Eid;
 
 /// Configuration for IPN 2-element legacy encoding filter
 #[derive(Debug, Clone)]
@@ -24,10 +28,10 @@ pub struct Config(
 /// ```ignore
 /// let filter = IpnLegacyFilter::new(peer_patterns);
 /// bpa.register_filter(
-///     hardy_bpa::filters::Hook::Egress,
+///     hardy_bpa::filter::Hook::Egress,
 ///     "ipn-legacy",
 ///     &[],
-///     hardy_bpa::filters::Filter::Write(Arc::new(filter)),
+///     hardy_bpa::filter::Filter::Write(Arc::new(filter)),
 /// )?;
 /// ```
 pub struct IpnLegacyFilter {
@@ -45,52 +49,45 @@ impl IpnLegacyFilter {
 }
 
 #[async_trait]
-impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
-    async fn filter(
-        &self,
-        bundle: &hardy_bpa::bundle::Bundle,
-        data: &[u8],
-    ) -> Result<hardy_bpa::filters::WriteResult, hardy_bpa::Error> {
-        // Check if next-hop requires legacy encoding
+impl WriteFilter for IpnLegacyFilter {
+    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<WriteResult, hardy_bpa::Error> {
         let Some(next_hop) = &bundle.metadata.read_only.next_hop else {
-            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
+            return Ok(WriteResult::Continue(None, None));
         };
 
         if !self.peer_patterns.iter().any(|p| p.matches(next_hop)) {
-            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
+            return Ok(WriteResult::Continue(None, None));
         }
 
-        // Check if rewriting is needed
-        let needs_source = matches!(bundle.bundle.id.source, hardy_bpv7::eid::Eid::Ipn { .. });
-        let needs_dest = matches!(bundle.bundle.destination, hardy_bpv7::eid::Eid::Ipn { .. });
+        let needs_source = matches!(bundle.bundle.id.source, Eid::Ipn { .. });
+        let needs_dest = matches!(bundle.bundle.destination, Eid::Ipn { .. });
 
         if !needs_source && !needs_dest {
-            return Ok(hardy_bpa::filters::WriteResult::Continue(None, None));
+            return Ok(WriteResult::Continue(None, None));
         }
 
-        // Use Editor to rewrite EIDs
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, data);
+        let mut editor = Editor::new(&bundle.bundle, data);
 
-        if let hardy_bpv7::eid::Eid::Ipn {
+        if let Eid::Ipn {
             fqnn,
             service_number,
         } = &bundle.bundle.id.source
         {
             editor = editor
-                .with_source(hardy_bpv7::eid::Eid::LegacyIpn {
+                .with_source(Eid::LegacyIpn {
                     fqnn: fqnn.clone(),
                     service_number: *service_number,
                 })
                 .map_err(|(_, e)| e)?;
         }
 
-        if let hardy_bpv7::eid::Eid::Ipn {
+        if let Eid::Ipn {
             fqnn,
             service_number,
         } = &bundle.bundle.destination
         {
             editor = editor
-                .with_destination(hardy_bpv7::eid::Eid::LegacyIpn {
+                .with_destination(Eid::LegacyIpn {
                     fqnn: fqnn.clone(),
                     service_number: *service_number,
                 })
@@ -99,19 +96,17 @@ impl hardy_bpa::filters::WriteFilter for IpnLegacyFilter {
 
         let new_data = editor.rebuild()?;
 
-        Ok(hardy_bpa::filters::WriteResult::Continue(
-            None,
-            Some(new_data.into()),
-        ))
+        Ok(WriteResult::Continue(None, Some(new_data.into())))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::bundle::{Bundle, BundleMetadata};
-    use hardy_bpa::filters::{WriteFilter, WriteResult};
-    use hardy_bpv7::eid::Eid;
+    use hardy_bpa::bundle::BundleMetadata;
+    use hardy_bpv7::builder::Builder;
+    use hardy_bpv7::bundle::ParsedBundle;
+    use hardy_bpv7::creation_timestamp::CreationTimestamp;
 
     fn make_config(patterns: &[&str]) -> Config {
         Config(patterns.iter().map(|p| p.parse().unwrap()).collect())
@@ -121,9 +116,9 @@ mod tests {
         let src: Eid = source.parse().unwrap();
         let dst: Eid = dest.parse().unwrap();
 
-        let (bpv7_bundle, data) = hardy_bpv7::builder::Builder::new(src, dst)
+        let (bpv7_bundle, data) = Builder::new(src, dst)
             .with_payload(std::borrow::Cow::Borrowed(b"test"))
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .build(CreationTimestamp::now())
             .unwrap();
 
         let mut metadata = BundleMetadata::default();
@@ -166,10 +161,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------
-    // Core 4 tests: allocator_id × matching/non-matching
-    // -------------------------------------------------------------------
-
     // IPNF-01: allocator_id=0, non-matching next-hop — no rewrite.
     #[tokio::test]
     async fn test_alloc0_non_matching() {
@@ -196,8 +187,6 @@ mod tests {
             panic!("Expected rewrite path, got {result:?}");
         };
 
-        // With allocator_id=0, Builder already produces legacy encoding,
-        // so the output should be identical (idempotent rewrite).
         assert_eq!(
             data,
             new_data.as_slice(),
@@ -230,16 +219,13 @@ mod tests {
             panic!("Expected rewrite path, got {result:?}");
         };
 
-        // Wire format should change: 3-element → 2-element encoding
         assert_ne!(
             data,
             new_data.as_slice(),
             "allocator_id!=0: 3-element should be rewritten to 2-element"
         );
 
-        // Verify the output is a valid bundle with legacy EIDs
-        let parsed =
-            hardy_bpv7::bundle::ParsedBundle::parse(&new_data, hardy_bpv7::bpsec::no_keys).unwrap();
+        let parsed = ParsedBundle::parse(&new_data, hardy_bpv7::bpsec::no_keys).unwrap();
 
         assert!(
             matches!(parsed.bundle.id.source, Eid::LegacyIpn { .. }),

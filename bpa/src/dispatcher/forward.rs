@@ -37,7 +37,7 @@ impl Dispatcher {
         let (bundle, data) = match self
             .filter_engine
             .exec(
-                filters::Hook::Egress,
+                filter::Hook::Egress,
                 bundle,
                 Bytes::from(data),
                 self.key_provider(),
@@ -47,8 +47,8 @@ impl Dispatcher {
             // TODO: Replace trace_expect with proper error handling
             .trace_expect("Egress filter execution failed")
         {
-            filters::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filters::ExecResult::Drop(bundle, reason) => {
+            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
+            filter::ExecResult::Drop(bundle, reason) => {
                 return self.drop_bundle(bundle, reason).await;
             }
         };
