@@ -8,7 +8,7 @@ impl Dispatcher {
         peer: u32,
         queue: Option<u32>,
         cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
     ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
@@ -23,7 +23,10 @@ impl Dispatcher {
         let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
-                return;
+                self.store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await;
+                return self.store.watch_bundle(bundle).await;
             }
             Ok(data) => data,
         };
@@ -44,12 +47,14 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            // TODO: Replace trace_expect with proper error handling
-            .trace_expect("Egress filter execution failed")
         {
-            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filter::ExecResult::Drop(bundle, reason) => {
+            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
+            Ok(filter::ExecResult::Drop(bundle, reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            Err(e) => {
+                error!("Egress filter execution failed: {e}");
+                return;
             }
         };
 

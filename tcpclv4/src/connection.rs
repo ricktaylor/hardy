@@ -103,7 +103,11 @@ impl ConnectionPool {
                 metrics::gauge!("tcpclv4.pool.idle").decrement(removed as f64);
             }
 
-            inner.active.is_empty() && inner.idle.is_empty()
+            let empty = inner.active.is_empty() && inner.idle.is_empty();
+            if empty {
+                inner.peers.clear();
+            }
+            empty
         };
 
         if remove_addr {
@@ -154,15 +158,6 @@ impl ConnectionPool {
                     .remove(&conn.local_addr);
             }
 
-            if self.max_idle == 0 || {
-                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                inner.active.len() + inner.idle.len()
-            } <= self.max_idle
-            {
-                // We can support more active connections
-                return Err(bundle);
-            }
-
             // Pick a random active connection and enqueue
             while let Some((local_addr, conn_tx)) = {
                 self.inner
@@ -187,6 +182,15 @@ impl ConnectionPool {
                     .trace_expect("Failed to lock mutex")
                     .active
                     .remove(&local_addr);
+            }
+
+            if self.max_idle == 0 || {
+                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
+                inner.active.len() + inner.idle.len()
+            } <= self.max_idle
+            {
+                // We can support more active connections
+                return Err(bundle);
             }
         }
     }
@@ -265,10 +269,12 @@ impl ConnectionRegistry {
         if let Some(pool) = pool
             && pool.remove(local_addr).await
         {
-            self.pools
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .remove(remote_addr);
+            let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
+            if let Some(current) = pools.get(remote_addr) {
+                if Arc::ptr_eq(current, &pool) {
+                    pools.remove(remote_addr);
+                }
+            }
         }
     }
 

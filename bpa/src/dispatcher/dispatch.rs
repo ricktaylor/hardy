@@ -51,7 +51,7 @@ impl Dispatcher {
                 }) => (
                     bundle::Bundle {
                         metadata: bundle::BundleMetadata {
-                            storage_name: Some(self.store.save_data(&data).await),
+                            storage_name: Some(self.store.save_data(data.clone()).await),
                             read_only: bundle::ReadOnlyMetadata {
                                 received_at,
                                 ingress_peer_node,
@@ -75,7 +75,7 @@ impl Dispatcher {
                     debug!("Received bundle has been rewritten");
 
                     data = Bytes::from(new_data);
-                    let storage_name = Some(self.store.save_data(&data).await);
+                    let storage_name = Some(self.store.save_data(data.clone()).await);
 
                     (
                         bundle::Bundle {
@@ -219,7 +219,7 @@ impl Dispatcher {
             filter::ExecResult::Continue(mutation, mut bundle, data) => {
                 if mutation.data {
                     if let Some(storage_name) = &bundle.metadata.storage_name {
-                        self.store.replace_data(storage_name, &data).await;
+                        self.store.replace_data(storage_name, data.clone()).await;
                     }
                 }
                 // Always checkpoint to Dispatching (crash safety)
@@ -325,7 +325,7 @@ impl Dispatcher {
                     self.store.watch_bundle(bundle).await;
                 }
             }
-            _ => {
+            Some(rib::FindResult::Deliver(None)) | None => {
                 // No route available - wait for one
                 debug!("Storing bundle until a forwarding opportunity arises");
 

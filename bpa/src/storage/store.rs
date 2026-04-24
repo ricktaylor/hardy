@@ -76,7 +76,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
-        let storage_name = self.save_data(data).await;
+        let storage_name = self.save_data(data.clone()).await;
 
         // Update storage_name in existing metadata
         bundle.metadata.storage_name = Some(storage_name);
@@ -115,17 +115,17 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn save_data(&self, data: &Bytes) -> Arc<str> {
+    pub async fn save_data(&self, data: Bytes) -> Arc<str> {
         self.bundle_storage
-            .save(data.clone())
+            .save(data)
             .await
             .trace_expect("Failed to save bundle data")
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn replace_data(&self, storage_name: &str, data: &Bytes) {
+    pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
         self.bundle_storage
-            .replace(storage_name, data.clone())
+            .replace(storage_name, data)
             .await
             .trace_expect("Failed to replace bundle data")
     }

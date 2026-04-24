@@ -112,7 +112,7 @@ impl Rib {
     }
 
     async fn notify_updated(&self) {
-        self.poll_waiting_notify.notify_one();
+        self.poll_waiting_notify.notify_waiters();
     }
 
     pub fn add_address_type(
