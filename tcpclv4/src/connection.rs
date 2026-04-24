@@ -186,16 +186,7 @@ impl ConnectionPool {
                     .remove(&conn.local_addr);
             }
 
-            if self.max_idle == 0 || {
-                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                inner.active.len() + inner.idle.len()
-            } <= self.max_idle
-            {
-                // We can support more active connections
-                return Err(bundle);
-            }
-
-            // Pick a random active connection and enqueue
+            // Try sending via an active connection before giving up
             while let Some((local_addr, conn_tx)) = {
                 self.inner
                     .lock()
@@ -219,6 +210,16 @@ impl ConnectionPool {
                     .trace_expect("Failed to lock mutex")
                     .active
                     .remove(&local_addr);
+            }
+
+            // No idle or active connections could send — tell caller to open a new one
+            // if the pool has capacity, otherwise retry
+            if self.max_idle == 0 || {
+                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
+                inner.active.len() + inner.idle.len()
+            } <= self.max_idle
+            {
+                return Err(bundle);
             }
 
             retries += 1;
