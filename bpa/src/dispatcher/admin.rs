@@ -13,7 +13,7 @@ impl Dispatcher {
             );
             metrics::counter!("bpa.admin_record.unknown").increment(1);
             return self
-                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
                 .await;
         }
 
@@ -30,7 +30,7 @@ impl Dispatcher {
             Err(e) => {
                 debug!("Received an invalid administrative record: {e}");
                 return self
-                    .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                    .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
                     .await;
             }
             Ok(data) => data,
@@ -40,7 +40,7 @@ impl Dispatcher {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
                 metrics::counter!("bpa.admin_record.unknown").increment(1);
-                self.drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
                     .await
             }
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {

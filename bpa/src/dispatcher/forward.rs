@@ -13,9 +13,7 @@ impl Dispatcher {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
             // Bundle data was deleted sometime during processing
-            return self
-                .drop_bundle(bundle, Some(ReasonCode::DepletedStorage))
-                .await;
+            return self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
         };
 
         // Increment Hop Count, etc...
@@ -50,7 +48,11 @@ impl Dispatcher {
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
             Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return self.drop_bundle(bundle, reason).await;
+                if let Some(reason) = reason {
+                    return self.drop_bundle(bundle, reason).await;
+                } else {
+                    return self.delete_bundle(bundle).await;
+                }
             }
             Err(e) => {
                 error!("Egress filter execution failed: {e}");

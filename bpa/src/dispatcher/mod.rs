@@ -121,21 +121,13 @@ impl Dispatcher {
             .as_ref()
             .trace_expect("Bundle without storage_name reached load_data");
 
-        if let Some(data) = self.store.load_data(storage_name).await {
-            Some(data)
-        } else {
-            self.store.tombstone_metadata(&bundle.bundle.id).await;
-            None
-        }
+        self.store.load_data(storage_name).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
-    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: Option<ReasonCode>) {
-        if let Some(reason) = reason {
-            metrics::counter!("bpa.bundle.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-            self.report_bundle_deletion(&bundle, reason).await;
-        }
-
+    pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: ReasonCode) {
+        metrics::counter!("bpa.bundle.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+        self.report_bundle_deletion(&bundle, reason).await;
         self.delete_bundle(bundle).await
     }
 
