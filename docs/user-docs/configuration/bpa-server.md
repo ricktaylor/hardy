@@ -54,6 +54,7 @@ and dots. For example:
 | `status-reports` | `true`, `false` | `false` | Whether to generate and dispatch bundle status reports. See warning below. |
 | `processing-pool-size` | Positive integer | 4 &times; CPU cores | Maximum concurrent bundle processing tasks. |
 | `poll-channel-depth` | Positive integer | `16` | Depth of the internal channel used for polling for new bundles. |
+| `service-priority` | Non-negative integer | `1` | Routing priority for service registration routes. Lower values are checked first. Controls where service routes sit relative to routing agent routes in the RIB. |
 
 !!! warning
     RFC 9171 §5.1: *"the requesting of status reports for large numbers

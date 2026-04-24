@@ -105,6 +105,10 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
             ))),
         );
 
+    if let Some(service_priority) = config.service_priority {
+        builder = builder.service_priority(service_priority);
+    }
+
     if config.storage.uses_cache() {
         builder = builder
             .lru_capacity(config.storage.lru_capacity)
