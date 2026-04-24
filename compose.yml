@@ -53,8 +53,10 @@ services:
         CARGO_ARGS: "--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage,hardy-bpa-server/s3-storage"
     image: hardy-bpa-server:latest
     restart: unless-stopped
+    command: ["-u"]
     environment:
       HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.yaml
+      HARDY_BPA_SERVER_LOG_LEVEL: debug
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
