@@ -16,7 +16,7 @@ mod route;
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(u32),                                      // Forward to peer
+    Forward(Arc<cla::adapter::Adapter>),               // Forward via CLA
     Drop(Option<ReasonCode>),                          // Drop with reason code
 }
 
@@ -25,7 +25,7 @@ type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; /
 struct RibInner {
     locals: local::LocalInner,
     routes: RouteTable,
-    address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
+    address_types: HashMap<cla::ClaAddressType, Arc<cla::adapter::Adapter>>,
 }
 
 pub struct Rib {
@@ -39,7 +39,6 @@ pub struct Rib {
     ecmp_hash_state: foldhash::quality::RandomState,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::Store>,
 }
 
 pub(crate) struct RibBuilder {
@@ -55,12 +54,8 @@ impl RibBuilder {
         self.agents.push((name, agent));
     }
 
-    pub async fn build(
-        self,
-        node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
-    ) -> routes::Result<Arc<Rib>> {
-        let rib = Arc::new(Rib::new(node_ids, store));
+    pub async fn build(self, node_ids: Arc<node_ids::NodeIds>) -> routes::Result<Arc<Rib>> {
+        let rib = Arc::new(Rib::new(node_ids));
         for (name, agent) in self.agents {
             rib.register_agent(name, agent).await?;
         }
@@ -69,7 +64,7 @@ impl RibBuilder {
 }
 
 impl Rib {
-    fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
+    fn new(node_ids: Arc<node_ids::NodeIds>) -> Self {
         Self {
             inner: RwLock::new(RibInner {
                 locals: local::LocalInner::new(&node_ids),
@@ -81,7 +76,6 @@ impl Rib {
             ecmp_hash_state: foldhash::quality::RandomState::default(),
             tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
-            store,
         }
     }
 
@@ -112,13 +106,13 @@ impl Rib {
     }
 
     async fn notify_updated(&self) {
-        self.poll_waiting_notify.notify_one();
+        self.poll_waiting_notify.notify_waiters();
     }
 
     pub fn add_address_type(
         &self,
         address_type: cla::ClaAddressType,
-        cla: Arc<cla::registry::Cla>,
+        cla: Arc<cla::adapter::Adapter>,
     ) {
         self.inner.write().address_types.insert(address_type, cla);
     }
@@ -143,13 +137,7 @@ pub(super) mod tests {
             dtn: None,
         });
 
-        let store = Arc::new(storage::Store::new(
-            core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(storage::MetadataMemStorage::new(&Default::default())),
-            Arc::new(storage::BundleMemStorage::new(&Default::default())),
-        ));
-
-        Arc::new(Rib::new(node_ids, store))
+        Arc::new(Rib::new(node_ids))
     }
 
     // Add a route directly to the RIB's route table (sync, no store interaction).
@@ -183,16 +171,49 @@ pub(super) mod tests {
     }
 
     // Add a local forward entry directly (sync, no store interaction).
-    pub fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {
+    pub fn add_local_forward(
+        rib: &Rib,
+        node_id: hardy_bpv7::eid::NodeId,
+        adapter: Arc<cla::adapter::Adapter>,
+    ) {
         let pattern: EidPattern = node_id.into();
         let mut inner = rib.inner.write();
         match inner.locals.actions.entry(pattern) {
             btree_map::Entry::Vacant(e) => {
-                e.insert([local::Action::Forward(peer)].into());
+                e.insert([local::Action::Forward(adapter)].into());
             }
             btree_map::Entry::Occupied(mut e) => {
-                e.get_mut().insert(local::Action::Forward(peer));
+                e.get_mut().insert(local::Action::Forward(adapter));
             }
+        }
+    }
+
+    pub fn make_adapter(name: &str) -> Arc<cla::adapter::Adapter> {
+        use hardy_async::sync::spin::Mutex;
+        Arc::new(cla::adapter::Adapter {
+            cla: Arc::new(NullCla),
+            name: Arc::from(name),
+            peers: Mutex::new(HashMap::new()),
+        })
+    }
+
+    // Minimal CLA for tests
+    struct NullCla;
+    #[hardy_async::async_trait]
+    impl cla::Cla for NullCla {
+        async fn on_register(
+            &self,
+            _sink: Box<dyn cla::Sink>,
+            _node_ids: &[hardy_bpv7::eid::NodeId],
+        ) {
+        }
+        async fn on_unregister(&self) {}
+        async fn forward(
+            &self,
+            _info: &cla::ForwardInfo<'_>,
+            _data: Bytes,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            Ok(cla::ForwardBundleResult::Sent)
         }
     }
 

@@ -47,13 +47,13 @@ impl NodeIds {
     pub(crate) fn get_admin_endpoint(&self, destination: &Eid) -> Eid {
         match (destination, &self.ipn, &self.dtn) {
             (Eid::LegacyIpn { .. }, Some(node_id), _) => Eid::LegacyIpn {
-                fqnn: node_id.clone(),
+                fqnn: *node_id,
                 service_number: 0,
             },
             (Eid::Dtn { .. }, _, Some(node_id)) | (_, None, Some(node_id)) => {
                 node_id.clone().into()
             }
-            (_, Some(node_id), _) => node_id.clone().into(),
+            (_, Some(node_id), _) => (*node_id).into(),
             (_, None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
         }
     }
@@ -62,7 +62,7 @@ impl NodeIds {
     pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
         match service_id {
             hardy_bpv7::eid::Service::Ipn(n) => Ok(Eid::Ipn {
-                fqnn: self.ipn.clone().ok_or(Error::NoIpnNodeId)?,
+                fqnn: self.ipn.ok_or(Error::NoIpnNodeId)?,
                 service_number: *n,
             }),
             hardy_bpv7::eid::Service::Dtn(name) => Ok(Eid::Dtn {
@@ -90,7 +90,7 @@ impl From<&NodeIds> for Vec<NodeId> {
     fn from(value: &NodeIds) -> Self {
         let mut v = Vec::with_capacity(2);
         if let Some(node_id) = &value.ipn {
-            v.push(NodeId::Ipn(node_id.clone()));
+            v.push(NodeId::Ipn(*node_id));
         }
         if let Some(node_id) = &value.dtn {
             v.push(NodeId::Dtn(node_id.clone()));
@@ -113,7 +113,7 @@ impl TryFrom<&[NodeId]> for NodeIds {
                     {
                         return Err(Error::MultipleIpnNodeIds);
                     }
-                    ipn = Some(node_id.clone());
+                    ipn = Some(*node_id);
                 }
                 NodeId::Dtn(node_id) => {
                     if let Some(existing) = &dtn

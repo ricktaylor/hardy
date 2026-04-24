@@ -39,11 +39,11 @@ pub async fn meta_03_update_replace(store: Arc<dyn MetadataStorage>) {
     bundle.metadata.status = BundleStatus::Waiting;
     assert!(store.insert(&bundle).await.unwrap());
 
-    bundle.metadata.status = BundleStatus::Dispatching;
+    bundle.metadata.status = BundleStatus::Waiting;
     store.replace(&bundle).await.unwrap();
 
     let got = store.get(&bundle.bundle.id).await.unwrap().unwrap();
-    assert_eq!(got.metadata.status, BundleStatus::Dispatching);
+    assert_eq!(got.metadata.status, BundleStatus::Waiting);
 }
 
 /// META-04: Tombstone
@@ -191,10 +191,7 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     let earlier = now - time::Duration::seconds(100);
     let later = now + time::Duration::seconds(100);
 
-    let status = BundleStatus::ForwardPending {
-        peer: 42,
-        queue: Some(0),
-    };
+    let status = BundleStatus::Waiting;
 
     let bundle_a = fixtures::bundle_with_status(status.clone(), earlier);
     let bundle_b = fixtures::bundle_with_status(status.clone(), later);
@@ -233,17 +230,14 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
 pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
     let now = time::OffsetDateTime::now_utc();
 
-    let status_a = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: Some(0),
+    let status_a = BundleStatus::WaitingForService {
+        service: "dtn://svc-a/1".parse().unwrap(),
     };
-    let status_b = BundleStatus::ForwardPending {
-        peer: 2,
-        queue: Some(0),
+    let status_b = BundleStatus::WaitingForService {
+        service: "dtn://svc-b/1".parse().unwrap(),
     };
-    let status_c = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: Some(1),
+    let status_c = BundleStatus::WaitingForService {
+        service: "dtn://svc-c/1".parse().unwrap(),
     };
 
     let bundle_a = fixtures::bundle_with_status(status_a.clone(), now);
@@ -360,45 +354,6 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
 // ---------------------------------------------------------------------------
 // Suite C: State Transitions & Bulk Ops
 // ---------------------------------------------------------------------------
-
-/// META-11: Reset Peer Queue
-pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
-    let now = time::OffsetDateTime::now_utc();
-
-    let status_100 = BundleStatus::ForwardPending {
-        peer: 100,
-        queue: Some(0),
-    };
-    let status_200 = BundleStatus::ForwardPending {
-        peer: 200,
-        queue: Some(0),
-    };
-
-    let bundle_a = fixtures::bundle_with_status(status_100, now);
-    let bundle_b = fixtures::bundle_with_status(status_200.clone(), now);
-
-    assert!(store.insert(&bundle_a).await.unwrap());
-    assert!(store.insert(&bundle_b).await.unwrap());
-
-    let changed = store.reset_peer_queue(100).await.unwrap();
-    assert_eq!(
-        changed, 1,
-        "reset_peer_queue should return 1 when bundles were reset"
-    );
-
-    let got_a = store.get(&bundle_a.bundle.id).await.unwrap().unwrap();
-    assert_eq!(
-        got_a.metadata.status,
-        BundleStatus::Waiting,
-        "peer 100 bundle should become Waiting"
-    );
-
-    let got_b = store.get(&bundle_b.bundle.id).await.unwrap().unwrap();
-    assert_eq!(
-        got_b.metadata.status, status_200,
-        "peer 200 bundle should remain ForwardPending"
-    );
-}
 
 /// META-12: Recovery
 pub async fn meta_12_recovery(store: Arc<dyn MetadataStorage>) {

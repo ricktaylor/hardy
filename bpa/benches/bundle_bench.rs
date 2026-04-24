@@ -38,9 +38,8 @@ impl cla::Cla for BenchCla {
     async fn on_unregister(&self) {}
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle: Bytes,
+        _info: &cla::ForwardInfo<'_>,
+        _data: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(std::time::Instant::now());
         Ok(cla::ForwardBundleResult::Sent)
@@ -83,7 +82,7 @@ fn get_state() -> &'static BenchState {
             bpa.start(false);
 
             let (cla, arrival_rx) = BenchCla::new();
-            bpa.register_cla("bench".to_string(), cla.clone(), None)
+            bpa.register_cla("bench".to_string(), cla.clone())
                 .await
                 .unwrap();
 

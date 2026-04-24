@@ -98,9 +98,8 @@ impl hardy_bpa::cla::Cla for NullCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        _cla_addr: &hardy_bpa::cla::ClaAddress,
-        _bundle: hardy_bpa::Bytes,
+        _info: &hardy_bpa::cla::ForwardInfo<'_>,
+        _data: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
     }

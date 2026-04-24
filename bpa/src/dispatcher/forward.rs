@@ -1,14 +1,11 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,adapter,bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         &self,
-        cla: &dyn cla::Cla,
-        peer: u32,
-        queue: Option<u32>,
-        cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
+        adapter: &cla::adapter::Adapter,
+        mut bundle: bundle::Bundle,
     ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
@@ -23,18 +20,22 @@ impl Dispatcher {
         let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
+                self.store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await;
+                self.store.watch_bundle(bundle).await;
                 return;
             }
             Ok(data) => data,
         };
 
-        // - Runs after dequeue from ForwardPending, just before CLA send
+        // - Runs after routing selects a CLA peer, just before CLA send
         // - Modifications are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         // - On Drop result: call drop_bundle() and return early
-        let (bundle, data) = match self
+        let (mut bundle, data) = match self
             .filter_engine
             .exec(
                 filter::Hook::Egress,
@@ -44,39 +45,57 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            // TODO: Replace trace_expect with proper error handling
-            .trace_expect("Egress filter execution failed")
         {
-            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filter::ExecResult::Drop(bundle, reason) => {
+            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
+            Ok(filter::ExecResult::Drop(bundle, reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            Err(e) => {
+                // Bundle was moved into exec() and is consumed on error.
+                // It still exists in storage with its previous status and will
+                // be retried on the next poll_waiting cycle.
+                warn!("Egress filter execution failed: {e}");
+                return;
             }
         };
 
-        // And pass to CLA
-        match cla.forward(queue, cla_addr, data).await {
+        // Build forwarding context from bundle metadata
+        let next_hop = bundle
+            .metadata
+            .read_only
+            .next_hop
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| bundle.bundle.destination.clone());
+
+        let info = cla::ForwardInfo {
+            next_hop: &next_hop,
+            flow_label: bundle.metadata.writable.flow_label,
+        };
+
+        match adapter.cla.forward(&info, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
 
-                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
                 self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
                     .await;
                 return self.delete_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
-                debug!(
-                    "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
-                );
+                debug!("CLA indicates neighbour has gone");
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                debug!("Failed to forward bundle: {e}");
             }
         }
 
-        self.store.reset_peer_queue(peer).await;
+        // Forwarding failed — set bundle to Waiting for retry
+        self.store
+            .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+            .await;
+        self.store.watch_bundle(bundle).await;
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]

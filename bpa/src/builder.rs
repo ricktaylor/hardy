@@ -3,13 +3,13 @@ use core::num::NonZeroUsize;
 use crate::Arc;
 use crate::bpa::Bpa;
 use crate::cla::Cla;
-use crate::cla::registry::ClaRegistryBuilder;
+use crate::cla::engine::ClaEngineBuilder;
 use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
+
 use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
@@ -40,7 +40,7 @@ pub struct BpaBuilder {
     filter_engine: Arc<FilterEngine>,
     keys_registry: Arc<KeyRegistry>,
     service_registry_builder: ServiceRegistryBuilder,
-    cla_registry_builder: ClaRegistryBuilder,
+    cla_engine_builder: ClaEngineBuilder,
     rib_builder: RibBuilder,
 }
 
@@ -102,14 +102,9 @@ impl BpaBuilder {
     }
 
     /// Register a CLA to be initialized when the BPA is built.
-    pub fn cla(
-        mut self,
-        name: impl Into<String>,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> Self {
-        self.cla_registry_builder
-            .insert(name.into(), cla, policy)
+    pub fn cla(mut self, name: impl Into<String>, cla: Arc<dyn Cla>) -> Self {
+        self.cla_engine_builder
+            .insert(name.into(), cla)
             .expect("Failed to insert CLA");
         self
     }
@@ -176,10 +171,7 @@ impl BpaBuilder {
         ));
 
         let node_ids = Arc::new(self.node_ids);
-        let rib = self
-            .rib_builder
-            .build(node_ids.clone(), store.clone())
-            .await?;
+        let rib = self.rib_builder.build(node_ids.clone()).await?;
         let filter_engine = self.filter_engine;
         let keys_registry = self.keys_registry;
 
@@ -194,28 +186,19 @@ impl BpaBuilder {
             filter_engine.clone(),
         );
 
-        let (service_registry, cla_registry) = futures::join!(
+        let (service_registry, cla_engine) = futures::join!(
             self.service_registry_builder
                 .build(&node_ids, &rib, &dispatcher),
-            self.cla_registry_builder.build(
-                &node_ids,
-                self.poll_channel_depth.into(),
-                &rib,
-                &store,
-                &dispatcher,
-            ),
+            self.cla_engine_builder.build(&node_ids, &rib, &dispatcher,),
         );
         let service_registry = service_registry?;
-        let cla_registry = cla_registry?;
-
-        // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
-        dispatcher.set_cla_registry(cla_registry.clone());
+        let cla_engine = cla_engine?;
 
         Ok(Bpa::from_parts(
             node_ids,
             store,
             rib,
-            cla_registry,
+            cla_engine,
             service_registry,
             filter_engine,
             dispatcher,
@@ -279,7 +262,7 @@ impl Default for BpaBuilder {
             metadata_storage: None,
             bundle_storage: None,
             service_registry_builder: ServiceRegistryBuilder::new(),
-            cla_registry_builder: ClaRegistryBuilder::new(),
+            cla_engine_builder: ClaEngineBuilder::new(),
             rib_builder: RibBuilder::new(),
         }
     }

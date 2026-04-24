@@ -146,12 +146,16 @@ message RemovePeerResponse {
 // A request to forward a bundle from the BPA to the CLA.
 message ForwardBundleRequest {
   // The bundle to forward. This should be a complete BPv7 bundle.
-  bytes           bundle  = 1;
-  // The address to forward the bundle to.
-  ClaAddress      address = 2;
-  // The egress queue to use for forwarding. This is determined by the egress
-  // policy.
-  optional uint32 queue   = 3;
+  bytes           bundle     = 1;
+  // The next-hop EID to forward the bundle to. The CLA resolves this
+  // internally to a connection or address.
+  string          next_hop   = 4;
+  // Optional flow label for QoS differentiation. CLAs may use this
+  // to select queues or prioritize traffic.
+  optional uint32 flow_label = 5;
+
+  reserved 2, 3;
+  reserved "address", "queue";
 }
 
 // A response to a forward bundle request.

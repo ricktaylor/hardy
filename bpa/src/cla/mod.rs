@@ -1,10 +1,11 @@
-use super::*;
+use hardy_async::async_trait;
 use thiserror::Error;
 
-pub(crate) mod peers;
-pub(crate) mod registry;
+use crate::Bytes;
 
-mod egress_queue;
+pub(crate) mod adapter;
+pub(crate) mod engine;
+mod sink;
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -120,6 +121,18 @@ impl core::fmt::Display for ClaAddress {
     }
 }
 
+/// Forwarding context passed to [`Cla::forward`].
+#[derive(Debug)]
+pub struct ForwardInfo<'a> {
+    /// The next-hop gateway EID resolved by the RIB.
+    /// The CLA maps this to its internal connection state.
+    pub next_hop: &'a hardy_bpv7::eid::Eid,
+    /// Optional flow label for QoS classification.
+    /// CLAs that implement traffic prioritization can use this
+    /// to route bundles to different internal queues.
+    pub flow_label: Option<u32>,
+}
+
 /// The result of a bundle forwarding attempt by a CLA.
 pub enum ForwardBundleResult {
     /// The bundle was successfully sent.
@@ -199,26 +212,13 @@ pub trait Cla: Send + Sync {
         None
     }
 
-    /// Returns the number of egress queues this policy manages.
-    /// The default is 0, for simple FIFO behavior.
-    /// Any value > 0 indicates multiple priority queues with 0 highest
+    /// Forwards a bundle to the next-hop destination.
     ///
-    /// If a CLA implements more than one queue, it is expected to implement strict priority.
-    /// This means it will always transmit all packets from the highest priority queue (e.g., Queue 0)
-    /// before servicing the next one (Queue 1), ensuring minimal latency for critical traffic
-    fn queue_count(&self) -> u32 {
-        0
-    }
-
-    /// Forwards a bundle to a specific CLA address over a given queue.
-    ///
-    /// Queue 'None' is the lowest priority Best Effort queue, often the only queue.
-    async fn forward(
-        &self,
-        queue: Option<u32>,
-        cla_addr: &ClaAddress,
-        bundle: Bytes,
-    ) -> Result<ForwardBundleResult>;
+    /// The CLA resolves `info.next_hop` to its internal connection using
+    /// the peer mappings established via [`Sink::add_peer`].
+    /// The optional `info.flow_label` provides QoS context for CLAs
+    /// that implement traffic prioritization.
+    async fn forward(&self, info: &ForwardInfo<'_>, data: Bytes) -> Result<ForwardBundleResult>;
 }
 
 /// A communication channel from a CLA back to the main BPA components.

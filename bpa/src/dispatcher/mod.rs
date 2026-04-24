@@ -17,8 +17,6 @@ pub(crate) struct Dispatcher {
     rib: Arc<rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_engine: Arc<filter::FilterEngine>,
-    cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
-
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
 
@@ -73,7 +71,7 @@ impl Dispatcher {
 
         // Create the dispatch queue channel
         let (dispatch_tx, dispatch_rx) =
-            store.channel(bundle::BundleStatus::Dispatching, poll_channel_depth_usize);
+            store.channel(bundle::BundleStatus::Waiting, poll_channel_depth_usize);
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
@@ -82,7 +80,6 @@ impl Dispatcher {
             rib,
             keys_registry,
             filter_engine,
-            cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports,
             node_ids,
@@ -95,16 +92,6 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
-    }
-
-    pub fn set_cla_registry(&self, cla_registry: Arc<cla::registry::ClaRegistry>) {
-        self.cla_registry.call_once(|| cla_registry);
-    }
-
-    fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {
-        self.cla_registry
-            .get()
-            .trace_expect("CLA registry not initialized")
     }
 
     pub async fn shutdown(&self) {

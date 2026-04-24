@@ -4,11 +4,11 @@ use hardy_bpv7::eid::NodeId;
 use tracing::instrument;
 
 use crate::builder::BpaBuilder;
-use crate::cla::registry::ClaRegistry;
+use crate::cla::engine::ClaEngine;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
-use crate::policy::EgressPolicy;
+
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
 use crate::services::Service;
@@ -135,7 +135,6 @@ pub trait BpaRegistration: Send + Sync {
     ///
     /// * `name` - Unique name for this CLA instance
     /// * `cla` - The CLA implementation
-    /// * `policy` - Optional egress policy for traffic shaping
     ///
     /// # Returns
     ///
@@ -144,7 +143,6 @@ pub trait BpaRegistration: Send + Sync {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -204,7 +202,7 @@ pub struct Bpa {
     node_ids: Arc<crate::node_ids::NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
-    cla_registry: Arc<ClaRegistry>,
+    cla_engine: Arc<ClaEngine>,
     service_registry: Arc<ServiceRegistry>,
     filter_engine: Arc<FilterEngine>,
     dispatcher: Arc<Dispatcher>,
@@ -215,7 +213,7 @@ impl Bpa {
         node_ids: Arc<crate::node_ids::NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
-        cla_registry: Arc<ClaRegistry>,
+        cla_engine: Arc<ClaEngine>,
         service_registry: Arc<ServiceRegistry>,
         filter_engine: Arc<FilterEngine>,
         dispatcher: Arc<Dispatcher>,
@@ -224,7 +222,7 @@ impl Bpa {
             node_ids,
             store,
             rib,
-            cla_registry,
+            cla_engine,
             service_registry,
             filter_engine,
             dispatcher,
@@ -263,7 +261,7 @@ impl Bpa {
         // blocked on CLA forwarding or waiting for service responses.
 
         self.rib.shutdown_agents().await;
-        self.cla_registry.shutdown().await;
+        self.cla_engine.shutdown().await;
         self.service_registry
             .shutdown(&self.node_ids, &self.rib)
             .await;
@@ -332,16 +330,9 @@ impl BpaRegistration for Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, cla, policy)))]
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> cla::Result<Vec<NodeId>> {
-        self.cla_registry
-            .register(name, cla, &self.dispatcher, policy)
-            .await
+    #[cfg_attr(feature = "instrument", instrument(skip(self, cla)))]
+    async fn register_cla(&self, name: String, cla: Arc<dyn Cla>) -> cla::Result<Vec<NodeId>> {
+        self.cla_engine.register(name, cla, &self.dispatcher).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]

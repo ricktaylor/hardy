@@ -82,15 +82,7 @@ impl Rib {
             vias
         };
 
-        let mut changed = false;
-        for v in vias {
-            if let Some(peers) = self.find_peers(&v)
-                && self.reset_peer_queues(peers).await
-            {
-                changed = true;
-            }
-        }
-        if changed {
+        if !vias.is_empty() {
             self.notify_updated().await;
         }
         true
@@ -127,11 +119,7 @@ impl Rib {
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
         metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
 
-        // See if we are removing a Via
-        if let routes::Action::Via(to) = action
-            && let Some(peers) = self.find_peers(to)
-            && self.reset_peer_queues(peers).await
-        {
+        if let routes::Action::Via(_) = action {
             self.notify_updated().await;
         }
         true
@@ -174,27 +162,9 @@ impl Rib {
 
         debug!("Removed all routes from source '{source}'");
 
-        let mut changed = false;
-        for v in vias {
-            if let Some(peers) = self.find_peers(&v)
-                && self.reset_peer_queues(peers).await
-            {
-                changed = true;
-            }
-        }
-        if changed {
+        if !vias.is_empty() {
             self.notify_updated().await;
         }
-    }
-
-    async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
-        let mut updated = false;
-        for p in peers {
-            if self.store.reset_peer_queue(p).await {
-                updated = true;
-            }
-        }
-        updated
     }
 }
 

@@ -229,7 +229,7 @@ impl storage::MetadataStorage for Storage {
         let bundle_key = bundle_id.to_key();
 
         let row = sqlx::query_as::<_, MetadataRow>(
-            "SELECT m.bundle, m.status, m.peer_id, m.queue_id,
+            "SELECT m.bundle, m.status,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
              JOIN bundles b ON m.id = b.id
@@ -262,10 +262,10 @@ impl storage::MetadataStorage for Storage {
              )
              INSERT INTO metadata
                  (id, expiry, received_at, status,
-                  peer_id, queue_id, adu_source, adu_ts_ms, adu_ts_seq, service_eid,
+                  adu_source, adu_ts_ms, adu_ts_seq, service_eid,
                   bundle)
              SELECT id, $3, $4, $5,
-                    $6, $7, $8, $9, $10, $11, $12
+                    $6, $7, $8, $9, $10
              FROM ins_bundle
              RETURNING id",
         )
@@ -274,8 +274,6 @@ impl storage::MetadataStorage for Storage {
         .bind(expiry)
         .bind(received_at) // denormalized received_at in metadata
         .bind(sf.status)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
         .bind(sf.adu_source)
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
@@ -298,20 +296,16 @@ impl storage::MetadataStorage for Storage {
             "UPDATE metadata
              SET status      = $2,
                  expiry      = $3,
-                 peer_id     = $4,
-                 queue_id    = $5,
-                 adu_source  = $6,
-                 adu_ts_ms   = $7,
-                 adu_ts_seq  = $8,
-                 service_eid = $9,
-                 bundle      = $10
+                 adu_source  = $4,
+                 adu_ts_ms   = $5,
+                 adu_ts_seq  = $6,
+                 service_eid = $7,
+                 bundle      = $8
              WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
         )
         .bind(bundle_key)
         .bind(sf.status)
         .bind(expiry)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
         .bind(sf.adu_source)
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
@@ -336,18 +330,14 @@ impl storage::MetadataStorage for Storage {
         let rows = sqlx::query(
             "UPDATE metadata
              SET status      = $2,
-                 peer_id     = $3,
-                 queue_id    = $4,
-                 adu_source  = $5,
-                 adu_ts_ms   = $6,
-                 adu_ts_seq  = $7,
-                 service_eid = $8
+                 adu_source  = $3,
+                 adu_ts_ms   = $4,
+                 adu_ts_seq  = $5,
+                 service_eid = $6
              WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
         )
         .bind(bundle_key)
         .bind(sf.status)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
         .bind(sf.adu_source)
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
@@ -403,7 +393,7 @@ impl storage::MetadataStorage for Storage {
         let mut txn = self.pool.begin().await?;
 
         let row = sqlx::query_as::<_, MetadataRowWithId>(
-            "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
+            "SELECT m.id, m.bundle, m.status,
                     m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
              FROM metadata m
              JOIN bundles b ON m.id = b.id
@@ -451,7 +441,7 @@ impl storage::MetadataStorage for Storage {
                      RETURNING id
                  ),
                  snapshot AS (
-                     SELECT m.bundle, m.status, m.peer_id, m.queue_id,
+                     SELECT m.bundle, m.status,
                             m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
                      FROM metadata m
                      JOIN batch ON m.id = batch.id
@@ -486,26 +476,6 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
-        let rows = sqlx::query(
-            "UPDATE metadata
-             SET status   = $2,
-                 peer_id  = NULL,
-                 queue_id = NULL
-             WHERE status = $3
-               AND peer_id = $1",
-        )
-        .bind(i32::try_from(peer)?)
-        .bind(status::BundleStatusKind::Waiting)
-        .bind(status::BundleStatusKind::ForwardPending)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-
-        Ok(rows)
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, tx)))]
     async fn poll_expiry(
         &self,
@@ -523,7 +493,7 @@ impl storage::MetadataStorage for Storage {
         loop {
             let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, ExpiryRow>(
-                "SELECT id, expiry, bundle, status, peer_id, queue_id,
+                "SELECT id, expiry, bundle, status,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status != $1
@@ -683,7 +653,7 @@ impl storage::MetadataStorage for Storage {
 
         loop {
             let rows = sqlx::query_as::<_, PendingRow>(
-                "SELECT id, received_at, bundle, status, peer_id, queue_id,
+                "SELECT id, received_at, bundle, status,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status = $1
@@ -744,23 +714,19 @@ impl storage::MetadataStorage for Storage {
         loop {
             let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, PendingRow>(
-                "SELECT id, received_at, bundle, status, peer_id, queue_id,
+                "SELECT id, received_at, bundle, status,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
                  FROM metadata
                  WHERE status    = $1
-                   AND peer_id     IS NOT DISTINCT FROM $2
-                   AND queue_id    IS NOT DISTINCT FROM $3
-                   AND adu_source  IS NOT DISTINCT FROM $4
-                   AND adu_ts_ms   IS NOT DISTINCT FROM $5
-                   AND adu_ts_seq  IS NOT DISTINCT FROM $6
-                   AND service_eid IS NOT DISTINCT FROM $7
-                   AND (received_at, id) > ($8, $9)
+                   AND adu_source  IS NOT DISTINCT FROM $2
+                   AND adu_ts_ms   IS NOT DISTINCT FROM $3
+                   AND adu_ts_seq  IS NOT DISTINCT FROM $4
+                   AND service_eid IS NOT DISTINCT FROM $5
+                   AND (received_at, id) > ($6, $7)
                  ORDER BY received_at ASC, id ASC
-                 LIMIT $10",
+                 LIMIT $8",
             )
             .bind(sf.status)
-            .bind(sf.peer_id)
-            .bind(sf.queue_id)
             .bind(&sf.adu_source)
             .bind(sf.adu_ts_ms)
             .bind(sf.adu_ts_seq)

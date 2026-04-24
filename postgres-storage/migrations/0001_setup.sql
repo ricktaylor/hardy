@@ -1,8 +1,6 @@
 CREATE TYPE bundle_status AS ENUM (
     'new',
     'waiting',
-    'dispatching',
-    'forward_pending',
     'adu_fragment',
     'waiting_for_service'
 );
@@ -28,8 +26,6 @@ CREATE TABLE metadata (
     status      bundle_status   NOT NULL,
 
     -- Status parameters (NULL when not applicable to the current status)
-    peer_id     INTEGER,        -- ForwardPending.peer
-    queue_id    INTEGER,        -- ForwardPending.queue
     adu_source  TEXT,           -- AduFragment.source (EID string)
     adu_ts_ms   BIGINT,         -- AduFragment.timestamp (milliseconds, 0 = no DTN clock)
     adu_ts_seq  BIGINT,         -- AduFragment.sequence_number
@@ -52,10 +48,6 @@ CREATE INDEX idx_metadata_waiting
     ON metadata (received_at ASC, id ASC)
     WHERE status = 'waiting';
 
-CREATE INDEX idx_metadata_forward_pending
-    ON metadata (peer_id, received_at ASC, id ASC)
-    WHERE status = 'forward_pending';
-
 CREATE INDEX idx_metadata_adu_fragment
     ON metadata (adu_source, adu_ts_ms, adu_ts_seq, received_at ASC, id ASC)
     WHERE status = 'adu_fragment';
@@ -63,10 +55,6 @@ CREATE INDEX idx_metadata_adu_fragment
 CREATE INDEX idx_metadata_service_waiting
     ON metadata (service_eid, received_at ASC, id ASC)
     WHERE status = 'waiting_for_service';
-
-CREATE INDEX idx_metadata_dispatching
-    ON metadata (received_at ASC, id ASC)
-    WHERE status = 'dispatching';
 
 -- Tracks metadata rows not yet confirmed during startup recovery.
 -- ON DELETE CASCADE cleans up automatically when its metadata row is tombstoned.

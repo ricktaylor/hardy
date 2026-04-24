@@ -125,15 +125,14 @@ impl hardy_bpa::cla::Cla for Cla {
 
     async fn forward(
         &self,
-        queue: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        info: &hardy_bpa::cla::ForwardInfo<'_>,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                 bundle,
-                address: Some(cla_addr.clone().into()),
-                queue,
+                next_hop: info.next_hop.to_string(),
+                flow_label: info.flow_label,
             }))
             .await?
         {
@@ -248,7 +247,7 @@ async fn run_cla_session(
                         });
                 let _ = cla.address_type.set(address_type);
                 let node_ids = bpa
-                    .register_cla(request.name, cla.clone(), None)
+                    .register_cla(request.name, cla.clone())
                     .await
                     .map_err(|e| tonic::Status::from_error(e.into()))?
                     .into_iter()

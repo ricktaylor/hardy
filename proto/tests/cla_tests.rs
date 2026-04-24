@@ -50,9 +50,8 @@ impl cla::Cla for MockCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        _cla_addr: &ClaAddress,
-        _bundle: hardy_bpa::Bytes,
+        _info: &cla::ForwardInfo<'_>,
+        _data: hardy_bpa::Bytes,
     ) -> cla::Result<ForwardBundleResult> {
         self.forwarded.store(true, Ordering::Relaxed);
         Ok(ForwardBundleResult::Sent)
@@ -69,7 +68,7 @@ async fn cla_cli_01_registration() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone())
         .await
         .expect("registration should succeed");
 
@@ -99,7 +98,7 @@ async fn cla_cli_02_dispatch_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone())
         .await
         .expect("registration should succeed");
 
@@ -128,7 +127,7 @@ async fn cla_cli_03_forward_bundle() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone())
         .await
         .expect("registration should succeed");
 
@@ -141,10 +140,14 @@ async fn cla_cli_03_forward_bundle() {
         .clone()
         .expect("BPA should have the server-side CLA");
 
-    let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
+    let next_hop: hardy_bpv7::eid::Eid = "ipn:0.1.0".parse().unwrap();
+    let info = cla::ForwardInfo {
+        next_hop: &next_hop,
+        flow_label: None,
+    };
     let bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
     let result = server_cla
-        .forward(None, &addr, bundle)
+        .forward(&info, bundle)
         .await
         .expect("forward should succeed");
 
@@ -173,7 +176,7 @@ async fn cla_cli_04_add_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone())
         .await
         .expect("registration should succeed");
 
@@ -203,7 +206,7 @@ async fn cla_cli_05_remove_peer() {
     let remote_bpa = RemoteBpa::new(grpc_addr);
 
     let _node_ids: Vec<NodeId> = remote_bpa
-        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .register_cla("test-cla".to_string(), cla.clone())
         .await
         .expect("registration should succeed");
 

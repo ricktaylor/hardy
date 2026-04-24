@@ -28,7 +28,7 @@ mod roundtrip_tests;
 ///
 /// Encoded as `ipn:<allocator_id>.<node_number>.<service_number>`, where
 /// a zero `allocator_id` is omitted from the display form.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IpnNodeId {
     /// The allocator identifier. Zero indicates the default allocator.
     pub allocator_id: u32,
@@ -247,6 +247,19 @@ impl Eid {
             Eid::LocalNode(_) => Ok(NodeId::LocalNode),
             Eid::LegacyIpn { fqnn, .. } | Eid::Ipn { fqnn, .. } => Ok(NodeId::Ipn(fqnn)),
             Eid::Dtn { node_name, .. } => Ok(NodeId::Dtn(node_name)),
+            _ => Err(Error::InvalidNodeId),
+        }
+    }
+
+    /// Extracts a [`NodeId`] from this EID without consuming it.
+    ///
+    /// For `ipn` EIDs this copies the two `u32` fields (no allocation).
+    /// For `dtn` EIDs this clones the node name.
+    pub fn to_node_id(&self) -> Result<NodeId, Error> {
+        match self {
+            Eid::LocalNode(_) => Ok(NodeId::LocalNode),
+            Eid::LegacyIpn { fqnn, .. } | Eid::Ipn { fqnn, .. } => Ok(NodeId::Ipn(*fqnn)),
+            Eid::Dtn { node_name, .. } => Ok(NodeId::Dtn(node_name.clone())),
             _ => Err(Error::InvalidNodeId),
         }
     }

@@ -3,7 +3,6 @@ mod config;
 mod error;
 mod static_routes;
 
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -168,31 +167,13 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
         warn!("Ignoring built-in-services.echo: echo feature is disabled at compile time");
     }
 
-    let mut policies = HashMap::new();
-    for (name, policy_config) in config.policies {
-        policies.insert(name, policy_config.build()?);
-    }
-
     for cla_config in config.clas {
         let Some(cla) = cla_config.build()? else {
             continue;
         };
 
-        let egress_policy = cla_config
-            .policy
-            .as_ref()
-            .map(|name| {
-                policies.get(name).cloned().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "CLA '{}' references unknown policy '{name}'",
-                        cla_config.name
-                    )
-                })
-            })
-            .transpose()?;
-
         let name = cla_config.name;
-        builder = builder.cla(name, cla, egress_policy);
+        builder = builder.cla(name, cla);
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);

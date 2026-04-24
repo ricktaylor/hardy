@@ -145,18 +145,6 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn remove_unconfirmed(&self, tx: Sender<Bundle>) -> Result<()>;
 
-    /// Resets all bundles with the status `BundleStatus::ForwardPending { peer, _ }` to `Waiting`.
-    /// This allows the dispatcher to re-evaluate the forwarding decision for these bundles.
-    ///
-    /// # Arguments
-    ///
-    /// * `peer` - The peer for which the queue should be reset.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the number of bundles that were reset.
-    async fn reset_peer_queue(&self, peer: u32) -> Result<u64>;
-
     /// Returns the next `limit` bundles, not of status `BundleStatus::New`, ordered by expiry.
     /// The receiver will hang up when it has enough bundles.
     ///

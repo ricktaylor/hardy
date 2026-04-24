@@ -83,8 +83,7 @@ impl Bibe {
     /// ```
     pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
         // Register CLA (uses Private address type)
-        bpa.register_cla("bibe".into(), self.cla.clone(), None)
-            .await?;
+        bpa.register_cla("bibe".into(), self.cla.clone()).await?;
 
         // Register decapsulation service
         if let Some(service_id) = self.decap_service_id.clone() {

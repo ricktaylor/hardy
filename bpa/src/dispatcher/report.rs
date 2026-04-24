@@ -169,8 +169,10 @@ impl Dispatcher {
 
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
-            // Just fire the report off now - it ensures sequential reporting (ish)
-            Box::pin(self.ingest_bundle_inner(bundle, data)).await
+            // Dispatch via queue to avoid blocking the caller (e.g., the CLA
+            // session reader), which would deadlock if forward_bundle tries to
+            // send on the same connection that received the original bundle.
+            self.dispatch_bundle(bundle).await
         }
     }
 }

@@ -5,15 +5,20 @@ use core::hash::BuildHasher;
 enum InternalFindResult<'a> {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(Vec<(u32, &'a Eid)>),                      // sorted peer -> next_hop pairs
+    Forward(Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>), // CLA entry -> next_hop pairs
     Drop(Option<ReasonCode>),                          // Drop with reason code
     Reflect,                                           // Reflect
 }
 
-/// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
-fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
-    if let Err(idx) = peers.binary_search_by_key(&peer, |&(p, _)| p) {
-        peers.insert(idx, (peer, next_hop));
+/// Insert into a sorted vec, maintaining sort order by CLA name. Skips duplicates.
+fn sorted_insert<'a>(
+    peers: &mut Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>,
+    entry: Arc<cla::adapter::Adapter>,
+    next_hop: &'a Eid,
+) {
+    if !peers.iter().any(|(e, _)| e == &entry) {
+        peers.push((entry, next_hop));
+        peers.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     }
 }
 
@@ -71,29 +76,16 @@ impl Rib {
             InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
             InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
             InternalFindResult::Forward(peers) => Some(FindResult::Forward(
-                peers.first().trace_expect("Forward with empty peers!").0,
+                peers
+                    .first()
+                    .trace_expect("Forward with empty peers!")
+                    .0
+                    .clone(),
             )),
             InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
             InternalFindResult::Reflect => {
                 unreachable!("Reflect filtered by find_local before calling map_result")
             }
-        }
-    }
-
-    /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
-    pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
-        let inner = self.inner.read();
-
-        // TODO: this is should be for *all* tables
-        let table = &inner.routes;
-
-        if let Some(InternalFindResult::Forward(peers)) =
-            find_recurse(&inner, table, to, false, &mut HashSet::new())
-        {
-            Some(peers.into_iter().map(|(peer, _)| peer).collect())
-        } else {
-            None
         }
     }
 }
@@ -109,24 +101,22 @@ fn map_result(
         InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
         InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
         InternalFindResult::Forward(peers) => {
-            let &(peer, next_hop) = if peers.len() > 1 {
+            let selected = if peers.len() > 1 {
+                let idx = (ecmp_hash_state.hash_one((
+                    &bundle.id.source,
+                    &bundle.destination,
+                    &metadata.writable.flow_label,
+                )) % (peers.len() as u64)) as usize;
                 peers
-                    .get(
-                        (ecmp_hash_state.hash_one((
-                            &bundle.id.source,
-                            &bundle.destination,
-                            &metadata.writable.flow_label,
-                        )) % (peers.len() as u64)) as usize,
-                    )
+                    .get(idx)
                     .trace_expect("ECMP hash has picked an invalid entry")
             } else {
                 peers.first().trace_expect("Empty CLA result from find?!?")
             };
 
-            // Set the next-hop for Egress filters
-            metadata.read_only.next_hop = Some(next_hop.clone());
+            metadata.read_only.next_hop = Some(selected.1.clone());
 
-            Some(FindResult::Forward(peer))
+            Some(FindResult::Forward(selected.0.clone()))
         }
         InternalFindResult::Reflect => {
             unreachable!("Reflect filtered by find() before calling map_result")
@@ -136,7 +126,7 @@ fn map_result(
 
 #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
 fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
-    let mut peers: Option<Vec<(u32, &'a Eid)>> = None;
+    let mut peers: Option<Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>> = None;
 
     // Iterate through all local patterns and find matches
     for (pattern, actions) in &inner.locals.actions {
@@ -151,12 +141,11 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
                         debug!("Deliver to Service {}", service.service_id);
                         return Some(InternalFindResult::Deliver(Some(service.clone())));
                     }
-                    local::Action::Forward(peer) => {
-                        // The 'to' Eid is the next-hop for all peers found here
+                    local::Action::Forward(adapter) => {
                         if let Some(peers) = &mut peers {
-                            sorted_insert(peers, *peer, to);
+                            sorted_insert(peers, adapter.clone(), to);
                         } else {
-                            peers = Some(vec![(*peer, to)]);
+                            peers = Some(vec![(adapter.clone(), to)]);
                         }
                     }
                 }
@@ -236,15 +225,16 @@ fn find_recurse<'a>(
                                 // The 'via' Eid is the next-hop for all peers found through this path
                                 // Append peers to the running vec, maintaining sort order
                                 if let Some(InternalFindResult::Forward(peers)) = &mut result {
-                                    for (peer, _) in sub_peers {
-                                        sorted_insert(peers, peer, via);
+                                    for (entry, _) in sub_peers {
+                                        sorted_insert(peers, entry, via);
                                     }
                                 } else {
-                                    let mut peers: Vec<(u32, &'a Eid)> = sub_peers
-                                        .into_iter()
-                                        .map(|(peer, _)| (peer, via))
-                                        .collect();
-                                    peers.sort_unstable_by_key(|&(peer, _)| peer);
+                                    let mut peers: Vec<(Arc<cla::adapter::Adapter>, &'a Eid)> =
+                                        sub_peers
+                                            .into_iter()
+                                            .map(|(entry, _)| (entry, via))
+                                            .collect();
+                                    peers.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
                                     result = Some(InternalFindResult::Forward(peers));
                                 }
                             } else {
@@ -271,6 +261,7 @@ fn find_recurse<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::make_adapter;
     use super::*;
     use rib::tests::{add_local_forward, add_route, make_rib};
 
@@ -306,20 +297,21 @@ mod tests {
     #[test]
     fn test_exact_match() {
         let rib = make_rib();
+        let cla = make_adapter("test-cla");
 
-        // Add a local forward peer for ipn:0.2.*
-        add_local_forward(&rib, ipn_node(2), 42);
+        add_local_forward(&rib, ipn_node(2), cla.clone());
 
-        // Lookup for an EID under that node
         let result = rib.find_local(&"ipn:0.2.1".parse().unwrap());
-        assert!(matches!(result, Some(FindResult::Forward(42))));
+        assert!(
+            matches!(result, Some(FindResult::Forward(ref e)) if e.name.as_ref() == "test-cla")
+        );
     }
 
     #[test]
     fn test_default_route() {
         let rib = make_rib();
+        let cla = make_adapter("gw-cla");
 
-        // Add a catch-all Via route
         add_route(
             &rib,
             "*:**",
@@ -328,13 +320,11 @@ mod tests {
             1000,
         );
 
-        // Add a local forward for the gateway node
-        add_local_forward(&rib, ipn_node(10), 99);
+        add_local_forward(&rib, ipn_node(10), cla);
 
-        // An unknown destination should resolve via the default route
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(99))));
+        assert!(matches!(result, Some(FindResult::Forward(ref e)) if e.name.as_ref() == "gw-cla"));
     }
 
     #[test]
@@ -384,16 +374,16 @@ mod tests {
         // Add a Reflect route for ipn:0.5.*
         add_route(&rib, "ipn:0.5.*", "reflect", routes::Action::Reflect, 10);
 
-        // Add a forward peer for node 4 (the previous hop)
-        add_local_forward(&rib, ipn_node(4), 77);
+        let cla = make_adapter("reflect-cla");
+        add_local_forward(&rib, ipn_node(4), cla);
 
-        // Bundle with a previous node set
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
 
         let result = rib.find(&mut bundle);
-        // Should route back to the previous node's peer
-        assert!(matches!(result, Some(FindResult::Forward(77))));
+        assert!(
+            matches!(result, Some(FindResult::Forward(ref e)) if e.name.as_ref() == "reflect-cla")
+        );
     }
 
     #[test]
@@ -432,30 +422,31 @@ mod tests {
             10,
         );
 
-        // Add forward peers for both gateways
-        add_local_forward(&rib, ipn_node(10), 10);
-        add_local_forward(&rib, ipn_node(11), 11);
+        let cla_a = make_adapter("ecmp-a");
+        let cla_b = make_adapter("ecmp-b");
+        add_local_forward(&rib, ipn_node(10), cla_a);
+        add_local_forward(&rib, ipn_node(11), cla_b);
 
-        // Same bundle should always hash to the same peer (deterministic)
+        // Same bundle should always hash to the same CLA (deterministic)
         let mut bundle = make_bundle("ipn:0.50.1");
         let result1 = rib.find(&mut bundle);
-        let peer1 = match result1 {
-            Some(FindResult::Forward(p)) => p,
+        let name1 = match &result1 {
+            Some(FindResult::Forward(e)) => e.name.clone(),
             other => panic!("Expected Forward, got {other:?}"),
         };
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
         bundle2.bundle.id = bundle.bundle.id.clone();
         let result2 = rib.find(&mut bundle2);
-        let peer2 = match result2 {
-            Some(FindResult::Forward(p)) => p,
+        let name2 = match &result2 {
+            Some(FindResult::Forward(e)) => e.name.clone(),
             other => panic!("Expected Forward, got {other:?}"),
         };
 
-        assert_eq!(peer1, peer2, "ECMP selection must be deterministic");
+        assert_eq!(name1, name2, "ECMP selection must be deterministic");
         assert!(
-            peer1 == 10 || peer1 == 11,
-            "Peer must be one of the ECMP targets, got {peer1}"
+            name1.as_ref() == "ecmp-a" || name1.as_ref() == "ecmp-b",
+            "CLA must be one of the ECMP targets, got {name1}"
         );
     }
 }

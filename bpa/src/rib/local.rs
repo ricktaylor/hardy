@@ -4,7 +4,7 @@ use super::*;
 pub enum Action {
     AdminEndpoint,                           // Deliver to the admin endpoint
     Local(Arc<services::registry::Service>), // Deliver to local service
-    Forward(u32),                            // Forward to a cla peer
+    Forward(Arc<cla::adapter::Adapter>),     // Forward via CLA
 }
 
 impl PartialOrd for Action {
@@ -15,7 +15,6 @@ impl PartialOrd for Action {
 
 impl Ord for Action {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // The order is critical, hence done long-hand
         match (self, other) {
             (Action::AdminEndpoint, Action::AdminEndpoint) => core::cmp::Ordering::Equal,
             (Action::AdminEndpoint, _) => core::cmp::Ordering::Less,
@@ -33,9 +32,7 @@ impl core::fmt::Display for Action {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
             Action::Local(service) => write!(f, "local service {}", &service.service_id),
-            Action::Forward(peer) => {
-                write!(f, "CLA peer {peer}")
-            }
+            Action::Forward(adapter) => write!(f, "CLA {}", adapter.name),
         }
     }
 }
@@ -62,7 +59,7 @@ impl LocalInner {
         if let Some(node_id) = &node_ids.ipn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
-            let admin_eid: Eid = node_id.clone().into();
+            let admin_eid: Eid = (*node_id).into();
             actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
         }
 
@@ -98,11 +95,11 @@ impl Rib {
         true
     }
 
-    /// Add a forward route for a CLA peer.
+    /// Add a forward route for a CLA.
     /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
-    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    pub async fn add_forward(&self, node_id: NodeId, adapter: Arc<cla::adapter::Adapter>) -> bool {
         let pattern: EidPattern = node_id.into();
-        self.add_local(pattern, Action::Forward(peer)).await
+        self.add_local(pattern, Action::Forward(adapter)).await
     }
 
     /// Add a service route for a local service.
@@ -134,42 +131,46 @@ impl Rib {
             .unwrap_or(false)
     }
 
-    /// Remove a forward route for a CLA peer.
-    pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    /// Remove a forward route for a CLA.
+    pub async fn remove_forward(&self, node_id: NodeId, adapter: &cla::adapter::Adapter) -> bool {
         let pattern: EidPattern = node_id.into();
         if !self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Forward(p) if &peer == p),
+            |action| matches!(action, Action::Forward(e) if e.as_ref() == adapter),
         ) {
             return false;
         }
 
-        if self.store.reset_peer_queue(peer).await {
-            self.notify_updated().await;
-        }
+        self.notify_updated().await;
         true
     }
 
     /// Remove a service route for a local service.
-    pub fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
         let pattern: EidPattern = eid.clone().into();
-        self.remove_local(
+        if !self.remove_local(
             &pattern,
             |action| matches!(action, Action::Local(svc) if svc.as_ref() == service),
-        )
+        ) {
+            return false;
+        }
+        self.notify_updated().await;
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::make_adapter;
     use super::*;
 
     #[test]
+    #[allow(clippy::mutable_key_type)]
     fn test_local_action_sort() {
         // AdminEndpoint < Local < Forward
         let admin = Action::AdminEndpoint;
-        let forward_1 = Action::Forward(1);
-        let forward_2 = Action::Forward(2);
+        let forward_1 = Action::Forward(make_adapter("cla-a"));
+        let forward_2 = Action::Forward(make_adapter("cla-b"));
 
         assert!(admin < forward_1);
         assert!(forward_1 < forward_2);
@@ -187,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::mutable_key_type)]
     fn test_implicit_routes() {
         use hardy_bpv7::eid::IpnNodeId;
 
@@ -207,7 +209,7 @@ mod tests {
         assert!(actions.contains(&Action::AdminEndpoint));
 
         // Should have admin endpoint for the IPN node's admin EID (ipn:0.1.0)
-        let admin_eid: hardy_bpv7::eid::Eid = node_ids.ipn.clone().unwrap().into();
+        let admin_eid: hardy_bpv7::eid::Eid = node_ids.ipn.unwrap().into();
         let admin_pattern: EidPattern = admin_eid.into();
         assert!(inner.actions.contains_key(&admin_pattern));
 
@@ -226,7 +228,7 @@ mod tests {
         // Add a finals entry so the RIB knows ipn:0.1.* is our node's address space
         {
             let mut inner = rib.inner.write();
-            let pattern: EidPattern = rib.node_ids.ipn.clone().unwrap().into();
+            let pattern: EidPattern = rib.node_ids.ipn.unwrap().into();
             inner.locals.finals.insert(pattern);
         }
 
