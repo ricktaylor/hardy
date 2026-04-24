@@ -8,8 +8,8 @@ use hardy_bpv7::{
 use hardy_eid_patterns::EidPattern;
 
 pub(crate) mod agent;
+
 mod find;
-mod local;
 mod route;
 
 #[derive(Debug)]
@@ -23,7 +23,6 @@ pub enum FindResult {
 type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
 
 struct RibInner {
-    locals: local::LocalInner,
     routes: RouteTable,
     address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
 }
@@ -40,19 +39,32 @@ pub struct Rib {
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
+
+    // The priority for services - default 1
+    service_priority: u32,
 }
 
 pub(crate) struct RibBuilder {
     agents: Vec<(String, Arc<dyn routes::RoutingAgent>)>,
+
+    // The priority for services - default 1
+    service_priority: u32,
 }
 
 impl RibBuilder {
     pub fn new() -> Self {
-        Self { agents: Vec::new() }
+        Self {
+            agents: Vec::new(),
+            service_priority: 1,
+        }
     }
 
     pub fn insert(&mut self, name: String, agent: Arc<dyn routes::RoutingAgent>) {
         self.agents.push((name, agent));
+    }
+
+    pub fn service_priority(&mut self, priority: u32) {
+        self.service_priority = priority;
     }
 
     pub async fn build(
@@ -60,7 +72,7 @@ impl RibBuilder {
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
     ) -> routes::Result<Arc<Rib>> {
-        let rib = Arc::new(Rib::new(node_ids, store));
+        let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
         for (name, agent) in self.agents {
             rib.register_agent(name, agent).await?;
         }
@@ -69,11 +81,42 @@ impl RibBuilder {
 }
 
 impl Rib {
-    fn new(node_ids: Arc<node_ids::NodeIds>, store: Arc<storage::Store>) -> Self {
+    const FORWARDS_NAME: &str = "neighbours";
+    const SERVICES_NAME: &str = "services";
+
+    fn new(
+        node_ids: Arc<node_ids::NodeIds>,
+        store: Arc<storage::Store>,
+        service_priority: u32,
+    ) -> Self {
+        let entry = route::Entry {
+            source: Self::SERVICES_NAME.into(),
+            action: route::Action::AdminEndpoint,
+        };
+
+        // Add localnode admin endpoint
+        let mut admin_endpoints = BTreeMap::new();
+        admin_endpoints.insert(NodeId::LocalNode.into(), [entry.clone()].into());
+
+        if let Some(node_id) = &node_ids.ipn {
+            // Add the Admin Endpoint EID itself (exact match, not wildcard)
+            // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
+            let admin_eid: Eid = node_id.clone().into();
+            admin_endpoints.insert(admin_eid.into(), [entry.clone()].into());
+        }
+
+        if let Some(node_name) = &node_ids.dtn {
+            // Add the Admin Endpoint EID itself (exact match, not wildcard)
+            let admin_eid: Eid = node_name.clone().into();
+            admin_endpoints.insert(admin_eid.into(), [entry].into());
+        }
+
+        let mut routes = BTreeMap::new();
+        routes.insert(0, admin_endpoints);
+
         Self {
             inner: RwLock::new(RibInner {
-                locals: local::LocalInner::new(&node_ids),
-                routes: BTreeMap::new(),
+                routes,
                 address_types: HashMap::new(),
             }),
             agents: Default::default(),
@@ -82,6 +125,7 @@ impl Rib {
             tasks: hardy_async::TaskPool::new(),
             poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
             store,
+            service_priority,
         }
     }
 
@@ -125,96 +169,5 @@ impl Rib {
 
     pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
         self.inner.write().address_types.remove(address_type);
-    }
-}
-
-#[cfg(test)]
-pub(super) mod tests {
-    use super::*;
-
-    pub fn make_rib() -> Arc<Rib> {
-        use hardy_bpv7::eid::IpnNodeId;
-
-        let node_ids = Arc::new(node_ids::NodeIds {
-            ipn: Some(IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            }),
-            dtn: None,
-        });
-
-        let store = Arc::new(storage::Store::new(
-            core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(storage::MetadataMemStorage::new(&Default::default())),
-            Arc::new(storage::BundleMemStorage::new(&Default::default())),
-        ));
-
-        Arc::new(Rib::new(node_ids, store))
-    }
-
-    // Add a route directly to the RIB's route table (sync, no store interaction).
-    pub fn add_route(
-        rib: &Rib,
-        pattern: &str,
-        source: &str,
-        action: routes::Action,
-        priority: u32,
-    ) {
-        let pattern: EidPattern = pattern.parse().unwrap();
-        let entry = route::Entry {
-            action,
-            source: source.to_string(),
-        };
-
-        let mut inner = rib.inner.write();
-        match inner.routes.entry(priority) {
-            btree_map::Entry::Vacant(e) => {
-                e.insert([(pattern, [entry].into())].into());
-            }
-            btree_map::Entry::Occupied(mut e) => match e.get_mut().entry(pattern) {
-                btree_map::Entry::Vacant(pe) => {
-                    pe.insert([entry].into());
-                }
-                btree_map::Entry::Occupied(mut pe) => {
-                    pe.get_mut().insert(entry);
-                }
-            },
-        }
-    }
-
-    // Add a local forward entry directly (sync, no store interaction).
-    pub fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {
-        let pattern: EidPattern = node_id.into();
-        let mut inner = rib.inner.write();
-        match inner.locals.actions.entry(pattern) {
-            btree_map::Entry::Vacant(e) => {
-                e.insert([local::Action::Forward(peer)].into());
-            }
-            btree_map::Entry::Occupied(mut e) => {
-                e.get_mut().insert(local::Action::Forward(peer));
-            }
-        }
-    }
-
-    #[test]
-    fn test_impacted_subsets() {
-        let rib = make_rib();
-
-        // Add a Via route for ipn:2.0 at priority 10
-        add_route(
-            &rib,
-            "ipn:*.*",
-            "src",
-            routes::Action::Via("ipn:0.2.0".parse().unwrap()),
-            10,
-        );
-
-        // Add a more specific Drop route at priority 20 (lower priority)
-        add_route(&rib, "ipn:0.3.*", "src", routes::Action::Drop(None), 20);
-
-        // Verify both routes were inserted
-        let inner = rib.inner.read();
-        assert!(inner.routes.contains_key(&10));
-        assert!(inner.routes.contains_key(&20));
     }
 }

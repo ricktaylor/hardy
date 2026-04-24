@@ -65,71 +65,61 @@ impl Dispatcher {
                 }
 
                 // Find a live service to notify
-                match self.rib.find_local(&report.bundle_id.source) {
-                    Some(rib::FindResult::Deliver(Some(service))) => {
-                        if let Some(assertion) = report.received {
-                            service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    &bundle.bundle.id.source,
-                                    services::StatusNotify::Received,
-                                    report.reason,
-                                    assertion.0,
-                                )
-                                .await;
-                        }
-                        if let Some(assertion) = report.forwarded {
-                            service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    &bundle.bundle.id.source,
-                                    services::StatusNotify::Forwarded,
-                                    report.reason,
-                                    assertion.0,
-                                )
-                                .await;
-                        }
-                        if let Some(assertion) = report.delivered {
-                            service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    &bundle.bundle.id.source,
-                                    services::StatusNotify::Delivered,
-                                    report.reason,
-                                    assertion.0,
-                                )
-                                .await;
-                        }
-                        if let Some(assertion) = report.deleted {
-                            service
-                                .on_status_notify(
-                                    &report.bundle_id,
-                                    &bundle.bundle.id.source,
-                                    services::StatusNotify::Deleted,
-                                    report.reason,
-                                    assertion.0,
-                                )
-                                .await;
-                        }
-
-                        // Just delete the bundle, there's no required counters or reporting
-                        self.delete_bundle(bundle).await;
+                if let Some(service) = self.rib.find_service(&report.bundle_id.source) {
+                    if let Some(assertion) = report.received {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Received,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
                     }
-                    Some(_) => {
-                        // TODO:  This match case can be removed when we fix Service registration
-
-                        // Just delete the bundle, there's no required counters or reporting
-                        self.delete_bundle(bundle).await;
+                    if let Some(assertion) = report.forwarded {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Forwarded,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
                     }
-                    None => {
-                        let desired = bundle::BundleStatus::WaitingForService {
-                            service: report.bundle_id.source.clone(),
-                        };
-
-                        self.store.update_status(&mut bundle, &desired).await;
-
-                        self.store.watch_bundle(bundle).await;
+                    if let Some(assertion) = report.delivered {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Delivered,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
                     }
+                    if let Some(assertion) = report.deleted {
+                        service
+                            .on_status_notify(
+                                &report.bundle_id,
+                                &bundle.bundle.id.source,
+                                services::StatusNotify::Deleted,
+                                report.reason,
+                                assertion.0,
+                            )
+                            .await;
+                    }
+
+                    // Just delete the bundle, there's no required counters or reporting
+                    self.delete_bundle(bundle).await;
+                } else {
+                    let desired = bundle::BundleStatus::WaitingForService {
+                        service: report.bundle_id.source.clone(),
+                    };
+
+                    self.store.update_status(&mut bundle, &desired).await;
+                    self.store.watch_bundle(bundle).await;
                 }
             }
         }

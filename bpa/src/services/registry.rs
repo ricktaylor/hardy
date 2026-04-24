@@ -377,7 +377,7 @@ impl ServiceRegistry {
         rib: &Arc<rib::Rib>,
     ) -> services::Result<()> {
         let eid = node_ids.resolve_eid(&service.service_id)?;
-        rib.remove_service(&eid, &service).await;
+        rib.remove_service(&eid, service.clone()).await;
 
         match &service.service {
             ServiceImpl::LowLevel(svc) => svc.on_unregister().await,

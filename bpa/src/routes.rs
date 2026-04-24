@@ -17,13 +17,8 @@ pub enum Action {
 impl core::fmt::Display for Action {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Action::Drop(reason_code) => {
-                if let Some(reason) = reason_code {
-                    write!(f, "Drop({reason:?})")
-                } else {
-                    write!(f, "Drop")
-                }
-            }
+            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
+            Action::Drop(None) => write!(f, "Drop"),
             Action::Reflect => write!(f, "Reflect"),
             Action::Via(eid) => write!(f, "Via {eid}"),
         }

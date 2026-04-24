@@ -28,7 +28,7 @@ impl routes::RoutingSink for Sink {
         let agent = self.agent.upgrade().ok_or(routes::Error::Disconnected)?;
         Ok(self
             .rib
-            .add(pattern, agent.name.clone(), action, priority)
+            .add(pattern, agent.name.clone(), action.into(), priority)
             .await)
     }
 
@@ -41,7 +41,7 @@ impl routes::RoutingSink for Sink {
         let agent = self.agent.upgrade().ok_or(routes::Error::Disconnected)?;
         Ok(self
             .rib
-            .remove(pattern, &agent.name, action, priority)
+            .remove(pattern, &agent.name, action.clone().into(), priority)
             .await)
     }
 }
