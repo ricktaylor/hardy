@@ -179,12 +179,14 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            // TODO: Replace trace_expect with proper error handling
-            .trace_expect("Deliver filter execution failed")
         {
-            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filter::ExecResult::Drop(bundle, reason) => {
+            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
+            Ok(filter::ExecResult::Drop(bundle, reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            Err(e) => {
+                error!("Deliver filter execution failed: {e}");
+                return;
             }
         };
 
