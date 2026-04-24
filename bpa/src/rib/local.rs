@@ -59,7 +59,7 @@ impl LocalInner {
         if let Some(node_id) = &node_ids.ipn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
-            let admin_eid: Eid = node_id.clone().into();
+            let admin_eid: Eid = (*node_id).into();
             actions.insert(admin_eid.into(), [local::Action::AdminEndpoint].into());
         }
 
@@ -209,7 +209,7 @@ mod tests {
         assert!(actions.contains(&Action::AdminEndpoint));
 
         // Should have admin endpoint for the IPN node's admin EID (ipn:0.1.0)
-        let admin_eid: hardy_bpv7::eid::Eid = node_ids.ipn.clone().unwrap().into();
+        let admin_eid: hardy_bpv7::eid::Eid = node_ids.ipn.unwrap().into();
         let admin_pattern: EidPattern = admin_eid.into();
         assert!(inner.actions.contains_key(&admin_pattern));
 
@@ -228,7 +228,7 @@ mod tests {
         // Add a finals entry so the RIB knows ipn:0.1.* is our node's address space
         {
             let mut inner = rib.inner.write();
-            let pattern: EidPattern = rib.node_ids.ipn.clone().unwrap().into();
+            let pattern: EidPattern = rib.node_ids.ipn.unwrap().into();
             inner.locals.finals.insert(pattern);
         }
 

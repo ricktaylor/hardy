@@ -75,7 +75,7 @@ impl WriteFilter for IpnLegacyFilter {
         {
             editor = editor
                 .with_source(Eid::LegacyIpn {
-                    fqnn: fqnn.clone(),
+                    fqnn: *fqnn,
                     service_number: *service_number,
                 })
                 .map_err(|(_, e)| e)?;
@@ -88,7 +88,7 @@ impl WriteFilter for IpnLegacyFilter {
         {
             editor = editor
                 .with_destination(Eid::LegacyIpn {
-                    fqnn: fqnn.clone(),
+                    fqnn: *fqnn,
                     service_number: *service_number,
                 })
                 .map_err(|(_, e)| e)?;
