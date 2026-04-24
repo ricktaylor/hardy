@@ -101,6 +101,11 @@ impl BpaBuilder {
         self
     }
 
+    pub fn service_priority(mut self, priority: u32) -> Self {
+        self.rib_builder.service_priority(priority);
+        self
+    }
+
     /// Register a CLA to be initialized when the BPA is built.
     pub fn cla(
         mut self,

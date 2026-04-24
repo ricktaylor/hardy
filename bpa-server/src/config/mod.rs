@@ -104,6 +104,10 @@ pub struct Config {
     #[serde(default)]
     pub node_ids: NodeIds,
 
+    // The routing priority of services (default 1)
+    #[serde(default)]
+    pub service_priority: Option<u32>,
+
     // Static Routes Configuration
     #[serde(default)]
     pub static_routes: Option<static_routes::Config>,
