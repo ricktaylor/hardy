@@ -11,7 +11,8 @@ impl Dispatcher {
     /// # Bundle State
     ///
     /// - Initial status: `New`
-    /// - Next: `ingest_bundle()` → Ingress filter → `Dispatching`
+    /// - Next: `ingest_bundle()` → Ingress filter → forward → tombstone (hot path)
+    ///   or → `Waiting` (cold path, no route available)
     ///
     /// See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
     /// for the complete state transition diagram.
@@ -170,7 +171,7 @@ impl Dispatcher {
     /// # Crash Safety
     ///
     /// Because this returns before the Ingress filter completes, bundles remain
-    /// in `New` status until `ingest_bundle_inner()` checkpoints to `Dispatching`.
+    /// in `New` status until `ingest_bundle_inner()` completes processing.
     pub(super) async fn ingest_bundle(self: &Arc<Self>, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
@@ -189,14 +190,12 @@ impl Dispatcher {
     /// 2. Validate hop count (drop if exceeded)
     /// 3. Execute Ingress filter hook
     /// 4. Persist any filter mutations (crash-safe ordering)
-    /// 5. **Checkpoint**: Transition status to `Dispatching`
-    /// 6. Call `process_bundle()` for routing decision
+    /// 5. Call `process_bundle()` for routing decision
     ///
     /// # Crash Safety
     ///
-    /// The checkpoint to `Dispatching` is always persisted after the Ingress
-    /// filter completes. On restart, bundles in `New` status re-run from step 1,
-    /// while bundles in `Dispatching` skip directly to routing.
+    /// On restart, bundles in `New` status re-run from step 1.
+    /// Bundles in `Waiting` status are retried via `poll_waiting()`.
     ///
     /// See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     /// filter execution details.
@@ -276,12 +275,12 @@ impl Dispatcher {
     ///
     /// | Result | Action | Status Transition |
     /// |--------|--------|-------------------|
-    /// | `Drop` | Delete bundle with reason | `Dispatching` → Tombstone |
-    /// | `AdminEndpoint` | Handle administrative record | `Dispatching` → Tombstone |
-    /// | `Deliver` (fragment) | Queue for reassembly | `Dispatching` → `AduFragment` |
-    /// | `Deliver` (whole) | Deliver to service | `Dispatching` → Tombstone |
-    /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
-    /// | `None` | Wait for route | `Dispatching` → `Waiting` |
+    /// | `Drop` | Delete bundle with reason | `New` → Tombstone |
+    /// | `AdminEndpoint` | Handle administrative record | `New` → Tombstone |
+    /// | `Deliver` (fragment) | Queue for reassembly | `New` → `AduFragment` |
+    /// | `Deliver` (whole) | Deliver to service | `New` → Tombstone |
+    /// | `Forward` | Forward via CLA peer | `New` → Tombstone (hot path) |
+    /// | `None` | Wait for route | `New` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
@@ -310,8 +309,8 @@ impl Dispatcher {
                 debug!("Forwarding bundle via CLA {}", cla_entry.name);
                 self.forward_bundle(&cla_entry, bundle).await;
             }
-            _ => {
-                // No route available - wait for one
+            Some(rib::FindResult::Deliver(None)) | None => {
+                // No route or service available yet
                 debug!("Storing bundle until a forwarding opportunity arises");
 
                 self.store

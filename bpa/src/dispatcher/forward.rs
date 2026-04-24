@@ -2,7 +2,11 @@ use super::*;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self,cla_entry,bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn forward_bundle(&self, cla_entry: &cla::entry::ClaEntry, bundle: bundle::Bundle) {
+    pub async fn forward_bundle(
+        &self,
+        cla_entry: &cla::entry::ClaEntry,
+        mut bundle: bundle::Bundle,
+    ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
             // Bundle data was deleted sometime during processing
@@ -16,12 +20,16 @@ impl Dispatcher {
         let data = match self.update_extension_blocks(&bundle, &data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
+                self.store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await;
+                self.store.watch_bundle(bundle).await;
                 return;
             }
             Ok(data) => data,
         };
 
-        // - Runs after dequeue from ForwardPending, just before CLA send
+        // - Runs after routing selects a CLA peer, just before CLA send
         // - Modifications are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress will run again with fresh context
@@ -37,12 +45,17 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
-            // TODO: Replace trace_expect with proper error handling
-            .trace_expect("Egress filter execution failed")
         {
-            filter::ExecResult::Continue(_, bundle, data) => (bundle, data),
-            filter::ExecResult::Drop(bundle, reason) => {
+            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
+            Ok(filter::ExecResult::Drop(bundle, reason)) => {
                 return self.drop_bundle(bundle, reason).await;
+            }
+            Err(e) => {
+                // Bundle was moved into exec() and is consumed on error.
+                // It still exists in storage with its previous status and will
+                // be retried on the next poll_waiting cycle.
+                warn!("Egress filter execution failed: {e}");
+                return;
             }
         };
 

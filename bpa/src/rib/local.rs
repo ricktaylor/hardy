@@ -146,12 +146,16 @@ impl Rib {
     }
 
     /// Remove a service route for a local service.
-    pub fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: &services::registry::Service) -> bool {
         let pattern: EidPattern = eid.clone().into();
-        self.remove_local(
+        if !self.remove_local(
             &pattern,
             |action| matches!(action, Action::Local(svc) if svc.as_ref() == service),
-        )
+        ) {
+            return false;
+        }
+        self.notify_updated().await;
+        true
     }
 }
 

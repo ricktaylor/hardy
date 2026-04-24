@@ -27,9 +27,14 @@ impl super::Sink for ClaCallback {
         peer_node: Option<&NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()> {
-        let cla_name = self.cla.upgrade().map(|c| c.name.clone());
+        let cla = self.cla.upgrade().ok_or(super::Error::Disconnected)?;
         self.dispatcher
-            .receive_bundle(bundle, cla_name, peer_node.cloned(), peer_addr.cloned())
+            .receive_bundle(
+                bundle,
+                Some(cla.name.clone()),
+                peer_node.cloned(),
+                peer_addr.cloned(),
+            )
             .await
     }
 

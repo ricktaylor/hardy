@@ -81,13 +81,7 @@ impl ConnectionPool {
             .peers
             .insert(node_id.clone())
         {
-            // Record NodeId → SocketAddr mapping for resolve_next_hop
-            self.node_to_addr
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .insert(node_id.clone(), self.socket_addr);
-
-            if !self
+            if self
                 .sink
                 .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
                 .await
@@ -96,10 +90,12 @@ impl ConnectionPool {
                     false
                 })
             {
+                // Record NodeId → SocketAddr mapping only after sink confirms
                 self.node_to_addr
                     .lock()
                     .trace_expect("Failed to lock mutex")
-                    .remove(&node_id);
+                    .insert(node_id, self.socket_addr);
+            } else {
                 self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
@@ -130,8 +126,7 @@ impl ConnectionPool {
                 .lock()
                 .trace_expect("Failed to lock mutex")
                 .peers
-                .iter()
-                .cloned()
+                .drain()
                 .collect();
             {
                 let mut map = self
@@ -154,7 +149,9 @@ impl ConnectionPool {
         &self,
         bundle: hardy_bpa::Bytes,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
-        // We repeatedly search as this function is async, so changes can happen while running
+        // Retry loop with a limit to prevent spinning when all connections fail
+        const MAX_RETRIES: usize = 3;
+        let mut retries = 0;
         loop {
             // Try to use an idle session
             while let Some(conn) = {
@@ -223,6 +220,12 @@ impl ConnectionPool {
                     .active
                     .remove(&local_addr);
             }
+
+            retries += 1;
+            if retries >= MAX_RETRIES {
+                return Err(bundle);
+            }
+            tokio::task::yield_now().await;
         }
     }
 }
@@ -257,13 +260,32 @@ impl ConnectionRegistry {
     }
 
     /// Resolve a next-hop EID to a SocketAddr for forwarding.
+    /// Returns None if the peer is unknown or the connection pool no longer exists.
     pub fn resolve_next_hop(&self, next_hop: &hardy_bpv7::eid::Eid) -> Option<SocketAddr> {
         let node_id = next_hop.clone().try_to_node_id().ok()?;
-        self.node_to_addr
+        let socket_addr = self
+            .node_to_addr
             .lock()
             .trace_expect("Failed to lock mutex")
             .get(&node_id)
-            .copied()
+            .copied()?;
+
+        // Validate the pool still exists for this address
+        if self
+            .pools
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .contains_key(&socket_addr)
+        {
+            Some(socket_addr)
+        } else {
+            // Stale mapping — pool was removed
+            self.node_to_addr
+                .lock()
+                .trace_expect("Failed to lock mutex")
+                .remove(&node_id);
+            None
+        }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
@@ -313,10 +335,14 @@ impl ConnectionRegistry {
         if let Some(pool) = pool
             && pool.remove(local_addr).await
         {
-            self.pools
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .remove(remote_addr);
+            // Only remove if the pool in the map is still the same instance
+            // (register_session may have replaced it between the two locks)
+            let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
+            if let Some(current) = pools.get(remote_addr) {
+                if Arc::ptr_eq(current, &pool) {
+                    pools.remove(remote_addr);
+                }
+            }
         }
     }
 
