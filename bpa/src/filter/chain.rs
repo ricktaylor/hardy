@@ -185,6 +185,17 @@ impl Level {
             return Ok((bundle, data, ControlFlow::Continue(())));
         }
 
+        // Fast path: single reader runs inline, no task spawn overhead
+        if self.readers.len() == 1 {
+            let result = self.readers[0].filter(&bundle, data.as_ref()).await?;
+            if let ReadResult::Drop(reason) = result {
+                debug!("ReadFilter dropped bundle: {reason:?}");
+                return Ok((bundle, data, ControlFlow::Break(reason)));
+            }
+            return Ok((bundle, data, ControlFlow::Continue(())));
+        }
+
+        // Multiple readers: spawn in parallel
         let shared = Arc::new((bundle, data));
 
         let mut handles = Vec::new();

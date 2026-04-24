@@ -368,7 +368,7 @@ async fn echo_round_trip() {
         node_number: 1,
     };
     let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
@@ -451,7 +451,7 @@ async fn local_delivery() {
         node_number: 1,
     };
     let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
@@ -512,7 +512,7 @@ async fn throughput() {
         node_number: 1,
     };
     let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);
@@ -609,7 +609,7 @@ async fn forwarding_latency() {
         node_number: 1,
     };
     let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id.clone())].as_slice()).unwrap();
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
 
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
     bpa.start(false);

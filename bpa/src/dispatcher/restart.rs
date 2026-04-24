@@ -135,7 +135,7 @@ impl Dispatcher {
 
                 // Write the rewritten bundle now for safety
                 let data = Bytes::from(new_data);
-                let new_storage_name = self.store.save_data(&data).await;
+                let new_storage_name = self.store.save_data(data.clone()).await;
 
                 let bundle = bundle::Bundle {
                     metadata: bundle::BundleMetadata {

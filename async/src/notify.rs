@@ -82,6 +82,24 @@ impl Notify {
         self.0.notify_one();
     }
 
+    /// Wakes all tasks currently waiting on [`notified()`](Notify::notified).
+    ///
+    /// Unlike [`notify_one()`](Notify::notify_one), this does **not** store the
+    /// notification — if no task is waiting at the time of the call, the
+    /// notification is lost.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hardy_async::Notify;
+    ///
+    /// let notify = Notify::new();
+    /// notify.notify_waiters();
+    /// ```
+    pub fn notify_waiters(&self) {
+        self.0.notify_waiters();
+    }
+
     /// Returns a future that completes when this `Notify` is signaled.
     ///
     /// The returned future will complete when [`notify_one()`](Notify::notify_one)

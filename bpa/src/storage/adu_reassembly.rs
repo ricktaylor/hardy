@@ -243,7 +243,7 @@ impl Store {
 
         // Write the rewritten bundle now for safety
         let new_data = Bytes::from(new_data);
-        let new_storage_name = self.save_data(&new_data).await;
+        let new_storage_name = self.save_data(new_data.clone()).await;
         Some((new_storage_name, new_data))
     }
 }
@@ -277,7 +277,7 @@ mod tests {
     }
 
     async fn store_bytes(store: &Store, data: &[u8]) -> Arc<str> {
-        store.save_data(&Bytes::from(data.to_vec())).await
+        store.save_data(Bytes::from(data.to_vec())).await
     }
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {

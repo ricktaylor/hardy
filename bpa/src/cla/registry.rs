@@ -11,7 +11,7 @@ pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
-    name: String,
+    name: Arc<str>,
     // sync::spin::Mutex for O(1) peer HashMap operations
     // Key: ClaAddress (primary key for a link-layer adjacency)
     // Value: (known EIDs for the peer, peer_id in PeerTable)
@@ -76,9 +76,19 @@ impl cla::Sink for Sink {
         peer_node: Option<&NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> cla::Result<()> {
-        let cla_name = self.cla.upgrade().map(|c| c.name.clone().into());
+        let cla_name = self
+            .cla
+            .upgrade()
+            .ok_or(cla::Error::Disconnected)?
+            .name
+            .clone();
         self.dispatcher
-            .receive_bundle(bundle, cla_name, peer_node.cloned(), peer_addr.cloned())
+            .receive_bundle(
+                bundle,
+                Some(cla_name),
+                peer_node.cloned(),
+                peer_addr.cloned(),
+            )
             .await
     }
 
@@ -137,7 +147,7 @@ impl ClaRegistryBuilder {
         e.insert(Arc::new(Cla {
             cla,
             peers: Default::default(),
-            name,
+            name: Arc::from(name.as_str()),
             policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
         }));
         Ok(())
@@ -166,7 +176,7 @@ impl ClaRegistryBuilder {
         for (_, cla) in self.clas {
             registry
                 .register(
-                    cla.name.clone(),
+                    cla.name.to_string(),
                     cla.cla.clone(),
                     dispatcher,
                     Some(cla.policy.clone()),
@@ -229,7 +239,7 @@ impl ClaRegistry {
             e.insert(Arc::new(Cla {
                 cla,
                 peers: Default::default(),
-                name: name.clone(),
+                name: Arc::from(name.as_str()),
                 policy: policy
                     .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
             }))
@@ -261,7 +271,7 @@ impl ClaRegistry {
     }
 
     async fn unregister(&self, cla: Arc<Cla>) {
-        let cla = self.clas.lock().remove(&cla.name);
+        let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
             metrics::gauge!("bpa.cla.registered").decrement(1.0);
