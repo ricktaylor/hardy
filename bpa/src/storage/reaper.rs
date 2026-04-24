@@ -173,7 +173,7 @@ impl Reaper {
                     dispatcher
                         .drop_bundle(
                             bundle,
-                            Some(hardy_bpv7::status_report::ReasonCode::LifetimeExpired),
+                            hardy_bpv7::status_report::ReasonCode::LifetimeExpired,
                         )
                         .await;
                 }

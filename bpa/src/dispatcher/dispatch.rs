@@ -228,7 +228,11 @@ impl Dispatcher {
                 (bundle, data)
             }
             Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return self.drop_bundle(bundle, reason).await;
+                if let Some(reason) = reason {
+                    return self.drop_bundle(bundle, reason).await;
+                } else {
+                    return self.delete_bundle(bundle).await;
+                }
             }
             Err(e) => {
                 error!("Ingress filter execution failed: {e}");
@@ -255,8 +259,7 @@ impl Dispatcher {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
             if bundle.has_expired() {
                 debug!("Bundle lifetime has expired while queued");
-                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired))
-                    .await;
+                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
                 continue;
             }
 
@@ -269,7 +272,7 @@ impl Dispatcher {
                 } else {
                     // Bundle data was deleted while queued
                     dispatcher
-                        .drop_bundle(bundle, Some(ReasonCode::DepletedStorage))
+                        .drop_bundle(bundle, ReasonCode::DepletedStorage)
                         .await;
                 }
             })
@@ -303,8 +306,13 @@ impl Dispatcher {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
             Some(rib::FindResult::Drop(reason)) => {
-                debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
-                self.drop_bundle(bundle, reason).await
+                if let Some(reason) = reason {
+                    debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
+                    self.drop_bundle(bundle, reason).await
+                } else {
+                    debug!("Routing lookup indicates bundle should be dropped without reason");
+                    self.delete_bundle(bundle).await
+                }
             }
             Some(rib::FindResult::AdminEndpoint) => {
                 // The bundle is for the Administrative Endpoint
@@ -359,7 +367,7 @@ impl Dispatcher {
 
                             if bundle.has_expired() {
                                 debug!("Bundle lifetime has expired");
-                                self.drop_bundle(bundle, Some(ReasonCode::LifetimeExpired)).await;
+                                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
                                 continue;
                             }
 
@@ -369,7 +377,7 @@ impl Dispatcher {
                                     dispatcher.process_bundle(bundle, data, dispatcher.cla_registry()).await
                                 } else {
                                     // Bundle data was deleted sometime while we waited, drop the bundle
-                                    dispatcher.drop_bundle(bundle, Some(ReasonCode::DepletedStorage)).await
+                                    dispatcher.drop_bundle(bundle, ReasonCode::DepletedStorage).await
                                 }
                             }).await;
                         }

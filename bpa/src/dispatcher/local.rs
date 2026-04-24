@@ -182,7 +182,11 @@ impl Dispatcher {
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
             Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return self.drop_bundle(bundle, reason).await;
+                if let Some(reason) = reason {
+                    return self.drop_bundle(bundle, reason).await;
+                } else {
+                    return self.delete_bundle(bundle).await;
+                }
             }
             Err(e) => {
                 error!("Deliver filter execution failed: {e}");
@@ -216,7 +220,7 @@ impl Dispatcher {
                             // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
                             return self
-                                .drop_bundle(bundle, Some(ReasonCode::BlockUnintelligible))
+                                .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
                                 .await;
                         }
                         Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
