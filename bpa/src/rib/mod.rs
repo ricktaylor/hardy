@@ -16,7 +16,7 @@ mod route;
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(Arc<cla::entry::ClaEntry>),                // Forward via CLA
+    Forward(Arc<cla::adapter::Adapter>),               // Forward via CLA
     Drop(Option<ReasonCode>),                          // Drop with reason code
 }
 
@@ -25,7 +25,7 @@ type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; /
 struct RibInner {
     locals: local::LocalInner,
     routes: RouteTable,
-    address_types: HashMap<cla::ClaAddressType, Arc<cla::entry::ClaEntry>>,
+    address_types: HashMap<cla::ClaAddressType, Arc<cla::adapter::Adapter>>,
 }
 
 pub struct Rib {
@@ -112,7 +112,7 @@ impl Rib {
     pub fn add_address_type(
         &self,
         address_type: cla::ClaAddressType,
-        cla: Arc<cla::entry::ClaEntry>,
+        cla: Arc<cla::adapter::Adapter>,
     ) {
         self.inner.write().address_types.insert(address_type, cla);
     }
@@ -174,23 +174,23 @@ pub(super) mod tests {
     pub fn add_local_forward(
         rib: &Rib,
         node_id: hardy_bpv7::eid::NodeId,
-        cla_entry: Arc<cla::entry::ClaEntry>,
+        adapter: Arc<cla::adapter::Adapter>,
     ) {
         let pattern: EidPattern = node_id.into();
         let mut inner = rib.inner.write();
         match inner.locals.actions.entry(pattern) {
             btree_map::Entry::Vacant(e) => {
-                e.insert([local::Action::Forward(cla_entry)].into());
+                e.insert([local::Action::Forward(adapter)].into());
             }
             btree_map::Entry::Occupied(mut e) => {
-                e.get_mut().insert(local::Action::Forward(cla_entry));
+                e.get_mut().insert(local::Action::Forward(adapter));
             }
         }
     }
 
-    pub fn make_cla_entry(name: &str) -> Arc<cla::entry::ClaEntry> {
+    pub fn make_adapter(name: &str) -> Arc<cla::adapter::Adapter> {
         use hardy_async::sync::spin::Mutex;
-        Arc::new(cla::entry::ClaEntry {
+        Arc::new(cla::adapter::Adapter {
             cla: Arc::new(NullCla),
             name: Arc::from(name),
             peers: Mutex::new(HashMap::new()),

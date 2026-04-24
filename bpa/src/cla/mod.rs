@@ -3,8 +3,8 @@ use thiserror::Error;
 
 use crate::Bytes;
 
+pub(crate) mod adapter;
 pub(crate) mod engine;
-pub(crate) mod entry;
 mod sink;
 
 /// A specialized `Result` type for CLA operations.

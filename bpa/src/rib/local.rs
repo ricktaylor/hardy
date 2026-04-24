@@ -4,7 +4,7 @@ use super::*;
 pub enum Action {
     AdminEndpoint,                           // Deliver to the admin endpoint
     Local(Arc<services::registry::Service>), // Deliver to local service
-    Forward(Arc<cla::entry::ClaEntry>),      // Forward via CLA
+    Forward(Arc<cla::adapter::Adapter>),     // Forward via CLA
 }
 
 impl PartialOrd for Action {
@@ -32,7 +32,7 @@ impl core::fmt::Display for Action {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
             Action::Local(service) => write!(f, "local service {}", &service.service_id),
-            Action::Forward(cla_entry) => write!(f, "CLA {}", cla_entry.name),
+            Action::Forward(adapter) => write!(f, "CLA {}", adapter.name),
         }
     }
 }
@@ -97,9 +97,9 @@ impl Rib {
 
     /// Add a forward route for a CLA.
     /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
-    pub async fn add_forward(&self, node_id: NodeId, cla_entry: Arc<cla::entry::ClaEntry>) -> bool {
+    pub async fn add_forward(&self, node_id: NodeId, adapter: Arc<cla::adapter::Adapter>) -> bool {
         let pattern: EidPattern = node_id.into();
-        self.add_local(pattern, Action::Forward(cla_entry)).await
+        self.add_local(pattern, Action::Forward(adapter)).await
     }
 
     /// Add a service route for a local service.
@@ -132,11 +132,11 @@ impl Rib {
     }
 
     /// Remove a forward route for a CLA.
-    pub async fn remove_forward(&self, node_id: NodeId, cla_entry: &cla::entry::ClaEntry) -> bool {
+    pub async fn remove_forward(&self, node_id: NodeId, adapter: &cla::adapter::Adapter) -> bool {
         let pattern: EidPattern = node_id.into();
         if !self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Forward(e) if e.as_ref() == cla_entry),
+            |action| matches!(action, Action::Forward(e) if e.as_ref() == adapter),
         ) {
             return false;
         }
@@ -161,7 +161,7 @@ impl Rib {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::make_cla_entry;
+    use super::super::tests::make_adapter;
     use super::*;
 
     #[test]
@@ -169,8 +169,8 @@ mod tests {
     fn test_local_action_sort() {
         // AdminEndpoint < Local < Forward
         let admin = Action::AdminEndpoint;
-        let forward_1 = Action::Forward(make_cla_entry("cla-a"));
-        let forward_2 = Action::Forward(make_cla_entry("cla-b"));
+        let forward_1 = Action::Forward(make_adapter("cla-a"));
+        let forward_2 = Action::Forward(make_adapter("cla-b"));
 
         assert!(admin < forward_1);
         assert!(forward_1 < forward_2);

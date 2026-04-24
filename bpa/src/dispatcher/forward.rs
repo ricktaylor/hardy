@@ -1,10 +1,10 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla_entry,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,adapter,bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         &self,
-        cla_entry: &cla::entry::ClaEntry,
+        adapter: &cla::adapter::Adapter,
         mut bundle: bundle::Bundle,
     ) {
         // Get bundle data from store, now we know we need it!
@@ -73,7 +73,7 @@ impl Dispatcher {
             flow_label: bundle.metadata.writable.flow_label,
         };
 
-        match cla_entry.cla.forward(&info, data).await {
+        match adapter.cla.forward(&info, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;

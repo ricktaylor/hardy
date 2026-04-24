@@ -305,9 +305,9 @@ impl Dispatcher {
                     self.deliver_bundle(service, bundle, data).await
                 }
             }
-            Some(rib::FindResult::Forward(cla_entry)) => {
-                debug!("Forwarding bundle via CLA {}", cla_entry.name);
-                self.forward_bundle(&cla_entry, bundle).await;
+            Some(rib::FindResult::Forward(adapter)) => {
+                debug!("Forwarding bundle via CLA {}", adapter.name);
+                self.forward_bundle(&adapter, bundle).await;
             }
             Some(rib::FindResult::Deliver(None)) | None => {
                 // No route or service available yet

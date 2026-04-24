@@ -1,14 +1,14 @@
 use hardy_async::async_trait;
 use hardy_bpv7::eid::NodeId;
 
+use super::adapter::Adapter;
 use super::engine::ClaEngine;
-use super::entry::ClaEntry;
 use super::{ClaAddress, Result};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes, Weak};
 
 pub(super) struct ClaCallback {
-    pub cla: Weak<ClaEntry>,
+    pub cla: Weak<Adapter>,
     pub engine: Arc<ClaEngine>,
     pub dispatcher: Arc<Dispatcher>,
 }

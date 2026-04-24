@@ -5,15 +5,15 @@ use core::hash::BuildHasher;
 enum InternalFindResult<'a> {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(Vec<(Arc<cla::entry::ClaEntry>, &'a Eid)>), // CLA entry -> next_hop pairs
+    Forward(Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>), // CLA entry -> next_hop pairs
     Drop(Option<ReasonCode>),                          // Drop with reason code
     Reflect,                                           // Reflect
 }
 
 /// Insert into a sorted vec, maintaining sort order by CLA name. Skips duplicates.
 fn sorted_insert<'a>(
-    peers: &mut Vec<(Arc<cla::entry::ClaEntry>, &'a Eid)>,
-    entry: Arc<cla::entry::ClaEntry>,
+    peers: &mut Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>,
+    entry: Arc<cla::adapter::Adapter>,
     next_hop: &'a Eid,
 ) {
     if !peers.iter().any(|(e, _)| e == &entry) {
@@ -126,7 +126,7 @@ fn map_result(
 
 #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
 fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFindResult<'a>> {
-    let mut peers: Option<Vec<(Arc<cla::entry::ClaEntry>, &'a Eid)>> = None;
+    let mut peers: Option<Vec<(Arc<cla::adapter::Adapter>, &'a Eid)>> = None;
 
     // Iterate through all local patterns and find matches
     for (pattern, actions) in &inner.locals.actions {
@@ -141,11 +141,11 @@ fn find_local_inner<'a>(inner: &'a RibInner, to: &'a Eid) -> Option<InternalFind
                         debug!("Deliver to Service {}", service.service_id);
                         return Some(InternalFindResult::Deliver(Some(service.clone())));
                     }
-                    local::Action::Forward(cla_entry) => {
+                    local::Action::Forward(adapter) => {
                         if let Some(peers) = &mut peers {
-                            sorted_insert(peers, cla_entry.clone(), to);
+                            sorted_insert(peers, adapter.clone(), to);
                         } else {
-                            peers = Some(vec![(cla_entry.clone(), to)]);
+                            peers = Some(vec![(adapter.clone(), to)]);
                         }
                     }
                 }
@@ -229,7 +229,7 @@ fn find_recurse<'a>(
                                         sorted_insert(peers, entry, via);
                                     }
                                 } else {
-                                    let mut peers: Vec<(Arc<cla::entry::ClaEntry>, &'a Eid)> =
+                                    let mut peers: Vec<(Arc<cla::adapter::Adapter>, &'a Eid)> =
                                         sub_peers
                                             .into_iter()
                                             .map(|(entry, _)| (entry, via))
@@ -261,7 +261,7 @@ fn find_recurse<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::make_cla_entry;
+    use super::super::tests::make_adapter;
     use super::*;
     use rib::tests::{add_local_forward, add_route, make_rib};
 
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn test_exact_match() {
         let rib = make_rib();
-        let cla = make_cla_entry("test-cla");
+        let cla = make_adapter("test-cla");
 
         add_local_forward(&rib, ipn_node(2), cla.clone());
 
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn test_default_route() {
         let rib = make_rib();
-        let cla = make_cla_entry("gw-cla");
+        let cla = make_adapter("gw-cla");
 
         add_route(
             &rib,
@@ -374,7 +374,7 @@ mod tests {
         // Add a Reflect route for ipn:0.5.*
         add_route(&rib, "ipn:0.5.*", "reflect", routes::Action::Reflect, 10);
 
-        let cla = make_cla_entry("reflect-cla");
+        let cla = make_adapter("reflect-cla");
         add_local_forward(&rib, ipn_node(4), cla);
 
         let mut bundle = make_bundle("ipn:0.5.1");
@@ -422,8 +422,8 @@ mod tests {
             10,
         );
 
-        let cla_a = make_cla_entry("ecmp-a");
-        let cla_b = make_cla_entry("ecmp-b");
+        let cla_a = make_adapter("ecmp-a");
+        let cla_b = make_adapter("ecmp-b");
         add_local_forward(&rib, ipn_node(10), cla_a);
         add_local_forward(&rib, ipn_node(11), cla_b);
 

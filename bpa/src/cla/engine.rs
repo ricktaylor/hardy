@@ -3,7 +3,7 @@ use hardy_async::sync::spin::Mutex;
 use hardy_bpv7::eid::NodeId;
 use tracing::{debug, info};
 
-use super::entry::ClaEntry;
+use super::adapter::Adapter;
 use super::sink::ClaCallback;
 use super::{Cla, ClaAddress};
 use crate::dispatcher::Dispatcher;
@@ -18,7 +18,7 @@ use crate::{Arc, HashMap, hash_map};
 //
 // CLA engine in the building phase — only insert() is available.
 pub(crate) struct ClaEngineBuilder {
-    clas: HashMap<String, Arc<ClaEntry>>,
+    clas: HashMap<String, Arc<Adapter>>,
 }
 
 impl ClaEngineBuilder {
@@ -33,7 +33,7 @@ impl ClaEngineBuilder {
             return Err(super::Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
-        e.insert(Arc::new(ClaEntry {
+        e.insert(Arc::new(Adapter {
             cla,
             peers: Default::default(),
             name: name.into(),
@@ -68,7 +68,7 @@ impl ClaEngineBuilder {
 // CLA registry in the running phase — full register/unregister available.
 pub(crate) struct ClaEngine {
     node_ids: Arc<NodeIds>,
-    clas: Mutex<HashMap<String, Arc<ClaEntry>>>,
+    clas: Mutex<HashMap<String, Arc<Adapter>>>,
     rib: Arc<Rib>,
     pub(super) tasks: TaskPool,
 }
@@ -101,7 +101,7 @@ impl ClaEngine {
             let hash_map::Entry::Vacant(e) = clas.entry(name.clone()) else {
                 return Err(super::Error::AlreadyExists(name));
             };
-            e.insert(Arc::new(ClaEntry {
+            e.insert(Arc::new(Adapter {
                 cla,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
@@ -133,7 +133,7 @@ impl ClaEngine {
         Ok(node_ids)
     }
 
-    pub(super) async fn unregister(&self, cla: Arc<ClaEntry>) {
+    pub(super) async fn unregister(&self, cla: Arc<Adapter>) {
         let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
@@ -142,7 +142,7 @@ impl ClaEngine {
         }
     }
 
-    async fn unregister_cla(&self, cla: Arc<ClaEntry>) {
+    async fn unregister_cla(&self, cla: Arc<Adapter>) {
         cla.cla.on_unregister().await;
 
         if let Some(address_type) = cla.cla.address_type() {
@@ -162,7 +162,7 @@ impl ClaEngine {
 
     pub(super) async fn add_peer(
         &self,
-        cla: Arc<ClaEntry>,
+        cla: Arc<Adapter>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
@@ -196,7 +196,7 @@ impl ClaEngine {
         true
     }
 
-    pub(super) async fn remove_peer(&self, cla: Arc<ClaEntry>, cla_addr: &ClaAddress) -> bool {
+    pub(super) async fn remove_peer(&self, cla: Arc<Adapter>, cla_addr: &ClaAddress) -> bool {
         let Some(node_ids) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
