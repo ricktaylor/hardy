@@ -3,7 +3,6 @@ mod config;
 mod error;
 mod static_routes;
 
-use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
 
@@ -166,11 +165,6 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
     #[cfg(not(feature = "echo"))]
     if config.built_in_services.echo.is_some() {
         warn!("Ignoring built-in-services.echo: echo feature is disabled at compile time");
-    }
-
-    let mut policies = HashMap::new();
-    for (name, policy_config) in config.policies {
-        policies.insert(name, policy_config.build()?);
     }
 
     for cla_config in config.clas {

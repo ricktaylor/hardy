@@ -135,7 +135,6 @@ pub trait BpaRegistration: Send + Sync {
     ///
     /// * `name` - Unique name for this CLA instance
     /// * `cla` - The CLA implementation
-    /// * `policy` - Optional egress policy for traffic shaping
     ///
     /// # Returns
     ///

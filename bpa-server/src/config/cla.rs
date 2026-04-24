@@ -13,8 +13,6 @@ pub struct Config {
     pub name: String,
     #[serde(flatten)]
     pub cla_type: ClaType,
-    #[serde(default)]
-    pub policy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

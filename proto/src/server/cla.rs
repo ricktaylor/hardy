@@ -131,9 +131,8 @@ impl hardy_bpa::cla::Cla for Cla {
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                 bundle,
-                // TODO: Update proto schema to use next_hop/flow_label
-                address: None,
-                queue: info.flow_label,
+                next_hop: info.next_hop.to_string(),
+                flow_label: info.flow_label,
             }))
             .await?
         {

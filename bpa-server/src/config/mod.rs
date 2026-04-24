@@ -1,5 +1,4 @@
 use core::num::NonZeroUsize;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hardy_async::available_parallelism;
@@ -10,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 pub mod cla;
-pub mod policy;
 pub mod storage;
 
 use crate::error::Error;
@@ -139,10 +137,6 @@ pub struct Config {
     // Absent key = service disabled.
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
-
-    /// Named egress policies, referenced by CLAs
-    #[serde(default)]
-    pub policies: HashMap<String, policy::EgressPolicyConfig>,
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
