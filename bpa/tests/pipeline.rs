@@ -42,11 +42,10 @@ impl cla::Cla for PipelineCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        bundle: Bytes,
+        _info: &cla::ForwardInfo<'_>,
+        data: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
-        let _ = self.forwarded_tx.send(bundle);
+        let _ = self.forwarded_tx.send(data);
         Ok(cla::ForwardBundleResult::Sent)
     }
 }
@@ -197,9 +196,8 @@ impl cla::Cla for TimedCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle: Bytes,
+        _info: &cla::ForwardInfo<'_>,
+        _data: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(tokio::time::Instant::now());
         Ok(cla::ForwardBundleResult::Sent)
@@ -299,7 +297,7 @@ async fn app_to_cla_routing() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone())
         .await
         .unwrap();
 
@@ -381,7 +379,7 @@ async fn echo_round_trip() {
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone())
         .await
         .unwrap();
 
@@ -464,7 +462,7 @@ async fn local_delivery() {
 
     // Register CLA (needed for dispatch)
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone())
         .await
         .unwrap();
 
@@ -518,7 +516,7 @@ async fn throughput() {
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone())
         .await
         .unwrap();
 
@@ -615,7 +613,7 @@ async fn forwarding_latency() {
     bpa.start(false);
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone())
         .await
         .unwrap();
 

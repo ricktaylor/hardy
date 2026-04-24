@@ -37,8 +37,7 @@ impl hardy_bpa::cla::Cla for Cla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        info: &hardy_bpa::cla::ForwardInfo<'_>,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let _sink = self.sink.get().ok_or_else(|| {
@@ -46,9 +45,9 @@ impl hardy_bpa::cla::Cla for Cla {
             hardy_bpa::cla::Error::Disconnected
         })?;
 
-        if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
-            && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
-            && self.inboxes.values().any(|p| p == addr_str)
+        // Resolve next_hop to a NodeId, then look up the inbox path
+        if let Ok(node_id) = info.next_hop.clone().try_to_node_id()
+            && let Some(addr_str) = self.inboxes.get(&node_id)
         {
             // Write bundle to peer's inbox directory
             let path = match hardy_bpv7::bundle::Id::parse(&bundle) {

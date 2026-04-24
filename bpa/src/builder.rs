@@ -9,7 +9,7 @@ use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
+
 use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
 use crate::services::registry::ServiceRegistryBuilder;
@@ -102,14 +102,9 @@ impl BpaBuilder {
     }
 
     /// Register a CLA to be initialized when the BPA is built.
-    pub fn cla(
-        mut self,
-        name: impl Into<String>,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> Self {
+    pub fn cla(mut self, name: impl Into<String>, cla: Arc<dyn Cla>) -> Self {
         self.cla_engine_builder
-            .insert(name.into(), cla, policy)
+            .insert(name.into(), cla)
             .expect("Failed to insert CLA");
         self
     }
@@ -194,19 +189,10 @@ impl BpaBuilder {
         let (service_registry, cla_engine) = futures::join!(
             self.service_registry_builder
                 .build(&node_ids, &rib, &dispatcher),
-            self.cla_engine_builder.build(
-                &node_ids,
-                self.poll_channel_depth.into(),
-                &rib,
-                &store,
-                &dispatcher,
-            ),
+            self.cla_engine_builder.build(&node_ids, &rib, &dispatcher,),
         );
         let service_registry = service_registry?;
         let cla_engine = cla_engine?;
-
-        // TODO: Remove this circular dependency between Dispatcher and ClaEngine
-        dispatcher.set_cla_engine(cla_engine.clone());
 
         Ok(Bpa::from_parts(
             node_ids,

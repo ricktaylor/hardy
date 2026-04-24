@@ -4,16 +4,11 @@ use hardy_bpv7::eid::NodeId;
 use tracing::{debug, info};
 
 use super::entry::ClaEntry;
-use super::peers::{Peer, PeerTable};
 use super::sink::ClaCallback;
 use super::{Cla, ClaAddress};
-use crate::bundle::Bundle;
 use crate::dispatcher::Dispatcher;
 use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
-use crate::policy::null_policy::EgressPolicy as NullEgressPolicy;
 use crate::rib::Rib;
-use crate::storage::Store;
 use crate::{Arc, HashMap, hash_map};
 // CLA engine uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -33,12 +28,7 @@ impl ClaEngineBuilder {
         }
     }
 
-    pub fn insert(
-        &mut self,
-        name: String,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> super::Result<()> {
+    pub fn insert(&mut self, name: String, cla: Arc<dyn Cla>) -> super::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
             return Err(super::Error::AlreadyExists(name));
         };
@@ -47,7 +37,6 @@ impl ClaEngineBuilder {
             cla,
             peers: Default::default(),
             name: name.into(),
-            policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy::new())),
         }));
         Ok(())
     }
@@ -56,30 +45,19 @@ impl ClaEngineBuilder {
     pub async fn build(
         self,
         node_ids: &Arc<NodeIds>,
-        poll_channel_depth: usize,
         rib: &Arc<Rib>,
-        store: &Arc<Store>,
         dispatcher: &Arc<Dispatcher>,
     ) -> super::Result<Arc<ClaEngine>> {
-        let peers = Arc::new(PeerTable::new());
         let engine = Arc::new(ClaEngine {
             node_ids: node_ids.clone(),
             clas: Mutex::new(Default::default()),
             rib: rib.clone(),
-            store: store.clone(),
-            peers,
-            poll_channel_depth,
             tasks: TaskPool::new(),
         });
 
         for (_, cla) in self.clas {
             engine
-                .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
-                    dispatcher,
-                    Some(cla.policy.clone()),
-                )
+                .register(cla.name.to_string(), cla.cla.clone(), dispatcher)
                 .await?;
         }
 
@@ -92,17 +70,10 @@ pub(crate) struct ClaEngine {
     node_ids: Arc<NodeIds>,
     clas: Mutex<HashMap<String, Arc<ClaEntry>>>,
     rib: Arc<Rib>,
-    store: Arc<Store>,
-    peers: Arc<PeerTable>,
-    poll_channel_depth: usize,
     pub(super) tasks: TaskPool,
 }
 
 impl ClaEngine {
-    pub async fn forward(&self, peer_id: u32, bundle: Bundle) -> core::result::Result<(), Bundle> {
-        self.peers.forward(peer_id, bundle).await
-    }
-
     pub async fn shutdown(&self) {
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
@@ -123,7 +94,6 @@ impl ClaEngine {
         name: String,
         cla: Arc<dyn Cla>,
         dispatcher: &Arc<Dispatcher>,
-        policy: Option<Arc<dyn EgressPolicy>>,
     ) -> super::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
         let entry = {
@@ -135,7 +105,6 @@ impl ClaEngine {
                 cla,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
-                policy: policy.unwrap_or_else(|| Arc::new(NullEgressPolicy::new())),
             }))
             .clone()
         };
@@ -181,13 +150,11 @@ impl ClaEngine {
         }
 
         let peers = core::mem::take(&mut *cla.peers.lock());
-        for (_, (node_ids, peer_id)) in peers {
-            // Remove RIB entries for all EIDs associated with this address
+        for (_, node_ids) in peers {
             for node_id in node_ids {
-                self.rib.remove_forward(node_id, peer_id).await;
+                self.rib.remove_forward(node_id, &cla).await;
                 metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
-            self.peers.remove(peer_id).await;
         }
 
         info!("Unregistered CLA: {}", cla.name);
@@ -196,37 +163,15 @@ impl ClaEngine {
     pub(super) async fn add_peer(
         &self,
         cla: Arc<ClaEntry>,
-        dispatcher: Arc<Dispatcher>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        // Check if peer already exists (without holding lock across async)
-        if cla.peers.lock().contains_key(&cla_addr) {
-            return false;
-        }
-
-        // Reserve a peer_id first, then create a fully initialized peer
-        let peer_id = self.peers.reserve();
-        let peer = Arc::new(
-            Peer::new(
-                cla.clone(),
-                peer_id,
-                cla_addr.clone(),
-                self.poll_channel_depth,
-                self.store.clone(),
-                dispatcher,
-                &self.tasks,
-            )
-            .await,
-        );
-        self.peers.activate(peer_id, peer);
-
-        // Insert into cla.peers — if it was added concurrently, clean up
+        // Record the mapping in the CLA entry
         let inserted = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
                 hash_map::Entry::Vacant(e) => {
-                    e.insert((node_ids.to_vec(), peer_id));
+                    e.insert(node_ids.to_vec());
                     true
                 }
                 hash_map::Entry::Occupied(_) => false,
@@ -234,35 +179,34 @@ impl ClaEngine {
         };
 
         if !inserted {
-            self.peers.remove(peer_id).await;
             return false;
         }
 
-        let cla_name = cla.name.clone();
-        debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
+        debug!(
+            "Added peer [{node_ids:?}] at {cla_addr} via CLA {}",
+            cla.name
+        );
 
-        // Add RIB entry for each known EID.
-        // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
+        // Install RIB entries — the RIB now maps NodeId → CLA entry
         for node_id in node_ids {
-            self.rib.add_forward(node_id.clone(), peer_id).await;
-            metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
+            self.rib.add_forward(node_id.clone(), cla.clone()).await;
+            metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).increment(1.0);
         }
 
         true
     }
 
     pub(super) async fn remove_peer(&self, cla: Arc<ClaEntry>, cla_addr: &ClaAddress) -> bool {
-        let Some((node_ids, peer_id)) = cla.peers.lock().remove(cla_addr) else {
+        let Some(node_ids) = cla.peers.lock().remove(cla_addr) else {
             return false;
         };
 
-        self.peers.remove(peer_id).await;
         for node_id in node_ids {
-            self.rib.remove_forward(node_id, peer_id).await;
+            self.rib.remove_forward(node_id, &cla).await;
             metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
         }
 
-        debug!("Removed peer {peer_id}");
+        debug!("Removed peer at {cla_addr} from CLA {}", cla.name);
 
         true
     }
@@ -294,9 +238,8 @@ mod tests {
         async fn on_unregister(&self) {}
         async fn forward(
             &self,
-            _queue: Option<u32>,
-            _cla_addr: &ClaAddress,
-            _bundle: bytes::Bytes,
+            _info: &cla::ForwardInfo<'_>,
+            _data: bytes::Bytes,
         ) -> cla::Result<ForwardBundleResult> {
             Ok(ForwardBundleResult::Sent)
         }
@@ -309,11 +252,11 @@ mod tests {
         bpa.start(false);
 
         let cla1 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
+        let result = bpa.register_cla("test-cla".to_string(), cla1).await;
         assert!(result.is_ok(), "First CLA registration should succeed");
 
         let cla2 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla2, None).await;
+        let result = bpa.register_cla("test-cla".to_string(), cla2).await;
         assert!(
             matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
             "Duplicate CLA name should return AlreadyExists, got: {result:?}"
@@ -329,7 +272,7 @@ mod tests {
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("lifecycle-cla".to_string(), cla.clone())
             .await
             .unwrap();
 
@@ -365,7 +308,7 @@ mod tests {
         bpa.start(false);
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("cascade-cla".to_string(), cla.clone())
             .await
             .unwrap();
 
@@ -391,9 +334,7 @@ mod tests {
 
         // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());
-        let result = bpa
-            .register_cla("cascade-cla".to_string(), cla2, None)
-            .await;
+        let result = bpa.register_cla("cascade-cla".to_string(), cla2).await;
         assert!(
             result.is_ok(),
             "Re-registration after unregister should succeed, got: {result:?}"

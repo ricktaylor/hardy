@@ -60,8 +60,7 @@ impl hardy_bpa::cla::Cla for Cla {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
+        info: &hardy_bpa::cla::ForwardInfo<'_>,
         mut bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let ctx = self.connection_context().ok_or_else(|| {
@@ -69,13 +68,14 @@ impl hardy_bpa::cla::Cla for Cla {
             hardy_bpa::cla::Error::Disconnected
         })?;
 
-        if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
+        // TODO: Resolve info.next_hop → SocketAddr via internal peer table
+        if let Some(remote_addr) = self.registry.resolve_next_hop(info.next_hop) {
             debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
 
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
                 // See if we have an active connection already
-                bundle = match self.registry.forward(remote_addr, bundle).await {
+                bundle = match self.registry.forward(&remote_addr, bundle).await {
                     Ok(r) => {
                         debug!("Bundle forwarded successfully using existing connection");
                         return Ok(r);
@@ -91,7 +91,7 @@ impl hardy_bpa::cla::Cla for Cla {
                     tasks: self.tasks.clone(),
                     ctx: ctx.clone(),
                 };
-                match conn.connect(remote_addr).await {
+                match conn.connect(&remote_addr).await {
                     Ok(()) | Err(transport::Error::Timeout) => {}
                     Err(_) => {
                         // No point retrying

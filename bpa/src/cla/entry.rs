@@ -6,15 +6,13 @@ use hardy_async::sync::spin::Mutex;
 use hardy_bpv7::eid::NodeId;
 
 use super::{Cla, ClaAddress};
-use crate::policy::EgressPolicy;
 use crate::{Arc, HashMap};
 
 /// A registered CLA instance with its runtime state.
 pub struct ClaEntry {
-    pub(super) cla: Arc<dyn Cla>,
-    pub(super) policy: Arc<dyn EgressPolicy>,
-    pub(super) name: Arc<str>,
-    pub(super) peers: Mutex<HashMap<ClaAddress, (Vec<NodeId>, u32)>>,
+    pub(crate) cla: Arc<dyn Cla>,
+    pub(crate) name: Arc<str>,
+    pub(crate) peers: Mutex<HashMap<ClaAddress, Vec<NodeId>>>,
 }
 
 impl PartialEq for ClaEntry {
@@ -40,6 +38,12 @@ impl Ord for ClaEntry {
 impl Hash for ClaEntry {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
+    }
+}
+
+impl core::fmt::Display for ClaEntry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{}", self.name)
     }
 }
 

@@ -8,7 +8,7 @@ use crate::cla::engine::ClaEngine;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
-use crate::policy::EgressPolicy;
+
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
 use crate::services::Service;
@@ -144,7 +144,6 @@ pub trait BpaRegistration: Send + Sync {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -332,16 +331,9 @@ impl BpaRegistration for Bpa {
             .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, cla, policy)))]
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
-    ) -> cla::Result<Vec<NodeId>> {
-        self.cla_engine
-            .register(name, cla, &self.dispatcher, policy)
-            .await
+    #[cfg_attr(feature = "instrument", instrument(skip(self, cla)))]
+    async fn register_cla(&self, name: String, cla: Arc<dyn Cla>) -> cla::Result<Vec<NodeId>> {
+        self.cla_engine.register(name, cla, &self.dispatcher).await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, service)))]

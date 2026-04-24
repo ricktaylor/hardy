@@ -17,8 +17,6 @@ pub(crate) struct Dispatcher {
     rib: Arc<rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_engine: Arc<filter::FilterEngine>,
-    cla_engine: hardy_async::sync::spin::Once<Arc<cla::engine::ClaEngine>>,
-
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
 
@@ -82,7 +80,6 @@ impl Dispatcher {
             rib,
             keys_registry,
             filter_engine,
-            cla_engine: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
             status_reports,
             node_ids,
@@ -95,16 +92,6 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
-    }
-
-    pub fn set_cla_engine(&self, cla_engine: Arc<cla::engine::ClaEngine>) {
-        self.cla_engine.call_once(|| cla_engine);
-    }
-
-    fn cla_engine(&self) -> &Arc<cla::engine::ClaEngine> {
-        self.cla_engine
-            .get()
-            .trace_expect("CLA registry not initialized")
     }
 
     pub async fn shutdown(&self) {

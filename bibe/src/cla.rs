@@ -95,24 +95,10 @@ impl Cla for BibeCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
-        cla_addr: &ClaAddress,
+        info: &hardy_bpa::cla::ForwardInfo<'_>,
         bundle: Bytes,
     ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
-        // Decode destination EID from CBOR in ClaAddress
-        let ClaAddress::Private(dest_bytes) = cla_addr else {
-            warn!("BIBE forward called with non-Private ClaAddress");
-            return Ok(ForwardBundleResult::NoNeighbour);
-        };
-
-        let outer_dest: Eid = match hardy_cbor::decode::parse(dest_bytes) {
-            Ok(eid) => eid,
-            Err(e) => {
-                warn!("Failed to decode destination EID from ClaAddress: {e}");
-                return Ok(ForwardBundleResult::NoNeighbour);
-            }
-        };
-
+        let outer_dest = info.next_hop.clone();
         debug!("BIBE encapsulating bundle to {outer_dest}");
 
         // Encapsulate the bundle

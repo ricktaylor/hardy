@@ -219,6 +219,14 @@ impl ConnectionRegistry {
         pools.clear();
     }
 
+    /// Resolve a next-hop EID to a SocketAddr for forwarding.
+    /// TODO: Implement proper NodeId → SocketAddr mapping from add_peer
+    pub fn resolve_next_hop(&self, _next_hop: &hardy_bpv7::eid::Eid) -> Option<SocketAddr> {
+        // Temporary: return the first known peer address
+        let pools = self.pools.lock().trace_expect("Failed to lock mutex");
+        pools.keys().next().copied()
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
     pub async fn register_session(
         &self,

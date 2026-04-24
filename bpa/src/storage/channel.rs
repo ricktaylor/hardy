@@ -134,6 +134,7 @@ impl Sender {
 
 /// Error returned when a bundle cannot be sent.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SendError(pub Bundle);
 
 impl Sender {

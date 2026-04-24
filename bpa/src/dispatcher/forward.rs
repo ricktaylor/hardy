@@ -1,15 +1,8 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
-    pub async fn forward_bundle(
-        &self,
-        cla: &dyn cla::Cla,
-        peer: u32,
-        queue: Option<u32>,
-        cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
-    ) {
+    #[cfg_attr(feature = "instrument", instrument(skip(self,cla_entry,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn forward_bundle(&self, cla_entry: &cla::entry::ClaEntry, bundle: bundle::Bundle) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
             // Bundle data was deleted sometime during processing
@@ -53,26 +46,35 @@ impl Dispatcher {
             }
         };
 
-        // And pass to CLA
-        match cla.forward(queue, cla_addr, data).await {
+        // Build forwarding context from bundle metadata
+        let next_hop = bundle
+            .metadata
+            .read_only
+            .next_hop
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| bundle.bundle.destination.clone());
+
+        let info = cla::ForwardInfo {
+            next_hop: &next_hop,
+            flow_label: bundle.metadata.writable.flow_label,
+        };
+
+        match cla_entry.cla.forward(&info, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
 
-                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
                 self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
                     .await;
                 return self.delete_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
-                debug!(
-                    "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
-                );
+                debug!("CLA indicates neighbour has gone");
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                debug!("Failed to forward bundle: {e}");
             }
         }
 

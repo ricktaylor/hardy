@@ -59,7 +59,6 @@ impl BpaRegistration for MockBpa {
         &self,
         _name: String,
         cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());

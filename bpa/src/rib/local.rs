@@ -4,7 +4,7 @@ use super::*;
 pub enum Action {
     AdminEndpoint,                           // Deliver to the admin endpoint
     Local(Arc<services::registry::Service>), // Deliver to local service
-    Forward(u32),                            // Forward to a cla peer
+    Forward(Arc<cla::entry::ClaEntry>),      // Forward via CLA
 }
 
 impl PartialOrd for Action {
@@ -15,7 +15,6 @@ impl PartialOrd for Action {
 
 impl Ord for Action {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // The order is critical, hence done long-hand
         match (self, other) {
             (Action::AdminEndpoint, Action::AdminEndpoint) => core::cmp::Ordering::Equal,
             (Action::AdminEndpoint, _) => core::cmp::Ordering::Less,
@@ -33,9 +32,7 @@ impl core::fmt::Display for Action {
         match self {
             Action::AdminEndpoint => write!(f, "administrative endpoint"),
             Action::Local(service) => write!(f, "local service {}", &service.service_id),
-            Action::Forward(peer) => {
-                write!(f, "CLA peer {peer}")
-            }
+            Action::Forward(cla_entry) => write!(f, "CLA {}", cla_entry.name),
         }
     }
 }
@@ -98,11 +95,11 @@ impl Rib {
         true
     }
 
-    /// Add a forward route for a CLA peer.
+    /// Add a forward route for a CLA.
     /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
-    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    pub async fn add_forward(&self, node_id: NodeId, cla_entry: Arc<cla::entry::ClaEntry>) -> bool {
         let pattern: EidPattern = node_id.into();
-        self.add_local(pattern, Action::Forward(peer)).await
+        self.add_local(pattern, Action::Forward(cla_entry)).await
     }
 
     /// Add a service route for a local service.
@@ -134,12 +131,12 @@ impl Rib {
             .unwrap_or(false)
     }
 
-    /// Remove a forward route for a CLA peer.
-    pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    /// Remove a forward route for a CLA.
+    pub async fn remove_forward(&self, node_id: NodeId, cla_entry: &cla::entry::ClaEntry) -> bool {
         let pattern: EidPattern = node_id.into();
         if !self.remove_local(
             &pattern,
-            |action| matches!(action, Action::Forward(p) if &peer == p),
+            |action| matches!(action, Action::Forward(e) if e.as_ref() == cla_entry),
         ) {
             return false;
         }
@@ -160,14 +157,16 @@ impl Rib {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::make_cla_entry;
     use super::*;
 
     #[test]
+    #[allow(clippy::mutable_key_type)]
     fn test_local_action_sort() {
         // AdminEndpoint < Local < Forward
         let admin = Action::AdminEndpoint;
-        let forward_1 = Action::Forward(1);
-        let forward_2 = Action::Forward(2);
+        let forward_1 = Action::Forward(make_cla_entry("cla-a"));
+        let forward_2 = Action::Forward(make_cla_entry("cla-b"));
 
         assert!(admin < forward_1);
         assert!(forward_1 < forward_2);
@@ -185,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::mutable_key_type)]
     fn test_implicit_routes() {
         use hardy_bpv7::eid::IpnNodeId;
 

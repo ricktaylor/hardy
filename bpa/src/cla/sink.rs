@@ -35,10 +35,7 @@ impl super::Sink for ClaCallback {
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> Result<bool> {
         let cla = self.cla.upgrade().ok_or(super::Error::Disconnected)?;
-        Ok(self
-            .engine
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
-            .await)
+        Ok(self.engine.add_peer(cla, cla_addr, node_ids).await)
     }
 
     async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool> {

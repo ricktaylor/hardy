@@ -5,13 +5,21 @@ async fn forward(
     cla: &dyn hardy_bpa::cla::Cla,
     request: ForwardBundleRequest,
 ) -> Result<ForwardBundleResponse, tonic::Status> {
-    let cla_addr = request
+    // TODO: Update proto schema to use next_hop/flow_label instead of address/queue
+    let _cla_addr: hardy_bpa::cla::ClaAddress = request
         .address
         .ok_or(tonic::Status::invalid_argument("Missing address"))?
         .try_into()?;
 
+    // Derive next_hop from the address for now
+    let next_hop: hardy_bpv7::eid::Eid = hardy_bpv7::eid::Eid::Null;
+    let info = hardy_bpa::cla::ForwardInfo {
+        next_hop: &next_hop,
+        flow_label: request.queue,
+    };
+
     let result = match cla
-        .forward(request.queue, &cla_addr, request.bundle)
+        .forward(&info, request.bundle)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {

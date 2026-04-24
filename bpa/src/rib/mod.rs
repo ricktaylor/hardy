@@ -16,7 +16,7 @@ mod route;
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(u32),                                      // Forward to peer
+    Forward(Arc<cla::entry::ClaEntry>),                // Forward via CLA
     Drop(Option<ReasonCode>),                          // Drop with reason code
 }
 
@@ -171,16 +171,49 @@ pub(super) mod tests {
     }
 
     // Add a local forward entry directly (sync, no store interaction).
-    pub fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {
+    pub fn add_local_forward(
+        rib: &Rib,
+        node_id: hardy_bpv7::eid::NodeId,
+        cla_entry: Arc<cla::entry::ClaEntry>,
+    ) {
         let pattern: EidPattern = node_id.into();
         let mut inner = rib.inner.write();
         match inner.locals.actions.entry(pattern) {
             btree_map::Entry::Vacant(e) => {
-                e.insert([local::Action::Forward(peer)].into());
+                e.insert([local::Action::Forward(cla_entry)].into());
             }
             btree_map::Entry::Occupied(mut e) => {
-                e.get_mut().insert(local::Action::Forward(peer));
+                e.get_mut().insert(local::Action::Forward(cla_entry));
             }
+        }
+    }
+
+    pub fn make_cla_entry(name: &str) -> Arc<cla::entry::ClaEntry> {
+        use hardy_async::sync::spin::Mutex;
+        Arc::new(cla::entry::ClaEntry {
+            cla: Arc::new(NullCla),
+            name: Arc::from(name),
+            peers: Mutex::new(HashMap::new()),
+        })
+    }
+
+    // Minimal CLA for tests
+    struct NullCla;
+    #[hardy_async::async_trait]
+    impl cla::Cla for NullCla {
+        async fn on_register(
+            &self,
+            _sink: Box<dyn cla::Sink>,
+            _node_ids: &[hardy_bpv7::eid::NodeId],
+        ) {
+        }
+        async fn on_unregister(&self) {}
+        async fn forward(
+            &self,
+            _info: &cla::ForwardInfo<'_>,
+            _data: Bytes,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            Ok(cla::ForwardBundleResult::Sent)
         }
     }
 

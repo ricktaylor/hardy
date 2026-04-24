@@ -49,9 +49,7 @@ impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
         &self,
         name: String,
         cla: Arc<dyn hardy_bpa::cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Note: policy is not supported over gRPC currently
         cla::register_cla(self.grpc_addr.clone(), name, cla).await
     }
 

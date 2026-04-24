@@ -178,21 +178,8 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
             continue;
         };
 
-        let egress_policy = cla_config
-            .policy
-            .as_ref()
-            .map(|name| {
-                policies.get(name).cloned().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "CLA '{}' references unknown policy '{name}'",
-                        cla_config.name
-                    )
-                })
-            })
-            .transpose()?;
-
         let name = cla_config.name;
-        builder = builder.cla(name, cla, egress_policy);
+        builder = builder.cla(name, cla);
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
