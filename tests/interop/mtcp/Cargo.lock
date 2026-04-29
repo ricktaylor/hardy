@@ -142,6 +142,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,6 +815,7 @@ dependencies = [
 name = "hardy-bpa"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "base64",
  "bytes",
  "flume",
@@ -828,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpv7"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -851,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-cbor"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "half",
  "num-traits",
@@ -860,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-eid-patterns"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "glob",
  "hardy-bpv7",
@@ -1194,9 +1204,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"
-version = "0.16.3"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
+checksum = "0e0b564323a0fb6d54b864f625ae139de9612e27edb944dda37c109f05aac531"
 
 [[package]]
 name = "matchers"
