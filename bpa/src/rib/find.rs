@@ -5,10 +5,10 @@ use route::Action;
 #[derive(Debug)]
 enum InternalFindResult<'a> {
     AdminEndpoint,
-    Deliver(Option<Arc<services::registry::Service>>), // Deliver to local service
-    Forward(Vec<(u32, &'a Eid)>),                      // sorted peer -> next_hop pairs
-    Drop(Option<ReasonCode>),                          // Drop with reason code
-    Reflect,                                           // Reflect
+    Deliver(Arc<services::registry::Service>), // Deliver to local service
+    Forward(Vec<(u32, &'a Eid)>),              // sorted peer -> next_hop pairs
+    Drop(Option<ReasonCode>),                  // Drop with reason code
+    Reflect,                                   // Reflect
 }
 
 /// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
@@ -207,7 +207,7 @@ fn find_recurse<'a>(
                         }
                         Action::Local(service) => {
                             debug!("Deliver to Service {}", service.service_id);
-                            return Some(InternalFindResult::Deliver(Some(service.clone())));
+                            return Some(InternalFindResult::Deliver(service.clone()));
                         }
                         Action::Forward(peer) => {
                             // The 'to' Eid is the next-hop for all peers found here
