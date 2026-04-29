@@ -297,11 +297,10 @@ impl Rib {
     }
 
     /// Add a service route for a local service.
-    /// The Eid is converted to an exact pattern.
+    /// IPN EIDs are converted to LocalNode form so routes are node-ID-independent.
     pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
-        let pattern: EidPattern = eid.into();
         self.add(
-            pattern,
+            self.node_ids.to_local_eid(&eid).unwrap_or(eid).into(),
             Self::SERVICES_NAME.into(),
             Action::Local(service),
             self.service_priority,
@@ -315,7 +314,11 @@ impl Rib {
         eid: &Eid,
         service: Arc<services::registry::Service>,
     ) -> bool {
-        let pattern: EidPattern = eid.clone().into();
+        let pattern: EidPattern = self
+            .node_ids
+            .to_local_eid(eid)
+            .unwrap_or_else(|| eid.clone())
+            .into();
         self.remove(
             &pattern,
             Self::SERVICES_NAME,
@@ -420,36 +423,21 @@ pub(super) mod tests {
 
     #[test]
     fn test_admin_endpoint_in_unified_table() {
-        // Rib::new() inserts admin endpoint routes into the unified routing
-        // table at priority 0 for LocalNode and the configured node IDs.
+        // Rib::new() inserts admin endpoint route into the unified routing
+        // table at priority 0 for LocalNode service 0 (ipn:!.0).
         let rib = make_rib();
 
         let inner = rib.inner.read();
         let entries = inner.routes.get(&0).unwrap();
 
-        // Should have admin endpoint for LocalNode
-        let local_node_pattern: EidPattern = hardy_bpv7::eid::NodeId::LocalNode.into();
-        let local_actions = entries.get(&local_node_pattern).unwrap();
+        // Should have admin endpoint for LocalNode(0) — exact ipn:!.0
+        let local_pattern: EidPattern = hardy_bpv7::eid::Eid::LocalNode(0).into();
+        let local_actions = entries.get(&local_pattern).unwrap();
         assert!(
             local_actions
                 .iter()
                 .any(|e| matches!(e.action, Action::AdminEndpoint)),
-            "LocalNode admin endpoint route should be in unified table"
-        );
-
-        // Should have admin endpoint for the IPN node's admin EID (ipn:0.1.0)
-        let admin_eid: hardy_bpv7::eid::Eid = hardy_bpv7::eid::IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        }
-        .into();
-        let admin_pattern: EidPattern = admin_eid.into();
-        let ipn_actions = entries.get(&admin_pattern).unwrap();
-        assert!(
-            ipn_actions
-                .iter()
-                .any(|e| matches!(e.action, Action::AdminEndpoint)),
-            "IPN admin endpoint route should be in unified table"
+            "LocalNode(0) admin endpoint route should be in unified table"
         );
     }
 

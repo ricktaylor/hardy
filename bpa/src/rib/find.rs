@@ -1,6 +1,26 @@
 use super::*;
 use core::hash::BuildHasher;
+use hardy_bpv7::eid::IpnNodeId;
 use route::Action;
+
+fn pattern_match(pattern: &EidPattern, eid: &Eid, local_node: &Option<IpnNodeId>) -> bool {
+    match eid {
+        Eid::Ipn {
+            fqnn,
+            service_number,
+        }
+        | Eid::LegacyIpn {
+            fqnn,
+            service_number,
+        } => {
+            pattern.matches(eid)
+                || local_node.is_some_and(|node_id| {
+                    *fqnn == node_id && pattern.matches(&Eid::LocalNode(*service_number))
+                })
+        }
+        _ => pattern.matches(eid),
+    }
+}
 
 #[derive(Debug)]
 enum InternalFindResult<'a> {
@@ -26,7 +46,13 @@ impl Rib {
         // TODO: this is where route table switching can occur
         let table = &inner.routes;
 
-        let result = find_recurse(table, &bundle.bundle.destination, true, &mut HashSet::new())?;
+        let result = find_recurse(
+            table,
+            &bundle.bundle.destination,
+            true,
+            &mut HashSet::new(),
+            &self.node_ids.ipn,
+        )?;
         if !matches!(result, InternalFindResult::Reflect) {
             return map_result(
                 result,
@@ -42,7 +68,13 @@ impl Rib {
             .previous_node()
             .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
-        let result = find_recurse(table, &previous, false, &mut HashSet::new())?;
+        let result = find_recurse(
+            table,
+            &previous,
+            false,
+            &mut HashSet::new(),
+            &self.node_ids.ipn,
+        )?;
         if matches!(result, InternalFindResult::Reflect) {
             // Ignore double reflection
             None
@@ -65,7 +97,7 @@ impl Rib {
         let table = &inner.routes;
 
         if let Some(InternalFindResult::Forward(peers)) =
-            find_recurse(table, to, false, &mut HashSet::new())
+            find_recurse(table, to, false, &mut HashSet::new(), &self.node_ids.ipn)
         {
             Some(peers.into_iter().map(|(peer, _)| peer).collect())
         } else {
@@ -86,7 +118,7 @@ impl Rib {
 
         for entries in table.values() {
             for (pattern, actions) in entries {
-                if pattern.matches(to) {
+                if pattern_match(pattern, to, &self.node_ids.ipn) {
                     for entry in actions {
                         if let Action::Local(service) = &entry.action {
                             return Some(service.clone());
@@ -147,19 +179,20 @@ fn map_result(
     }
 }
 
-#[cfg_attr(feature = "instrument", instrument(skip(table, to, trail),fields(to = %to)))]
+#[cfg_attr(feature = "instrument", instrument(skip(table, to, trail, local_node),fields(to = %to)))]
 fn find_recurse<'a>(
     table: &'a RouteTable,
     to: &'a Eid,
     reflect: bool,
     trail: &mut HashSet<&'a Eid>,
+    local_node: &Option<IpnNodeId>,
 ) -> Option<InternalFindResult<'a>> {
     debug!("Looking for route for {to}");
 
     let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
     for entries in table.values() {
         for (pattern, actions) in entries {
-            if pattern.matches(to) {
+            if pattern_match(pattern, to, local_node) {
                 for entry in actions {
                     match &entry.action {
                         Action::Drop(reason) => {
@@ -182,7 +215,7 @@ fn find_recurse<'a>(
                                 )));
                             }
 
-                            let sub_result = find_recurse(table, via, reflect, trail);
+                            let sub_result = find_recurse(table, via, reflect, trail, local_node);
 
                             trail.remove(to);
 

@@ -54,12 +54,28 @@ impl NodeIds {
                 node_id.clone().into()
             }
             (_, Some(node_id), _) => (*node_id).into(),
-            (_, None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
+            (_, None, None) => unreachable!("NodeIds require at least one scheme at construction"),
+        }
+    }
+
+    /// If `eid` belongs to this node (IPN scheme), return the `LocalNode` form.
+    /// Returns `None` if no conversion is needed (non-local or DTN EIDs).
+    pub(crate) fn to_local_eid(&self, eid: &Eid) -> Option<Eid> {
+        match eid {
+            Eid::Ipn {
+                fqnn,
+                service_number,
+            }
+            | Eid::LegacyIpn {
+                fqnn,
+                service_number,
+            } if Some(*fqnn) == self.ipn => Some(Eid::LocalNode(*service_number)),
+            _ => None,
         }
     }
 
     /// Resolve a service identifier to a full EID using this node's identity.
-    pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
+    pub(crate) fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
         match service_id {
             hardy_bpv7::eid::Service::Ipn(n) => Ok(Eid::Ipn {
                 fqnn: self.ipn.ok_or(Error::NoIpnNodeId)?,
