@@ -491,6 +491,79 @@ mod tests {
     }
 
     #[test]
+    fn test_localnode_service_matches_concrete_eid() {
+        // A service registered with a concrete local EID should be stored
+        // under a LocalNode pattern (via to_local_eid in add_service).
+        // The find() lookup with a concrete EID should match via pattern_match.
+        let rib = make_rib();
+
+        // Manually add a LocalNode service route (simulating add_service)
+        add_route(
+            &rib,
+            "ipn:!.42",
+            "services",
+            Action::Local(Arc::new(services::registry::Service {
+                service: services::registry::ServiceImpl::LowLevel(Arc::new(
+                    crate::services::tests::NullService,
+                )),
+                service_id: hardy_bpv7::eid::Service::Ipn(42),
+            })),
+            1,
+        );
+
+        // Bundle with concrete local EID should match the LocalNode pattern
+        let mut bundle = make_bundle("ipn:0.1.42");
+        let result = rib.find(&mut bundle);
+        assert!(
+            matches!(result, Some(FindResult::Deliver(_))),
+            "Concrete local EID should match LocalNode service route, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_localnode_pattern_ignores_remote_eid() {
+        // A LocalNode pattern should NOT match a remote node's EID,
+        // even if the service number matches.
+        let rib = make_rib();
+
+        add_route(
+            &rib,
+            "ipn:!.42",
+            "services",
+            Action::Local(Arc::new(services::registry::Service {
+                service: services::registry::ServiceImpl::LowLevel(Arc::new(
+                    crate::services::tests::NullService,
+                )),
+                service_id: hardy_bpv7::eid::Service::Ipn(42),
+            })),
+            1,
+        );
+
+        // Bundle for a different node should NOT match
+        let mut bundle = make_bundle("ipn:0.2.42");
+        let result = rib.find(&mut bundle);
+        assert!(
+            result.is_none(),
+            "Remote EID should not match LocalNode pattern, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_admin_endpoint_localnode_matches_concrete() {
+        // The admin endpoint is registered as ipn:!.0.
+        // A bundle for ipn:0.1.0 (concrete admin EID) should match
+        // via pattern_match's LocalNode fallback.
+        let rib = make_rib();
+
+        let mut bundle = make_bundle("ipn:0.1.0");
+        let result = rib.find(&mut bundle);
+        assert!(
+            matches!(result, Some(FindResult::AdminEndpoint)),
+            "Concrete admin EID should match LocalNode(0) pattern, got {result:?}"
+        );
+    }
+
+    #[test]
     fn test_explicit_drop_overrides_wait() {
         let rib = make_rib();
 
