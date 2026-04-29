@@ -17,6 +17,13 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 
 mod metrics_otel;
 
+fn endpoint_configured() -> bool {
+    std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some()
+        || std::env::var_os("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_some()
+        || std::env::var_os("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").is_some()
+        || std::env::var_os("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").is_some()
+}
+
 fn init_tracer(resource: &Resource) -> SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -166,6 +173,7 @@ pub fn init(pkg_name: &'static str, pkg_ver: &'static str, level: tracing::Level
         tracer_provider,
         meter_provider,
         logger_provider,
+        endpoint_configured: endpoint_configured(),
     }
 }
 
@@ -178,6 +186,7 @@ pub struct OtelGuard {
     tracer_provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,
     logger_provider: SdkLoggerProvider,
+    endpoint_configured: bool,
 }
 
 impl OtelGuard {
@@ -186,13 +195,19 @@ impl OtelGuard {
     /// export interval (60s for metrics) may not have fired.
     pub fn force_flush(&self) {
         self.tracer_provider.force_flush().unwrap_or_else(|e| {
-            tracing::warn!("OTEL tracer flush failed: {e}");
+            if self.endpoint_configured {
+                tracing::warn!("OTEL tracer flush failed: {e}");
+            }
         });
         self.meter_provider.force_flush().unwrap_or_else(|e| {
-            tracing::warn!("OTEL meter flush failed: {e}");
+            if self.endpoint_configured {
+                tracing::warn!("OTEL meter flush failed: {e}");
+            }
         });
         self.logger_provider.force_flush().unwrap_or_else(|e| {
-            eprintln!("Warning: OTEL logger flush failed: {e}");
+            if self.endpoint_configured {
+                eprintln!("Warning: OTEL logger flush failed: {e}");
+            }
         });
     }
 }
@@ -204,13 +219,19 @@ impl Drop for OtelGuard {
         self.force_flush();
 
         self.tracer_provider.shutdown().unwrap_or_else(|e| {
-            tracing::warn!("OTEL tracer provider did not shut down cleanly: {e}")
+            if self.endpoint_configured {
+                tracing::warn!("OTEL tracer provider did not shut down cleanly: {e}");
+            }
         });
         self.meter_provider.shutdown().unwrap_or_else(|e| {
-            tracing::warn!("OTEL meter provider did not shut down cleanly: {e}")
+            if self.endpoint_configured {
+                tracing::warn!("OTEL meter provider did not shut down cleanly: {e}");
+            }
         });
         self.logger_provider.shutdown().unwrap_or_else(|e| {
-            eprintln!("Warning: OTEL logger provider did not shut down cleanly: {e}")
+            if self.endpoint_configured {
+                eprintln!("Warning: OTEL logger provider did not shut down cleanly: {e}");
+            }
         });
     }
 }
