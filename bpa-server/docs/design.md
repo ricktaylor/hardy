@@ -98,6 +98,12 @@ When the `grpc` feature is enabled, the server hosts gRPC services defined in ha
 
 Remote CLAs and services connect to these endpoints. The gRPC module translates between protobuf messages and BPA trait calls.
 
+## Service Priority
+
+The `service-priority` option controls the routing priority at which local service registrations are inserted into the unified RIB. The default is `1`, placing service routes after admin endpoints and CLA peers (priority 0) but before static routes (default priority 100).
+
+Operators can raise or lower this value to control whether routing rules from agents or static routes can override local service delivery. For example, setting a `Drop` rule at a lower priority number than `service-priority` will reject bundles for those services even if a service is registered.
+
 ## Static Routes
 
 File-based static routing with hot-reload support. See [Static Routes Design](static_routes_design.md) for details.
