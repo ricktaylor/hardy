@@ -11,15 +11,14 @@ This document describes the routing infrastructure in the Bundle Protocol Agent 
 
 ## Overview
 
-The BPA routing system consists of three interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routes.rs`):
+The BPA routing system consists of two interconnected components, driven by pluggable **Routing Agents** that push routes into the RIB via the `RoutingAgent` / `RoutingSink` trait pair (see `bpa/src/routes.rs`):
 
 | Component | Purpose | Key Structure |
 |-----------|---------|---------------|
-| **RIB** | Pattern-based route storage and lookup | Priority-ordered BTreeMap of EidPatterns to Actions |
-| **Local Table** | Known local endpoints (services, admin) | HashMap of Eid to local Actions |
+| **RIB** | Unified pattern-based route storage and lookup | Priority-ordered BTreeMap of EidPatterns to Actions |
 | **Peer Table** | Reachable neighbors via CLAs | HashMap of NodeId to ClaAddress to peer_id |
 
-There is no separate FIB. Instead, forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue }`.
+All routes — admin endpoints, service registrations, CLA peers, static routes, TVR contacts, and drop rules — live in a single priority-ordered table. There is no separate local table or FIB. Forwarding decisions are recorded in bundle metadata as `BundleStatus::ForwardPending { peer, queue }`.
 
 ## Architecture Diagram
 
@@ -27,33 +26,34 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
                           ┌─────────────────────────────────────────────┐
                           │                    RIB                      │
                           │                                             │
-┌──────────────────┐      │  ┌────────────────┐    ┌─────────────────┐  │
-│ Routing Agents   │      │  │  Local Table   │    │   Route Table   │  │
-│ (RoutingAgent    │      │  │                │    │                 │  │
-│  trait + Sink)   │─────►│  │ Eid → Actions  │    │ Priority →      │  │
-│                  │      │  │                │    │   Pattern →     │  │
-│  - StaticRoutes  │      │  │ - AdminEndpoint│    │     Actions     │  │
-│  - SAND (future) │      │  │ - Local(svc)   │    │                 │  │
-│  - CLA peers     │      │  │ - Forward(peer)│    │ - Drop          │  │
-└──────────────────┘      │  │                │    │ - Reflect       │  │
-                          │  └────────────────┘    │ - Via(Eid)      │  │
-                          │          │             └─────────────────┘  │
-                          │          │                     │            │
-                          │          └──────────┬──────────┘            │
-                          │                     │                       │
-                          │                     ▼                       │
+┌──────────────────┐      │         ┌─────────────────────────┐         │
+│ Route Sources    │      │         │   Unified Route Table   │         │
+│                  │      │         │                         │         │
+│  - Admin EPs     │      │         │ Priority →              │         │
+│    (built-in)    │─────►│         │   Pattern →             │         │
+│  - Services      │      │         │     Actions             │         │
+│    (register)    │      │         │                         │         │
+│  - CLA peers     │      │         │ - Drop(reason)          │         │
+│    (add_peer)    │      │         │ - AdminEndpoint         │         │
+│  - StaticRoutes  │      │         │ - Local(service)        │         │
+│  - TVR contacts  │      │         │ - Forward(peer)         │         │
+│  - Routing Agents│      │         │ - Reflect               │         │
+└──────────────────┘      │         │ - Via(Eid)              │         │
+                          │         └────────────┬────────────┘         │
+                          │                      │                      │
+                          │                      ▼                      │
                           │              ┌─────────────┐                │
                           │              │   find()    │                │
                           │              └─────────────┘                │
-                          │                     │                       │
-                          └─────────────────────│───────────────────────┘
-                                                │
-                                                ▼
-                          ┌─────────────────────────────────────────────┐
-                          │                FindResult                   │
-                          │                                             │
-                          │ AdminEndpoint │ Deliver(svc) │ Forward(peer)│ Drop
-                          └─────────────────────────────────────────────┘
+                          │                      │                      │
+                          └──────────────────────│──────────────────────┘
+                                                 │
+                                                 ▼
+                      ┌─────────────────────────────────────────────────────┐
+                      │                     FindResult                      │
+                      │                                                     │
+                      │ AdminEndpoint / Deliver(svc) / Forward(peer) / Drop |
+                      └─────────────────────────────────────────────────────┘
                                                 │
                                                 ▼
                           ┌─────────────────────────────────────────────┐
@@ -70,29 +70,44 @@ There is no separate FIB. Instead, forwarding decisions are recorded in bundle m
 
 ### Data Structures
 
-The RIB contains a local endpoint table and a pattern-based route table. The route table uses a three-level nested structure: `BTreeMap<priority, BTreeMap<EidPattern, BTreeSet<Entry>>>`. Lower priority numbers are checked first. Within a priority level, patterns are ordered by specificity score (most specific first), so the first matching pattern is always the best match.
+The RIB uses a single unified route table: `BTreeMap<priority, BTreeMap<EidPattern, BTreeSet<Entry>>>`. Lower priority numbers are checked first. Within a priority level, patterns are ordered by specificity score (most specific first), so the first matching pattern is always the best match.
 
-Each route entry contains an action (Drop, Reflect, or Via) and a source identifier for debugging (e.g., "static_routes", "control").
+Each route entry contains an action and a source identifier for debugging (e.g., "services", "neighbours", "static_routes").
 
 ### Route Actions
 
-| Action | Description |
-|--------|-------------|
-| `Drop` | Discard bundle with optional reason code |
-| `Reflect` | Return to sender (previous node or source) |
-| `Via(Eid)` | Forward toward the specified EID (recursive lookup) |
+The internal `Action` enum covers all route types:
 
-When multiple entries exist under the same pattern, precedence is: Drop > Reflect > Via. Across patterns at the same priority, the most specific matching pattern takes precedence (highest specificity score wins).
+| Action | Description | Source |
+|--------|-------------|--------|
+| `Drop` | Discard bundle with optional reason code | Routing agents, static routes |
+| `AdminEndpoint` | Deliver to the administrative endpoint | Built-in (priority 0) |
+| `Local(service)` | Deliver to a registered local service | Service registration (configurable priority, default 1) |
+| `Forward(peer)` | Forward to a CLA peer | CLA peer discovery (priority 0) |
+| `Reflect` | Return to sender (previous node or source) | Routing agents, static routes |
+| `Via(Eid)` | Forward toward the specified EID (recursive lookup) | Routing agents, static routes |
 
-### Local Table
+When multiple entries exist under the same pattern, precedence follows enum ordering: Drop > AdminEndpoint > Local > Forward > Reflect > Via. Across patterns at the same priority, the most specific matching pattern takes precedence (highest specificity score wins).
 
-The local table provides fast O(1) lookup for known local endpoints using a HashMap of EIDs to actions. Actions include delivering to the admin endpoint, delivering to a registered service, or forwarding to a CLA peer.
+Routing agents (via the `RoutingSink` trait) can only create `Drop`, `Reflect`, and `Via` actions. `AdminEndpoint`, `Local`, and `Forward` are internal actions managed by the BPA itself.
 
-Local entries are populated by:
+### Route Priority Assignments
 
-- **Admin endpoint**: Node's administrative EID
-- **Services**: When `register_service()` is called
-- **CLA peers**: When `add_peer()` creates a direct neighbor route
+| Route Source | Default Priority | Configurable |
+|-------------|-----------------|--------------|
+| Admin endpoints | 0 | No |
+| CLA peer forwards | 0 | No |
+| Service registrations | 1 | Yes (`service-priority`) |
+| Static routes | 100 | Yes (per-file `priority`) |
+| TVR contacts | Agent-defined | Yes (`default_priority`) |
+
+The `service-priority` configuration controls where service routes sit in the priority order. The default of 1 means services are checked after admin endpoints and CLA peers (priority 0) but before static routes (default priority 100). Operators can adjust this to allow higher-priority routing rules to override local service delivery — for example, to redirect traffic for a service range to another node.
+
+### Default-to-Wait Behaviour
+
+When no route matches a bundle's destination, the bundle waits (`BundleStatus::Waiting`) for a future route to appear. This applies uniformly — including bundles destined for local service numbers with no registered service. When a service registers, its route is added to the table, triggering `poll_waiting()` which re-dispatches waiting bundles.
+
+Operators who want specific service ranges to be rejected rather than deferred can configure explicit `Drop` rules via static routes or TVR contact plans at a priority that will be checked before the (absent) service route.
 
 ## Peer Table
 
@@ -127,7 +142,7 @@ Sink::add_peer(node_id, cla_addr)
 RIB::add_forward(node_id, peer_id)
         │
         ▼
-Local table: NodeId → Forward(peer_id)
+Route table: NodeId pattern → Forward(peer_id) at priority 0
 ```
 
 ## Route Lookup Algorithm
@@ -138,22 +153,18 @@ Local table: NodeId → Forward(peer_id)
 
 ### Algorithm
 
-1. **Check locals first** (fast path)
-   - Direct EID match in local table
-   - Returns immediately if found
-
-2. **Search route table by priority**
-   - Iterate priorities low to high
+1. **Search unified route table by priority**
+   - Iterate priorities low to high (0, 1, 100, ...)
    - Within each priority, patterns are ordered by specificity score (descending)
    - The first matching pattern is the most specific match
    - Stop at first match
 
-3. **Handle Via(eid) recursively**
+2. **Handle Via(eid) recursively**
    - Recursive lookup on the via EID
    - Detects loops via trail set
    - Collects all reachable peers
 
-4. **ECMP selection** (if multiple peers)
+3. **ECMP selection** (if multiple peers)
    - Hash of: bundle source + destination + flow_label
    - Uses a per-instance `RandomState` (seeded once at RIB creation) for deterministic peer selection within a BPA instance
 
@@ -187,7 +198,7 @@ Route: ipn:200.* via dtn://tunnel1
 1. Match pattern ipn:200.*
 2. Action: Via(dtn://tunnel1)
 3. Recursive lookup: dtn://tunnel1
-4. Local table: dtn://tunnel1 → Forward(peer_id=5)
+4. Priority 0: dtn://tunnel1 → Forward(peer_id=5)
 5. Result: Forward(5), next_hop=dtn://tunnel1
 ```
 
@@ -262,13 +273,13 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
    Status: New → Dispatching (after Ingress filter checkpoint)
 
 2. ROUTE LOOKUP (process_bundle)
-   RIB::find() searches:
-   - locals: no match
-   - routes[priority=100]: ipn:200.* via dtn://tunnel1
+   RIB::find() searches unified table:
+   - priority 0: no match (admin endpoints, CLA peers)
+   - priority 100: ipn:200.* via dtn://tunnel1
 
 3. VIA RESOLUTION
    Recursive lookup: dtn://tunnel1
-   - locals: Forward(peer_id=5)
+   - priority 0: Forward(peer_id=5)
 
 4. ECMP
    Only one peer, select peer_id=5
