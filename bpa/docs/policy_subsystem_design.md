@@ -171,35 +171,198 @@ The queue channels implement a fast/slow path hybrid for backpressure (`src/stor
 
 ## CLA Integration
 
-### Policy Registration
+### Policy Configuration
 
-When registering a CLA with the BPA, an optional `EgressPolicy` can be provided. If `None`, the default null policy (FIFO) is used.
+Policies are defined as named, reusable configurations in the bpa-server
+config. Each policy specifies a type (qdisc) and its parameters. CLAs
+reference a policy by name at registration time.
+
+```toml
+[policies.satellite]
+type = "htb"
+# class hierarchy, rates, borrowing rules...
+
+[policies.ground-link]
+type = "strict-priority"
+classes = 4
+
+[policies.best-effort]
+type = "null"
+
+[cla.tcpclv4]
+policy = "satellite"
+
+[cla.udpcl]
+policy = "ground-link"
+```
+
+The policy definition describes *what* the scheduling should be (traffic
+classes, priorities, rates). The controller adapts *how* to map those
+classes onto the CLA's actual queues at peer establishment time. The same
+named policy works regardless of the CLA's queue count — the controller
+degrades gracefully (multiple classes share a queue when N < M, or
+classes spread across queues when N > M).
+
+Multiple CLAs can reference the same named policy. A CLA that registers
+without specifying a policy (e.g., a gRPC-connected CLA server) defaults
+to the null policy.
+
+This follows the linux `tc` model: the policy config defines the class
+hierarchy (like `tc class add`), and the controller is the qdisc
+attached to the device (CLA). The qdisc queries the device for
+capabilities (queue count) and builds the class-to-queue mapping at
+attach time, not at config time.
 
 ### CLA Queue Count
 
-CLAs can declare their own queue count via `queue_count()` (default: 0, meaning single best-effort queue). The queue index is passed to `forward()`, allowing CLAs to implement priority scheduling at the transport level.
+CLAs declare their queue count via `queue_count()` (default: 0, meaning
+single best-effort queue). These are physical or logical transport
+channels — QUIC streams, DSCP classes, separate TCP connections. The
+queue index is passed to `CLA::forward()`.
+
+The CLA does not need to understand traffic classes. It implements strict
+priority across its own queues (queue 0 before queue 1) and transmits
+what the controller gives it. All traffic class intelligence lives in
+the BPA's policy controller.
+
+### Runtime Class-to-Queue Mapping
+
+The policy config defines M traffic classes. The CLA advertises N queues
+at registration time. When a peer connects, the controller builds the
+M→N mapping:
+
+**N >= M** — each class gets its own CLA queue. Remaining CLA queues
+are unused (or classes can be spread for isolation). Scheduling within
+each queue is FIFO since each class is already separated.
+
+**N < M** — multiple classes share CLA queues. The controller does
+priority scheduling within each shared queue, ensuring higher-priority
+classes are serviced before lower-priority ones on the same output.
+
+**N = 1** — all classes collapse onto a single CLA queue. The controller
+does all scheduling internally, feeding one output stream in priority
+order. The CLA sees a single FIFO, but the bundle ordering reflects
+the full HTB discipline.
+
+**N = 0** — equivalent to N = 1 (single best-effort queue, `None`).
+
+The mapping is built once at controller creation and is fixed for the
+lifetime of the peer connection. If the CLA's capabilities change (e.g.,
+reconfiguration), the peer must be re-established to pick up the new
+mapping.
 
 ### Controller Lifecycle
 
-1. **Peer initialization**: Policy creates controller via `new_controller(queues)`
-2. **Bundle forwarding**: Controller mediates all `forward(queue, bundle)` calls
+1. **Peer connects**: Policy creates controller via `new_controller(queues)`.
+   The controller receives the actual CLA queue set and builds its
+   class-to-queue mapping based on the CLA's capabilities
+2. **Bundle forwarding**: Controller mediates all `forward(class, bundle)`
+   calls, scheduling across traffic classes and mapping to CLA queues
 3. **Peer removal**: Controller dropped, pollers exit naturally
 
 ## Default Policy (Null Policy)
 
 The null policy provides simple FIFO behavior: it declares zero priority queues, classifies all bundles to the best-effort queue (`None`), and its controller simply passes bundles through without rate limiting or scheduling.
 
+### Known wart: `Option<u32>` queue indices
+
+CLA queue indices are currently `Option<u32>`, where `None` means "the
+default queue." This was a natural fit for the null policy (everything is
+`None`) but creates an awkward special case: `None` doesn't mean "no
+queue" — it means queue 0 by another name. The `queue_count()` return
+value of 0 means "one queue (the `None` queue)," which is confusing.
+
+A cleaner model would use plain `u32` indices starting at 0. The default
+/ best-effort queue would just be a numbered queue (e.g., the highest
+index, or whichever the policy designates). `queue_count()` would return
+the actual count (1 for a single-queue CLA). No special casing for
+`None` vs `Some(0)`.
+
+This cleanup should be done when implementing a real policy — it touches
+the CLA trait, peer queue maps, `ForwardPending` status, storage
+channels, and tests, so it's not worth the churn until there's a
+functional reason to make the change.
+
+## Three-Stage Egress Pipeline
+
+The egress path has three conceptually distinct stages. The current null
+policy collapses all three, but an advanced policy implementation must
+separate them.
+
+### Stage 1: Label (Filter)
+
+Ingress or originate filters tag bundles with a `flow_label: Option<u32>`
+in `WritableMetadata`. The label is an opaque application-level identifier
+— it carries no scheduling semantics itself. Examples: DSCP value from
+the payload, application priority, mission phase identifier.
+
+### Stage 2: Classify (EgressPolicy)
+
+`EgressPolicy::classify(flow_label) → traffic_class` maps the label to
+one of M traffic classes. Traffic classes carry scheduling semantics:
+priority level, rate guarantees, burst allowances. The number of traffic
+classes (M) is independent of the number of CLA queues (N).
+
+**Current limitation:** `classify` returns `Option<u32>` which is treated
+as a CLA queue index, conflating traffic class with CLA queue. An HTB
+implementation would need `classify` to return a traffic class that the
+controller then maps to CLA queues.
+
+### Stage 3: Schedule (EgressController)
+
+The `EgressController` is the scheduler. It accepts bundles tagged with
+traffic classes and multiplexes M classes onto N CLA queues using a
+scheduling discipline (HTB, WFQ, strict priority, etc.).
+
+The controller is the only component that knows both:
+
+- The traffic class semantics (M classes with priorities and rates)
+- The CLA's capabilities (N queues, link bandwidth)
+
+It performs the M→N mapping, ensuring high-priority classes get
+preferential access to CLA queue capacity while low-priority classes can
+borrow when capacity is available.
+
+### Pipeline diagram
+
+```
+Filter              EgressPolicy         EgressController        CLA
+  │                     │                       │                  │
+  │  flow_label (u32)   │                       │                  │
+  ├────────────────────►│                       │                  │
+  │                     │  traffic_class        │                  │
+  │                     ├──────────────────────►│                  │
+  │                     │                       │  HTB scheduling  │
+  │                     │                       │  M classes → N   │
+  │                     │                       │  CLA queues      │
+  │                     │                       ├─────────────────►│
+  │                     │                       │  forward(q, data)│
+```
+
+### CLA queue semantics
+
+The CLA advertises N queues via `queue_count()`. These are physical or
+logical transport channels — QUIC streams, DSCP classes, separate TCP
+connections, etc. The CLA implements strict priority across its own
+queues (queue 0 before queue 1), but does not need to understand traffic
+classes. The BPA's HTB scheduler has already made the priority decision.
+
+This means a CLA with just 2 queues (e.g., high/low QUIC streams) can
+support arbitrarily many traffic classes — the HTB scheduler in the BPA
+does the M→2 mapping, and the CLA just sends on whichever stream it's
+told.
+
 ## Advanced Policy Patterns
 
-Controllers can implement sophisticated scheduling:
+The `EgressController` is the extension point for sophisticated
+scheduling. Possible implementations:
 
-| Pattern | Description |
-|---------|-------------|
-| **Token Bucket** | Rate limiting with token issuance |
-| **Weighted Fair Queueing** | Proportional service across priorities |
-| **Hierarchical Token Bucket** | Multi-level rate limits with borrowing |
-
-The HTB policy (`src/policy/htb_policy.rs`) provides a partial implementation of hierarchical scheduling.
+- **Token Bucket** — per-class rate limiting with burst allowance
+- **Weighted Fair Queueing** — proportional service across classes
+- **Hierarchical Token Bucket** — multi-level rate limits with borrowing
+  between parent/child classes
+- **Strict Priority** — always service highest non-empty class first,
+  with optional starvation guards
 
 ## Forwarding Failure Handling
 
@@ -243,3 +406,37 @@ See [Routing Design: Route Change Handling](routing_subsystem_design.md#route-ch
    Success: delete bundle
    Failure: reset_peer_queue() → bundles return to Waiting
 ```
+
+## Future direction: EgressPolicy as controller factory
+
+The `EgressPolicy` trait currently serves two roles: classification
+(`classify`) and controller creation (`new_controller`). In the target
+architecture (see queue_architecture.md), these separate:
+
+- **Classification** becomes a generic `ClassificationPolicy` trait
+  (`flow_label → u32`) used at multiple pipeline stages, not just
+  egress. The `EgressPolicy::classify` method is an instance of this
+  generic pattern
+- **Controller creation** is the factory role. `EgressPolicy` becomes
+  `EgressControllerFactory` — its sole responsibility is creating
+  per-peer `EgressController` instances
+
+**`EgressPolicy::queue_count()`** currently returns M (the number of
+traffic classes / BPA-side queues). This exists because the current
+code in `peers.rs` pre-creates M storage channels before calling
+`new_controller`. In the target architecture, the controller owns its
+own queue creation — it receives N CLA queues, allocates M class queues
+internally from the `QueueFactory`, and builds the M→N mapping. M
+becomes a private implementation detail of the controller, not part of
+the factory's public interface.
+
+There are two separate `queue_count` methods that should not be
+confused:
+
+- **`Cla::queue_count()`** — N, the CLA's transport channel count.
+  Stays on the CLA trait
+- **`EgressPolicy::queue_count()`** — M, the policy's traffic class
+  count. Disappears when the controller owns its queue creation
+
+This refactor cannot be done independently of the queue architecture
+work described in queue_architecture.md.
