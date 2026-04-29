@@ -280,3 +280,26 @@ pub trait ServiceSink: Send + Sync {
     /// Cancels a pending bundle that hasn't been forwarded yet.
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub struct NullService;
+
+    #[async_trait]
+    impl Service for NullService {
+        async fn on_register(&self, _: &Eid, _: Box<dyn ServiceSink>) {}
+        async fn on_unregister(&self) {}
+        async fn on_receive(&self, _: Bytes, _: time::OffsetDateTime) {}
+        async fn on_status_notify(
+            &self,
+            _: &hardy_bpv7::bundle::Id,
+            _: &Eid,
+            _: StatusNotify,
+            _: hardy_bpv7::status_report::ReasonCode,
+            _: Option<time::OffsetDateTime>,
+        ) {
+        }
+    }
+}
