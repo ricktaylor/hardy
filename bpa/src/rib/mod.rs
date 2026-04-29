@@ -101,7 +101,7 @@ impl Rib {
         if let Some(node_id) = &node_ids.ipn {
             // Add the Admin Endpoint EID itself (exact match, not wildcard)
             // Convert to Eid first to get ipn:N.0, then to EidPattern for exact match
-            let admin_eid: Eid = node_id.clone().into();
+            let admin_eid: Eid = (*node_id).into();
             admin_endpoints.insert(admin_eid.into(), [entry.clone()].into());
         }
 
