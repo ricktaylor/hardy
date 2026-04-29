@@ -1,7 +1,6 @@
 use super::*;
 
-// The order is critical, do not reo-rder
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     Drop(Option<hardy_bpv7::status_report::ReasonCode>),
     AdminEndpoint,                           // Deliver to the admin endpoint
@@ -9,6 +8,40 @@ pub enum Action {
     Forward(u32),                            // Forward to a cla peer
     Reflect,
     Via(hardy_bpv7::eid::Eid),
+}
+
+impl PartialOrd for Action {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// The order is critical, do not re-order
+impl Ord for Action {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        // Precedence: Drop < AdminEndpoint < Local < Forward < Reflect < Via
+        let rank = |a: &Action| -> u8 {
+            match a {
+                Action::Drop(_) => 0,
+                Action::AdminEndpoint => 1,
+                Action::Local(_) => 2,
+                Action::Forward(_) => 3,
+                Action::Reflect => 4,
+                Action::Via(_) => 5,
+            }
+        };
+        match rank(self).cmp(&rank(other)) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        match (self, other) {
+            (Action::Drop(a), Action::Drop(b)) => a.cmp(b),
+            (Action::Local(a), Action::Local(b)) => a.cmp(b),
+            (Action::Forward(a), Action::Forward(b)) => a.cmp(b),
+            (Action::Via(a), Action::Via(b)) => a.cmp(b),
+            _ => core::cmp::Ordering::Equal,
+        }
+    }
 }
 
 impl From<routes::Action> for Action {
