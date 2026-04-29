@@ -235,9 +235,9 @@ impl Store {
 
     /// Background poller: drains storage into memory channel when congested.
     async fn poll_queue(self: Arc<Self>, shared: Arc<Shared>, cap: usize) {
-        loop {
-            shared.notify.notified().await;
+        shared.notify.notified().await;
 
+        loop {
             // Transition to Draining from any state except Closing.
             // CAS loop: load current, bail if Closing, otherwise try to write Draining.
             let mut current = shared.load_state(Ordering::Acquire);
@@ -282,8 +282,11 @@ impl Store {
                     )
                     .is_err()
             {
-                continue; // Congested - loop again
+                continue; // Congested — loop again without waiting
             }
+
+            // Wait for new work
+            shared.notify.notified().await;
         }
     }
 
