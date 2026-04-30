@@ -1,8 +1,76 @@
 use super::*;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Action {
+    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    AdminEndpoint,                           // Deliver to the admin endpoint
+    Local(Arc<services::registry::Service>), // Deliver to local service
+    Forward(u32),                            // Forward to a cla peer
+    Reflect,
+    Via(hardy_bpv7::eid::Eid),
+}
+
+impl PartialOrd for Action {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// The order is critical, do not re-order
+impl Ord for Action {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        // Precedence: Drop < AdminEndpoint < Local < Forward < Reflect < Via
+        let rank = |a: &Action| -> u8 {
+            match a {
+                Action::Drop(_) => 0,
+                Action::AdminEndpoint => 1,
+                Action::Local(_) => 2,
+                Action::Forward(_) => 3,
+                Action::Reflect => 4,
+                Action::Via(_) => 5,
+            }
+        };
+        match rank(self).cmp(&rank(other)) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        match (self, other) {
+            (Action::Drop(a), Action::Drop(b)) => a.cmp(b),
+            (Action::Local(a), Action::Local(b)) => a.cmp(b),
+            (Action::Forward(a), Action::Forward(b)) => a.cmp(b),
+            (Action::Via(a), Action::Via(b)) => a.cmp(b),
+            _ => core::cmp::Ordering::Equal,
+        }
+    }
+}
+
+impl From<routes::Action> for Action {
+    fn from(value: routes::Action) -> Self {
+        match value {
+            routes::Action::Drop(reason_code) => Self::Drop(reason_code),
+            routes::Action::Reflect => Self::Reflect,
+            routes::Action::Via(eid) => Self::Via(eid),
+        }
+    }
+}
+
+impl core::fmt::Display for Action {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
+            Action::Drop(None) => write!(f, "Drop"),
+            Action::AdminEndpoint => write!(f, "administrative endpoint"),
+            Action::Local(service) => write!(f, "local service {}", &service.service_id),
+            Action::Forward(peer) => write!(f, "CLA peer {peer}"),
+            Action::Reflect => write!(f, "Reflect"),
+            Action::Via(eid) => write!(f, "Via {eid}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Entry {
-    pub action: routes::Action,
+    pub action: Action,
     pub source: String,
 }
 
@@ -15,18 +83,9 @@ impl PartialOrd for Entry {
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // The order is critical, hence done long-hand
-        match (&self.action, &other.action) {
-            (routes::Action::Drop(lhs), routes::Action::Drop(rhs)) => lhs.cmp(rhs),
-            (routes::Action::Drop(_), routes::Action::Reflect)
-            | (routes::Action::Drop(_), routes::Action::Via(_)) => core::cmp::Ordering::Less,
-            (routes::Action::Reflect, routes::Action::Drop(_)) => core::cmp::Ordering::Greater,
-            (routes::Action::Reflect, routes::Action::Reflect) => core::cmp::Ordering::Equal,
-            (routes::Action::Reflect, routes::Action::Via(_)) => core::cmp::Ordering::Less,
-            (routes::Action::Via(_), routes::Action::Drop(_))
-            | (routes::Action::Via(_), routes::Action::Reflect) => core::cmp::Ordering::Greater,
-            (routes::Action::Via(lhs), routes::Action::Via(rhs)) => lhs.cmp(rhs),
-        }
-        .then_with(|| self.source.cmp(&other.source))
+        self.action
+            .cmp(&other.action)
+            .then_with(|| self.source.cmp(&other.source))
     }
 }
 
@@ -35,7 +94,7 @@ impl Rib {
         &self,
         pattern: EidPattern,
         source: String,
-        action: routes::Action,
+        action: Action,
         priority: u32,
     ) -> bool {
         let vias = {
@@ -63,7 +122,7 @@ impl Rib {
             }
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
-            metrics::gauge!("bpa.rib.entries", "source" => source.clone()).increment(1.0);
+            metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
 
             // Start walking through the route table starting at this priority to find impacted routes
             let mut vias = HashSet::new();
@@ -72,7 +131,7 @@ impl Rib {
                     if p.is_subset(&pattern) {
                         // We have an impacted subset, so see if we need to refresh any queue assignments
                         for entry in actions {
-                            if let routes::Action::Via(to) = &entry.action {
+                            if let Action::Via(to) = &entry.action {
                                 vias.insert(to.clone());
                             }
                         }
@@ -82,14 +141,21 @@ impl Rib {
             vias
         };
 
-        let mut changed = false;
-        for v in vias {
-            if let Some(peers) = self.find_peers(&v)
-                && self.reset_peer_queues(peers).await
-            {
-                changed = true;
+        let changed = match action {
+            Action::AdminEndpoint => false,
+            Action::Local(_) | Action::Forward(_) => true,
+            _ => {
+                let mut changed = false;
+                for v in vias {
+                    if let Some(peers) = self.find_peers(&v)
+                        && self.reset_peer_queues(peers).await
+                    {
+                        changed = true;
+                    }
+                }
+                changed
             }
-        }
+        };
         if changed {
             self.notify_updated().await;
         }
@@ -100,7 +166,7 @@ impl Rib {
         &self,
         pattern: &EidPattern,
         source: &str,
-        action: &routes::Action,
+        action: Action,
         priority: u32,
     ) -> bool {
         // Remove the entry
@@ -127,12 +193,24 @@ impl Rib {
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
         metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
 
-        // See if we are removing a Via
-        if let routes::Action::Via(to) = action
-            && let Some(peers) = self.find_peers(to)
-            && self.reset_peer_queues(peers).await
-        {
-            self.notify_updated().await;
+        // See if we are removing a Via or a Forward
+        match action {
+            Action::Via(ref to) => {
+                if let Some(peers) = self.find_peers(to)
+                    && self.reset_peer_queues(peers).await
+                {
+                    self.notify_updated().await;
+                }
+            }
+            Action::Forward(peer) => {
+                if self.store.reset_peer_queue(peer).await {
+                    self.notify_updated().await;
+                }
+            }
+            Action::Local(_) => {
+                self.notify_updated().await;
+            }
+            _ => {}
         }
         true
     }
@@ -147,7 +225,7 @@ impl Rib {
                 patterns.retain(|_pattern, actions| {
                     actions.retain(|entry| {
                         if entry.source == source {
-                            if let routes::Action::Via(to) = &entry.action {
+                            if let Action::Via(to) = &entry.action {
                                 vias.insert(to.clone());
                             }
                             removed_count += 1;
@@ -196,13 +274,209 @@ impl Rib {
         }
         updated
     }
+
+    /// Add a forward route for a CLA peer.
+    /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
+    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+        let pattern: EidPattern = node_id.into();
+        self.add(
+            pattern,
+            Self::FORWARDS_NAME.into(),
+            Action::Forward(peer),
+            0,
+        )
+        .await
+    }
+
+    /// Remove a forward route for a CLA peer.
+    pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
+        let pattern: EidPattern = node_id.into();
+        self.remove(&pattern, Self::FORWARDS_NAME, Action::Forward(peer), 0)
+            .await
+    }
+
+    /// Add a service route for a local service.
+    /// IPN EIDs are converted to LocalNode form so routes are node-ID-independent.
+    pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
+        self.add(
+            self.node_ids.to_local_eid(&eid).unwrap_or(eid).into(),
+            Self::SERVICES_NAME.into(),
+            Action::Local(service),
+            self.service_priority,
+        )
+        .await
+    }
+
+    /// Remove a service route for a local service.
+    pub async fn remove_service(
+        &self,
+        eid: &Eid,
+        service: Arc<services::registry::Service>,
+    ) -> bool {
+        let pattern: EidPattern = self
+            .node_ids
+            .to_local_eid(eid)
+            .unwrap_or_else(|| eid.clone())
+            .into();
+        self.remove(
+            &pattern,
+            Self::SERVICES_NAME,
+            Action::Local(service),
+            self.service_priority,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn entry(action: routes::Action, source: &str) -> Entry {
+    pub fn make_rib() -> Arc<Rib> {
+        use hardy_bpv7::eid::IpnNodeId;
+
+        let node_ids = Arc::new(node_ids::NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: None,
+        });
+
+        let store = Arc::new(storage::Store::new(
+            core::num::NonZeroUsize::new(16).unwrap(),
+            Arc::new(storage::MetadataMemStorage::new(&Default::default())),
+            Arc::new(storage::BundleMemStorage::new(&Default::default())),
+        ));
+
+        Arc::new(Rib::new(node_ids, store, 1))
+    }
+
+    // Add a route directly to the RIB's route table (sync, no store interaction).
+    pub fn add_route(rib: &Rib, pattern: &str, source: &str, action: route::Action, priority: u32) {
+        let pattern: EidPattern = pattern.parse().unwrap();
+        let entry = route::Entry {
+            action,
+            source: source.to_string(),
+        };
+
+        let mut inner = rib.inner.write();
+        match inner.routes.entry(priority) {
+            btree_map::Entry::Vacant(e) => {
+                e.insert([(pattern, [entry].into())].into());
+            }
+            btree_map::Entry::Occupied(mut e) => match e.get_mut().entry(pattern) {
+                btree_map::Entry::Vacant(pe) => {
+                    pe.insert([entry].into());
+                }
+                btree_map::Entry::Occupied(mut pe) => {
+                    pe.get_mut().insert(entry);
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn test_impacted_subsets() {
+        let rib = make_rib();
+
+        // Add a Via route for ipn:2.0 at priority 10
+        add_route(
+            &rib,
+            "ipn:*.*",
+            "src",
+            route::Action::Via("ipn:0.2.0".parse().unwrap()),
+            10,
+        );
+
+        // Add a more specific Drop route at priority 20 (lower priority)
+        add_route(&rib, "ipn:0.3.*", "src", route::Action::Drop(None), 20);
+
+        // Verify both routes were inserted
+        let inner = rib.inner.read();
+        assert!(inner.routes.contains_key(&10));
+        assert!(inner.routes.contains_key(&20));
+    }
+
+    #[test]
+    fn test_local_action_sort() {
+        // AdminEndpoint < Local < Forward
+        let admin = Action::AdminEndpoint;
+        let forward_1 = Action::Forward(1);
+        let forward_2 = Action::Forward(2);
+
+        assert!(admin < forward_1);
+        assert!(forward_1 < forward_2);
+
+        // Verify BTreeSet ordering
+        let mut set = BTreeSet::new();
+        set.insert(forward_2.clone());
+        set.insert(admin.clone());
+        set.insert(forward_1.clone());
+
+        let sorted: Vec<_> = set.into_iter().collect();
+        assert_eq!(sorted[0], admin);
+        assert_eq!(sorted[1], forward_1);
+        assert_eq!(sorted[2], forward_2);
+    }
+
+    #[test]
+    fn test_admin_endpoint_in_unified_table() {
+        // Rib::new() inserts admin endpoint route into the unified routing
+        // table at priority 0 for LocalNode service 0 (ipn:!.0).
+        let rib = make_rib();
+
+        let inner = rib.inner.read();
+        let entries = inner.routes.get(&0).unwrap();
+
+        // Should have admin endpoint for LocalNode(0) — exact ipn:!.0
+        let local_pattern: EidPattern = hardy_bpv7::eid::Eid::LocalNode(0).into();
+        let local_actions = entries.get(&local_pattern).unwrap();
+        assert!(
+            local_actions
+                .iter()
+                .any(|e| matches!(e.action, Action::AdminEndpoint)),
+            "LocalNode(0) admin endpoint route should be in unified table"
+        );
+    }
+
+    #[test]
+    fn test_unregistered_local_waits() {
+        // With the unified routing table, bundles destined for a local EID
+        // with no registered service have no matching route — they wait (None).
+        // This is the correct DTN behaviour: default to wait, not drop.
+        // Operators can configure explicit Drop rules for service ranges.
+        let rib = make_rib();
+
+        // ipn:0.1.99 is under our node but no service is registered
+        let mut bundle = bundle::Bundle {
+            bundle: hardy_bpv7::bundle::Bundle {
+                id: hardy_bpv7::bundle::Id {
+                    source: "ipn:0.99.1".parse().unwrap(),
+                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    fragment_info: None,
+                },
+                flags: Default::default(),
+                crc_type: Default::default(),
+                destination: "ipn:0.1.99".parse().unwrap(),
+                report_to: Default::default(),
+                lifetime: core::time::Duration::from_secs(3600),
+                previous_node: None,
+                age: None,
+                hop_count: None,
+                blocks: Default::default(),
+            },
+            metadata: Default::default(),
+        };
+
+        let result = rib.find(&mut bundle);
+        assert!(
+            result.is_none(),
+            "Unregistered local service should wait (no route), got {result:?}"
+        );
+    }
+
+    fn entry(action: Action, source: &str) -> Entry {
         Entry {
             action,
             source: source.to_string(),
@@ -212,9 +486,9 @@ mod tests {
     #[test]
     fn test_action_precedence() {
         // Drop < Reflect < Via in ordering
-        let drop_entry = entry(routes::Action::Drop(None), "a");
-        let reflect_entry = entry(routes::Action::Reflect, "a");
-        let via_entry = entry(routes::Action::Via("ipn:1.0".parse().unwrap()), "a");
+        let drop_entry = entry(Action::Drop(None), "a");
+        let reflect_entry = entry(Action::Reflect, "a");
+        let via_entry = entry(Action::Via("ipn:1.0".parse().unwrap()), "a");
 
         assert!(drop_entry < reflect_entry);
         assert!(reflect_entry < via_entry);
@@ -225,10 +499,10 @@ mod tests {
     fn test_route_entry_sort() {
         let mut set = BTreeSet::new();
 
-        let via2 = entry(routes::Action::Via("ipn:2.0".parse().unwrap()), "src1");
-        let via1 = entry(routes::Action::Via("ipn:1.0".parse().unwrap()), "src1");
-        let drop_none = entry(routes::Action::Drop(None), "src1");
-        let reflect = entry(routes::Action::Reflect, "src1");
+        let via2 = entry(Action::Via("ipn:2.0".parse().unwrap()), "src1");
+        let via1 = entry(Action::Via("ipn:1.0".parse().unwrap()), "src1");
+        let drop_none = entry(Action::Drop(None), "src1");
+        let reflect = entry(Action::Reflect, "src1");
 
         set.insert(via2);
         set.insert(via1);
@@ -236,25 +510,25 @@ mod tests {
         set.insert(reflect);
 
         let sorted: Vec<_> = set.into_iter().collect();
-        assert!(matches!(sorted[0].action, routes::Action::Drop(_)));
-        assert!(matches!(sorted[1].action, routes::Action::Reflect));
-        assert!(matches!(sorted[2].action, routes::Action::Via(_)));
-        assert!(matches!(sorted[3].action, routes::Action::Via(_)));
+        assert!(matches!(sorted[0].action, Action::Drop(_)));
+        assert!(matches!(sorted[1].action, Action::Reflect));
+        assert!(matches!(sorted[2].action, Action::Via(_)));
+        assert!(matches!(sorted[3].action, Action::Via(_)));
     }
 
     #[test]
     fn test_entry_source_tiebreak() {
         // Same action, different source — sorted by source name
-        let a = entry(routes::Action::Reflect, "alpha");
-        let b = entry(routes::Action::Reflect, "beta");
+        let a = entry(Action::Reflect, "alpha");
+        let b = entry(Action::Reflect, "beta");
         assert!(a < b);
     }
 
     #[test]
     fn test_entry_dedup() {
         let mut set = BTreeSet::new();
-        let e1 = entry(routes::Action::Reflect, "src");
-        let e2 = entry(routes::Action::Reflect, "src");
+        let e1 = entry(Action::Reflect, "src");
+        let e2 = entry(Action::Reflect, "src");
         assert!(set.insert(e1));
         assert!(!set.insert(e2)); // duplicate
     }

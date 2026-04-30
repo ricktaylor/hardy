@@ -312,7 +312,7 @@ impl Dispatcher {
                 // The bundle is for the Administrative Endpoint
                 self.administrative_bundle(bundle, data).await
             }
-            Some(rib::FindResult::Deliver(Some(service))) => {
+            Some(rib::FindResult::Deliver(service)) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
                     // Reassemble the bundle before delivery
@@ -329,7 +329,7 @@ impl Dispatcher {
                     self.store.watch_bundle(bundle).await;
                 }
             }
-            Some(rib::FindResult::Deliver(None)) | None => {
+            None => {
                 // No route available - wait for one
                 debug!("Storing bundle until a forwarding opportunity arises");
 

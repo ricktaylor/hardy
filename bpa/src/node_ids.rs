@@ -54,12 +54,28 @@ impl NodeIds {
                 node_id.clone().into()
             }
             (_, Some(node_id), _) => (*node_id).into(),
-            (_, None, None) => unreachable!("NodeIds requires at least one scheme at construction"),
+            (_, None, None) => unreachable!("NodeIds require at least one scheme at construction"),
+        }
+    }
+
+    /// If `eid` belongs to this node (IPN scheme), return the `LocalNode` form.
+    /// Returns `None` if no conversion is needed (non-local or DTN EIDs).
+    pub(crate) fn to_local_eid(&self, eid: &Eid) -> Option<Eid> {
+        match eid {
+            Eid::Ipn {
+                fqnn,
+                service_number,
+            }
+            | Eid::LegacyIpn {
+                fqnn,
+                service_number,
+            } if Some(*fqnn) == self.ipn => Some(Eid::LocalNode(*service_number)),
+            _ => None,
         }
     }
 
     /// Resolve a service identifier to a full EID using this node's identity.
-    pub fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
+    pub(crate) fn resolve_eid(&self, service_id: &hardy_bpv7::eid::Service) -> Result<Eid, Error> {
         match service_id {
             hardy_bpv7::eid::Service::Ipn(n) => Ok(Eid::Ipn {
                 fqnn: self.ipn.ok_or(Error::NoIpnNodeId)?,
@@ -263,6 +279,84 @@ mod tests {
         let ids = [ipn(0, 1), NodeId::LocalNode];
         let result = NodeIds::try_from(ids.as_slice());
         assert!(matches!(result, Err(Error::LocalNode)));
+    }
+
+    #[test]
+    fn test_to_local_eid_ipn() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: None,
+        };
+
+        // Local IPN EID should convert to LocalNode
+        let eid = Eid::Ipn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            },
+            service_number: 42,
+        };
+        assert_eq!(node_ids.to_local_eid(&eid), Some(Eid::LocalNode(42)));
+
+        // LegacyIpn should also convert
+        let legacy = Eid::LegacyIpn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            },
+            service_number: 7,
+        };
+        assert_eq!(node_ids.to_local_eid(&legacy), Some(Eid::LocalNode(7)));
+
+        // Non-local IPN should return None
+        let remote = Eid::Ipn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            },
+            service_number: 42,
+        };
+        assert_eq!(node_ids.to_local_eid(&remote), None);
+    }
+
+    #[test]
+    fn test_to_local_eid_dtn() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: Some(DtnNodeId {
+                node_name: "mynode".into(),
+            }),
+        };
+
+        // DTN EIDs should always return None (no LocalNode equivalent)
+        let dtn_eid: Eid = "dtn://mynode/svc".parse().unwrap();
+        assert_eq!(node_ids.to_local_eid(&dtn_eid), None);
+    }
+
+    #[test]
+    fn test_to_local_eid_no_ipn() {
+        let node_ids = NodeIds {
+            ipn: None,
+            dtn: Some(DtnNodeId {
+                node_name: "mynode".into(),
+            }),
+        };
+
+        // With no IPN node ID configured, all IPN EIDs return None
+        let eid = Eid::Ipn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            },
+            service_number: 42,
+        };
+        assert_eq!(node_ids.to_local_eid(&eid), None);
     }
 
     // Admin EID for IPN destination should use the IPN node ID with service 0.
