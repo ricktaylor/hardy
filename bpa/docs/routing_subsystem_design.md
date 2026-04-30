@@ -201,7 +201,7 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
 
 ```
          ┌─────────┐
-         │   New   │  ← Ingress filter runs here (ingest_bundle_inner)
+         │   New   │  ← Ingress filter runs here (ingress_bundle)
          └────┬────┘
               │ checkpoint after Ingress filter
               ▼

@@ -11,7 +11,7 @@ This document describes the bundle processing state machine in the BPA dispatche
 
 ## Overview
 
-The dispatcher implements a state machine that governs bundle lifecycle from ingestion to final disposition. Bundle state is persisted via the metadata storage backend, enabling crash recovery and resumption of in-flight bundles.
+The dispatcher implements a state machine that governs bundle lifecycle from ingress to final disposition. Bundle state is persisted via the metadata storage backend, enabling crash recovery and resumption of in-flight bundles.
 
 ## Bundle States
 
@@ -30,16 +30,22 @@ The `BundleStatus` enum (defined in `bpa/src/metadata.rs`) defines all possible 
 
 ```mermaid
 flowchart TD
-    Receive["Receive"] -->|"receive_bundle()"| New["New"]
-    New -->|"ingest_bundle()"| ProcessBundle["process_bundle()"]
+    Receive["CLA Receive"] -->|"receive_bundle()"| New["New"]
+    Originate["Service Originate"] -->|"originate_bundle()"| OrigDispatching["Dispatching"]
+    StatusReport["Status Report"] -->|"dispatch_status_report()"| SrDispatching["Dispatching"]
+
+    New -->|"ingress_bundle()"| ProcessBundle["process_bundle()"]
+    OrigDispatching -->|"dispatch_bundle()"| ProcessBundle
+    SrDispatching -->|"dispatch_bundle()"| ProcessBundle
 
     ProcessBundle --> Drop["Drop (invalid)"]
-    ProcessBundle --> Deliver["Deliver (local)"]
+    ProcessBundle --> DeliverWhole["Deliver (whole bundle)"]
+    ProcessBundle --> DeliverFrag["Deliver (fragment)"]
     ProcessBundle --> Forward["Forward (remote)"]
     ProcessBundle --> NoRoute["No Route Available"]
 
     Drop --> Tombstone1["Tombstone"]
-    Deliver --> Tombstone2["Tombstone"]
+    DeliverWhole --> Tombstone2["Tombstone"]
     Forward --> Dispatching["Dispatching"]
     NoRoute --> Waiting["Waiting"]
 
@@ -54,13 +60,13 @@ flowchart TD
     Success --> Tombstone3["Tombstone"]
     Failure -->|"reset_peer_queue"| Waiting
 
-    New -->|"Fragment Path"| Reassemble["reassemble()"]
-    Reassemble --> AduFragment["AduFragment { source, ts }"]
+    DeliverFrag -->|"reassemble()"| AduFragment["AduFragment { source, ts }"]
 
     AduFragment --> Complete["Complete (all frags)"]
     AduFragment --> Incomplete["Incomplete (waiting)"]
 
-    Complete --> ReIngest["Re-ingest as New"]
+    Complete -->|"process_received_bundle()"| NewReassembled["New (reassembled)"]
+    NewReassembled -->|"ingress_bundle()"| ProcessBundle
     Incomplete --> Expires["Expires (reaper)"]
     Expires --> Tombstone4["Tombstone"]
 ```
@@ -69,20 +75,34 @@ flowchart TD
 
 ### Phase 1: Bundle Ingestion
 
-**Entry Point:** `receive_bundle()` (`dispatch.rs`)
+**Entry Point:** `receive_bundle()` (`ingress.rs`)
 
 1. Bundle received from CLA
-2. CBOR parsing and format validation
-3. Bundle data stored in bundle storage
-4. Metadata inserted with status **`New`**
-5. Valid bundles spawn `ingest_bundle()` in processing pool
-6. Invalid bundles dropped with reason code
+2. `process_received_bundle()` handles validation and storage:
+   - CBOR pre-check (reject empty, BPv6, non-array data)
+   - `RewrittenBundle::parse()` with full processing (block removal, canonicalization, BPSec)
+   - Bundle data stored (or replaced if reassembly pre-saved it)
+   - Invalid bundles dropped with status report where possible — errors are **not** returned to the CLA
+   - Metadata inserted with status **`New`**
+3. `ingress_bundle()` runs the Ingress filter and routes
 
-**Processing:** `ingest_bundle_inner()` (`dispatch.rs`)
+**Origination Entry Point:** `originate_bundle()` (`local.rs`)
 
-- Lifetime validation (immediate expiry check)
-- Hop count validation
+1. Service creates bundle via Builder or CheckedBundle
+2. **Originate Filter Hook** runs in-memory (may drop)
+3. Bundle stored with status **`Dispatching`** (skips Ingress filter)
+4. `dispatch_bundle()` queues directly for routing
+
+**Reassembly Entry Point:** `reassemble()` (`reassemble.rs`)
+
+1. ADU fragments collected and reassembled
+2. `process_received_bundle()` re-parses with full processing
+3. `ingress_bundle()` runs the Ingress filter and routes (via `Box::pin` to break async recursion)
+
+**Ingress Processing:** `ingress_bundle()` (`ingress.rs`)
+
 - **Ingress Filter Hook** execution (may drop bundle) — see [Filter Subsystem Design](filter_subsystem_design.md)
+- Persist any filter mutations (crash-safe ordering)
 - Checkpoint: status transitions to `Dispatching`
 - Proceeds to `process_bundle()`
 
@@ -139,9 +159,11 @@ See [Routing Design](routing_subsystem_design.md) for details on peer table stru
 
 | Condition | Action | State Transition |
 |-----------|--------|------------------|
-| All fragments received | Reassemble and re-ingest | `AduFragment` → `New` (new bundle) |
+| All fragments received | Reassemble and run full receive pipeline | `AduFragment` → `New` (new bundle) |
 | Fragments incomplete | Wait for more fragments | Remains `AduFragment` |
 | Lifetime expired | Drop all fragments | `AduFragment` → Tombstone |
+
+When all fragments arrive, the reassembled data is re-parsed via `process_received_bundle()` using `RewrittenBundle::parse()` (Full mode) to apply block removal, canonicalization, and BPSec validation. The reassembled bundle then runs the Ingress filter via `ingress_bundle()` (using `Box::pin` to break the recursive async type cycle).
 
 ### Phase 5: Waiting State
 
@@ -155,11 +177,11 @@ See [Routing Design](routing_subsystem_design.md) for details on peer table stru
 
 **Entry:** `administrative_bundle()` (`admin.rs`) — when a status report (or other admin bundle) targets a service that is not yet registered, the bundle is set to `WaitingForService { source: report.bundle_id.source }`, persisted, and watched.
 
-**Wait Monitoring:** `poll_service_waiting()` (`dispatcher/mod.rs`) — when a service registers, the service registry calls `poll_service_waiting(&service_id)`; matching bundles are loaded and re-ingested via `ingest_bundle()`, so the status report is delivered or re-queued.
+**Wait Monitoring:** `poll_service_waiting()` (`dispatcher/mod.rs`) — when a service registers, the service registry calls `poll_service_waiting(&service_id)`; matching bundles are loaded and re-dispatched via `dispatch_bundle()`, so the status report is delivered or re-queued.
 
 | Condition | Action | State Transition |
 |-----------|--------|------------------|
-| Service registers | Re-ingest bundle | `WaitingForService` → deliver or re-queue |
+| Service registers | Re-dispatch bundle | `WaitingForService` → deliver or re-queue |
 | Lifetime expires | Reaper drops bundle | `WaitingForService` → Tombstone |
 
 ## Persistence Points
@@ -168,13 +190,14 @@ Bundle state is persisted at these critical moments:
 
 | Location | Status After | Function |
 |----------|--------------|----------|
-| Initial storage | `New` | `receive_bundle()` |
-| After Ingress filter | `Dispatching` | `ingest_bundle_inner()` |
+| CLA ingress storage | `New` | `process_received_bundle()` |
+| After Ingress filter | `Dispatching` | `ingress_bundle()` |
+| Originated bundle storage | `Dispatching` | `originate_bundle()` |
 | Waiting state | `Waiting` | `process_bundle()` |
 | Status report, service not registered | `WaitingForService` | `administrative_bundle()` |
 | CLA queue entry | `ForwardPending` | `Sender::send()` |
 | Fragment accumulation | `AduFragment` | `adu_reassemble()` |
-| Filter mutations | Various | `ingest_bundle_inner()` |
+| Filter mutations | Various | `ingress_bundle()` |
 
 ## Error Handling and Recovery
 
@@ -188,9 +211,9 @@ Bundle state is persisted at these critical moments:
 
 ### Hop Count Exceeded
 
-**Check:** `ingest_bundle_inner()` (`dispatch.rs`)
+**Check:** `ingress_bundle()` (`ingress.rs`) via Ingress filter
 
-- Validates hop count during ingestion
+- Validates hop count during ingress
 - Triggers `drop_bundle(bundle, ReasonCode::HopLimitExceeded)`
 
 ### Data Loss During Processing
@@ -202,9 +225,9 @@ Bundle state is persisted at these critical moments:
 
 ### Duplicate Bundle Detection
 
-**Point 1:** CLA receive (`dispatch.rs`)
+**Point 1:** CLA receive (`ingress.rs`)
 
-- `store.insert_metadata()` returns false
+- `store.insert_metadata()` returns false in `process_received_bundle()`
 - Duplicate discarded without further processing
 
 **Point 2:** Restart recovery (`restart.rs`)
@@ -224,8 +247,8 @@ Bundle state is persisted at these critical moments:
 
 **Location:** `reassemble()` (`reassemble.rs`)
 
-- Parse failure of reconstituted bundle
-- Fragments remain in `AduFragment` status until expiry
+- Reassembled data runs through `process_received_bundle()` which handles parse failures internally (logs, drops, generates status report where possible)
+- If reassembly itself fails (corrupt/misaligned fragments), fragments are cleaned up by `adu_reassemble()`
 
 ## Channel-Based Status Management
 
@@ -256,22 +279,21 @@ See `src/storage/channel.rs` for the `ChannelShared` implementation.
 
 ### Recovery Process (`recover.rs`)
 
-1. `start_metadata_storage_recovery()` - Backend preparation
-2. `bundle_storage_recovery()` - Scan all bundle data
-   - Each bundle re-parsed and validated
-   - `restart_bundle()` called per bundle
-3. `metadata_storage_recovery()` - Find orphaned metadata
-   - Metadata exists but data missing
-   - Reported as deleted (DepletedStorage)
+1. `start_metadata_storage_recovery()` — Backend preparation (marks all entries unconfirmed)
+2. `bundle_storage_recovery()` — Scan all bundle data
+   - Each bundle validated with `ParsedBundle::parse()` (Preserve mode — integrity check only, no block removal or canonicalization)
+   - `restart_bundle()` called per bundle to reconcile with metadata
+3. `metadata_storage_recovery()` — Find unconfirmed metadata (data missing or deleted as junk)
+   - Reports deletion with `DepletedStorage` reason code
 
 ### Restart Results
 
 | Result | Condition | Action |
 |--------|-----------|--------|
-| `Valid` | Data + metadata exist and match | No action needed |
-| `Orphan` | Data exists, metadata missing | Insert metadata, re-ingest |
-| `Duplicate` | Extra copy of existing bundle | Delete spurious copy |
-| `Junk` | Unparseable data | Delete data |
+| Resumable | Data + metadata exist and match | Resume from checkpoint status |
+| Orphan | Data exists, metadata missing | Full receive pipeline (`process_received_bundle` + `ingress_bundle`) |
+| Duplicate | Extra copy of existing bundle | Delete spurious copy |
+| Junk | Unparseable data | Delete data (orphaned metadata caught by phase 3) |
 
 ## Crash Safety Strategy
 
@@ -284,8 +306,10 @@ See `src/storage/channel.rs` for the `ChannelShared` implementation.
 
 ### Task Pools
 
-- `processing_pool` (BoundedTaskPool): Rate-limits bundle processing
+- `processing_pool` (BoundedTaskPool): Rate-limits parallel filter execution and dispatch queue consumers
 - `tasks` (TaskPool): Dispatcher and storage maintenance tasks
+
+Bundle ingress runs inline in the caller's context (no separate spawn). For CLA ingress, backpressure comes from the RpcProxy's handler pool. For dispatch queue consumers and recovery, from the dispatcher's processing pool spawns.
 
 ### Synchronization Primitives
 
@@ -315,10 +339,10 @@ For filter traits, registration API, and execution model, see [Filter Subsystem 
 
 | Hook | Location | Execution | Persistence |
 |------|----------|-----------|-------------|
-| **Ingress** | `ingest_bundle_inner()` | Async (spawned task) | Always (checkpoint to `Dispatching`) |
-| **Originate** | `run_originate_filter()` | Sync (in caller context) | None (bundle stored after filter) |
-| **Deliver** | `deliver_bundle()` | Sync (before delivery) | None (bundle dropped after) |
-| **Egress** | `forward_bundle()` | Sync (after dequeue) | None (bundle leaving node) |
+| **Ingress** | `ingress_bundle()` | Inline (caller context) | Always (checkpoint to `Dispatching`) |
+| **Originate** | `run_originate_filter()` | Inline (caller context) | None (bundle stored after filter) |
+| **Deliver** | `deliver_bundle()` | Inline (before delivery) | None (bundle dropped after) |
+| **Egress** | `forward_bundle()` | Inline (after dequeue) | None (bundle leaving node) |
 
 ### Checkpoint Model
 
@@ -330,11 +354,15 @@ For filter traits, registration API, and execution model, see [Filter Subsystem 
 │                         CHECKPOINT MODEL                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│   [Receive/Create] ──► [Status: New] ──► [Ingress Filter] ──►           │
-│                         (checkpoint)                                    │
+│   CLA Ingress:                                                          │
+│     [Receive] ──► [Status: New] ──► [Ingress Filter] ──►                │
+│                    (checkpoint)                                         │
+│     ──► [Status: Dispatching] ──► [process_bundle()] ──► [Next State]   │
+│          (checkpoint)                                                   │
 │                                                                         │
-│   ──► [Status: Dispatching] ──► [process_bundle()] ──► [Next State]     │
-│        (checkpoint)                                                     │
+│   Service Origination:                                                  │
+│     [Originate Filter] ──► [Status: Dispatching] ──► [process_bundle()] │
+│                             (checkpoint, skips Ingress filter)          │
 │                                                                         │
 │   On restart:                                                           │
 │     • Status=New        → Run Ingress filter, then route                │
@@ -345,12 +373,10 @@ For filter traits, registration API, and execution model, see [Filter Subsystem 
 
 ### Ingress Filter Crash Safety
 
-The Ingress filter runs in a spawned task (`ingest_bundle()` uses `spawn!` on a bounded pool).
-The spawning function returns to the caller once the task **starts**, not when it completes.
-This means:
-
-1. For received bundles: `receive_bundle()` returns to CLA before Ingress filter completes
-2. For originated bundles: `local_dispatch()` returns `Ok(bundle_id)` before Ingress completes
+The Ingress filter runs inline within `ingress_bundle()` in the caller's context. For CLA
+ingress, the caller is already running on the RpcProxy's `BoundedTaskPool`; for reassembly,
+the caller is already running on the dispatcher's processing pool. This provides natural
+backpressure without a separate spawn.
 
 If a crash occurs during or after the Ingress filter but before the status changes, the
 bundle would still be in `New` status. Without proper checkpointing, the Ingress filter
@@ -358,7 +384,7 @@ would re-run on restart, potentially applying mutations twice.
 
 **Solution:** Transition to `Dispatching` immediately after Ingress filter completes, before calling `process_bundle()`. This checkpoint is always persisted, even if the filter made no mutations. If the filter modified bundle data, the new data is saved before the old is deleted (crash-safe ordering).
 
-See `ingest_bundle_inner()` in `src/dispatcher/dispatch.rs` for implementation.
+See `ingress_bundle()` in `src/dispatcher/ingress.rs` for implementation.
 
 ### Originate Filter Crash Safety
 
@@ -370,20 +396,20 @@ This design provides clean crash semantics:
 
 - **Crash before/during filter:** Nothing persisted, caller sees failure, can retry
 - **Crash after filter but before store:** Nothing persisted, caller sees failure, can retry
-- **Crash after store:** Bundle is in system, Ingress filter will run on restart
+- **Crash after store:** Bundle is in system with `Dispatching` status, routing resumes on restart
 
 No checkpoint is needed because:
 
 1. The bundle isn't stored until after the filter passes
 2. The caller handles retry semantics
-3. The Ingress filter checkpoint protects against double-filtering
+3. Originated bundles store with `Dispatching` status, so restart skips the Ingress filter entirely
 
 The `originate_bundle()` function in `src/dispatcher/local.rs` implements this pattern:
 
-1. Wrap bundle with initial metadata (in-memory only)
+1. Wrap bundle with initial metadata and **`Dispatching`** status (in-memory only)
 2. Run Originate filter (may modify metadata like flow_label)
 3. Store bundle and metadata atomically
-4. Queue for Ingress filter processing
+4. Queue directly for routing via `dispatch_bundle()` (Ingress filter is skipped)
 
 The `local_dispatch()` wrapper handles timestamp collisions by retrying with a new timestamp, while `local_dispatch_raw()` uses a fixed bundle ID without retry.
 
@@ -404,11 +430,11 @@ On restart, `restart_bundle()` examines the bundle status to determine where to 
 
 | Status | Recovery Action |
 |--------|-----------------|
-| `New` | Run `ingest_bundle()` → Ingress filter → routing |
+| `New` | Run `ingress_bundle()` → Ingress filter → routing (CLA-received bundles only) |
 | `Dispatching` | Skip filters, run `process_bundle()` directly |
 | `ForwardPending` | Re-queue for CLA transmission |
 | `Waiting` | Re-add to waiting pool for route polling |
-| `WaitingForService` | Re-ingest so status report is re-evaluated (deliver or re-queue) |
+| `WaitingForService` | Re-dispatch so status report is re-evaluated (deliver or re-queue) |
 | `AduFragment` | Re-add to fragment reassembly |
 
 ### Why No Originate Checkpoint?
@@ -418,16 +444,16 @@ Originated bundles don't need a separate checkpoint state because:
 1. **Delayed persistence:** The bundle isn't stored until after the Originate filter passes
 2. **Caller handles failure:** If crash before store completes, caller gets no response and can retry
 3. **Single persist operation:** Filter-modified metadata is preserved in the single `store()` call
-4. **Ingress checkpoint:** After store, Ingress runs in a spawned task; the `Dispatching`
-   checkpoint protects against re-running Ingress on restart
+4. **Direct to Dispatching:** Originated bundles store with `Dispatching` status and queue directly
+   for routing via `dispatch_bundle()`, skipping the Ingress filter entirely
 
 The transaction boundary for originated bundles is:
 
-- Caller gets `Ok(bundle_id)` → Bundle stored and queued for Ingress filter
+- Caller gets `Ok(bundle_id)` → Bundle stored with `Dispatching` status and queued for routing
 - Caller gets `Err` or crash → Nothing persisted, caller can retry
 
 ## Notes
 
-- Fragment reassembly creates a new bundle with fresh `New` status
+- Fragment reassembly creates a new bundle with fresh `New` status (re-parsed with `RewrittenBundle::parse()` in full mode)
 - The reaper monitors all bundles except those in active `New` processing
 - Channel status management provides automatic persistence on queue transitions

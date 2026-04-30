@@ -5,6 +5,7 @@ use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 mod admin;
 mod dispatch;
 mod forward;
+mod ingress;
 mod local;
 mod reassemble;
 mod report;
