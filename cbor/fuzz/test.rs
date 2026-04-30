@@ -20,9 +20,9 @@ fn test_all() {
                 {
                     let mut buffer = Vec::new();
                     if file.read_to_end(&mut buffer).is_ok() {
-                        _ = hardy_cbor::decode::parse_value(&buffer, |value, _, _| {
+                        _ = hardy_cbor::buffer::decoder::parse_value(&buffer, |value, _, _| {
                             _ = format!("{value:?}");
-                            Ok::<_, hardy_cbor::decode::Error>(())
+                            Ok::<_, hardy_cbor::buffer::decoder::Error>(())
                         });
                     }
                 }

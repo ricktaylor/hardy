@@ -19,6 +19,20 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "stream_decode"
+path = "fuzz_targets/stream_decode.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "stream_roundtrip"
+path = "fuzz_targets/stream_roundtrip.rs"
+test = false
+bench = false
+doc = false
+
 [lib]
 name = "test"
 path = "test.rs"

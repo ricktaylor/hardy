@@ -15,10 +15,15 @@ description = "RFC 8949 compliant canonical CBOR encoder/decoder"
 path = "src/lib.rs"
 crate-type = ["rlib"]
 
+[features]
+default = ["std"]
+std = ["hardy-io/std"]
+
 [dependencies]
 thiserror = { version = "2", default-features = false }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 num-traits = { version = "0.2", default-features = false }
+hardy-io = { version = "0.1", path = "../io", default-features = false }
 
 [dev-dependencies]
 hex-literal = "1"

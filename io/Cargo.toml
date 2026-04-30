@@ -1,0 +1,16 @@
+[package]
+name = "hardy-io"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable I/O traits for streaming CBOR and BPv7"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+embedded-io = { version = "0.7.1", default-features = false }
+thiserror = { version = "2", default-features = false }

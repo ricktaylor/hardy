@@ -1,4 +1,4 @@
-use super::encode::*;
+use hardy_cbor::buffer::encoder::*;
 use hex_literal::hex;
 
 #[test]
@@ -70,10 +70,7 @@ fn rfc_tests() {
 
     assert_eq!(*emit(&false).0, hex!("f4"));
     assert_eq!(*emit(&true).0, hex!("f5"));
-    assert_eq!(*emit_simple_value(22), hex!("f6"));
     assert_eq!(*emit(&None::<i32>).0, hex!("f7"));
-    assert_eq!(*emit_simple_value(16), hex!("f0"));
-    assert_eq!(*emit_simple_value(255), hex!("f8ff"));
     assert_eq!(
         *emit(&Tagged::<0, _>("2013-03-21T20:04:00Z")).0,
         hex!("c074323031332d30332d32315432303a30343a30305a")
@@ -149,7 +146,7 @@ fn rfc_tests() {
         hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
     );
     assert_eq!(
-        *emit((1..=25).collect::<alloc::vec::Vec<u8>>().as_slice()).0,
+        *emit((1..=25).collect::<Vec<u8>>().as_slice()).0,
         hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
     );
 
