@@ -63,12 +63,14 @@ This centralised design ensures consistent bundle handling across all paths (CLA
 A bundle entering from a CLA follows this path:
 
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
-2. **Validation**: `RewrittenBundle::parse()` performs full validation and canonicalisation
-3. **Filtering**: Ingress filters may drop, modify, or mark the bundle
-4. **Storage**: Bundle persisted with `New` status before processing continues
-5. **Dispatch**: Destination examined - local delivery, admin endpoint, or forwarding
+2. **Validation**: `process_received_bundle()` runs CBOR precheck and `RewrittenBundle::parse()` with full processing (block removal, canonicalization, BPSec). Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
+3. **Storage**: Bundle data and metadata persisted with `New` status
+4. **Filtering**: `ingress_bundle()` runs Ingress filters, which may drop, modify, or mark the bundle. Status checkpointed to `Dispatching`
+5. **Dispatch**: Destination examined — local delivery, admin endpoint, or forwarding
 6. **Routing**: RIB lookup determines next hop for forwarding bundles
 7. **Egress**: Bundle queued to CLA for transmission, egress filters applied
+
+Locally-originated bundles (from services) run the Originate filter, store with `Dispatching` status, and skip the Ingress filter. Fragment reassembly shares the same `process_received_bundle()` path as CLA ingress, ensuring reassembled bundles get full-mode parsing and validation.
 
 Failed bundles generate status reports where requested and permitted.
 
@@ -168,9 +170,9 @@ Routes are keyed by `(priority, pattern, action, source)` allowing multiple rout
 
 ### Bounded Processing Pool
 
-Bundle processing uses `BoundedTaskPool` with a configurable concurrency limit. When the pool is saturated, ingress naturally slows down - new bundles wait for processing slots rather than queuing unboundedly in memory.
+The `BoundedTaskPool` provides concurrency control for parallel filter execution and dispatch queue consumers. Bundle ingress runs inline in the caller's context rather than being spawned into the pool — backpressure for CLA ingress comes from the RpcProxy's handler pool, which limits concurrent gRPC handler tasks.
 
-This provides backpressure through the system. CLAs that receive bundles faster than the BPA can process them will experience slowdown at the dispatch call, which can propagate to their network handling.
+This layered backpressure model means CLAs that receive bundles faster than the BPA can process them experience slowdown at the gRPC dispatch call, which propagates to their network handling.
 
 ### Storage-Backed Queues
 
@@ -206,9 +208,9 @@ See [Policy Subsystem Design](policy_subsystem_design.md#hybrid-channel-architec
 
 The BPA uses all three parsing modes:
 
-- `RewrittenBundle` for CLA input (untrusted, full validation)
-- `CheckedBundle` for service input (semi-trusted, canonicalisation only)
-- `ParsedBundle` for quick routing inspection
+- `RewrittenBundle` for CLA ingress and fragment reassembly (untrusted, full validation with block removal)
+- `CheckedBundle` for service input (semi-trusted, canonicalization only)
+- `ParsedBundle` for restart recovery routing inspection
 
 ### With Storage Backends
 
