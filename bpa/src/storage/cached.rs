@@ -92,6 +92,16 @@ impl BundleStorage for CachedBundleStorage {
         Ok(())
     }
 
+    async fn create(&self, total_length: u64) -> Result<Arc<str>> {
+        self.inner.create(total_length).await
+    }
+
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> Result<()> {
+        // Invalidate cache on partial write — the cached entry (if any) is now stale
+        self.lru.lock().pop(storage_name);
+        self.inner.write_at(storage_name, offset, data).await
+    }
+
     async fn delete(&self, storage_name: &str) -> Result<()> {
         self.lru.lock().pop(storage_name);
         self.inner.delete(storage_name).await

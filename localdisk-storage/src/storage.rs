@@ -371,6 +371,33 @@ impl BundleStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn create(&self, total_length: u64) -> storage::Result<Arc<str>> {
+        // Create a file of the given size with a random name
+        let data = Bytes::from(vec![0u8; total_length as usize]);
+        self.save(data).await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> storage::Result<()> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+        let path = self.store_root.join(PathBuf::from_str(storage_name)?);
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .await?;
+
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        file.write_all(&data).await?;
+
+        if self.fsync {
+            file.sync_data().await?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn delete(&self, storage_name: &str) -> storage::Result<()> {
         tokio::fs::remove_file(&self.store_root.join(PathBuf::from_str(storage_name)?))
             .await

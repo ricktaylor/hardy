@@ -1,12 +1,13 @@
-use super::*;
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+
+use super::*;
 
 mod admin;
 mod dispatch;
 mod forward;
 mod local;
-mod reassemble;
 mod report;
 mod restart;
 

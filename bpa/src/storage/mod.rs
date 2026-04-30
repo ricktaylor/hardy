@@ -1,10 +1,21 @@
 use hardy_async::async_trait;
 use hardy_bpv7::bundle::Id;
+use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
 
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+pub use crate::fragmentation::{FragmentDescriptor, ReassemblyStatus};
 use crate::{Arc, Bytes};
+
+// For bundle_cache we use hardy_async::sync::spin::Mutex because:
+// 1. All operations are O(1): peek, put, pop
+// 2. Critical sections are very short (LRU HashMap lookups)
+// 3. No blocking/sleeping/syscalls while holding lock
+// 4. Avoids OS mutex overhead on hot path
+//
+// Other caches (metadata_mem, bundle_mem) use hardy_async::sync::Mutex because
+// they perform O(n) iteration while holding the lock.
 
 /// Boxed error type used by storage trait methods.
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
@@ -23,7 +34,6 @@ mod store;
 
 use reaper::Reaper;
 
-pub(crate) mod adu_reassembly;
 pub(crate) mod channel;
 pub(crate) mod recover;
 
@@ -33,6 +43,27 @@ pub use cached::{CachedBundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_B
 /// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
 pub use metadata_mem::{Config as MetadataMemStorageConfig, MetadataMemStorage};
 pub(crate) use store::Store;
+
+/// Result of upserting a fragment into the metadata reassembly tracker.
+pub struct UpsertResult {
+    /// Storage name of the ADU object. `None` if this is the first fragment.
+    pub storage_name: Option<Arc<str>>,
+    /// `true` only for the first fragment that created this reassembly entry.
+    pub created: bool,
+}
+
+/// Returned by `confirm_fragment_write` when all bytes have been written.
+pub struct CompletionInfo {
+    /// Fragment 0's wire data (extension blocks), if available.
+    pub extension_blocks: Option<Bytes>,
+}
+
+/// An expired reassembly entry returned by the reaper scan.
+pub struct ExpiredReassembly {
+    pub source: Eid,
+    pub timestamp: CreationTimestamp,
+    pub storage_name: Option<Arc<str>>,
+}
 
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
@@ -226,6 +257,50 @@ pub trait MetadataStorage: Send + Sync {
         status: &BundleStatus,
         limit: usize,
     ) -> Result<()>;
+
+    /// Record a fragment for progressive reassembly.
+    ///
+    /// Creates or updates the reassembly tracker for the given bundle.
+    /// Returns the storage name (if already set) and whether this call created
+    /// a new entry. Does NOT update coverage — call `confirm_fragment_write`
+    /// after the data has been written to storage.
+    async fn upsert_reassembly(&self, fragment: &FragmentDescriptor<'_>) -> Result<UpsertResult>;
+
+    /// Confirm that a fragment's data has been written to storage.
+    ///
+    /// Updates the coverage tracking and checks completeness.
+    /// Must be called AFTER `write_at` succeeds, so that completeness
+    /// is only reported when all bytes are actually persisted.
+    /// Returns `Some(CompletionInfo)` when the ADU is fully covered.
+    async fn confirm_fragment_write(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        offset: u64,
+        length: u64,
+        total_adu_length: u64,
+    ) -> Result<Option<CompletionInfo>>;
+
+    /// Associate a storage name with a reassembly entry (compare-and-swap).
+    ///
+    /// Only sets the name if the entry currently has no storage name.
+    /// Returns the name that is now active — either the one just set,
+    /// or the pre-existing one if another task won the race.
+    /// The caller must clean up the orphaned ADU when the returned name
+    /// differs from the one passed in.
+    async fn set_reassembly_name(
+        &self,
+        source: &Eid,
+        timestamp: &CreationTimestamp,
+        name: Arc<str>,
+    ) -> Result<Arc<str>>;
+
+    /// Delete a reassembly tracker after finalization or failure.
+    async fn delete_reassembly(&self, source: &Eid, timestamp: &CreationTimestamp) -> Result<()>;
+
+    /// Return expired reassembly entries for cleanup.
+    /// The reaper calls this periodically to find stale reassemblies.
+    async fn poll_expired_reassemblies(&self) -> Result<Vec<ExpiredReassembly>>;
 }
 
 /// A recovered bundle entry: `(storage_name, creation_time)`.
@@ -280,6 +355,21 @@ pub trait BundleStorage: Send + Sync {
     /// The implementation must ensure atomicity: readers see either the
     /// old data or the new data, never a partial write.
     async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()>;
+
+    /// Create an empty storage object of the given size.
+    ///
+    /// Returns the storage name for the new object.
+    /// For disk: creates a file of the given size.
+    /// For S3: initiates a multipart upload.
+    /// For memory: allocates a zeroed buffer.
+    async fn create(&self, total_length: u64) -> Result<Arc<str>>;
+
+    /// Write data at a specific offset within an existing storage object.
+    ///
+    /// The storage object must have been created with `create()`.
+    /// Writes are idempotent: writing the same data at the same offset
+    /// produces the same result.
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> Result<()>;
 
     /// Deletes a bundle from the bundle storage.
     ///

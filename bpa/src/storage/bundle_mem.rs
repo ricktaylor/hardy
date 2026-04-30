@@ -143,6 +143,38 @@ impl BundleStorage for BundleMemStorage {
             .saturating_sub(old_len)
             .saturating_add(new_len);
         metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
+
+        Ok(())
+    }
+
+    async fn create(&self, total_length: u64) -> Result<Arc<str>> {
+        let data = Bytes::from(vec![0u8; total_length as usize]);
+        self.save(data).await
+    }
+
+    async fn write_at(&self, storage_name: &str, offset: u64, data: Bytes) -> Result<()> {
+        let mut inner = self.inner.lock();
+        let (_, existing) = inner
+            .cache
+            .get_mut(storage_name)
+            .ok_or_else(|| format!("Storage object not found: {storage_name}"))?;
+
+        let offset = offset as usize;
+        let end = offset + data.len();
+        if end > existing.len() {
+            return Err(format!(
+                "write_at beyond object size: offset={offset}, len={}, size={}",
+                data.len(),
+                existing.len()
+            )
+            .into());
+        }
+
+        // Bytes is immutable, so we need to rebuild
+        let mut buf = existing.to_vec();
+        buf[offset..end].copy_from_slice(&data);
+        *existing = Bytes::from(buf);
+
         Ok(())
     }
 
