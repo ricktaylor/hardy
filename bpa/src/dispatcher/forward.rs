@@ -12,8 +12,11 @@ impl Dispatcher {
     ) {
         // Get bundle data from store, now we know we need it!
         let Some(data) = self.load_data(&bundle).await else {
-            // Bundle data was deleted sometime during processing
-            return self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+            if !bundle.has_expired() {
+                // Bundle data was deleted while queued - not reaped
+                self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+            }
+            return;
         };
 
         // Increment Hop Count, etc...

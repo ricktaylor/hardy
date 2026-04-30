@@ -269,8 +269,8 @@ impl Dispatcher {
                     dispatcher
                         .process_bundle(bundle, data, dispatcher.cla_registry())
                         .await;
-                } else {
-                    // Bundle data was deleted while queued
+                } else if !bundle.has_expired() {
+                    // Bundle data was deleted while queued - not reaped
                     dispatcher
                         .drop_bundle(bundle, ReasonCode::DepletedStorage)
                         .await;
@@ -375,8 +375,8 @@ impl Dispatcher {
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
                                 if let Some(data) = dispatcher.load_data(&bundle).await {
                                     dispatcher.process_bundle(bundle, data, dispatcher.cla_registry()).await
-                                } else {
-                                    // Bundle data was deleted sometime while we waited, drop the bundle
+                                } else if !bundle.has_expired() {
+                                    // Bundle data was deleted while queued - not reaped
                                     dispatcher.drop_bundle(bundle, ReasonCode::DepletedStorage).await
                                 }
                             }).await;
