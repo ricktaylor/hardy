@@ -105,7 +105,13 @@ impl Rib {
         }
     }
 
-    /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
+    /// Find a registered local service matching the given EID.
+    ///
+    /// Used for status report notifications (`admin.rs`) where we need to
+    /// find the service to notify, regardless of routing policy. This
+    /// intentionally bypasses priority ordering and Drop rules — a Drop
+    /// rule prevents *routing* bundles to a service, but should not prevent
+    /// the BPA from notifying a registered service about its own bundles.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub fn find_service(
         &self,
@@ -113,7 +119,7 @@ impl Rib {
     ) -> Option<Arc<services::registry::Service>> {
         let inner = self.inner.read();
 
-        // TODO: this is should be for *all* tables
+        // TODO: this should be for *all* tables
         let table = &inner.routes;
 
         for entries in table.values() {
