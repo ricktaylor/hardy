@@ -62,7 +62,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 }
                 Err(e) => {
                     warn!("Ignoring invalid bundle: {e}");
-                    return Err(e.into());
+                    return Err(hardy_bpa::cla::Error::Internal(e.into()));
                 }
             };
 

@@ -120,7 +120,7 @@ The optional `ReasonCode` in `Drop` allows filters to indicate why the bundle wa
 
 ## Filter Traits
 
-See `bpa/src/filters/mod.rs` for trait definitions and result types.
+See `bpa/src/filter/mod.rs` for trait definitions and result types.
 
 Two async traits with identical signatures, differing only in return type:
 
@@ -151,7 +151,7 @@ Persistence depends on the hook (see [Bundle State Machine Design](bundle_state_
 
 ## Registration API
 
-See `bpa/src/filters/mod.rs` for the `Filter` enum, `Hook` enum, and `ExecResult` type, and `bpa/src/filters/registry.rs` for the `Registry`.
+See `bpa/src/filter/mod.rs` for the `Filter` enum, `Hook` enum, and `ExecResult` type, and `bpa/src/filter/engine.rs` for the `FilterEngine`.
 
 The `Filter` enum wraps either a `ReadFilter` or `WriteFilter` trait object in an `Arc`. The `Hook` enum identifies which hook point to register at.
 
@@ -214,13 +214,7 @@ This prevents writer starvation, is Send-safe for async runtimes, and avoids per
 
 ### Rate-Limited Execution
 
-Filter execution occurs within the dispatcher's `processing_pool` (a `BoundedTaskPool`). This:
-
-- Prevents unbounded parallelism from exhausting system resources
-- Applies backpressure when the pool is saturated
-- Is configurable via `processing_pool_size` (default: 4 × available CPU cores)
-
-The pool is shared across all bundle processing work (ingress, filter execution, dispatch).
+ReadFilter parallelism is bounded by the dispatcher's `processing_pool` (a `BoundedTaskPool`). Bundle processing itself runs inline in the caller's context — for CLA ingress, backpressure comes from the RpcProxy's handler pool; for dispatch queue consumers and reassembly, from the dispatcher's processing pool spawns.
 
 ### Parallelism Rules
 
@@ -236,35 +230,45 @@ The pool is shared across all bundle processing work (ingress, filter execution,
 ### Bundle Processing Flow
 
 ```
-CLA.on_receive(data)
-  └─▶ dispatcher.receive_bundle(data)
-        ├─ parse bundle
-        ├─ save to store
-        └─▶ ingest_bundle(bundle)  ← spawns into processing_pool
-              └─▶ ingest_bundle_inner(bundle)
-                    ├─ check lifetime/hop count
-                    ├─ ◀── HOOK: Ingress
-                    ├─ persist data + checkpoint to Dispatching
-                    └─▶ process_bundle(bundle)
-                          ├─ RIB lookup (see routing_subsystem_design.md)
-                          ├─ Deliver:
-                          │     ├─ ◀── HOOK: Deliver
-                          │     └─ deliver_bundle(service)
-                          │           └─ (no persist - bundle dropped after delivery)
-                          └─ Forward → egress path
+CLA ingress:
+  └─▶ dispatcher.receive_bundle(data)         (ingress.rs)
+        └─▶ process_received_bundle(data)
+              ├─ CBOR precheck
+              ├─ RewrittenBundle::parse() (full mode)
+              ├─ save/replace data in store
+              ├─ insert metadata (status: New)
+              ├─ report bundle reception
+              └─ return Some((bundle, data))
+        └─▶ ingress_bundle(bundle, data)
+              ├─ ◀── HOOK: Ingress
+              ├─ persist data + checkpoint to Dispatching
+              └─▶ process_bundle(bundle)
+                    ├─ RIB lookup (see routing_subsystem_design.md)
+                    ├─ Deliver:
+                    │     ├─ ◀── HOOK: Deliver
+                    │     └─ deliver_bundle(service)
+                    │           └─ (no persist - bundle dropped after delivery)
+                    └─ Forward → egress path
 
-Local origination:
-  └─▶ local_dispatch(...)
+Fragment reassembly:
+  └─▶ reassemble(bundle)                      (reassemble.rs)
+        ├─ adu_reassemble() → reassembled data
+        └─▶ process_received_bundle(data)     (shared with CLA ingress)
+              └─ full-mode parse, store, report
+        └─▶ Box::pin(ingress_bundle(bundle))   (breaks async recursion)
+
+Local origination (skips Ingress filter):
+  └─▶ local_dispatch(...)                     (local.rs)
         ├─ Builder::build() or CheckedBundle::parse()
         ├─ ◀── HOOK: Originate (in-memory, may set flow_label)
-        ├─ store.store(bundle, data)  ← store AFTER filter
-        └─▶ ingest_bundle(bundle)
+        ├─ store.store(bundle, data)  ← store AFTER filter, status: Dispatching
+        └─▶ dispatch_bundle(bundle)   ← routes directly, no Ingress filter
 
-Status reports (internal bundles, skip Originate):
+Status reports (internal bundles, skip both Originate and Ingress):
   └─▶ dispatch_status_report(...)
         ├─ Builder::build()
-        ├─ store.store(bundle, data)
-        └─▶ ingest_bundle_inner(bundle)  ← runs Ingress filter
+        ├─ store.store(bundle, data)  ← status: Dispatching
+        └─▶ dispatch_bundle(bundle)   ← routes directly
 
 Egress path:
   └─▶ forward_bundle(bundle)  ← after dequeue from ForwardPending
@@ -274,7 +278,11 @@ Egress path:
         └─ CLA.send()
 ```
 
-**Filter-then-store pattern:** For Originate hooks, the filter runs on an in-memory bundle before storing. If the filter drops the bundle, nothing is persisted. Filter modifications (e.g., flow_label) are preserved in the single store operation.
+**Filter-then-store pattern:** For Originate hooks, the filter runs on an in-memory bundle before storing. If the filter drops the bundle, nothing is persisted. Filter modifications (e.g., flow_label) are preserved in the single store operation. Originated bundles store with `Dispatching` status and skip the Ingress filter entirely.
+
+**Error handling:** Bundle validation errors (malformed CBOR, parse failures) are handled internally by `process_received_bundle()` — logged, counted, and dropped. Errors are never returned to the CLA, since the CLA cannot fix invalid bundle content.
+
+**Restart recovery:** Stored bundles are validated with `ParsedBundle::parse()` (Preserve mode — integrity check only, no block removal or canonicalization). Bundles with existing metadata resume from their checkpoint status. Orphan bundles (data without metadata) run the full receive pipeline via `process_received_bundle()`. See [Bundle State Machine Design](bundle_state_machine_design.md#recovery-architecture) for details.
 
 ### Hook Placement
 
