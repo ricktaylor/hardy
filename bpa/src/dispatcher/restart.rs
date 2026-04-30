@@ -8,8 +8,8 @@ impl Dispatcher {
         file_time: time::OffsetDateTime,
     ) {
         let Some(data) = self.store.load_data(&storage_name).await else {
-            // Data has gone while we were restarting
-            metrics::counter!("bpa.restart.lost").increment(1);
+            // Data has gone while we were restarting - the reaper hasn't started, so this is data loss.
+            // This is safe as the metadata restart will report it if it's in the metadata store
             return;
         };
 
