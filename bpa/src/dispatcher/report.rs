@@ -150,10 +150,12 @@ impl Dispatcher {
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
             .trace_expect("Failed to create new bundle");
 
-            // Wrap in bundle::Bundle with initial metadata (not stored yet)
+            // Wrap in bundle::Bundle with Dispatching status — status reports
+            // are internally generated, so they skip both the Originate and
+            // Ingress filters and go directly to routing.
             let mut bundle = bundle::Bundle {
                 metadata: bundle::BundleMetadata {
-                    status: bundle::BundleStatus::New,
+                    status: bundle::BundleStatus::Dispatching,
                     ..Default::default()
                 },
                 bundle,

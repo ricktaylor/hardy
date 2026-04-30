@@ -118,10 +118,12 @@ impl Dispatcher {
         bundle: hardy_bpv7::bundle::Bundle,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        // Wrap in bundle::Bundle with initial metadata (not stored yet)
+        // Wrap in bundle::Bundle with Dispatching status so that restart
+        // recovery skips the Ingress filter (originated bundles only run the
+        // Originate filter, never the Ingress filter).
         let bundle = bundle::Bundle {
             metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::New,
+                status: bundle::BundleStatus::Dispatching,
                 ..Default::default()
             },
             bundle,
@@ -144,11 +146,9 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated").increment(1);
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
-        // TODO: Originated bundles should skip ingress filter and call dispatch_bundle()
-        // directly. This requires storing with Dispatching status (not New) so that
-        // restart recovery doesn't re-run the ingress filter on originated bundles.
         let bundle_id = bundle.bundle.id.clone();
-        self.ingest_bundle(bundle, data).await;
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }
 
