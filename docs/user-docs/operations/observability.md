@@ -126,7 +126,6 @@ Metrics are exported every 60 seconds to the collector.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `bpa.restart.lost` | counter | Bundles lost during recovery (missing from both stores) |
 | `bpa.restart.duplicate` | counter | Duplicate bundles found during recovery |
 | `bpa.restart.orphan` | counter | Bundle data without matching metadata |
 | `bpa.restart.junk` | counter | Unreadable data cleaned up during recovery |

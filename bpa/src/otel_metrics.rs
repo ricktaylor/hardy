@@ -196,11 +196,6 @@ pub fn init() {
 
     // -- I. Restart/Recovery --
     metrics::describe_counter!(
-        "bpa.restart.lost",
-        metrics::Unit::Count,
-        "Lost bundles discovered during restart"
-    );
-    metrics::describe_counter!(
         "bpa.restart.duplicate",
         metrics::Unit::Count,
         "Duplicate bundles discovered during restart"
