@@ -1,5 +1,16 @@
-use super::{decode::*, *};
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+
 use thiserror::Error;
+
+use super::decoder::{Error, FromCbor, Value, parse_value};
+
+/// A type alias for a [`Series`] that represents a CBOR array.
+pub type Array<'a> = Series<'a, 1>;
+/// A type alias for a [`Series`] that represents a CBOR map.
+pub type Map<'a> = Series<'a, 2>;
 
 /// A stateful iterator for decoding a sequence of CBOR items, such as an array or a map.
 ///

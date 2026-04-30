@@ -27,7 +27,7 @@ There are two primary ways to use the decoder:
 To deserialize a CBOR byte slice into your custom type, implement [`FromCbor`].
 
 ```
-use hardy_cbor::decode::{self, FromCbor, Error};
+use hardy_cbor::buffer::decoder::{self, FromCbor, Error};
 
 struct Point {
     x: i32,
@@ -38,7 +38,7 @@ impl FromCbor for Point {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        decode::parse_array(data, |a, shortest, _| {
+        decoder::parse_array(data, |a, shortest, _| {
             let x = a.parse()?;
             let y = a.parse()?;
             Ok((Point { x, y }, shortest))
@@ -46,10 +46,8 @@ impl FromCbor for Point {
     }
 }
 
-// CBOR for `[10, -20]`
 let bytes = &[0x82, 0x0A, 0x33];
 let (point, shortest, len) = Point::from_cbor(bytes).unwrap();
-
 assert_eq!(point.x, 10);
 assert_eq!(point.y, -20);
 assert!(shortest);
@@ -62,24 +60,26 @@ Use [`parse_value`] to inspect a CBOR item without allocating new memory
 for its contents (such as strings or byte strings).
 
 ```
-use hardy_cbor::decode::{self, Value};
+use hardy_cbor::buffer::decoder::{self, Value};
 
-// CBOR for `24(h'68656c6c6f')`
 let bytes = &[0xd8, 0x18, 0x45, 0x68, 0x65, 0x6c, 0x6c, 0x6f];
-
-let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
-    assert_eq!(tags, &[24]); // Semantic tag 24
+let ((), len) = decoder::parse_value(bytes, |value, shortest, tags| {
+    assert_eq!(tags, &[24]);
     assert!(matches!(value, Value::Bytes(range) if &bytes[range.clone()] == b"hello"));
-    Ok::<_, decode::Error>(())
+    Ok::<_, decoder::Error>(())
 }).unwrap();
-
 assert_eq!(len, bytes.len());
 ```
 
 [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
-use super::*;
-use core::{ops::Range, str::Utf8Error};
+use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::ops::Range;
+use core::str::Utf8Error;
+
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
@@ -160,13 +160,13 @@ pub trait FromCbor: Sized {
 }
 
 /// A type alias for a generic, untyped CBOR sequence.
-pub type Sequence<'a> = super::decode_seq::Series<'a, 0>;
+pub type Sequence<'a> = super::series::Series<'a, 0>;
 /// A type alias for a [`Series`] that represents a CBOR array.
-pub type Array<'a> = super::decode_seq::Series<'a, 1>;
+pub type Array<'a> = super::series::Series<'a, 1>;
 /// A type alias for a [`Series`] that represents a CBOR map.
-pub type Map<'a> = super::decode_seq::Series<'a, 2>;
+pub type Map<'a> = super::series::Series<'a, 2>;
 /// A stateful iterator for decoding a sequence of CBOR items (e.g., an array or map).
-pub use super::decode_seq::Series;
+pub use super::series::Series;
 
 /// Represents a single, decoded CBOR data item.
 pub enum Value<'a, 'b: 'a> {

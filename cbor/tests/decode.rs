@@ -1,4 +1,4 @@
-use super::{decode::*, *};
+use hardy_cbor::buffer::decoder::*;
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
@@ -154,10 +154,6 @@ fn test_sub_map<F, const D: usize>(
 
 #[test]
 fn rfc_tests() {
-    // RFC 8949, Appendix A:
-    // https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
-
-    // LLR 1.1.9: Support all primitive data items (Unsigned Integers)
     test_simple(0, &hex!("00"));
     test_simple(1, &hex!("01"));
     test_simple(10, &hex!("0a"));
@@ -170,30 +166,15 @@ fn rfc_tests() {
     test_simple(1000000000000u64, &hex!("1b000000e8d4a51000"));
     test_simple(18446744073709551615u64, &hex!("1bffffffffffffffff"));
 
-    // LLR 1.1.9: Correctly reject unsupported types (Bignums)
-    /* We do not support BIGNUMs */
     assert!(parse::<u64>(&hex!("c249010000000000000000")).is_err());
-    /*test_simple(
-        18446744073709551616,
-        &hex!("c249010000000000000000")
-    );*/
     assert!(parse::<i64>(&hex!("3bffffffffffffffff")).is_err());
-    /*test_simple(
-        -18446744073709551616i128,
-        &hex!("3bffffffffffffffff")
-    );*/
     assert!(parse::<i64>(&hex!("c349010000000000000000")).is_err());
-    /*test_simple(
-        -18446744073709551617,
-        &hex!("c349010000000000000000")
-    );*/
 
-    // LLR 1.1.9: Support all primitive data items (Negative Integers)
     test_simple(-1, &hex!("20"));
     test_simple(-10, &hex!("29"));
     test_simple(-100, &hex!("3863"));
     test_simple(-1000, &hex!("3903e7"));
-    // LLR 1.1.9: Support all primitive data items (Floating-Point Numbers)
+
     test_simple(0.0, &hex!("f90000"));
     test_simple(-0.0, &hex!("f98000"));
     test_simple(1.0, &hex!("f93c00"));
@@ -209,23 +190,21 @@ fn rfc_tests() {
     test_simple(-4.1, &hex!("fbc010666666666666"));
     test_simple(half::f16::INFINITY, &hex!("f97c00"));
     test_value(&hex!("f97e00"), &[], |v| {
-        assert!(matches!(v,Value::Float(v) if v.is_nan()))
+        assert!(matches!(v, Value::Float(v) if v.is_nan()))
     });
     test_simple(half::f16::NEG_INFINITY, &hex!("f9fc00"));
 
-    // LLR 1.1.7: Report if a parsed data item is in canonical form (non-canonical floats)
     test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
     test_value_long(&hex!("fa7fc00000"), &[], |v| {
-        assert!(matches!(v,Value::Float(v) if v.is_nan()))
+        assert!(matches!(v, Value::Float(v) if v.is_nan()))
     });
     test_simple_long(f32::NEG_INFINITY, &hex!("faff800000"));
     test_simple_long(f64::INFINITY, &hex!("fb7ff0000000000000"));
     test_value_long(&hex!("fb7ff8000000000000"), &[], |v| {
-        assert!(matches!(v,Value::Float(v) if v.is_nan()))
+        assert!(matches!(v, Value::Float(v) if v.is_nan()))
     });
     test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
 
-    // LLR 1.1.9: Support all primitive data items (Simple values and booleans)
     test_simple(false, &hex!("f4"));
     test_simple(true, &hex!("f5"));
     test_value(&hex!("f6"), &[], |v| assert!(matches!(v, Value::Null)));
@@ -237,7 +216,6 @@ fn rfc_tests() {
         assert!(matches!(v, Value::Simple(255)))
     });
 
-    // LLR 1.1.8: Report if a parsed data item has associated tags
     test_value(
         &hex!("c074323031332d30332d32315432303a30343a30305a"),
         &[0],
@@ -261,7 +239,6 @@ fn rfc_tests() {
         |v| assert!(matches!(v, Value::Text(v) if v == "http://www.example.com")),
     );
 
-    // LLR 1.1.9: Support all primitive data items (Byte and Text Strings)
     test_value(&hex!("40"), &[], |v| {
         assert!(matches!(v, Value::Bytes(v) if v.is_empty()))
     });
@@ -274,12 +251,8 @@ fn rfc_tests() {
     test_string("\"\\", &hex!("62225c"));
     test_string("\u{00fc}", &hex!("62c3bc"));
     test_string("\u{6c34}", &hex!("63e6b0b4"));
-    test_string(
-        "\u{10151}", /* surrogate pair: \u{d800}\u{dd51} */
-        &hex!("64f0908591"),
-    );
+    test_string("\u{10151}", &hex!("64f0908591"));
 
-    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Arrays)
     test_array(&[], true, &hex!("80"), |a| assert_eq!(a.count(), Some(0)));
     test_array(&[], true, &hex!("83010203"), |a| {
         test_sub_simple(1, a);
@@ -308,7 +281,6 @@ fn rfc_tests() {
         },
     );
 
-    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Maps)
     test_map(&[], true, &hex!("a0"), |_| {});
     test_map(&[], true, &hex!("a201020304"), |m| {
         for i in 1..=4 {
@@ -342,7 +314,6 @@ fn rfc_tests() {
         },
     );
 
-    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Strings)
     {
         let test_data = &hex!("5f42010243030405ff");
         test_value(test_data, &[], |v| match v {
@@ -373,7 +344,6 @@ fn rfc_tests() {
         _ => panic!("Expected indefinite byte string"),
     });
 
-    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Arrays)
     test_array(&[], false, &hex!("9fff"), |_| ());
     test_array(&[], false, &hex!("9f018202039f0405ffff"), |a| {
         test_sub_simple(1, a);
@@ -386,8 +356,6 @@ fn rfc_tests() {
             test_sub_simple(5, a);
         });
     });
-
-    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Mixed definite/indefinite arrays)
     test_array(&[], true, &hex!("83018202039f0405ff"), |a| {
         test_sub_simple(1, a);
         test_sub_array(&[], true, a, |a| {
@@ -421,7 +389,6 @@ fn rfc_tests() {
         },
     );
 
-    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Maps)
     test_map(&[], false, &hex!("bf61610161629f0203ffff"), |m| {
         test_sub_string("a", m);
         test_sub_simple(1, m);
@@ -436,7 +403,7 @@ fn rfc_tests() {
         test_sub_map(&[], false, a, |m| {
             test_sub_string("b", m);
             test_sub_string("c", m);
-        })
+        });
     });
     test_map(&[], false, &hex!("bf6346756ef563416d7421ff"), |m| {
         test_sub_string("Fun", m);
@@ -446,95 +413,64 @@ fn rfc_tests() {
     });
 }
 
-// LLR 1.1.12: Incomplete Item Detection
-// Verify that `Error::NeedMoreData` is returned for truncated inputs.
 #[test]
 fn incomplete_item_detection() {
-    // Unsigned integer: major type 0, additional info 24 requires 1 following byte
     assert!(matches!(
         parse::<u64>(&hex!("18")),
         Err(Error::NeedMoreData(1))
     ));
-
-    // Unsigned integer: additional info 25 requires 2 following bytes
     assert!(matches!(
         parse::<u64>(&hex!("19")),
         Err(Error::NeedMoreData(2))
     ));
-
-    // Unsigned integer: additional info 25 with only 1 of 2 bytes
     assert!(matches!(
         parse::<u64>(&hex!("1900")),
         Err(Error::NeedMoreData(1))
     ));
-
-    // Unsigned integer: additional info 26 requires 4 following bytes
     assert!(matches!(
         parse::<u64>(&hex!("1a")),
         Err(Error::NeedMoreData(4))
     ));
-
-    // Unsigned integer: additional info 27 requires 8 following bytes, only 3 given
     assert!(matches!(
         parse::<u64>(&hex!("1b000000")),
         Err(Error::NeedMoreData(5))
     ));
-
-    // Negative integer: same encoding, major type 1
     assert!(matches!(
         parse::<i64>(&hex!("38")),
         Err(Error::NeedMoreData(1))
     ));
-
-    // Byte string: header says 4 bytes, but none follow
     assert!(matches!(
         parse_value(&hex!("44"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(4))
     ));
-
-    // Byte string: header says 4 bytes, only 2 follow
     assert!(matches!(
         parse_value(&hex!("440102"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(2))
     ));
-
-    // Text string: header says 4 bytes of UTF-8, but none follow
     assert!(matches!(
         parse_value(&hex!("64"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(4))
     ));
-
-    // Float16: additional info 25 requires 2 bytes
     assert!(matches!(
         parse_value(&hex!("f9"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(2))
     ));
-
-    // Float32: additional info 26 requires 4 bytes, only 1 given
     assert!(matches!(
         parse_value(&hex!("fa00"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(3))
     ));
-
-    // Empty input
     assert!(matches!(
         parse_value(&hex!(""), |_, _, _| Ok::<_, Error>(())),
         Err(Error::NeedMoreData(1))
     ));
-
-    // Definite-length array: header says 3 items, but body is truncated
-    // NeedMoreData is raised when trying to read the first item
     assert!(matches!(
         parse_array(&hex!("83"), |a, _, _| { a.parse::<u64>() }),
         Err(Error::NeedMoreData(1))
     ));
 }
 
-// LLR 1.1.11: Opportunistic Parsing
-// Verify `try_parse` returns `Ok(None)` when a sequence is cleanly exhausted.
 #[test]
 fn opportunistic_parsing() {
-    // Definite-length array with 2 items: try_parse returns values then None
     parse_array(&hex!("820102"), |a, _, _| {
         assert_eq!(a.try_parse::<u64>()?, Some(1));
         assert_eq!(a.try_parse::<u64>()?, Some(2));
@@ -543,14 +479,12 @@ fn opportunistic_parsing() {
     })
     .unwrap();
 
-    // Empty definite-length array: try_parse returns None immediately
     parse_array(&hex!("80"), |a, _, _| {
         assert_eq!(a.try_parse::<u64>()?, None);
         Ok::<_, Error>(())
     })
     .unwrap();
 
-    // Indefinite-length array with 1 item: try_parse returns value then None
     parse_array(&hex!("9f01ff"), |a, _, _| {
         assert_eq!(a.try_parse::<u64>()?, Some(1));
         assert_eq!(a.try_parse::<u64>()?, None);
@@ -558,14 +492,12 @@ fn opportunistic_parsing() {
     })
     .unwrap();
 
-    // Empty indefinite-length array: try_parse returns None immediately
     parse_array(&hex!("9fff"), |a, _, _| {
         assert_eq!(a.try_parse::<u64>()?, None);
         Ok::<_, Error>(())
     })
     .unwrap();
 
-    // try_parse_value also returns None at end
     parse_array(&hex!("8101"), |a, _, _| {
         assert!(a.try_parse_value(|_, _, _| Ok::<_, Error>(()))?.is_some());
         assert!(a.try_parse_value(|_, _, _| Ok::<_, Error>(()))?.is_none());
@@ -573,7 +505,6 @@ fn opportunistic_parsing() {
     })
     .unwrap();
 
-    // Sequence (bare items, no container): try_parse returns values then None
     parse_sequence(&hex!("0102"), |s| {
         assert_eq!(s.try_parse::<u64>()?, Some(1));
         assert_eq!(s.try_parse::<u64>()?, Some(2));
@@ -582,7 +513,6 @@ fn opportunistic_parsing() {
     })
     .unwrap();
 
-    // Contrast: parse (not try_parse) returns NoMoreItems at end
     parse_array(&hex!("8101"), |a, _, _| {
         assert!(a.parse::<u64>().is_ok());
         assert!(matches!(a.parse::<u64>(), Err(Error::NoMoreItems)));
@@ -591,66 +521,27 @@ fn opportunistic_parsing() {
     .unwrap();
 }
 
-// LLR 1.1.7: Report non-canonical integer encodings
-//
-// RFC 8949 §4.2.1: integers must use the shortest encoding.
-// Values 0-23 fit in the minor value itself (1 byte total).
-// Values 24-255 require additional info 24 (2 bytes total).
-// Values 256-65535 require additional info 25 (3 bytes total).
-// Values 65536-4294967295 require additional info 26 (5 bytes total).
 #[test]
 fn non_canonical_integers() {
-    // Value 0 encoded as 2-byte (additional info 24): non-canonical
     test_simple_long(0u64, &hex!("1800"));
-
-    // Value 23 encoded as 2-byte: non-canonical (fits in minor value)
     test_simple_long(23u64, &hex!("1817"));
-
-    // Value 24 encoded as 2-byte: canonical (doesn't fit in minor)
     test_simple(24u64, &hex!("1818"));
-
-    // Value 0 encoded as 3-byte (additional info 25): non-canonical
     test_simple_long(0u64, &hex!("190000"));
-
-    // Value 255 encoded as 3-byte: non-canonical (fits in 2-byte)
     test_simple_long(255u64, &hex!("1900ff"));
-
-    // Value 256 encoded as 3-byte: canonical
     test_simple(256u64, &hex!("190100"));
-
-    // Value 0 encoded as 5-byte (additional info 26): non-canonical
     test_simple_long(0u64, &hex!("1a00000000"));
-
-    // Value 65535 encoded as 5-byte: non-canonical (fits in 3-byte)
     test_simple_long(65535u64, &hex!("1a0000ffff"));
-
-    // Value 65536 encoded as 5-byte: canonical
     test_simple(65536u64, &hex!("1a00010000"));
-
-    // Value 0 encoded as 9-byte (additional info 27): non-canonical
     test_simple_long(0u64, &hex!("1b0000000000000000"));
-
-    // Value 4294967295 encoded as 9-byte: non-canonical (fits in 5-byte)
     test_simple_long(4294967295u64, &hex!("1b00000000ffffffff"));
-
-    // Value 4294967296 encoded as 9-byte: canonical
     test_simple(4294967296u64, &hex!("1b0000000100000000"));
-
-    // Negative integers: same encoding rules, major type 1
-    // Value -1 (minor value 0) encoded as 2-byte: non-canonical
     test_simple_long(-1i64, &hex!("3800"));
-
-    // Value -25 (minor value 24) encoded as 2-byte: canonical
     test_simple(-25i64, &hex!("3818"));
-
-    // Value -24 (minor value 23) encoded as 2-byte: non-canonical
     test_simple_long(-24i64, &hex!("3817"));
 }
 
-// Error path tests for malformed CBOR (beyond truncation)
 #[test]
 fn malformed_cbor() {
-    // Invalid minor values (28, 29, 30) are reserved and must be rejected
     assert!(matches!(
         parse::<u64>(&hex!("1c")),
         Err(Error::InvalidMinorValue(28))
@@ -663,8 +554,6 @@ fn malformed_cbor() {
         parse::<u64>(&hex!("1e")),
         Err(Error::InvalidMinorValue(30))
     ));
-
-    // Reserved minor values in other major types (negative int, bytes, text)
     assert!(matches!(
         parse::<i64>(&hex!("3c")),
         Err(Error::InvalidMinorValue(28))
@@ -677,9 +566,6 @@ fn malformed_cbor() {
         parse_value(&hex!("7c"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidMinorValue(28))
     ));
-
-    // Invalid simple values: 2-byte simple type with value < 32 is not allowed
-    // (values 0-31 must use the 1-byte encoding directly in the minor value)
     assert!(matches!(
         parse_value(&hex!("f800"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidSimpleType(0))
@@ -688,44 +574,31 @@ fn malformed_cbor() {
         parse_value(&hex!("f81f"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidSimpleType(31))
     ));
-    // Value 32 in 2-byte form is valid
     parse_value(&hex!("f820"), |v, _, _| {
         assert!(matches!(v, Value::Simple(32)));
         Ok::<_, Error>(())
     })
     .unwrap();
-
-    // Invalid UTF-8 in text string
     assert!(matches!(
         parse_value(&hex!("62ff80"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidUtf8(_))
     ));
-
-    // Indefinite-length byte string with wrong chunk type (text instead of bytes)
     assert!(matches!(
         parse_value(&hex!("5f6161ff"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidChunk)
     ));
-
-    // Indefinite-length text string with wrong chunk type (bytes instead of text)
     assert!(matches!(
         parse_value(&hex!("7f4101ff"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidChunk)
     ));
-
-    // Type mismatch: expecting u64, got text string
     assert!(matches!(
         parse::<u64>(&hex!("6161")),
         Err(Error::IncorrectType(_, _))
     ));
-
-    // Type mismatch: expecting u64, got array
     assert!(matches!(
         parse::<u64>(&hex!("80")),
         Err(Error::IncorrectType(_, _))
     ));
-
-    // AdditionalItems: array has 1 item but trying to parse 2
     assert!(matches!(
         parse_array(&hex!("8101"), |a, _, _| {
             a.parse::<u64>()?;
@@ -734,9 +607,6 @@ fn malformed_cbor() {
         }),
         Err(Error::NoMoreItems)
     ));
-
-    // Reserved minor values in major type 7 (simple/float)
-    // Minor values 28-30 are unassigned for major type 7
     assert!(matches!(
         parse_value(&hex!("fc"), |_, _, _| Ok::<_, Error>(())),
         Err(Error::InvalidSimpleType(28))
@@ -750,15 +620,13 @@ fn malformed_cbor() {
         Err(Error::InvalidSimpleType(30))
     ));
 
-    // Unterminated indefinite-length array: data ends before break code 0xFF
-    // 9f 01 02 = indefinite array with items 1, 2 but no break
     assert!(matches!(
         parse_value(&hex!("9f0102"), |v, _, _| {
             match v {
                 Value::Array(a) => {
-                    a.try_parse::<u64>()?; // 1
-                    a.try_parse::<u64>()?; // 2
-                    a.try_parse::<u64>()?; // hits end of data
+                    a.try_parse::<u64>()?;
+                    a.try_parse::<u64>()?;
+                    a.try_parse::<u64>()?;
                     Ok(())
                 }
                 _ => panic!("expected array"),
@@ -767,13 +635,12 @@ fn malformed_cbor() {
         Err(Error::NeedMoreData(_))
     ));
 
-    // Unterminated indefinite-length map
     assert!(matches!(
         parse_value(&hex!("bf6161"), |v, _, _| {
             match v {
                 Value::Map(m) => {
-                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?; // key "a"
-                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?; // hits end of data
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
+                    m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
                     Ok(())
                 }
                 _ => panic!("expected map"),
@@ -782,15 +649,11 @@ fn malformed_cbor() {
         Err(Error::NeedMoreData(_))
     ));
 
-    // PartialMap: indefinite-length map with a key but no value
-    // bf 61 61 ff = indefinite map { "a": <break> } — key "a" has no value
     assert!(matches!(
         parse_value(&hex!("bf6161ff"), |v, _, _| {
             match v {
                 Value::Map(m) => {
-                    // Try to read key — should succeed
                     m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
-                    // Trying to read value hits break code with odd item count
                     m.try_parse_value(|_, _, _| Ok::<_, Error>(()))?;
                     Ok(())
                 }
@@ -800,26 +663,22 @@ fn malformed_cbor() {
         Err(Error::PartialMap)
     ));
 
-    // MaxRecursion: deeply nested arrays exceeding recursion limit
-    // Build a nested array 300 levels deep: [[[[...]]]]
-    // Each level is 0x81 (definite array of 1 item) with 0x00 at the centre
     let depth = 300usize;
-    let mut nested = alloc::vec![0x81u8; depth];
-    nested.push(0x00); // innermost value: unsigned 0
+    let mut nested = vec![0x81u8; depth];
+    nested.push(0x00);
     assert!(matches!(
         parse_value(&nested, |mut v, _, _| {
-            v.skip(16)?; // limit recursion to 16 levels
+            v.skip(16)?;
             Ok::<_, Error>(())
         }),
         Err(Error::MaxRecursion)
     ));
 
-    // Verify skip succeeds when within recursion limit
     let shallow_depth = 5usize;
-    let mut shallow = alloc::vec![0x81u8; shallow_depth];
+    let mut shallow = vec![0x81u8; shallow_depth];
     shallow.push(0x00);
     parse_value(&shallow, |mut v, _, _| {
-        v.skip(16)?; // 5 levels, limit 16 — should succeed
+        v.skip(16)?;
         Ok::<_, Error>(())
     })
     .unwrap();
