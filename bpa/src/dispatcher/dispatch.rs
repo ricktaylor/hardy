@@ -257,12 +257,6 @@ impl Dispatcher {
     /// Consumer task for the dispatch queue
     pub(super) async fn run_dispatch_queue(self: Arc<Self>, dispatch_rx: storage::Receiver) {
         while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
-            if bundle.has_expired() {
-                debug!("Bundle lifetime has expired while queued");
-                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
-                continue;
-            }
-
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 if let Some(data) = dispatcher.load_data(&bundle).await {
@@ -364,12 +358,6 @@ impl Dispatcher {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-
-                            if bundle.has_expired() {
-                                debug!("Bundle lifetime has expired");
-                                self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
-                                continue;
-                            }
 
                             let dispatcher = dispatcher.clone();
                             hardy_async::spawn!(self.processing_pool, "poll_waiting_dispatcher", async move {
