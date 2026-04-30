@@ -151,7 +151,6 @@ impl Rib {
                         && self.reset_peer_queues(peers).await
                     {
                         changed = true;
-                        break;
                     }
                 }
                 changed
