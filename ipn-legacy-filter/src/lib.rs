@@ -8,7 +8,7 @@ for peers that require the older encoding.
 use hardy_bpa::async_trait;
 use hardy_bpa::bundle::Bundle;
 use hardy_bpa::filter::{WriteFilter, WriteResult};
-use hardy_bpv7::editor::Editor;
+use hardy_bpv7::editor::{Chunk, Editor};
 use hardy_bpv7::eid::Eid;
 
 /// Configuration for IPN 2-element legacy encoding filter
@@ -94,9 +94,9 @@ impl WriteFilter for IpnLegacyFilter {
                 .map_err(|(_, e)| e)?;
         }
 
-        let new_data = editor.rebuild()?;
+        let data = editor.rebuild().map(|c| Chunk::flatten(c, data))?;
 
-        Ok(WriteResult::Continue(None, Some(new_data.into())))
+        Ok(WriteResult::Continue(None, Some(data.into())))
     }
 }
 

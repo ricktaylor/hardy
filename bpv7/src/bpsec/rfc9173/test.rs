@@ -1,9 +1,11 @@
+#![cfg(test)]
+
 use super::*;
 use crate::bpsec::{encryptor, key, signer};
 use crate::builder::Builder;
 use crate::bundle;
 use crate::creation_timestamp::CreationTimestamp;
-use crate::editor::Editor;
+use crate::editor::{Chunk, Editor};
 
 // Helper function to count blocks of a specific type
 fn count_blocks_of_type(bundle: &bundle::Bundle, block_type: crate::block::Type) -> usize {
@@ -459,6 +461,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         .expect("Failed to remove BCB from payload");
     let decrypted_bytes = editor
         .rebuild()
+        .map(|c| Chunk::flatten(c, &encrypted_bytes))
         .expect("Failed to rebuild after removing payload BCB");
 
     let parsed_decrypted = bundle::ParsedBundle::parse_with_keys(&decrypted_bytes, &all_keys)
@@ -554,6 +557,7 @@ fn test_bib_removal_and_readd() {
         .expect("Failed to remove BIB");
     let unsigned_bytes = editor
         .rebuild()
+        .map(|c| Chunk::flatten(c, &signed_bytes))
         .expect("Failed to rebuild after BIB removal");
 
     let parsed_unsigned = bundle::ParsedBundle::parse_with_keys(&unsigned_bytes, &keys)
@@ -791,6 +795,7 @@ fn test_bcb_without_bib_removal() {
         .expect("Failed to remove BCB");
     let decrypted_bytes = editor
         .rebuild()
+        .map(|c| Chunk::flatten(c, &encrypted_bytes))
         .expect("Failed to rebuild after BCB removal");
 
     let parsed_decrypted = bundle::ParsedBundle::parse_with_keys(&decrypted_bytes, &keys)

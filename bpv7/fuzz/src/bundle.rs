@@ -58,6 +58,7 @@ pub fn test_bundle(orig_data: &[u8]) {
     if let Ok(RewrittenBundle::Rewritten { new_data, .. }) =
         RewrittenBundle::parse_with_keys(orig_data, keys)
     {
+        let new_data = hardy_bpv7::editor::Chunk::flatten(new_data, orig_data);
         match RewrittenBundle::parse_with_keys(&new_data, keys) {
             Ok(RewrittenBundle::Valid { .. }) => {}
             Ok(RewrittenBundle::Rewritten { .. }) => {

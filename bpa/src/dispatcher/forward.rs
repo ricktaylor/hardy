@@ -21,7 +21,7 @@ impl Dispatcher {
 
         // Increment Hop Count, etc...
         // We ignore the fact that a new bundle has been created, as it makes no difference below
-        let data = match self.update_extension_blocks(&bundle, &data) {
+        let data = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
                 self.store
@@ -43,7 +43,7 @@ impl Dispatcher {
             .exec(
                 filter::Hook::Egress,
                 bundle,
-                Bytes::from(data),
+                data,
                 self.key_provider(),
                 &self.processing_pool,
             )
@@ -93,10 +93,10 @@ impl Dispatcher {
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
-        source_data: &[u8],
-    ) -> Result<Box<[u8]>, hardy_bpv7::editor::Error> {
+        source_data: Bytes,
+    ) -> Result<Bytes, hardy_bpv7::editor::Error> {
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, source_data)
+        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(|(_, e)| e)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -153,6 +153,19 @@ impl Dispatcher {
                 .rebuild();
         }
 
-        editor.rebuild()
+        let chunks = editor.rebuild()?;
+
+        // Try to modify the source buffer in place if exclusively owned
+        match source_data.try_into_mut() {
+            Ok(buf) => {
+                let mut vec = buf.into();
+                hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
+                Ok(Bytes::from(vec))
+            }
+            Err(source_data) => Ok(Bytes::from(hardy_bpv7::editor::Chunk::flatten(
+                chunks,
+                &source_data,
+            ))),
+        }
     }
 }

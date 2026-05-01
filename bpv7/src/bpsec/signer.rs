@@ -1,4 +1,5 @@
 use super::*;
+use editor::{Chunk, Editor};
 use smallvec::SmallVec;
 use thiserror::Error;
 
@@ -122,19 +123,27 @@ impl<'a> Signer<'a> {
 
     /// Applies all queued signing operations and rebuilds the bundle as raw bytes.
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
-        self.rebuild_editor()?.rebuild().map_err(Into::into)
+        let source_data = self.source_data;
+        self.rebuild_editor()?
+            .rebuild()
+            .map(|c| Chunk::flatten(c, source_data))
+            .map_err(Error::from)
     }
 
     /// Applies all queued signing operations and rebuilds the bundle,
     /// returning both the updated `Bundle` and the serialized data.
     pub fn rebuild_bundle(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
-        self.rebuild_editor()?.rebuild_bundle().map_err(Into::into)
+        let source_data = self.source_data;
+        self.rebuild_editor()?
+            .rebuild_bundle()
+            .map(|(b, c)| (b, Chunk::flatten(c, source_data)))
+            .map_err(Error::from)
     }
 
-    fn rebuild_editor(self) -> Result<editor::Editor<'a>, Error> {
+    fn rebuild_editor(self) -> Result<Editor<'a>, Error> {
         if self.templates.is_empty() {
             // No signing to do
-            return Ok(editor::Editor::new(self.original, self.source_data));
+            return Ok(Editor::new(self.original, self.source_data));
         }
 
         // Reorder and accumulate BIB operations
@@ -147,7 +156,7 @@ impl<'a> Signer<'a> {
                 .push((block_number, template.key));
         }
 
-        let mut editor = editor::Editor::new(self.original, self.source_data);
+        let mut editor = Editor::new(self.original, self.source_data);
 
         // Now build BIB blocks
         for ((bpsec_source, context), targets) in blocks {

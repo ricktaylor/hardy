@@ -325,12 +325,6 @@ impl Block {
         )?));
         Ok(())
     }
-
-    /// Copies the entire block from a source byte array to a new CBOR array.
-    /// This is an internal function used when modifying a bundle.
-    pub(crate) fn copy_whole(&mut self, source_data: &[u8], array: &mut hardy_cbor::encode::Array) {
-        self.extent = array.emit(&hardy_cbor::encode::Raw(&source_data[self.extent.clone()]));
-    }
 }
 
 /// A helper struct used during bundle parsing to associate a block with its block number.

@@ -9,7 +9,7 @@ use super::*;
 use base64::prelude::*;
 
 mod parse;
-mod primary_block;
+pub(crate) mod primary_block;
 
 /// Holds fragmentation information for a bundle.
 ///
@@ -447,23 +447,6 @@ pub struct Bundle {
 }
 
 impl Bundle {
-    /// Emits the primary block into a CBOR array during bundle creation.
-    pub(crate) fn emit_primary_block(
-        &mut self,
-        array: &mut hardy_cbor::encode::Array,
-    ) -> Result<(), Error> {
-        let extent = array.emit(&hardy_cbor::encode::Raw(
-            &primary_block::PrimaryBlock::emit(self)?,
-        ));
-
-        // Replace existing block record
-        self.blocks.insert(
-            0,
-            primary_block::PrimaryBlock::as_block(self.crc_type, extent),
-        );
-        Ok(())
-    }
-
     /// Retrieves the payload of a specific block by its number.
     ///
     /// This method handles the complexity of block-level security. If the target
@@ -651,7 +634,7 @@ pub enum RewrittenBundle {
     /// is requested for an unsupported block and if the rewrite was due to non-canonical CBOR.
     Rewritten {
         bundle: Bundle,
-        new_data: Box<[u8]>,
+        new_data: Vec<editor::Chunk>,
         report_unsupported: bool,
         non_canonical: bool,
     },
@@ -691,5 +674,5 @@ pub struct CheckedBundle {
     /// The parsed bundle structure.
     pub bundle: Bundle,
     /// The rewritten bundle data if canonicalization was needed, `None` if already canonical.
-    pub new_data: Option<Box<[u8]>>,
+    pub new_data: Option<Vec<editor::Chunk>>,
 }

@@ -127,30 +127,23 @@ impl services::Service for EchoService {
     async fn on_unregister(&self) {}
 
     async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
-        let Ok(parsed) = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-        else {
-            return;
-        };
-
-        // Swap source and destination via Editor
-        let Ok(editor) = hardy_bpv7::editor::Editor::new(&parsed.bundle, &data)
-            .with_source(parsed.bundle.destination.clone())
-            .map_err(|(_, e)| e)
-        else {
-            return;
-        };
-        let Ok(editor) = editor
-            .with_destination(parsed.bundle.id.source.clone())
-            .map_err(|(_, e)| e)
-        else {
-            return;
-        };
-        let Ok(reply_data) = editor.rebuild() else {
-            return;
-        };
-
-        if let Some(sink) = self.sink.get() {
-            let _ = sink.send(reply_data.into()).await;
+        if let Some(sink) = self.sink.get()
+            && let Ok(parsed) =
+                hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
+            && let Ok(editor) = hardy_bpv7::editor::Editor::new(&parsed.bundle, &data)
+                .with_source(parsed.bundle.destination.clone())
+            && let Ok(editor) = editor.with_destination(parsed.bundle.id.source.clone())
+            && let Ok(chunks) = editor.rebuild()
+        {
+            let reply = match data.try_into_mut() {
+                Ok(buf) => {
+                    let mut vec = buf.into();
+                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
+                    Bytes::from(vec)
+                }
+                Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
+            };
+            let _ = sink.send(reply).await;
         }
     }
 

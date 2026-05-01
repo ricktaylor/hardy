@@ -1,5 +1,6 @@
 use super::*;
 use alloc::borrow::Cow;
+use core::ops::Range;
 use smallvec::SmallVec;
 use thiserror::Error;
 
@@ -47,6 +48,207 @@ impl From<bpsec::Error> for Error {
 impl From<error::Error> for Error {
     fn from(e: error::Error) -> Self {
         Error::Builder(builder::Error::InternalError(e))
+    }
+}
+
+#[derive(Debug)]
+pub enum Chunk {
+    Unchanged(Range<usize>),
+    New(Box<[u8]>),
+}
+
+impl Chunk {
+    fn len(&self) -> usize {
+        match self {
+            Chunk::Unchanged(range) => range.len(),
+            Chunk::New(data) => data.len(),
+        }
+    }
+
+    /// Flatten chunks into a contiguous byte buffer, wrapping in a CBOR
+    /// indefinite-length array (0x9F prefix, 0xFF suffix).
+    pub fn flatten(chunks: Vec<Self>, source: &[u8]) -> Box<[u8]> {
+        let mut result = vec![0x9F];
+        for c in chunks {
+            match c {
+                Chunk::Unchanged(extent) => {
+                    result.extend_from_slice(&source[extent]);
+                }
+                Chunk::New(items) => {
+                    result.extend(items);
+                }
+            }
+        }
+        result.push(0xFF);
+        result.into()
+    }
+
+    /// Modify the source buffer in place to produce the rebuilt bundle.
+    ///
+    /// This avoids allocation when the assembled chunks fit within the
+    /// original buffer. Unchanged ranges that are already at the correct
+    /// position are left untouched; New chunks overwrite the gaps.
+    /// The buffer is resized (truncated or extended) if the total output
+    /// length differs from the source.
+    pub fn flatten_inplace(chunks: Vec<Self>, source: &mut Vec<u8>) {
+        // Single pass: compute total length and check if backward copy is needed
+        let mut content_len: usize = 0;
+        let mut write_pos: usize = 1; // after 0x9F
+        let mut needs_backward = false;
+        for chunk in &chunks {
+            let len = chunk.len();
+            if !needs_backward
+                && let Chunk::Unchanged(range) = chunk
+                && write_pos > range.start
+            {
+                needs_backward = true;
+            }
+            content_len += len;
+            write_pos += len;
+        }
+        let total_len = 1 + content_len + 1; // 0x9F prefix + content + 0xFF suffix
+
+        // Ensure buffer is large enough
+        if total_len > source.len() {
+            source.resize(total_len, 0);
+        }
+
+        source[0] = 0x9F;
+
+        if needs_backward {
+            // Backward pass: process chunks from back to front to avoid
+            // overwriting source data that hasn't been read yet
+            let mut write_end = 1 + content_len;
+            for chunk in chunks.iter().rev() {
+                match chunk {
+                    Chunk::Unchanged(range) => {
+                        write_end -= range.len();
+                        if range.start != write_end {
+                            source.copy_within(range.clone(), write_end);
+                        }
+                    }
+                    Chunk::New(data) => {
+                        write_end -= data.len();
+                        source[write_end..write_end + data.len()].copy_from_slice(data);
+                    }
+                }
+            }
+        } else {
+            // Forward pass: safe when write positions are at or before source positions
+            let mut write_pos: usize = 1;
+            for chunk in chunks {
+                match chunk {
+                    Chunk::Unchanged(range) => {
+                        let len = range.len();
+                        if range.start != write_pos {
+                            source.copy_within(range, write_pos);
+                        }
+                        write_pos += len;
+                    }
+                    Chunk::New(data) => {
+                        source[write_pos..write_pos + data.len()].copy_from_slice(&data);
+                        write_pos += data.len();
+                    }
+                }
+            }
+        }
+
+        // Write 0xFF suffix and truncate
+        source[total_len - 1] = 0xFF;
+        source.truncate(total_len);
+    }
+
+    /// Assemble chunks into optimal order for output:
+    /// - Primary first, payload last
+    /// - Unchanged extension blocks sorted by source position
+    /// - New extension blocks slotted into gaps of matching size where possible
+    /// - Adjacent Unchanged ranges merged
+    ///
+    /// If `bundle` is provided, block extents are updated to reflect positions
+    /// in the flattened output (offset 1 for the 0x9F array header).
+    fn assemble(
+        primary: (u64, Chunk),
+        extensions: Vec<(u64, Chunk)>,
+        payload: (u64, Chunk),
+        bundle: Option<&mut bundle::Bundle>,
+    ) -> Vec<Chunk> {
+        // Separate unchanged and new extension chunks
+        let mut unchanged: Vec<(u64, Range<usize>)> = Vec::new();
+        let mut new_chunks: Vec<(u64, Box<[u8]>)> = Vec::new();
+
+        for (block_number, chunk) in extensions {
+            match chunk {
+                Chunk::Unchanged(range) => unchanged.push((block_number, range)),
+                Chunk::New(data) => new_chunks.push((block_number, data)),
+            }
+        }
+
+        // Sort unchanged by source position
+        unchanged.sort_by_key(|(_, range)| range.start);
+
+        // Sort new chunks by size descending for best-fit gap filling
+        new_chunks.sort_by(|(_, a), (_, b)| b.len().cmp(&a.len()));
+
+        // Build ordered extension list: try to fill gaps with matching-size New chunks
+        let mut ordered: Vec<(u64, Chunk)> = Vec::with_capacity(unchanged.len() + new_chunks.len());
+        let mut prev_end: Option<usize> = None;
+
+        for (block_number, range) in unchanged {
+            // Check for gap before this unchanged block
+            if let Some(end) = prev_end {
+                let gap_size = range.start.saturating_sub(end);
+                if gap_size > 0 {
+                    // Try to find a New chunk that fits this gap exactly
+                    if let Some(idx) = new_chunks
+                        .iter()
+                        .position(|(_, data)| data.len() == gap_size)
+                    {
+                        let (new_bn, new_data) = new_chunks.swap_remove(idx);
+                        ordered.push((new_bn, Chunk::New(new_data)));
+                    }
+                }
+            }
+            prev_end = Some(range.end);
+            ordered.push((block_number, Chunk::Unchanged(range)));
+        }
+
+        // Append remaining New chunks that didn't fit in gaps
+        for (block_number, data) in new_chunks {
+            ordered.push((block_number, Chunk::New(data)));
+        }
+
+        // Assemble final list: primary + extensions + payload
+        let mut assembled: Vec<(u64, Chunk)> = Vec::with_capacity(1 + ordered.len() + 1);
+        assembled.push(primary);
+        assembled.extend(ordered);
+        assembled.push(payload);
+
+        // Update block extents if bundle provided
+        if let Some(bundle) = bundle {
+            let mut offset: usize = 1; // 0x9F prefix
+            for (block_number, chunk) in &assembled {
+                let len = chunk.len();
+                if let Some(block) = bundle.blocks.get_mut(block_number) {
+                    block.extent = offset..offset + len;
+                }
+                offset += len;
+            }
+        }
+
+        // Merge adjacent Unchanged ranges
+        let mut result: Vec<Chunk> = Vec::with_capacity(assembled.len());
+        for (_, chunk) in assembled {
+            match (&mut result.last_mut(), &chunk) {
+                (Some(Chunk::Unchanged(prev)), Chunk::Unchanged(next))
+                    if prev.end == next.start =>
+                {
+                    prev.end = next.end;
+                }
+                _ => result.push(chunk),
+            }
+        }
+
+        result
     }
 }
 
@@ -909,101 +1111,110 @@ impl<'a> Editor<'a> {
     /// - The public API prevents adding/updating security blocks
     /// - Cascade deletes preserve or remove security block references
     /// - Signer/Encryptor set bib/bcb overrides explicitly
-    pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+    pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Vec<Chunk>), Error> {
         let mut bundle_out = bundle::Bundle::default();
 
-        let data: Box<[u8]> = hardy_cbor::encode::try_emit_array(None, |a| {
-            let primary_block = self.blocks.remove(&0).expect("No primary block!");
+        let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
-            if let Some(mut update) = self.bundle.take() {
-                // Primary block modified via with_* methods
-                update.bundle_flags.is_fragment = update.fragment_info.is_some();
+        // Build primary chunk
+        let primary_chunk = if let Some(mut update) = self.bundle.take() {
+            update.bundle_flags.is_fragment = update.fragment_info.is_some();
 
-                bundle_out.id.source = update.source;
-                bundle_out.id.timestamp = update.timestamp;
-                bundle_out.id.fragment_info = update.fragment_info;
-                bundle_out.flags = update.bundle_flags;
-                bundle_out.crc_type = update.crc_type;
-                bundle_out.destination = update.destination;
-                bundle_out.report_to = update.report_to;
-                bundle_out.lifetime = update.lifetime;
-                bundle_out.emit_primary_block(a)?;
+            bundle_out.id.source = update.source;
+            bundle_out.id.timestamp = update.timestamp;
+            bundle_out.id.fragment_info = update.fragment_info;
+            bundle_out.flags = update.bundle_flags;
+            bundle_out.crc_type = update.crc_type;
+            bundle_out.destination = update.destination;
+            bundle_out.report_to = update.report_to;
+            bundle_out.lifetime = update.lifetime;
+
+            let primary_bytes = bundle::primary_block::PrimaryBlock::emit(&bundle_out)?;
+            let len = primary_bytes.len();
+            bundle_out.blocks.insert(
+                0,
+                bundle::primary_block::PrimaryBlock::as_block(bundle_out.crc_type, 0..len),
+            );
+            (0u64, Chunk::New(primary_bytes.into()))
+        } else {
+            bundle_out.id = self.original.id.clone();
+            bundle_out.flags = self.original.flags.clone();
+            bundle_out.crc_type = self.original.crc_type;
+            bundle_out.destination = self.original.destination.clone();
+            bundle_out.report_to = self.original.report_to.clone();
+            bundle_out.lifetime = self.original.lifetime;
+
+            if let BlockTemplate::Update(template) = primary_block {
+                let primary_bytes = template
+                    .data
+                    .ok_or(Error::Builder(builder::Error::NoBlockData))?;
+                let len = primary_bytes.len();
+                bundle_out.blocks.insert(
+                    0,
+                    bundle::primary_block::PrimaryBlock::as_block(bundle_out.crc_type, 0..len),
+                );
+                (0u64, Chunk::New(primary_bytes.into_owned().into()))
             } else {
-                // Primary block fields unchanged from original
-                bundle_out.id = self.original.id.clone();
-                bundle_out.flags = self.original.flags.clone();
-                bundle_out.crc_type = self.original.crc_type;
-                bundle_out.destination = self.original.destination.clone();
-                bundle_out.report_to = self.original.report_to.clone();
-                bundle_out.lifetime = self.original.lifetime;
-
-                if let BlockTemplate::Update(template) = primary_block {
-                    // Pre-encoded canonical primary block (from parser)
-                    let data = template
-                        .data
-                        .as_ref()
-                        .ok_or(Error::Builder(builder::Error::NoBlockData))?;
-                    let mut block = template.block;
-                    block.extent = a.emit(&hardy_cbor::encode::Raw(data));
-                    block.data = block.extent.clone();
-                    bundle_out.blocks.insert(0, block);
-                } else {
-                    let block = self.build_block(0, primary_block, a)?;
-                    bundle_out.blocks.insert(0, block);
-                }
+                let block = self
+                    .original
+                    .blocks
+                    .get(&0)
+                    .ok_or(Error::from(error::Error::Altered))?;
+                bundle_out.blocks.insert(0, block.clone());
+                (0u64, Chunk::Unchanged(block.extent.clone()))
             }
+        };
 
-            let payload_block = self.blocks.remove(&1).expect("No payload block!");
+        let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-            for (block_number, block_template) in core::mem::take(&mut self.blocks) {
-                match &block_template {
-                    BlockTemplate::Keep(block::Type::PreviousNode) => {
-                        bundle_out.previous_node = self.original.previous_node.clone();
-                    }
-                    BlockTemplate::Keep(block::Type::BundleAge) => {
-                        bundle_out.age = self.original.age;
-                    }
-                    BlockTemplate::Keep(block::Type::HopCount) => {
-                        bundle_out.hop_count = self.original.hop_count.clone();
-                    }
-                    BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
-                        if let Some(ref payload) = template.data {
-                            match template.block.block_type {
-                                block::Type::PreviousNode => {
-                                    if let Ok(eid) = hardy_cbor::decode::parse::<eid::Eid>(payload)
-                                    {
-                                        bundle_out.previous_node = Some(eid);
-                                    }
+        // Build extension chunks
+        let mut ext_chunks = Vec::new();
+        for (block_number, block_template) in core::mem::take(&mut self.blocks) {
+            match &block_template {
+                BlockTemplate::Keep(block::Type::PreviousNode) => {
+                    bundle_out.previous_node = self.original.previous_node.clone();
+                }
+                BlockTemplate::Keep(block::Type::BundleAge) => {
+                    bundle_out.age = self.original.age;
+                }
+                BlockTemplate::Keep(block::Type::HopCount) => {
+                    bundle_out.hop_count = self.original.hop_count.clone();
+                }
+                BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                    if let Some(ref payload) = template.data {
+                        match template.block.block_type {
+                            block::Type::PreviousNode => {
+                                if let Ok(eid) = hardy_cbor::decode::parse::<eid::Eid>(payload) {
+                                    bundle_out.previous_node = Some(eid);
                                 }
-                                block::Type::BundleAge => {
-                                    if let Ok(millis) = hardy_cbor::decode::parse::<u64>(payload) {
-                                        bundle_out.age =
-                                            Some(core::time::Duration::from_millis(millis));
-                                    }
-                                }
-                                block::Type::HopCount => {
-                                    if let Ok(hop) =
-                                        hardy_cbor::decode::parse::<hop_info::HopInfo>(payload)
-                                    {
-                                        bundle_out.hop_count = Some(hop);
-                                    }
-                                }
-                                _ => {}
                             }
+                            block::Type::BundleAge => {
+                                if let Ok(millis) = hardy_cbor::decode::parse::<u64>(payload) {
+                                    bundle_out.age =
+                                        Some(core::time::Duration::from_millis(millis));
+                                }
+                            }
+                            block::Type::HopCount => {
+                                if let Ok(hop) =
+                                    hardy_cbor::decode::parse::<hop_info::HopInfo>(payload)
+                                {
+                                    bundle_out.hop_count = Some(hop);
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    _ => {}
                 }
-                let block = self.build_block(block_number, block_template, a)?;
-                bundle_out.blocks.insert(block_number, block);
+                _ => {}
             }
+            let (block, chunk) = self.build_chunk(block_number, block_template)?;
+            bundle_out.blocks.insert(block_number, block);
+            ext_chunks.push((block_number, chunk));
+        }
 
-            let block = self.build_block(1, payload_block, a)?;
-            bundle_out.blocks.insert(1, block);
-
-            Ok::<_, Error>(())
-        })?
-        .into();
+        // Build payload chunk
+        let (block, payload_chunk) = self.build_chunk(1, payload_block)?;
+        bundle_out.blocks.insert(1, block);
 
         // Apply security metadata overrides from Signer/Encryptor
         for (block_number, bib) in &self.bib_overrides {
@@ -1017,82 +1228,98 @@ impl<'a> Editor<'a> {
             }
         }
 
-        Ok((bundle_out, data))
+        // Assemble, order, set extents, and merge
+        let chunks = Chunk::assemble(
+            primary_chunk,
+            ext_chunks,
+            (1, payload_chunk),
+            Some(&mut bundle_out),
+        );
+
+        Ok((bundle_out, chunks))
     }
 
-    /// Rebuild the bundle, applying all of the modifications.
+    /// Rebuild the bundle as a list of chunks.
     ///
-    /// Returns only the serialized representation, discarding the updated
-    /// bundle metadata. Use [`rebuild_bundle`](Self::rebuild_bundle) if you
-    /// need the updated `Bundle` with correct block extents.
-    pub fn rebuild(mut self) -> Result<Box<[u8]>, Error> {
-        hardy_cbor::encode::try_emit_array(None, |a| {
-            // Emit primary block
-            let primary_block = self.blocks.remove(&0).expect("No primary block!");
+    /// `Chunk::Unchanged` references ranges in the original `source_data`,
+    /// `Chunk::New` contains freshly encoded bytes. Use `Chunk::flatten()`
+    /// to concatenate into contiguous bytes.
+    pub fn rebuild(mut self) -> Result<Vec<Chunk>, Error> {
+        let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
-            if let Some(mut update) = self.bundle.take() {
-                // Sync the is_fragment flags to the presence of fragment info
-                update.bundle_flags.is_fragment = update.fragment_info.is_some();
+        // Build primary chunk
+        let primary_chunk = if let Some(mut update) = self.bundle.take() {
+            update.bundle_flags.is_fragment = update.fragment_info.is_some();
 
-                let mut bundle = bundle::Bundle {
-                    id: bundle::Id {
-                        source: update.source,
-                        timestamp: update.timestamp,
-                        fragment_info: update.fragment_info,
-                    },
-                    flags: update.bundle_flags,
-                    crc_type: update.crc_type,
-                    destination: update.destination,
-                    report_to: update.report_to,
-                    lifetime: update.lifetime,
-                    ..Default::default()
-                };
-                // Emit primary block
-                bundle.emit_primary_block(a)?;
-            } else if let BlockTemplate::Update(template) = primary_block {
-                // Pre-encoded canonical primary block (from parser)
-                let data = template
-                    .data
-                    .as_ref()
-                    .ok_or(Error::Builder(builder::Error::NoBlockData))?;
-                a.emit(&hardy_cbor::encode::Raw(data));
-            } else {
-                self.build_block(0, primary_block, a)?;
-            }
+            let bundle = bundle::Bundle {
+                id: bundle::Id {
+                    source: update.source,
+                    timestamp: update.timestamp,
+                    fragment_info: update.fragment_info,
+                },
+                flags: update.bundle_flags,
+                crc_type: update.crc_type,
+                destination: update.destination,
+                report_to: update.report_to,
+                lifetime: update.lifetime,
+                ..Default::default()
+            };
+            (
+                0u64,
+                Chunk::New(bundle::primary_block::PrimaryBlock::emit(&bundle)?.into()),
+            )
+        } else if let BlockTemplate::Update(template) = primary_block {
+            let data = template
+                .data
+                .ok_or(Error::Builder(builder::Error::NoBlockData))?;
+            (0u64, Chunk::New(data.into_owned().into()))
+        } else {
+            let block = self
+                .original
+                .blocks
+                .get(&0)
+                .ok_or(Error::from(error::Error::Altered))?;
+            (0u64, Chunk::Unchanged(block.extent.clone()))
+        };
 
-            // Stash payload block
-            let payload_block = self.blocks.remove(&1).expect("No payload block!");
+        let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-            // Emit extension blocks
-            for (block_number, block_template) in core::mem::take(&mut self.blocks) {
-                self.build_block(block_number, block_template, a)?;
-            }
+        // Build extension chunks
+        let mut ext_chunks = Vec::new();
+        for (block_number, block_template) in core::mem::take(&mut self.blocks) {
+            let (_, chunk) = self.build_chunk(block_number, block_template)?;
+            ext_chunks.push((block_number, chunk));
+        }
 
-            // Emit payload block
-            self.build_block(1, payload_block, a)?;
+        // Build payload chunk
+        let (_, payload_chunk) = self.build_chunk(1, payload_block)?;
 
-            Ok::<_, Error>(())
-        })
-        .map(Into::into)
+        // Assemble, order, and merge (no extent tracking)
+        Ok(Chunk::assemble(
+            primary_chunk,
+            ext_chunks,
+            (1, payload_chunk),
+            None,
+        ))
     }
 
-    fn build_block(
+    fn build_chunk(
         &self,
         block_number: u64,
         template: BlockTemplate,
-        array: &mut hardy_cbor::encode::Array,
-    ) -> Result<block::Block, Error> {
+    ) -> Result<(block::Block, Chunk), Error> {
         if let BlockTemplate::Update(template) | BlockTemplate::Insert(template) = template {
-            template.build(block_number, array).map_err(Into::into)
+            let (block, bytes) = template.build_to_vec(block_number).map_err(Error::from)?;
+            Ok((block, Chunk::New(bytes.into())))
         } else {
-            let mut block = self
+            let block = self
                 .original
                 .blocks
                 .get(&block_number)
                 .ok_or(Error::from(error::Error::Altered))?
                 .clone();
-            block.copy_whole(self.source_data, array);
-            Ok(block)
+            let extent = block.extent.clone();
+            Ok((block, Chunk::Unchanged(extent)))
         }
     }
 }
@@ -1224,7 +1451,10 @@ mod test {
     #[test]
     fn no_op_rebuild() {
         let (bundle, data) = make_bundle();
-        let new_data = Editor::new(&bundle, &data).rebuild().unwrap();
+        let new_data = Editor::new(&bundle, &data)
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.id.source, bundle.id.source);
         assert_eq!(reparsed.destination, bundle.destination);
@@ -1236,6 +1466,7 @@ mod test {
         let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
         let new_data = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.destination, new_dest);
@@ -1248,6 +1479,7 @@ mod test {
         let new_src: eid::Eid = "ipn:50.0".parse().unwrap();
         let new_data = ok(Editor::new(&bundle, &data).with_source(new_src.clone()))
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.id.source, new_src);
@@ -1259,6 +1491,7 @@ mod test {
         let new_rt: eid::Eid = "ipn:77.0".parse().unwrap();
         let new_data = ok(Editor::new(&bundle, &data).with_report_to(new_rt.clone()))
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.report_to, new_rt);
@@ -1270,6 +1503,7 @@ mod test {
         let new_lifetime = core::time::Duration::from_secs(7200);
         let new_data = ok(Editor::new(&bundle, &data).with_lifetime(new_lifetime))
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.lifetime, new_lifetime);
@@ -1281,6 +1515,7 @@ mod test {
         let new_data =
             ok(Editor::new(&bundle, &data).with_bundle_crc_type(crc::CrcType::CRC16_X25))
                 .rebuild()
+                .map(|c| Chunk::flatten(c, &data))
                 .unwrap();
         let reparsed = reparse(&new_data);
         assert!(matches!(reparsed.crc_type, crc::CrcType::CRC16_X25));
@@ -1293,6 +1528,7 @@ mod test {
             .with_data((&[0xCA, 0xFE][..]).into())
             .rebuild()
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert!(reparsed.blocks.contains_key(&2));
@@ -1310,6 +1546,7 @@ mod test {
 
         let new_data = ok(Editor::new(&bundle, &data).remove_block(hop_block))
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert!(reparsed.hop_count.is_none());
@@ -1342,7 +1579,10 @@ mod test {
         let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
         let new_lifetime = core::time::Duration::from_secs(600);
         let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
-        let new_data = ok(editor.with_lifetime(new_lifetime)).rebuild().unwrap();
+        let new_data = ok(editor.with_lifetime(new_lifetime))
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
         let reparsed = reparse(&new_data);
         assert_eq!(reparsed.destination, new_dest);
         assert_eq!(reparsed.lifetime, new_lifetime);
@@ -1357,6 +1597,7 @@ mod test {
             .with_data((&[0x01, 0x02][..]).into())
             .rebuild()
             .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
             .unwrap();
         let reparsed = reparse(&new_data);
         assert!(reparsed.blocks.contains_key(&2));
@@ -1449,7 +1690,10 @@ mod test {
     #[test]
     fn rebuild_bundle_no_op() {
         let (bundle, data) = make_bundle();
-        let (new_bundle, new_data) = Editor::new(&bundle, &data).rebuild_bundle().unwrap();
+        let (new_bundle, new_data) = Editor::new(&bundle, &data)
+            .rebuild_bundle()
+            .map(|(b, c)| (b, Chunk::flatten(c, &data)))
+            .unwrap();
         assert_rebuild_matches_parse(&new_bundle, &new_data);
     }
 
@@ -1460,6 +1704,7 @@ mod test {
         let (new_bundle, new_data) =
             ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
                 .rebuild_bundle()
+                .map(|(b, c)| (b, Chunk::flatten(c, &data)))
                 .unwrap();
         assert_eq!(new_bundle.destination, new_dest);
         assert_eq!(new_bundle.id.source, bundle.id.source);
@@ -1474,6 +1719,7 @@ mod test {
         let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
         let (new_bundle, new_data) = ok(editor.with_lifetime(new_lifetime))
             .rebuild_bundle()
+            .map(|(b, c)| (b, Chunk::flatten(c, &data)))
             .unwrap();
         assert_eq!(new_bundle.destination, new_dest);
         assert_eq!(new_bundle.lifetime, new_lifetime);
@@ -1488,6 +1734,7 @@ mod test {
                 .with_data((&[0xCA, 0xFE][..]).into())
                 .rebuild()
                 .rebuild_bundle()
+                .map(|(b, c)| (b, Chunk::flatten(c, &data)))
                 .unwrap();
         assert!(new_bundle.blocks.contains_key(&2));
         assert_rebuild_matches_parse(&new_bundle, &new_data);
@@ -1505,8 +1752,84 @@ mod test {
 
         let (new_bundle, new_data) = ok(Editor::new(&bundle, &data).remove_block(hop_block))
             .rebuild_bundle()
+            .map(|(b, c)| (b, Chunk::flatten(c, &data)))
             .unwrap();
         assert!(!new_bundle.blocks.contains_key(&hop_block));
         assert_rebuild_matches_parse(&new_bundle, &new_data);
+    }
+
+    #[test]
+    fn flatten_inplace_no_op() {
+        let (bundle, data) = make_bundle();
+        let flattened = Editor::new(&bundle, &data)
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
+        let chunks = Editor::new(&bundle, &data).rebuild().unwrap();
+        let mut inplace = data.to_vec();
+        Chunk::flatten_inplace(chunks, &mut inplace);
+        assert_eq!(&*flattened, &*inplace);
+    }
+
+    #[test]
+    fn flatten_inplace_change_destination() {
+        let (bundle, data) = make_bundle();
+        let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
+
+        let flattened = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
+
+        let chunks = ok(Editor::new(&bundle, &data).with_destination(new_dest))
+            .rebuild()
+            .unwrap();
+        let mut inplace = data.to_vec();
+        Chunk::flatten_inplace(chunks, &mut inplace);
+        assert_eq!(&*flattened, &*inplace);
+    }
+
+    #[test]
+    fn flatten_inplace_add_block() {
+        let (bundle, data) = make_bundle();
+
+        let flattened = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+            .with_data((&[0xCA, 0xFE][..]).into())
+            .rebuild()
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
+
+        let chunks = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+            .with_data((&[0xCA, 0xFE][..]).into())
+            .rebuild()
+            .rebuild()
+            .unwrap();
+        let mut inplace = data.to_vec();
+        Chunk::flatten_inplace(chunks, &mut inplace);
+        assert_eq!(&*flattened, &*inplace);
+    }
+
+    #[test]
+    fn flatten_inplace_remove_block() {
+        let (bundle, data) = make_bundle_with_hop_count();
+        let hop_block = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+            .map(|(n, _)| *n)
+            .expect("Should have hop count block");
+
+        let flattened = ok(Editor::new(&bundle, &data).remove_block(hop_block))
+            .rebuild()
+            .map(|c| Chunk::flatten(c, &data))
+            .unwrap();
+
+        let chunks = ok(Editor::new(&bundle, &data).remove_block(hop_block))
+            .rebuild()
+            .unwrap();
+        let mut inplace = data.to_vec();
+        Chunk::flatten_inplace(chunks, &mut inplace);
+        assert_eq!(&*flattened, &*inplace);
     }
 }
