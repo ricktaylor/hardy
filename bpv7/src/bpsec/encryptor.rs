@@ -180,11 +180,18 @@ impl<'a> Encryptor<'a> {
 
     /// Applies all queued encryption operations and rebuilds the bundle as raw bytes.
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
+        self.rebuild_editor()?.rebuild().map_err(Into::into)
+    }
+
+    /// Applies all queued encryption operations and rebuilds the bundle,
+    /// returning both the updated `Bundle` and the serialized data.
+    pub fn rebuild_bundle(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+        self.rebuild_editor()?.rebuild_bundle().map_err(Into::into)
+    }
+
+    fn rebuild_editor(self) -> Result<editor::Editor<'a>, Error> {
         if self.templates.is_empty() {
-            // No signing to do
-            return editor::Editor::new(self.original, self.source_data)
-                .rebuild()
-                .map_err(Into::into);
+            return Ok(editor::Editor::new(self.original, self.source_data));
         }
 
         // Reorder and accumulate BCB operations if sharing is possible
@@ -251,7 +258,7 @@ impl<'a> Encryptor<'a> {
 
             // Reserve a block number for the BCB block
             let b = editor
-                .push_block(block::Type::BlockSecurity)
+                .alloc_block(block::Type::BlockSecurity)
                 .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None)
                 .with_flags(block::Flags {
@@ -287,6 +294,9 @@ impl<'a> Encryptor<'a> {
                 operations.insert(target, op);
             }
 
+            // Set BCB coverage on target blocks before operations is moved
+            let target_blocks: SmallVec<[u64; 4]> = operations.keys().copied().collect();
+
             // Rewrite the BCB with the real data
             editor = editor_bs
                 .editor
@@ -301,9 +311,13 @@ impl<'a> Encryptor<'a> {
                     .into(),
                 )
                 .rebuild();
+
+            for target in target_blocks {
+                editor.set_bcb_target(target, source);
+            }
         }
 
-        editor.rebuild().map_err(Into::into)
+        Ok(editor)
     }
 }
 

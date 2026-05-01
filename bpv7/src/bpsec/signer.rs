@@ -122,11 +122,19 @@ impl<'a> Signer<'a> {
 
     /// Applies all queued signing operations and rebuilds the bundle as raw bytes.
     pub fn rebuild(self) -> Result<Box<[u8]>, Error> {
+        self.rebuild_editor()?.rebuild().map_err(Into::into)
+    }
+
+    /// Applies all queued signing operations and rebuilds the bundle,
+    /// returning both the updated `Bundle` and the serialized data.
+    pub fn rebuild_bundle(self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+        self.rebuild_editor()?.rebuild_bundle().map_err(Into::into)
+    }
+
+    fn rebuild_editor(self) -> Result<editor::Editor<'a>, Error> {
         if self.templates.is_empty() {
             // No signing to do
-            return editor::Editor::new(self.original, self.source_data)
-                .rebuild()
-                .map_err(Into::into);
+            return Ok(editor::Editor::new(self.original, self.source_data));
         }
 
         // Reorder and accumulate BIB operations
@@ -166,7 +174,7 @@ impl<'a> Signer<'a> {
 
             // Reserve a block number for the BIB block
             let b = editor
-                .push_block(block::Type::BlockIntegrity)
+                .alloc_block(block::Type::BlockIntegrity)
                 .map_err(|(_, e)| e)?
                 .with_crc_type(crc::CrcType::None);
 
@@ -203,9 +211,14 @@ impl<'a> Signer<'a> {
                 .map_err(|(_, e)| e)?
                 .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
                 .rebuild();
+
+            // Set BIB coverage on target blocks
+            for target in operation_set.operations.keys() {
+                editor.set_bib_target(*target, source);
+            }
         }
 
-        editor.rebuild().map_err(Into::into)
+        Ok(editor)
     }
 }
 
