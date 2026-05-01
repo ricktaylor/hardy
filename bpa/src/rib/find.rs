@@ -3,16 +3,16 @@ use core::hash::BuildHasher;
 use route::Action;
 
 #[derive(Debug)]
-enum InternalFindResult {
+enum InternalFindResult<'a> {
     AdminEndpoint,
     Deliver(Arc<services::registry::Service>), // Deliver to local service
-    Forward(Vec<(u32, Eid)>),                  // sorted peer -> next_hop pairs
+    Forward(Vec<(u32, &'a Eid)>),              // sorted peer -> next_hop pairs
     Drop(Option<ReasonCode>),                  // Drop with reason code
     Reflect,                                   // Reflect
 }
 
 /// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
-fn sorted_insert(peers: &mut Vec<(u32, Eid)>, peer: u32, next_hop: Eid) {
+fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
     }
@@ -26,7 +26,7 @@ impl Rib {
         // TODO: this is where route table switching can occur
         let table = &inner.routes;
 
-        let result = self.find_with_local(table, &bundle.bundle.destination, true)?;
+        let result = find_recurse(table, &bundle.bundle.destination, true, &mut HashSet::new())?;
         if !matches!(result, InternalFindResult::Reflect) {
             return map_result(
                 result,
@@ -43,24 +43,11 @@ impl Rib {
             .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
         map_result(
-            self.find_with_local(table, &previous, false)?,
+            find_recurse(table, &previous, false, &mut HashSet::new())?,
             &self.ecmp_hash_state,
             &bundle.bundle,
             &mut bundle.metadata,
         )
-    }
-
-    fn find_with_local(
-        &self,
-        table: &RouteTable,
-        to: &Eid,
-        reflect: bool,
-    ) -> Option<InternalFindResult> {
-        // Two-phase lookup: try literal EID, then LocalNode fallback.
-        find_recurse(table, to, reflect, &mut HashSet::new()).or_else(|| {
-            let local_eid = self.node_ids.to_local_eid(to)?;
-            find_recurse(table, &local_eid, reflect, &mut HashSet::new())
-        })
     }
 
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
@@ -71,7 +58,9 @@ impl Rib {
         // TODO: this should be for *all* tables
         let table = &inner.routes;
 
-        if let Some(InternalFindResult::Forward(peers)) = self.find_with_local(table, to, false) {
+        if let Some(InternalFindResult::Forward(peers)) =
+            find_recurse(table, to, false, &mut HashSet::new())
+        {
             Some(peers.into_iter().map(|(peer, _)| peer).collect())
         } else {
             None
@@ -95,28 +84,21 @@ impl Rib {
         // TODO: this should be for *all* tables
         let table = &inner.routes;
 
-        find_service_in_table(table, to).or_else(|| {
-            let local_eid = self.node_ids.to_local_eid(to)?;
-            find_service_in_table(table, &local_eid)
-        })
-    }
-}
-
-/// Scan the table for a Local(service) action matching the given EID.
-/// Ignores priority ordering and Drop rules (see find_service doc comment).
-fn find_service_in_table(table: &RouteTable, to: &Eid) -> Option<Arc<services::registry::Service>> {
-    for entries in table.values() {
-        for (pattern, actions) in entries {
-            if pattern.matches(to) {
-                for entry in actions {
-                    if let Action::Local(service) = &entry.action {
-                        return Some(service.clone());
+        // Scan the table for a Local(service) action matching the given EID.
+        // Ignores priority ordering and Drop rules.
+        for entries in table.values() {
+            for (pattern, actions) in entries {
+                if pattern.matches(to) {
+                    for entry in actions {
+                        if let Action::Local(service) = &entry.action {
+                            return Some(service.clone());
+                        }
                     }
                 }
             }
         }
+        None
     }
-    None
 }
 
 fn map_result(
@@ -160,7 +142,7 @@ fn map_result(
             let (peer, next_hop) = peers.swap_remove(idx);
 
             // Set the next-hop for Egress filters
-            metadata.read_only.next_hop = Some(next_hop);
+            metadata.read_only.next_hop = Some(next_hop.clone());
 
             Some(FindResult::Forward(peer))
         }
@@ -174,10 +156,10 @@ fn find_recurse<'a>(
     to: &'a Eid,
     reflect: bool,
     trail: &mut HashSet<&'a Eid>,
-) -> Option<InternalFindResult> {
+) -> Option<InternalFindResult<'a>> {
     debug!("Looking for route for {to}");
 
-    let mut peers: Vec<(u32, Eid)> = Vec::new();
+    let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
     for entries in table.values() {
         for (pattern, actions) in entries {
             if pattern.matches(to) {
@@ -216,7 +198,7 @@ fn find_recurse<'a>(
                                 // The 'via' Eid is the next-hop for all peers found through this path
                                 // Append peers to the running vec, maintaining sort order
                                 for (sub_peer, _) in sub_peers {
-                                    sorted_insert(&mut peers, sub_peer, via.clone());
+                                    sorted_insert(&mut peers, sub_peer, via);
                                 }
                             } else {
                                 // TODO: Kick off a resolver lookup for `via`
@@ -232,7 +214,7 @@ fn find_recurse<'a>(
                         }
                         Action::Forward(peer) => {
                             // The 'to' Eid is the next-hop for all peers found here
-                            sorted_insert(&mut peers, *peer, to.clone());
+                            sorted_insert(&mut peers, *peer, to);
                         }
                     }
                 }
@@ -479,17 +461,14 @@ mod tests {
     }
 
     #[test]
-    fn test_localnode_service_matches_concrete_eid() {
-        // A service registered with a concrete local EID should be stored
-        // under a LocalNode pattern (via to_local_eid in add_service).
-        // The find() lookup with a concrete EID should match via the
-        // two-phase LocalNode fallback.
+    fn test_concrete_service_matches() {
+        // A service route stored with a concrete local EID pattern
+        // should match bundles destined for that EID.
         let rib = make_rib();
 
-        // Manually add a LocalNode service route (simulating add_service)
         add_route(
             &rib,
-            "ipn:!.42",
+            "ipn:0.1.42",
             "services",
             Action::Local(Arc::new(services::registry::Service {
                 service: services::registry::ServiceImpl::LowLevel(Arc::new(
@@ -500,24 +479,23 @@ mod tests {
             1,
         );
 
-        // Bundle with concrete local EID should match the LocalNode pattern
         let mut bundle = make_bundle("ipn:0.1.42");
         let result = rib.find(&mut bundle);
         assert!(
             matches!(result, Some(FindResult::Deliver(_))),
-            "Concrete local EID should match LocalNode service route, got {result:?}"
+            "Concrete local EID should match concrete service route, got {result:?}"
         );
     }
 
     #[test]
-    fn test_localnode_pattern_ignores_remote_eid() {
-        // A LocalNode pattern should NOT match a remote node's EID,
+    fn test_concrete_service_ignores_remote_eid() {
+        // A concrete service route should NOT match a remote node's EID,
         // even if the service number matches.
         let rib = make_rib();
 
         add_route(
             &rib,
-            "ipn:!.42",
+            "ipn:0.1.42",
             "services",
             Action::Local(Arc::new(services::registry::Service {
                 service: services::registry::ServiceImpl::LowLevel(Arc::new(
@@ -533,22 +511,21 @@ mod tests {
         let result = rib.find(&mut bundle);
         assert!(
             result.is_none(),
-            "Remote EID should not match LocalNode pattern, got {result:?}"
+            "Remote EID should not match local service route, got {result:?}"
         );
     }
 
     #[test]
-    fn test_admin_endpoint_localnode_matches_concrete() {
-        // The admin endpoint is registered as ipn:!.0.
-        // A bundle for ipn:0.1.0 (concrete admin EID) should match
-        // via the two-phase LocalNode fallback.
+    fn test_admin_endpoint_matches_concrete() {
+        // The admin endpoint is registered with a concrete IPN EID (ipn:0.1.0).
+        // A bundle for that EID should match directly.
         let rib = make_rib();
 
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
             matches!(result, Some(FindResult::AdminEndpoint)),
-            "Concrete admin EID should match LocalNode(0) pattern, got {result:?}"
+            "Concrete admin EID should match admin endpoint route, got {result:?}"
         );
     }
 

@@ -81,6 +81,20 @@ impl IpnPatternItem {
             && self.service_number.is_subset(&other.service_number)
     }
 
+    pub(super) fn expand_local_node(&self, node_id: &IpnNodeId) -> Option<Self> {
+        if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)])
+            && self.node_number == IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)])
+        {
+            Some(Self {
+                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(node_id.allocator_id)]),
+                node_number: IpnPattern::Range(vec![IpnInterval::Number(node_id.node_number)]),
+                service_number: self.service_number.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
         Some(Eid::Ipn {
             fqnn: IpnNodeId {

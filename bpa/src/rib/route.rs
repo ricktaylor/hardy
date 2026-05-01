@@ -97,6 +97,16 @@ impl Rib {
         action: Action,
         priority: u32,
     ) -> bool {
+        let pattern = if let Some(ipn) = &self.node_ids.ipn {
+            pattern.expand_local_node(ipn).unwrap_or(pattern)
+        } else {
+            pattern
+        };
+        let action = match action {
+            Action::Via(eid) => Action::Via(self.node_ids.from_local_node(&eid).unwrap_or(eid)),
+            other => other,
+        };
+
         let vias = {
             let new_entry = Entry {
                 action: action.clone(),
@@ -169,18 +179,30 @@ impl Rib {
         action: Action,
         priority: u32,
     ) -> bool {
+        let pattern = if let Some(ipn) = &self.node_ids.ipn {
+            pattern
+                .expand_local_node(ipn)
+                .unwrap_or_else(|| pattern.clone())
+        } else {
+            pattern.clone()
+        };
+        let action = match action {
+            Action::Via(eid) => Action::Via(self.node_ids.from_local_node(&eid).unwrap_or(eid)),
+            other => other,
+        };
+
         // Remove the entry
         {
             let mut inner = self.inner.write();
             if let Some(patterns) = inner.routes.get_mut(&priority)
-                && let Some(actions) = patterns.get_mut(pattern)
+                && let Some(actions) = patterns.get_mut(&pattern)
                 && actions.remove(&Entry {
                     action: action.clone(),
                     source: source.to_string(),
                 })
             {
                 if actions.is_empty() {
-                    patterns.remove(pattern);
+                    patterns.remove(&pattern);
                     if patterns.is_empty() {
                         inner.routes.remove(&priority);
                     }
@@ -296,10 +318,9 @@ impl Rib {
     }
 
     /// Add a service route for a local service.
-    /// IPN EIDs are converted to LocalNode form so routes are node-ID-independent.
     pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
         self.add(
-            self.node_ids.to_local_eid(&eid).unwrap_or(eid).into(),
+            eid.into(),
             Self::SERVICES_NAME.into(),
             Action::Local(service),
             self.service_priority,
@@ -313,11 +334,7 @@ impl Rib {
         eid: &Eid,
         service: Arc<services::registry::Service>,
     ) -> bool {
-        let pattern: EidPattern = self
-            .node_ids
-            .to_local_eid(eid)
-            .unwrap_or_else(|| eid.clone())
-            .into();
+        let pattern: EidPattern = eid.clone().into();
         self.remove(
             &pattern,
             Self::SERVICES_NAME,
@@ -423,20 +440,27 @@ pub(super) mod tests {
     #[test]
     fn test_admin_endpoint_in_unified_table() {
         // Rib::new() inserts admin endpoint route into the unified routing
-        // table at priority 0 for LocalNode service 0 (ipn:!.0).
+        // table at priority 0 with a concrete IPN admin EID (ipn:0.1.0).
         let rib = make_rib();
 
         let inner = rib.inner.read();
         let entries = inner.routes.get(&0).unwrap();
 
-        // Should have admin endpoint for LocalNode(0) — exact ipn:!.0
-        let local_pattern: EidPattern = hardy_bpv7::eid::Eid::LocalNode(0).into();
-        let local_actions = entries.get(&local_pattern).unwrap();
+        // Should have admin endpoint for concrete ipn:0.1.0
+        let admin_pattern: EidPattern = hardy_bpv7::eid::Eid::Ipn {
+            fqnn: hardy_bpv7::eid::IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            },
+            service_number: 0,
+        }
+        .into();
+        let admin_actions = entries.get(&admin_pattern).unwrap();
         assert!(
-            local_actions
+            admin_actions
                 .iter()
                 .any(|e| matches!(e.action, Action::AdminEndpoint)),
-            "LocalNode(0) admin endpoint route should be in unified table"
+            "Concrete admin endpoint route should be in unified table"
         );
     }
 
