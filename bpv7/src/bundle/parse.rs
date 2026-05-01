@@ -6,6 +6,7 @@ canonicalization issues.
 */
 
 use super::*;
+use editor::{Chunk, Editor};
 use error::CaptureFieldErr;
 use smallvec::SmallVec;
 use thiserror::Error;
@@ -650,7 +651,7 @@ impl<'a> BlockParse<'a> {
     /// Rewrites the entire bundle if any blocks were non-canonical or removed.
     /// Returns `None` if no rewrite was necessary.
     #[allow(clippy::type_complexity)]
-    fn finish(mut self, bundle: &mut Bundle) -> Result<(Option<Box<[u8]>>, bool), Error> {
+    fn finish(mut self, bundle: &mut Bundle) -> Result<(Option<Vec<Chunk>>, bool), Error> {
         bundle.blocks = core::mem::take(&mut self.blocks);
 
         // Preserve mode: never rewrite
@@ -665,7 +666,7 @@ impl<'a> BlockParse<'a> {
         }
 
         // Construct Editor from the bundle and its source data
-        let mut editor = editor::Editor::new(bundle, self.source_data);
+        let mut editor = Editor::new(bundle, self.source_data);
 
         // Handle non-canonical primary block
         if let Some(Some(data)) = self.noncanonical_blocks.remove(&0) {
@@ -704,12 +705,12 @@ impl<'a> BlockParse<'a> {
         }
 
         // Rebuild and update the bundle
-        let (new_bundle, data) = editor
+        let (new_bundle, chunks) = editor
             .rebuild_bundle()
             .unwrap_or_else(|e| panic!("Editor rebuild failed on parsed bundle: {e}"));
         *bundle = new_bundle;
 
-        Ok((Some(data), non_canonical))
+        Ok((Some(chunks), non_canonical))
     }
 }
 
@@ -722,7 +723,7 @@ fn parse_blocks(
     source_data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     mode: ParseMode,
-) -> Result<(Option<Box<[u8]>>, bool, bool), Error> {
+) -> Result<(Option<Vec<Chunk>>, bool, bool), Error> {
     let mut parser = BlockParse::new(source_data, mode);
 
     // Steal the primary block, we put it back later
@@ -830,7 +831,7 @@ fn parse_bundle_with_provider<F>(
     canonical: bool,
     tags: &[u64],
     mode: ParseMode,
-) -> Result<(Bundle, Option<Box<[u8]>>, bool, bool), (Option<Bundle>, Error)>
+) -> Result<(Bundle, Option<Vec<Chunk>>, bool, bool), (Option<Bundle>, Error)>
 where
     F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -863,7 +864,7 @@ fn parse_bundle_with_keys(
     canonical: bool,
     tags: &[u64],
     mode: ParseMode,
-) -> Result<(Bundle, Option<Box<[u8]>>, bool, bool), (Option<Bundle>, Error)> {
+) -> Result<(Bundle, Option<Vec<Chunk>>, bool, bool), (Option<Bundle>, Error)> {
     let (mut bundle, canonical) = parse_primary_block(block_array, canonical, tags)?;
     match parse_blocks(&mut bundle, canonical, block_array, data, key_source, mode) {
         Ok((new_data, non_canonical, report_unsupported)) => {
@@ -1388,8 +1389,9 @@ mod test {
             } => {
                 assert!(non_canonical, "Should flag as non-canonical rewrite");
                 // Rewritten data should not have the tag
+                let flattened = editor::Chunk::flatten(new_data, &tagged);
                 assert_eq!(
-                    new_data[0], 0x9F,
+                    flattened[0], 0x9F,
                     "Rewritten bundle should start with indefinite array"
                 );
             }

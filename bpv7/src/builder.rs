@@ -140,7 +140,12 @@ impl<'a> Builder<'a> {
 
         let data = hardy_cbor::encode::try_emit_array(None, |a| {
             // Emit primary block
-            bundle.emit_primary_block(a)?;
+            let primary_bytes = bundle::primary_block::PrimaryBlock::emit(&bundle)?;
+            let extent = a.emit(&hardy_cbor::encode::Raw(&primary_bytes));
+            bundle.blocks.insert(
+                0,
+                bundle::primary_block::PrimaryBlock::as_block(bundle.crc_type, extent),
+            );
 
             // Emit extension blocks
             for (block_number, block) in self.extensions.into_iter().enumerate() {
@@ -228,6 +233,33 @@ impl<'a> BlockTemplate<'a> {
             },
             data,
         }
+    }
+
+    /// Builds the [`block::Block`] to standalone bytes.
+    pub fn build_to_vec(mut self, block_number: u64) -> Result<(block::Block, Vec<u8>), Error> {
+        let data = self.data.take().ok_or(Error::NoBlockData)?;
+        let bytes = crc::append_crc_value(
+            self.block.crc_type,
+            hardy_cbor::encode::emit_array(
+                Some(if let crc::CrcType::None = self.block.crc_type {
+                    5
+                } else {
+                    6
+                }),
+                |a| {
+                    a.emit(&self.block.block_type);
+                    a.emit(&block_number);
+                    a.emit(&self.block.flags);
+                    a.emit(&self.block.crc_type);
+                    self.block.data = a.emit(&hardy_cbor::encode::Bytes(&data));
+                    if !matches!(self.block.crc_type, crc::CrcType::None) {
+                        a.skip_value();
+                    }
+                },
+            ),
+        )
+        .map_err(|e| Error::InternalError(e.into()))?;
+        Ok((self.block, bytes))
     }
 
     /// Builds the [`block::Block`] with the given block number and array.

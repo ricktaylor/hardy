@@ -247,11 +247,14 @@ impl Level {
                         mutation.metadata = true;
                         bundle.metadata.writable = writable;
                     }
-                    if let Some(new_data) = new_data {
+                    if let Some(mut new_data) = new_data {
                         debug!("WriteFilter rewrote bundle data");
                         mutation.data = true;
                         let parsed = CheckedBundle::parse(&new_data, key_provider)?;
-                        *data = Bytes::from(parsed.new_data.map(Vec::from).unwrap_or(new_data));
+                        if let Some(chunks) = parsed.new_data {
+                            hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut new_data);
+                        }
+                        *data = Bytes::from(new_data);
                         bundle.bundle = parsed.bundle;
                     }
                 }

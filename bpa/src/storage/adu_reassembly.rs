@@ -2,7 +2,7 @@ use core::ops::Range;
 
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::bundle::Id as Bpv7Id;
-use hardy_bpv7::editor::Editor;
+use hardy_bpv7::editor::{Chunk, Editor};
 use time::OffsetDateTime;
 use trace_err::*;
 use tracing::{debug, error};
@@ -227,7 +227,7 @@ impl Store {
         };
 
         // Now rebuild
-        let new_data = match editor.update_block(1) {
+        let chunks = match editor.update_block(1) {
             Err((_, e)) => {
                 debug!("Missing payload block?: {e}");
                 return None;
@@ -237,12 +237,19 @@ impl Store {
                     debug!("Failed to rebuild bundle: {e}");
                     return None;
                 }
-                Ok(new_data) => new_data,
+                Ok(chunks) => chunks,
             },
         };
 
         // Write the rewritten bundle now for safety
-        let new_data = Bytes::from(new_data);
+        let new_data = match old_data.try_into_mut() {
+            Ok(buf) => {
+                let mut vec = buf.into();
+                Chunk::flatten_inplace(chunks, &mut vec);
+                Bytes::from(vec)
+            }
+            Err(original) => Bytes::from(Chunk::flatten(chunks, &original)),
+        };
         let new_storage_name = self.save_data(new_data.clone()).await;
         Some((new_storage_name, new_data))
     }
@@ -422,6 +429,7 @@ mod tests {
             .with_data(std::borrow::Cow::Borrowed(&b"Hello"[..]))
             .rebuild()
             .rebuild()
+            .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
         // Create fragment 1: offset=5, total=10, payload="World"
@@ -438,6 +446,7 @@ mod tests {
             .with_data(std::borrow::Cow::Borrowed(&b"World"[..]))
             .rebuild()
             .rebuild()
+            .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
         // Parse fragments back to get Bundle structs with correct block ranges

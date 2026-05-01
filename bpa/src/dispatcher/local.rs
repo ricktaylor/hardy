@@ -96,8 +96,16 @@ impl Dispatcher {
         let checked = hardy_bpv7::bundle::CheckedBundle::parse(&data, self.key_provider())?;
 
         // Use rewritten data if canonicalization was needed
-        let (bundle, data) = if let Some(new_data) = checked.new_data {
-            (checked.bundle, Bytes::from(new_data))
+        let (bundle, data) = if let Some(chunks) = checked.new_data {
+            let data = match data.try_into_mut() {
+                Ok(buf) => {
+                    let mut vec = buf.into();
+                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
+                    Bytes::from(vec)
+                }
+                Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
+            };
+            (checked.bundle, data)
         } else {
             (checked.bundle, data)
         };

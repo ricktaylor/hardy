@@ -57,7 +57,7 @@ impl EchoService {
             );
 
             // Swap source and destination
-            let data = hardy_bpv7::editor::Editor::new(&bundle, &data)
+            let chunks = hardy_bpv7::editor::Editor::new(&bundle, &data)
                 .with_source(bundle.destination.clone())
                 .map_err(|(_, e)| {
                     debug!("Failed to set source Eid: {e:?}");
@@ -77,7 +77,18 @@ impl EchoService {
                 "Sending echo reply"
             );
 
-            sink.send(data.into()).await.inspect_err(|e| {
+            let reply = match data.try_into_mut() {
+                Ok(buf) => {
+                    let mut vec = buf.into();
+                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
+                    hardy_bpa::Bytes::from(vec)
+                }
+                Err(original) => {
+                    hardy_bpa::Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original))
+                }
+            };
+
+            sink.send(reply).await.inspect_err(|e| {
                 warn!("Failed to send reply: {e:?}");
             })?;
         }

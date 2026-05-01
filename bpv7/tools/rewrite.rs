@@ -30,7 +30,9 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
         {
             hardy_bpv7::bundle::RewrittenBundle::Valid { .. } => data,
-            hardy_bpv7::bundle::RewrittenBundle::Rewritten { new_data, .. } => new_data.into(),
+            hardy_bpv7::bundle::RewrittenBundle::Rewritten { new_data, .. } => {
+                hardy_bpv7::editor::Chunk::flatten(new_data, &data).into()
+            }
             hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. } => {
                 return Err(anyhow::anyhow!("Failed to parse bundle: {error}"));
             }
