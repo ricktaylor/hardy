@@ -94,13 +94,17 @@ impl Rib {
             action: route::Action::AdminEndpoint,
         };
 
-        // Add admin endpoint for LocalNode service 0 (ipn:!.0)
+        // Add admin endpoints
         let mut admin_endpoints = BTreeMap::new();
-        admin_endpoints.insert(Eid::LocalNode(0).into(), [entry.clone()].into());
-
         if let Some(node_name) = &node_ids.dtn {
-            // Add the Admin Endpoint EID itself (exact match, not wildcard)
+            // Add the Admin Endpoint ipn EID itself (exact match, not wildcard)
             let admin_eid: Eid = node_name.clone().into();
+            admin_endpoints.insert(admin_eid.into(), [entry.clone()].into());
+        }
+
+        if let Some(node_number) = &node_ids.ipn {
+            // Add the Admin Endpoint dtn EID itself (exact match, not wildcard)
+            let admin_eid: Eid = (*node_number).into();
             admin_endpoints.insert(admin_eid.into(), [entry].into());
         }
 

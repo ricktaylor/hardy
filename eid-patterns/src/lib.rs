@@ -104,6 +104,28 @@ impl EidPattern {
         }
     }
 
+    /// If any item in this pattern is a LocalNode pattern (the `ipn:!.*` sentinel),
+    /// return a new pattern with the sentinel replaced by the concrete `node_id`.
+    /// Returns `None` if no LocalNode pattern was found.
+    pub fn expand_local_node(&self, node_id: &IpnNodeId) -> Option<Self> {
+        match self {
+            EidPattern::Any => None,
+            EidPattern::Set(items) => {
+                let mut expanded = Vec::new();
+                let mut changed = false;
+                for item in items.iter() {
+                    if let Some(new_item) = item.expand_local_node(node_id) {
+                        expanded.push(new_item);
+                        changed = true;
+                    } else {
+                        expanded.push(item.clone());
+                    }
+                }
+                changed.then(|| EidPattern::Set(expanded.into()))
+            }
+        }
+    }
+
     /// Returns `true` if `self` is a subset of (or equal to) `other`.
     pub fn is_subset(&self, other: &Self) -> bool {
         match (self, other) {
@@ -335,6 +357,15 @@ impl EidPatternItem {
                 lhs.is_subset(rhs)
             }
             _ => false,
+        }
+    }
+
+    fn expand_local_node(&self, node_id: &IpnNodeId) -> Option<Self> {
+        match self {
+            EidPatternItem::IpnPatternItem(i) => i
+                .expand_local_node(node_id)
+                .map(EidPatternItem::IpnPatternItem),
+            _ => None,
         }
     }
 

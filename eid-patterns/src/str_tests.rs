@@ -506,3 +506,64 @@ fn test_subset_eid_pattern_set() {
     // Any pattern is not subset of non-Any (unless rhs also covers all)
     assert!(!is_subset("*:**", "ipn:0.*.*"));
 }
+
+#[test]
+fn test_expand_local_node_exact() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+
+    let pattern: EidPattern = "ipn:!.42".parse().unwrap();
+    let expanded = pattern.expand_local_node(&node_id);
+    assert!(expanded.is_some());
+    assert_eq!(expanded.unwrap().to_string(), "ipn:1.42");
+}
+
+#[test]
+fn test_expand_local_node_wildcard_service() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+
+    let pattern: EidPattern = "ipn:!.*".parse().unwrap();
+    let expanded = pattern.expand_local_node(&node_id);
+    assert!(expanded.is_some());
+    assert_eq!(expanded.unwrap().to_string(), "ipn:1.*");
+}
+
+#[test]
+fn test_expand_local_node_non_local() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+
+    let pattern: EidPattern = "ipn:0.2.42".parse().unwrap();
+    assert!(pattern.expand_local_node(&node_id).is_none());
+}
+
+#[test]
+fn test_expand_local_node_any() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+
+    let pattern = EidPattern::Any;
+    assert!(pattern.expand_local_node(&node_id).is_none());
+}
+
+#[test]
+fn test_expand_local_node_nonzero_allocator() {
+    let node_id = IpnNodeId {
+        allocator_id: 5,
+        node_number: 10,
+    };
+
+    let pattern: EidPattern = "ipn:!.42".parse().unwrap();
+    let expanded = pattern.expand_local_node(&node_id);
+    assert!(expanded.is_some());
+    assert_eq!(expanded.unwrap().to_string(), "ipn:5.10.42");
+}
