@@ -103,7 +103,7 @@ impl Rib {
             pattern
         };
         let action = match action {
-            Action::Via(eid) => Action::Via(self.node_ids.from_local_node(&eid).unwrap_or(eid)),
+            Action::Via(eid) => Action::Via(self.node_ids.expand_local_node(&eid).unwrap_or(eid)),
             other => other,
         };
 
@@ -187,7 +187,7 @@ impl Rib {
             pattern.clone()
         };
         let action = match action {
-            Action::Via(eid) => Action::Via(self.node_ids.from_local_node(&eid).unwrap_or(eid)),
+            Action::Via(eid) => Action::Via(self.node_ids.expand_local_node(&eid).unwrap_or(eid)),
             other => other,
         };
 

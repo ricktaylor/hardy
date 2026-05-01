@@ -60,7 +60,7 @@ impl NodeIds {
 
     /// If `eid` is a `LocalNode`, return the concrete IPN form using this node's identity.
     /// Returns `None` if no conversion is needed (non-LocalNode EIDs).
-    pub(crate) fn from_local_node(&self, eid: &Eid) -> Option<Eid> {
+    pub(crate) fn expand_local_node(&self, eid: &Eid) -> Option<Eid> {
         match eid {
             Eid::LocalNode(service_number) => Some(Eid::Ipn {
                 fqnn: self.ipn?,
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_local_node() {
+    fn test_expand_local_node() {
         let node_ids = NodeIds {
             ipn: Some(IpnNodeId {
                 allocator_id: 0,
@@ -289,7 +289,7 @@ mod tests {
 
         // LocalNode should expand to concrete IPN
         assert_eq!(
-            node_ids.from_local_node(&Eid::LocalNode(42)),
+            node_ids.expand_local_node(&Eid::LocalNode(42)),
             Some(Eid::Ipn {
                 fqnn: IpnNodeId {
                     allocator_id: 0,
@@ -307,11 +307,11 @@ mod tests {
             },
             service_number: 42,
         };
-        assert_eq!(node_ids.from_local_node(&concrete), None);
+        assert_eq!(node_ids.expand_local_node(&concrete), None);
     }
 
     #[test]
-    fn test_from_local_node_no_ipn() {
+    fn test_expand_local_node_no_ipn() {
         let node_ids = NodeIds {
             ipn: None,
             dtn: Some(DtnNodeId {
@@ -320,7 +320,7 @@ mod tests {
         };
 
         // With no IPN node ID, LocalNode cannot be expanded
-        assert_eq!(node_ids.from_local_node(&Eid::LocalNode(42)), None);
+        assert_eq!(node_ids.expand_local_node(&Eid::LocalNode(42)), None);
     }
 
     // Admin EID for IPN destination should use the IPN node ID with service 0.
