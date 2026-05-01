@@ -435,6 +435,23 @@ impl<'a> Editor<'a> {
         self.bcb_overrides.insert(target_block, Some(bcb_block));
     }
 
+    /// Set a pre-encoded canonical primary block for re-emission.
+    ///
+    /// Used by the parser when the primary block needs re-encoding for
+    /// canonicalization. The data is the complete encoded primary block,
+    /// emitted as raw bytes during rebuild.
+    pub(crate) fn set_canonical_primary(&mut self, data: Cow<'a, [u8]>) {
+        self.blocks.insert(
+            0,
+            BlockTemplate::Update(builder::BlockTemplate::new(
+                block::Type::Primary,
+                block::Flags::default(),
+                crc::CrcType::None,
+                Some(data),
+            )),
+        );
+    }
+
     /// Update an existing block without automatic security target removal.
     ///
     /// This is for internal use by encryptor/signer which need to update blocks
@@ -520,7 +537,7 @@ impl<'a> Editor<'a> {
     }
 
     #[allow(clippy::result_large_err)]
-    fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
+    pub(crate) fn remove_block_inner(mut self, block_number: u64) -> Result<Self, (Self, Error)> {
         // Get the block's security references BEFORE removing it
         let (bib, bcb) = if let Some((block, _)) = self.block(block_number) {
             (block.bib.clone(), block.bcb)
@@ -893,12 +910,13 @@ impl<'a> Editor<'a> {
     /// - Cascade deletes preserve or remove security block references
     /// - Signer/Encryptor set bib/bcb overrides explicitly
     pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
-        let mut bundle_out = self.original.clone();
+        let mut bundle_out = bundle::Bundle::default();
 
         let data: Box<[u8]> = hardy_cbor::encode::try_emit_array(None, |a| {
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
 
             if let Some(mut update) = self.bundle.take() {
+                // Primary block modified via with_* methods
                 update.bundle_flags.is_fragment = update.fragment_info.is_some();
 
                 bundle_out.id.source = update.source;
@@ -911,15 +929,71 @@ impl<'a> Editor<'a> {
                 bundle_out.lifetime = update.lifetime;
                 bundle_out.emit_primary_block(a)?;
             } else {
-                let block = self.build_block(0, primary_block, a)?;
-                bundle_out.blocks.insert(0, block);
+                // Primary block fields unchanged from original
+                bundle_out.id = self.original.id.clone();
+                bundle_out.flags = self.original.flags.clone();
+                bundle_out.crc_type = self.original.crc_type;
+                bundle_out.destination = self.original.destination.clone();
+                bundle_out.report_to = self.original.report_to.clone();
+                bundle_out.lifetime = self.original.lifetime;
+
+                if let BlockTemplate::Update(template) = primary_block {
+                    // Pre-encoded canonical primary block (from parser)
+                    let data = template
+                        .data
+                        .as_ref()
+                        .ok_or(Error::Builder(builder::Error::NoBlockData))?;
+                    let mut block = template.block;
+                    block.extent = a.emit(&hardy_cbor::encode::Raw(data));
+                    block.data = block.extent.clone();
+                    bundle_out.blocks.insert(0, block);
+                } else {
+                    let block = self.build_block(0, primary_block, a)?;
+                    bundle_out.blocks.insert(0, block);
+                }
             }
 
             let payload_block = self.blocks.remove(&1).expect("No payload block!");
 
-            bundle_out.blocks.retain(|k, _| *k == 0);
-
             for (block_number, block_template) in core::mem::take(&mut self.blocks) {
+                match &block_template {
+                    BlockTemplate::Keep(block::Type::PreviousNode) => {
+                        bundle_out.previous_node = self.original.previous_node.clone();
+                    }
+                    BlockTemplate::Keep(block::Type::BundleAge) => {
+                        bundle_out.age = self.original.age;
+                    }
+                    BlockTemplate::Keep(block::Type::HopCount) => {
+                        bundle_out.hop_count = self.original.hop_count.clone();
+                    }
+                    BlockTemplate::Update(template) | BlockTemplate::Insert(template) => {
+                        if let Some(ref payload) = template.data {
+                            match template.block.block_type {
+                                block::Type::PreviousNode => {
+                                    if let Ok(eid) = hardy_cbor::decode::parse::<eid::Eid>(payload)
+                                    {
+                                        bundle_out.previous_node = Some(eid);
+                                    }
+                                }
+                                block::Type::BundleAge => {
+                                    if let Ok(millis) = hardy_cbor::decode::parse::<u64>(payload) {
+                                        bundle_out.age =
+                                            Some(core::time::Duration::from_millis(millis));
+                                    }
+                                }
+                                block::Type::HopCount => {
+                                    if let Ok(hop) =
+                                        hardy_cbor::decode::parse::<hop_info::HopInfo>(payload)
+                                    {
+                                        bundle_out.hop_count = Some(hop);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 let block = self.build_block(block_number, block_template, a)?;
                 bundle_out.blocks.insert(block_number, block);
             }
@@ -975,6 +1049,13 @@ impl<'a> Editor<'a> {
                 };
                 // Emit primary block
                 bundle.emit_primary_block(a)?;
+            } else if let BlockTemplate::Update(template) = primary_block {
+                // Pre-encoded canonical primary block (from parser)
+                let data = template
+                    .data
+                    .as_ref()
+                    .ok_or(Error::Builder(builder::Error::NoBlockData))?;
+                a.emit(&hardy_cbor::encode::Raw(data));
             } else {
                 self.build_block(0, primary_block, a)?;
             }

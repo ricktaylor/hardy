@@ -647,86 +647,69 @@ impl<'a> BlockParse<'a> {
         }
     }
 
-    /// Emits a single block into a CBOR array, handling canonical and non-canonical data.
-    fn emit_block(
-        &mut self,
-        block: &mut block::Block,
-        block_number: u64,
-        array: &mut hardy_cbor::encode::Array,
-    ) -> Result<(), Error> {
-        match self.noncanonical_blocks.remove(&block_number) {
-            Some(Some(payload)) => block.emit(block_number, &payload, array),
-            Some(None) => block.emit(
-                block_number,
-                &self.source_data[block.payload_range()],
-                array,
-            ),
-            None => {
-                block.copy_whole(self.source_data, array);
-                Ok(())
-            }
-        }
-    }
-
     /// Rewrites the entire bundle if any blocks were non-canonical or removed.
     /// Returns `None` if no rewrite was necessary.
     #[allow(clippy::type_complexity)]
     fn finish(mut self, bundle: &mut Bundle) -> Result<(Option<Box<[u8]>>, bool), Error> {
+        bundle.blocks = core::mem::take(&mut self.blocks);
+
         // Preserve mode: never rewrite
         if matches!(self.mode, ParseMode::Preserve) {
-            bundle.blocks = self.blocks;
             return Ok((None, !self.noncanonical_blocks.is_empty()));
         }
 
         // Canonicalize/Full: check if we need to rewrite
-        if self.noncanonical_blocks.is_empty() && self.blocks_to_remove.is_empty() {
-            bundle.blocks = self.blocks;
+        let non_canonical = !self.noncanonical_blocks.is_empty();
+        if !non_canonical && self.blocks_to_remove.is_empty() {
             return Ok((None, false));
         }
 
-        let non_canonical = !self.noncanonical_blocks.is_empty();
+        // Construct Editor from the bundle and its source data
+        let mut editor = editor::Editor::new(bundle, self.source_data);
 
-        // Drop any blocks marked for removal
-        self.blocks
-            .retain(|block_number, _| !self.blocks_to_remove.contains(block_number));
+        // Handle non-canonical primary block
+        if let Some(Some(data)) = self.noncanonical_blocks.remove(&0) {
+            editor.set_canonical_primary(data.into_vec().into());
+        }
 
-        // Write out the new bundle
-        Ok((
-            Some(
-                hardy_cbor::encode::try_emit_array(None, |block_array| {
-                    // Primary block first
-                    let mut primary_block = self.blocks.remove(&0).expect("Missing primary block!");
+        // Remove blocks marked for removal
+        for block_number in &self.blocks_to_remove {
+            editor = editor
+                .remove_block_inner(*block_number)
+                .unwrap_or_else(|(_, e)| {
+                    panic!("Editor remove_block failed on parsed bundle: {e}")
+                });
+        }
 
-                    primary_block.extent =
-                        if let Some(Some(payload)) = self.noncanonical_blocks.remove(&0) {
-                            block_array.emit(&hardy_cbor::encode::Raw(&payload))
-                        } else {
-                            block_array.emit(&hardy_cbor::encode::Raw(
-                                &self.source_data[primary_block.extent],
-                            ))
-                        };
-                    primary_block.data = primary_block.extent.clone();
-                    bundle.blocks.insert(0, primary_block);
+        // Apply non-canonical block rewrites
+        for (block_number, payload) in self.noncanonical_blocks {
+            // Skip blocks that were already removed
+            if self.blocks_to_remove.contains(&block_number) {
+                continue;
+            }
 
-                    // Stash payload block
-                    let mut payload_block = self.blocks.remove(&1).expect("Missing payload block!");
+            let mut bb = editor
+                .update_block_inner(block_number)
+                .unwrap_or_else(|(_, e)| {
+                    panic!("Editor update_block failed on parsed bundle: {e}")
+                });
 
-                    // Emit all blocks
-                    for (block_number, mut block) in core::mem::take(&mut self.blocks) {
-                        self.emit_block(&mut block, block_number, block_array)?;
-                        bundle.blocks.insert(block_number, block);
-                    }
+            // If there's replacement payload data, use it; otherwise
+            // update_block_inner already pre-populated the original payload
+            if let Some(data) = payload {
+                bb = bb.with_data(data.into_vec().into());
+            }
 
-                    // And final payload block
-                    self.emit_block(&mut payload_block, 1, block_array)?;
-                    bundle.blocks.insert(1, payload_block);
+            editor = bb.rebuild();
+        }
 
-                    Ok::<_, Error>(())
-                })?
-                .into(),
-            ),
-            non_canonical,
-        ))
+        // Rebuild and update the bundle
+        let (new_bundle, data) = editor
+            .rebuild_bundle()
+            .unwrap_or_else(|e| panic!("Editor rebuild failed on parsed bundle: {e}"));
+        *bundle = new_bundle;
+
+        Ok((Some(data), non_canonical))
     }
 }
 
