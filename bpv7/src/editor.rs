@@ -887,22 +887,13 @@ impl<'a> Editor<'a> {
     ///
     /// Returns the updated `Bundle` (with block extents and BPSec coverage
     /// pointing into the new data) and the serialized representation.
-    /// Falls back to a Preserve-mode parse if the security block references
-    /// have been invalidated by the modifications.
+    ///
+    /// BPSec coverage is correct by construction:
+    /// - The public API prevents adding/updating security blocks
+    /// - Cascade deletes preserve or remove security block references
+    /// - Signer/Encryptor set bib/bcb overrides explicitly
     pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
         let mut bundle_out = self.original.clone();
-        let mut refs_valid = true;
-
-        let kept_security_blocks: HashSet<u64> = self
-            .blocks
-            .iter()
-            .filter_map(|(n, t)| match t {
-                BlockTemplate::Keep(block::Type::BlockIntegrity | block::Type::BlockSecurity) => {
-                    Some(*n)
-                }
-                _ => None,
-            })
-            .collect();
 
         let data: Box<[u8]> = hardy_cbor::encode::try_emit_array(None, |a| {
             let primary_block = self.blocks.remove(&0).expect("No primary block!");
@@ -921,7 +912,6 @@ impl<'a> Editor<'a> {
                 bundle_out.emit_primary_block(a)?;
             } else {
                 let block = self.build_block(0, primary_block, a)?;
-                Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
                 bundle_out.blocks.insert(0, block);
             }
 
@@ -931,12 +921,10 @@ impl<'a> Editor<'a> {
 
             for (block_number, block_template) in core::mem::take(&mut self.blocks) {
                 let block = self.build_block(block_number, block_template, a)?;
-                Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
                 bundle_out.blocks.insert(block_number, block);
             }
 
             let block = self.build_block(1, payload_block, a)?;
-            Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
             bundle_out.blocks.insert(1, block);
 
             Ok::<_, Error>(())
@@ -944,47 +932,18 @@ impl<'a> Editor<'a> {
         .into();
 
         // Apply security metadata overrides from Signer/Encryptor
-        if !self.bib_overrides.is_empty() || !self.bcb_overrides.is_empty() {
-            for (block_number, bib) in &self.bib_overrides {
-                if let Some(block) = bundle_out.blocks.get_mut(block_number) {
-                    block.bib = bib.clone();
-                }
+        for (block_number, bib) in &self.bib_overrides {
+            if let Some(block) = bundle_out.blocks.get_mut(block_number) {
+                block.bib = bib.clone();
             }
-            for (block_number, bcb) in &self.bcb_overrides {
-                if let Some(block) = bundle_out.blocks.get_mut(block_number) {
-                    block.bcb = *bcb;
-                }
+        }
+        for (block_number, bcb) in &self.bcb_overrides {
+            if let Some(block) = bundle_out.blocks.get_mut(block_number) {
+                block.bcb = *bcb;
             }
-            refs_valid = true;
         }
 
-        if refs_valid {
-            Ok((bundle_out, data))
-        } else {
-            let parsed = bundle::ParsedBundle::parse_with_keys(&data, &bpsec::key::KeySet::EMPTY)
-                .map_err(|e| Error::Builder(builder::Error::InternalError(e)))?;
-            Ok((parsed.bundle, data))
-        }
-    }
-
-    fn check_security_refs(
-        block: &block::Block,
-        kept_security_blocks: &HashSet<u64>,
-        refs_valid: &mut bool,
-    ) {
-        if !*refs_valid {
-            return;
-        }
-        if let block::BibCoverage::Some(bib) = block.bib {
-            if !kept_security_blocks.contains(&bib) {
-                *refs_valid = false;
-            }
-        }
-        if let Some(bcb) = block.bcb {
-            if !kept_security_blocks.contains(&bcb) {
-                *refs_valid = false;
-            }
-        }
+        Ok((bundle_out, data))
     }
 
     /// Rebuild the bundle, applying all of the modifications.
