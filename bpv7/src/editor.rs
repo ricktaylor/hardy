@@ -1,5 +1,6 @@
 use super::*;
 use alloc::borrow::Cow;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,6 +31,9 @@ pub enum Error {
     )]
     CannotDecryptRelatedBib(u64),
 
+    #[error("Security blocks (BIB/BCB) must be managed via Signer/Encryptor, not the Editor")]
+    SecurityBlock,
+
     #[error(transparent)]
     Builder(#[from] builder::Error),
 }
@@ -55,6 +59,8 @@ pub struct Editor<'a> {
     source_data: &'a [u8],
     bundle: Option<BundleUpdate>,
     blocks: HashMap<u64, BlockTemplate<'a>>,
+    bib_overrides: HashMap<u64, block::BibCoverage>,
+    bcb_overrides: HashMap<u64, Option<u64>>,
 }
 
 struct BundleUpdate {
@@ -97,6 +103,8 @@ impl<'a> Editor<'a> {
             source_data,
             original,
             bundle: None,
+            bib_overrides: HashMap::new(),
+            bcb_overrides: HashMap::new(),
         }
     }
 
@@ -257,33 +265,44 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn push_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        if let block::Type::Primary
-        | block::Type::Payload
-        | block::Type::BundleAge
-        | block::Type::HopCount
-        | block::Type::PreviousNode = block_type
-        {
-            for template in self.blocks.values() {
-                match template {
-                    BlockTemplate::Keep(t) if t == &block_type => {
-                        return Err((self, Error::IllegalDuplicate(block_type)));
+        match block_type {
+            block::Type::Primary => {
+                return Err((self, Error::PrimaryBlock));
+            }
+            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                return Err((self, Error::SecurityBlock));
+            }
+            block::Type::Payload
+            | block::Type::BundleAge
+            | block::Type::HopCount
+            | block::Type::PreviousNode => {
+                for template in self.blocks.values() {
+                    match template {
+                        BlockTemplate::Keep(t) if t == &block_type => {
+                            return Err((self, Error::IllegalDuplicate(block_type)));
+                        }
+                        BlockTemplate::Insert(template) | BlockTemplate::Update(template)
+                            if template.block.block_type == block_type =>
+                        {
+                            return Err((self, Error::IllegalDuplicate(block_type)));
+                        }
+                        _ => {}
                     }
-                    BlockTemplate::Insert(template) | BlockTemplate::Update(template)
-                        if template.block.block_type == block_type =>
-                    {
-                        return Err((self, Error::IllegalDuplicate(block_type)));
-                    }
-                    _ => {}
                 }
             }
+            _ => {}
         }
 
-        self.add_block(block_type)
+        self.alloc_block(block_type)
     }
 
+    /// Allocate the next available block number and return a builder.
+    /// No policy checks — used internally and by Signer/Encryptor.
     #[allow(clippy::result_large_err)]
-    fn add_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        // Find the lowest unused block_number
+    pub(crate) fn alloc_block(
+        self,
+        block_type: block::Type,
+    ) -> Result<BlockBuilder<'a>, (Self, Error)> {
         let mut block_number = 2u64;
         while self.blocks.contains_key(&block_number) {
             block_number = match block_number.checked_add(1) {
@@ -303,8 +322,12 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn insert_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        if let block::Type::Primary = block_type {
-            return Err((self, Error::PrimaryBlock));
+        match block_type {
+            block::Type::Primary => return Err((self, Error::PrimaryBlock)),
+            block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                return Err((self, Error::SecurityBlock));
+            }
+            _ => {}
         }
 
         if let Some((block_number, is_new, template)) =
@@ -341,7 +364,7 @@ impl<'a> Editor<'a> {
             ));
         }
 
-        self.add_block(block_type)
+        self.alloc_block(block_type)
     }
 
     /// Update an existing block in the bundle.
@@ -354,36 +377,62 @@ impl<'a> Editor<'a> {
     /// On error, returns the editor along with the error so it can be reused for recovery.
     #[allow(clippy::result_large_err)]
     pub fn update_block(mut self, block_number: u64) -> Result<BlockBuilder<'a>, (Self, Error)> {
-        // Get security references before any modifications
-        let (bib, bcb) = match self.original.blocks.get(&block_number) {
-            Some(block) => (block.bib.clone(), block.bcb),
-            None => (block::BibCoverage::None, None),
+        // Check block type and get security references in one lookup
+        let (bib, bcb) = match self.block(block_number) {
+            Some((block, _)) => {
+                match block.block_type {
+                    block::Type::Primary => {
+                        return Err((self, Error::PrimaryBlock));
+                    }
+                    block::Type::BlockIntegrity | block::Type::BlockSecurity => {
+                        return Err((self, Error::SecurityBlock));
+                    }
+                    _ => {}
+                }
+                (block.bib.clone(), block.bcb)
+            }
+            None => return Err((self, Error::NoSuchBlock(block_number))),
         };
 
-        // Handle BIB coverage - must remove from target list if present
-        match &bib {
+        // Handle BIB coverage — must remove from target list if present
+        match bib {
             block::BibCoverage::Maybe => {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
             block::BibCoverage::Some(bib_num) => {
-                // Check if the BIB is encrypted
-                if let Some(bib_block) = self.original.blocks.get(bib_num)
+                if let Some((bib_block, _)) = self.block(bib_num)
                     && bib_block.bcb.is_some()
                 {
                     return Err((self, Error::BibIsEncrypted(block_number)));
                 }
-                // Remove from BIB target list (signature will be invalid after update)
-                self = self.remove_from_bib_targets(block_number, *bib_num)?;
+                self = self.remove_from_bib_targets(block_number, bib_num)?;
             }
             block::BibCoverage::None => {}
         }
 
-        // Remove from BCB target list if present (encryption will be invalid after update)
+        // Remove from BCB target list if present
         if let Some(bcb_num) = bcb {
             self = self.remove_from_bcb_targets(block_number, bcb_num)?;
         }
 
         self.update_block_inner(block_number)
+    }
+
+    /// Record that a BIB covers the given target block.
+    ///
+    /// Used by `Signer` to set `bib` metadata on target blocks so that
+    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
+    pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
+        self.bib_overrides
+            .insert(target_block, block::BibCoverage::Some(bib_block));
+    }
+
+    /// Record that a BCB covers the given target block.
+    ///
+    /// Used by `Encryptor` to set `bcb` metadata on target blocks so that
+    /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
+    pub(crate) fn set_bcb_target(&mut self, target_block: u64, bcb_block: u64) {
+        self.bcb_overrides.insert(target_block, Some(bcb_block));
     }
 
     /// Update an existing block without automatic security target removal.
@@ -741,7 +790,7 @@ impl<'a> Editor<'a> {
                 // uniqueness requirements, so this code path is for future security
                 // contexts (e.g., COSE-based) that may support multi-target BCBs.
                 if opset.can_share() {
-                    let bib_targets: Vec<u64> = opset
+                    let bib_targets: SmallVec<[u64; 4]> = opset
                         .operations
                         .keys()
                         .filter(|&&target| {
@@ -836,7 +885,113 @@ impl<'a> Editor<'a> {
 
     /// Rebuild the bundle, applying all of the modifications.
     ///
-    /// This will return the new `Bundle` and its serialized representation.
+    /// Returns the updated `Bundle` (with block extents and BPSec coverage
+    /// pointing into the new data) and the serialized representation.
+    /// Falls back to a Preserve-mode parse if the security block references
+    /// have been invalidated by the modifications.
+    pub fn rebuild_bundle(mut self) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
+        let mut bundle_out = self.original.clone();
+        let mut refs_valid = true;
+
+        let kept_security_blocks: HashSet<u64> = self
+            .blocks
+            .iter()
+            .filter_map(|(n, t)| match t {
+                BlockTemplate::Keep(block::Type::BlockIntegrity | block::Type::BlockSecurity) => {
+                    Some(*n)
+                }
+                _ => None,
+            })
+            .collect();
+
+        let data: Box<[u8]> = hardy_cbor::encode::try_emit_array(None, |a| {
+            let primary_block = self.blocks.remove(&0).expect("No primary block!");
+
+            if let Some(mut update) = self.bundle.take() {
+                update.bundle_flags.is_fragment = update.fragment_info.is_some();
+
+                bundle_out.id.source = update.source;
+                bundle_out.id.timestamp = update.timestamp;
+                bundle_out.id.fragment_info = update.fragment_info;
+                bundle_out.flags = update.bundle_flags;
+                bundle_out.crc_type = update.crc_type;
+                bundle_out.destination = update.destination;
+                bundle_out.report_to = update.report_to;
+                bundle_out.lifetime = update.lifetime;
+                bundle_out.emit_primary_block(a)?;
+            } else {
+                let block = self.build_block(0, primary_block, a)?;
+                Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
+                bundle_out.blocks.insert(0, block);
+            }
+
+            let payload_block = self.blocks.remove(&1).expect("No payload block!");
+
+            bundle_out.blocks.retain(|k, _| *k == 0);
+
+            for (block_number, block_template) in core::mem::take(&mut self.blocks) {
+                let block = self.build_block(block_number, block_template, a)?;
+                Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
+                bundle_out.blocks.insert(block_number, block);
+            }
+
+            let block = self.build_block(1, payload_block, a)?;
+            Self::check_security_refs(&block, &kept_security_blocks, &mut refs_valid);
+            bundle_out.blocks.insert(1, block);
+
+            Ok::<_, Error>(())
+        })?
+        .into();
+
+        // Apply security metadata overrides from Signer/Encryptor
+        if !self.bib_overrides.is_empty() || !self.bcb_overrides.is_empty() {
+            for (block_number, bib) in &self.bib_overrides {
+                if let Some(block) = bundle_out.blocks.get_mut(block_number) {
+                    block.bib = bib.clone();
+                }
+            }
+            for (block_number, bcb) in &self.bcb_overrides {
+                if let Some(block) = bundle_out.blocks.get_mut(block_number) {
+                    block.bcb = *bcb;
+                }
+            }
+            refs_valid = true;
+        }
+
+        if refs_valid {
+            Ok((bundle_out, data))
+        } else {
+            let parsed = bundle::ParsedBundle::parse_with_keys(&data, &bpsec::key::KeySet::EMPTY)
+                .map_err(|e| Error::Builder(builder::Error::InternalError(e)))?;
+            Ok((parsed.bundle, data))
+        }
+    }
+
+    fn check_security_refs(
+        block: &block::Block,
+        kept_security_blocks: &HashSet<u64>,
+        refs_valid: &mut bool,
+    ) {
+        if !*refs_valid {
+            return;
+        }
+        if let block::BibCoverage::Some(bib) = block.bib {
+            if !kept_security_blocks.contains(&bib) {
+                *refs_valid = false;
+            }
+        }
+        if let Some(bcb) = block.bcb {
+            if !kept_security_blocks.contains(&bcb) {
+                *refs_valid = false;
+            }
+        }
+    }
+
+    /// Rebuild the bundle, applying all of the modifications.
+    ///
+    /// Returns only the serialized representation, discarding the updated
+    /// bundle metadata. Use [`rebuild_bundle`](Self::rebuild_bundle) if you
+    /// need the updated `Bundle` with correct block extents.
     pub fn rebuild(mut self) -> Result<Box<[u8]>, Error> {
         hardy_cbor::encode::try_emit_array(None, |a| {
             // Emit primary block
@@ -1165,5 +1320,153 @@ mod test {
             .unwrap();
         let reparsed = reparse(&new_data);
         assert!(reparsed.blocks.contains_key(&2));
+    }
+
+    /// Asserts that the Bundle returned by `rebuild_bundle()` matches a fresh
+    /// parse of the same data — same block set, same extents, same primary
+    /// block fields.
+    fn assert_rebuild_matches_parse(bundle: &bundle::Bundle, data: &[u8]) {
+        let reparsed = reparse(data);
+
+        // Primary block fields
+        assert_eq!(bundle.id.source, reparsed.id.source);
+        assert_eq!(bundle.id.timestamp, reparsed.id.timestamp);
+        assert_eq!(bundle.id.fragment_info, reparsed.id.fragment_info);
+        assert_eq!(bundle.destination, reparsed.destination);
+        assert_eq!(bundle.report_to, reparsed.report_to);
+        assert_eq!(bundle.lifetime, reparsed.lifetime);
+        assert!(
+            matches!(
+                (&bundle.crc_type, &reparsed.crc_type),
+                (crc::CrcType::None, crc::CrcType::None)
+                    | (crc::CrcType::CRC16_X25, crc::CrcType::CRC16_X25)
+                    | (
+                        crc::CrcType::CRC32_CASTAGNOLI,
+                        crc::CrcType::CRC32_CASTAGNOLI
+                    )
+            ),
+            "CRC type mismatch"
+        );
+        assert_eq!(bundle.flags, reparsed.flags);
+
+        // Same set of block numbers
+        assert_eq!(
+            bundle.blocks.keys().collect::<HashSet<_>>(),
+            reparsed.blocks.keys().collect::<HashSet<_>>(),
+            "Block sets differ"
+        );
+
+        // Block fields match and ranges index validly into the data
+        for (block_number, block) in &bundle.blocks {
+            let reparsed_block = reparsed.blocks.get(block_number).unwrap();
+            assert_eq!(
+                block.block_type, reparsed_block.block_type,
+                "Block {block_number} type mismatch"
+            );
+            assert_eq!(
+                block.flags, reparsed_block.flags,
+                "Block {block_number} flags mismatch"
+            );
+            assert!(
+                matches!(
+                    (&block.crc_type, &reparsed_block.crc_type),
+                    (crc::CrcType::None, crc::CrcType::None)
+                        | (crc::CrcType::CRC16_X25, crc::CrcType::CRC16_X25)
+                        | (
+                            crc::CrcType::CRC32_CASTAGNOLI,
+                            crc::CrcType::CRC32_CASTAGNOLI
+                        )
+                ),
+                "Block {block_number} CRC type mismatch"
+            );
+            assert_eq!(
+                block.bib, reparsed_block.bib,
+                "Block {block_number} BIB coverage mismatch"
+            );
+            assert_eq!(
+                block.bcb, reparsed_block.bcb,
+                "Block {block_number} BCB mismatch"
+            );
+            assert_eq!(
+                block.extent, reparsed_block.extent,
+                "Block {block_number} extent mismatch"
+            );
+            assert_eq!(
+                block.data, reparsed_block.data,
+                "Block {block_number} data range mismatch"
+            );
+            assert!(
+                block.extent.end <= data.len(),
+                "Block {block_number} extent exceeds data length"
+            );
+            assert!(
+                block.data.end <= data.len(),
+                "Block {block_number} data range exceeds data length"
+            );
+        }
+    }
+
+    #[test]
+    fn rebuild_bundle_no_op() {
+        let (bundle, data) = make_bundle();
+        let (new_bundle, new_data) = Editor::new(&bundle, &data).rebuild_bundle().unwrap();
+        assert_rebuild_matches_parse(&new_bundle, &new_data);
+    }
+
+    #[test]
+    fn rebuild_bundle_change_destination() {
+        let (bundle, data) = make_bundle();
+        let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
+        let (new_bundle, new_data) =
+            ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()))
+                .rebuild_bundle()
+                .unwrap();
+        assert_eq!(new_bundle.destination, new_dest);
+        assert_eq!(new_bundle.id.source, bundle.id.source);
+        assert_rebuild_matches_parse(&new_bundle, &new_data);
+    }
+
+    #[test]
+    fn rebuild_bundle_multiple_primary_changes() {
+        let (bundle, data) = make_bundle();
+        let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
+        let new_lifetime = core::time::Duration::from_secs(600);
+        let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
+        let (new_bundle, new_data) = ok(editor.with_lifetime(new_lifetime))
+            .rebuild_bundle()
+            .unwrap();
+        assert_eq!(new_bundle.destination, new_dest);
+        assert_eq!(new_bundle.lifetime, new_lifetime);
+        assert_rebuild_matches_parse(&new_bundle, &new_data);
+    }
+
+    #[test]
+    fn rebuild_bundle_add_block() {
+        let (bundle, data) = make_bundle();
+        let (new_bundle, new_data) =
+            ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(200)))
+                .with_data((&[0xCA, 0xFE][..]).into())
+                .rebuild()
+                .rebuild_bundle()
+                .unwrap();
+        assert!(new_bundle.blocks.contains_key(&2));
+        assert_rebuild_matches_parse(&new_bundle, &new_data);
+    }
+
+    #[test]
+    fn rebuild_bundle_remove_block() {
+        let (bundle, data) = make_bundle_with_hop_count();
+        let hop_block = bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+            .map(|(n, _)| *n)
+            .expect("Should have hop count block");
+
+        let (new_bundle, new_data) = ok(Editor::new(&bundle, &data).remove_block(hop_block))
+            .rebuild_bundle()
+            .unwrap();
+        assert!(!new_bundle.blocks.contains_key(&hop_block));
+        assert_rebuild_matches_parse(&new_bundle, &new_data);
     }
 }
