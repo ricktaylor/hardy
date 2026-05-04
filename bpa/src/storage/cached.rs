@@ -49,23 +49,21 @@ impl BundleStorage for CachedBundleStorage {
         self.inner.recover(tx).await
     }
 
+    // SAFETY: load() is always the final storage access before delete().
+    // Taking from the cache (rather than cloning) ensures the returned Bytes
+    // has a single refcount, enabling in-place mutation via try_into_mut()
+    // in the Editor's flatten_inplace() path.
+    // On a cache miss, the inner backend (disk/sqlite) returns a fresh
+    // Bytes with refcount=1, so we do not re-populate the cache.
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>> {
-        if let Some(data) = self.lru.lock().get(storage_name) {
+        if let Some(data) = self.lru.lock().pop(storage_name) {
             metrics::counter!("bpa.store.cache.hits").increment(1);
-            return Ok(Some(data.clone()));
+            return Ok(Some(data));
         }
 
         metrics::counter!("bpa.store.cache.misses").increment(1);
 
-        let Some(data) = self.inner.load(storage_name).await? else {
-            return Ok(None);
-        };
-
-        if self.is_cacheable(&data) {
-            self.lru.lock().put(storage_name.into(), data.clone());
-        }
-
-        Ok(Some(data))
+        self.inner.load(storage_name).await
     }
 
     async fn save(&self, data: Bytes) -> Result<Arc<str>> {

@@ -178,13 +178,30 @@ impl Store {
             .total_adu_length;
 
         // Reassemble payload by writing each fragment at its ADU offset.
-        // Iteration order does not matter. Each fragment is placed by offset.
-        // TODO: There's a lot of mem copies going on here!
+        // Fragment 0's data is already in old_data — copy its payload first,
+        // then load remaining fragments. This avoids reloading fragment 0
+        // (load_data takes from storage, so a second load would return None).
         let adu_len = total_adu_length as usize;
         let mut new_data: Vec<u8> = vec![0; adu_len];
         let mut bytes_written: u64 = 0;
 
+        // Copy fragment 0's payload from old_data (already loaded)
+        {
+            let len = first.2.len();
+            if len > adu_len {
+                debug!("Fragment 0 extends beyond total ADU length: {}", first.0);
+                return None;
+            }
+            new_data[..len].copy_from_slice(&old_data[first.2.clone()]);
+            bytes_written = bytes_written.saturating_add(len as u64);
+        }
+
         for (bundle_id, storage_name, payload) in results.adus.values() {
+            // Skip fragment 0 — already copied above
+            if *storage_name == first.1 {
+                continue;
+            }
+
             let fi = bundle_id
                 .fragment_info
                 .as_ref()

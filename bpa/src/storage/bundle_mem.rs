@@ -77,13 +77,21 @@ impl BundleStorage for BundleMemStorage {
         Ok(())
     }
 
+    // SAFETY: load() is always the final storage access before delete().
+    // Taking from the cache (rather than cloning) ensures the returned Bytes
+    // has a single refcount, enabling in-place mutation via try_into_mut()
+    // in the Editor's flatten_inplace() path.
+    // bundle_mem has no crash recovery, so there is no secondary load path
+    // that could observe the missing entry.
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>> {
-        Ok(self
-            .inner
-            .lock()
-            .cache
-            .peek(storage_name)
-            .map(|(_, b)| b.clone()))
+        let mut inner = self.inner.lock();
+        let Some((_, data)) = inner.cache.pop(storage_name) else {
+            return Ok(None);
+        };
+        inner.capacity = inner.capacity.saturating_sub(data.len());
+        metrics::gauge!("bpa.mem_store.bundles").set(inner.cache.len() as f64);
+        metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
+        Ok(Some(data))
     }
 
     async fn save(&self, data: Bytes) -> Result<Arc<str>> {
@@ -168,7 +176,7 @@ mod tests {
         }
     }
 
-    // When capacity is exceeded, the LRU (oldest-accessed) bundle is evicted.
+    // When capacity is exceeded, the oldest-inserted bundle is evicted.
     #[tokio::test]
     async fn test_eviction_policy_fifo() {
         // 100 bytes capacity, min 0 bundles (so eviction is purely capacity-driven)
@@ -181,17 +189,17 @@ mod tests {
         // At this point, capacity = 100, exactly at limit
         let name3 = storage.save(Bytes::from(vec![3u8; 50])).await.unwrap();
 
-        // name3 pushed capacity to 150 > 100, so LRU (name1) should be evicted
+        // name3 pushed capacity to 150 > 100, so oldest (name1) should be evicted
         assert!(
             storage.load(&name1).await.unwrap().is_none(),
             "Oldest bundle should be evicted"
         );
+        // load() takes — subsequent loads of name2/name3 confirm they survived eviction
         assert!(storage.load(&name2).await.unwrap().is_some());
         assert!(storage.load(&name3).await.unwrap().is_some());
     }
 
-    // BundleMemStorage uses insertion-order LRU. load() uses peek() so does NOT
-    // promote entries. Eviction is strictly FIFO by insertion order.
+    // Eviction is strictly FIFO by insertion order.
     #[tokio::test]
     async fn test_eviction_policy_priority() {
         let storage = BundleMemStorage::new(&small_config(100, 0));
@@ -228,6 +236,7 @@ mod tests {
 
         // Total capacity = 150 > 100, but we have exactly min_bundles (3) entries
         // So no eviction should occur despite exceeding byte capacity
+        // load() takes, so each call confirms the entry survived then removes it
         assert!(
             storage.load(&name1).await.unwrap().is_some(),
             "min_bundles should protect from eviction"
