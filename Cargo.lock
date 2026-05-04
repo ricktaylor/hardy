@@ -1957,6 +1957,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardy-btpu"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "futures-core",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "hardy-cbor"
 version = "2.0.0"
 dependencies = [

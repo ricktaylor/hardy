@@ -12,6 +12,7 @@ members = [
     "bpv7",
     "bpv7/tools",
     "bpv7/fuzz",
+    "btpu",
     "cbor",
     "cbor/tools",
     "cbor/fuzz",
