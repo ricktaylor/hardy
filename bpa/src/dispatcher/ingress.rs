@@ -103,7 +103,17 @@ impl Dispatcher {
                 }) => {
                     debug!("Received bundle has been rewritten");
 
-                    data = Bytes::from(new_data);
+                    data = match data.try_into_mut() {
+                        Ok(buf) => {
+                            let mut vec = buf.into();
+                            hardy_bpv7::editor::Chunk::flatten_inplace(new_data, &mut vec);
+                            Bytes::from(vec)
+                        }
+                        Err(original) => {
+                            Bytes::from(hardy_bpv7::editor::Chunk::flatten(new_data, &original))
+                        }
+                    };
+
                     if let Some(storage_name) = &metadata.storage_name {
                         self.store.replace_data(storage_name, data.clone()).await;
                     } else {
@@ -186,11 +196,11 @@ impl Dispatcher {
     // See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     // filter execution details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn ingress_bundle(&self, mut bundle: bundle::Bundle, mut data: Bytes) {
+    pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
         // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
-        (bundle, data) = match self
+        match self
             .filter_engine
             .exec(
                 filter::Hook::Ingress,
@@ -204,27 +214,25 @@ impl Dispatcher {
             .trace_expect("Ingress filter execution failed")
         {
             filter::ExecResult::Continue(mutation, mut bundle, data) => {
-                if mutation.data {
-                    if let Some(storage_name) = &bundle.metadata.storage_name {
-                        self.store.replace_data(storage_name, data.clone()).await;
-                    }
+                if mutation.data
+                    && let Some(storage_name) = &bundle.metadata.storage_name
+                {
+                    self.store.replace_data(storage_name, data.clone()).await;
                 }
+
                 // Always checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
                 bundle.metadata.status = bundle::BundleStatus::Dispatching;
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
-                (bundle, data)
-            }
-            filter::ExecResult::Drop(bundle, reason) => {
-                if let Some(reason) = reason {
-                    return self.drop_bundle(bundle, reason).await;
-                } else {
-                    return self.delete_bundle(bundle).await;
-                }
-            }
-        };
 
-        self.process_bundle(bundle, data, self.cla_registry()).await;
+                // Hand off to dispatch queue for fan-out via processing pool
+                self.dispatch_bundle(bundle).await
+            }
+            filter::ExecResult::Drop(bundle, Some(reason)) => {
+                self.drop_bundle(bundle, reason).await
+            }
+            filter::ExecResult::Drop(bundle, None) => self.delete_bundle(bundle).await,
+        }
     }
 }
