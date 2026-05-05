@@ -81,6 +81,7 @@ impl RibBuilder {
 }
 
 impl Rib {
+    const ADMIN_NAME: &str = "administrative endpoint";
     const FORWARDS_NAME: &str = "neighbours";
     const SERVICES_NAME: &str = "services";
 
@@ -90,7 +91,7 @@ impl Rib {
         service_priority: u32,
     ) -> Self {
         let entry = route::Entry {
-            source: Self::SERVICES_NAME.into(),
+            source: Self::ADMIN_NAME.into(),
             action: route::Action::AdminEndpoint,
         };
 
