@@ -218,11 +218,12 @@ fn find_recurse<'a>(
                         }
                     }
                 }
-            }
-        }
 
-        if !peers.is_empty() {
-            return Some(InternalFindResult::Forward(peers));
+                // Only accumulate ECMP peers within the same pattern (equal specificity)
+                if !peers.is_empty() {
+                    return Some(InternalFindResult::Forward(peers));
+                }
+            }
         }
     }
     None
