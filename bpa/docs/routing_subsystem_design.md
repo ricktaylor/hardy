@@ -87,7 +87,7 @@ The internal `Action` enum covers all route types:
 | `Reflect` | Return to sender (previous node or source) | Routing agents, static routes |
 | `Via(Eid)` | Forward toward the specified EID (recursive lookup) | Routing agents, static routes |
 
-When multiple entries exist under the same pattern, precedence follows enum ordering: Drop > AdminEndpoint > Local > Forward > Reflect > Via. Across patterns at the same priority, the most specific matching pattern takes precedence (highest specificity score wins).
+When multiple entries exist under the same pattern, precedence follows enum ordering: Drop > AdminEndpoint > Local > Forward > Reflect > Via. Terminal actions (Drop, AdminEndpoint, Local, Reflect) return immediately. Multiple Forward and Via entries under the same pattern accumulate next-hop peers for ECMP selection. Patterns are evaluated in specificity order (most specific first); once a pattern matches and yields any result, no further patterns are consulted.
 
 Routing agents (via the `RoutingSink` trait) can only create `Drop`, `Reflect`, and `Via` actions. `AdminEndpoint`, `Local`, and `Forward` are internal actions managed by the BPA itself.
 
@@ -157,7 +157,9 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
    - Iterate priorities low to high (0, 1, 100, ...)
    - Within each priority, patterns are ordered by specificity score (descending)
    - The first matching pattern is the most specific match
-   - Stop at first match
+   - Terminal actions (Drop, AdminEndpoint, Local, Reflect) return immediately
+   - Forward and Via entries under the same pattern accumulate ECMP peers
+   - Once a pattern matches and yields any result, no further patterns are consulted
 
 2. **Handle Via(eid) recursively**
    - Recursive lookup on the via EID

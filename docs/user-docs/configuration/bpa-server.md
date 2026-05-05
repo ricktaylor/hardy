@@ -54,7 +54,7 @@ and dots. For example:
 | `status-reports` | `true`, `false` | `false` | Whether to generate and dispatch bundle status reports. See warning below. |
 | `processing-pool-size` | Positive integer | 4 &times; CPU cores | Maximum concurrent bundle processing tasks. |
 | `poll-channel-depth` | Positive integer | `16` | Depth of the internal channel used for polling for new bundles. |
-| `service-priority` | Non-negative integer | `1` | Routing priority for service registration routes. Lower values are checked first. Controls where service routes sit relative to routing agent routes in the RIB. |
+| `service-priority` | Non-negative integer | `1` | Routing priority for service registration routes. See [Route Selection Order](#route-selection-order) for how priority interacts with pattern specificity. |
 
 !!! warning
     RFC 9171 §5.1: *"the requesting of status reports for large numbers
@@ -212,6 +212,49 @@ BPA as a routing agent via gRPC — ensure `routing` is included in
 
 See the [TVR configuration reference](tvr.md) for configuration,
 contact plan format, gRPC service, and hot-reload.
+
+## Route Selection Order
+
+The RIB evaluates routes using a three-level ordering:
+
+1. **Priority** (lower values checked first). Admin endpoints and CLA
+   peers are at priority 0, services default to 1 (configurable via
+   `service-priority`), static routes default to 100.
+
+2. **Pattern specificity** (most specific first within a priority).
+   Exact EIDs score highest, then narrow wildcards, then broad
+   catch-alls. For example, `ipn:1.2.3` is checked before `ipn:1.2.*`,
+   which is checked before `ipn:*.*.*`.
+
+3. **Action precedence** (within a single pattern). When multiple
+   actions exist under the same pattern, precedence is:
+   Drop > Local service > Forward > Reflect > Via.
+
+Once a pattern matches and yields any result, no further patterns are
+consulted. Multiple `via` or forward entries under the **same pattern**
+accumulate as equal-cost next hops for ECMP selection. Entries from
+different patterns — even at the same priority — are not combined.
+
+### Unregistered Services and Default-to-Wait
+
+When no route matches, the bundle waits for a future route to appear.
+This applies to both forwarding destinations and local services — a
+bundle addressed to an unregistered service number will wait until that
+service registers.
+
+Operators who want to reject bundles for specific service ranges
+(rather than waiting indefinitely) must configure an explicit `drop`
+rule at a priority that will be checked before the service route. For
+example, to drop all unregistered services on this node:
+
+```
+ipn:!.* drop priority 2
+```
+
+The `!` matches the local node's IPN node number. This works because
+the `drop` rule at priority 2 is checked after registered services
+(priority 1 by default), but matches any service EID that no
+registered service has claimed.
 
 ## `rfc9171-validity` — RFC 9171 Validity Filters
 
