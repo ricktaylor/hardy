@@ -200,8 +200,10 @@ impl Dispatcher {
                 &self.processing_pool,
             )
             .await
+            // TODO: Recover gracefully once filter error handling is redesigned
+            .trace_expect("Ingress filter execution failed")
         {
-            Ok(filter::ExecResult::Continue(mutation, mut bundle, data)) => {
+            filter::ExecResult::Continue(mutation, mut bundle, data) => {
                 if mutation.data {
                     if let Some(storage_name) = &bundle.metadata.storage_name {
                         self.store.replace_data(storage_name, data.clone()).await;
@@ -214,16 +216,12 @@ impl Dispatcher {
                 self.store.update_metadata(&bundle).await;
                 (bundle, data)
             }
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
+            filter::ExecResult::Drop(bundle, reason) => {
                 if let Some(reason) = reason {
                     return self.drop_bundle(bundle, reason).await;
                 } else {
                     return self.delete_bundle(bundle).await;
                 }
-            }
-            Err(e) => {
-                error!("Ingress filter execution failed: {e}");
-                return;
             }
         };
 
