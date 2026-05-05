@@ -174,8 +174,15 @@ impl Dispatcher {
         &self,
         service: Arc<services::registry::Service>,
         bundle: bundle::Bundle,
-        data: Bytes,
     ) {
+        let Some(data) = self.load_data(&bundle).await else {
+            if !bundle.has_expired() {
+                // Bundle data was deleted while queued - not reaped
+                self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+            }
+            return;
+        };
+
         // Deliver filter hook
         let (bundle, data) = match self
             .filter_engine
