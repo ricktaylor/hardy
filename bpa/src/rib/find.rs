@@ -116,8 +116,8 @@ fn map_result(
             None
         }
         InternalFindResult::Forward(mut peers) => {
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                debug!(
+            if tracing::enabled!(tracing::Level::TRACE) {
+                trace!(
                     "Forward to CLA peer{} {}",
                     if peers.len() == 1 { "" } else { "s:" },
                     peers.iter().fold(String::new(), |acc, (k, v)| {
@@ -157,7 +157,7 @@ fn find_recurse<'a>(
     reflect: bool,
     trail: &mut HashSet<&'a Eid>,
 ) -> Option<InternalFindResult<'a>> {
-    debug!("Looking for route for {to}");
+    trace!("Looking for route for {to}");
 
     let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
     for entries in table.values() {
@@ -167,12 +167,12 @@ fn find_recurse<'a>(
                     match &entry.action {
                         Action::Drop(reason) => {
                             // Drop trumps everything else
-                            debug!("Drop {reason:?}");
+                            trace!("Drop {reason:?}");
                             return Some(InternalFindResult::Drop(*reason));
                         }
                         Action::Reflect => {
                             if reflect {
-                                debug!("Reflect");
+                                trace!("Reflect");
                                 return Some(InternalFindResult::Reflect);
                             }
                         }
@@ -205,11 +205,11 @@ fn find_recurse<'a>(
                             }
                         }
                         Action::AdminEndpoint => {
-                            debug!("Deliver to Admin Endpoint");
+                            trace!("Deliver to Admin Endpoint");
                             return Some(InternalFindResult::AdminEndpoint);
                         }
                         Action::Local(service) => {
-                            debug!("Deliver to Service {}", service.service_id);
+                            trace!("Deliver to Service {}", service.service_id);
                             return Some(InternalFindResult::Deliver(service.clone()));
                         }
                         Action::Forward(peer) => {
