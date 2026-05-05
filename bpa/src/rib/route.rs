@@ -238,17 +238,28 @@ impl Rib {
     }
 
     pub async fn remove_by_source(&self, source: &str) {
-        let (vias, removed_count) = {
+        let (vias, forward_peers, has_local, removed_count) = {
             let mut inner = self.inner.write();
             let mut vias = HashSet::new();
+            let mut forward_peers = HashSet::new();
+            let mut has_local = false;
             let mut removed_count = 0u64;
 
             inner.routes.retain(|_priority, patterns| {
                 patterns.retain(|_pattern, actions| {
                     actions.retain(|entry| {
                         if entry.source == source {
-                            if let Action::Via(to) = &entry.action {
-                                vias.insert(to.clone());
+                            match &entry.action {
+                                Action::Via(to) => {
+                                    vias.insert(to.clone());
+                                }
+                                Action::Forward(peer) => {
+                                    forward_peers.insert(*peer);
+                                }
+                                Action::Local(_) => {
+                                    has_local = true;
+                                }
+                                _ => {}
                             }
                             removed_count += 1;
                             false
@@ -260,25 +271,27 @@ impl Rib {
                 });
                 !patterns.is_empty()
             });
-            (vias, removed_count)
+            (vias, forward_peers, has_local, removed_count)
         };
 
-        if removed_count > 0 {
-            metrics::gauge!("bpa.rib.entries", "source" => source.to_string())
-                .decrement(removed_count as f64);
-        }
-
-        if vias.is_empty() {
+        if removed_count == 0 {
             return;
         }
 
         debug!("Removed all routes from source '{source}'");
+        metrics::gauge!("bpa.rib.entries", "source" => source.to_string())
+            .decrement(removed_count as f64);
 
-        let mut changed = false;
+        let mut changed = has_local;
         for v in vias {
             if let Some(peers) = self.find_peers(&v)
                 && self.reset_peer_queues(peers).await
             {
+                changed = true;
+            }
+        }
+        for peer in forward_peers {
+            if self.store.reset_peer_queue(peer).await {
                 changed = true;
             }
         }
