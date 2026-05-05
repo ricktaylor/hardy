@@ -3,7 +3,7 @@ use super::*;
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub(crate) async fn restart_bundle(
-        self: &Arc<Self>,
+        &self,
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
     ) {
