@@ -149,7 +149,11 @@ impl Dispatcher {
         let dispatcher = self.clone();
 
         join!(self.store.poll_service_waiting(source.clone(), tx), async {
-            while let Ok(bundle) = rx.recv_async().await {
+            while let Ok(mut bundle) = rx.recv_async().await {
+                dispatcher
+                    .store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await;
                 dispatcher.dispatch_bundle(bundle).await;
             }
         });

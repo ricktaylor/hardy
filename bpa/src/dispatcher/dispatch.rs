@@ -3,11 +3,13 @@ use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
-    /// Queue a bundle for dispatch processing
-    pub(super) async fn dispatch_bundle(&self, mut bundle: bundle::Bundle) {
-        self.store
-            .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-            .await;
+    /// Queue a bundle for dispatch processing.
+    /// The caller must ensure the bundle status is already `Dispatching`.
+    pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
+        debug_assert!(matches!(
+            bundle.metadata.status,
+            bundle::BundleStatus::Dispatching
+        ));
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
