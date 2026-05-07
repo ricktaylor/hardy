@@ -212,18 +212,12 @@ mod flume {
         /// reported: once the buffer is empty and the channel is closed
         /// (either by [`Sender::close`] or by every `Sender` being dropped),
         /// returns [`RecvError::Disconnected`].
-        #[cfg(feature = "tokio")]
         #[inline]
         pub async fn recv(&self) -> Result<T, RecvError> {
-            tokio::select! {
-                biased;
-
-                r = self.receiver.recv_async() => {
-                    r.map_err(Into::into)
-                }
-                _ = self.cancel_token.cancelled() => {
-                    Err(RecvError::Disconnected)
-                }
+            use futures::FutureExt;
+            futures::select_biased! {
+                r = self.receiver.recv_async().fuse() => r.map_err(Into::into),
+                _ = self.cancel_token.cancelled().fuse() => Err(RecvError::Disconnected),
             }
         }
 

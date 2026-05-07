@@ -1810,6 +1810,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "flume",
+ "futures",
  "hardy-async",
  "notify",
  "notify-debouncer-full",
