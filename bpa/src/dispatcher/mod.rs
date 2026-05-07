@@ -119,10 +119,7 @@ impl Dispatcher {
     /// bundles are left for the reaper to handle (it will drop them with
     /// `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn load_data_or_drop(
-        &self,
-        bundle: bundle::Bundle,
-    ) -> Option<(bundle::Bundle, Bytes)> {
+    async fn load_data_or_drop(&self, bundle: bundle::Bundle) -> Option<(bundle::Bundle, Bytes)> {
         let storage_name = bundle
             .metadata
             .storage_name
