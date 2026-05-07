@@ -109,6 +109,17 @@ impl<T> Once<T> {
     pub fn is_completed(&self) -> bool {
         self.0.is_completed()
     }
+
+    /// Blocks (spinning) until the cell is initialised, then returns a reference
+    /// to the value. If the cell is already initialised, returns immediately.
+    ///
+    /// Use this when one task initialises the cell and other tasks need to
+    /// wait for that initialisation before proceeding. The wait is a busy-spin,
+    /// so only appropriate when the initialisation is expected to be quick.
+    #[inline]
+    pub fn wait(&self) -> &T {
+        self.0.wait()
+    }
 }
 
 impl<T> Default for Once<T> {
