@@ -17,6 +17,7 @@ rfc9173 = ["hardy-bpv7/rfc9173"]
 no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
+critical-section = ["hardy-bpv7/critical-section"]
 std = [
     "hardy-async/std",
     "time/std",
