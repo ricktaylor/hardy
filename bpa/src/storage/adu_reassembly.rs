@@ -429,7 +429,7 @@ mod tests {
         // Build a complete bundle
         let (complete_bundle, complete_data) =
             hardy_bpv7::builder::Builder::new(source.clone(), dest.clone())
-                .with_payload(std::borrow::Cow::Borrowed(&payload[..]))
+                .with_payload(alloc::borrow::Cow::Borrowed(&payload[..]))
                 .build(ts.clone())
                 .unwrap();
 
@@ -444,7 +444,7 @@ mod tests {
             .update_block(1)
             .map_err(|(_, e)| e)
             .unwrap()
-            .with_data(std::borrow::Cow::Borrowed(&b"Hello"[..]))
+            .with_data(alloc::borrow::Cow::Borrowed(&b"Hello"[..]))
             .rebuild()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
@@ -461,7 +461,7 @@ mod tests {
             .update_block(1)
             .map_err(|(_, e)| e)
             .unwrap()
-            .with_data(std::borrow::Cow::Borrowed(&b"World"[..]))
+            .with_data(alloc::borrow::Cow::Borrowed(&b"World"[..]))
             .rebuild()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
