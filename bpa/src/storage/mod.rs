@@ -12,8 +12,10 @@ pub type Error = Box<dyn core::error::Error + Send + Sync>;
 pub type Result<T> = core::result::Result<T, Error>;
 /// Channel sender used to stream results from storage polling methods.
 pub type Sender<T> = flume::Sender<T>;
-/// Receiver handle. Receives `Some(bundle)` for data, `None` signals channel close.
-pub type Receiver = flume::Receiver<Option<Bundle>>;
+/// Receiver handle for bundles drained from a hybrid storage channel.
+/// `recv()` returns `Err(RecvError::Disconnected)` after the buffer drains
+/// once the channel has been closed.
+pub type Receiver = hardy_async::closeable::Receiver<Bundle>;
 
 mod bundle_mem;
 mod cached;

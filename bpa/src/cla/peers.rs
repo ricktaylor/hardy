@@ -94,7 +94,7 @@ impl Peer {
             "egress_queue_poller",
             (peer = peer, queue = queue),
             async move {
-                while let Ok(Some(bundle)) = rx.recv_async().await {
+                while let Ok(bundle) = rx.recv().await {
                     controller.forward(queue, bundle).await;
                 }
             }
@@ -127,9 +127,9 @@ impl Peer {
         }
     }
 
-    async fn close(&self) {
+    fn close(&self) {
         for tx in self.inner.wait().queues.values() {
-            tx.close().await;
+            tx.close();
         }
     }
 }
@@ -169,7 +169,7 @@ impl PeerTable {
         let peer = self.inner.write().peers.remove(&peer_id);
 
         if let Some(peer) = peer {
-            peer.close().await;
+            peer.close();
         }
     }
 
