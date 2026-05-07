@@ -38,6 +38,8 @@ mod spawn;
 
 pub mod bounded_task_pool;
 pub mod cancellation_token;
+pub mod channel;
+pub mod closeable;
 pub mod join_handle;
 pub mod notify;
 pub mod sync;
