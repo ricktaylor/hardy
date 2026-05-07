@@ -6,7 +6,7 @@ use hardy_async::async_trait;
 use hardy_async::sync::spin::Mutex;
 use lru::LruCache;
 
-use super::{BundleStorage, RecoveryResponse, Result, Sender};
+use super::{BundleStorage, RecoveryResponse, Result, StreamIn};
 use crate::{Arc, Bytes};
 
 /// Default LRU cache capacity (number of entries).
@@ -45,8 +45,8 @@ impl CachedBundleStorage {
 
 #[async_trait]
 impl BundleStorage for CachedBundleStorage {
-    async fn recover(&self, tx: Sender<RecoveryResponse>) -> Result<()> {
-        self.inner.recover(tx).await
+    async fn recover(&self, stream: &dyn StreamIn<RecoveryResponse>) -> Result<()> {
+        self.inner.recover(stream).await
     }
 
     // SAFETY: load() is always the final storage access before delete().

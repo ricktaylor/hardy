@@ -96,19 +96,23 @@ impl Dispatcher {
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: hardy_async::CancellationToken) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+        let (stream, rx) =
+            storage::ChannelStreamIn::<bundle::Bundle>::bounded(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 
         // Run producer and consumer concurrently
         join!(
             // Producer: feed bundles into channel
-            self.store.poll_waiting(tx),
+            async {
+                self.store.poll_waiting(&stream).await;
+                drop(stream);
+            },
             // Consumer: drain channel into shared processing pool
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };

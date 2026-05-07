@@ -144,7 +144,10 @@ impl Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
+    async fn recover(
+        &self,
+        stream: &dyn storage::StreamIn<storage::RecoveryResponse>,
+    ) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
 
         loop {
@@ -176,7 +179,7 @@ impl storage::BundleStorage for Storage {
                     .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t.secs()).ok())
                     .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
 
-                if tx.send_async((storage_name, received_at)).await.is_err() {
+                if stream.send((storage_name, received_at)).await.is_err() {
                     // Consumer closed early; exit cleanly.
                     return Ok(());
                 }
