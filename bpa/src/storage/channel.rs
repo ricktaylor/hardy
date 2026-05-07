@@ -288,12 +288,12 @@ impl Store {
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (inner_tx, inner_rx) = flume::bounded::<Bundle>(cap);
+        let (stream, inner_rx) = super::ChannelStreamIn::<Bundle>::bounded(cap);
         let shared_cloned = shared.clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
-            while let Ok(bundle) = inner_rx.recv_async().await {
+            while let Ok(bundle) = inner_rx.recv().await {
                 // Just do some checks
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
                     // Send into queue
@@ -306,9 +306,11 @@ impl Store {
         });
 
         self.metadata_storage
-            .poll_pending(inner_tx, &shared.status, cap)
+            .poll_pending(&stream, &shared.status, cap)
             .await
             .trace_expect("Failed to poll store for pending bundles");
+        // Drop the stream so the consumer task sees disconnect and exits.
+        drop(stream);
 
         h.await.trace_expect("Failed to join task")
     }
@@ -370,7 +372,7 @@ mod tests {
     async fn test_fast_path_saturation() {
         let store = make_store();
         let cap = 2;
-        let (tx, _rx) = store.channel(STATUS, cap);
+        let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for the poller's initial cycle to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -393,7 +395,7 @@ mod tests {
         // ordering no longer matters for correctness — but keeping the
         // receiver-then-sender shutdown order here mirrors how producers and
         // consumers actually wind down in production.
-        drop(_rx);
+        drop(rx);
         tx.close();
         store.shutdown().await;
     }
@@ -403,7 +405,7 @@ mod tests {
     async fn test_congestion_signal() {
         let store = make_store();
         let cap = 2;
-        let (tx, _rx) = store.channel(STATUS, cap);
+        let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for poller's initial cycle
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -422,7 +424,7 @@ mod tests {
             "Should be Draining or Congested, got {state:?}"
         );
 
-        drop(_rx);
+        drop(rx);
         tx.close();
         store.shutdown().await;
     }

@@ -37,9 +37,9 @@ pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
     let name_a = store.save(data_a).await.unwrap();
     let name_b = store.save(data_b).await.unwrap();
 
-    let (tx, rx) = flume::unbounded();
-    store.recover(tx).await.unwrap();
-    let mut results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::new();
+    store.recover(&sink).await.unwrap();
+    let mut results = sink.into_inner();
 
     assert!(
         results.len() >= 2,
@@ -49,7 +49,10 @@ pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
     // Sort by name for deterministic comparison
     results.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_ref()).collect();
+    let names: Vec<&str> = results
+        .iter()
+        .map(|(n, _): &hardy_bpa::storage::RecoveryResponse| n.as_ref())
+        .collect();
     assert!(
         names.contains(&name_a.as_ref()),
         "recovery should include first saved bundle"
