@@ -7,7 +7,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::{BundleStorage, RecoveryResponse, Result, Sender};
+use super::{BundleStorage, RecoveryResponse, Result, StreamIn};
 use crate::{Arc, Bytes};
 
 #[derive(Debug)]
@@ -62,7 +62,7 @@ impl BundleMemStorage {
 
 #[async_trait]
 impl BundleStorage for BundleMemStorage {
-    async fn recover(&self, tx: Sender<RecoveryResponse>) -> Result<()> {
+    async fn recover(&self, stream: &dyn StreamIn<RecoveryResponse>) -> Result<()> {
         let snapshot = self
             .inner
             .lock()
@@ -72,7 +72,9 @@ impl BundleStorage for BundleMemStorage {
             .collect::<Vec<_>>();
 
         for (name, t) in snapshot {
-            tx.send_async((name, t)).await?;
+            if stream.send((name, t)).await.is_err() {
+                break;
+            }
         }
         Ok(())
     }

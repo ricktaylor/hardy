@@ -198,20 +198,21 @@ impl Reaper {
 
     async fn refill_cache(&self) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (tx, rx) = flume::bounded::<Bundle>(self.cache_size);
+        let (stream, rx) = super::ChannelStreamIn::<Bundle>::bounded(self.cache_size);
 
         join!(
             async {
                 let _ = self
                     .metadata_storage
-                    .poll_expiry(tx, self.cache_size)
+                    .poll_expiry(&stream, self.cache_size)
                     .await
                     .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
+                drop(stream);
             },
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
