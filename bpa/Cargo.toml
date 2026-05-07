@@ -18,6 +18,7 @@ no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
 std = [
+    "hardy-async/std",
     "time/std",
     "hardy-bpv7/std",
     "hardy-eid-patterns/std",
