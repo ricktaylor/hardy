@@ -53,6 +53,7 @@ mod flume {
     }
 
     impl<T> From<flume::TrySendError<T>> for TrySendError<T> {
+        #[inline]
         fn from(value: flume::TrySendError<T>) -> Self {
             match value {
                 flume::TrySendError::Full(t) => Self::Full(t),
@@ -80,6 +81,7 @@ mod flume {
     pub struct SendError<T>(pub T);
 
     impl<T> From<flume::SendError<T>> for SendError<T> {
+        #[inline]
         fn from(value: flume::SendError<T>) -> Self {
             Self(value.0)
         }
@@ -97,6 +99,7 @@ mod flume {
         /// Attempt to send a value into the channel. If the channel is bounded and full, or all
         /// receivers have been dropped, an error is returned. If the channel associated with this
         /// sender is unbounded, this method has the same behaviour as [`Sender::send`].
+        #[inline]
         pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
             self.0.try_send(msg).map_err(Into::into)
         }
@@ -105,16 +108,19 @@ mod flume {
         /// If the channel is bounded and is full, this method will block until space is available
         /// or all receivers have been dropped. If the channel is unbounded, this method will not
         /// block.
+        #[inline]
         pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
             self.0.send_async(msg).await.map_err(Into::into)
         }
 
         /// Returns true if the channel is empty.
+        #[inline]
         pub fn is_empty(&self) -> bool {
             self.0.is_empty()
         }
 
         /// Returns the number of messages in the channel
+        #[inline]
         pub fn len(&self) -> usize {
             self.0.len()
         }
@@ -129,6 +135,7 @@ mod flume {
     }
 
     impl From<flume::RecvError> for RecvError {
+        #[inline]
         fn from(_: flume::RecvError) -> Self {
             Self::Disconnected
         }
@@ -154,16 +161,19 @@ mod flume {
         ///
         /// Returns [`RecvError::Disconnected`] once all senders have been
         /// dropped and the buffer is empty.
+        #[inline]
         pub async fn recv(&self) -> Result<T, RecvError> {
             self.0.recv_async().await.map_err(Into::into)
         }
 
         /// Returns true if the channel is empty.
+        #[inline]
         pub fn is_empty(&self) -> bool {
             self.0.is_empty()
         }
 
         /// Returns the number of messages in the channel
+        #[inline]
         pub fn len(&self) -> usize {
             self.0.len()
         }
