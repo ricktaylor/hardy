@@ -12,14 +12,14 @@ struct PeerInner {
 
 pub struct Peer {
     cla: Weak<registry::Cla>,
-    inner: std::sync::OnceLock<PeerInner>,
+    inner: hardy_async::sync::spin::Once<PeerInner>,
 }
 
 impl Peer {
     pub fn new(cla: Weak<registry::Cla>) -> Self {
         Self {
             cla,
-            inner: std::sync::OnceLock::new(),
+            inner: hardy_async::sync::spin::Once::new(),
         }
     }
 
@@ -73,7 +73,7 @@ impl Peer {
             );
         }
 
-        self.inner.get_or_init(|| PeerInner { queues });
+        self.inner.call_once(|| PeerInner { queues });
     }
 
     fn start_queue_poller(
