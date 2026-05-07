@@ -99,6 +99,16 @@ pub(crate) use store::Store;
 ///
 /// Implementers of this trait are expected to provide a thread-safe and efficient implementation
 /// of these methods.
+///
+/// # Streaming Results
+///
+/// Polling methods (`poll_*`, `remove_unconfirmed`) deliver results to the caller via a
+/// [`StreamIn<Bundle>`] sink rather than returning them as a collection. This decouples the
+/// trait from any specific channel implementation: the BPA wraps a
+/// [`hardy_async::channel::Sender`] in [`ChannelStreamIn`], localdisk-storage builds an
+/// adapter over its internal flume channel, and tests use a `Vec`-collecting mock — all
+/// implementing the same `StreamIn` trait. Implementors should stop iterating when
+/// `stream.send` returns `Err(StreamClosed(_))` — the consumer has gone away.
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
     /// Retrieves the metadata for a bundle with the given `bundle_id`.
@@ -307,6 +317,11 @@ pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 ///
 /// Implementers of this trait are expected to provide a thread-safe and efficient implementation
 /// of these methods.
+///
+/// # Streaming Results
+///
+/// `recover` delivers entries to the caller via a [`StreamIn<RecoveryResponse>`] sink rather
+/// than returning a collection. See the [`MetadataStorage`] trait docs for the rationale.
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
     /// Recovers bundles from the bundle storage and pushes them to `stream`.
