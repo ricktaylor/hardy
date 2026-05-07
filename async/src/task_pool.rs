@@ -142,7 +142,7 @@ impl TaskPool {
 
     /// Spawns a task tracked by this pool.
     ///
-    /// The task will be tracked until it completes. The returned [`JoinHandle`]
+    /// The task will be tracked until it completes. The returned [`JoinHandle`](crate::JoinHandle)
     /// can be used to await the task's result or check if it has finished.
     ///
     /// # Panics
