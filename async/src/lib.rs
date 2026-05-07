@@ -65,6 +65,7 @@ pub use task_pool::TaskPool;
 /// With the `std` feature enabled, this queries the OS via
 /// `std::thread::available_parallelism()`. Without `std`, returns 1.
 #[cfg(feature = "std")]
+#[inline]
 pub fn available_parallelism() -> core::num::NonZeroUsize {
     std::thread::available_parallelism().unwrap_or(core::num::NonZeroUsize::new(1).unwrap())
 }
@@ -74,6 +75,7 @@ pub fn available_parallelism() -> core::num::NonZeroUsize {
 /// With the `std` feature enabled, this queries the OS via
 /// `std::thread::available_parallelism()`. Without `std`, returns 1.
 #[cfg(not(feature = "std"))]
+#[inline]
 pub fn available_parallelism() -> core::num::NonZeroUsize {
     core::num::NonZeroUsize::new(1).unwrap()
 }
