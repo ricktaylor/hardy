@@ -8,14 +8,10 @@ impl Dispatcher {
         peer: u32,
         queue: Option<u32>,
         cla_addr: &cla::ClaAddress,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
     ) {
         // Get bundle data from store, now we know we need it!
-        let Some(data) = self.load_data(&bundle).await else {
-            if !bundle.has_expired() {
-                // Bundle data was deleted while queued - not reaped
-                self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
-            }
+        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
