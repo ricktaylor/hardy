@@ -3,7 +3,7 @@ use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub(super) async fn administrative_bundle(&self, mut bundle: bundle::Bundle) {
+    pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle) {
         metrics::counter!("bpa.admin_record.received").increment(1);
 
         // This is a bundle for an Admin Endpoint
@@ -17,11 +17,7 @@ impl Dispatcher {
                 .await;
         }
 
-        let Some(data) = self.load_data(&bundle).await else {
-            if !bundle.has_expired() {
-                // Bundle data was deleted while queued - not reaped
-                self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
-            }
+        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 

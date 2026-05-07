@@ -175,11 +175,7 @@ impl Dispatcher {
         service: Arc<services::registry::Service>,
         bundle: bundle::Bundle,
     ) {
-        let Some(data) = self.load_data(&bundle).await else {
-            if !bundle.has_expired() {
-                // Bundle data was deleted while queued - not reaped
-                self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
-            }
+        let Some((bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 

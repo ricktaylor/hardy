@@ -114,15 +114,31 @@ impl Dispatcher {
         self.tasks.shutdown().await;
     }
 
+    /// Load bundle data, dropping the bundle with `DepletedStorage` if the
+    /// data is missing and the bundle has not yet expired. Expired-and-missing
+    /// bundles are left for the reaper to handle (it will drop them with
+    /// `LifetimeExpired`).
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn load_data(&self, bundle: &bundle::Bundle) -> Option<Bytes> {
+    async fn load_data_or_drop(
+        &self,
+        bundle: bundle::Bundle,
+    ) -> Option<(bundle::Bundle, Bytes)> {
         let storage_name = bundle
             .metadata
             .storage_name
             .as_ref()
-            .trace_expect("Bundle without storage_name reached load_data");
+            .trace_expect("Bundle without storage_name reached load_data_or_drop");
 
-        self.store.load_data(storage_name).await
+        match self.store.load_data(storage_name).await {
+            Some(data) => Some((bundle, data)),
+            None => {
+                if !bundle.has_expired() {
+                    // Bundle data was deleted while queued - not reaped
+                    self.drop_bundle(bundle, ReasonCode::DepletedStorage).await;
+                }
+                None
+            }
+        }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
