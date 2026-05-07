@@ -72,6 +72,14 @@ The walk applies several cleanup rules:
 
 The timestamp check prevents a race condition where concurrent writes could be mistaken for recovery candidates.
 
+#### Internal flume + bridge pump
+
+The walk runs inside `tokio::task::spawn_blocking` and uses `std::fs` (synchronous I/O), so it needs a blocking-friendly channel for emitting results. The trait surface, however, takes a `&dyn StreamIn<RecoveryResponse>` (see [bpa stream pattern](../../bpa/docs/stream_pattern.md)) — async-only.
+
+`recover()` bridges these by creating an internal `flume::bounded(parallelism * 16)`: the walk tasks `flume::Sender::send` into it (blocking, with `is_disconnected()` early-exit), and a sibling pump task in the same `recover()` future pulls from the flume receiver and forwards items to the external `StreamIn` via `send().await`. When the walk completes it drops its `flume_tx`, the pump's `recv_async` returns `Disconnected`, and the pump exits. When the external consumer goes away first, the pump's `stream.send` errors, the pump returns and drops `flume_rx`, and the walk's next `is_disconnected()` check stops the walk.
+
+This keeps the existing walk code unchanged while presenting the `StreamIn`-shaped trait surface. The bridge composes cleanly with the planned [WriteQueue](../../../dtn/docs/hardy/localdisk-storage/WRITE_QUEUE_DESIGN.md) refactor — that design uses an internal flume channel for batched I/O too, so the same bridge pattern would extend naturally.
+
 ## Configuration
 
 | Option | Default | Purpose |
