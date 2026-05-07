@@ -71,6 +71,26 @@ The `MetadataStorage` trait manages bundle lifecycle state with indexed queries.
 - **Queue management**: reset_peer_queue (ForwardPending → Waiting)
 - **Polling**: poll_expiry, poll_waiting, poll_pending for background processing
 
+### Streaming results via `StreamIn<T>`
+
+Polling methods on both traits stream results back to the caller via a `StreamIn<T>` sink rather than returning a collection. The trait describes *what* is communicated — a sequence of bundles or recovery responses — without committing to any particular channel type for *how* they are delivered.
+
+The original design exposed a `Sender<T>` alias on the trait, which resolved to a concrete `flume::Sender<T>`. Every implementation of `MetadataStorage` and `BundleStorage` therefore had to depend on flume directly, and a backend with a different internal model had no escape: localdisk-storage's recovery walk runs synchronously inside a blocking task and uses flume's blocking `send` + `is_disconnected` API, while the in-memory backends and the SQLite backend use only async sends. Coupling these two backend styles to a single channel API forced awkward compromises in either direction. It also propagated the BPA's channel choice into every backend crate, so any future change (such as the eventual flume → `hardy_async::channel` migration that motivated this redesign) would cascade through the whole workspace.
+
+`StreamIn<T>` is a small trait with one async `send` method that returns an error wrapping the rejected item when the consumer has gone away. Each consumer implements the trait on whatever transport is convenient: BPA call sites wrap a `hardy_async::channel::Sender` in `ChannelStreamIn<T>`; localdisk-storage's `recover()` keeps its blocking flume channel internally and runs a small bridge pump task that forwards items from the flume receiver to the external `StreamIn`; the shared test suite uses a `Mutex<Vec<T>>`-based collector for assertions. None of these implementations leak into the trait surface — they're free to evolve independently.
+
+The trait is passed as `&dyn StreamIn<T>` rather than as a method-level generic parameter. A generic method would force `MetadataStorage` and `BundleStorage` to lose their object-safety, which would cascade through the BPA: the central `Store` holds storage backends as `Arc<dyn MetadataStorage>` (chosen at runtime based on configuration), and that pattern would no longer compile. The cost of `&dyn` is one indirect call per item streamed, which is negligible relative to anything the storage backend itself does.
+
+#### Naming: `StreamIn`, not `Sink`
+
+Hardy already uses the name `Sink` for a structurally different pattern: the long-lived, multi-method back-channels that CLAs, Services, and RoutingAgents receive when they register with the BPA. A `cla::Sink` lives for the duration of the registration and exposes several methods (forward, dispatch, error reporting). Reusing `Sink` for the storage abstraction would invite confusion between the two patterns even though their architectural intent — decouple the trait from the underlying transport — is the same.
+
+`StreamIn<T>` is the dual of `futures::Stream`: the *push* side where the producer drives delivery item-by-item, where `futures::Stream` is the *pull* side where the consumer drives. The `In` suffix reserves the name `StreamOut<T>` for a future symmetric pull-side abstraction. None of the current storage code needs `StreamOut` — the hybrid memory/storage receiver in `storage/channel.rs` is held concretely by a single internal consumer and never crosses a trait boundary — but reserving the name now avoids a rename if the streaming-chunks redesign later wants to pull bytes *from* storage trait methods.
+
+#### Connection to streaming chunks
+
+The longer-term direction for BPA payload handling is end-to-end streaming: payload bytes flow through pipelines chunk-by-chunk rather than buffering whole bundles in memory. See [streaming_pipeline_design.md](streaming_pipeline_design.md) for the full architecture. `StreamIn<T>` is the smallest expression of that direction — when the streaming pipeline lands, `StreamIn<Chunk>` is a natural shape using exactly the same trait.
+
 ## Dual Storage Model
 
 Bundle data and metadata are stored separately:
