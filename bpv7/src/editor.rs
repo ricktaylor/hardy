@@ -68,7 +68,9 @@ impl Chunk {
     /// Flatten chunks into a contiguous byte buffer, wrapping in a CBOR
     /// indefinite-length array (0x9F prefix, 0xFF suffix).
     pub fn flatten(chunks: Vec<Self>, source: &[u8]) -> Box<[u8]> {
-        let mut result = vec![0x9F];
+        let total_len = 2 + chunks.iter().map(|c| c.len()).sum::<usize>();
+        let mut result = Vec::with_capacity(total_len);
+        result.push(0x9F);
         for c in chunks {
             match c {
                 Chunk::Unchanged(extent) => {
@@ -81,6 +83,7 @@ impl Chunk {
             }
         }
         result.push(0xFF);
+        debug_assert_eq!(result.len(), total_len);
         result.into()
     }
 
