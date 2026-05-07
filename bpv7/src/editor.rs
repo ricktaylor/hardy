@@ -72,6 +72,7 @@ impl Chunk {
         for c in chunks {
             match c {
                 Chunk::Unchanged(extent) => {
+                    debug_assert!(extent.end <= source.len());
                     result.extend_from_slice(&source[extent]);
                 }
                 Chunk::New(items) => {
@@ -97,11 +98,11 @@ impl Chunk {
         let mut needs_backward = false;
         for chunk in &chunks {
             let len = chunk.len();
-            if !needs_backward
-                && let Chunk::Unchanged(range) = chunk
-                && write_pos > range.start
-            {
-                needs_backward = true;
+            if let Chunk::Unchanged(range) = chunk {
+                debug_assert!(range.end <= source.len());
+                if !needs_backward && write_pos > range.start {
+                    needs_backward = true;
+                }
             }
             content_len += len;
             write_pos += len;
@@ -133,6 +134,7 @@ impl Chunk {
                     }
                 }
             }
+            debug_assert_eq!(write_end, 1);
         } else {
             // Forward pass: safe when write positions are at or before source positions
             let mut write_pos: usize = 1;
@@ -151,6 +153,7 @@ impl Chunk {
                     }
                 }
             }
+            debug_assert_eq!(write_pos, 1 + content_len);
         }
 
         // Write 0xFF suffix and truncate
