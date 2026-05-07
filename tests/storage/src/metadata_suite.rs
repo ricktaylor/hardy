@@ -92,9 +92,9 @@ pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
     );
 
     // The confirmed bundle should survive remove_unconfirmed
-    let (tx, rx) = flume::unbounded();
-    store.remove_unconfirmed(tx).await.unwrap();
-    let removed: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.remove_unconfirmed(&sink).await.unwrap();
+    let removed = sink.into_inner();
     assert!(removed.is_empty(), "confirmed bundle should not be removed");
 
     // The confirmed bundle should still be retrievable
@@ -122,9 +122,9 @@ pub async fn meta_06_poll_waiting_fifo(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_b).await.unwrap());
     assert!(store.insert(&bundle_a).await.unwrap());
 
-    let (tx, rx) = flume::unbounded();
-    store.poll_waiting(tx).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_waiting(&sink).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "should return both Waiting bundles");
     assert_eq!(
@@ -162,9 +162,9 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_c).await.unwrap());
 
     // Full poll: should return B then A, excluding C (New status)
-    let (tx, rx) = flume::unbounded();
-    store.poll_expiry(tx, 10).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_expiry(&sink, 10).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "New-status bundle should be excluded");
     assert_eq!(
@@ -177,9 +177,9 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     );
 
     // Limit test: limit=1 should return only the earliest-expiry bundle
-    let (tx, rx) = flume::unbounded();
-    store.poll_expiry(tx, 1).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_expiry(&sink, 1).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
     assert_eq!(results[0].bundle.id, bundle_b.bundle.id);
@@ -203,9 +203,9 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_b).await.unwrap());
 
     // limit=1: should return only the first (earlier) bundle
-    let (tx, rx) = flume::unbounded();
-    store.poll_pending(tx, &status, 1).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_pending(&sink, &status, 1).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
     assert_eq!(
@@ -214,9 +214,9 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     );
 
     // limit=2: should return both in FIFO order
-    let (tx, rx) = flume::unbounded();
-    store.poll_pending(tx, &status, 2).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_pending(&sink, &status, 2).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "limit=2 should return both bundles");
     assert_eq!(
@@ -254,9 +254,9 @@ pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_b).await.unwrap());
     assert!(store.insert(&bundle_c).await.unwrap());
 
-    let (tx, rx) = flume::unbounded();
-    store.poll_pending(tx, &status_a, 10).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_pending(&sink, &status_a, 10).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(
         results.len(),
@@ -283,9 +283,9 @@ pub async fn meta_10_poll_adu_fragments(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_b).await.unwrap());
     assert!(store.insert(&bundle_a).await.unwrap());
 
-    let (tx, rx) = flume::unbounded();
-    store.poll_adu_fragments(tx, &status).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_adu_fragments(&sink, &status).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "should return both fragments");
     assert_eq!(
@@ -327,12 +327,12 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
     assert!(store.insert(&bundle_a2).await.unwrap());
 
     // Poll for service_a — should return both in FIFO order (earlier first)
-    let (tx, rx) = flume::unbounded();
+    let sink = super::VecSink::<bundle::Bundle>::new();
     store
-        .poll_service_waiting(service_a.clone(), tx)
+        .poll_service_waiting(service_a.clone(), &sink)
         .await
         .unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "should return both bundles for service_a");
     assert_eq!(
@@ -349,9 +349,9 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
     );
 
     // Poll for service_b — should return only the one matching bundle
-    let (tx, rx) = flume::unbounded();
-    store.poll_service_waiting(service_b, tx).await.unwrap();
-    let results: Vec<_> = rx.try_iter().collect();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.poll_service_waiting(service_b, &sink).await.unwrap();
+    let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "should return only bundle for service_b");
     assert_eq!(results[0].bundle.id, bundle_b1.bundle.id);
@@ -411,7 +411,7 @@ pub async fn meta_13_remove_unconfirmed(store: Arc<dyn MetadataStorage>) {
     let bundle = fixtures::random_bundle();
     assert!(store.insert(&bundle).await.unwrap());
 
-    let (tx, _rx) = flume::unbounded();
-    store.remove_unconfirmed(tx).await.unwrap();
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store.remove_unconfirmed(&sink).await.unwrap();
     // Should complete without error
 }

@@ -8,7 +8,7 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, Reaper, Sender};
+use super::{BundleStorage, MetadataStorage, Reaper, StreamIn};
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
 use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
@@ -204,17 +204,17 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_waiting(&self, tx: Sender<Bundle>) {
+    pub async fn poll_waiting(&self, stream: &dyn StreamIn<Bundle>) {
         self.metadata_storage
-            .poll_waiting(tx)
+            .poll_waiting(stream)
             .await
             .trace_expect("Failed to poll for waiting bundles")
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) {
+    pub async fn poll_service_waiting(&self, source: Eid, stream: &dyn StreamIn<Bundle>) {
         self.metadata_storage
-            .poll_service_waiting(source, tx)
+            .poll_service_waiting(source, stream)
             .await
             .trace_expect("Failed to poll for waiting bundles")
     }

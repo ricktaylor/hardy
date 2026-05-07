@@ -157,19 +157,28 @@ impl Dispatcher {
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+        let (stream, rx) =
+            storage::ChannelStreamIn::<bundle::Bundle>::bounded(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 
-        join!(self.store.poll_service_waiting(source.clone(), tx), async {
-            while let Ok(mut bundle) = rx.recv_async().await {
-                dispatcher
-                    .store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+        join!(
+            async {
+                self.store
+                    .poll_service_waiting(source.clone(), &stream)
                     .await;
-                dispatcher.dispatch_bundle(bundle).await;
+                drop(stream);
+            },
+            async {
+                while let Ok(mut bundle) = rx.recv().await {
+                    dispatcher
+                        .store
+                        .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                        .await;
+                    dispatcher.dispatch_bundle(bundle).await;
+                }
             }
-        });
+        );
     }
 
     fn key_provider(

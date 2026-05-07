@@ -94,23 +94,24 @@ impl Store {
             .into(),
         };
 
-        let (tx, rx) = flume::bounded::<Bundle>(16);
+        let (stream, rx) = super::ChannelStreamIn::<Bundle>::bounded(16);
 
         join!(
             // Producer: poll for fragment bundles
             async {
                 let _ = self
                     .metadata_storage
-                    .poll_adu_fragments(tx, status)
+                    .poll_adu_fragments(&stream, status)
                     .await
                     .inspect_err(|e| error!("Failed to poll store for fragmented bundles: {e}"));
-                // When tx is dropped, consumer will see channel close and return result
+                // When stream is dropped, consumer will see channel close and return result
+                drop(stream);
             },
             // Consumer: collect fragments
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
                                 break (adu_totals >= total_adu_len).then_some(results);
