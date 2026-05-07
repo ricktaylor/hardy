@@ -318,7 +318,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use hashbrown::HashSet;
 
     use super::*;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
