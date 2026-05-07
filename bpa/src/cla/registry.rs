@@ -453,7 +453,7 @@ mod tests {
 
         // Add peer
         let added = sink
-            .add_peer(peer_addr.clone(), std::slice::from_ref(&peer_node))
+            .add_peer(peer_addr.clone(), core::slice::from_ref(&peer_node))
             .await
             .unwrap();
         assert!(added, "First add_peer should succeed");

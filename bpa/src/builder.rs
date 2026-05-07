@@ -155,7 +155,7 @@ impl BpaBuilder {
     }
 
     /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));
