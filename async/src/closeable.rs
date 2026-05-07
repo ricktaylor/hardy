@@ -67,6 +67,7 @@ mod flume {
     }
 
     impl<T> From<flume::TrySendError<T>> for TrySendError<T> {
+        #[inline]
         fn from(value: flume::TrySendError<T>) -> Self {
             match value {
                 flume::TrySendError::Full(t) => Self::Full(t),
@@ -95,6 +96,7 @@ mod flume {
     pub struct SendError<T>(pub T);
 
     impl<T> From<flume::SendError<T>> for SendError<T> {
+        #[inline]
         fn from(value: flume::SendError<T>) -> Self {
             Self(value.0)
         }
@@ -117,6 +119,7 @@ mod flume {
         /// because any [`close`](Self::close) call has been made on this
         /// channel. For unbounded channels, [`TrySendError::Full`] is never
         /// returned.
+        #[inline]
         pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
             if self.cancel_token.is_cancelled() {
                 return Err(TrySendError::Disconnected(msg));
@@ -132,6 +135,7 @@ mod flume {
         /// because any [`close`](Self::close) call has been made on this
         /// channel. A `send` already awaiting buffer space when `close` is
         /// called is not interrupted; see [`close`](Self::close) for details.
+        #[inline]
         pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
             if self.cancel_token.is_cancelled() {
                 return Err(SendError(msg));
@@ -149,16 +153,19 @@ mod flume {
         /// This is an advisory signal between sender and receiver, not a barrier:
         /// sends already in flight on other threads may still complete. Callers
         /// who need a strict happens-before guarantee should coordinate externally.
+        #[inline]
         pub fn close(self) {
             self.cancel_token.cancel()
         }
 
         /// Returns true if the channel is empty.
+        #[inline]
         pub fn is_empty(&self) -> bool {
             self.sender.is_empty()
         }
 
         /// Returns the number of messages in the channel
+        #[inline]
         pub fn len(&self) -> usize {
             self.sender.len()
         }
@@ -173,6 +180,7 @@ mod flume {
     }
 
     impl From<flume::RecvError> for RecvError {
+        #[inline]
         fn from(_: flume::RecvError) -> Self {
             Self::Disconnected
         }
@@ -205,6 +213,7 @@ mod flume {
         /// (either by [`Sender::close`] or by every `Sender` being dropped),
         /// returns [`RecvError::Disconnected`].
         #[cfg(feature = "tokio")]
+        #[inline]
         pub async fn recv(&self) -> Result<T, RecvError> {
             tokio::select! {
                 biased;
@@ -219,11 +228,13 @@ mod flume {
         }
 
         /// Returns true if the channel is empty.
+        #[inline]
         pub fn is_empty(&self) -> bool {
             self.receiver.is_empty()
         }
 
         /// Returns the number of messages in the channel
+        #[inline]
         pub fn len(&self) -> usize {
             self.receiver.len()
         }
