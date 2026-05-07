@@ -109,7 +109,7 @@ impl Dispatcher {
     }
 
     pub async fn shutdown(&self) {
-        self.dispatch_tx.close().await;
+        self.dispatch_tx.close();
         self.processing_pool.shutdown().await;
         self.tasks.shutdown().await;
     }

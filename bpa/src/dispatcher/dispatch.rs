@@ -17,7 +17,7 @@ impl Dispatcher {
 
     /// Consumer task for the dispatch queue
     pub(super) async fn run_dispatch_queue(self: Arc<Self>, dispatch_rx: storage::Receiver) {
-        while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
+        while let Ok(bundle) = dispatch_rx.recv().await {
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 dispatcher
