@@ -17,7 +17,7 @@ crate-type = ["rlib"]
 
 [features]
 default = ["tokio"]
-std = ["time/std", "tracing/std"]
+std = ["time/std", "tracing/std", "dep:flume"]
 tokio = ["std", "dep:tokio", "dep:tokio-util"]
 watcher = ["tokio", "dep:notify", "dep:notify-debouncer-full", "dep:flume"]
 instrument = ["tracing/attributes"]
