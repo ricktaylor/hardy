@@ -16,43 +16,13 @@ use time::OffsetDateTime;
 use crate::{
     Arc, Bytes,
     bundle::{Bundle, BundleMetadata, BundleStatus},
+    stream::Sender,
 };
 
 /// Boxed error type used by storage trait methods.
 pub type Error = Box<dyn core::error::Error + Send + Sync>;
 /// Result alias for storage operations.
 pub type Result<T> = core::result::Result<T, Error>;
-
-/// Returned by [`StreamIn::send`] when the consumer has gone away and the
-/// producer should stop. Wraps the rejected item so the producer can
-/// recover ownership (e.g. for logging, metrics, or alternative delivery).
-/// Producers should treat this as a definitive "stop streaming" signal,
-/// not a transient error.
-#[derive(Debug)]
-pub struct StreamClosed<T>(pub T);
-
-impl<T> core::fmt::Display for StreamClosed<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("stream consumer has gone away")
-    }
-}
-
-impl<T: core::fmt::Debug> core::error::Error for StreamClosed<T> {}
-
-/// A consumer of streamed items used by storage trait methods to deliver
-/// results. Implementors typically wrap a channel sender (which has
-/// interior mutability), but may equally be in-memory buffers or test
-/// mocks (which may need their own interior mutability, e.g. `Mutex`).
-///
-/// `StreamIn<T>` is the *push* side of a stream: the producer drives
-/// delivery item-by-item by calling `send`. Returns
-/// `Err(StreamClosed(item))` to signal that the consumer is gone — at
-/// which point the producer should stop. The rejected item is returned
-/// in the error so the producer can recover ownership.
-#[async_trait]
-pub trait StreamIn<T>: Send + Sync {
-    async fn send(&self, item: T) -> core::result::Result<(), StreamClosed<T>>;
-}
 
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
@@ -67,11 +37,11 @@ pub trait StreamIn<T>: Send + Sync {
 /// # Streaming Results
 ///
 /// Polling methods (`poll_*`, `remove_unconfirmed`) deliver results to the caller via a
-/// [`StreamIn<Bundle>`] sink rather than returning them as a collection. This decouples the
+/// [`Sender<Bundle>`] sink rather than returning them as a collection. This decouples the
 /// trait from any specific channel implementation: the BPA wraps its own channel sender in
 /// an internal adapter, localdisk-storage builds an adapter over its internal flume channel,
-/// and tests use a `Vec`-collecting mock — all implementing the same `StreamIn` trait.
-/// Implementors should stop iterating when `stream.send` returns `Err(StreamClosed(_))` —
+/// and tests use a `Vec`-collecting mock — all implementing the same `Sender` trait.
+/// Implementors should stop iterating when `stream.send` returns `Err(SendError(_))` —
 /// the consumer has gone away.
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
@@ -171,12 +141,12 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// * `stream` - The sink to which the unconfirmed bundles are pushed.
     ///   The implementor should stop iterating if `stream.send` returns
-    ///   `Err(StreamClosed(_))` — the consumer has gone away.
+    ///   `Err(SendError(_))` — the consumer has gone away.
     ///
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn remove_unconfirmed(&self, stream: &dyn StreamIn<Bundle>) -> Result<()>;
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
     /// Resets all bundles with the status `BundleStatus::ForwardPending { peer, _ }` to `Waiting`.
     /// This allows the dispatcher to re-evaluate the forwarding decision for these bundles.
@@ -192,7 +162,7 @@ pub trait MetadataStorage: Send + Sync {
 
     /// Returns the next `limit` bundles, not of status `BundleStatus::New`, ordered by expiry.
     /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(StreamClosed(_))`.
+    /// `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -202,11 +172,11 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_expiry(&self, stream: &dyn StreamIn<Bundle>, limit: usize) -> Result<()>;
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()>;
 
     /// Returns all bundles with `BundleStatus::Waiting` status, snapshotted at the time of the call,
     /// ordered by received time. The implementor should stop iterating
-    /// when `stream.send` returns `Err(StreamClosed(_))`.
+    /// when `stream.send` returns `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -215,11 +185,11 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_waiting(&self, stream: &dyn StreamIn<Bundle>) -> Result<()>;
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
     /// Returns bundles currently in `BundleStatus::WaitingForService` for the specified service source,
     /// ordered by received time. The implementor should stop iterating
-    /// when `stream.send` returns `Err(StreamClosed(_))`.
+    /// when `stream.send` returns `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -229,11 +199,11 @@ pub trait MetadataStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn poll_service_waiting(&self, source: Eid, stream: &dyn StreamIn<Bundle>) -> Result<()>;
+    async fn poll_service_waiting(&self, source: Eid, stream: &dyn Sender<Bundle>) -> Result<()>;
 
     /// Returns all bundles matching the `BundleStatus::AduFragment` status, preferably ordered by fragment offset.
     /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(StreamClosed(_))`.
+    /// `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -245,13 +215,13 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn poll_adu_fragments(
         &self,
-        stream: &dyn StreamIn<Bundle>,
+        stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
     ) -> Result<()>;
 
     /// Returns the next `limit` bundles waiting in a particular status, ordered by received time.
     /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(StreamClosed(_))`.
+    /// `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -264,7 +234,7 @@ pub trait MetadataStorage: Send + Sync {
     /// A `Result` indicating whether the operation was successful.
     async fn poll_pending(
         &self,
-        stream: &dyn StreamIn<Bundle>,
+        stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
         limit: usize,
     ) -> Result<()>;
@@ -284,13 +254,13 @@ pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 ///
 /// # Streaming Results
 ///
-/// `recover` delivers entries to the caller via a [`StreamIn<RecoveryResponse>`] sink rather
+/// `recover` delivers entries to the caller via a [`Sender<RecoveryResponse>`] sink rather
 /// than returning a collection. See the [`MetadataStorage`] trait docs for the rationale.
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
     /// Recovers bundles from the bundle storage and pushes them to `stream`.
     /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(StreamClosed(_))`.
+    /// `Err(SendError(_))`.
     ///
     /// # Arguments
     ///
@@ -299,7 +269,7 @@ pub trait BundleStorage: Send + Sync {
     /// # Returns
     ///
     /// A `Result` indicating whether the operation was successful.
-    async fn recover(&self, stream: &dyn StreamIn<RecoveryResponse>) -> Result<()>;
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> Result<()>;
 
     /// Loads a bundle from the bundle storage.
     ///

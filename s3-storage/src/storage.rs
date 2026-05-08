@@ -1,10 +1,16 @@
+use aws_sdk_s3::{
+    primitives::ByteStream,
+    types::{CompletedMultipartUpload, CompletedPart},
+};
+use hardy_bpa::{
+    Bytes, async_trait,
+    storage::{self, RecoveryResponse},
+    stream::Sender,
+};
+use std::sync::Arc;
+
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-
-use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
-use hardy_bpa::{Bytes, async_trait, storage};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub(super) struct Storage {
@@ -144,10 +150,7 @@ impl Storage {
 #[async_trait]
 impl storage::BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(
-        &self,
-        stream: &dyn storage::StreamIn<storage::RecoveryResponse>,
-    ) -> storage::Result<()> {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
 
         loop {

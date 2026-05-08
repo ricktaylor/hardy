@@ -21,19 +21,26 @@
 //!
 //! Uses lock-free CAS operations for state transitions on the hot path.
 
-use core::result::Result;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use hardy_async::Notify;
-use hardy_async::closeable::TrySendError;
+use core::{
+    result::Result,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use hardy_async::{Notify, closeable::TrySendError};
 use trace_err::*;
 use tracing::debug;
 
 use crate::{
     Arc,
     bundle::{Bundle, BundleStatus},
+    stream::ChannelSender,
 };
 
-use super::{Receiver, store::Store};
+use super::store::Store;
+
+/// Receiver handle for bundles drained from a hybrid storage channel.
+/// `recv()` returns `Err(RecvError::Disconnected)` after the buffer
+/// drains once the channel has been closed.
+pub(crate) type Receiver = hardy_async::closeable::Receiver<Bundle>;
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
@@ -290,7 +297,7 @@ impl Store {
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (stream, inner_rx) = super::ChannelStreamIn::<Bundle>::bounded(cap);
+        let (stream, inner_rx) = ChannelSender::<Bundle>::bounded(cap);
         let shared_cloned = shared.clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {

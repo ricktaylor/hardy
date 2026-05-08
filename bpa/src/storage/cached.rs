@@ -1,13 +1,13 @@
 //! LRU cache decorator for BundleStorage.
 
 use core::num::NonZeroUsize;
-
 use hardy_async::async_trait;
 use hardy_async::sync::spin::Mutex;
 use lru::LruCache;
 
-use super::{BundleStorage, RecoveryResponse, Result, StreamIn};
-use crate::{Arc, Bytes};
+use crate::{Arc, Bytes, stream::Sender};
+
+use super::{BundleStorage, RecoveryResponse, Result};
 
 /// Default LRU cache capacity (number of entries).
 pub const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
@@ -45,7 +45,7 @@ impl CachedBundleStorage {
 
 #[async_trait]
 impl BundleStorage for CachedBundleStorage {
-    async fn recover(&self, stream: &dyn StreamIn<RecoveryResponse>) -> Result<()> {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> Result<()> {
         self.inner.recover(stream).await
     }
 
