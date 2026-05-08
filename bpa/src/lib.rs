@@ -55,6 +55,7 @@ pub mod policy;
 pub mod routes;
 pub mod services;
 pub mod storage;
+pub mod stream;
 
 // The generic error type
 pub type Error = Box<dyn core::error::Error + Send + Sync>;

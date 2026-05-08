@@ -1,5 +1,10 @@
 use super::*;
-use hardy_bpa::{async_trait, bundle::BundleStatus, storage};
+use hardy_bpa::{
+    async_trait,
+    bundle::{Bundle, BundleMetadata, BundleStatus},
+    storage,
+    stream::Sender,
+};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -241,10 +246,7 @@ fn to_status(
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    async fn get(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
+    async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3)) = self
             .read(move |conn| {
@@ -268,7 +270,7 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        let mut bundle: hardy_bpa::bundle::Bundle = serde_json::from_slice(&bundle)?;
+        let mut bundle: Bundle = serde_json::from_slice(&bundle)?;
         if let Some(status) = to_status(status_code, p1, p2, p3) {
             bundle.metadata.status = status;
             Ok(Some(bundle))
@@ -279,7 +281,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
+    async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
@@ -299,7 +301,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
@@ -324,7 +326,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    async fn update_status(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+    async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
         let id = serde_json::to_vec(&bundle.bundle.id)?;
@@ -380,7 +382,7 @@ impl storage::MetadataStorage for Storage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::bundle::BundleMetadata>> {
+    ) -> storage::Result<Option<BundleMetadata>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {
@@ -408,7 +410,7 @@ impl storage::MetadataStorage for Storage {
             return Ok(None);
         };
 
-        match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+        match serde_json::from_slice::<Bundle>(&bundle) {
             Ok(mut bundle) => {
                 if let Some(status) = to_status(status_code, p1, p2, p3) {
                     bundle.metadata.status = status;
@@ -426,10 +428,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn remove_unconfirmed(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         loop {
             let bundles = self
                 .write(move |conn| {
@@ -513,11 +512,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    async fn poll_expiry(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-        limit: usize,
-    ) -> storage::Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::New).0 == 0,
             "Status code mismatch"
@@ -546,7 +541,7 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for (bundle, status_code, p1, p2, p3) in bundles {
-            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+            match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
                     if let Some(status) = to_status(status_code, p1, p2, p3) {
                         bundle.metadata.status = status;
@@ -566,10 +561,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn poll_waiting(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::Waiting).0 == 1,
             "Status code mismatch"
@@ -624,7 +616,7 @@ impl storage::MetadataStorage for Storage {
             }
 
             for bundle in bundles {
-                match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+                match serde_json::from_slice::<Bundle>(&bundle) {
                     Ok(mut bundle) => {
                         bundle.metadata.status = BundleStatus::Waiting;
                         if stream.send(bundle).await.is_err() {
@@ -642,7 +634,7 @@ impl storage::MetadataStorage for Storage {
     async fn poll_service_waiting(
         &self,
         source: hardy_bpv7::eid::Eid,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
+        stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::WaitingForService {
@@ -667,7 +659,7 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+            match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
                     bundle.metadata.status = BundleStatus::WaitingForService {
                         service: source.clone(),
@@ -686,7 +678,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_adu_fragments(
         &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
+        stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
     ) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) = from_status(status);
@@ -707,7 +699,7 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+            match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
                     bundle.metadata.status = status.clone();
                     if stream.send(bundle).await.is_err() {
@@ -725,7 +717,7 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_pending(
         &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
+        stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
@@ -748,7 +740,7 @@ impl storage::MetadataStorage for Storage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle) {
+            match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
                     bundle.metadata.status = status.clone();
                     if stream.send(bundle).await.is_err() {
@@ -767,7 +759,10 @@ impl storage::MetadataStorage for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::storage::MetadataStorage;
+    use hardy_bpa::{
+        storage::MetadataStorage,
+        stream::{SendError, Sender},
+    };
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -783,8 +778,8 @@ mod tests {
     }
 
     #[hardy_bpa::async_trait]
-    impl<T: Send + Sync + 'static> hardy_bpa::storage::StreamIn<T> for VecSink<T> {
-        async fn send(&self, item: T) -> Result<(), hardy_bpa::storage::StreamClosed<T>> {
+    impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
+        async fn send(&self, item: T) -> Result<(), SendError<T>> {
             self.0.lock().unwrap().push(item);
             Ok(())
         }

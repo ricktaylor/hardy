@@ -1,5 +1,4 @@
 use core::num::{NonZero, NonZeroUsize};
-
 use hardy_async::async_trait;
 use hardy_async::sync::Mutex;
 use rand::distr::{Alphanumeric, SampleString};
@@ -7,8 +6,9 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use super::{BundleStorage, RecoveryResponse, Result, StreamIn};
-use crate::{Arc, Bytes};
+use crate::{Arc, Bytes, stream::Sender};
+
+use super::{BundleStorage, RecoveryResponse, Result};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -62,7 +62,7 @@ impl BundleMemStorage {
 
 #[async_trait]
 impl BundleStorage for BundleMemStorage {
-    async fn recover(&self, stream: &dyn StreamIn<RecoveryResponse>) -> Result<()> {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> Result<()> {
         let snapshot = self
             .inner
             .lock()
