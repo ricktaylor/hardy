@@ -38,7 +38,7 @@ pub struct Rib {
     ecmp_hash_state: foldhash::quality::RandomState,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::Store>,
+    store: Arc<storage::store::Store>,
 
     // The priority for services - default 1
     service_priority: u32,
@@ -70,7 +70,7 @@ impl RibBuilder {
     pub async fn build(
         self,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
     ) -> routes::Result<Arc<Rib>> {
         let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
         for (name, agent) in self.agents {
@@ -87,7 +87,7 @@ impl Rib {
 
     fn new(
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         service_priority: u32,
     ) -> Self {
         let entry = route::Entry {
