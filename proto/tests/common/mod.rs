@@ -172,6 +172,14 @@ impl cla::Sink for ClaSinkWrapper {
     ) -> cla::Result<()> {
         self.0.dispatch(b, pn, pa).await
     }
+    async fn dispatch_streamed(
+        &self,
+        s: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        pn: Option<&NodeId>,
+        pa: Option<&cla::ClaAddress>,
+    ) -> cla::Result<()> {
+        self.0.dispatch_streamed(s, pn, pa).await
+    }
     async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
         self.0.add_peer(a, n).await
     }

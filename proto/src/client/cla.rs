@@ -75,6 +75,44 @@ impl hardy_bpa::cla::Sink for Sink {
         }
     }
 
+    async fn dispatch_streamed(
+        &self,
+        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+    ) -> hardy_bpa::cla::Result<()> {
+        // TODO: Just do a dumb concat for now!
+        let mut concat: Option<bytes::BytesMut> = None;
+        loop {
+            let (data, last) = match stream.recv().await {
+                Ok(hardy_bpa::cla::Segment::Next(data)) => (data, false),
+                Ok(hardy_bpa::cla::Segment::Final(data)) => (data, true),
+                Err(_) => return Ok(()),
+            };
+
+            if let Some(current) = concat.as_mut() {
+                current.extend(data);
+            } else {
+                match data.try_into_mut() {
+                    Ok(data) => concat = Some(data),
+                    Err(data) => {
+                        let mut current = bytes::BytesMut::with_capacity(data.len());
+                        current.extend(data);
+                        concat = Some(current);
+                    }
+                }
+            }
+
+            if last {
+                break;
+            }
+        }
+        let Some(data) = concat.map(Into::into) else {
+            return Ok(());
+        };
+        self.dispatch(data, peer_node, peer_addr).await
+    }
+
     async fn add_peer(
         &self,
         cla_addr: hardy_bpa::cla::ClaAddress,
