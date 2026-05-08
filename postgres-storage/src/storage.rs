@@ -1,5 +1,10 @@
 use super::*;
-use hardy_bpa::{async_trait, storage};
+use hardy_bpa::{
+    async_trait,
+    bundle::{Bundle, BundleStatus},
+    storage,
+    stream::Sender,
+};
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 use tracing::{error, warn};
 
@@ -134,7 +139,7 @@ struct WaitingRow {
 }
 
 impl WaitingRow {
-    fn decode(self, status: &hardy_bpa::bundle::BundleStatus) -> Option<hardy_bpa::bundle::Bundle> {
+    fn decode(self, status: &BundleStatus) -> Option<Bundle> {
         decode_bundle(self.bundle, Some(status.clone()))
     }
 }
@@ -162,13 +167,13 @@ struct PendingRow {
 }
 
 impl MetadataRow {
-    fn decode(self) -> Option<hardy_bpa::bundle::Bundle> {
+    fn decode(self) -> Option<Bundle> {
         decode_bundle(self.bundle, self.status_fields.into_bundle_status())
     }
 }
 
 impl MetadataRowWithId {
-    fn decode(self) -> (i64, Option<hardy_bpa::bundle::Bundle>) {
+    fn decode(self) -> (i64, Option<Bundle>) {
         (
             self.id,
             decode_bundle(self.bundle, self.status_fields.into_bundle_status()),
@@ -177,7 +182,7 @@ impl MetadataRowWithId {
 }
 
 impl ExpiryRow {
-    fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
+    fn decode(self) -> (i64, time::OffsetDateTime, Option<Bundle>) {
         (
             self.id,
             self.expiry,
@@ -187,7 +192,7 @@ impl ExpiryRow {
 }
 
 impl PendingRow {
-    fn decode(self) -> (i64, time::OffsetDateTime, Option<hardy_bpa::bundle::Bundle>) {
+    fn decode(self) -> (i64, time::OffsetDateTime, Option<Bundle>) {
         (
             self.id,
             self.received_at,
@@ -199,15 +204,12 @@ impl PendingRow {
 // Deserialize a bundle from BYTEA and override its status from the pre-decoded typed columns.
 // The BYTEA blob is authoritative for all fields; typed columns are only for indexing.
 // We still override status from typed columns to guard against any blob/column skew.
-fn decode_bundle(
-    bundle_bytes: Vec<u8>,
-    status: Option<hardy_bpa::bundle::BundleStatus>,
-) -> Option<hardy_bpa::bundle::Bundle> {
+fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<Bundle> {
     let Some(status) = status else {
         warn!("Failed to decode metadata status");
         return None;
     };
-    match serde_json::from_slice::<hardy_bpa::bundle::Bundle>(&bundle_bytes) {
+    match serde_json::from_slice::<Bundle>(&bundle_bytes) {
         Ok(mut bundle) => {
             bundle.metadata.status = status;
             Some(bundle)
@@ -222,10 +224,7 @@ fn decode_bundle(
 #[async_trait]
 impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
-    async fn get(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<hardy_bpa::bundle::Bundle>> {
+    async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let bundle_key = bundle_id.to_key();
 
         let row = sqlx::query_as::<_, MetadataRow>(
@@ -243,7 +242,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
-    async fn insert(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<bool> {
+    async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let bundle_key = bundle.bundle.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let received_at = bundle.metadata.read_only.received_at;
@@ -288,7 +287,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
-    async fn replace(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.bundle.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let expiry = bundle.expiry();
@@ -329,7 +328,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
-    async fn update_status(&self, bundle: &hardy_bpa::bundle::Bundle) -> storage::Result<()> {
+    async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.bundle.id.to_key();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
@@ -436,10 +435,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn remove_unconfirmed(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         loop {
             // One atomic CTE: delete a batch from unconfirmed, snapshot the bundle blobs,
             // then tombstone the metadata rows. PostgreSQL evaluates all CTEs against the
@@ -507,11 +503,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    async fn poll_expiry(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-        limit: usize,
-    ) -> storage::Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
         let mut conn = begin_snapshot(&self.pool).await?;
 
         // UNIX_EPOCH as the initial keyset cursor: all BIGSERIAL ids start at 1,
@@ -566,10 +558,7 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn poll_waiting(
-        &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-    ) -> storage::Result<()> {
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         let mut conn = begin_snapshot(&self.pool).await?;
 
         let mut last_received_at = time::OffsetDateTime::UNIX_EPOCH;
@@ -600,7 +589,7 @@ impl storage::MetadataStorage for Storage {
                 last_id = r.id;
                 // Status is 'waiting' by the WHERE clause; override the blob's status
                 // field (which may lag by one write) to keep them consistent.
-                let Some(bundle) = r.decode(&hardy_bpa::bundle::BundleStatus::Waiting) else {
+                let Some(bundle) = r.decode(&BundleStatus::Waiting) else {
                     continue;
                 };
                 if stream.send(bundle).await.is_err() {
@@ -618,11 +607,11 @@ impl storage::MetadataStorage for Storage {
     async fn poll_service_waiting(
         &self,
         source: hardy_bpv7::eid::Eid,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
+        stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
         let source_str = source.to_string();
         // Construct once; all bundles on this poll share the same WaitingForService status.
-        let bundle_status = hardy_bpa::bundle::BundleStatus::WaitingForService { service: source };
+        let bundle_status = BundleStatus::WaitingForService { service: source };
 
         let mut conn = begin_snapshot(&self.pool).await?;
 
@@ -671,8 +660,8 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_adu_fragments(
         &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::bundle::BundleStatus,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;
 
@@ -729,8 +718,8 @@ impl storage::MetadataStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_pending(
         &self,
-        stream: &dyn storage::StreamIn<hardy_bpa::bundle::Bundle>,
-        status: &hardy_bpa::bundle::BundleStatus,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
         limit: usize,
     ) -> storage::Result<()> {
         let sf = status::StatusFields::try_from(status)?;

@@ -2,10 +2,11 @@ use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 use trace_err::*;
 use tracing::info;
+
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
+use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher, stream::ChannelSender};
 
 use super::{RecoveryResponse, store::Store};
 
@@ -40,7 +41,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (stream, rx) = super::ChannelStreamIn::<RecoveryResponse>::bounded(16);
+        let (stream, rx) = ChannelSender::<RecoveryResponse>::bounded(16);
 
         join!(
             // Producer: recover bundles from storage
@@ -75,7 +76,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (stream, rx) = super::ChannelStreamIn::<Bundle>::bounded(16);
+        let (stream, rx) = ChannelSender::<Bundle>::bounded(16);
 
         join!(
             // Producer: find unconfirmed bundles
