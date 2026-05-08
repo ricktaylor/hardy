@@ -159,7 +159,7 @@ impl ClaRegistryBuilder {
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: &Arc<rib::Rib>,
-        store: &Arc<storage::Store>,
+        store: &Arc<storage::store::Store>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<Arc<ClaRegistry>> {
         let peers = Arc::new(cla::peers::PeerTable::new());
@@ -193,7 +193,7 @@ pub(crate) struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
     rib: Arc<rib::Rib>,
-    store: Arc<storage::Store>,
+    store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,

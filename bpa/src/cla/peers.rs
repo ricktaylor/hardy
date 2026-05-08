@@ -30,7 +30,7 @@ impl Peer {
         cla: Arc<registry::Cla>,
         peer: u32,
         cla_addr: ClaAddress,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
     ) {
@@ -79,7 +79,7 @@ impl Peer {
     fn start_queue_poller(
         poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,
         queue: Option<u32>,

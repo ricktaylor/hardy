@@ -5,10 +5,9 @@ use tracing::info;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{RecoveryResponse, Store};
-use crate::Arc;
-use crate::bundle::Bundle;
-use crate::dispatcher::Dispatcher;
+use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
+
+use super::{RecoveryResponse, store::Store};
 
 impl Store {
     pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
