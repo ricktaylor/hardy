@@ -125,9 +125,11 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
-        // Ensure we process operations in the same order
+        // Sort by target block number for deterministic wire format
+        let mut entries: SmallVec<[_; 4]> = self.operations.iter().collect();
+        entries.sort_by_key(|(k, _)| *k);
         let (targets, operations): (SmallVec<[&u64; 4]>, SmallVec<[&Operation; 4]>) =
-            self.operations.iter().unzip();
+            entries.into_iter().unzip();
 
         // Targets
         encoder.emit(targets.as_slice());
