@@ -50,43 +50,6 @@ pub trait Sender<T>: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Pull side
-// ---------------------------------------------------------------------------
-
-/// Returned by [`Receiver::recv`] when the producer has gone away and no
-/// further items will arrive. Consumers should treat this as a definitive
-/// "stop pulling" signal, not a transient error.
-#[derive(Debug)]
-pub struct RecvError;
-
-impl core::fmt::Display for RecvError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("stream producer has gone away")
-    }
-}
-
-impl core::error::Error for RecvError {}
-
-/// A producer of streamed items, supplied by a callee to a caller so the
-/// caller can pull items at its own pace. Implementors typically wrap a
-/// channel receiver (which has interior mutability).
-///
-/// `Receiver<T>` is the *pull* side of a stream: the consumer drives
-/// delivery item-by-item by calling `recv`. Returns `Err(RecvError)` to
-/// signal that the producer is gone and no more items will arrive — at
-/// which point the consumer should stop.
-///
-/// **Backpressure**: `recv` is async, so a slow consumer naturally
-/// backpressures the producer *only* if the underlying channel is bounded.
-/// Callers handing a `Receiver` to the BPA should drive segments through
-/// a bounded channel (see [`ChannelReceiver`]), otherwise the producer
-/// will buffer unbounded.
-#[async_trait]
-pub trait Receiver<T>: Send + Sync {
-    async fn recv(&self) -> core::result::Result<T, RecvError>;
-}
-
-// ---------------------------------------------------------------------------
 // Default channel adapters
 // ---------------------------------------------------------------------------
 
@@ -112,27 +75,5 @@ impl<T: Send + 'static> Sender<T> for ChannelSender<T> {
             .send(item)
             .await
             .map_err(|hardy_async::channel::SendError(item)| SendError(item))
-    }
-}
-
-/// Adapter that exposes a [`hardy_async::channel::Receiver<T>`] as a
-/// [`Receiver<T>`]. Use at call sites that create a channel and hand the
-/// receiver into a streaming trait method.
-pub(crate) struct ChannelReceiver<T>(pub hardy_async::channel::Receiver<T>);
-
-impl<T> ChannelReceiver<T> {
-    /// Convenience constructor that creates a bounded
-    /// [`hardy_async::channel`] and wraps the receiver in a
-    /// `ChannelReceiver`, returning it alongside the sender.
-    pub fn bounded(capacity: usize) -> (hardy_async::channel::Sender<T>, Self) {
-        let (tx, rx) = hardy_async::channel::bounded(capacity);
-        (tx, Self(rx))
-    }
-}
-
-#[async_trait]
-impl<T: Send + 'static> Receiver<T> for ChannelReceiver<T> {
-    async fn recv(&self) -> core::result::Result<T, RecvError> {
-        self.0.recv().await.map_err(|_| RecvError)
     }
 }
