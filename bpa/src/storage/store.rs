@@ -1,5 +1,4 @@
 use core::num::NonZeroUsize;
-
 use hardy_async::TaskPool;
 use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
@@ -8,10 +7,13 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, Reaper, StreamIn};
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
-use crate::dispatcher::Dispatcher;
-use crate::{Arc, Bytes};
+use crate::{
+    Arc, Bytes,
+    bundle::{Bundle, BundleMetadata, BundleStatus},
+    dispatcher::Dispatcher,
+};
+
+use super::{BundleStorage, MetadataStorage, StreamIn, reaper::Reaper};
 
 pub struct Store {
     pub(super) tasks: TaskPool,

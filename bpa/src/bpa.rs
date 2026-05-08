@@ -3,18 +3,19 @@ use hardy_bpv7::eid::NodeId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use crate::builder::BpaBuilder;
-use crate::cla::registry::ClaRegistry;
-use crate::cla::{self, Cla};
-use crate::dispatcher::Dispatcher;
-use crate::filter::{self, Filter, FilterEngine, Hook};
-use crate::policy::EgressPolicy;
-use crate::rib::Rib;
-use crate::routes::{self, RoutingAgent};
-use crate::services::Service;
-use crate::services::registry::ServiceRegistry;
-use crate::storage::Store;
-use crate::{Arc, otel_metrics, services};
+use crate::{
+    Arc,
+    builder::BpaBuilder,
+    cla::{self, Cla, registry::ClaRegistry},
+    dispatcher::Dispatcher,
+    filter::{self, Filter, FilterEngine, Hook},
+    otel_metrics,
+    policy::EgressPolicy,
+    rib::Rib,
+    routes::{self, RoutingAgent},
+    services::{self, Service, registry::ServiceRegistry},
+    storage::store::Store,
+};
 
 /// Trait for registering CLAs, services, and applications with a BPA.
 ///
