@@ -23,15 +23,17 @@
 
 use core::result::Result;
 use core::sync::atomic::{AtomicUsize, Ordering};
-
 use hardy_async::Notify;
 use hardy_async::closeable::TrySendError;
 use trace_err::*;
 use tracing::debug;
 
-use super::{Receiver, Store};
-use crate::Arc;
-use crate::bundle::{Bundle, BundleStatus};
+use crate::{
+    Arc,
+    bundle::{Bundle, BundleStatus},
+};
+
+use super::{Receiver, store::Store};
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
