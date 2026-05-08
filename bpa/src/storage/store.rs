@@ -11,9 +11,10 @@ use crate::{
     Arc, Bytes,
     bundle::{Bundle, BundleMetadata, BundleStatus},
     dispatcher::Dispatcher,
+    stream::Sender,
 };
 
-use super::{BundleStorage, MetadataStorage, StreamIn, reaper::Reaper};
+use super::{BundleStorage, MetadataStorage, reaper::Reaper};
 
 pub struct Store {
     pub(super) tasks: TaskPool,
@@ -206,7 +207,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_waiting(&self, stream: &dyn StreamIn<Bundle>) {
+    pub async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) {
         self.metadata_storage
             .poll_waiting(stream)
             .await
@@ -214,7 +215,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    pub async fn poll_service_waiting(&self, source: Eid, stream: &dyn StreamIn<Bundle>) {
+    pub async fn poll_service_waiting(&self, source: Eid, stream: &dyn Sender<Bundle>) {
         self.metadata_storage
             .poll_service_waiting(source, stream)
             .await

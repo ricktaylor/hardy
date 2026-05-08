@@ -158,7 +158,7 @@ impl Dispatcher {
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
         let (stream, rx) =
-            storage::ChannelStreamIn::<bundle::Bundle>::bounded(self.poll_channel_depth);
+            crate::stream::ChannelSender::<bundle::Bundle>::bounded(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 

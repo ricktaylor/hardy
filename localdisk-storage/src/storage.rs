@@ -1,6 +1,10 @@
 use super::*;
 use futures::join;
-use hardy_bpa::{Bytes, async_trait, storage, storage::BundleStorage};
+use hardy_bpa::{
+    Bytes, async_trait,
+    storage::{self, BundleStorage, RecoveryResponse},
+    stream::Sender,
+};
 use rand::prelude::*;
 use std::{
     io::Write,
@@ -68,7 +72,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &flume::Sender<storage::RecoveryResponse>,
+    tx: &flume::Sender<RecoveryResponse>,
 ) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
@@ -154,13 +158,10 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(
-        &self,
-        stream: &dyn storage::StreamIn<storage::RecoveryResponse>,
-    ) -> storage::Result<()> {
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
         // Internal flume channel: walk_dirs uses blocking send + is_disconnected
         // (called from spawn_blocking), so we keep flume internally and bridge
-        // to the external StreamIn via a sibling pump task.
+        // to the external Sender via a sibling pump task.
         let parallelism: usize = std::thread::available_parallelism()
             .map(Into::into)
             .unwrap_or(1);
@@ -214,7 +215,7 @@ impl BundleStorage for Storage {
             drop(flume_tx);
         };
 
-        // Pump: forward items from the internal flume to the external StreamIn.
+        // Pump: forward items from the internal flume to the external Sender.
         let pump = async {
             loop {
                 match flume_rx.recv_async().await {
@@ -418,7 +419,10 @@ impl BundleStorage for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::storage::BundleStorage;
+    use hardy_bpa::{
+        storage::BundleStorage,
+        stream::{SendError, Sender},
+    };
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -434,8 +438,8 @@ mod tests {
     }
 
     #[hardy_bpa::async_trait]
-    impl<T: Send + Sync + 'static> hardy_bpa::storage::StreamIn<T> for VecSink<T> {
-        async fn send(&self, item: T) -> Result<(), hardy_bpa::storage::StreamClosed<T>> {
+    impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
+        async fn send(&self, item: T) -> Result<(), SendError<T>> {
             self.0.lock().unwrap().push(item);
             Ok(())
         }
