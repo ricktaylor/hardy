@@ -3,12 +3,13 @@ use hardy_bpv7::status_report::ReasonCode;
 
 use crate::{cla::Segment, stream::Receiver};
 
-async fn concat_stream(stream: &dyn Receiver<Segment>) -> Result<crate::Bytes, ()> {
+async fn concat_stream(stream: &dyn Receiver<Segment>) -> Option<crate::Bytes> {
     let mut concat: Option<bytes::BytesMut> = None;
     loop {
-        let (data, last) = match stream.recv().await.map_err(|_| ())? {
-            Segment::Next(data) => (data, false),
-            Segment::Final(data) => (data, true),
+        let (data, last) = match stream.recv().await {
+            Ok(Segment::Next(data)) => (data, false),
+            Ok(Segment::Final(data)) => (data, true),
+            Err(_) => return None,
         };
 
         if let Some(current) = concat.as_mut() {
@@ -28,7 +29,23 @@ async fn concat_stream(stream: &dyn Receiver<Segment>) -> Result<crate::Bytes, (
             break;
         }
     }
-    concat.map(Into::into).ok_or(())
+    concat.map(Into::into)
+}
+
+struct CountingReceiver<'a> {
+    stream: &'a dyn Receiver<Segment>,
+}
+
+#[async_trait]
+impl Receiver<Segment> for CountingReceiver<'_> {
+    async fn recv(&self) -> Result<Segment, crate::stream::RecvError> {
+        let seg = self.stream.recv().await?;
+        let len = match &seg {
+            Segment::Next(b) | Segment::Final(b) => b.len(),
+        };
+        metrics::counter!("bpa.bundle.received.bytes").increment(len as u64);
+        Ok(seg)
+    }
 }
 
 impl Dispatcher {
@@ -52,14 +69,7 @@ impl Dispatcher {
         ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
     ) -> cla::Result<()> {
-        // TODO:  For now, we just concantenate in a dumb way
-        let Ok(data) = concat_stream(stream).await else {
-            debug!("Stream cancelled");
-            return Ok(());
-        };
-
         metrics::counter!("bpa.bundle.received").increment(1);
-        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
         let metadata = bundle::BundleMetadata {
             status: bundle::BundleStatus::New,
@@ -73,7 +83,8 @@ impl Dispatcher {
             ..Default::default()
         };
 
-        if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
+        let stream = CountingReceiver { stream };
+        if let Some((bundle, data)) = self.process_received_bundle(&stream, metadata).await {
             self.ingress_bundle(bundle, data).await;
         }
         Ok(())
@@ -94,9 +105,15 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub(super) async fn process_received_bundle(
         &self,
-        mut data: Bytes,
+        stream: &dyn Receiver<Segment>,
         mut metadata: bundle::BundleMetadata,
     ) -> Option<(bundle::Bundle, Bytes)> {
+        // TODO:  For now, we just concantenate in a dumb way
+        let Some(mut data) = concat_stream(stream).await else {
+            debug!("Stream cancelled");
+            return None;
+        };
+
         // Fast pre-check: reject empty, BPv6, and non-CBOR-array data
         if let Err(e) = crate::cbor::precheck(&data) {
             debug!("Bundle rejected by CBOR precheck: {e}");
