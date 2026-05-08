@@ -84,9 +84,8 @@ impl cla::Sink for Sink {
             .name
             .clone();
 
+        // TODO: Just push the entire bundle into the stream
         let (tx, rx) = hardy_async::channel::bounded(1);
-
-        // Just push the entire bundle into the stream
         tx.send(Segment::Final(bundle))
             .await
             .trace_expect("New stream push failed?!?");

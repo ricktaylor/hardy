@@ -90,7 +90,13 @@ impl Dispatcher {
                 ..Default::default()
             };
 
-            if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
+            // TODO: Just push the entire bundle into the stream
+            let (tx, rx) = hardy_async::channel::bounded(1);
+            tx.send(cla::Segment::Final(data))
+                .await
+                .trace_expect("New stream push failed?!?");
+
+            if let Some((bundle, data)) = self.process_received_bundle(&rx, metadata).await {
                 self.ingress_bundle(bundle, data).await;
             }
             metrics::counter!("bpa.restart.orphan").increment(1);
