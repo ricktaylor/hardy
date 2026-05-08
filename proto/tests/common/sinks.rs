@@ -81,6 +81,15 @@ impl cla::Sink for MockClaSink {
         Ok(())
     }
 
+    async fn dispatch_streamed(
+        &self,
+        _stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        _peer_node: Option<&NodeId>,
+        _peer_addr: Option<&cla::ClaAddress>,
+    ) -> cla::Result<()> {
+        Ok(())
+    }
+
     async fn add_peer(
         &self,
         _cla_addr: cla::ClaAddress,

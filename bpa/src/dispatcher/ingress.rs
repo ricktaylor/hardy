@@ -1,6 +1,36 @@
 use super::*;
 use hardy_bpv7::status_report::ReasonCode;
 
+use crate::{cla::Segment, stream::Receiver};
+
+async fn concat_stream(stream: &dyn Receiver<Segment>) -> Result<crate::Bytes, ()> {
+    let mut concat: Option<bytes::BytesMut> = None;
+    loop {
+        let (data, last) = match stream.recv().await.map_err(|_| ())? {
+            Segment::Next(data) => (data, false),
+            Segment::Final(data) => (data, true),
+        };
+
+        if let Some(current) = concat.as_mut() {
+            current.extend(data);
+        } else {
+            match data.try_into_mut() {
+                Ok(data) => concat = Some(data),
+                Err(data) => {
+                    let mut current = bytes::BytesMut::with_capacity(data.len());
+                    current.extend(data);
+                    concat = Some(current);
+                }
+            }
+        }
+
+        if last {
+            break;
+        }
+    }
+    concat.map(Into::into).ok_or(())
+}
+
 impl Dispatcher {
     // Entry point for bundles received from CLAs.
     //
@@ -17,11 +47,17 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn receive_bundle(
         &self,
-        data: Bytes,
-        ingress_cla: Option<Arc<str>>,
-        ingress_peer_node: Option<hardy_bpv7::eid::NodeId>,
-        ingress_peer_addr: Option<cla::ClaAddress>,
+        stream: &dyn Receiver<Segment>,
+        ingress_cla: Arc<str>,
+        ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        ingress_peer_addr: Option<&cla::ClaAddress>,
     ) -> cla::Result<()> {
+        // TODO:  For now, we just concantenate in a dumb way
+        let Ok(data) = concat_stream(stream).await else {
+            debug!("Stream cancelled");
+            return Ok(());
+        };
+
         metrics::counter!("bpa.bundle.received").increment(1);
         metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
@@ -29,9 +65,9 @@ impl Dispatcher {
             status: bundle::BundleStatus::New,
             read_only: bundle::ReadOnlyMetadata {
                 received_at: time::OffsetDateTime::now_utc(),
-                ingress_peer_node,
-                ingress_peer_addr,
-                ingress_cla,
+                ingress_peer_node: ingress_peer_node.cloned(),
+                ingress_peer_addr: ingress_peer_addr.cloned(),
+                ingress_cla: Some(ingress_cla),
                 ..Default::default()
             },
             ..Default::default()

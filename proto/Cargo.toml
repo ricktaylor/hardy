@@ -36,5 +36,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 time = "0.3"
 tracing = { version = "0.1", default-features = false }
 
+# This is a temp hack
+bytes = "1"
+
 [build-dependencies]
 tonic-prost-build = "0.14"

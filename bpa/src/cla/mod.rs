@@ -131,6 +131,21 @@ pub enum ForwardBundleResult {
     NoNeighbour,
 }
 
+/// A bundle segment delivered via [`crate::stream::Receiver<Segment>`] in
+/// [`Sink::dispatch_streamed`].
+///
+/// `Final` marks the last segment of the bundle. The payload may be empty
+/// (`Final(Bytes::new())`) to signal end-of-stream without additional data.
+/// After `Final`, the producer is expected to drop its sender; a subsequent
+/// `recv` then returns `Err(crate::stream::RecvError)`.
+#[derive(Debug)]
+pub enum Segment {
+    /// The next segment of the bundle
+    Next(Bytes),
+    /// The last segment (may be empty)
+    Final(Bytes),
+}
+
 /// The primary trait for a Convergence Layer Adapter (CLA).
 ///
 /// A CLA is responsible for adapting the Bundle Protocol to a specific underlying
@@ -266,6 +281,23 @@ pub trait Sink: Send + Sync {
     async fn dispatch(
         &self,
         bundle: Bytes,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&ClaAddress>,
+    ) -> Result<()>;
+
+    /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
+    ///
+    /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
+    /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
+    ///   (e.g., learned during TCPCLv4 session establishment).
+    /// - `peer_addr`: The convergence layer address of the peer, if applicable
+    ///   (e.g., remote socket address for TCP-based CLAs).
+    ///
+    /// These may be `None` for CLAs without peer concepts (e.g., file-based) or
+    /// unidirectional links.
+    async fn dispatch_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<Segment>,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()>;
