@@ -1,15 +1,17 @@
 //! Streaming primitives shared across the BPA's trait surfaces.
 //!
-//! Storage backends stream their poll and recovery results back to the BPA
-//! through the *push-side* [`Sender<T>`] trait: the BPA hands the backend a
-//! sink, and the backend delivers items one at a time by calling
-//! [`Sender::send`]. Keeping the trait independent of any concrete channel
-//! lets a backend emit into whatever the caller chose — the hybrid storage
-//! channel in production, or a `Vec`-collecting sink in the conformance
-//! tests — without depending on a channel type.
+//! The trait surfaces use two complementary streaming patterns, each a
+//! single-method trait that keeps the surface independent of any concrete
+//! channel:
 //!
-//! The pull side (a caller draining items with `recv`) has no trait of its
-//! own; consumers use a concrete channel receiver directly.
+//! - **Push side** ([`Sender<T>`]): the caller hands a sink to a callee, which
+//!   delivers items by calling [`Sender::send`]. Storage backends use it to
+//!   stream poll and recovery results back to the BPA — into the hybrid
+//!   storage channel in production, or a `Vec`-collecting sink in the
+//!   conformance tests.
+//! - **Pull side** ([`Receiver<T>`]): the callee hands a source to a caller,
+//!   which pulls items by calling [`Receiver::recv`]. CLAs use it to stream
+//!   bundle segments into the BPA's ingress path.
 
 use hardy_async::async_trait;
 
@@ -55,5 +57,47 @@ impl<T: Send + 'static> Sender<T> for hardy_async::channel::Sender<T> {
         hardy_async::channel::Sender::send(self, item)
             .await
             .map_err(|hardy_async::channel::SendError(item)| SendError(item))
+    }
+}
+
+/// Returned by [`Receiver::recv`] when the producer has gone away and no
+/// further items will arrive. Consumers should treat this as a definitive
+/// "stop pulling" signal, not a transient error.
+#[derive(Debug)]
+pub struct RecvError;
+
+impl core::fmt::Display for RecvError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("stream producer has gone away")
+    }
+}
+
+impl core::error::Error for RecvError {}
+
+/// A producer of streamed items, supplied by a callee to a caller so the
+/// caller can pull items at its own pace. Implementors typically wrap a
+/// channel receiver (which has interior mutability).
+///
+/// `Receiver<T>` is the *pull* side of a stream: the consumer drives
+/// delivery item-by-item by calling `recv`. Returns `Err(RecvError)` to
+/// signal that the producer is gone and no more items will arrive — at
+/// which point the consumer should stop.
+///
+/// **Backpressure**: `recv` is async, so a slow consumer naturally
+/// backpressures the producer, provided the underlying channel is bounded.
+#[async_trait]
+pub trait Receiver<T>: Send + Sync {
+    async fn recv(&self) -> core::result::Result<T, RecvError>;
+}
+
+/// A channel receiver is itself a stream [`Receiver`], so a call site can
+/// create a channel and pass the receiver straight into a streaming trait
+/// method.
+#[async_trait]
+impl<T: Send + 'static> Receiver<T> for hardy_async::channel::Receiver<T> {
+    async fn recv(&self) -> core::result::Result<T, RecvError> {
+        hardy_async::channel::Receiver::recv(self)
+            .await
+            .map_err(|_| RecvError)
     }
 }
