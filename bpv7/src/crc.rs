@@ -41,7 +41,7 @@ pub enum Error {
 
 /// Represents the type of CRC used in a bundle block.
 #[allow(non_camel_case_types)]
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CrcType {
     /// No CRC is used.

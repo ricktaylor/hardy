@@ -1,4 +1,4 @@
-use super::*;
+use clap::ValueEnum;
 use hardy_bpv7::{block, bundle, crc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
