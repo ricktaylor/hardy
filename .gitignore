@@ -1,4 +1,5 @@
 target/
+/.claude/
 /.vscode
 /test_data
 
