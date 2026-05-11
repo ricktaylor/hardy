@@ -30,6 +30,7 @@ members = [
     "tcpclv4-server",
     "tools",
     "tvr",
+    "tests/bpsec",
     "tests/storage",
     "postgres-storage",
 ]
