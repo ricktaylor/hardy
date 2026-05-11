@@ -885,17 +885,35 @@ impl<'a> Editor<'a> {
 
     /// Remove integrity from a block when the BIB block number is already known.
     ///
-    /// This removes the target from the BIB. CRC is not restored automatically —
-    /// the RFC does not require CRC restoration after BIB removal. The caller
-    /// can add CRC explicitly via `update_block_inner().with_crc_type()` if needed.
+    /// This removes the target from the BIB and restores the CRC if needed.
     #[allow(clippy::result_large_err)]
     fn remove_integrity_inner(
         mut self,
         block_number: u64,
         bib_block_num: u64,
     ) -> Result<Self, (Self, Error)> {
+        // Get block info for CRC restoration decision
+        let (has_bcb, needs_crc) = self
+            .block(block_number)
+            .map(|(b, _)| (b.bcb.is_some(), matches!(b.crc_type, crc::CrcType::None)))
+            .unwrap_or((false, false));
+
         // Remove the target from the BIB
         self = self.remove_from_bib_targets(block_number, bib_block_num)?;
+
+        // Ensure we have a CRC if there's no BCB
+        if !has_bcb && needs_crc {
+            if block_number == 0 {
+                // Primary block: use with_bundle_crc_type
+                self = self.with_bundle_crc_type(crc::CrcType::CRC32_CASTAGNOLI)?;
+            } else {
+                // Extension block: use update_block_inner
+                self = self
+                    .update_block_inner(block_number)?
+                    .with_crc_type(crc::CrcType::CRC32_CASTAGNOLI)
+                    .rebuild();
+            }
+        }
 
         Ok(self)
     }
@@ -932,6 +950,8 @@ impl<'a> Editor<'a> {
         };
 
         if let Some((_, Some(bcb_payload))) = self.block(bcb) {
+            let original_block = target_block.clone();
+
             let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
             {
                 Ok(opset) => opset,
@@ -971,11 +991,17 @@ impl<'a> Editor<'a> {
                 let target_payload: Box<[u8]> = core::mem::take(&mut target_payload);
 
                 // Replace the block payload
-                self = block_set
+                let mut block = block_set
                     .editor
                     .update_block_inner(block_number)?
-                    .with_data(target_payload.into_vec().into())
-                    .rebuild();
+                    .with_data(target_payload.into_vec().into());
+                // Only add CRC if there's no BIB for integrity protection
+                if !matches!(original_block.bib, block::BibCoverage::Some(_))
+                    && matches!(original_block.crc_type, crc::CrcType::None)
+                {
+                    block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
+                }
+                self = block.rebuild();
 
                 // RFC 9172 Section 3.8: "A BCB MUST NOT target a BIB unless it shares a
                 // security target with that BIB."
@@ -985,10 +1011,9 @@ impl<'a> Editor<'a> {
                 // We must decrypt such BIBs and remove the signature.
 
                 // Handle BIBs within this same BCB's targets.
-                // Note: BCB-AES-GCM (RFC 9173) cannot have multiple targets due to IV
-                // uniqueness requirements, so this code path is for future security
-                // contexts (e.g., COSE-based) that may support multi-target BCBs.
-                if opset.can_share() {
+                // Hardy creates separate BCBs for AES-GCM (IV uniqueness), but other
+                // implementations may produce multi-target BCBs. We must handle them.
+                {
                     let bib_targets: SmallVec<[u64; 4]> = opset
                         .operations
                         .keys()
