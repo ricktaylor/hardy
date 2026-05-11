@@ -791,6 +791,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpsec-tests"
+version = "0.1.0"
+dependencies = [
+ "hardy-bpv7",
+ "hardy-bpv7-tools",
+ "hex-literal",
+ "serde_json",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1980,6 +1990,7 @@ dependencies = [
  "clap",
  "hardy-bpv7",
  "hardy-cbor",
+ "hex-literal",
  "humantime",
  "serde",
  "serde_json",

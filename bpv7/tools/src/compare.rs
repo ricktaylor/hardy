@@ -4,13 +4,15 @@ use hardy_bpv7::block;
 use hardy_bpv7::bpsec;
 use hardy_bpv7::bundle;
 
-/// Compare two parsed bundles for semantic equivalence.
-///
-/// Byte-compares whole blocks where the encoding is deterministic
-/// (primary, payload, regular extension blocks). Falls back to semantic
-/// comparison for security blocks where the RFC allows non-deterministic
-/// encodings (target array ordering per RFC 9172 Section 3.6, random IV
-/// per RFC 9173 Section 4.3.1).
+/// Options for bundle comparison.
+#[derive(Default)]
+pub struct CompareOptions {
+    /// Ignore CRC type differences between blocks.
+    /// CRC type is an implementation choice per RFC 9171 Section 4.2.1.
+    pub ignore_crc: bool,
+}
+
+/// Compare two parsed bundles for semantic equivalence with default options.
 ///
 /// Returns a list of human-readable differences. Empty means equivalent.
 pub fn compare_bundles<K>(
@@ -23,29 +25,71 @@ pub fn compare_bundles<K>(
 where
     K: bpsec::key::KeySource + ?Sized,
 {
+    compare_bundles_with_options(a, data_a, b, data_b, keys, &CompareOptions::default())
+}
+
+/// Compare two parsed bundles for semantic equivalence.
+///
+/// Byte-compares whole blocks where the encoding is deterministic
+/// (primary, payload, regular extension blocks). Falls back to semantic
+/// comparison for security blocks where the RFC allows non-deterministic
+/// encodings (target array ordering per RFC 9172 Section 3.6, random IV
+/// per RFC 9173 Section 4.3.1).
+///
+/// Returns a list of human-readable differences. Empty means equivalent.
+pub fn compare_bundles_with_options<K>(
+    a: &bundle::Bundle,
+    data_a: &[u8],
+    b: &bundle::Bundle,
+    data_b: &[u8],
+    keys: &K,
+    options: &CompareOptions,
+) -> Vec<String>
+where
+    K: bpsec::key::KeySource + ?Sized,
+{
     let mut diffs = Vec::new();
 
-    // Primary block: whole-block byte compare
-    let primary_a = a
-        .blocks
-        .get(&0)
-        .and_then(|blk| data_a.get(blk.extent.clone()));
-    let primary_b = b
-        .blocks
-        .get(&0)
-        .and_then(|blk| data_b.get(blk.extent.clone()));
-    match (primary_a, primary_b) {
-        (Some(pa), Some(pb)) if pa != pb => {
-            diffs.push(format!(
-                "Primary: bytes differ ({} vs {} bytes)",
-                pa.len(),
-                pb.len()
-            ));
+    // Primary block: whole-block byte compare (unless ignore_crc,
+    // since CRC presence changes the primary block encoding)
+    if options.ignore_crc {
+        if a.id != b.id {
+            diffs.push("Primary: id differs".to_string());
         }
-        (None, _) | (_, None) => {
-            diffs.push("Primary: block missing".to_string());
+        if a.destination != b.destination {
+            diffs.push("Primary: destination differs".to_string());
         }
-        _ => {}
+        if a.report_to != b.report_to {
+            diffs.push("Primary: report_to differs".to_string());
+        }
+        if a.lifetime != b.lifetime {
+            diffs.push("Primary: lifetime differs".to_string());
+        }
+        if a.flags != b.flags {
+            diffs.push("Primary: flags differ".to_string());
+        }
+    } else {
+        let primary_a = a
+            .blocks
+            .get(&0)
+            .and_then(|blk| data_a.get(blk.extent.clone()));
+        let primary_b = b
+            .blocks
+            .get(&0)
+            .and_then(|blk| data_b.get(blk.extent.clone()));
+        match (primary_a, primary_b) {
+            (Some(pa), Some(pb)) if pa != pb => {
+                diffs.push(format!(
+                    "Primary: bytes differ ({} vs {} bytes)",
+                    pa.len(),
+                    pb.len()
+                ));
+            }
+            (None, _) | (_, None) => {
+                diffs.push("Primary: block missing".to_string());
+            }
+            _ => {}
+        }
     }
 
     // Extension blocks: group by type, compare
@@ -115,7 +159,7 @@ where
                     if blk_a.flags != blk_b.flags {
                         diffs.push(format!("{tag}: flags differ"));
                     }
-                    if blk_a.crc_type != blk_b.crc_type {
+                    if !options.ignore_crc && blk_a.crc_type != blk_b.crc_type {
                         diffs.push(format!(
                             "{tag}: CRC type {:?} vs {:?}",
                             blk_a.crc_type, blk_b.crc_type
