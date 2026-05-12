@@ -1,5 +1,5 @@
 use super::*;
-use hardy_bpv7::compare::compare_bundles;
+use hardy_bpv7::cmp::compare_bundles;
 
 #[derive(Parser, Debug)]
 #[command(
