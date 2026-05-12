@@ -1,5 +1,8 @@
-use super::*;
+use alloc::boxed::Box;
+use alloc::string::String;
 use thiserror::Error;
+
+use super::{Context, key};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -83,8 +86,6 @@ pub enum Error {
     #[error("Integrity check failed")]
     IntegrityCheckFailed,
 
-    /// This type is deliberately opaque as to avoid potential side-channel
-    /// leakage (e.g. padding oracle).
     #[error("Encryption failed")]
     EncryptionFailed,
 
@@ -105,6 +106,48 @@ pub enum Error {
 
     #[error("Underlying cryptographic operation failed: {0}")]
     Algorithm(String),
+
+    // Sign errors
+    #[error("Invalid block target {0}, either BCB or BIB block")]
+    InvalidSignTarget(u64),
+
+    #[error("Block target {0} is already signed with another BIB")]
+    AlreadySigned(u64),
+
+    #[error("Block target {0} is already the target of a BCB")]
+    EncryptedTarget(u64),
+
+    // Encrypt errors
+    #[error("Invalid block target {0}, BCB block")]
+    InvalidEncryptTarget(u64),
+
+    #[error("Block target {0} is already the target of a BCB")]
+    AlreadyEncrypted(u64),
+
+    // Shared
+    #[error("Bundle is a fragment")]
+    FragmentedBundle,
+
+    #[error("No block found matching selector: {0}")]
+    NoMatchingBlock(String),
+
+    #[error(transparent)]
+    Parse(Box<crate::Error>),
+
+    #[error(transparent)]
+    Editor(Box<crate::editor::Error>),
+}
+
+impl From<crate::editor::Error> for Error {
+    fn from(e: crate::editor::Error) -> Self {
+        Error::Editor(Box::new(e))
+    }
+}
+
+impl From<crate::Error> for Error {
+    fn from(e: crate::Error) -> Self {
+        Error::Parse(Box::new(e))
+    }
 }
 
 impl crate::error::HasInvalidField for Error {

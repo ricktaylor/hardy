@@ -1,5 +1,7 @@
-use super::*;
 use aes_kw::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockSizeUser, KeyInit, consts::U16};
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
 
 pub fn wrap<C>(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String>
 where

@@ -1,6 +1,93 @@
-use super::*;
 use aes_gcm::KeyInit;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::string::ToString;
+use alloc::vec::Vec;
+use core::ops::Range;
+
+use crate::bpsec::asb::{self, OperationArgs};
+
+/// AAD scope flags (RFC 9173 Section 4.3.4).
+///
+/// Controls which bundle fields are included in the AAD for AES-GCM.
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+pub struct ScopeFlags {
+    pub include_primary_block: bool,
+    pub include_target_header: bool,
+    pub include_security_header: bool,
+    pub unrecognised: Option<u64>,
+}
+
+impl ScopeFlags {
+    pub const NONE: Self = Self {
+        include_primary_block: false,
+        include_target_header: false,
+        include_security_header: false,
+        unrecognised: None,
+    };
+}
+
+impl Default for ScopeFlags {
+    fn default() -> Self {
+        Self {
+            include_primary_block: true,
+            include_target_header: true,
+            include_security_header: true,
+            unrecognised: None,
+        }
+    }
+}
+
+impl hardy_cbor::decode::FromCbor for ScopeFlags {
+    type Error = hardy_cbor::decode::Error;
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            let mut flags = Self::NONE;
+            let mut unrecognised = value;
+            if (value & (1 << 0)) != 0 {
+                flags.include_primary_block = true;
+                unrecognised &= !(1 << 0);
+            }
+            if (value & (1 << 1)) != 0 {
+                flags.include_target_header = true;
+                unrecognised &= !(1 << 1);
+            }
+            if (value & (1 << 2)) != 0 {
+                flags.include_security_header = true;
+                unrecognised &= !(1 << 2);
+            }
+            if unrecognised != 0 {
+                flags.unrecognised = Some(unrecognised);
+            }
+            (flags, shortest, len)
+        })
+    }
+}
+
+impl hardy_cbor::encode::ToCbor for ScopeFlags {
+    type Result = ();
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        let mut flags = self.unrecognised.unwrap_or(0);
+        if self.include_primary_block {
+            flags |= 1 << 0;
+        }
+        if self.include_target_header {
+            flags |= 1 << 1;
+        }
+        if self.include_security_header {
+            flags |= 1 << 2;
+        }
+        encoder.emit(&flags)
+    }
+}
+use crate::HashMap;
+use crate::bpsec::asb::decode_box;
+use crate::bpsec::error::Error;
+use crate::bpsec::key_wrap;
+use crate::bpsec::rand_bytes;
+use crate::bpsec::{Context, key};
+use crate::eid;
+use crate::error::CaptureFieldErr;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -63,7 +150,7 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => {
-                    iv = Some(parse::decode_box(range, data).map(|(v, s)| {
+                    iv = Some(decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?);
@@ -75,7 +162,7 @@ impl Parameters {
                     })?);
                 }
                 3 => {
-                    key = Some(parse::decode_box(range, data).map(|(v, s)| {
+                    key = Some(decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?);
@@ -142,7 +229,7 @@ impl Results {
         for (id, range) in results {
             match id {
                 1 => {
-                    r = Some(parse::decode_box(range, data).map(|(v, s)| {
+                    r = Some(decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?);
@@ -167,7 +254,7 @@ impl hardy_cbor::encode::ToCbor for Results {
     }
 }
 
-fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, Error> {
+fn build_data(flags: &ScopeFlags, args: &OperationArgs) -> Result<Vec<u8>, Error> {
     let mut encoder = hardy_cbor::encode::Encoder::new();
     encoder.emit(&ScopeFlags {
         include_primary_block: flags.include_primary_block,
@@ -238,7 +325,7 @@ impl Operation {
     pub fn encrypt(
         jwk: &key::Key,
         scope_flags: ScopeFlags,
-        args: bcb::OperationArgs,
+        args: OperationArgs,
     ) -> Result<(Self, Box<[u8]>), Error> {
         let payload = args
             .blocks
@@ -353,7 +440,7 @@ impl Operation {
     pub fn decrypt<K>(
         &self,
         key_source: &K,
-        args: bcb::OperationArgs,
+        args: OperationArgs,
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
     where
         K: key::KeySource + ?Sized,
@@ -481,9 +568,9 @@ impl Operation {
 }
 
 pub fn parse(
-    asb: parse::AbstractSyntaxBlock,
+    asb: asb::AbstractSecurityBlock,
     data: &[u8],
-) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>, bool), Error> {
+) -> Result<(eid::Eid, HashMap<u64, super::EncryptContext>, bool), Error> {
     let mut shortest = false;
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)
@@ -499,7 +586,7 @@ pub fn parse(
     for (target, results) in asb.results {
         operations.insert(
             target,
-            bcb::Operation::AES_GCM(Operation {
+            super::EncryptContext::AES_GCM(Operation {
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
                     .map(|(v, s)| {

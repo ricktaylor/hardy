@@ -1,9 +1,22 @@
-use super::*;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::ops::Range;
+
+use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-fn parse_ranges<const D: usize>(
+use super::BlockSet;
+use super::Context;
+use super::error::Error;
+use crate::HashMap;
+use crate::eid::Eid;
+use crate::error::CaptureFieldErr;
+
+// ---- Formerly in parse.rs ----
+
+pub(crate) fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
     shortest: &mut bool,
     mut offset: usize,
@@ -49,9 +62,9 @@ pub struct UnknownOperation {
 
 impl UnknownOperation {
     pub fn parse(
-        asb: AbstractSyntaxBlock,
+        asb: AbstractSecurityBlock,
         source_data: &[u8],
-    ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
+    ) -> Result<(Eid, HashMap<u64, Self>), Error> {
         let param_count = asb.parameters.len();
         let parameters = Rc::from(asb.parameters.into_iter().fold(
             HashMap::with_capacity(param_count),
@@ -82,12 +95,7 @@ impl UnknownOperation {
         Ok((asb.source, operations))
     }
 
-    pub fn emit_context(
-        &self,
-        encoder: &mut hardy_cbor::encode::Encoder,
-        source: &eid::Eid,
-        id: u64,
-    ) {
+    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &Eid, id: u64) {
         encoder.emit(&id);
         if self.parameters.is_empty() {
             encoder.emit(&0);
@@ -109,117 +117,6 @@ impl UnknownOperation {
                 a.emit(&(id, hardy_cbor::encode::Raw(result)));
             }
         });
-    }
-}
-
-pub struct AbstractSyntaxBlock {
-    pub context: Context,
-    pub source: eid::Eid,
-    pub parameters: HashMap<u64, Range<usize>>,
-    pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
-}
-
-impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
-    type Error = self::Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_sequence(data, |seq| {
-            let mut shortest = true;
-
-            // Targets
-            let targets = seq
-                .parse_array(|a, s, tags| {
-                    shortest = shortest && s && tags.is_empty() && a.is_definite();
-                    let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
-                    while let Some((block, s, _)) = a.try_parse()? {
-                        shortest = shortest && s;
-
-                        // Check for duplicates
-                        if targets.contains(&block) {
-                            return Err(Error::DuplicateOpTarget);
-                        }
-                        targets.push(block);
-                    }
-                    Ok::<_, Error>(targets)
-                })
-                .map_field_err::<Error>("security targets")?;
-            if targets.is_empty() {
-                return Err(Error::NoTargets);
-            }
-
-            // Context
-            let context = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security context id")?;
-
-            // Flags
-            let flags: u64 = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security context flags")?;
-
-            // Source
-            let source = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security source")?;
-            if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
-                return Err(Error::InvalidSecuritySource);
-            }
-
-            // Context Parameters
-            let parameters = if flags & 1 == 0 {
-                HashMap::new()
-            } else {
-                parse_ranges(seq, &mut shortest, 0)
-                    .map_field_err::<Error>("security context parameters")?
-                    .unwrap_or_default()
-            };
-
-            // Target Results
-            let offset = seq.offset();
-            let results = seq.parse_array(|a, s, tags| {
-                shortest = shortest && s && tags.is_empty() && a.is_definite();
-
-                let mut results = HashMap::with_capacity(targets.len());
-                let mut idx = 0;
-                while let Some(target_results) = parse_ranges(a, &mut shortest, offset)
-                    .map_field_err::<Error>("security results")?
-                {
-                    results.insert(
-                        *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,
-                        target_results,
-                    );
-                    idx += 1;
-                }
-                Ok::<_, Error>(results)
-            })?;
-
-            if targets.len() != results.len() {
-                return Err(Error::MismatchedTargetResult);
-            }
-
-            Ok((
-                AbstractSyntaxBlock {
-                    context,
-                    source,
-                    parameters,
-                    results,
-                },
-                shortest,
-            ))
-        })
-        .map(|((v, s), len)| (v, s, len))
     }
 }
 
@@ -247,4 +144,128 @@ pub fn decode_box(
         )),
     })
     .map(|v| v.0)
+}
+
+// ---- Original asb.rs content ----
+
+/// Abstract Security Block (RFC 9172 Section 3.6).
+///
+/// The raw CBOR-decoded form of a BPSec security block, before
+/// context-specific interpretation.
+pub struct AbstractSecurityBlock {
+    pub targets: SmallVec<[u64; 4]>,
+    pub context: Context,
+    pub source: Eid,
+    pub parameters: HashMap<u64, Range<usize>>,
+    pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
+}
+
+impl FromCbor for AbstractSecurityBlock {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse_sequence(data, |seq| {
+            let mut shortest = true;
+
+            let targets = seq
+                .parse_array(|a, s, tags| {
+                    shortest = shortest && s && tags.is_empty() && a.is_definite();
+                    let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
+                    while let Some((block, s, _)) = a.try_parse()? {
+                        shortest = shortest && s;
+                        if targets.contains(&block) {
+                            return Err(Error::DuplicateOpTarget);
+                        }
+                        targets.push(block);
+                    }
+                    Ok::<_, Error>(targets)
+                })
+                .map_field_err::<Error>("security targets")?;
+            if targets.is_empty() {
+                return Err(Error::NoTargets);
+            }
+
+            let context = seq
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err::<Error>("security context id")?;
+
+            let flags: u64 = seq
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err::<Error>("security context flags")?;
+
+            let source: Eid = seq
+                .parse()
+                .map(|(v, s)| {
+                    shortest = shortest && s;
+                    v
+                })
+                .map_field_err::<Error>("security source")?;
+            if let Eid::Null | Eid::LocalNode { .. } = source {
+                return Err(Error::InvalidSecuritySource);
+            }
+
+            let parameters = if flags & 1 == 0 {
+                HashMap::new()
+            } else {
+                parse_ranges(seq, &mut shortest, 0)
+                    .map_field_err::<Error>("security context parameters")?
+                    .unwrap_or_default()
+            };
+
+            let offset = seq.offset();
+            let results = seq.parse_array(|a, s, tags| {
+                shortest = shortest && s && tags.is_empty() && a.is_definite();
+                let mut results = HashMap::with_capacity(targets.len());
+                let mut idx = 0;
+                while let Some(target_results) = parse_ranges(a, &mut shortest, offset)
+                    .map_field_err::<Error>("security results")?
+                {
+                    results.insert(
+                        *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,
+                        target_results,
+                    );
+                    idx += 1;
+                }
+                Ok::<_, Error>(results)
+            })?;
+
+            if targets.len() != results.len() {
+                return Err(Error::MismatchedTargetResult);
+            }
+
+            Ok((
+                AbstractSecurityBlock {
+                    targets,
+                    context,
+                    source,
+                    parameters,
+                    results,
+                },
+                shortest,
+            ))
+        })
+        .map(|((v, s), len)| (v, s, len))
+    }
+}
+
+/// Arguments passed to a security operation (verification or decryption).
+///
+/// Shared by both BIB and BCB operations.
+pub struct OperationArgs<'a> {
+    /// The EID of the security source.
+    pub bpsec_source: &'a Eid,
+    /// The block number of the security target.
+    pub target: u64,
+    /// The block number of the security block itself (BIB or BCB).
+    pub source: u64,
+    /// A view of the bundle's blocks.
+    pub blocks: &'a dyn BlockSet<'a>,
 }

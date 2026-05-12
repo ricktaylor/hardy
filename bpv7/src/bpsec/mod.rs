@@ -1,36 +1,43 @@
-use super::*;
+use alloc::boxed::Box;
+use alloc::string::ToString;
+
+use crate::block::{Block, Payload};
+use crate::bundle::Bundle;
+use hardy_cbor::decode::{Error as DecodeError, FromCbor, parse as cbor_parse};
+use hardy_cbor::encode::{Encoder, ToCbor};
 
 /// Block Confidentiality Block (BCB) types and operations (RFC 9172 Section 3.7).
-pub mod bcb;
-/// Block Integrity Block (BIB) types and operations (RFC 9172 Section 3.6).
-pub mod bib;
+pub mod encrypt;
 /// Cryptographic key types and key source abstraction for BPSec operations.
 pub mod key;
+/// Block Integrity Block (BIB) types and operations (RFC 9172 Section 3.6).
+pub mod sign;
 
+pub mod asb;
 mod error;
-mod parse;
-
-/// RFC 9173 default security contexts (BIB-HMAC-SHA2 and BCB-AES-GCM).
 #[cfg(feature = "rfc9173")]
-pub mod rfc9173;
+pub(crate) mod key_wrap;
 
-// Signer and encryptor require at least one security context to be enabled.
-// The internal "bpsec" feature is automatically enabled by context features
-// (rfc9173, and future cose).
-/// Bundle encryption API for adding BCB blocks to bundles.
+/// High-level security policy API for applying BIB/BCB operations by block type.
 #[cfg(feature = "bpsec")]
-pub mod encryptor;
-/// Bundle signing API for adding BIB blocks to bundles.
-#[cfg(feature = "bpsec")]
-pub mod signer;
-
-use crate::error::CaptureFieldErr;
+pub mod policy;
 
 pub use error::Error;
 
+#[cfg(feature = "rfc9173")]
+pub(crate) fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
+    use alloc::vec;
+    use rand::TryRng;
+    let mut buf = vec![0u8; N].into_boxed_slice();
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut buf)
+        .map_err(|e| Error::Algorithm(e.to_string()))?;
+    Ok(buf)
+}
+
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
-pub fn no_keys(_bundle: &bundle::Bundle, _data: &[u8]) -> Box<dyn key::KeySource> {
+pub fn no_keys(_bundle: &Bundle, _data: &[u8]) -> Box<dyn key::KeySource> {
     Box::new(key::KeySet::EMPTY)
 }
 
@@ -49,10 +56,10 @@ pub enum Context {
     Unrecognised(u64),
 }
 
-impl hardy_cbor::encode::ToCbor for Context {
+impl ToCbor for Context {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(match self {
             #[cfg(feature = "rfc9173")]
             Self::BIB_HMAC_SHA2 => &1,
@@ -63,11 +70,11 @@ impl hardy_cbor::encode::ToCbor for Context {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Context {
-    type Error = hardy_cbor::decode::Error;
+impl FromCbor for Context {
+    type Error = DecodeError;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+        cbor_parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
             (
                 match value {
                     #[cfg(feature = "rfc9173")]
@@ -86,6 +93,5 @@ impl hardy_cbor::decode::FromCbor for Context {
 /// Provides access to bundle blocks by number, used during BPSec IPPT construction.
 pub trait BlockSet<'a> {
     /// Returns the block and its payload for the given block number, or `None` if absent.
-    fn block(&'a self, block_number: u64)
-    -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
+    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Option<Payload<'a>>)>;
 }

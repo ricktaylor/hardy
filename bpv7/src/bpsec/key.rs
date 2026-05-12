@@ -1,4 +1,9 @@
-use super::*;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use crate::HashSet;
+use crate::eid::Eid;
 
 /// Resolves cryptographic keys for BPSec operations by source EID and required operations.
 pub trait KeySource {
@@ -6,7 +11,7 @@ pub trait KeySource {
     /// Returns None if no key is available for this source/operations.
     /// If a key is returned, it is expected to be valid for the operation;
     /// verification/decryption failure with a provided key indicates corruption.
-    fn key<'a>(&'a self, source: &eid::Eid, operations: &[Operation]) -> Option<&'a Key>;
+    fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key>;
 }
 
 /// A collection of cryptographic keys that implements [`KeySource`] by linear search.
@@ -26,10 +31,12 @@ impl KeySet {
 }
 
 impl KeySource for KeySet {
-    fn key<'a>(&'a self, _source: &eid::Eid, operations: &[Operation]) -> Option<&'a Key> {
+    fn key<'a>(&'a self, _source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
         self.keys.iter().find(|k| {
             if let Some(key_operations) = &k.operations {
-                operations.iter().any(|op| key_operations.contains(op))
+                operations
+                    .iter()
+                    .any(|op: &Operation| key_operations.contains(op))
             } else {
                 false
             }

@@ -43,8 +43,8 @@ struct BlockParse<'a> {
     blocks_to_check: HashSet<u64>,
     /// A set of blocks that are marked for removal (e.g., unsupported blocks).
     blocks_to_remove: HashSet<u64>,
-    /// A map of BCB block numbers to their parsed operation sets.
-    bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
+    /// A map of BCB block numbers to their parsed (source, operations).
+    bcbs: HashMap<u64, (eid::Eid, HashMap<u64, bpsec::encrypt::EncryptContext>)>,
     /// A map of BIB block numbers to their targets, for duplicate target detection.
     bib_targets: HashMap<u64, u64>,
     /// Parsing mode controlling rewriting and block removal behavior.
@@ -173,14 +173,12 @@ impl<'a> BlockParse<'a> {
                     };
 
                     // Parse the BCB
-                    let (bcb, canonical) =
-                        hardy_cbor::decode::parse::<(bpsec::bcb::OperationSet, bool, usize)>(
-                            block_data,
-                        )
-                        .map(|(v, s, len)| (v, s && len == block_data.len()))
-                        .map_field_err::<Error>("BPSec confidentiality extension block")?;
+                    let (bcb_source, bcb_operations, bcb_shortest, bcb_len) =
+                        bpsec::encrypt::parse_asb(block_data)
+                            .map_field_err::<Error>("BPSec confidentiality extension block")?;
+                    let canonical = bcb_shortest && bcb_len == block_data.len();
 
-                    if bcb.is_unsupported() {
+                    if bpsec::encrypt::is_unsupported(&bcb_operations) {
                         if block.block.flags.delete_bundle_on_failure {
                             return Err(Error::Unsupported(block.number));
                         }
@@ -196,10 +194,14 @@ impl<'a> BlockParse<'a> {
 
                     if !canonical {
                         // Rewrite the BCB canonically
-                        block.payload = Some(hardy_cbor::encode::emit(&bcb).0.into());
+                        block.payload = Some(
+                            bpsec::encrypt::encode_asb(&bcb_source, &bcb_operations)
+                                .into_vec()
+                                .into(),
+                        );
                     }
 
-                    self.bcbs.insert(block.number, bcb);
+                    self.bcbs.insert(block.number, (bcb_source, bcb_operations));
                 }
                 block::Type::Unrecognised(_) => {
                     if block.block.flags.delete_bundle_on_failure {
@@ -251,16 +253,16 @@ impl<'a> BlockParse<'a> {
     /// when the key provider is consulted.
     fn mark_bcb_targets(&mut self) -> Result<(), Error> {
         // Pre-allocate based on total number of BCB operations
-        let total_targets: usize = self.bcbs.values().map(|bcb| bcb.operations.len()).sum();
+        let total_targets: usize = self.bcbs.values().map(|(_, ops)| ops.len()).sum();
         let mut bcb_targets = HashMap::with_capacity(total_targets);
-        for (bcb_block_number, bcb) in &self.bcbs {
+        for (bcb_block_number, (_, bcb_operations)) in &self.bcbs {
             let bcb_block = self
                 .blocks
                 .get(bcb_block_number)
                 .expect("Missing BCB block!");
 
             // Check targets
-            for target_number in bcb.operations.keys() {
+            for target_number in bcb_operations.keys() {
                 if bcb_targets
                     .insert(*target_number, bcb_block_number)
                     .is_some()
@@ -333,16 +335,16 @@ impl<'a> BlockParse<'a> {
                 continue;
             };
 
-            let bcb = self.bcbs.get(&bcb_block_number).expect("Missing BCB!");
-            let op = bcb
-                .operations
+            let (bcb_source, bcb_operations) =
+                self.bcbs.get(&bcb_block_number).expect("Missing BCB!");
+            let op = bcb_operations
                 .get(&target_number)
                 .expect("Missing operation!");
 
             match op.decrypt(
                 key_source,
-                bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb.source,
+                bpsec::asb::OperationArgs {
+                    bpsec_source: bcb_source,
                     target: target_number,
                     source: bcb_block_number,
                     blocks: self,
@@ -481,13 +483,26 @@ impl<'a> BlockParse<'a> {
         // Copy these values to release the borrow on self.blocks
         let bib_block_bcb = bib_block.bcb;
 
-        let (mut bib, mut canonical) = self
-            .parse_payload::<bpsec::bib::OperationSet>(bib_block_number)
-            .map_field_err::<Error>("BPSec integrity extension block")?;
+        // Get the BIB payload data
+        let payload = if let Some(b) = self.decrypted_data.get(&bib_block_number) {
+            b.as_ref()
+        } else if let Some(Some(b)) = self.noncanonical_blocks.get(&bib_block_number) {
+            b.as_ref()
+        } else {
+            self.blocks
+                .get(&bib_block_number)
+                .and_then(|block| block.payload(self.source_data))
+                .ok_or(Error::MissingPayload)?
+        };
+
+        let (bib_source, mut bib_operations, bib_shortest, bib_len) =
+            bpsec::sign::parse_asb(payload)
+                .map_field_err::<Error>("BPSec integrity extension block")?;
+        let mut canonical = bib_shortest && bib_len == payload.len();
 
         let mut report_unsupported = false;
 
-        if bib.is_unsupported() {
+        if bpsec::sign::is_unsupported(&bib_operations) {
             if bib_block.flags.delete_bundle_on_failure {
                 return Err(Error::Unsupported(bib_block_number));
             }
@@ -504,7 +519,7 @@ impl<'a> BlockParse<'a> {
         }
 
         // Check and mark targets
-        for target_number in bib.operations.keys() {
+        for target_number in bib_operations.keys() {
             // Check for duplicate BIB targets
             if self
                 .bib_targets
@@ -544,14 +559,13 @@ impl<'a> BlockParse<'a> {
         // support sharing (e.g., future COSE-based contexts). BCB-AES-GCM cannot
         // share due to IV uniqueness requirements, so separate BCBs are expected.
         if let Some(bcb_block_num) = bib_block_bcb
-            && let Some(bcb) = self.bcbs.get(&bcb_block_num)
-            && bcb.can_share()
+            && let Some((_, bcb_ops)) = self.bcbs.get(&bcb_block_num)
+            && bpsec::encrypt::can_share(bcb_ops)
         {
             // The BCB should share at least one target with the BIB
-            let shares_target = bib
-                .operations
+            let shares_target = bib_operations
                 .keys()
-                .any(|bib_target| bcb.operations.contains_key(bib_target));
+                .any(|bib_target| bcb_ops.contains_key(bib_target));
             if !shares_target {
                 return Err(bpsec::Error::InvalidBCBTarget.into());
             }
@@ -560,8 +574,8 @@ impl<'a> BlockParse<'a> {
         // Verify each target block if key_source provides a key
         // NoKey means skip verification (policy decision), other errors are failures
         // Skip targets that are still encrypted (will be verified after decryption)
-        if !bib.is_unsupported() {
-            for (target_number, op) in &bib.operations {
+        if !bpsec::sign::is_unsupported(&bib_operations) {
+            for (target_number, op) in &bib_operations {
                 // Skip verification if target is still encrypted and not yet decrypted
                 if let Some(target_block) = self.blocks.get(target_number)
                     && target_block.bcb.is_some()
@@ -572,8 +586,8 @@ impl<'a> BlockParse<'a> {
 
                 match op.verify(
                     key_source,
-                    bpsec::bib::OperationArgs {
-                        bpsec_source: &bib.source,
+                    bpsec::asb::OperationArgs {
+                        bpsec_source: &bib_source,
                         target: *target_number,
                         source: bib_block_number,
                         blocks: self,
@@ -588,16 +602,15 @@ impl<'a> BlockParse<'a> {
 
         if matches!(self.mode, ParseMode::Full) {
             // Remove targets scheduled for removal
-            let old_len = bib.operations.len();
-            bib.operations
-                .retain(|k, _| !self.blocks_to_remove.contains(k));
-            if bib.operations.is_empty() {
+            let old_len = bib_operations.len();
+            bib_operations.retain(|k, _| !self.blocks_to_remove.contains(k));
+            if bib_operations.is_empty() {
                 self.noncanonical_blocks.remove(&bib_block_number);
                 self.blocks_to_remove.insert(bib_block_number);
                 return Ok(report_unsupported);
             }
 
-            if bib.operations.len() != old_len {
+            if bib_operations.len() != old_len {
                 canonical = false;
             }
         }
@@ -605,7 +618,11 @@ impl<'a> BlockParse<'a> {
         if !canonical {
             self.noncanonical_blocks.insert(
                 bib_block_number,
-                Some(hardy_cbor::encode::emit(&bib).0.into()),
+                Some(
+                    bpsec::sign::encode_asb(&bib_source, &bib_operations)
+                        .into_vec()
+                        .into(),
+                ),
             );
         }
 
@@ -632,17 +649,21 @@ impl<'a> BlockParse<'a> {
     /// Reduces the set of BCBs by removing targets that are scheduled for removal.
     fn reduce_bcbs(&mut self) {
         // Remove BCB targets scheduled for removal
-        for (bcb_block_number, mut bcb) in core::mem::take(&mut self.bcbs) {
-            let old_len = bcb.operations.len();
-            bcb.operations
-                .retain(|k, _| !self.blocks_to_remove.contains(k));
-            if bcb.operations.is_empty() {
+        for (bcb_block_number, (bcb_source, mut bcb_operations)) in core::mem::take(&mut self.bcbs)
+        {
+            let old_len = bcb_operations.len();
+            bcb_operations.retain(|k, _| !self.blocks_to_remove.contains(k));
+            if bcb_operations.is_empty() {
                 self.noncanonical_blocks.remove(&bcb_block_number);
                 self.blocks_to_remove.insert(bcb_block_number);
-            } else if bcb.operations.len() != old_len {
+            } else if bcb_operations.len() != old_len {
                 self.noncanonical_blocks.insert(
                     bcb_block_number,
-                    Some(hardy_cbor::encode::emit(&bcb).0.into()),
+                    Some(
+                        bpsec::encrypt::encode_asb(&bcb_source, &bcb_operations)
+                            .into_vec()
+                            .into(),
+                    ),
                 );
             }
         }

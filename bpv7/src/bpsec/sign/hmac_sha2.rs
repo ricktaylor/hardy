@@ -1,6 +1,91 @@
-use super::*;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::string::ToString;
+use core::ops::Range;
 use hmac::{KeyInit, Mac};
+
+use crate::block;
+use crate::bpsec::asb::OperationArgs;
+
+/// Integrity scope flags (RFC 9173 Section 3.3.3).
+///
+/// Controls which bundle fields are included in the IPPT for HMAC computation.
+#[derive(Debug, Hash, Clone, PartialEq, Eq)]
+pub struct ScopeFlags {
+    pub include_primary_block: bool,
+    pub include_target_header: bool,
+    pub include_security_header: bool,
+    pub unrecognised: Option<u64>,
+}
+
+impl ScopeFlags {
+    pub const NONE: Self = Self {
+        include_primary_block: false,
+        include_target_header: false,
+        include_security_header: false,
+        unrecognised: None,
+    };
+}
+
+impl Default for ScopeFlags {
+    fn default() -> Self {
+        Self {
+            include_primary_block: true,
+            include_target_header: true,
+            include_security_header: true,
+            unrecognised: None,
+        }
+    }
+}
+
+impl hardy_cbor::decode::FromCbor for ScopeFlags {
+    type Error = hardy_cbor::decode::Error;
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            let mut flags = Self::NONE;
+            let mut unrecognised = value;
+            if (value & (1 << 0)) != 0 {
+                flags.include_primary_block = true;
+                unrecognised &= !(1 << 0);
+            }
+            if (value & (1 << 1)) != 0 {
+                flags.include_target_header = true;
+                unrecognised &= !(1 << 1);
+            }
+            if (value & (1 << 2)) != 0 {
+                flags.include_security_header = true;
+                unrecognised &= !(1 << 2);
+            }
+            if unrecognised != 0 {
+                flags.unrecognised = Some(unrecognised);
+            }
+            (flags, shortest, len)
+        })
+    }
+}
+
+impl hardy_cbor::encode::ToCbor for ScopeFlags {
+    type Result = ();
+    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+        let mut flags = self.unrecognised.unwrap_or(0);
+        if self.include_primary_block {
+            flags |= 1 << 0;
+        }
+        if self.include_target_header {
+            flags |= 1 << 1;
+        }
+        if self.include_security_header {
+            flags |= 1 << 2;
+        }
+        encoder.emit(&flags)
+    }
+}
+use crate::HashMap;
+use crate::bpsec::asb::decode_box;
+use crate::bpsec::error::Error;
+use crate::bpsec::{Context, key};
+use crate::eid;
+use crate::error::CaptureFieldErr;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -68,7 +153,7 @@ impl Parameters {
                     })?;
                 }
                 2 => {
-                    result.key = Some(parse::decode_box(range, data).map(|(v, s)| {
+                    result.key = Some(decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?);
@@ -125,7 +210,7 @@ impl Results {
         for (id, range) in results {
             match id {
                 1 => {
-                    r = Some(parse::decode_box(range, data).map(|(v, s)| {
+                    r = Some(decode_box(range, data).map(|(v, s)| {
                         shortest = shortest && s;
                         v
                     })?);
@@ -149,7 +234,7 @@ impl hardy_cbor::encode::ToCbor for Results {
 fn calculate_hmac<D>(
     flags: &ScopeFlags,
     key: &[u8],
-    args: &bib::OperationArgs,
+    args: &OperationArgs,
 ) -> Result<hmac::digest::Output<hmac::Hmac<D>>, Error>
 where
     D: hmac::EagerHash,
@@ -280,7 +365,7 @@ impl Operation {
     pub fn sign(
         jwk: &key::Key,
         scope_flags: ScopeFlags,
-        args: bib::OperationArgs,
+        args: OperationArgs,
     ) -> Result<Self, Error> {
         if let Some(ops) = &jwk.operations
             && !ops.contains(&key::Operation::Sign)
@@ -300,7 +385,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<32>()?))
+                    Some(zeroize::Zeroizing::from(crate::bpsec::rand_bytes::<32>()?))
                 }
                 KeyWrap::Aes192 => {
                     if let Some(ops) = &jwk.operations
@@ -308,7 +393,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<48>()?))
+                    Some(zeroize::Zeroizing::from(crate::bpsec::rand_bytes::<48>()?))
                 }
                 KeyWrap::Aes256 => {
                     if let Some(ops) = &jwk.operations
@@ -316,7 +401,7 @@ impl Operation {
                     {
                         return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
                     }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<64>()?))
+                    Some(zeroize::Zeroizing::from(crate::bpsec::rand_bytes::<64>()?))
                 }
             }
         } else {
@@ -350,9 +435,15 @@ impl Operation {
 
         let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
             let key = match key_wrap {
-                KeyWrap::Aes128 => key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek),
-                KeyWrap::Aes192 => key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek),
-                KeyWrap::Aes256 => key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek),
+                KeyWrap::Aes128 => {
+                    crate::bpsec::key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek)
+                }
+                KeyWrap::Aes192 => {
+                    crate::bpsec::key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek)
+                }
+                KeyWrap::Aes256 => {
+                    crate::bpsec::key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek)
+                }
             }
             .map_err(Error::Algorithm)?;
             Some(key.into())
@@ -370,7 +461,7 @@ impl Operation {
         })
     }
 
-    pub fn verify<K>(&self, key_source: &K, args: bib::OperationArgs) -> Result<(), Error>
+    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
     where
         K: key::KeySource + ?Sized,
     {
@@ -393,13 +484,13 @@ impl Operation {
 
             let cek = match as_key_wrap(jwk.key_algorithm) {
                 Some(KeyWrap::Aes128) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes128>(key.as_ref(), wrapped_cek)
+                    crate::bpsec::key_wrap::unwrap::<aes_kw::aes::Aes128>(key.as_ref(), wrapped_cek)
                 }
                 Some(KeyWrap::Aes192) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes192>(key.as_ref(), wrapped_cek)
+                    crate::bpsec::key_wrap::unwrap::<aes_kw::aes::Aes192>(key.as_ref(), wrapped_cek)
                 }
                 Some(KeyWrap::Aes256) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes256>(key.as_ref(), wrapped_cek)
+                    crate::bpsec::key_wrap::unwrap::<aes_kw::aes::Aes256>(key.as_ref(), wrapped_cek)
                 }
                 None => return Err(Error::IntegrityCheckFailed),
             }
@@ -433,7 +524,7 @@ impl Operation {
         }
     }
 
-    fn verify_inner(&self, cek: &[u8], args: &bib::OperationArgs) -> Result<bool, Error> {
+    fn verify_inner(&self, cek: &[u8], args: &OperationArgs) -> Result<bool, Error> {
         match self.parameters.variant {
             ShaVariant::HMAC_256_256 => {
                 let mac = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?;
@@ -469,9 +560,9 @@ impl Operation {
 }
 
 pub fn parse(
-    asb: parse::AbstractSyntaxBlock,
+    asb: crate::bpsec::asb::AbstractSecurityBlock,
     data: &[u8],
-) -> Result<(eid::Eid, HashMap<u64, bib::Operation>, bool), Error> {
+) -> Result<(eid::Eid, HashMap<u64, super::SignContext>, bool), Error> {
     let mut shortest = false;
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)
@@ -487,7 +578,7 @@ pub fn parse(
     for (target, results) in asb.results {
         operations.insert(
             target,
-            bib::Operation::HMAC_SHA2(Operation {
+            super::SignContext::HMAC_SHA2(Operation {
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
                     .map(|(v, s)| {

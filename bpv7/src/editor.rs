@@ -779,9 +779,8 @@ impl<'a> Editor<'a> {
         bib_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bib_payload))) = self.block(bib_block) {
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
-            {
-                Ok(opset) => opset,
+            let (bib_source, mut bib_operations, _, _) = match bpsec::sign::parse_asb(bib_payload) {
+                Ok(result) => result,
                 Err(e) => {
                     return Err((
                         self,
@@ -795,15 +794,19 @@ impl<'a> Editor<'a> {
             };
 
             // Remove the target from the BIB
-            if opset.operations.remove(&target_block).is_some() {
-                if opset.operations.is_empty() {
+            if bib_operations.remove(&target_block).is_some() {
+                if bib_operations.is_empty() {
                     // BIB is now empty, recursively remove it
                     self = self.remove_block_inner(bib_block)?;
                 } else {
                     // Rewrite BIB with updated operation set
                     self = self
                         .update_block_inner(bib_block)?
-                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .with_data(
+                            bpsec::sign::encode_asb(&bib_source, &bib_operations)
+                                .into_vec()
+                                .into(),
+                        )
                         .rebuild();
                 }
             }
@@ -820,31 +823,35 @@ impl<'a> Editor<'a> {
         bcb_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bcb_payload))) = self.block(bcb_block) {
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
-            {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        error::Error::InvalidField {
-                            field: "BCB Abstract Syntax Block",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ));
-                }
-            };
+            let (bcb_source, mut bcb_operations, _, _) =
+                match bpsec::encrypt::parse_asb(bcb_payload) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        return Err((
+                            self,
+                            error::Error::InvalidField {
+                                field: "BCB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ));
+                    }
+                };
 
             // Remove the target from the BCB
-            if opset.operations.remove(&target_block).is_some() {
-                if opset.operations.is_empty() {
+            if bcb_operations.remove(&target_block).is_some() {
+                if bcb_operations.is_empty() {
                     // BCB is now empty, recursively remove it
                     self = self.remove_block_inner(bcb_block)?;
                 } else {
                     // Rewrite BCB with updated operation set
                     self = self
                         .update_block_inner(bcb_block)?
-                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .with_data(
+                            bpsec::encrypt::encode_asb(&bcb_source, &bcb_operations)
+                                .into_vec()
+                                .into(),
+                        )
                         .rebuild();
                 }
             }
@@ -952,28 +959,28 @@ impl<'a> Editor<'a> {
         if let Some((_, Some(bcb_payload))) = self.block(bcb) {
             let original_block = target_block.clone();
 
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
-            {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        error::Error::InvalidField {
-                            field: "BCB Abstract Syntax Block",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ));
-                }
-            };
+            let (bcb_source, mut bcb_operations, _, _) =
+                match bpsec::encrypt::parse_asb(bcb_payload) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        return Err((
+                            self,
+                            error::Error::InvalidField {
+                                field: "BCB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ));
+                    }
+                };
 
-            if let Some(op) = opset.operations.remove(&block_number) {
+            if let Some(op) = bcb_operations.remove(&block_number) {
                 // Decrypt the target payload
                 let block_set = EditorBlockSet { editor: self };
                 let mut target_payload = match op.decrypt(
                     key_source,
-                    bpsec::bcb::OperationArgs {
-                        bpsec_source: &opset.source,
+                    bpsec::asb::OperationArgs {
+                        bpsec_source: &bcb_source,
                         target: block_number,
                         source: bcb,
                         blocks: &block_set,
@@ -1014,8 +1021,7 @@ impl<'a> Editor<'a> {
                 // Hardy creates separate BCBs for AES-GCM (IV uniqueness), but other
                 // implementations may produce multi-target BCBs. We must handle them.
                 {
-                    let bib_targets: SmallVec<[u64; 4]> = opset
-                        .operations
+                    let bib_targets: SmallVec<[u64; 4]> = bcb_operations
                         .keys()
                         .filter(|&&target| {
                             if let Some((blk, _)) = self.block(target) {
@@ -1028,7 +1034,7 @@ impl<'a> Editor<'a> {
                         .collect();
 
                     for bib_block_num in bib_targets {
-                        let Some(bib_op) = opset.operations.get(&bib_block_num) else {
+                        let Some(bib_op) = bcb_operations.get(&bib_block_num) else {
                             continue;
                         };
 
@@ -1036,8 +1042,8 @@ impl<'a> Editor<'a> {
                         let block_set = EditorBlockSet { editor: self };
                         let mut decrypted_bib = match bib_op.decrypt(
                             key_source,
-                            bpsec::bcb::OperationArgs {
-                                bpsec_source: &opset.source,
+                            bpsec::asb::OperationArgs {
+                                bpsec_source: &bcb_source,
                                 target: bib_block_num,
                                 source: bcb,
                                 blocks: &block_set,
@@ -1056,10 +1062,9 @@ impl<'a> Editor<'a> {
                         self = block_set.editor;
 
                         // Parse the decrypted BIB to check its targets
-                        let bib_opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(
-                            &decrypted_bib,
-                        ) {
-                            Ok(opset) => opset,
+                        let (_, bib_operations, _, _) = match bpsec::sign::parse_asb(&decrypted_bib)
+                        {
+                            Ok(result) => result,
                             Err(e) => {
                                 return Err((
                                     self,
@@ -1073,7 +1078,7 @@ impl<'a> Editor<'a> {
                         };
 
                         // Check if the BIB targets the block we just decrypted
-                        if bib_opset.operations.contains_key(&block_number) {
+                        if bib_operations.contains_key(&block_number) {
                             // The BIB targets our decrypted block - decrypt the BIB and remove signature
                             let decrypted_bib: Box<[u8]> = core::mem::take(&mut decrypted_bib);
                             self = self
@@ -1082,7 +1087,7 @@ impl<'a> Editor<'a> {
                                 .rebuild();
 
                             // Remove the BIB from the BCB's target list
-                            opset.operations.remove(&bib_block_num);
+                            bcb_operations.remove(&bib_block_num);
 
                             // Now remove the signature from the decrypted block (and restore CRC)
                             self = self.remove_integrity_inner(block_number, bib_block_num)?;
@@ -1092,13 +1097,17 @@ impl<'a> Editor<'a> {
                 }
 
                 // Update/remove the current BCB
-                if opset.operations.is_empty() {
+                if bcb_operations.is_empty() {
                     self = self.remove_block_inner(bcb)?;
                 } else {
                     // Rewrite BCB
                     self = self
                         .update_block_inner(bcb)?
-                        .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                        .with_data(
+                            bpsec::encrypt::encode_asb(&bcb_source, &bcb_operations)
+                                .into_vec()
+                                .into(),
+                        )
                         .rebuild();
                 }
             }

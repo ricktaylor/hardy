@@ -513,22 +513,21 @@ impl Bundle {
     {
         let bcb_block = self.blocks.get(&bcb_block_number).ok_or(Error::Altered)?;
 
-        let bcb = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(
-            bcb_block.payload(source_data).ok_or(Error::Altered)?,
-        )
-        .map_err(|e| Error::InvalidField {
-            field: "BCB Abstract Syntax Block",
-            source: e.into(),
-        })?;
+        let (bcb_source, bcb_operations, _, _) =
+            bpsec::encrypt::parse_asb(bcb_block.payload(source_data).ok_or(Error::Altered)?)
+                .map_err(|e| Error::InvalidField {
+                    field: "BCB Abstract Syntax Block",
+                    source: e.into(),
+                })?;
 
         // Confirm we can decrypt if we have keys
-        bcb.operations
+        bcb_operations
             .get(&target)
             .ok_or(Error::Altered)?
             .decrypt(
                 key_source,
-                bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb.source,
+                bpsec::asb::OperationArgs {
+                    bpsec_source: &bcb_source,
                     target,
                     source: bcb_block_number,
                     blocks: &DecryptBlockSet {
@@ -589,20 +588,20 @@ impl Bundle {
                 .ok_or(Error::Altered)?
         };
 
-        let bib = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_data.as_ref())
+        let (bib_source, bib_operations, _, _) = bpsec::sign::parse_asb(bib_data.as_ref())
             .map_err(|e| Error::InvalidField {
                 field: "BIB Abstract Syntax Block",
                 source: e.into(),
             })?;
 
         // Confirm we can verify if we have keys
-        bib.operations
+        bib_operations
             .get(&block_number)
             .ok_or(Error::Altered)?
             .verify(
                 key_source,
-                bpsec::bib::OperationArgs {
-                    bpsec_source: &bib.source,
+                bpsec::asb::OperationArgs {
+                    bpsec_source: &bib_source,
                     target: block_number,
                     source: *bib_block_number,
                     blocks: &VerifyBlockSet {
