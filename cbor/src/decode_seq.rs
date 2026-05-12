@@ -211,6 +211,9 @@ impl<'a, const D: usize> Series<'a, D> {
         let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Array(count) => {
+                let count = count
+                    .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
+                    .transpose()?;
                 let mut a = Array::new(data, count, &mut offset);
                 let r = f(&mut a, shortest, &marker.tags)?;
                 a.complete(r)
@@ -245,7 +248,14 @@ impl<'a, const D: usize> Series<'a, D> {
         let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Map(count) => {
-                let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+                let count = count
+                    .map(|c| {
+                        usize::try_from(c)
+                            .map_err(|_| Error::TooBig)
+                            .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
+                    })
+                    .transpose()?;
+                let mut m = Map::new(data, count, &mut offset);
                 let r = f(&mut m, shortest, &marker.tags)?;
                 m.complete(r)
             }
