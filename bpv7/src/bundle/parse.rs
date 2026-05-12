@@ -1428,14 +1428,11 @@ mod test {
 
         // The bundle is 9F [primary_array] [payload_array] FF
         // We insert the unknown block between the primary block and the payload.
-        // Skip 0x9F (1 byte), then use parse_value + skip to find the primary block length.
+        // Skip 0x9F (1 byte), then walk past the primary block to find the insertion point.
         assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
 
-        let (_, primary_len) = hardy_cbor::decode::parse_value(&data[1..], |mut v, _, _| {
-            v.skip(16)?;
-            Ok::<_, hardy_cbor::decode::Error>(())
-        })
-        .expect("Should skip primary block");
+        let (_, primary_len) =
+            hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
 
         let insert_pos = 1 + primary_len;
         let mut modified = Vec::with_capacity(data.len() + unknown_block.len());
