@@ -1,5 +1,5 @@
+pub(crate) use crate::{flags, io, keys};
 pub(crate) use clap::{Parser, ValueEnum};
-pub(crate) use hardy_bpv7_tools::{flags, io, keys};
 
 pub mod add_block;
 pub mod compare;

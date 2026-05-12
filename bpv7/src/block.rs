@@ -114,7 +114,7 @@ impl hardy_cbor::decode::FromCbor for Flags {
 }
 
 /// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Type {
     /// Primary Block (type code 0).
