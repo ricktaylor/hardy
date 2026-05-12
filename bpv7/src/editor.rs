@@ -1011,9 +1011,10 @@ impl<'a> Editor<'a> {
                 // We must decrypt such BIBs and remove the signature.
 
                 // Handle BIBs within this same BCB's targets.
-                // Hardy creates separate BCBs for AES-GCM (IV uniqueness), but other
-                // implementations may produce multi-target BCBs. We must handle them.
-                {
+                // Note: BCB-AES-GCM (RFC 9173) cannot have multiple targets due to IV
+                // uniqueness requirements, so this code path is for future security
+                // contexts (e.g., COSE-based) that may support multi-target BCBs.
+                if opset.can_share() {
                     let bib_targets: SmallVec<[u64; 4]> = opset
                         .operations
                         .keys()
