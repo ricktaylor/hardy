@@ -294,7 +294,7 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
                 let (tag, s, o) = parse_uint_minor(minor, &data[offset..])?;
                 tags.push(tag);
                 shortest &= s;
-                offset += o;
+                offset = offset.checked_add(o).ok_or(Error::TooBig)?;
             }
             _ => break,
         }
@@ -302,6 +302,7 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
     Ok((tags, shortest, offset))
 }
 
+#[inline]
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     match data.len().cmp(&N) {
         core::cmp::Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
@@ -310,6 +311,7 @@ fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     }
 }
 
+#[inline]
 fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error> {
     match minor {
         24 => {
@@ -333,20 +335,6 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
         }
         val if val < 24 => Ok((val as u64, true, 0)),
         _ => Err(Error::InvalidMinorValue(minor)),
-    }
-}
-
-fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(Range<usize>, bool, usize), Error> {
-    let (data_len, shortest, len) = parse_uint_minor(minor, data)?;
-    let data_len = data_len
-        .checked_add(len as u64)
-        .and_then(|data_len| (data_len <= usize::MAX as u64).then_some(data_len as usize))
-        .ok_or(Error::TooBig)?;
-
-    if data_len > data.len() {
-        Err(Error::NeedMoreData(data_len - data.len()))
-    } else {
-        Ok((len..data_len, shortest, len))
     }
 }
 
@@ -404,22 +392,22 @@ pub enum Marker {
     /// of the payload within the original input for definite-length
     /// strings; `None` indicates an indefinite-length string whose chunks
     /// are still in the buffer awaiting parsing.
-    Bytes(Option<Range<usize>>),
+    Bytes(Option<u64>),
     /// A text string (CBOR major type 3). `Some(range)` is the byte range
     /// of the payload within the original input for definite-length
     /// strings; `None` indicates an indefinite-length string whose chunks
     /// are still in the buffer awaiting parsing.
-    Text(Option<Range<usize>>),
+    Text(Option<u64>),
     /// A CBOR array (major type 4). `Some(count)` is the number of
     /// elements for definite-length arrays — not a byte length;
     /// `None` indicates an indefinite-length array whose elements are
     /// still in the buffer, terminated by a break byte.
-    Array(Option<usize>),
+    Array(Option<u64>),
     /// A CBOR map (major type 5). `Some(count)` is the number of
     /// key-value pairs for definite-length maps — not a byte length;
     /// `None` indicates an indefinite-length map whose pairs are still in
     /// the buffer, terminated by a break byte.
-    Map(Option<usize>),
+    Map(Option<u64>),
     /// The boolean value `false` (CBOR simple value 20).
     False,
     /// The boolean value `true` (CBOR simple value 21).
@@ -517,9 +505,8 @@ impl FromCbor for TaggedMarker {
             (2, 31) => (Marker::Bytes(None), shortest, 0),
             (2, minor) => {
                 /* Known length byte string */
-                let (t, s, len) = parse_data_minor(minor, data)?;
-                let t = t.start + offset..t.end + offset;
-                (Marker::Bytes(Some(t)), shortest && s, len)
+                parse_uint_minor(minor, data)
+                    .map(|(v, s, len)| (Marker::Bytes(Some(v)), shortest && s, len))?
             }
             (3, 31) => {
                 /* Indefinite length text string */
@@ -527,9 +514,8 @@ impl FromCbor for TaggedMarker {
             }
             (3, minor) => {
                 /* Known length text string */
-                let (t, s, len) = parse_data_minor(minor, data)?;
-                let t = t.start + offset..t.end + offset;
-                (Marker::Text(Some(t)), shortest && s, len)
+                parse_uint_minor(minor, data)
+                    .map(|(v, s, len)| (Marker::Text(Some(v)), shortest && s, len))?
             }
             (4, 31) => {
                 /* Indefinite length array */
@@ -537,11 +523,8 @@ impl FromCbor for TaggedMarker {
             }
             (4, minor) => {
                 /* Known length array */
-                let (count, s, len) = parse_uint_minor(minor, data)?;
-                if count > usize::MAX as u64 {
-                    return Err(Error::TooBig);
-                }
-                (Marker::Array(Some(count as usize)), shortest && s, len)
+                parse_uint_minor(minor, data)
+                    .map(|(v, s, len)| (Marker::Array(Some(v)), shortest && s, len))?
             }
             (5, 31) => {
                 /* Indefinite length map */
@@ -549,11 +532,8 @@ impl FromCbor for TaggedMarker {
             }
             (5, minor) => {
                 /* Known length map */
-                let (count, s, len) = parse_uint_minor(minor, data)?;
-                if count > (usize::MAX as u64) / 2 {
-                    return Err(Error::TooBig);
-                }
-                (Marker::Map(Some(count as usize)), shortest && s, len)
+                parse_uint_minor(minor, data)
+                    .map(|(v, s, len)| (Marker::Map(Some(v)), shortest && s, len))?
             }
             (6, _) => unreachable!("CBOR major type 6 (tags) consumed before dispatch"),
             (7, 20) => {
@@ -673,36 +653,34 @@ impl FromCbor for TaggedMarker {
 pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize), Error> {
     let (marker, mut shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
     match marker.marker {
-        Marker::Bytes(Some(v)) | Marker::Text(Some(v)) => Ok((shortest, v.end)),
+        Marker::Bytes(Some(v)) | Marker::Text(Some(v)) => {
+            Ok((shortest, checked_offset(offset, v)?))
+        }
         Marker::Bytes(None) => loop {
             let (inner_marker, inner_shortest, len) =
                 parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
+            offset = offset.checked_add(len).ok_or(Error::TooBig)?;
 
             match inner_marker.marker {
-                Marker::Bytes(Some(range)) if inner_marker.tags.is_empty() => {
-                    offset += range.end;
+                Marker::Bytes(Some(len)) if inner_marker.tags.is_empty() => {
+                    offset = checked_offset(offset, len)?;
                     shortest &= inner_shortest;
                 }
-                Marker::End => {
-                    offset += len;
-                    return Ok((shortest, offset));
-                }
+                Marker::End => return Ok((shortest, offset)),
                 _ => return Err(Error::InvalidChunk),
             }
         },
         Marker::Text(None) => loop {
             let (inner_marker, inner_shortest, len) =
                 parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
+            offset = offset.checked_add(len).ok_or(Error::TooBig)?;
 
             match inner_marker.marker {
-                Marker::Text(Some(range)) if inner_marker.tags.is_empty() => {
-                    offset += range.end;
+                Marker::Text(Some(len)) if inner_marker.tags.is_empty() => {
+                    offset = checked_offset(offset, len)?;
                     shortest &= inner_shortest;
                 }
-                Marker::End => {
-                    offset += len;
-                    return Ok((shortest, offset));
-                }
+                Marker::End => return Ok((shortest, offset)),
                 _ => return Err(Error::InvalidChunk),
             }
         },
@@ -714,7 +692,7 @@ pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize)
             for _ in 0..count {
                 let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
                 shortest &= inner_shortest;
-                offset += len;
+                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
             }
             Ok((shortest, offset))
         }
@@ -726,11 +704,29 @@ pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize)
             while *data.get(offset).ok_or(Error::NeedMoreData(1))? != 0xFF {
                 let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
                 shortest &= inner_shortest;
-                offset += len;
+                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
             }
             Ok((shortest, offset + 1))
         }
         _ => Ok((shortest, offset)),
+    }
+}
+
+#[inline]
+fn checked_offset(offset: usize, len: u64) -> Result<usize, Error> {
+    usize::try_from(len)
+        .ok()
+        .and_then(|len| offset.checked_add(len))
+        .ok_or(Error::TooBig)
+}
+
+#[inline]
+fn offset_extent(data: &[u8], offset: usize, len: u64) -> Result<Range<usize>, Error> {
+    let end = checked_offset(offset, len)?;
+    if end > data.len() {
+        Err(Error::NeedMoreData(end - data.len()))
+    } else {
+        Ok(offset..end)
     }
 }
 
@@ -753,9 +749,10 @@ where
     match marker.marker {
         Marker::UnsignedInteger(v) => f(Value::UnsignedInteger(v), shortest, &marker.tags),
         Marker::NegativeInteger(v) => f(Value::NegativeInteger(v), shortest, &marker.tags),
-        Marker::Bytes(Some(range)) => {
-            offset = range.end;
-            f(Value::Bytes(range), shortest, &marker.tags)
+        Marker::Bytes(Some(len)) => {
+            let extent = offset_extent(data, offset, len)?;
+            offset = extent.end;
+            f(Value::Bytes(extent), shortest, &marker.tags)
         }
         Marker::Bytes(None) => {
             let mut chunks = Vec::new();
@@ -763,14 +760,16 @@ where
                 let (inner_marker, inner_shortest, len) =
                     parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
 
+                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
+
                 match inner_marker.marker {
-                    Marker::Bytes(Some(range)) if inner_marker.tags.is_empty() => {
-                        chunks.push(range.start + offset..range.end + offset);
-                        offset += range.end;
+                    Marker::Bytes(Some(len)) if inner_marker.tags.is_empty() => {
+                        let extent = offset_extent(data, offset, len)?;
+                        offset = extent.end;
+                        chunks.push(extent);
                         shortest &= inner_shortest;
                     }
                     Marker::End => {
-                        offset += len;
                         break f(Value::ByteStream(chunks), shortest, &marker.tags);
                     }
                     _ => {
@@ -779,10 +778,11 @@ where
                 }
             }
         }
-        Marker::Text(Some(range)) => {
-            offset = range.end;
+        Marker::Text(Some(len)) => {
+            let extent = offset_extent(data, offset, len)?;
+            offset = extent.end;
             f(
-                Value::Text(core::str::from_utf8(&data[range]).map_err(Into::into)?),
+                Value::Text(core::str::from_utf8(&data[extent]).map_err(Into::into)?),
                 shortest,
                 &marker.tags,
             )
@@ -793,17 +793,16 @@ where
                 let (inner_marker, inner_shortest, len) =
                     parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
 
+                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
+
                 match inner_marker.marker {
-                    Marker::Text(Some(range)) if inner_marker.tags.is_empty() => {
-                        chunks.push(
-                            core::str::from_utf8(&data[range.start + offset..range.end + offset])
-                                .map_err(Into::into)?,
-                        );
-                        offset += range.end;
+                    Marker::Text(Some(len)) if inner_marker.tags.is_empty() => {
+                        let extent = offset_extent(data, offset, len)?;
+                        offset = extent.end;
+                        chunks.push(core::str::from_utf8(&data[extent]).map_err(Into::into)?);
                         shortest &= inner_shortest;
                     }
                     Marker::End => {
-                        offset += len;
                         break f(Value::TextStream(&chunks), shortest, &marker.tags);
                     }
                     _ => {
@@ -813,12 +812,22 @@ where
             }
         }
         Marker::Array(count) => {
+            let count = count
+                .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
+                .transpose()?;
             let mut a = Array::new(data, count, &mut offset);
             let r = f(Value::Array(&mut a), shortest, &marker.tags)?;
             a.complete(r).map_err(Into::into)
         }
         Marker::Map(count) => {
-            let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+            let count = count
+                .map(|c| {
+                    usize::try_from(c)
+                        .map_err(|_| Error::TooBig)
+                        .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
+                })
+                .transpose()?;
+            let mut m = Map::new(data, count, &mut offset);
             let r = f(Value::Map(&mut m), shortest, &marker.tags)?;
             m.complete(r).map_err(Into::into)
         }
@@ -863,6 +872,9 @@ where
     let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
     match marker.marker {
         Marker::Array(count) => {
+            let count = count
+                .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
+                .transpose()?;
             let mut a = Array::new(data, count, &mut offset);
             let r = f(&mut a, shortest, &marker.tags)?;
             a.complete(r).map_err(Into::into)
@@ -885,7 +897,14 @@ where
     let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
     match marker.marker {
         Marker::Map(count) => {
-            let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+            let count = count
+                .map(|c| {
+                    usize::try_from(c)
+                        .map_err(|_| Error::TooBig)
+                        .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
+                })
+                .transpose()?;
+            let mut m = Map::new(data, count, &mut offset);
             let r = f(&mut m, shortest, &marker.tags)?;
             m.complete(r).map_err(Into::into)
         }
