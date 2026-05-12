@@ -16,44 +16,21 @@ use hardy_cbor::decode::{self, FromCbor};
 use crate::block::{Block, Type};
 use crate::bpsec::{bcb, bib, no_keys};
 use crate::bundle::{Bundle, ParsedBundle};
+use crate::crc::CrcType;
 use crate::eid::Eid;
 use crate::{Error, HashMap};
 
-/// Comparison mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CompareMode {
-    /// Bundles must be *identical*: two different encodings of the same bundle.
-    /// Only CBOR encoding freedoms are tolerated.
-    #[default]
-    Strict,
-    /// Bundles must be *equivalent*: same semantic content, but CRC type
-    /// differences are tolerated (e.g., after security block removal where
-    /// CRC restoration is policy-dependent per RFC 9173 Section 3.8.2, 4.8.2).
-    Relaxed,
-}
-
-/// Compare two bundles from their raw bytes using strict mode.
+/// Compare two bundles from their raw bytes.
 ///
 /// Returns a list of human-readable differences. Empty means identical.
 pub fn compare_bundles(data_a: &[u8], data_b: &[u8]) -> Result<Vec<String>, Error> {
-    compare_bundles_with_mode(data_a, data_b, CompareMode::Strict)
-}
-
-/// Compare two bundles from their raw bytes with the given mode.
-///
-/// Returns a list of human-readable differences. Empty means identical/equivalent.
-pub fn compare_bundles_with_mode(
-    data_a: &[u8],
-    data_b: &[u8],
-    mode: CompareMode,
-) -> Result<Vec<String>, Error> {
     let parsed_a = ParsedBundle::parse(data_a, no_keys)?;
     let parsed_b = ParsedBundle::parse(data_b, no_keys)?;
 
     let side_a = BundleSide::new(&parsed_a.bundle, data_a);
     let side_b = BundleSide::new(&parsed_b.bundle, data_b);
 
-    Ok(compare_parsed(&side_a, &side_b, mode))
+    Ok(compare_parsed(&side_a, &side_b))
 }
 
 /// One side of a bundle comparison: parsed bundle, raw data, and precomputed
@@ -87,11 +64,10 @@ impl<'a> BundleSide<'a> {
 }
 
 /// Compare two already-parsed bundles.
-fn compare_parsed(a: &BundleSide, b: &BundleSide, mode: CompareMode) -> Vec<String> {
+fn compare_parsed(a: &BundleSide, b: &BundleSide) -> Vec<String> {
     let mut diffs = Vec::new();
-    let ignore_crc = mode == CompareMode::Relaxed;
 
-    compare_primary(a.bundle, b.bundle, ignore_crc, &mut diffs);
+    compare_primary(a.bundle, b.bundle, &mut diffs);
 
     let types_a: BTreeSet<_> = a.by_type.keys().collect();
     let types_b: BTreeSet<_> = b.by_type.keys().collect();
@@ -129,12 +105,7 @@ fn compare_parsed(a: &BundleSide, b: &BundleSide, mode: CompareMode) -> Vec<Stri
             if blk_a.flags != blk_b.flags {
                 diffs.push(format!("{tag}: flags differ"));
             }
-            if !ignore_crc && blk_a.crc_type != blk_b.crc_type {
-                diffs.push(format!(
-                    "{tag}: CRC type {:?} vs {:?}",
-                    blk_a.crc_type, blk_b.crc_type
-                ));
-            }
+            compare_crc(blk_a.crc_type, blk_b.crc_type, &tag, &mut diffs);
 
             match bt {
                 Type::BlockIntegrity if blk_a.bcb.is_none() && blk_b.bcb.is_none() => {
@@ -158,7 +129,7 @@ fn compare_parsed(a: &BundleSide, b: &BundleSide, mode: CompareMode) -> Vec<Stri
 }
 
 /// Compare primary block parsed fields.
-fn compare_primary(a: &Bundle, b: &Bundle, ignore_crc: bool, diffs: &mut Vec<String>) {
+fn compare_primary(a: &Bundle, b: &Bundle, diffs: &mut Vec<String>) {
     if a.id != b.id {
         diffs.push("Primary: id differs".into());
     }
@@ -174,11 +145,16 @@ fn compare_primary(a: &Bundle, b: &Bundle, ignore_crc: bool, diffs: &mut Vec<Str
     if a.flags != b.flags {
         diffs.push("Primary: flags differ".into());
     }
-    if !ignore_crc && a.crc_type != b.crc_type {
-        diffs.push(format!(
-            "Primary: CRC type {:?} vs {:?}",
-            a.crc_type, b.crc_type
-        ));
+    compare_crc(a.crc_type, b.crc_type, "Primary", diffs);
+}
+
+/// Compare CRC presence. The exact CRC type (CRC-16 vs CRC-32) is an
+/// implementation choice, but having CRC vs none is semantically meaningful.
+fn compare_crc(a: CrcType, b: CrcType, tag: &str, diffs: &mut Vec<String>) {
+    let has_a = !matches!(a, CrcType::None);
+    let has_b = !matches!(b, CrcType::None);
+    if has_a != has_b {
+        diffs.push(format!("{tag}: CRC {:?} vs {:?}", a, b));
     }
 }
 
