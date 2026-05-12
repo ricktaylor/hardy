@@ -1980,6 +1980,7 @@ dependencies = [
  "clap",
  "hardy-bpv7",
  "hardy-cbor",
+ "hex-literal",
  "humantime",
  "serde",
  "serde_json",
