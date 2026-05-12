@@ -3,7 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Project** | Hardy DTN Router |
-| **Date** | 2026-04-15 |
+| **Date** | 2026-05-12 |
 
 ## 1. Introduction
 
@@ -16,9 +16,9 @@ Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
 * 11 of 21 top-level requirements Done
   * 4 Partial
   * 6 Not started
-* 71 of 78 LLRs Done
+* 73 of 78 LLRs Done
   * 1 N/A
-  * 6 Not Tested
+  * 4 Not Tested
 * Gaps and implementation status detailed in [§4](#4-gaps)
 
 ## 2. Requirements Traceability Matrix
@@ -332,8 +332,8 @@ Verified by: visual inspection (GitHub, crates.io, docs.rs)
 | LLR | Description | Status |
 | :--- | :--- | :--- |
 | **21.2.1** | Source, documentation, and examples on GitHub.com | Done |
-| **21.2.2** | Rust crates available on crates.io | Not started |
-| **21.2.3** | RustDoc documentation on docs.rs | Not started |
+| **21.2.2** | Rust crates available on crates.io | Done |
+| **21.2.3** | RustDoc documentation on docs.rs | Done |
 
 ### Issue Reporting and Tracking (21.3)
 
@@ -367,9 +367,9 @@ Verified by: visual inspection (GitHub)
 | **19.1** OpenTelemetry | 3 | 3 | 0 | 0 |
 | **19.2** Tools | 5 | 5 | 0 | 0 |
 | **21.1** Documentation | 0 | 0 | 0 | 0 |
-| **21.2** Documentation | 3 | 1 | 0 | 2 |
+| **21.2** Documentation | 3 | 3 | 0 | 0 |
 | **21.3** Issue Reporting | 2 | 2 | 0 | 0 |
-| **Total** | **78** | **71** | **1** | **6** |
+| **Total** | **78** | **73** | **1** | **4** |
 
 ## 4. Gaps
 
@@ -403,4 +403,4 @@ Verified by: visual inspection (GitHub)
 
 ## 5. Conclusion
 
-All initial phase requirements are Done except REQ-9 (Partial). Core protocol compliance (REQ-1, REQ-2, REQ-3), infrastructure (REQ-6, REQ-7, REQ-15, REQ-17, REQ-19, REQ-21), and documentation (REQ-18) are fully satisfied. REQ-9 (S3 storage) is Partial due to missing capacity enforcement (LLR 9.1.2, 9.1.3) and untested configuration (LLR 9.1.1). At the LLR level, 71 of 78 requirements are done, with the 6 untested items concentrated in S3 storage and documentation publishing (crates.io, docs.rs). Stretch goal REQ-20 (interoperability) is complete with 7 peer implementations verified.
+All initial phase requirements are Done except REQ-9 (Partial). Core protocol compliance (REQ-1, REQ-2, REQ-3), infrastructure (REQ-6, REQ-7, REQ-15, REQ-17, REQ-19, REQ-21), and documentation (REQ-18) are fully satisfied. REQ-9 (S3 storage) is Partial due to missing capacity enforcement (LLR 9.1.2, 9.1.3) and untested configuration (LLR 9.1.1). At the LLR level, 73 of 78 requirements are done, with the 4 untested items concentrated in S3 storage. Stretch goal REQ-20 (interoperability) is complete with 7 peer implementations verified.
