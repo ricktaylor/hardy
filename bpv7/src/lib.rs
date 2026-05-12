@@ -107,7 +107,7 @@ pub mod block;
 pub mod bpsec;
 pub mod builder;
 pub mod bundle;
-pub mod compare;
+pub mod cmp;
 pub mod crc;
 pub mod creation_timestamp;
 pub mod dtn_time;

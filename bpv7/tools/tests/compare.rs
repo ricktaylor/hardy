@@ -1,4 +1,4 @@
-use hardy_bpv7::compare::compare_bundles;
+use hardy_bpv7::cmp::compare_bundles;
 
 // Original plain bundle (RFC 9173, Section A.3.1.4)
 const ORIGINAL: &[u8] = &hex_literal::hex!(
