@@ -5,11 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI tools and library for BPv7 bundle operations"
+description = "CLI tools for BPv7 bundle operations"
 publish = false
-
-[lib]
-path = "src/lib.rs"
 
 [[bin]]
 name = "bundle"

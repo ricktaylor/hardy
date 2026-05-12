@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 
 mod cmd;
+mod flags;
+mod io;
+mod keys;
 
 /// A CLI tool for creating and managing BPv7 bundles.
 #[derive(Parser, Debug)]
