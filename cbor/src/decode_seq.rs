@@ -57,7 +57,7 @@ impl<'a, const D: usize> Series<'a, D> {
         } else if *self.offset >= self.data.len() {
             Err(Error::NeedMoreData(*self.offset + 1 - self.data.len()))
         } else if D > 0 && self.data[*self.offset] == 0xFF {
-            if self.parsed % D == 1 {
+            if !self.parsed.is_multiple_of(D) {
                 Err(Error::PartialMap)
             } else {
                 *self.offset += 1;
@@ -84,15 +84,18 @@ impl<'a, const D: usize> Series<'a, D> {
 
     /// Parses and skips the next value in the sequence without fully decoding it.
     ///
-    /// This is more efficient than parsing into a `Value` and then calling `skip`
-    /// if you only need to advance the cursor.
-    /// Returns a boolean indicating if the skipped value was in canonical form.
+    /// More efficient than parsing into a [`Value`] and calling [`Value::skip`]
+    /// — no chunk lists or nested [`Series`] are constructed. Delegates to
+    /// [`decode::skip_value`]; see that function for the canonical-form
+    /// reporting rules.
     pub fn skip_value(&mut self, max_recursion: usize) -> Result<bool, Error> {
-        self.parse_value(|mut value, shortest, tags| {
-            value
-                .skip(max_recursion)
-                .map(|s| s && shortest && tags.is_empty())
-        })
+        if self.at_end()? {
+            return Err(Error::NoMoreItems);
+        }
+        let (shortest, len) = decode::skip_value(&self.data[*self.offset..], max_recursion)?;
+        self.parsed += 1;
+        *self.offset += len;
+        Ok(shortest)
     }
 
     /// Skips all remaining values until the end of the sequence is reached.
@@ -102,15 +105,8 @@ impl<'a, const D: usize> Series<'a, D> {
     pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<bool, Error> {
         let mut shortest = true;
         while !self.at_end()? {
-            self.parse_value(|mut value, s, tags| {
-                shortest = value.skip(max_recursion)? && shortest && s && tags.is_empty();
-                Ok::<_, Error>(())
-            })?;
-            if D == 2 {
-                self.parse_value(|mut value, s, tags| {
-                    shortest = value.skip(max_recursion)? && shortest && s && tags.is_empty();
-                    Ok::<_, Error>(())
-                })?;
+            for _ in 0..D {
+                shortest &= self.skip_value(max_recursion)?;
             }
         }
         Ok(shortest)
@@ -206,12 +202,28 @@ impl<'a, const D: usize> Series<'a, D> {
         F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
-        self.parse_value(|value, shortest, tags| match value {
-            Value::Array(a) => f(a, shortest, tags),
-            _ => Err(
-                Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into(),
-            ),
-        })
+        // Check for end of array
+        if self.at_end()? {
+            return Err(Error::NoMoreItems.into());
+        }
+
+        let data = &self.data[*self.offset..];
+        let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        let value = match marker.marker {
+            Marker::Array(count) => {
+                let mut a = Array::new(data, count, &mut offset);
+                let r = f(&mut a, shortest, &marker.tags)?;
+                a.complete(r)
+            }
+            _ => Err(Error::IncorrectType(
+                "Array".to_string(),
+                marker.to_string(),
+            )),
+        }?;
+
+        self.parsed += 1;
+        *self.offset += offset;
+        Ok(value)
     }
 
     /// Parses the next item in the sequence, expecting it to be a map.
@@ -224,12 +236,25 @@ impl<'a, const D: usize> Series<'a, D> {
         F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
         E: From<Error>,
     {
-        self.parse_value(|value, shortest, tags| match value {
-            Value::Map(m) => f(m, shortest, tags),
-            _ => Err(
-                Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into(),
-            ),
-        })
+        // Check for end of array
+        if self.at_end()? {
+            return Err(Error::NoMoreItems.into());
+        }
+
+        let data = &self.data[*self.offset..];
+        let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        let value = match marker.marker {
+            Marker::Map(count) => {
+                let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+                let r = f(&mut m, shortest, &marker.tags)?;
+                m.complete(r)
+            }
+            _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string())),
+        }?;
+
+        self.parsed += 1;
+        *self.offset += offset;
+        Ok(value)
     }
 }
 

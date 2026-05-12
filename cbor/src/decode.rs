@@ -8,7 +8,7 @@ definite and indefinite-length items, and semantic tags.
 
 # Core Concepts
 
-There are two primary ways to use the decoder:
+There are three primary ways to use the decoder:
 
 1.  **Direct Deserialization with `FromCbor`:** For straightforward cases, you can
     implement the [`FromCbor`] trait for your types. This allows you to
@@ -19,6 +19,12 @@ There are two primary ways to use the decoder:
     ([`parse_value`], [`parse_array`], [`parse_map`]) to process the CBOR
     stream piece by piece. This approach gives you fine-grained control and
     avoids intermediate allocations.
+
+3.  **Low-level peek with [`TaggedMarker`]:** For optimised parsing where
+    you want to dispatch on type and length without using a closure or
+    materialising indefinite-length contents, parse a [`TaggedMarker`] and
+    match on its [`Marker`] directly. The caller chooses whether to walk
+    the contents of arrays, maps, and chunked strings.
 
 # Usage
 
@@ -226,8 +232,14 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
 
     /// Skips over the content of the current value.
     ///
-    /// For simple types, this does nothing. For arrays and maps, it consumes all
-    /// nested items until the end of the sequence is reached.
+    /// For simple types this does nothing. For arrays and maps it consumes
+    /// all nested items until the end of the sequence is reached. Returns
+    /// whether every nested marker was minimally encoded; indefiniteness is
+    /// not considered (use [`Series::is_definite`] on the value itself if
+    /// you need that signal).
+    #[deprecated(
+        note = "use `decode::skip_value` on the byte slice, or `Series::skip_value` inside a sequence — both avoid the chunk-list and Series allocations made by parse_value"
+    )]
     pub fn skip(&mut self, mut max_recursion: usize) -> Result<bool, Error> {
         match self {
             Value::Array(a) => {
@@ -235,14 +247,14 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
                     return Err(Error::MaxRecursion);
                 }
                 max_recursion -= 1;
-                a.skip_to_end(max_recursion).map(|s| s && a.is_definite())
+                a.skip_to_end(max_recursion)
             }
             Value::Map(m) => {
                 if max_recursion == 0 {
                     return Err(Error::MaxRecursion);
                 }
                 max_recursion -= 1;
-                m.skip_to_end(max_recursion).map(|s| s && m.is_definite())
+                m.skip_to_end(max_recursion)
             }
             _ => Ok(true),
         }
@@ -281,7 +293,7 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
                 offset += 1;
                 let (tag, s, o) = parse_uint_minor(minor, &data[offset..])?;
                 tags.push(tag);
-                shortest = shortest && s;
+                shortest &= s;
                 offset += o;
             }
             _ => break,
@@ -334,230 +346,489 @@ fn parse_data_minor(minor: u8, data: &[u8]) -> Result<(Range<usize>, bool, usize
     if data_len > data.len() {
         Err(Error::NeedMoreData(data_len - data.len()))
     } else {
-        Ok((len..data_len, shortest, data_len))
+        Ok((len..data_len, shortest, len))
     }
 }
 
-fn parse_data_chunked(major: u8, data: &[u8]) -> Result<(Vec<Range<usize>>, bool, usize), Error> {
-    let mut chunks = Vec::new();
-    let mut offset = 0;
-    let mut shortest = true;
-    while let Some(v) = data.get(offset) {
-        offset += 1;
+/// The head of a single CBOR data item.
+///
+/// `Marker` captures the CBOR major type and the value carried directly in
+/// the type marker encoding — a scalar, a definite-length payload range, or
+/// an element count. It is the payload returned by the [`TaggedMarker`]
+/// [`FromCbor`] implementation when you only need to dispatch on type
+/// without paying for a full decode.
+///
+/// # What this *does not* tell you
+///
+/// `Marker` does **not** carry the byte length of the encoded CBOR item as
+/// a whole. The values inside the variants describe the item itself, not
+/// its encoded size:
+///
+/// - [`Array(Some(count))`][Self::Array] / [`Map(Some(count))`][Self::Map]
+///   carry the **element count** — for a map, the number of key-value
+///   pairs. They say nothing about how many bytes the contained items
+///   occupy.
+/// - [`Bytes(Some(range))`][Self::Bytes] /
+///   [`Text(Some(range))`][Self::Text] carry a [`Range`] into the original
+///   input that locates the payload bytes; this is a slice index, not a
+///   length-of-encoding.
+/// - The `None` variants of `Bytes`, `Text`, `Array`, and `Map` carry no
+///   length information at all — the contents are indefinite-length and
+///   must be walked to a break byte.
+///
+/// # Bytes consumed
+///
+/// The byte count returned alongside a `Marker` by [`FromCbor`] covers
+/// only the encoding of the type marker itself, plus the validated payload
+/// of definite-length strings:
+///
+/// - **Scalars** (integers, floats, booleans, null, undefined, simple
+///   values): the full encoding is consumed.
+/// - **Definite-length strings** ([`Bytes(Some(_))`][Self::Bytes],
+///   [`Text(Some(_))`][Self::Text]): the head byte, length prefix, and
+///   payload bytes are all consumed; the [`Range`] then locates the
+///   payload within the original input.
+/// - **Indefinite-length strings** ([`Bytes(None)`][Self::Bytes],
+///   [`Text(None)`][Self::Text]): only the single head byte is consumed;
+///   the chunks and the trailing break byte remain in the buffer.
+/// - **Arrays and maps** ([`Array`][Self::Array], [`Map`][Self::Map],
+///   either `Some` or `None`): only the head byte and (for definite
+///   collections) the length prefix are consumed; the contained items
+///   remain in the buffer for the caller to walk.
+pub enum Marker {
+    /// An unsigned integer (CBOR major type 0).
+    UnsignedInteger(u64),
+    /// A negative integer (CBOR major type 1), stored as the raw value `n` where the actual value is `-1 - n`.
+    NegativeInteger(u64),
+    /// A byte string (CBOR major type 2). `Some(range)` is the byte range
+    /// of the payload within the original input for definite-length
+    /// strings; `None` indicates an indefinite-length string whose chunks
+    /// are still in the buffer awaiting parsing.
+    Bytes(Option<Range<usize>>),
+    /// A text string (CBOR major type 3). `Some(range)` is the byte range
+    /// of the payload within the original input for definite-length
+    /// strings; `None` indicates an indefinite-length string whose chunks
+    /// are still in the buffer awaiting parsing.
+    Text(Option<Range<usize>>),
+    /// A CBOR array (major type 4). `Some(count)` is the number of
+    /// elements for definite-length arrays — not a byte length;
+    /// `None` indicates an indefinite-length array whose elements are
+    /// still in the buffer, terminated by a break byte.
+    Array(Option<usize>),
+    /// A CBOR map (major type 5). `Some(count)` is the number of
+    /// key-value pairs for definite-length maps — not a byte length;
+    /// `None` indicates an indefinite-length map whose pairs are still in
+    /// the buffer, terminated by a break byte.
+    Map(Option<usize>),
+    /// The boolean value `false` (CBOR simple value 20).
+    False,
+    /// The boolean value `true` (CBOR simple value 21).
+    True,
+    /// The null value (CBOR simple value 22).
+    Null,
+    /// The undefined value (CBOR simple value 23).
+    Undefined,
+    /// An unassigned simple value (CBOR simple values 0–19, 24–31).
+    Simple(u8),
+    /// A floating-point value (CBOR major type 7).
+    Float(f64),
+    /// An 'end' marker for indefinite length items
+    End,
+}
 
-        if *v == 0xFF {
-            return Ok((chunks, shortest, offset));
+/// A [`Marker`] preceded by zero or more CBOR semantic tags.
+///
+/// `TaggedMarker` is the head of a tagged or untagged CBOR item produced by
+/// the [`FromCbor`] implementation. It is the entry point for low-level
+/// parsing, in contrast to the closure-driven [`parse_value`] family.
+///
+/// Use [`parse::<TaggedMarker>(data)`][parse] to peek at the next item, or
+/// [`parse::<(TaggedMarker, bool, usize)>(data)`][parse] when you also need
+/// the canonical-encoding flag and the byte count consumed by the marker
+/// itself (see [`Marker`] for the consumption rules — this count is *not*
+/// the size of the encoded item for arrays, maps, or indefinite-length
+/// strings).
+///
+/// # When to use this over [`parse_value`]
+///
+/// - **No closure required.** Match directly on the returned [`Marker`]
+///   instead of threading control flow through an `FnOnce`, which avoids
+///   borrow-checker friction and lets the caller propagate any error type.
+/// - **No contiguous materialisation.** [`parse_value`] eagerly collects
+///   indefinite-length string chunks into a `Vec<Range<usize>>` and
+///   constructs nested [`Series`] iterators for arrays and maps; with
+///   `TaggedMarker` the caller decides whether to walk the chunks or
+///   sub-items at all, and may skip them byte-wise instead of parsing
+///   them.
+pub struct TaggedMarker {
+    /// CBOR major-type-6 tags preceding the item, in encoding order. Empty
+    /// if the item is untagged.
+    pub tags: Vec<u64>,
+    /// The decoded marker for the item itself.
+    pub marker: Marker,
+}
+
+impl core::fmt::Display for TaggedMarker {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let prefix = if self.tags.is_empty() {
+            "Untagged"
+        } else {
+            "Tagged"
         }
-
-        if v >> 5 != major {
-            return Err(Error::InvalidChunk);
+        .to_string();
+        match self.marker {
+            Marker::UnsignedInteger(_) => write!(f, "{prefix} Unsigned Integer"),
+            Marker::NegativeInteger(_) => write!(f, "{prefix} Negative Integer"),
+            Marker::Bytes(Some(_)) => write!(f, "{prefix} Definite-length Byte String"),
+            Marker::Bytes(None) => write!(f, "{prefix} Indefinite-length Byte String"),
+            Marker::Text(Some(_)) => write!(f, "{prefix} Definite-length Text String"),
+            Marker::Text(None) => write!(f, "{prefix} Indefinite-length Text String"),
+            Marker::Array(Some(_)) => write!(f, "{prefix} Definite-length Array"),
+            Marker::Array(None) => write!(f, "{prefix} Indefinite-length Array"),
+            Marker::Map(Some(_)) => write!(f, "{prefix} Definite-length Map"),
+            Marker::Map(None) => write!(f, "{prefix} Indefinite-length Map"),
+            Marker::False => write!(f, "{prefix} False"),
+            Marker::True => write!(f, "{prefix} True"),
+            Marker::Null => write!(f, "{prefix} Null"),
+            Marker::Undefined => write!(f, "{prefix} Undefined"),
+            Marker::Simple(v) => write!(f, "{prefix} Simple Value {v}"),
+            Marker::Float(_) => write!(f, "{prefix} Float"),
+            Marker::End => write!(f, "End of sequence marker"),
         }
-
-        let (chunk, s, chunk_len) = parse_data_minor(v & 0x1F, &data[offset..])?;
-        chunks.push(chunk.start + offset..chunk.end + offset);
-        shortest = shortest && s;
-        offset += chunk_len;
     }
+}
 
-    Err(Error::NeedMoreData(1))
+impl FromCbor for TaggedMarker {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let (tags, mut shortest, mut offset) = parse_tags(data)?;
+        let Some(marker) = data.get(offset) else {
+            return Err(Error::NeedMoreData(1));
+        };
+        offset += 1;
+        let data = &data[offset..];
+
+        let (marker, shortest, len) = match (marker >> 5, marker & 0x1F) {
+            (0, minor) => parse_uint_minor(minor, data)
+                .map(|(v, s, len)| (Marker::UnsignedInteger(v), shortest && s, len))?,
+            (1, minor) => parse_uint_minor(minor, data)
+                .map(|(v, s, len)| (Marker::NegativeInteger(v), shortest && s, len))?,
+            (2, 31) => (Marker::Bytes(None), shortest, 0),
+            (2, minor) => {
+                /* Known length byte string */
+                let (t, s, len) = parse_data_minor(minor, data)?;
+                let t = t.start + offset..t.end + offset;
+                (Marker::Bytes(Some(t)), shortest && s, len)
+            }
+            (3, 31) => {
+                /* Indefinite length text string */
+                (Marker::Text(None), shortest, 0)
+            }
+            (3, minor) => {
+                /* Known length text string */
+                let (t, s, len) = parse_data_minor(minor, data)?;
+                let t = t.start + offset..t.end + offset;
+                (Marker::Text(Some(t)), shortest && s, len)
+            }
+            (4, 31) => {
+                /* Indefinite length array */
+                (Marker::Array(None), shortest, 0)
+            }
+            (4, minor) => {
+                /* Known length array */
+                let (count, s, len) = parse_uint_minor(minor, data)?;
+                if count > usize::MAX as u64 {
+                    return Err(Error::TooBig);
+                }
+                (Marker::Array(Some(count as usize)), shortest && s, len)
+            }
+            (5, 31) => {
+                /* Indefinite length map */
+                (Marker::Map(None), shortest, 0)
+            }
+            (5, minor) => {
+                /* Known length map */
+                let (count, s, len) = parse_uint_minor(minor, data)?;
+                if count > (usize::MAX as u64) / 2 {
+                    return Err(Error::TooBig);
+                }
+                (Marker::Map(Some(count as usize)), shortest && s, len)
+            }
+            (6, _) => unreachable!("CBOR major type 6 (tags) consumed before dispatch"),
+            (7, 20) => {
+                /* False */
+                (Marker::False, shortest, 0)
+            }
+            (7, 21) => {
+                /* True */
+                (Marker::True, shortest, 0)
+            }
+            (7, 22) => {
+                /* Null */
+                (Marker::Null, shortest, 0)
+            }
+            (7, 23) => {
+                /* Undefined */
+                (Marker::Undefined, shortest, 0)
+            }
+            (7, minor @ 0..=19) => {
+                /* Unassigned simple type */
+                (Marker::Simple(minor), shortest, 0)
+            }
+            (7, 24) => {
+                /* Unassigned simple type */
+                let Some(v) = data.first() else {
+                    return Err(Error::NeedMoreData(1));
+                };
+                if *v < 32 {
+                    return Err(Error::InvalidSimpleType(*v));
+                }
+                (Marker::Simple(*v), shortest, 1)
+            }
+            (7, 25) => {
+                /* FP16 */
+                let v = half::f16::from_be_bytes(to_array(data)?);
+                (Marker::Float(v.into()), shortest, 2)
+            }
+            (7, 26) => {
+                /* FP32 */
+                let v = f32::from_be_bytes(to_array(data)?);
+                if shortest {
+                    match v.classify() {
+                        core::num::FpCategory::Nan
+                        | core::num::FpCategory::Infinite
+                        | core::num::FpCategory::Zero => {
+                            // There is an FP16 representation that is shorter
+                            shortest = false;
+                        }
+                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                            if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v)
+                                && <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v)
+                            {
+                                shortest = false;
+                            }
+                        }
+                    }
+                }
+                (Marker::Float(v.into()), shortest, 4)
+            }
+            (7, 27) => {
+                /* FP64 */
+                let v = f64::from_be_bytes(to_array(data)?);
+                if shortest {
+                    match v.classify() {
+                        core::num::FpCategory::Nan
+                        | core::num::FpCategory::Infinite
+                        | core::num::FpCategory::Zero => {
+                            // There is an FP16 representation that is shorter
+                            shortest = false;
+                        }
+                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                            if let Some(v32) = f32::from_f64(v) {
+                                if v32.to_f64() == Some(v) {
+                                    shortest = false;
+                                }
+                            } else if let Some(v16) =
+                                <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+                                && <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v)
+                            {
+                                shortest = false;
+                            }
+                        }
+                    }
+                }
+                (Marker::Float(v), shortest, 8)
+            }
+            (7, 31) if offset == 1 => (Marker::End, true, 0),
+            (7, minor) => {
+                return Err(Error::InvalidSimpleType(minor));
+            }
+            _ => unreachable!("CBOR major type is 3 bits, all values 0-7 handled above"),
+        };
+        Ok((TaggedMarker { tags, marker }, shortest, offset + len))
+    }
+}
+
+/// Skips over the next CBOR data item without materialising its contents.
+///
+/// Walks the encoding using [`TaggedMarker`] dispatch, recursing into
+/// arrays and maps and walking the chunks of indefinite-length strings.
+/// No `Vec` is allocated for chunk lists and no [`Series`] iterator is
+/// constructed.
+///
+/// On success returns `(shortest, len)` where `len` is the total byte
+/// count consumed and `shortest` reports whether every marker encountered
+/// was minimally encoded (lengths, tags, and floats per [RFC 8949 §4.2.1]).
+/// Indefiniteness itself does **not** clear the flag — callers that treat
+/// indefinite-length items as non-canonical should pattern-match on the
+/// returned `Marker` or use [`Series::is_definite`] separately.
+///
+/// # Errors
+///
+/// Returns [`Error::MaxRecursion`] if nested arrays or maps exceed
+/// `max_recursion`.
+///
+/// [RFC 8949 §4.2.1]: https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1
+pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize), Error> {
+    let (marker, mut shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+    match marker.marker {
+        Marker::Bytes(Some(v)) | Marker::Text(Some(v)) => Ok((shortest, v.end)),
+        Marker::Bytes(None) => loop {
+            let (inner_marker, inner_shortest, len) =
+                parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
+
+            match inner_marker.marker {
+                Marker::Bytes(Some(range)) if inner_marker.tags.is_empty() => {
+                    offset += range.end;
+                    shortest &= inner_shortest;
+                }
+                Marker::End => {
+                    offset += len;
+                    return Ok((shortest, offset));
+                }
+                _ => return Err(Error::InvalidChunk),
+            }
+        },
+        Marker::Text(None) => loop {
+            let (inner_marker, inner_shortest, len) =
+                parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
+
+            match inner_marker.marker {
+                Marker::Text(Some(range)) if inner_marker.tags.is_empty() => {
+                    offset += range.end;
+                    shortest &= inner_shortest;
+                }
+                Marker::End => {
+                    offset += len;
+                    return Ok((shortest, offset));
+                }
+                _ => return Err(Error::InvalidChunk),
+            }
+        },
+        Marker::Array(Some(count)) | Marker::Map(Some(count)) => {
+            if max_recursion == 0 {
+                return Err(Error::MaxRecursion);
+            }
+            max_recursion -= 1;
+            for _ in 0..count {
+                let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
+                shortest &= inner_shortest;
+                offset += len;
+            }
+            Ok((shortest, offset))
+        }
+        Marker::Array(None) | Marker::Map(None) => {
+            if max_recursion == 0 {
+                return Err(Error::MaxRecursion);
+            }
+            max_recursion -= 1;
+            while *data.get(offset).ok_or(Error::NeedMoreData(1))? != 0xFF {
+                let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
+                shortest &= inner_shortest;
+                offset += len;
+            }
+            Ok((shortest, offset + 1))
+        }
+        _ => Ok((shortest, offset)),
+    }
 }
 
 /// Parses a single CBOR value from a byte slice and processes it with a closure.
 ///
-/// This is the core low-level parsing function. It handles tags and determines
-/// the major type of the next item in the slice, then passes a [`Value`]
-/// representation to the provided closure `f`.
+/// Reads the next item, including any preceding semantic tags, and passes a
+/// fully-formed [`Value`] to `f`. Indefinite-length strings are gathered
+/// into chunk lists and arrays/maps are presented as nested [`Series`]
+/// iterators, so the closure sees a uniform view regardless of encoding.
+/// For finer control without a closure, parse a [`TaggedMarker`] instead.
 ///
-/// On success, it returns a tuple containing the result of the closure and the
-/// total number of bytes consumed from the input slice.
+/// On success, returns the result of `f` and the total number of bytes
+/// consumed from the input slice.
 pub fn parse_value<T, F, E>(data: &[u8], f: F) -> Result<(T, usize), E>
 where
     F: FnOnce(Value, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
-    let (tags, mut shortest, mut offset) = parse_tags(data)?;
-    let Some(marker) = data.get(offset) else {
-        return Err(Error::NeedMoreData(1).into());
-    };
-    offset += 1;
+    let (marker, mut shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+    match marker.marker {
+        Marker::UnsignedInteger(v) => f(Value::UnsignedInteger(v), shortest, &marker.tags),
+        Marker::NegativeInteger(v) => f(Value::NegativeInteger(v), shortest, &marker.tags),
+        Marker::Bytes(Some(range)) => {
+            offset = range.end;
+            f(Value::Bytes(range), shortest, &marker.tags)
+        }
+        Marker::Bytes(None) => {
+            let mut chunks = Vec::new();
+            loop {
+                let (inner_marker, inner_shortest, len) =
+                    parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
 
-    match (marker >> 5, marker & 0x1F) {
-        (0, minor) => {
-            let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
-            offset += len;
-            f(Value::UnsignedInteger(v), shortest && s, &tags)
-        }
-        (1, minor) => {
-            let (v, s, len) = parse_uint_minor(minor, &data[offset..])?;
-            offset += len;
-            f(Value::NegativeInteger(v), shortest && s, &tags)
-        }
-        (2, 31) => {
-            /* Indefinite length byte string */
-            let (mut v, s, len) = parse_data_chunked(2, &data[offset..])?;
-            for t in v.iter_mut() {
-                t.start += offset;
-                t.end += offset;
+                match inner_marker.marker {
+                    Marker::Bytes(Some(range)) if inner_marker.tags.is_empty() => {
+                        chunks.push(range.start + offset..range.end + offset);
+                        offset += range.end;
+                        shortest &= inner_shortest;
+                    }
+                    Marker::End => {
+                        offset += len;
+                        break f(Value::ByteStream(chunks), shortest, &marker.tags);
+                    }
+                    _ => {
+                        return Err(Error::InvalidChunk.into());
+                    }
+                }
             }
-            offset += len;
-            f(Value::ByteStream(v), shortest && s, &tags)
         }
-        (2, minor) => {
-            /* Known length byte string */
-            let (t, s, len) = parse_data_minor(minor, &data[offset..])?;
-            let t = t.start + offset..t.end + offset;
-            offset += len;
-            f(Value::Bytes(t), shortest && s, &tags)
-        }
-        (3, 31) => {
-            /* Indefinite length text string */
-            let data = &data[offset..];
-            let (v, s, len) = parse_data_chunked(3, data)?;
-            offset += len;
-            let mut t = Vec::with_capacity(v.len());
-            for b in v {
-                t.push(core::str::from_utf8(&data[b]).map_err(Into::into)?);
-            }
-            f(Value::TextStream(&t), shortest && s, &tags)
-        }
-        (3, minor) => {
-            /* Known length text string */
-            let data = &data[offset..];
-            let (t, s, len) = parse_data_minor(minor, data)?;
-            offset += len;
+        Marker::Text(Some(range)) => {
+            offset = range.end;
             f(
-                Value::Text(core::str::from_utf8(&data[t]).map_err(Into::into)?),
-                shortest && s,
-                &tags,
+                Value::Text(core::str::from_utf8(&data[range]).map_err(Into::into)?),
+                shortest,
+                &marker.tags,
             )
         }
-        (4, 31) => {
-            /* Indefinite length array */
-            let mut a = Array::new(data, None, &mut offset);
-            let r = f(Value::Array(&mut a), shortest, &tags)?;
-            a.complete(r).map_err(Into::into)
-        }
-        (4, minor) => {
-            /* Known length array */
-            let (count, s, len) = parse_uint_minor(minor, &data[offset..])?;
-            offset += len;
-            if count > usize::MAX as u64 {
-                return Err(Error::TooBig.into());
-            }
-            let mut a = Array::new(data, Some(count as usize), &mut offset);
-            let r = f(Value::Array(&mut a), shortest && s, &tags)?;
-            a.complete(r).map_err(Into::into)
-        }
-        (5, 31) => {
-            /* Indefinite length map */
-            let mut m = Map::new(data, None, &mut offset);
-            let r = f(Value::Map(&mut m), true, &tags)?;
-            m.complete(r).map_err(Into::into)
-        }
-        (5, minor) => {
-            /* Known length map */
-            let (count, s, len) = parse_uint_minor(minor, &data[offset..])?;
-            offset += len;
-            if count > (usize::MAX as u64) / 2 {
-                return Err(Error::TooBig.into());
-            }
-            let mut m = Map::new(data, Some((count * 2) as usize), &mut offset);
-            let r = f(Value::Map(&mut m), shortest && s, &tags)?;
-            m.complete(r).map_err(Into::into)
-        }
-        (6, _) => unreachable!("CBOR major type 6 (tags) consumed before dispatch"),
-        (7, 20) => {
-            /* False */
-            f(Value::False, shortest, &tags)
-        }
-        (7, 21) => {
-            /* True */
-            f(Value::True, shortest, &tags)
-        }
-        (7, 22) => {
-            /* Null */
-            f(Value::Null, shortest, &tags)
-        }
-        (7, 23) => {
-            /* Undefined */
-            f(Value::Undefined, shortest, &tags)
-        }
-        (7, minor @ 0..=19) => {
-            /* Unassigned simple type */
-            f(Value::Simple(minor), shortest, &tags)
-        }
-        (7, 24) => {
-            /* Unassigned simple type */
-            let Some(v) = data.get(offset) else {
-                return Err(Error::NeedMoreData(1).into());
-            };
-            offset += 1;
-            if *v < 32 {
-                return Err(Error::InvalidSimpleType(*v).into());
-            }
-            f(Value::Simple(*v), shortest, &tags)
-        }
-        (7, 25) => {
-            /* FP16 */
-            let v = half::f16::from_be_bytes(to_array(&data[offset..])?);
-            offset += 2;
-            f(Value::Float(v.into()), shortest, &tags)
-        }
-        (7, 26) => {
-            /* FP32 */
-            let v = f32::from_be_bytes(to_array(&data[offset..])?);
-            offset += 4;
-            if shortest {
-                match v.classify() {
-                    core::num::FpCategory::Nan
-                    | core::num::FpCategory::Infinite
-                    | core::num::FpCategory::Zero => {
-                        // There is an FP16 representation that is shorter
-                        shortest = false;
+        Marker::Text(None) => {
+            let mut chunks = Vec::new();
+            loop {
+                let (inner_marker, inner_shortest, len) =
+                    parse::<(TaggedMarker, bool, usize)>(&data[offset..])?;
+
+                match inner_marker.marker {
+                    Marker::Text(Some(range)) if inner_marker.tags.is_empty() => {
+                        chunks.push(
+                            core::str::from_utf8(&data[range.start + offset..range.end + offset])
+                                .map_err(Into::into)?,
+                        );
+                        offset += range.end;
+                        shortest &= inner_shortest;
                     }
-                    core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
-                        if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v)
-                            && <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v)
-                        {
-                            shortest = false;
-                        }
+                    Marker::End => {
+                        offset += len;
+                        break f(Value::TextStream(&chunks), shortest, &marker.tags);
+                    }
+                    _ => {
+                        return Err(Error::InvalidChunk.into());
                     }
                 }
             }
-            f(Value::Float(v.into()), shortest, &tags)
         }
-        (7, 27) => {
-            /* FP64 */
-            let v = f64::from_be_bytes(to_array(&data[offset..])?);
-            offset += 8;
-            if shortest {
-                match v.classify() {
-                    core::num::FpCategory::Nan
-                    | core::num::FpCategory::Infinite
-                    | core::num::FpCategory::Zero => {
-                        // There is an FP16 representation that is shorter
-                        shortest = false;
-                    }
-                    core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
-                        if let Some(v32) = f32::from_f64(v) {
-                            if v32.to_f64() == Some(v) {
-                                shortest = false;
-                            }
-                        } else if let Some(v16) =
-                            <half::f16 as num_traits::FromPrimitive>::from_f64(v)
-                            && <half::f16 as num_traits::ToPrimitive>::to_f64(&v16) == Some(v)
-                        {
-                            shortest = false;
-                        }
-                    }
-                }
-            }
-            f(Value::Float(v), shortest, &tags)
+        Marker::Array(count) => {
+            let mut a = Array::new(data, count, &mut offset);
+            let r = f(Value::Array(&mut a), shortest, &marker.tags)?;
+            a.complete(r).map_err(Into::into)
         }
-        (7, minor) => {
-            return Err(Error::InvalidSimpleType(minor).into());
+        Marker::Map(count) => {
+            let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+            let r = f(Value::Map(&mut m), shortest, &marker.tags)?;
+            m.complete(r).map_err(Into::into)
         }
-        _ => unreachable!("CBOR major type is 3 bits, all values 0-7 handled above"),
+        Marker::False => f(Value::False, shortest, &marker.tags),
+        Marker::True => f(Value::True, shortest, &marker.tags),
+        Marker::Null => f(Value::Null, shortest, &marker.tags),
+        Marker::Undefined => f(Value::Undefined, shortest, &marker.tags),
+        Marker::Simple(v) => f(Value::Simple(v), shortest, &marker.tags),
+        Marker::Float(v) => f(Value::Float(v), shortest, &marker.tags),
+        Marker::End => return Err(Error::InvalidSimpleType(31).into()),
     }
     .map(|r| (r, offset))
 }
@@ -589,12 +860,16 @@ where
     F: FnOnce(&mut Array, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
-    parse_value(data, |value, shortest, tags| match value {
-        Value::Array(a) => f(a, shortest, tags),
-        _ => {
-            Err(Error::IncorrectType("Array".to_string(), value.type_name(!tags.is_empty())).into())
+    let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+    match marker.marker {
+        Marker::Array(count) => {
+            let mut a = Array::new(data, count, &mut offset);
+            let r = f(&mut a, shortest, &marker.tags)?;
+            a.complete(r).map_err(Into::into)
         }
-    })
+        _ => Err(Error::IncorrectType("Array".to_string(), marker.to_string()).into()),
+    }
+    .map(|r| (r, offset))
 }
 
 /// Parses a CBOR map from a byte slice.
@@ -607,10 +882,16 @@ where
     F: FnOnce(&mut Map, bool, &[u64]) -> Result<T, E>,
     E: From<Error>,
 {
-    parse_value(data, |value, shortest, tags| match value {
-        Value::Map(m) => f(m, shortest, tags),
-        _ => Err(Error::IncorrectType("Map".to_string(), value.type_name(!tags.is_empty())).into()),
-    })
+    let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+    match marker.marker {
+        Marker::Map(count) => {
+            let mut m = Map::new(data, count.map(|count| count * 2), &mut offset);
+            let r = f(&mut m, shortest, &marker.tags)?;
+            m.complete(r).map_err(Into::into)
+        }
+        _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string()).into()),
+    }
+    .map(|r| (r, offset))
 }
 
 /// A convenience function to decode a single value that implements [`FromCbor`].
@@ -618,6 +899,7 @@ where
 /// This function is a shorthand for `T::from_cbor(data).map(|v| v.0)`. It
 /// decodes the value and discards the `shortest` and `len` information,
 /// returning only the decoded object.
+#[inline]
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
@@ -647,15 +929,17 @@ impl_uint_from_cbor!(u8, u16, u32, usize);
 impl FromCbor for u64 {
     type Error = self::Error;
 
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        parse_value(data, |value, shortest, tags| match value {
-            Value::UnsignedInteger(n) => Ok((n, shortest && tags.is_empty())),
-            value => Err(Error::IncorrectType(
+        let (marker, shortest, offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        if let Marker::UnsignedInteger(v) = marker.marker {
+            Ok((v, shortest && marker.tags.is_empty(), offset))
+        } else {
+            Err(Error::IncorrectType(
                 "Untagged Unsigned Integer".to_string(),
-                value.type_name(!tags.is_empty()),
-            )),
-        })
-        .map(|((v, s), len)| (v, s, len))
+                marker.to_string(),
+            ))
+        }
     }
 }
 
@@ -680,18 +964,25 @@ impl_int_from_cbor!(i8, i16, i32, isize);
 impl FromCbor for i64 {
     type Error = self::Error;
 
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        parse_value(data, |value, shortest, tags| match value {
-            Value::UnsignedInteger(n) => Ok((i64::try_from(n)?, shortest && tags.is_empty())),
-            Value::NegativeInteger(n) => {
-                Ok((-1i64 - i64::try_from(n)?, shortest && tags.is_empty()))
-            }
-            value => Err(Error::IncorrectType(
-                "Untagged Integer".to_string(),
-                value.type_name(!tags.is_empty()),
+        let (marker, shortest, offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        match marker.marker {
+            Marker::UnsignedInteger(v) => Ok((
+                i64::try_from(v)?,
+                shortest && marker.tags.is_empty(),
+                offset,
             )),
-        })
-        .map(|((v, s), len)| (v, s, len))
+            Marker::NegativeInteger(n) => Ok((
+                -1i64 - i64::try_from(n)?,
+                shortest && marker.tags.is_empty(),
+                offset,
+            )),
+            _ => Err(Error::IncorrectType(
+                "Untagged Integer".to_string(),
+                marker.to_string(),
+            )),
+        }
     }
 }
 
@@ -727,14 +1018,15 @@ impl FromCbor for f64 {
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        parse_value(data, |value, shortest, tags| match value {
-            Value::Float(f) => Ok((f, shortest && tags.is_empty())),
-            value => Err(Error::IncorrectType(
+        let (marker, shortest, offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        if let Marker::Float(v) = marker.marker {
+            Ok((v, shortest && marker.tags.is_empty(), offset))
+        } else {
+            Err(Error::IncorrectType(
                 "Untagged Float".to_string(),
-                value.type_name(!tags.is_empty()),
-            )),
-        })
-        .map(|((v, s), len)| (v, s, len))
+                marker.to_string(),
+            ))
+        }
     }
 }
 
@@ -743,15 +1035,15 @@ impl FromCbor for bool {
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        parse_value(data, |value, shortest, tags| match value {
-            Value::False => Ok((false, shortest && tags.is_empty())),
-            Value::True => Ok((true, shortest && tags.is_empty())),
-            value => Err(Error::IncorrectType(
+        let (marker, shortest, offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        match marker.marker {
+            Marker::False => Ok((false, shortest && marker.tags.is_empty(), offset)),
+            Marker::True => Ok((true, shortest && marker.tags.is_empty(), offset)),
+            _ => Err(Error::IncorrectType(
                 "Untagged Boolean".to_string(),
-                value.type_name(!tags.is_empty()),
+                marker.to_string(),
             )),
-        })
-        .map(|((v, s), len)| (v, s, len))
+        }
     }
 }
 
@@ -762,6 +1054,7 @@ where
 {
     type Error = T::Error;
 
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         match parse_value(data, |value, shortest, tags| match value {
             Value::Undefined => Ok(Some(shortest && tags.is_empty())),
@@ -783,6 +1076,7 @@ macro_rules! impl_tuple_from_cbor {
             {
                 type Error = T::Error;
 
+                #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
                     T::from_cbor(data).map(|(value, shortest, length)| ($map_expr(value, shortest, length), shortest, length))
                 }
