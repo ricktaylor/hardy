@@ -1,56 +1,29 @@
 # Bundle Comparison Design
 
-Semantic comparison of BPv7 bundles, accounting for the encoding freedoms in RFC 9171, RFC 9172, and RFC 9173.
+Bundle encoding is not deterministic. RFC 9171, 9172, and 9173 allow multiple valid encodings for the same bundle: CBOR definite vs indefinite length, arbitrary block numbering and ordering, security target array ordering, and optional parameter elision. Two bundles with completely different bytes can represent the same content.
 
-## Comparison modes
+This module determines if two bundles are identical by comparing parsed content, since byte-level comparison is unreliable given the encoding freedoms defined in the RFCs.
 
-The comparison supports two modes:
+## Precondition
 
-- **Strict**: the bundles must be *identical*: two different encodings of the same bundle. Only CBOR encoding freedoms are tolerated (definite vs indefinite length, block ordering, block number assignment, ASB target/parameter/result ordering). CRC type, security parameters, and security results must all match.
+The comparison assumes the two bundles originate from the same bundle. They may have been re-encoded differently, but the content (including security operations) is the same. The comparison handles encoding freedoms, not content differences.
 
-- **Relaxed**: the bundles must be *equivalent*: same semantic content, but implementation choices (CRC type) are tolerated.
+Security operations are non-deterministic transformations: applying the same operation (same key, same context) independently produces different results because of random IV. Two bundles that were independently signed or encrypted are no longer the same bundle, even if they started from the same content.
 
-## Strict comparison
+The comparison does not decrypt or reverse any transformation. It compares the bundle as-is.
 
-### Precondition
-
-The two bundles are two different encodings of the same bundle, not two independently processed bundles. The only differences between them are encoding freedoms.
-
-Two identical bundles that independently undergo the same transformation are no longer identical:
-- Security operations are non-deterministic. The same operation (same key, same context) produces different results because of random IV. BIB signatures over encrypted content also differ since the ciphertext they cover differs.
-- CRC type changes recompute the CRC value and modify the block encoding.
-
-The strict comparison does not decrypt or reverse any transformation. It compares the bundle as-is.
-
-### Strategy
+## Strategy
 
 All blocks are compared using parsed content, not raw bytes. This handles CBOR encoding differences (definite vs indefinite length) transparently.
 
-| Block | Tolerated | Normalized | Excluded |
-|-------|-----------|------------|----------|
-| Primary | - | - | - |
-| Payload | - | - | - |
-| Extension blocks | Block number, block ordering | - | - |
-| BIB / BCB | Block number, block ordering, target/parameter/result array ordering (RFC 9172 Section 3.6) | - Absent parameters are filled with their default value before comparison (RFC 9173 Section 3.3) <br> - Target block numbers are translated from raw block numbers to (block_type, index) before comparison ([details](#target-resolution)) | - |
-
-## Relaxed comparison
-
-### Precondition
-
-Same as strict, but CRC type differences are tolerated.
-
-When a security block is removed, the target block's CRC must be restored but the original CRC type is not preserved. The restoring node picks a CRC type based on local policy (RFC 9173 Section 3.8.2, 4.8.2). Two implementations processing the same bundle may restore different CRC types.
-
-### Strategy
-
-Same as strict. No decryption, no keys needed.
+CRC type (CRC-16 vs CRC-32) is an implementation choice (RFC 9171 Section 4.2.1). The comparison only checks whether CRC is present or absent, not the specific type. When a security block is removed, the target block's CRC must be restored but the original CRC type is not preserved; the restoring node picks a type based on local policy (RFC 9173 Section 3.8.2, 4.8.2).
 
 | Block | Tolerated | Normalized | Excluded |
 |-------|-----------|------------|----------|
-| Primary | - | - | CRC type |
-| Payload | - | - | CRC type |
-| Extension blocks | Block number, block ordering | - | CRC type |
-| BIB / BCB | Block number, block ordering, target/parameter/result array ordering (RFC 9172 Section 3.6) | - Absent parameters are filled with their default value before comparison (RFC 9173 Section 3.3) <br> - Target block numbers are translated from raw block numbers to (block_type, index) before comparison ([details](#target-resolution)) | CRC type |
+| Primary | CRC type (presence checked) | - | - |
+| Payload | CRC type (presence checked) | - | - |
+| Extension blocks | Block number, block ordering, CRC type (presence checked) | - | - |
+| BIB / BCB | Block number, block ordering, CRC type (presence checked), target/parameter/result array ordering (RFC 9172 Section 3.6) | - Absent parameters are filled with their default value before comparison (RFC 9173 Section 3.3) <br> - Target block numbers are translated from raw block numbers to (block_type, index) before comparison ([details](#target-resolution)) | - |
 
 ## Block pairing
 
