@@ -16,7 +16,7 @@ pub(crate) struct Dispatcher {
     processing_pool: hardy_async::BoundedTaskPool,
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
-    keys_registry: Arc<keys::registry::Registry>,
+    key_store: Arc<key_store::KeyStore>,
     filter_engine: Arc<filter::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
@@ -38,7 +38,7 @@ impl Dispatcher {
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
-        keys_registry: Arc<keys::registry::Registry>,
+        key_store: Arc<key_store::KeyStore>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> Arc<Self> {
         let (dispatcher, start) = Self::new_inner(
@@ -48,7 +48,7 @@ impl Dispatcher {
             node_ids,
             store,
             rib,
-            keys_registry,
+            key_store,
             filter_engine,
         );
         start(&dispatcher);
@@ -63,7 +63,7 @@ impl Dispatcher {
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
-        keys_registry: Arc<keys::registry::Registry>,
+        key_store: Arc<key_store::KeyStore>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
         if status_reports {
@@ -81,7 +81,7 @@ impl Dispatcher {
             processing_pool: hardy_async::BoundedTaskPool::new(processing_pool_size),
             store,
             rib,
-            keys_registry,
+            key_store,
             filter_engine,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
@@ -170,21 +170,5 @@ impl Dispatcher {
                 dispatcher.dispatch_bundle(bundle).await;
             }
         });
-    }
-
-    fn key_provider(
-        &self,
-    ) -> impl Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone
-    {
-        let keys_registry = self.keys_registry.clone();
-        move |bundle, data| keys_registry.key_source(bundle, data)
-    }
-
-    fn key_source(
-        &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
-        data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        self.keys_registry.key_source(bundle, data)
     }
 }

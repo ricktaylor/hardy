@@ -18,7 +18,8 @@ impl Dispatcher {
         // (Preserve mode) rather than RewrittenBundle because the bundle was
         // already fully processed at ingress — restart should verify integrity
         // and resume, not re-apply block removal or canonicalization.
-        let bundle = match hardy_bpv7::bundle::ParsedBundle::parse(&data, self.key_provider()) {
+        let keys = self.key_store.current();
+        let bundle = match hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &**keys) {
             Ok(parsed) => parsed.bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up

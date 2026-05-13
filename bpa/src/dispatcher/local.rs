@@ -19,7 +19,7 @@ impl Dispatcher {
                 filter::Hook::Originate,
                 bundle,
                 data,
-                self.key_provider(),
+                &self.key_store,
                 &self.processing_pool,
             )
             .await
@@ -93,7 +93,8 @@ impl Dispatcher {
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Parse the bundle (security boundary - can't trust service-provided bytes)
         // Use CheckedBundle to canonicalize but preserve all blocks (including unknown extensions)
-        let checked = hardy_bpv7::bundle::CheckedBundle::parse(&data, self.key_provider())?;
+        let keys = self.key_store.current();
+        let checked = hardy_bpv7::bundle::CheckedBundle::parse_with_keys(&data, &**keys)?;
 
         // Use rewritten data if canonicalization was needed
         let (bundle, data) = if let Some(chunks) = checked.new_data {
@@ -186,7 +187,7 @@ impl Dispatcher {
                 filter::Hook::Deliver,
                 bundle,
                 data,
-                self.key_provider(),
+                &self.key_store,
                 &self.processing_pool,
             )
             .await
@@ -213,9 +214,9 @@ impl Dispatcher {
             services::registry::ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application
                 let payload_result = {
-                    let key_source = self.key_source(&bundle.bundle, &data);
-                    bundle.bundle.block_data(1, &data, &*key_source)
-                }; // key_source dropped here, before any await
+                    let keys = self.key_store.current();
+                    bundle.bundle.block_data(1, &data, &**keys)
+                }; // keys dropped here, before any await
 
                 let payload = {
                     match payload_result {

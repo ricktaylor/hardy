@@ -72,8 +72,9 @@ impl Dispatcher {
         }
 
         // Parse the bundle with full processing (block removal, canonicalization, BPSec)
+        let keys = self.key_store.current();
         let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
+            match hardy_bpv7::bundle::RewrittenBundle::parse_with_keys(&data, &**keys) {
                 Err(e) => {
                     debug!("Bundle parse failed: {e}");
                     metrics::counter!("bpa.bundle.received.dropped").increment(1);
@@ -206,7 +207,7 @@ impl Dispatcher {
                 filter::Hook::Ingress,
                 bundle,
                 data,
-                self.key_provider(),
+                &self.key_store,
                 &self.processing_pool,
             )
             .await
