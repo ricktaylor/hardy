@@ -1,20 +1,17 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use arc_swap::ArcSwap;
-use hardy_async::sync::RwLock;
-use hardy_bpv7::bpsec::key::{self, KeySource};
 
+use super::pattern::PatternKeySource;
 use crate::HashMap;
 
-/// Holds named key sources and provides lock-free composite access.
+/// Holds a `PatternKeySource` and provides lock-free access.
 ///
-/// Key sources are registered by name and can be added or removed at runtime.
-/// Internally, a composite snapshot is rebuilt on each mutation and swapped
-/// atomically via `ArcSwap`, so query-time access is lock-free.
+/// The source can be replaced at runtime via `set()`. Replacement is
+/// atomic — in-flight lookups against the previous source complete
+/// safely via `Arc` reference counting.
 pub struct KeyStore {
-    sources: RwLock<HashMap<String, Arc<dyn KeySource>>>,
-    current: ArcSwap<Composite>,
+    current: ArcSwap<PatternKeySource>,
 }
 
 impl KeyStore {
@@ -22,31 +19,14 @@ impl KeyStore {
         Self::default()
     }
 
-    pub fn add(&self, name: String, source: Arc<dyn KeySource>) -> Option<Arc<dyn KeySource>> {
-        let mut sources = self.sources.write();
-        let old = sources.insert(name, source);
-        self.rebuild(&sources);
-        old
+    /// Replace the current key source.
+    pub fn set(&self, source: Arc<PatternKeySource>) {
+        self.current.store(source);
     }
 
-    pub fn remove(&self, name: &str) -> Option<Arc<dyn KeySource>> {
-        let mut sources = self.sources.write();
-        let old = sources.remove(name);
-        if old.is_some() {
-            self.rebuild(&sources);
-        }
-        old
-    }
-
-    fn rebuild(&self, sources: &HashMap<String, Arc<dyn KeySource>>) {
-        self.current.store(Arc::new(Composite {
-            sources: sources.values().cloned().collect(),
-        }));
-    }
-
-    /// Returns a guard to the current composite snapshot.
+    /// Returns a guard to the current key source.
     /// Lock-free — suitable for hot paths.
-    pub fn current(&self) -> arc_swap::Guard<Arc<Composite>> {
+    pub fn current(&self) -> arc_swap::Guard<Arc<PatternKeySource>> {
         self.current.load()
     }
 }
@@ -54,25 +34,7 @@ impl KeyStore {
 impl Default for KeyStore {
     fn default() -> Self {
         Self {
-            sources: RwLock::new(HashMap::new()),
-            current: ArcSwap::from_pointee(Composite {
-                sources: Vec::new(),
-            }),
+            current: ArcSwap::from_pointee(PatternKeySource::new(HashMap::new(), vec![])),
         }
-    }
-}
-
-/// Tries each registered key source in order, returning the first match.
-pub struct Composite {
-    sources: Vec<Arc<dyn KeySource>>,
-}
-
-impl KeySource for Composite {
-    fn key<'a>(
-        &'a self,
-        source: &hardy_bpv7::eid::Eid,
-        operations: &[key::Operation],
-    ) -> Option<&'a key::Key> {
-        self.sources.iter().find_map(|s| s.key(source, operations))
     }
 }

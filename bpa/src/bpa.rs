@@ -1,5 +1,4 @@
 use hardy_async::async_trait;
-use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::eid::NodeId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -10,6 +9,7 @@ use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
 use crate::key::KeyStore;
+use crate::key::pattern::PatternKeySource;
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -279,14 +279,9 @@ impl Bpa {
         self.filter_engine.clear();
     }
 
-    /// Register a key source for BPSec operations.
-    pub fn add_key_source(&self, name: String, source: Arc<dyn KeySource>) {
-        self.key_store.add(name, source);
-    }
-
-    /// Remove a key source by name.
-    pub fn remove_key_source(&self, name: &str) -> Option<Arc<dyn KeySource>> {
-        self.key_store.remove(name)
+    /// Replace the key source used for BPSec operations.
+    pub fn set_key_source(&self, source: Arc<PatternKeySource>) {
+        self.key_store.set(source);
     }
 
     /// Register a filter at a hook point
