@@ -9,7 +9,7 @@ use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
-use crate::key_store::KeyStore;
+use crate::key::KeyStore;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
 use crate::rib::RibBuilder;
