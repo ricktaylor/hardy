@@ -11,6 +11,7 @@ use tracing::Level;
 
 pub mod cla;
 pub mod policy;
+pub mod security;
 pub mod storage;
 
 use crate::error::Error;
@@ -143,6 +144,11 @@ pub struct Config {
     // Absent key = service disabled.
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
+
+    // Security configuration: keys and BPSec key bindings.
+    // Absent = no keys loaded, BPSec blocks will fail with NoKey.
+    #[serde(default)]
+    pub security: Option<security::Config>,
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
@@ -495,5 +501,46 @@ node-ids:
   - "dtn://my-node/"
 "#,
         );
+    }
+
+    // Security config parses from YAML.
+    #[test]
+    #[serial]
+    fn security_config_parses() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let keys_path = dir.path().join("keys.jwks");
+        std::fs::write(
+            &keys_path,
+            r#"{ "keys": [{ "kid": "k", "kty": "oct", "k": "AAAA", "key_ops": ["verify"] }] }"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&keys_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "security:\n  keys-file: \"{}\"\n  bindings:\n    - match: \"ipn:*.*\"\n      integrity-key: \"k\"\n",
+                keys_path.display()
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(Some(config_path)).unwrap();
+        assert!(config.security.is_some());
+        assert_eq!(config.security.unwrap().bindings.len(), 1);
+    }
+
+    // No security section is valid (default None).
+    #[test]
+    #[serial]
+    fn no_security_config() {
+        let config = write_and_load("no-security.yaml", "");
+        assert!(config.security.is_none());
     }
 }

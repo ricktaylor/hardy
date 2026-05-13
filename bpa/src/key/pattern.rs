@@ -8,6 +8,7 @@ use hardy_eid_patterns::EidPattern;
 use crate::HashMap;
 
 /// Binds an EID pattern to key identifiers for integrity and confidentiality.
+#[derive(Debug)]
 struct KeyBinding {
     pattern: EidPattern,
     integrity_kid: Option<String>,
@@ -18,6 +19,7 @@ struct KeyBinding {
 ///
 /// Bindings are sorted by specificity at construction time (most specific first).
 /// On lookup, the first matching binding wins.
+#[derive(Debug)]
 pub struct PatternKeySource {
     keys: HashMap<String, Key>,
     bindings: Vec<KeyBinding>,
