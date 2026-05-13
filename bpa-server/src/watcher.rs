@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
@@ -13,9 +14,10 @@ use tracing::error;
 ///
 /// The watcher monitors the file's parent directory (non-recursive) and
 /// filters events to only the target file. Runs until `cancel` is triggered.
-pub async fn watch<F>(path: &Path, cancel: CancellationToken, on_change: F)
+pub async fn watch<F, Fut>(path: &Path, cancel: CancellationToken, on_change: F)
 where
-    F: Fn() + Send + 'static,
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = ()>,
 {
     let watch_dir = path
         .parent()
@@ -57,7 +59,7 @@ where
                     ) && event.paths.iter().any(|p| p == &watch_file);
 
                     if relevant {
-                        on_change();
+                        on_change().await;
                     }
                 }
             },

@@ -73,14 +73,18 @@ async fn main() -> anyhow::Result<()> {
             info!("Monitoring key file '{}' for changes", keys_file.display());
             hardy_async::spawn!(tasks, "key_file_watcher", async move {
                 watcher::watch(&keys_file, cancel, move || {
-                    info!("Key file changed, reloading");
-                    match config.build() {
-                        Ok(source) => {
-                            bpa.set_key_source(Arc::new(source));
-                            info!("Keys reloaded successfully");
-                        }
-                        Err(e) => {
-                            error!("Failed to reload keys: {e}. Keeping previous keys.");
+                    let config = config.clone();
+                    let bpa = bpa.clone();
+                    async move {
+                        info!("Key file changed, reloading");
+                        match config.build() {
+                            Ok(source) => {
+                                bpa.set_key_source(Arc::new(source));
+                                info!("Keys reloaded successfully");
+                            }
+                            Err(e) => {
+                                error!("Failed to reload keys: {e}. Keeping previous keys.");
+                            }
                         }
                     }
                 })

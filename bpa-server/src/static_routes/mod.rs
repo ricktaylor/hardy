@@ -1,20 +1,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
-use notify_debouncer_full::notify::event::{CreateKind, RemoveKind};
-use notify_debouncer_full::notify::{EventKind, RecursiveMode};
-use notify_debouncer_full::{DebouncedEvent, new_debouncer};
 use serde::{Deserialize, Serialize};
-use trace_err::{TraceErrOption, TraceErrResult};
 use tracing::{error, info};
 
 use crate::config::default_config_dir;
+use crate::watcher;
 
 mod parse;
 
@@ -130,63 +126,25 @@ impl StaticRoutesAgent {
     }
 
     fn start_watcher(&self) {
-        let routes_dir = self
-            .routes_file
-            .parent()
-            .trace_expect("Failed to get 'routes_file' parent directory!")
-            .to_path_buf();
+        let watch_path = self.routes_file.clone();
         let routes_file = self.routes_file.clone();
         let priority = self.priority;
         let sink = self.sink.get().unwrap().clone();
         let routes = self.routes.clone();
         let watch = self.watch;
-        let cancel_token = self.tasks.cancel_token().clone();
+        let cancel = self.tasks.cancel_token().clone();
 
         hardy_async::spawn!(self.tasks, "static_routes_watcher", async move {
-            let (tx, rx) = flume::unbounded();
-            let mut debouncer = new_debouncer(Duration::from_secs(1), None, move |res| match res {
-                Ok(events) => {
-                    for e in events {
-                        if tx.send(e).is_err() {
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    for e in e {
-                        error!("Watch error: {e}")
-                    }
+            watcher::watch(&watch_path, cancel, move || {
+                let routes_file = routes_file.clone();
+                let sink = sink.clone();
+                let routes = routes.clone();
+                async move {
+                    info!("Reloading static routes from '{}'", routes_file.display());
+                    refresh_routes_inner(&routes_file, priority, &*sink, &routes, watch).await;
                 }
             })
-            .trace_expect("Failed to create directory watcher");
-
-            debouncer
-                .watch(&routes_dir, RecursiveMode::NonRecursive)
-                .trace_expect("Failed to watch file");
-
-            loop {
-                tokio::select! {
-                    res = rx.recv_async() => match res {
-                        Err(_) => break,
-                        Ok(DebouncedEvent{ event, .. }) => {
-                            if match event.kind {
-                                EventKind::Create(CreateKind::File)|
-                                EventKind::Modify(_)|
-                                EventKind::Remove(RemoveKind::File) => {
-                                    event.paths.iter().any(|p| p == &routes_file)
-                                }
-                                _ => false
-                            } {
-                                info!("Reloading static routes from '{}' (event: {:?})", routes_file.display(), event.kind);
-                                refresh_routes_inner(&routes_file, priority, &*sink, &routes, watch).await;
-                            }
-                        },
-                    },
-                    _ = cancel_token.cancelled() => {
-                        break;
-                    }
-                }
-            }
+            .await;
         });
     }
 }
