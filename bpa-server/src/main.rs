@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod error;
 mod static_routes;
+mod watcher;
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -55,12 +56,38 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "grpc")]
     let grpc_config = config.grpc.take();
 
-    let bpa = build(config, args.upgrade_storage).await?;
+    let security_config = config.security.take();
+    let bpa = build(config, &security_config, args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
+
+    if let Some(ref security_config) = security_config {
+        if security_config.watch {
+            let config = security_config.clone();
+            let bpa = bpa.clone();
+            let keys_file = config.keys_file.clone();
+            let cancel = tasks.cancel_token().clone();
+            info!("Monitoring key file '{}' for changes", keys_file.display());
+            hardy_async::spawn!(tasks, "key_file_watcher", async move {
+                watcher::watch(&keys_file, cancel, move || {
+                    info!("Key file changed, reloading");
+                    match config.build() {
+                        Ok(source) => {
+                            bpa.set_key_source(Arc::new(source));
+                            info!("Keys reloaded successfully");
+                        }
+                        Err(e) => {
+                            error!("Failed to reload keys: {e}. Keeping previous keys.");
+                        }
+                    }
+                })
+                .await;
+            });
+        }
+    }
 
     #[cfg(feature = "grpc")]
     if let Some(grpc_config) = grpc_config {
@@ -86,7 +113,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build a BPA from the given configuration.
-async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<Arc<Bpa>> {
+async fn build(
+    config: config::Config,
+    security_config: &Option<config::security::Config>,
+    upgrade_storage: bool,
+) -> anyhow::Result<Arc<Bpa>> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
 
     let mut builder = Bpa::builder()
@@ -109,11 +140,11 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
         builder = builder.service_priority(service_priority);
     }
 
-    if let Some(security_config) = &config.security {
+    if let Some(security_config) = security_config {
         let source = security_config
             .build()
             .context("Failed to load security configuration")?;
-        builder = builder.key_source("config", Arc::new(source));
+        builder = builder.key_source(Arc::new(source));
     }
 
     if config.storage.uses_cache() {

@@ -1,7 +1,5 @@
 use core::num::NonZeroUsize;
 
-use hardy_bpv7::bpsec::key::KeySource;
-
 use crate::Arc;
 use crate::bpa::Bpa;
 use crate::cla::Cla;
@@ -10,6 +8,7 @@ use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
 use crate::key::KeyStore;
+use crate::key::pattern::PatternKeySource;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
 use crate::rib::RibBuilder;
@@ -142,9 +141,9 @@ impl BpaBuilder {
         self
     }
 
-    /// Register a key source to be available for BPSec operations.
-    pub fn key_source(self, name: impl Into<String>, source: Arc<dyn KeySource>) -> Self {
-        self.key_store.add(name.into(), source);
+    /// Set the key source for BPSec operations.
+    pub fn key_source(self, source: Arc<PatternKeySource>) -> Self {
+        self.key_store.set(source);
         self
     }
 
