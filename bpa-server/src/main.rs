@@ -65,14 +65,18 @@ async fn main() -> anyhow::Result<()> {
     hardy_async::signal::listen_for_cancel(&tasks);
 
     if let Some(ref security_config) = security_config {
-        if security_config.watch {
+        if let Some(watch_mode) = security_config.watch {
             let config = security_config.clone();
             let bpa = bpa.clone();
             let keys_file = config.keys_file.clone();
             let cancel = tasks.cancel_token().clone();
-            info!("Monitoring key file '{}' for changes", keys_file.display());
+            info!(
+                "Monitoring key file '{}' for changes ({:?})",
+                keys_file.display(),
+                watch_mode
+            );
             hardy_async::spawn!(tasks, "key_file_watcher", async move {
-                watcher::watch(&keys_file, cancel, move || {
+                watcher::watch(&keys_file, watch_mode, cancel, move || {
                     let config = config.clone();
                     let bpa = bpa.clone();
                     async move {
