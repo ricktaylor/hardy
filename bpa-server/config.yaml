@@ -26,6 +26,14 @@ storage:
     region: us-east-1
     force-path-style: true
 
+security:
+  keys-file: /etc/hardy/keys.jwks
+  watch: poll
+  bindings:
+    - match: "ipn:*.*"
+      integrity-key: "test-hmac"
+      confidentiality-key: "test-aes"
+
 rfc9171-validity:
   primary-block-integrity: true
   bundle-age-required: true

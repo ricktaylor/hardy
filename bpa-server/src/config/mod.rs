@@ -12,10 +12,10 @@ use tracing::Level;
 pub mod cla;
 pub mod policy;
 pub mod security;
+pub mod static_routes;
 pub mod storage;
 
 use crate::error::Error;
-use crate::static_routes;
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/

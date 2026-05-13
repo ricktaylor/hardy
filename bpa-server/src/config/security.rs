@@ -7,6 +7,8 @@ use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::watcher::WatchMode;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -14,9 +16,10 @@ pub struct Config {
     /// The file SHOULD have restrictive permissions (0600 on Unix).
     pub keys_file: PathBuf,
 
-    /// Watch the key file for changes and reload automatically (default: false).
+    /// Watch the key file for changes and reload automatically.
+    /// Values: "native" (inotify/kqueue), "poll" (works in Docker). Absent to disable.
     #[serde(default)]
-    pub watch: bool,
+    pub watch: Option<WatchMode>,
 
     /// Key bindings: map EID patterns to keys by kid.
     /// Evaluated by specificity (most specific match wins).
@@ -152,7 +155,7 @@ mod tests {
     fn config_with(keys_path: &Path, bindings: Vec<KeyBindingConfig>) -> Config {
         Config {
             keys_file: keys_path.to_path_buf(),
-            watch: false,
+            watch: None,
             bindings,
         }
     }
@@ -226,7 +229,7 @@ mod tests {
     fn missing_key_file() {
         let config = Config {
             keys_file: PathBuf::from("/nonexistent/keys.jwks"),
-            watch: false,
+            watch: None,
             bindings: vec![],
         };
         assert!(config.build().is_err());

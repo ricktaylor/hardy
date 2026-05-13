@@ -6,38 +6,12 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
-use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use crate::config::default_config_dir;
 use crate::watcher;
+use crate::watcher::WatchMode;
 
 use super::loader;
-
-// Configuration for the static routes routing agent.
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct Config {
-    // Path to the routes file (default: `/etc/hardy/static_routes`).
-    pub routes_file: PathBuf,
-    // Default route priority when not specified per-route (default: `100`).
-    pub priority: u32,
-    // Watch the routes file for changes and reload automatically (default: `true`).
-    pub watch: bool,
-    // Protocol identifier used when registering with the BPA (default: `"static_routes"`).
-    pub protocol_id: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            routes_file: default_config_dir().join("static_routes"),
-            priority: 100,
-            watch: true,
-            protocol_id: "static_routes".to_string(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct StaticRoute {
@@ -49,14 +23,14 @@ pub(super) struct StaticRoute {
 pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
-    watch: bool,
+    watch: Option<WatchMode>,
     sink: Once<Arc<dyn RoutingSink>>,
     routes: Arc<Mutex<Vec<StaticRoute>>>,
     tasks: TaskPool,
 }
 
 impl StaticRoutesAgent {
-    pub fn new(routes_file: PathBuf, priority: u32, watch: bool) -> Self {
+    pub fn new(routes_file: PathBuf, priority: u32, watch: Option<WatchMode>) -> Self {
         Self {
             routes_file,
             priority,
@@ -67,7 +41,7 @@ impl StaticRoutesAgent {
         }
     }
 
-    fn start_watcher(&self) {
+    fn start_watcher(&self, mode: WatchMode) {
         let watch_path = self.routes_file.clone();
         let routes_file = self.routes_file.clone();
         let priority = self.priority;
@@ -76,7 +50,7 @@ impl StaticRoutesAgent {
         let cancel = self.tasks.cancel_token().clone();
 
         hardy_async::spawn!(self.tasks, "static_routes_watcher", async move {
-            watcher::watch(&watch_path, cancel, move || {
+            watcher::watch(&watch_path, mode, cancel, move || {
                 let routes_file = routes_file.clone();
                 let sink = sink.clone();
                 let routes = routes.clone();
@@ -168,9 +142,9 @@ impl RoutingAgent for StaticRoutesAgent {
         )
         .await;
 
-        if self.watch {
-            info!("Monitoring static routes file for changes");
-            self.start_watcher();
+        if let Some(mode) = self.watch {
+            info!("Monitoring static routes file for changes ({mode:?})");
+            self.start_watcher(mode);
         }
     }
 
