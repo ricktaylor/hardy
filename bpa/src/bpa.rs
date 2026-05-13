@@ -1,4 +1,5 @@
 use hardy_async::async_trait;
+use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::eid::NodeId;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -8,6 +9,7 @@ use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
+use crate::key_store::KeyStore;
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -204,6 +206,7 @@ pub struct Bpa {
     node_ids: Arc<crate::node_ids::NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
+    key_store: Arc<KeyStore>,
     cla_registry: Arc<ClaRegistry>,
     service_registry: Arc<ServiceRegistry>,
     filter_engine: Arc<FilterEngine>,
@@ -211,10 +214,12 @@ pub struct Bpa {
 }
 
 impl Bpa {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         node_ids: Arc<crate::node_ids::NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
+        key_store: Arc<KeyStore>,
         cla_registry: Arc<ClaRegistry>,
         service_registry: Arc<ServiceRegistry>,
         filter_engine: Arc<FilterEngine>,
@@ -224,6 +229,7 @@ impl Bpa {
             node_ids,
             store,
             rib,
+            key_store,
             cla_registry,
             service_registry,
             filter_engine,
@@ -271,6 +277,16 @@ impl Bpa {
         self.rib.shutdown().await;
         self.store.shutdown().await;
         self.filter_engine.clear();
+    }
+
+    /// Register a key source for BPSec operations.
+    pub fn add_key_source(&self, name: String, source: Arc<dyn KeySource>) {
+        self.key_store.add(name, source);
+    }
+
+    /// Remove a key source by name.
+    pub fn remove_key_source(&self, name: &str) -> Option<Arc<dyn KeySource>> {
+        self.key_store.remove(name)
     }
 
     /// Register a filter at a hook point

@@ -1,8 +1,7 @@
 use core::ops::ControlFlow;
 
 use hardy_async::BoundedTaskPool;
-use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
+use hardy_bpv7::bundle::CheckedBundle;
 use hardy_bpv7::status_report::ReasonCode;
 use trace_err::*;
 use tracing::debug;
@@ -12,6 +11,7 @@ use super::{
 };
 
 use crate::bundle::Bundle;
+use crate::key_store::KeyStore;
 use crate::{Arc, Bytes, HashSet};
 
 struct FilterEntry {
@@ -229,16 +229,13 @@ impl Level {
     }
 
     /// Run all writers sequentially.
-    async fn run_writers<F>(
+    async fn run_writers(
         &self,
         bundle: &mut Bundle,
         data: &mut Bytes,
         mutation: &mut Mutation,
-        key_provider: &F,
-    ) -> Result<ControlFlow<Option<ReasonCode>>, crate::Error>
-    where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
-    {
+        key_store: &Arc<KeyStore>,
+    ) -> Result<ControlFlow<Option<ReasonCode>>, crate::Error> {
         for filter in &self.writers {
             match filter.filter(bundle, data).await? {
                 WriteResult::Continue(writable, new_data) => {
@@ -250,7 +247,8 @@ impl Level {
                     if let Some(mut new_data) = new_data {
                         debug!("WriteFilter rewrote bundle data");
                         mutation.data = true;
-                        let parsed = CheckedBundle::parse(&new_data, key_provider)?;
+                        let keys = key_store.current();
+                        let parsed = CheckedBundle::parse_with_keys(&new_data, &**keys)?;
                         if let Some(chunks) = parsed.new_data {
                             hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut new_data);
                         }
@@ -278,16 +276,13 @@ pub struct FilterChain {
 }
 
 impl FilterChain {
-    pub async fn exec<F>(
+    pub async fn exec(
         &self,
         pool: &hardy_async::BoundedTaskPool,
         mut bundle: Bundle,
         mut data: Bytes,
-        key_provider: F,
-    ) -> Result<ExecResult, crate::Error>
-    where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
-    {
+        key_store: &Arc<KeyStore>,
+    ) -> Result<ExecResult, crate::Error> {
         let mut mutation = Mutation::default();
 
         for level in &self.levels {
@@ -296,7 +291,7 @@ impl FilterChain {
                 (b, _, ControlFlow::Break(reason)) => return Ok(ExecResult::Drop(b, reason)),
             }
             if let ControlFlow::Break(reason) = level
-                .run_writers(&mut bundle, &mut data, &mut mutation, &key_provider)
+                .run_writers(&mut bundle, &mut data, &mut mutation, key_store)
                 .await?
             {
                 return Ok(ExecResult::Drop(bundle, reason));
@@ -523,8 +518,9 @@ mod tests {
             bundle: Default::default(),
             metadata: Default::default(),
         };
+        let key_store = Arc::new(KeyStore::new());
         chain
-            .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)
+            .exec(&pool, bundle, Bytes::new(), &key_store)
             .await
             .unwrap()
     }
