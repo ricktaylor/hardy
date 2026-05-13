@@ -109,6 +109,13 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
         builder = builder.service_priority(service_priority);
     }
 
+    if let Some(security_config) = &config.security {
+        let source = security_config
+            .build()
+            .context("Failed to load security configuration")?;
+        builder = builder.key_source("config", Arc::new(source));
+    }
+
     if config.storage.uses_cache() {
         builder = builder
             .lru_capacity(config.storage.lru_capacity)
