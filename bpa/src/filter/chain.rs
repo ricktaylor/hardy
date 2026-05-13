@@ -11,7 +11,7 @@ use super::{
 };
 
 use crate::bundle::Bundle;
-use crate::key_store::KeyStore;
+use crate::key::KeyStore;
 use crate::{Arc, Bytes, HashSet};
 
 struct FilterEntry {

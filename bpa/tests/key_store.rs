@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use hardy_bpa::key_store::KeyStore;
+use hardy_bpa::key::KeyStore;
 use hardy_bpv7::bpsec::key::{Key, KeySource, Operation, Type};
 use hardy_bpv7::eid::Eid;
 
