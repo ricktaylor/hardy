@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use hardy_bpa::key::pattern::PatternKeySource;
+use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{KeySet, Type};
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub struct Config {
     #[serde(default)]
     pub watch: Option<WatchMode>,
 
-    /// Key bindings: map EID patterns to keys by kid.
+    /// Key bindings: map EID patterns to keys and roles.
     /// Evaluated by specificity (most specific match wins).
     #[serde(default)]
     pub bindings: Vec<KeyBindingConfig>,
@@ -30,15 +30,38 @@ pub struct Config {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct KeyBindingConfig {
-    /// EID pattern to match against the security source EID.
+    /// EID pattern to match against the peer EID.
     #[serde(rename = "match")]
     pub pattern: EidPattern,
+
+    /// Security role: "verifier" (default), "acceptor", or "source".
+    #[serde(default)]
+    pub role: SecurityRoleConfig,
 
     /// kid of the key for integrity operations (BIB sign/verify).
     pub integrity_key: Option<String>,
 
     /// kid of the key for confidentiality operations (BCB encrypt/decrypt).
     pub confidentiality_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecurityRoleConfig {
+    #[default]
+    Verifier,
+    Acceptor,
+    Source,
+}
+
+impl From<SecurityRoleConfig> for SecurityRole {
+    fn from(config: SecurityRoleConfig) -> Self {
+        match config {
+            SecurityRoleConfig::Verifier => SecurityRole::Verifier,
+            SecurityRoleConfig::Acceptor => SecurityRole::Acceptor,
+            SecurityRoleConfig::Source => SecurityRole::Source,
+        }
+    }
 }
 
 impl Config {
@@ -64,7 +87,7 @@ impl Config {
         let mut keys = HashMap::new();
         for key in key_set.keys {
             let Some(kid) = key.id.clone() else {
-                warn!("Key file contains a key without a 'kid' field — skipping");
+                warn!("Key file contains a key without a 'kid' field, skipping");
                 continue;
             };
 
@@ -73,7 +96,7 @@ impl Config {
             }
 
             if key.operations.is_none() {
-                anyhow::bail!("Key '{kid}' has no 'key_ops' field — cannot match any operation");
+                anyhow::bail!("Key '{kid}' has no 'key_ops' field, cannot match any operation");
             }
 
             if keys.insert(kid.clone(), key).is_some() {
@@ -81,15 +104,36 @@ impl Config {
             }
         }
 
-        // Validate all kid references and binding completeness
+        // Validate bindings
         for binding in &self.bindings {
-            if binding.integrity_key.is_none() && binding.confidentiality_key.is_none() {
-                anyhow::bail!(
-                    "Security binding for '{}' has neither integrity-key nor confidentiality-key",
-                    binding.pattern
-                );
+            // Role-specific validation
+            match binding.role {
+                SecurityRoleConfig::Verifier => {
+                    if binding.integrity_key.is_none() {
+                        anyhow::bail!(
+                            "Verifier binding for '{}' requires integrity-key",
+                            binding.pattern
+                        );
+                    }
+                    if binding.confidentiality_key.is_some() {
+                        anyhow::bail!(
+                            "Verifier binding for '{}' cannot have confidentiality-key \
+                             (no verifier role for BCBs per RFC 9172)",
+                            binding.pattern
+                        );
+                    }
+                }
+                SecurityRoleConfig::Acceptor | SecurityRoleConfig::Source => {
+                    if binding.integrity_key.is_none() && binding.confidentiality_key.is_none() {
+                        anyhow::bail!(
+                            "Security binding for '{}' has neither integrity-key nor confidentiality-key",
+                            binding.pattern
+                        );
+                    }
+                }
             }
 
+            // Validate kid references
             for kid in binding
                 .integrity_key
                 .iter()
@@ -107,6 +151,7 @@ impl Config {
             .map(|b| {
                 (
                     b.pattern.clone(),
+                    b.role.into(),
                     b.integrity_key.clone(),
                     b.confidentiality_key.clone(),
                 )
@@ -162,11 +207,13 @@ mod tests {
 
     fn binding(
         pattern: &str,
+        role: SecurityRoleConfig,
         integrity: Option<&str>,
         confidentiality: Option<&str>,
     ) -> KeyBindingConfig {
         KeyBindingConfig {
             pattern: pattern.parse().unwrap(),
+            role,
             integrity_key: integrity.map(String::from),
             confidentiality_key: confidentiality.map(String::from),
         }
@@ -198,7 +245,12 @@ mod tests {
         let keys_path = write_keys(&dir, VALID_KEYS);
         let config = config_with(
             &keys_path,
-            vec![binding("ipn:*.*", Some("hmac-key"), Some("aes-key"))],
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Acceptor,
+                Some("hmac-key"),
+                Some("aes-key"),
+            )],
         );
 
         let source = config.build().unwrap();
@@ -241,7 +293,12 @@ mod tests {
         let keys_path = write_keys(&dir, VALID_KEYS);
         let config = config_with(
             &keys_path,
-            vec![binding("ipn:*.*", Some("nonexistent"), None)],
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Verifier,
+                Some("nonexistent"),
+                None,
+            )],
         );
         let err = config.build().unwrap_err();
         assert!(err.to_string().contains("nonexistent"));
@@ -257,7 +314,15 @@ mod tests {
                 { "kid": "dup", "kty": "oct", "k": "BBBB", "key_ops": ["verify"] }
             ] }"#,
         );
-        let config = config_with(&keys_path, vec![binding("ipn:*.*", Some("dup"), None)]);
+        let config = config_with(
+            &keys_path,
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Verifier,
+                Some("dup"),
+                None,
+            )],
+        );
         let err = config.build().unwrap_err();
         assert!(err.to_string().contains("duplicate"));
     }
@@ -266,9 +331,41 @@ mod tests {
     fn empty_binding_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let keys_path = write_keys(&dir, VALID_KEYS);
-        let config = config_with(&keys_path, vec![binding("ipn:*.*", None, None)]);
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRoleConfig::Acceptor, None, None)],
+        );
         let err = config.build().unwrap_err();
         assert!(err.to_string().contains("neither"));
+    }
+
+    #[test]
+    fn verifier_requires_integrity_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRoleConfig::Verifier, None, None)],
+        );
+        let err = config.build().unwrap_err();
+        assert!(err.to_string().contains("requires integrity-key"));
+    }
+
+    #[test]
+    fn verifier_rejects_confidentiality_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(
+            &keys_path,
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Verifier,
+                Some("hmac-key"),
+                Some("aes-key"),
+            )],
+        );
+        let err = config.build().unwrap_err();
+        assert!(err.to_string().contains("cannot have confidentiality-key"));
     }
 
     #[test]
@@ -278,7 +375,15 @@ mod tests {
             &dir,
             r#"{ "keys": [{ "kid": "no-ops", "kty": "oct", "k": "AAAA" }] }"#,
         );
-        let config = config_with(&keys_path, vec![binding("ipn:*.*", Some("no-ops"), None)]);
+        let config = config_with(
+            &keys_path,
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Verifier,
+                Some("no-ops"),
+                None,
+            )],
+        );
         let err = config.build().unwrap_err();
         assert!(err.to_string().contains("key_ops"));
     }
@@ -290,7 +395,15 @@ mod tests {
             &dir,
             r#"{ "keys": [{ "kid": "ec", "kty": "EC", "key_ops": ["verify"] }] }"#,
         );
-        let config = config_with(&keys_path, vec![binding("ipn:*.*", Some("ec"), None)]);
+        let config = config_with(
+            &keys_path,
+            vec![binding(
+                "ipn:*.*",
+                SecurityRoleConfig::Verifier,
+                Some("ec"),
+                None,
+            )],
+        );
         let err = config.build().unwrap_err();
         assert!(err.to_string().contains("symmetric"));
     }

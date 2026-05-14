@@ -31,6 +31,14 @@ security:
   watch: poll
   bindings:
     - match: "ipn:*.*"
+      role: acceptor
+      integrity-key: "test-hmac"
+      confidentiality-key: "test-aes"
+    - match: "ipn:0.2.*"
+      role: verifier
+      integrity-key: "test-hmac"
+    - match: "ipn:0.3.*"
+      role: source
       integrity-key: "test-hmac"
       confidentiality-key: "test-aes"
 

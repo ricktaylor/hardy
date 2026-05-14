@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use hardy_bpa::key::pattern::PatternKeySource;
+use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{EncAlgorithm, Key, KeyAlgorithm, KeySource, Operation, Type, Use};
 use hardy_bpv7::eid::Eid;
 use hardy_eid_patterns::EidPattern;
@@ -74,7 +74,12 @@ fn no_policies_returns_none() {
 fn no_matching_policy_returns_none() {
     let source = PatternKeySource::new(
         keys(&[("k", hmac_key("k"))]),
-        vec![(parse_pattern("ipn:0.99.*"), Some("k".into()), None)],
+        vec![(
+            parse_pattern("ipn:0.99.*"),
+            SecurityRole::Acceptor,
+            Some("k".into()),
+            None,
+        )],
     );
 
     // ipn:0.1.0 doesn't match ipn:0.99.*
@@ -89,7 +94,12 @@ fn no_matching_policy_returns_none() {
 fn wildcard_matches_any() {
     let source = PatternKeySource::new(
         keys(&[("fleet", hmac_key("fleet"))]),
-        vec![(parse_pattern("ipn:*.*"), Some("fleet".into()), None)],
+        vec![(
+            parse_pattern("ipn:*.*"),
+            SecurityRole::Acceptor,
+            Some("fleet".into()),
+            None,
+        )],
     );
 
     let key = source
@@ -104,9 +114,19 @@ fn specific_pattern_overrides_wildcard() {
         keys(&[("fleet", hmac_key("fleet")), ("node42", hmac_key("node42"))]),
         vec![
             // Wildcard — less specific
-            (parse_pattern("ipn:*.*"), Some("fleet".into()), None),
+            (
+                parse_pattern("ipn:*.*"),
+                SecurityRole::Acceptor,
+                Some("fleet".into()),
+                None,
+            ),
             // Exact node — more specific
-            (parse_pattern("ipn:0.42.*"), Some("node42".into()), None),
+            (
+                parse_pattern("ipn:0.42.*"),
+                SecurityRole::Acceptor,
+                Some("node42".into()),
+                None,
+            ),
         ],
     );
 
@@ -129,6 +149,7 @@ fn integrity_vs_confidentiality_routing() {
         keys(&[("hmac", hmac_key("hmac")), ("aes", aes_key("aes"))]),
         vec![(
             parse_pattern("ipn:*.*"),
+            SecurityRole::Acceptor,
             Some("hmac".into()),
             Some("aes".into()),
         )],
@@ -165,7 +186,12 @@ fn integrity_vs_confidentiality_routing() {
 fn integrity_only_policy() {
     let source = PatternKeySource::new(
         keys(&[("hmac", hmac_key("hmac"))]),
-        vec![(parse_pattern("ipn:*.*"), Some("hmac".into()), None)],
+        vec![(
+            parse_pattern("ipn:*.*"),
+            SecurityRole::Acceptor,
+            Some("hmac".into()),
+            None,
+        )],
     );
 
     let eid = parse_eid("ipn:0.1.0");
@@ -182,7 +208,12 @@ fn missing_kid_reference_returns_none() {
     // Policy references "nonexistent" which isn't in the key map
     let source = PatternKeySource::new(
         keys(&[("real-key", hmac_key("real-key"))]),
-        vec![(parse_pattern("ipn:*.*"), Some("nonexistent".into()), None)],
+        vec![(
+            parse_pattern("ipn:*.*"),
+            SecurityRole::Acceptor,
+            Some("nonexistent".into()),
+            None,
+        )],
     );
 
     assert!(
@@ -198,6 +229,7 @@ fn mixed_operations_returns_first_matching() {
         keys(&[("hmac", hmac_key("hmac")), ("aes", aes_key("aes"))]),
         vec![(
             parse_pattern("ipn:*.*"),
+            SecurityRole::Acceptor,
             Some("hmac".into()),
             Some("aes".into()),
         )],

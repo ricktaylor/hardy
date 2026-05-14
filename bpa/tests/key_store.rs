@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use hardy_bpa::key::KeyStore;
-use hardy_bpa::key::pattern::PatternKeySource;
+use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{Key, KeySource, Operation, Type};
 use hardy_bpv7::eid::Eid;
 
@@ -23,7 +23,12 @@ fn make_source(kid: &str) -> Arc<PatternKeySource> {
     keys.insert(kid.to_string(), key);
     Arc::new(PatternKeySource::new(
         keys,
-        vec![("ipn:*.*".parse().unwrap(), Some(kid.into()), None)],
+        vec![(
+            "ipn:*.*".parse().unwrap(),
+            SecurityRole::Acceptor,
+            Some(kid.into()),
+            None,
+        )],
     ))
 }
 
