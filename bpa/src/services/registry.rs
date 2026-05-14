@@ -240,7 +240,7 @@ impl ServiceRegistry {
             .collect::<Vec<_>>();
 
         if !services.is_empty() {
-            metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
+            ::metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
         }
 
         for service in services {
@@ -351,7 +351,7 @@ impl ServiceRegistry {
             ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
         }
         dispatcher.poll_service_waiting(&eid).await;
-        metrics::gauge!("bpa.service.registered").increment(1.0);
+        ::metrics::gauge!("bpa.service.registered").increment(1.0);
         Ok(eid)
     }
 
@@ -364,7 +364,7 @@ impl ServiceRegistry {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
-            metrics::gauge!("bpa.service.registered").decrement(1.0);
+            ::metrics::gauge!("bpa.service.registered").decrement(1.0);
             self.unregister_service(service, node_ids, rib).await?;
         }
         Ok(())

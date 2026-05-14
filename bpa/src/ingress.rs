@@ -19,7 +19,7 @@ use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
 use crate::cbor::precheck;
 use crate::cla::{self, ClaAddress};
 use crate::filter::{ExecResult, FilterEngine, Hook};
-use crate::otel_metrics::reason_label;
+use crate::metrics::reason_label;
 use crate::rib::{FindResult, Rib};
 use crate::security::KeyStore;
 use crate::storage::Store;

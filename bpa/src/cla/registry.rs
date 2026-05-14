@@ -212,7 +212,7 @@ impl ClaRegistry {
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
         if !clas.is_empty() {
-            metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
+            ::metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
         }
 
         for cla in clas {
@@ -264,7 +264,7 @@ impl ClaRegistry {
             )
             .await;
 
-        metrics::gauge!("bpa.cla.registered").increment(1.0);
+        ::metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
 
         Ok(node_ids)
@@ -274,7 +274,7 @@ impl ClaRegistry {
         let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
-            metrics::gauge!("bpa.cla.registered").decrement(1.0);
+            ::metrics::gauge!("bpa.cla.registered").decrement(1.0);
             self.unregister_cla(cla).await;
         }
     }
@@ -291,7 +291,7 @@ impl ClaRegistry {
             // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
-                metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
+                ::metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
             self.peers.remove(peer_id).await;
         }
@@ -354,7 +354,7 @@ impl ClaRegistry {
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
         for node_id in node_ids {
             self.rib.add_forward(node_id.clone(), peer_id).await;
-            metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
+            ::metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
         }
 
         true
@@ -368,7 +368,7 @@ impl ClaRegistry {
         self.peers.remove(peer_id).await;
         for node_id in node_ids {
             self.rib.remove_forward(node_id, peer_id).await;
-            metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
+            ::metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
         }
 
         debug!("Removed peer {peer_id}");

@@ -139,7 +139,8 @@ impl Dispatcher {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn drop_bundle(&self, bundle: bundle::Bundle, reason: ReasonCode) {
-        metrics::counter!("bpa.bundle.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+        ::metrics::counter!("bpa.bundle.dropped", "reason" => crate::metrics::reason_label(&reason))
+            .increment(1);
         self.report_bundle_deletion(&bundle, reason).await;
         self.delete_bundle(bundle).await
     }
@@ -152,7 +153,7 @@ impl Dispatcher {
         }
         self.store.tombstone_metadata(&bundle.bundle.id).await;
 
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+        ::metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&bundle.metadata.status)).decrement(1.0);
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {

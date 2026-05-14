@@ -9,7 +9,7 @@ use hardy_bpv7::bundle::ParsedBundle;
 use tracing::{debug, warn};
 
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
-use crate::otel_metrics::status_label;
+use crate::metrics::status_label;
 use crate::security::KeyStore;
 use crate::storage::Store;
 use crate::storage::channel::Sender;

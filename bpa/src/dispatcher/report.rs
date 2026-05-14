@@ -17,7 +17,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.receipt_report_requested {
             debug!("Reporting bundle reception to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
@@ -41,6 +41,7 @@ impl Dispatcher {
         }
     }
 
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(&self, bundle: &bundle::Bundle) {
         debug!("Bundle {} forwarded", bundle.bundle.id);
@@ -51,7 +52,7 @@ impl Dispatcher {
                 "Reporting bundle as forwarded to {}",
                 &bundle.bundle.report_to
             );
-            metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
@@ -81,7 +82,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.delivery_report_requested {
             debug!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
 
             // Create a bundle report
             self.dispatch_status_report(
@@ -110,7 +111,7 @@ impl Dispatcher {
         // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
             debug!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
 
             // Create a bundle report
             self.dispatch_status_report(
@@ -171,7 +172,7 @@ impl Dispatcher {
                 return;
             }
 
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+            ::metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&bundle.metadata.status)).increment(1.0);
 
             // Dispatch via queue to avoid blocking the CLA session reader.
             // Running inline would block incoming bundles on this connection

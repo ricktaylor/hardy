@@ -152,11 +152,11 @@ impl Dispatcher {
             return Err(services::Error::DuplicateBundle);
         }
 
-        metrics::counter!("bpa.bundle.originated").increment(1);
-        metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
+        ::metrics::counter!("bpa.bundle.originated").increment(1);
+        ::metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
         let bundle_id = bundle.bundle.id.clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        ::metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&bundle.metadata.status)).increment(1.0);
         self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }
@@ -254,7 +254,7 @@ impl Dispatcher {
             }
         }
 
-        metrics::counter!("bpa.bundle.delivered").increment(1);
+        ::metrics::counter!("bpa.bundle.delivered").increment(1);
         self.report_bundle_delivery(&bundle).await;
 
         // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'

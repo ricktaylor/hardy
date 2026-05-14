@@ -1,7 +1,36 @@
 use super::*;
+use crate::egress::{Egress, SendResult};
+use crate::sink::Sink;
+
+/// Wraps a CLA + peer info as a Sink for egress.
+struct ClaSink<'a> {
+    cla: &'a dyn cla::Cla,
+    queue: Option<u32>,
+    cla_addr: &'a cla::ClaAddress,
+}
+
+#[async_trait]
+impl Sink for ClaSink<'_> {
+    async fn write(&self, data: Bytes) -> Result<(), crate::Error> {
+        match self.cla.forward(self.queue, self.cla_addr, data).await {
+            Ok(cla::ForwardBundleResult::Sent) => Ok(()),
+            Ok(cla::ForwardBundleResult::NoNeighbour) => Err("Neighbour unavailable".into()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub(crate) fn egress(&self) -> Egress<'_> {
+        Egress {
+            store: self.store.clone(),
+            key_store: self.key_store.clone(),
+            filter_engine: self.filter_engine.clone(),
+            processing_pool: &self.processing_pool,
+        }
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self, cla, bundle), fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         &self,
         cla: &dyn cla::Cla,
@@ -10,158 +39,24 @@ impl Dispatcher {
         cla_addr: &cla::ClaAddress,
         bundle: bundle::Bundle,
     ) {
-        // Get bundle data from store, now we know we need it!
-        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
-            return;
+        let sink = ClaSink {
+            cla,
+            queue,
+            cla_addr,
         };
 
-        // Increment Hop Count, etc...
-        // We ignore the fact that a new bundle has been created, as it makes no difference below
-        let data = match self.update_extension_blocks(&bundle, data) {
+        match self.egress().send(bundle, &sink).await {
+            Ok(SendResult::Sent) => {
+                // TODO: reporting
+            }
+            Ok(SendResult::Rejected) => {
+                debug!("CLA rejected bundle for peer {peer}, resetting queue");
+                self.store.reset_peer_queue(peer).await;
+            }
+            Ok(SendResult::Filtered) | Ok(SendResult::NotFound) => {}
             Err(e) => {
-                warn!("Failed to update extension blocks: {e}");
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                return self.store.watch_bundle(bundle).await;
+                error!("Egress processing failed for peer {peer}: {e}");
             }
-            Ok(data) => data,
-        };
-
-        // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
-        // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
-        // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        // - On Drop result: call drop_bundle() and return early
-        let (bundle, data) = match self
-            .filter_engine
-            .exec(
-                filter::Hook::Egress,
-                bundle,
-                data,
-                &self.key_store,
-                &self.processing_pool,
-            )
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
-                    return self.drop_bundle(bundle, reason).await;
-                } else {
-                    return self.delete_bundle(bundle).await;
-                }
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
-                return;
-            }
-        };
-
-        // And pass to CLA
-        match cla.forward(queue, cla_addr, data).await {
-            Ok(cla::ForwardBundleResult::Sent) => {
-                metrics::counter!("bpa.bundle.forwarded").increment(1);
-                self.report_bundle_forwarded(&bundle).await;
-
-                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
-                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
-                    .await;
-                return self.delete_bundle(bundle).await;
-            }
-            Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
-                debug!(
-                    "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
-                );
-            }
-            Err(e) => {
-                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
-            }
-        }
-
-        self.store.reset_peer_queue(peer).await;
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    fn update_extension_blocks(
-        &self,
-        bundle: &bundle::Bundle,
-        source_data: Bytes,
-    ) -> Result<Bytes, hardy_bpv7::editor::Error> {
-        // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &source_data)
-            .insert_block(hardy_bpv7::block::Type::PreviousNode)
-            .map_err(|(_, e)| e)?
-            .with_flags(hardy_bpv7::block::Flags {
-                report_on_failure: true,
-                ..Default::default()
-            })
-            .with_data(
-                hardy_cbor::encode::emit(
-                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
-                )
-                .0
-                .into(),
-            )
-            .rebuild();
-
-        // Increment Hop Count
-        if let Some(hop_count) = &bundle.bundle.hop_count {
-            editor = editor
-                .insert_block(hardy_bpv7::block::Type::HopCount)
-                .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
-                    report_on_failure: true,
-                    must_replicate: true,
-                    ..Default::default()
-                })
-                .with_data(
-                    hardy_cbor::encode::emit(&hardy_bpv7::hop_info::HopInfo {
-                        limit: hop_count.limit,
-                        count: hop_count.count.saturating_add(1),
-                    })
-                    .0
-                    .into(),
-                )
-                .rebuild();
-        }
-
-        // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || !bundle.bundle.id.timestamp.is_clocked() {
-            // We have a bundle age block already, or no valid clock at bundle source
-            // So we must add an updated bundle age block
-            let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
-                .whole_milliseconds()
-                .clamp(0, u64::MAX as i128) as u64;
-
-            editor = editor
-                .insert_block(hardy_bpv7::block::Type::BundleAge)
-                .map_err(|(_, e)| e)?
-                .with_flags(hardy_bpv7::block::Flags {
-                    report_on_failure: true,
-                    must_replicate: true,
-                    ..Default::default()
-                })
-                .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
-                .rebuild();
-        }
-
-        let chunks = editor.rebuild()?;
-
-        // Try to modify the source buffer in place if exclusively owned
-        match source_data.try_into_mut() {
-            Ok(buf) => {
-                let mut vec = buf.into();
-                hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                Ok(Bytes::from(vec))
-            }
-            Err(source_data) => Ok(Bytes::from(hardy_bpv7::editor::Chunk::flatten(
-                chunks,
-                &source_data,
-            ))),
         }
     }
 }

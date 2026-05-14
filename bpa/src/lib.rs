@@ -37,8 +37,9 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 extern crate alloc;
 
 mod dispatcher;
+pub(crate) mod egress;
 pub(crate) mod ingress;
-mod otel_metrics;
+mod metrics;
 pub(crate) mod recover;
 mod rib;
 
@@ -52,6 +53,7 @@ pub mod node_ids;
 pub mod routes;
 pub mod security;
 pub mod services;
+pub mod sink;
 pub mod storage;
 
 // The generic error type

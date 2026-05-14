@@ -16,7 +16,7 @@ use crate::security::pattern::PatternKeySource;
 use crate::services::Service;
 use crate::services::registry::ServiceRegistry;
 use crate::storage::Store;
-use crate::{Arc, otel_metrics, services};
+use crate::{Arc, metrics, services};
 
 /// Trait for registering CLAs, services, and applications with a BPA.
 ///
@@ -243,7 +243,7 @@ impl Bpa {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn start(&self, recover_storage: bool) {
-        otel_metrics::init();
+        metrics::init();
 
         // Start the store
         self.store.start(self.dispatcher.clone(), recover_storage);

@@ -74,7 +74,7 @@ impl Rib {
             e.insert(Arc::new(Agent { agent, name })).clone()
         };
 
-        metrics::gauge!("bpa.rib.agents").increment(1.0);
+        ::metrics::gauge!("bpa.rib.agents").increment(1.0);
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
@@ -96,7 +96,7 @@ impl Rib {
         let agent = self.agents.lock().remove(&agent.name);
 
         if let Some(agent) = agent {
-            metrics::gauge!("bpa.rib.agents").decrement(1.0);
+            ::metrics::gauge!("bpa.rib.agents").decrement(1.0);
             agent.agent.on_unregister().await;
             self.remove_by_source(&agent.name).await;
             info!("Unregistered routing agent: {}", agent.name);
@@ -112,7 +112,7 @@ impl Rib {
             .collect::<Vec<_>>();
 
         if !agents.is_empty() {
-            metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
+            ::metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
         }
 
         for agent in agents {
