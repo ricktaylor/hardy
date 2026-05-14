@@ -122,6 +122,7 @@ impl Store {
             .trace_expect("Failed to save bundle data")
     }
 
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
     pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
         self.bundle_storage

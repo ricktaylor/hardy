@@ -9,19 +9,18 @@ mod ingress;
 mod local;
 mod reassemble;
 mod report;
-mod restart;
 
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
     store: Arc<storage::Store>,
     rib: Arc<rib::Rib>,
-    key_store: Arc<key::KeyStore>,
+    pub(crate) key_store: Arc<security::KeyStore>,
     filter_engine: Arc<filter::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
-    dispatch_tx: storage::channel::Sender,
+    pub(crate) dispatch_tx: storage::channel::Sender,
 
     // Config options
     status_reports: bool,
@@ -38,7 +37,7 @@ impl Dispatcher {
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
-        key_store: Arc<key::KeyStore>,
+        key_store: Arc<security::KeyStore>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> Arc<Self> {
         let (dispatcher, start) = Self::new_inner(
@@ -63,7 +62,7 @@ impl Dispatcher {
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
         rib: Arc<rib::Rib>,
-        key_store: Arc<key::KeyStore>,
+        key_store: Arc<security::KeyStore>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
         if status_reports {

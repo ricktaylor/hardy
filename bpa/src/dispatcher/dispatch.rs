@@ -56,7 +56,7 @@ impl Dispatcher {
     ) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
-            Some(rib::FindResult::Drop(reason)) => {
+            rib::FindResult::Drop(reason) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                     self.drop_bundle(bundle, reason).await
@@ -65,28 +65,23 @@ impl Dispatcher {
                     self.delete_bundle(bundle).await
                 }
             }
-            Some(rib::FindResult::AdminEndpoint) => self.administrative_bundle(bundle).await,
-            Some(rib::FindResult::Deliver(service)) => {
-                // Check for reassembly
+            rib::FindResult::AdminEndpoint => self.administrative_bundle(bundle).await,
+            rib::FindResult::Deliver(service) => {
                 if bundle.bundle.id.fragment_info.is_some() {
-                    // Reassemble the bundle before delivery
                     self.reassemble(bundle).await
                 } else {
-                    // Bundle is for a local service
                     self.deliver_bundle(service, bundle).await
                 }
             }
-            Some(rib::FindResult::Forward(peer)) => {
+            rib::FindResult::Forward(peer) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 if let Err(bundle) = cla_registry.forward(peer, bundle).await {
                     debug!("CLA forward failed, returning bundle to watch queue");
                     self.store.watch_bundle(bundle).await;
                 }
             }
-            None => {
-                // No route available - wait for one
+            rib::FindResult::Wait => {
                 debug!("Storing bundle until a forwarding opportunity arises");
-
                 self.store
                     .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
                     .await;

@@ -37,7 +37,9 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 extern crate alloc;
 
 mod dispatcher;
+pub(crate) mod ingress;
 mod otel_metrics;
+pub(crate) mod recover;
 mod rib;
 
 pub mod bpa;
@@ -46,10 +48,9 @@ pub mod bundle;
 pub(crate) mod cbor;
 pub mod cla;
 pub mod filter;
-pub mod key;
 pub mod node_ids;
-pub mod policy;
 pub mod routes;
+pub mod security;
 pub mod services;
 pub mod storage;
 

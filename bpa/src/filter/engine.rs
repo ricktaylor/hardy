@@ -4,7 +4,7 @@ use hardy_async::sync::Mutex;
 use super::chain::{FilterChain, FilterChainBuilder};
 use super::{Error, ExecResult, Filter, Hook};
 use crate::bundle::Bundle;
-use crate::key::KeyStore;
+use crate::security::KeyStore;
 use crate::{Arc, Bytes};
 
 /// Built filter chains for all hooks, ready to execute.

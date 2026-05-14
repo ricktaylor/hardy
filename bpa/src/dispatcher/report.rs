@@ -4,6 +4,8 @@ use hardy_bpv7::status_report::{
 };
 
 impl Dispatcher {
+    // TODO: extract to reporting.rs as a standalone function
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_reception(
         &self,

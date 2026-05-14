@@ -2,6 +2,7 @@ use super::*;
 use thiserror::Error;
 
 pub(crate) mod peers;
+pub mod policy;
 pub(crate) mod registry;
 
 mod egress_queue;

@@ -507,7 +507,7 @@ pub(super) mod tests {
 
         let result = rib.find(&mut bundle);
         assert!(
-            result.is_none(),
+            matches!(result, super::FindResult::Wait),
             "Unregistered local service should wait (no route), got {result:?}"
         );
     }
