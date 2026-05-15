@@ -955,3 +955,81 @@ fn tagged_marker_consumed_bytes() {
     assert!(matches!(m.marker, Marker::End));
     assert_eq!(len, 1);
 }
+
+// Regression: skip_value on a definite-length map must skip 2*N items,
+// not N. Marker::Map(Some(n)) carries the pair count, but skip_value
+// walks raw items and needs the doubled count.
+#[test]
+fn skip_value_definite_map_pair_count() {
+    // Map { 1: 2, 3: 4 } — 5 bytes
+    let map = hex!("a2 01 02 03 04");
+    let (shortest, len) = skip_value(&map, 16).unwrap();
+    assert!(shortest);
+    assert_eq!(len, map.len());
+
+    // Map followed by sentinel uint 66 — skip must consume only the map.
+    let data = hex!("a2 01 02 03 04 18 42");
+    let (_, len) = skip_value(&data, 16).unwrap();
+    assert_eq!(len, 5);
+
+    // And via Series::skip_value inside a sequence.
+    parse_sequence(&data, |s| {
+        s.skip_value(16)?;
+        let v: u64 = s.parse()?;
+        assert_eq!(v, 66);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Map nested inside an array — outer skip must clear the whole map.
+    // [ {1:2, 3:4}, 66 ]
+    let data = hex!("82 a2 01 02 03 04 18 42");
+    parse_array(&data, |a, _, _| {
+        a.skip_value(16)?;
+        let v: u64 = a.parse()?;
+        assert_eq!(v, 66);
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Regression: skip_to_end on a D=0 Sequence must terminate.
+// The old `for _ in 0..D` ran zero times for D=0 and left offset
+// unchanged, infinite-looping.
+#[test]
+fn skip_to_end_sequence() {
+    parse_sequence(&hex!("01 02 03"), |s| {
+        s.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Empty sequence terminates immediately.
+    parse_sequence(&hex!(""), |s| {
+        s.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Regression: skip_value on an indefinite-length map with an odd number
+// of items before the break must return Error::PartialMap, matching the
+// behaviour of the Series-driven path.
+#[test]
+fn skip_value_indefinite_map_partial() {
+    // BF 01 02 03 FF — indefinite map { 1:2, 3:<break> } — three items.
+    assert!(matches!(
+        skip_value(&hex!("BF 01 02 03 FF"), 16),
+        Err(Error::PartialMap)
+    ));
+
+    // Even count succeeds.
+    let (shortest, len) = skip_value(&hex!("BF 01 02 03 04 FF"), 16).unwrap();
+    assert!(shortest);
+    assert_eq!(len, 6);
+
+    // Empty indefinite map succeeds.
+    let (shortest, len) = skip_value(&hex!("BF FF"), 16).unwrap();
+    assert!(shortest);
+    assert_eq!(len, 2);
+}
