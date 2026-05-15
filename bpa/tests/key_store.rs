@@ -26,8 +26,7 @@ fn make_source(kid: &str) -> Arc<PatternKeySource> {
         vec![(
             "ipn:*.*".parse().unwrap(),
             SecurityRole::Acceptor,
-            Some(kid.into()),
-            None,
+            vec![kid.into()],
         )],
     ))
 }

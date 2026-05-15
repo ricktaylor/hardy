@@ -56,17 +56,17 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "grpc")]
     let grpc_config = config.grpc.take();
 
-    let security_config = config.security.take();
-    let bpa = build(config, &security_config, args.upgrade_storage).await?;
+    let bpsec_config = config.bpsec.take();
+    let bpa = build(config, &bpsec_config, args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    if let Some(ref security_config) = security_config {
-        if let Some(watch_mode) = security_config.watch {
-            let config = security_config.clone();
+    if let Some(ref bpsec_config) = bpsec_config {
+        if let Some(watch_mode) = bpsec_config.watch {
+            let config = bpsec_config.clone();
             let bpa = bpa.clone();
             let keys_file = config.keys_file.clone();
             let cancel = tasks.cancel_token().clone();
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
 /// Build a BPA from the given configuration.
 async fn build(
     config: config::Config,
-    security_config: &Option<config::security::Config>,
+    bpsec_config: &Option<config::bpsec::Config>,
     upgrade_storage: bool,
 ) -> anyhow::Result<Arc<Bpa>> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
@@ -148,10 +148,10 @@ async fn build(
         builder = builder.service_priority(service_priority);
     }
 
-    if let Some(security_config) = security_config {
-        let source = security_config
+    if let Some(bpsec_config) = bpsec_config {
+        let source = bpsec_config
             .build()
-            .context("Failed to load security configuration")?;
+            .context("Failed to load BPSec configuration")?;
         builder = builder.key_source(Arc::new(source));
     }
 
