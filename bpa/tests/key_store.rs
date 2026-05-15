@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hardy_bpa::key::KeyStore;
-use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
+use hardy_bpa::security::KeyStore;
+use hardy_bpa::security::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{Key, KeySource, Operation, Type};
 use hardy_bpv7::eid::Eid;
 

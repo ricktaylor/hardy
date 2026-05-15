@@ -3,16 +3,15 @@ use core::num::NonZeroUsize;
 use crate::Arc;
 use crate::bpa::Bpa;
 use crate::cla::Cla;
+use crate::cla::policy::EgressPolicy;
 use crate::cla::registry::ClaRegistryBuilder;
-use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
-use crate::key::KeyStore;
-use crate::key::pattern::PatternKeySource;
 use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
 use crate::rib::RibBuilder;
 use crate::routes::RoutingAgent;
+use crate::security::KeyStore;
+use crate::security::pattern::PatternKeySource;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
 use crate::storage::{
@@ -52,8 +51,6 @@ impl BpaBuilder {
 
     pub fn bundle_storage(mut self, bundle_storage: Arc<dyn BundleStorage>) -> Self {
         self.bundle_storage = Some(bundle_storage);
-        // Auto-enable cache for non-default (presumably persistent) storage,
-        // unless the caller has explicitly disabled caching.
         if !self.cache_disabled {
             self.lru_capacity
                 .get_or_insert(crate::storage::DEFAULT_LRU_CAPACITY);
@@ -162,7 +159,7 @@ impl BpaBuilder {
     }
 
     /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn build(self) -> Result<Arc<Bpa>, Box<dyn std::error::Error + Send + Sync>> {
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));
@@ -195,7 +192,7 @@ impl BpaBuilder {
         let filter_engine = self.filter_engine;
         let key_store = self.key_store;
 
-        let dispatcher = Dispatcher::new(
+        let (bpa, start) = Bpa::new_inner(
             self.status_reports,
             self.poll_channel_depth,
             self.processing_pool_size,
@@ -207,32 +204,24 @@ impl BpaBuilder {
         );
 
         let (service_registry, cla_registry) = futures::join!(
-            self.service_registry_builder
-                .build(&node_ids, &rib, &dispatcher),
+            self.service_registry_builder.build(&node_ids, &rib, &bpa),
             self.cla_registry_builder.build(
                 &node_ids,
                 self.poll_channel_depth.into(),
                 &rib,
                 &store,
-                &dispatcher,
+                &bpa,
             ),
         );
         let service_registry = service_registry?;
         let cla_registry = cla_registry?;
 
-        // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
-        dispatcher.set_cla_registry(cla_registry.clone());
+        bpa.set_cla_registry(cla_registry);
+        bpa.set_service_registry(service_registry);
 
-        Ok(Bpa::from_parts(
-            node_ids,
-            store,
-            rib,
-            key_store,
-            cla_registry,
-            service_registry,
-            filter_engine,
-            dispatcher,
-        ))
+        start(&bpa);
+
+        Ok(bpa)
     }
 }
 
@@ -240,7 +229,6 @@ impl Default for BpaBuilder {
     fn default() -> Self {
         let filter_engine = Arc::new(FilterEngine::new());
 
-        // Auto-register bundle validity filter (lifetime, hop-count)
         let validity = Arc::new(BundleValidityFilter);
         filter_engine
             .register(
@@ -259,7 +247,6 @@ impl Default for BpaBuilder {
             )
             .expect("Failed to register bundle validity filter");
 
-        // Auto-register RFC9171 validity filter unless disabled
         #[cfg(not(feature = "no-rfc9171-autoregister"))]
         {
             use crate::filter::rfc9171::Rfc9171ValidityFilter;

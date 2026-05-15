@@ -20,34 +20,43 @@ fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a E
 
 impl Rib {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
+    pub fn find(&self, bundle: &mut bundle::Bundle) -> FindResult {
         let inner = self.inner.read();
 
         // TODO: this is where route table switching can occur
         let table = &inner.routes;
 
-        let result = find_recurse(table, &bundle.bundle.destination, true, &mut HashSet::new())?;
+        let Some(result) =
+            find_recurse(table, &bundle.bundle.destination, true, &mut HashSet::new())
+        else {
+            return FindResult::Wait;
+        };
+
         if !matches!(result, InternalFindResult::Reflect) {
             return map_result(
                 result,
                 &self.ecmp_hash_state,
                 &bundle.bundle,
                 &mut bundle.metadata,
-            );
+            )
+            .unwrap_or(FindResult::Wait);
         }
 
-        // Reflect: return the bundle via the previous forwarding node,
-        // falling back to the bundle source as last resort.
         let previous = bundle
             .previous_node()
             .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
+        let Some(result) = find_recurse(table, &previous, false, &mut HashSet::new()) else {
+            return FindResult::Wait;
+        };
+
         map_result(
-            find_recurse(table, &previous, false, &mut HashSet::new())?,
+            result,
             &self.ecmp_hash_state,
             &bundle.bundle,
             &mut bundle.metadata,
         )
+        .unwrap_or(FindResult::Wait)
     }
 
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
@@ -285,7 +294,7 @@ mod tests {
         // Lookup for an EID under that node
         let mut bundle = make_bundle("ipn:0.2.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(42))));
+        assert!(matches!(result, FindResult::Forward(42)));
     }
 
     #[test]
@@ -307,17 +316,17 @@ mod tests {
         // An unknown destination should resolve via the default route
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(99))));
+        assert!(matches!(result, FindResult::Forward(99)));
     }
 
     #[test]
     fn test_no_route() {
         let rib = make_rib();
 
-        // No matching route — unknown destination returns None (wait for route)
+        // No matching route — returns Wait
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
-        assert!(result.is_none());
+        assert!(matches!(result, FindResult::Wait));
     }
 
     #[test]
@@ -344,9 +353,7 @@ mod tests {
         let result = rib.find(&mut bundle);
         assert!(matches!(
             result,
-            Some(FindResult::Drop(Some(
-                ReasonCode::NoKnownRouteToDestinationFromHere
-            )))
+            FindResult::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere))
         ));
     }
 
@@ -366,7 +373,7 @@ mod tests {
 
         let result = rib.find(&mut bundle);
         // Should route back to the previous node's peer
-        assert!(matches!(result, Some(FindResult::Forward(77))));
+        assert!(matches!(result, FindResult::Forward(77)));
     }
 
     #[test]
@@ -382,7 +389,7 @@ mod tests {
         bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
 
         let result = rib.find(&mut bundle);
-        assert!(result.is_none());
+        assert!(matches!(result, FindResult::Wait));
     }
 
     #[test]
@@ -413,7 +420,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.50.1");
         let result1 = rib.find(&mut bundle);
         let peer1 = match result1 {
-            Some(FindResult::Forward(p)) => p,
+            FindResult::Forward(p) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -421,7 +428,7 @@ mod tests {
         bundle2.bundle.id = bundle.bundle.id.clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
-            Some(FindResult::Forward(p)) => p,
+            FindResult::Forward(p) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -441,7 +448,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::AdminEndpoint)),
+            matches!(result, FindResult::AdminEndpoint),
             "Admin EID should resolve to AdminEndpoint, got {result:?}"
         );
     }
@@ -456,7 +463,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.99");
         let result = rib.find(&mut bundle);
         assert!(
-            result.is_none(),
+            matches!(result, FindResult::Wait),
             "Unregistered local service should wait (no route), got {result:?}"
         );
     }
@@ -483,7 +490,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.42");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::Deliver(_))),
+            matches!(result, FindResult::Deliver(_)),
             "Concrete local EID should match concrete service route, got {result:?}"
         );
     }
@@ -511,7 +518,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.2.42");
         let result = rib.find(&mut bundle);
         assert!(
-            result.is_none(),
+            matches!(result, FindResult::Wait),
             "Remote EID should not match local service route, got {result:?}"
         );
     }
@@ -525,7 +532,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::AdminEndpoint)),
+            matches!(result, FindResult::AdminEndpoint),
             "Concrete admin EID should match admin endpoint route, got {result:?}"
         );
     }
@@ -549,9 +556,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Some(FindResult::Drop(Some(
-                    ReasonCode::DestinationEndpointIDUnavailable
-                )))
+                FindResult::Drop(Some(ReasonCode::DestinationEndpointIDUnavailable))
             ),
             "Explicit drop rule should override default wait, got {result:?}"
         );

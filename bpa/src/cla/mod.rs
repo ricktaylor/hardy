@@ -2,6 +2,7 @@ use super::*;
 use thiserror::Error;
 
 pub(crate) mod peers;
+pub mod policy;
 pub(crate) mod registry;
 
 mod egress_queue;
@@ -246,7 +247,7 @@ pub trait Sink: Send + Sync {
     /// Typically called when the CLA encounters a fatal error and needs to shut down.
     async fn unregister(&self);
 
-    /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.
+    /// Dispatches a received bundle (as raw bytes) to the BPA for processing.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known

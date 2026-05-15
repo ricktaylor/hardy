@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
+use hardy_bpa::security::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{EncAlgorithm, Key, KeyAlgorithm, KeySource, Operation, Type, Use};
 use hardy_bpv7::eid::Eid;
 use hardy_eid_patterns::EidPattern;

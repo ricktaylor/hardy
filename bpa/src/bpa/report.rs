@@ -1,9 +1,17 @@
-use super::*;
+use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::{
     AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion,
 };
+use tracing::debug;
 
-impl Dispatcher {
+use super::Bpa;
+use crate::bundle;
+
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+impl Bpa {
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_reception(
         &self,
@@ -12,12 +20,11 @@ impl Dispatcher {
     ) {
         debug!("Bundle {} received", bundle.bundle.id);
 
-        // Check if a report is requested
         if bundle.bundle.flags.receipt_report_requested {
             debug!("Reporting bundle reception to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
 
-            self.dispatch_status_report(
+            Box::pin(self.report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
@@ -34,24 +41,24 @@ impl Dispatcher {
                 ))
                 .0,
                 &bundle.bundle.report_to,
-            )
+            ))
             .await
         }
     }
 
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn report_bundle_forwarded(&self, bundle: &bundle::Bundle) {
         debug!("Bundle {} forwarded", bundle.bundle.id);
 
-        // Check if a report is requested
         if bundle.bundle.flags.forward_report_requested {
             debug!(
                 "Reporting bundle as forwarded to {}",
                 &bundle.bundle.report_to
             );
-            metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
 
-            self.dispatch_status_report(
+            Box::pin(self.report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
@@ -67,7 +74,7 @@ impl Dispatcher {
                 ))
                 .0,
                 &bundle.bundle.report_to,
-            )
+            ))
             .await
         }
     }
@@ -76,13 +83,11 @@ impl Dispatcher {
     pub(super) async fn report_bundle_delivery(&self, bundle: &bundle::Bundle) {
         debug!("Bundle {} delivered", bundle.bundle.id);
 
-        // Check if a report is requested
         if bundle.bundle.flags.delivery_report_requested {
             debug!("Reporting bundle delivery to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
 
-            // Create a bundle report
-            self.dispatch_status_report(
+            Box::pin(self.report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
@@ -98,20 +103,18 @@ impl Dispatcher {
                 ))
                 .0,
                 &bundle.bundle.report_to,
-            )
+            ))
             .await
         }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn report_bundle_deletion(&self, bundle: &bundle::Bundle, reason: ReasonCode) {
-        // Check if a report is requested
         if bundle.bundle.flags.delete_report_requested {
             debug!("Reporting bundle deletion to {}", &bundle.bundle.report_to);
-            metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
+            ::metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
 
-            // Create a bundle report
-            self.dispatch_status_report(
+            Box::pin(self.report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
                         bundle_id: bundle.bundle.id.clone(),
@@ -128,53 +131,8 @@ impl Dispatcher {
                 ))
                 .0,
                 &bundle.bundle.report_to,
-            )
+            ))
             .await
-        }
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, payload),fields(report_to = %report_to)))]
-    async fn dispatch_status_report(&self, payload: Vec<u8>, report_to: &Eid) {
-        // Check reports are enabled
-        if self.status_reports {
-            // Build the bundle
-            let (bundle, data) = hardy_bpv7::builder::Builder::new(
-                self.node_ids.get_admin_endpoint(report_to),
-                report_to.clone(),
-            )
-            .with_flags(hardy_bpv7::bundle::Flags {
-                is_admin_record: true,
-                ..Default::default()
-            })
-            .with_payload(payload.into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .trace_expect("Failed to create new bundle");
-
-            // Wrap in bundle::Bundle with Dispatching status — status reports
-            // are internally generated, so they skip both the Originate and
-            // Ingress filters and go directly to routing.
-            let mut bundle = bundle::Bundle {
-                metadata: bundle::BundleMetadata {
-                    status: bundle::BundleStatus::Dispatching,
-                    ..Default::default()
-                },
-                bundle,
-            };
-
-            // Store (no Originate filter - not user-originated)
-            let data = Bytes::from(data);
-            if !self.store.store(&mut bundle, &data).await {
-                // Duplicate status report - shouldn't happen but handle gracefully
-                debug!("Duplicate status report bundle");
-                return;
-            }
-
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
-
-            // Dispatch via queue to avoid blocking the CLA session reader.
-            // Running inline would block incoming bundles on this connection
-            // for the duration of the status report's full pipeline.
-            self.dispatch_bundle(bundle).await
         }
     }
 }

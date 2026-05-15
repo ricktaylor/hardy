@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
+use hardy_bpa::security::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{KeySet, Type};
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};

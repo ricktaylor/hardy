@@ -52,7 +52,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         &self,
         _name: String,
         cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
+        _policy: Option<Arc<dyn hardy_bpa::cla::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let node_ids = vec![NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
             allocator_id: 0,

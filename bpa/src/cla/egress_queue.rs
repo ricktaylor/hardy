@@ -2,7 +2,7 @@ use super::*;
 
 struct Shared {
     cla: Arc<dyn Cla>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<bpa::Bpa>,
     peer: u32,
     cla_addr: ClaAddress,
 }
@@ -36,7 +36,7 @@ impl EgressQueue {
 
 pub fn new_queue_set(
     cla: Arc<dyn Cla>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<bpa::Bpa>,
     peer: u32,
     cla_addr: ClaAddress,
     queue_count: u32,

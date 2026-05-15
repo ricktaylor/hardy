@@ -42,6 +42,38 @@ impl Service {
     }
 }
 
+/// Egress sink that delivers bundles to this service.
+///
+/// LowLevel services receive raw bundle bytes.
+/// Applications receive the payload block (already decrypted by the pipeline).
+pub struct DeliverySink {
+    pub service: Arc<Service>,
+}
+
+#[async_trait]
+impl crate::sink::Sink for DeliverySink {
+    async fn write(&self, bundle: &bundle::Bundle, data: Bytes) -> Result<(), crate::Error> {
+        match &self.service.service {
+            ServiceImpl::LowLevel(svc) => {
+                svc.on_receive(data, bundle.expiry()).await;
+            }
+            ServiceImpl::Application(app) => {
+                let payload = data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range());
+                app.on_receive(
+                    bundle.bundle.id.source.clone(),
+                    bundle.expiry(),
+                    bundle.bundle.flags.app_ack_requested,
+                    payload,
+                )
+                .await;
+            }
+        }
+
+        ::metrics::counter!("bpa.bundle.delivered").increment(1);
+        Ok(())
+    }
+}
+
 impl PartialEq for Service {
     fn eq(&self, other: &Self) -> bool {
         self.service_id == other.service_id
@@ -84,7 +116,7 @@ struct Sink {
     registry: Arc<ServiceRegistry>,
     node_ids: Arc<node_ids::NodeIds>,
     rib: Arc<rib::Rib>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<bpa::Bpa>,
 }
 
 impl Sink {
@@ -203,7 +235,7 @@ impl ServiceRegistryBuilder {
         self,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Arc<ServiceRegistry>> {
         let registry = Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(self.services),
@@ -240,7 +272,7 @@ impl ServiceRegistry {
             .collect::<Vec<_>>();
 
         if !services.is_empty() {
-            metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
+            ::metrics::gauge!("bpa.service.registered").decrement(services.len() as f64);
         }
 
         for service in services {
@@ -258,7 +290,7 @@ impl ServiceRegistry {
         service: Arc<dyn services::Service>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
         self.register(&service_id, node_ids, rib, dispatcher).await
@@ -270,7 +302,7 @@ impl ServiceRegistry {
         application: Arc<dyn services::Application>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
         self.register(&service_id, node_ids, rib, dispatcher).await
@@ -282,7 +314,7 @@ impl ServiceRegistry {
         service: Arc<dyn services::Service>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
         self.register_service(service_id, service, node_ids, rib, dispatcher)
@@ -295,7 +327,7 @@ impl ServiceRegistry {
         application: Arc<dyn services::Application>,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
         self.register_application(service_id, application, node_ids, rib, dispatcher)
@@ -331,7 +363,7 @@ impl ServiceRegistry {
         service_id: &hardy_bpv7::eid::Service,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> services::Result<Eid> {
         let service = self.services.lock().get(service_id).cloned().unwrap();
         let eid = node_ids.resolve_eid(service_id)?;
@@ -351,7 +383,7 @@ impl ServiceRegistry {
             ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
         }
         dispatcher.poll_service_waiting(&eid).await;
-        metrics::gauge!("bpa.service.registered").increment(1.0);
+        ::metrics::gauge!("bpa.service.registered").increment(1.0);
         Ok(eid)
     }
 
@@ -364,7 +396,7 @@ impl ServiceRegistry {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
-            metrics::gauge!("bpa.service.registered").decrement(1.0);
+            ::metrics::gauge!("bpa.service.registered").decrement(1.0);
             self.unregister_service(service, node_ids, rib).await?;
         }
         Ok(())

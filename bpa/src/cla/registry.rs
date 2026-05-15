@@ -59,7 +59,7 @@ type ClaMap = HashMap<String, Arc<Cla>>;
 struct Sink {
     cla: Weak<Cla>,
     registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<bpa::Bpa>,
 }
 
 #[async_trait]
@@ -83,13 +83,14 @@ impl cla::Sink for Sink {
             .name
             .clone();
         self.dispatcher
-            .receive_bundle(
+            .receive(
                 bundle,
                 Some(cla_name),
                 peer_node.cloned(),
                 peer_addr.cloned(),
             )
             .await
+            .map_err(cla::Error::Internal)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -160,7 +161,7 @@ impl ClaRegistryBuilder {
         poll_channel_depth: usize,
         rib: &Arc<rib::Rib>,
         store: &Arc<storage::Store>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> cla::Result<Arc<ClaRegistry>> {
         let peers = Arc::new(cla::peers::PeerTable::new());
         let registry = Arc::new(ClaRegistry {
@@ -212,7 +213,7 @@ impl ClaRegistry {
         let clas = self.clas.lock().drain().map(|(_, v)| v).collect::<Vec<_>>();
 
         if !clas.is_empty() {
-            metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
+            ::metrics::gauge!("bpa.cla.registered").decrement(clas.len() as f64);
         }
 
         for cla in clas {
@@ -227,7 +228,7 @@ impl ClaRegistry {
         self: &Arc<Self>,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
@@ -264,7 +265,7 @@ impl ClaRegistry {
             )
             .await;
 
-        metrics::gauge!("bpa.cla.registered").increment(1.0);
+        ::metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
 
         Ok(node_ids)
@@ -274,7 +275,7 @@ impl ClaRegistry {
         let cla = self.clas.lock().remove(&*cla.name);
 
         if let Some(cla) = cla {
-            metrics::gauge!("bpa.cla.registered").decrement(1.0);
+            ::metrics::gauge!("bpa.cla.registered").decrement(1.0);
             self.unregister_cla(cla).await;
         }
     }
@@ -291,7 +292,7 @@ impl ClaRegistry {
             // Remove RIB entries for all EIDs associated with this address
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
-                metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
+                ::metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
             self.peers.remove(peer_id).await;
         }
@@ -302,7 +303,7 @@ impl ClaRegistry {
     async fn add_peer(
         &self,
         cla: Arc<Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        dispatcher: Arc<bpa::Bpa>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
@@ -354,7 +355,7 @@ impl ClaRegistry {
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
         for node_id in node_ids {
             self.rib.add_forward(node_id.clone(), peer_id).await;
-            metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
+            ::metrics::gauge!("bpa.fib.entries", "cla" => cla_name.clone()).increment(1.0);
         }
 
         true
@@ -368,7 +369,7 @@ impl ClaRegistry {
         self.peers.remove(peer_id).await;
         for node_id in node_ids {
             self.rib.remove_forward(node_id, peer_id).await;
-            metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
+            ::metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
         }
 
         debug!("Removed peer {peer_id}");

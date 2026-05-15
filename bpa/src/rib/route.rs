@@ -132,7 +132,7 @@ impl Rib {
             }
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
-            metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
+            ::metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
 
             // Start walking through the route table starting at this priority to find impacted routes
             let mut vias = HashSet::new();
@@ -213,7 +213,7 @@ impl Rib {
         }
 
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
-        metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
+        ::metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).decrement(1.0);
 
         // See if we are removing a Via or a Forward
         match action {
@@ -278,7 +278,7 @@ impl Rib {
         }
 
         debug!("Removed all routes from source '{source}'");
-        metrics::gauge!("bpa.rib.entries", "source" => source.to_string())
+        ::metrics::gauge!("bpa.rib.entries", "source" => source.to_string())
             .decrement(removed_count as f64);
 
         let mut changed = has_local;
@@ -507,7 +507,7 @@ pub(super) mod tests {
 
         let result = rib.find(&mut bundle);
         assert!(
-            result.is_none(),
+            matches!(result, super::FindResult::Wait),
             "Unregistered local service should wait (no route), got {result:?}"
         );
     }

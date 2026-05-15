@@ -40,7 +40,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 #[allow(unused)]
-async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
+async fn new_bpa(testname: &str) -> std::sync::Arc<hardy_bpa::bpa::Bpa> {
     let path = std::env::temp_dir().join("hardy-fuzz").join(testname);
 
     let mut builder = hardy_bpa::bpa::Bpa::builder()

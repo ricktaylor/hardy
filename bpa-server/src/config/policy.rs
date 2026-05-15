@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hardy_bpa::policy::EgressPolicy;
+use hardy_bpa::cla::policy::EgressPolicy;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]

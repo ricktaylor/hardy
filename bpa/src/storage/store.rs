@@ -9,8 +9,8 @@ use tracing::error;
 use tracing::instrument;
 
 use super::{BundleStorage, MetadataStorage, Reaper, Sender};
+use crate::bpa::Bpa;
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
-use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
 
 pub struct Store {
@@ -49,7 +49,7 @@ impl Store {
     ///
     /// Optionally runs crash recovery, then starts the reaper background task
     /// for bundle lifetime monitoring.
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<Bpa>, recover_storage: bool) {
         if recover_storage {
             self.recover(&dispatcher);
         }
@@ -122,6 +122,7 @@ impl Store {
             .trace_expect("Failed to save bundle data")
     }
 
+    #[allow(dead_code)]
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
     pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
         self.bundle_storage
@@ -192,8 +193,9 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
         if bundle.metadata.status != *status {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(status))
+                .increment(1.0);
 
             bundle.metadata.status = status.clone();
             self.metadata_storage
@@ -228,9 +230,9 @@ impl Store {
             .trace_expect("Failed to reset peer queue");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: None }))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&BundleStatus::ForwardPending { peer, queue: None }))
                 .decrement(reset as f64);
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
+            metrics::gauge!("bpa.bundle.status", "state" => crate::metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
         }
 

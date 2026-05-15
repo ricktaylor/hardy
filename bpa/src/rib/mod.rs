@@ -12,12 +12,13 @@ pub(crate) mod agent;
 mod find;
 mod route;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FindResult {
     AdminEndpoint,
-    Deliver(Arc<services::registry::Service>), // Deliver to local service
-    Forward(u32),                              // Forward to peer
-    Drop(Option<ReasonCode>),                  // Drop with reason code
+    Deliver(Arc<services::registry::Service>),
+    Forward(u32),
+    Drop(Option<ReasonCode>),
+    Wait,
 }
 
 type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
@@ -127,7 +128,7 @@ impl Rib {
         }
     }
 
-    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<bpa::Bpa>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
