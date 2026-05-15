@@ -25,6 +25,28 @@ impl<'a, const D: usize> Series<'a, D> {
         }
     }
 
+    /// Constructs a `Series` from a CBOR head count.
+    ///
+    /// Converts the wire-format `Option<u64>` into the item count this
+    /// `Series` tracks: for `D == 2` (a [`Map`]) the input is the number of
+    /// pairs and is doubled; for other `D` it is passed through. Returns
+    /// [`Error::TooBig`] if the count overflows `usize`.
+    pub(super) fn try_new(
+        data: &'a [u8],
+        count: Option<u64>,
+        offset: &'a mut usize,
+    ) -> Result<Self, Error> {
+        let count = count
+            .map(|c| {
+                usize::try_from(c)
+                    .ok()
+                    .and_then(|c| c.checked_mul(D.max(1)))
+                    .ok_or(Error::TooBig)
+            })
+            .transpose()?;
+        Ok(Self::new(data, count, offset))
+    }
+
     /// Returns the number of elements in the sequence, if it is definite-length.
     ///
     /// For an array, this is the number of items. For a map, it's the number of key-value pairs.
@@ -105,7 +127,8 @@ impl<'a, const D: usize> Series<'a, D> {
     pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<bool, Error> {
         let mut shortest = true;
         while !self.at_end()? {
-            for _ in 0..D {
+            shortest &= self.skip_value(max_recursion)?;
+            for _ in 1..D {
                 shortest &= self.skip_value(max_recursion)?;
             }
         }
@@ -211,10 +234,7 @@ impl<'a, const D: usize> Series<'a, D> {
         let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Array(count) => {
-                let count = count
-                    .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
-                    .transpose()?;
-                let mut a = Array::new(data, count, &mut offset);
+                let mut a = Array::try_new(data, count, &mut offset)?;
                 let r = f(&mut a, shortest, &marker.tags)?;
                 a.complete(r)
             }
@@ -248,14 +268,7 @@ impl<'a, const D: usize> Series<'a, D> {
         let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Map(count) => {
-                let count = count
-                    .map(|c| {
-                        usize::try_from(c)
-                            .map_err(|_| Error::TooBig)
-                            .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
-                    })
-                    .transpose()?;
-                let mut m = Map::new(data, count, &mut offset);
+                let mut m = Map::try_new(data, count, &mut offset)?;
                 let r = f(&mut m, shortest, &marker.tags)?;
                 m.complete(r)
             }

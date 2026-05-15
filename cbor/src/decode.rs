@@ -209,24 +209,24 @@ pub enum Value<'a, 'b: 'a> {
 impl<'a, 'b: 'a> Value<'a, 'b> {
     /// Returns a human-readable string describing the type of the CBOR value.
     pub fn type_name(&self, tagged: bool) -> String {
-        let prefix = if tagged { "Tagged " } else { "Untagged " }.to_string();
+        let prefix = if tagged { "Tagged" } else { "Untagged" };
         match self {
-            Value::UnsignedInteger(_) => prefix + "Unsigned Integer",
-            Value::NegativeInteger(_) => prefix + "Negative Integer",
-            Value::Bytes(_) => prefix + "Definite-length Byte String",
-            Value::ByteStream(_) => prefix + "Indefinite-length Byte String",
-            Value::Text(_) => prefix + "Definite-length Text String",
-            Value::TextStream(_) => prefix + "Indefinite-length Text String",
-            Value::Array(a) if a.is_definite() => prefix + "Definite-length Array",
-            Value::Array(_) => prefix + "Indefinite-length Array",
-            Value::Map(m) if m.is_definite() => prefix + "Definite-length Map",
-            Value::Map(_) => prefix + "Indefinite-length Map",
-            Value::False => prefix + "False",
-            Value::True => prefix + "True",
-            Value::Null => prefix + "Null",
-            Value::Undefined => prefix + "Undefined",
-            Value::Simple(v) => format!("{prefix}Simple Value {v}"),
-            Value::Float(_) => prefix + "Float",
+            Value::UnsignedInteger(_) => format!("{prefix} Unsigned Integer"),
+            Value::NegativeInteger(_) => format!("{prefix} Negative Integer"),
+            Value::Bytes(_) => format!("{prefix} Definite-length Byte String"),
+            Value::ByteStream(_) => format!("{prefix} Indefinite-length Byte String"),
+            Value::Text(_) => format!("{prefix} Definite-length Text String"),
+            Value::TextStream(_) => format!("{prefix} Indefinite-length Text String"),
+            Value::Array(a) if a.is_definite() => format!("{prefix} Definite-length Array"),
+            Value::Array(_) => format!("{prefix} Indefinite-length Array"),
+            Value::Map(m) if m.is_definite() => format!("{prefix} Definite-length Map"),
+            Value::Map(_) => format!("{prefix} Indefinite-length Map"),
+            Value::False => format!("{prefix} False"),
+            Value::True => format!("{prefix} True"),
+            Value::Null => format!("{prefix} Null"),
+            Value::Undefined => format!("{prefix} Undefined"),
+            Value::Simple(v) => format!("{prefix} Simple Value {v}"),
+            Value::Float(_) => format!("{prefix} Float"),
         }
     }
 
@@ -341,8 +341,8 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 /// The head of a single CBOR data item.
 ///
 /// `Marker` captures the CBOR major type and the value carried directly in
-/// the type marker encoding — a scalar, a definite-length payload range, or
-/// an element count. It is the payload returned by the [`TaggedMarker`]
+/// the type marker encoding — a scalar, a definite-length payload length,
+/// or an element count. It is the payload returned by the [`TaggedMarker`]
 /// [`FromCbor`] implementation when you only need to dispatch on type
 /// without paying for a full decode.
 ///
@@ -356,26 +356,29 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 ///   carry the **element count** — for a map, the number of key-value
 ///   pairs. They say nothing about how many bytes the contained items
 ///   occupy.
-/// - [`Bytes(Some(range))`][Self::Bytes] /
-///   [`Text(Some(range))`][Self::Text] carry a [`Range`] into the original
-///   input that locates the payload bytes; this is a slice index, not a
-///   length-of-encoding.
+/// - [`Bytes(Some(len))`][Self::Bytes] / [`Text(Some(len))`][Self::Text]
+///   carry the **payload length in bytes**. The payload itself sits in
+///   the buffer immediately after the marker head; it is not consumed
+///   by the marker decode.
 /// - The `None` variants of `Bytes`, `Text`, `Array`, and `Map` carry no
 ///   length information at all — the contents are indefinite-length and
 ///   must be walked to a break byte.
 ///
+/// `Marker` derives [`Debug`], [`Clone`], and [`PartialEq`]. `PartialEq`
+/// follows IEEE-754 semantics for [`Float`][Self::Float] (`NaN != NaN`).
+///
 /// # Bytes consumed
 ///
 /// The byte count returned alongside a `Marker` by [`FromCbor`] covers
-/// only the encoding of the type marker itself, plus the validated payload
-/// of definite-length strings:
+/// the encoding of the type marker itself — including any length
+/// prefix — but never the variable-length payload that follows:
 ///
 /// - **Scalars** (integers, floats, booleans, null, undefined, simple
 ///   values): the full encoding is consumed.
 /// - **Definite-length strings** ([`Bytes(Some(_))`][Self::Bytes],
-///   [`Text(Some(_))`][Self::Text]): the head byte, length prefix, and
-///   payload bytes are all consumed; the [`Range`] then locates the
-///   payload within the original input.
+///   [`Text(Some(_))`][Self::Text]): only the head byte and length
+///   prefix are consumed; the payload bytes remain in the buffer and
+///   the `Some(len)` value gives their length.
 /// - **Indefinite-length strings** ([`Bytes(None)`][Self::Bytes],
 ///   [`Text(None)`][Self::Text]): only the single head byte is consumed;
 ///   the chunks and the trailing break byte remain in the buffer.
@@ -383,20 +386,21 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
 ///   either `Some` or `None`): only the head byte and (for definite
 ///   collections) the length prefix are consumed; the contained items
 ///   remain in the buffer for the caller to walk.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Marker {
     /// An unsigned integer (CBOR major type 0).
     UnsignedInteger(u64),
     /// A negative integer (CBOR major type 1), stored as the raw value `n` where the actual value is `-1 - n`.
     NegativeInteger(u64),
-    /// A byte string (CBOR major type 2). `Some(range)` is the byte range
-    /// of the payload within the original input for definite-length
-    /// strings; `None` indicates an indefinite-length string whose chunks
-    /// are still in the buffer awaiting parsing.
+    /// A byte string (CBOR major type 2). `Some(len)` is the payload
+    /// length in bytes — the payload itself remains in the buffer
+    /// immediately after the marker; `None` indicates an indefinite-length
+    /// string whose chunks are still in the buffer awaiting parsing.
     Bytes(Option<u64>),
-    /// A text string (CBOR major type 3). `Some(range)` is the byte range
-    /// of the payload within the original input for definite-length
-    /// strings; `None` indicates an indefinite-length string whose chunks
-    /// are still in the buffer awaiting parsing.
+    /// A text string (CBOR major type 3). `Some(len)` is the payload
+    /// length in bytes — the payload itself remains in the buffer
+    /// immediately after the marker; `None` indicates an indefinite-length
+    /// string whose chunks are still in the buffer awaiting parsing.
     Text(Option<u64>),
     /// A CBOR array (major type 4). `Some(count)` is the number of
     /// elements for definite-length arrays — not a byte length;
@@ -462,8 +466,7 @@ impl core::fmt::Display for TaggedMarker {
             "Untagged"
         } else {
             "Tagged"
-        }
-        .to_string();
+        };
         match self.marker {
             Marker::UnsignedInteger(_) => write!(f, "{prefix} Unsigned Integer"),
             Marker::NegativeInteger(_) => write!(f, "{prefix} Negative Integer"),
@@ -620,6 +623,10 @@ impl FromCbor for TaggedMarker {
                 }
                 (Marker::Float(v), shortest, 8)
             }
+            // A break code is only a valid End marker when untagged.
+            // `offset == 1` means no tag bytes preceded it (offset = tag
+            // bytes consumed + 1 for the marker byte). A tagged break
+            // falls through to the catch-all and is rejected.
             (7, 31) if offset == 1 => (Marker::End, true, 0),
             (7, minor) => {
                 return Err(Error::InvalidSimpleType(minor));
@@ -632,10 +639,10 @@ impl FromCbor for TaggedMarker {
 
 /// Skips over the next CBOR data item without materialising its contents.
 ///
-/// Walks the encoding using [`TaggedMarker`] dispatch, recursing into
-/// arrays and maps and walking the chunks of indefinite-length strings.
-/// No `Vec` is allocated for chunk lists and no [`Series`] iterator is
-/// constructed.
+/// Walks the encoding using [`TaggedMarker`] dispatch. Indefinite-length
+/// string chunks are walked in place with no allocation; arrays and maps
+/// are drained through a stack-only [`Series`] cursor — no `Vec` for
+/// chunk lists or nested values is constructed.
 ///
 /// On success returns `(shortest, len)` where `len` is the total byte
 /// count consumed and `shortest` reports whether every marker encountered
@@ -684,29 +691,23 @@ pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize)
                 _ => return Err(Error::InvalidChunk),
             }
         },
-        Marker::Array(Some(count)) | Marker::Map(Some(count)) => {
+        Marker::Array(count) => {
             if max_recursion == 0 {
                 return Err(Error::MaxRecursion);
             }
             max_recursion -= 1;
-            for _ in 0..count {
-                let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
-                shortest &= inner_shortest;
-                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
-            }
-            Ok((shortest, offset))
+            Array::try_new(data, count, &mut offset)?
+                .skip_to_end(max_recursion)
+                .map(|s| (shortest & s, offset))
         }
-        Marker::Array(None) | Marker::Map(None) => {
+        Marker::Map(count) => {
             if max_recursion == 0 {
                 return Err(Error::MaxRecursion);
             }
             max_recursion -= 1;
-            while *data.get(offset).ok_or(Error::NeedMoreData(1))? != 0xFF {
-                let (inner_shortest, len) = skip_value(&data[offset..], max_recursion)?;
-                shortest &= inner_shortest;
-                offset = offset.checked_add(len).ok_or(Error::TooBig)?;
-            }
-            Ok((shortest, offset + 1))
+            Map::try_new(data, count, &mut offset)?
+                .skip_to_end(max_recursion)
+                .map(|s| (shortest & s, offset))
         }
         _ => Ok((shortest, offset)),
     }
@@ -812,22 +813,12 @@ where
             }
         }
         Marker::Array(count) => {
-            let count = count
-                .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
-                .transpose()?;
-            let mut a = Array::new(data, count, &mut offset);
+            let mut a = Array::try_new(data, count, &mut offset)?;
             let r = f(Value::Array(&mut a), shortest, &marker.tags)?;
             a.complete(r).map_err(Into::into)
         }
         Marker::Map(count) => {
-            let count = count
-                .map(|c| {
-                    usize::try_from(c)
-                        .map_err(|_| Error::TooBig)
-                        .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
-                })
-                .transpose()?;
-            let mut m = Map::new(data, count, &mut offset);
+            let mut m = Map::try_new(data, count, &mut offset)?;
             let r = f(Value::Map(&mut m), shortest, &marker.tags)?;
             m.complete(r).map_err(Into::into)
         }
@@ -872,16 +863,12 @@ where
     let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
     match marker.marker {
         Marker::Array(count) => {
-            let count = count
-                .map(|c| usize::try_from(c).map_err(|_| Error::TooBig))
-                .transpose()?;
-            let mut a = Array::new(data, count, &mut offset);
+            let mut a = Array::try_new(data, count, &mut offset)?;
             let r = f(&mut a, shortest, &marker.tags)?;
-            a.complete(r).map_err(Into::into)
+            a.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
         _ => Err(Error::IncorrectType("Array".to_string(), marker.to_string()).into()),
     }
-    .map(|r| (r, offset))
 }
 
 /// Parses a CBOR map from a byte slice.
@@ -897,20 +884,12 @@ where
     let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
     match marker.marker {
         Marker::Map(count) => {
-            let count = count
-                .map(|c| {
-                    usize::try_from(c)
-                        .map_err(|_| Error::TooBig)
-                        .and_then(|c| c.checked_mul(2).ok_or(Error::TooBig))
-                })
-                .transpose()?;
-            let mut m = Map::new(data, count, &mut offset);
+            let mut m = Map::try_new(data, count, &mut offset)?;
             let r = f(&mut m, shortest, &marker.tags)?;
-            m.complete(r).map_err(Into::into)
+            m.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
         _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string()).into()),
     }
-    .map(|r| (r, offset))
 }
 
 /// A convenience function to decode a single value that implements [`FromCbor`].
