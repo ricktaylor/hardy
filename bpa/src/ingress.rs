@@ -1,9 +1,9 @@
-//! Inbound bundle processing.
+//! Bundle processing pipeline.
 //!
-//! Takes raw bytes from a CLA, produces a stored and routed `Bundle`.
-//! Analogous to `BundleReader` in the streaming model.
+//! Shared pipeline for all bundle sources: CLA, service origination, and status reports.
+//! Each source provides a pre-built (Bundle, Bytes) and an optional filter Hook.
 //!
-//! Pipeline: decode → filter → security → route → store.
+//! Pipeline: [decode] → [filter] → security → route → store.
 
 use alloc::sync::Arc;
 
@@ -12,12 +12,11 @@ use hardy_async::BoundedTaskPool;
 use hardy_bpv7::bpsec;
 use hardy_bpv7::bundle::ParsedBundle;
 use hardy_bpv7::eid::NodeId;
-use trace_err::*;
 use tracing::debug;
 
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
 use crate::cbor::precheck;
-use crate::cla::{self, ClaAddress};
+use crate::cla::ClaAddress;
 use crate::filter::{ExecResult, FilterEngine, Hook};
 use crate::metrics::reason_label;
 use crate::rib::{FindResult, Rib};
@@ -25,35 +24,39 @@ use crate::security::KeyStore;
 use crate::storage::Store;
 
 /// The result of ingress processing.
-pub(crate) struct IngressResult {
-    pub bundle: Bundle,
-    pub route: FindResult,
+pub(crate) enum IngressResult {
+    /// Bundle accepted: stored and routed.
+    Routed(Bundle, FindResult),
+    /// Bundle rejected by filter or routing.
+    Dropped,
+    /// Duplicate bundle already in store.
+    Duplicate,
 }
 
-/// Inbound bundle processor.
+/// Bundle processing pipeline.
 ///
-/// Pipeline: decode → filter → security → route → store.
+/// Pipeline: [decode] → [filter] → security → route → store.
 ///
-/// Configured once, called repeatedly for each bundle from a CLA.
-pub(crate) struct Ingress<'a> {
+/// Owned by the BPA, shared across all bundle sources.
+pub(crate) struct Ingress {
     pub store: Arc<Store>,
     pub key_store: Arc<KeyStore>,
     pub filter_engine: Arc<FilterEngine>,
-    pub processing_pool: &'a BoundedTaskPool,
+    pub processing_pool: Arc<BoundedTaskPool>,
     pub rib: Arc<Rib>,
 }
 
-impl Ingress<'_> {
-    /// Process raw bytes into a stored, routed bundle.
+impl Ingress {
+    /// Process raw bytes from a CLA into a stored, routed bundle.
     ///
-    /// Returns `Some(IngressResult)` if accepted, `None` if dropped at any stage.
+    /// Decodes, then delegates to [`process()`](Self::process) with `Hook::Ingress`.
     pub async fn receive(
         &self,
         data: Bytes,
         ingress_cla: Option<Arc<str>>,
         ingress_peer_node: Option<NodeId>,
         ingress_peer_addr: Option<ClaAddress>,
-    ) -> cla::Result<Option<IngressResult>> {
+    ) -> Result<IngressResult, crate::Error> {
         metrics::counter!("bpa.bundle.received").increment(1);
         metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
@@ -69,36 +72,56 @@ impl Ingress<'_> {
             ..Default::default()
         };
 
-        // 1. Decode
+        // Decode raw bytes
         let Some((bundle, data)) = self.decode(&data, metadata) else {
-            return Ok(None);
+            return Ok(IngressResult::Dropped);
         };
 
-        // 2. Filter
-        let Some((mut bundle, data)) = self.filter(bundle, data).await else {
-            return Ok(None);
+        self.process(bundle, data, Some(Hook::Ingress)).await
+    }
+
+    /// Process a pre-built bundle through the pipeline.
+    ///
+    /// Pipeline: [filter] → security → route → store.
+    ///
+    /// Used by all sources: CLA (after decode), service origination, status reports.
+    /// The hook determines which filter chain runs. Pass `None` to skip filtering.
+    pub async fn process(
+        &self,
+        bundle: Bundle,
+        data: Bytes,
+        hook: Option<Hook>,
+    ) -> Result<IngressResult, crate::Error> {
+        // 1. Filter (if hook provided)
+        let (mut bundle, data) = if let Some(hook) = hook {
+            let Some(result) = self.filter(bundle, data, hook).await? else {
+                return Ok(IngressResult::Dropped);
+            };
+            result
+        } else {
+            (bundle, data)
         };
 
-        // 3. Security (TODO: security::process_inbound)
+        // 2. Security (TODO: security::process_inbound)
 
-        // 4. Route
+        // 3. Route
         let route = match self.rib.find(&mut bundle) {
             FindResult::Drop(reason) => {
                 debug!("Bundle dropped by routing: {reason:?}");
                 metrics::counter!("bpa.bundle.received.dropped").increment(1);
-                return Ok(None);
+                return Ok(IngressResult::Dropped);
             }
             route => route,
         };
 
-        // 5. Store
-        let Some(mut bundle) = self.store_bundle(bundle, data).await? else {
-            return Ok(None);
+        // 4. Store
+        let Some(mut bundle) = self.store_bundle(bundle, data).await else {
+            return Ok(IngressResult::Duplicate);
         };
         bundle.metadata.status = BundleStatus::Dispatching;
         self.store.update_metadata(&bundle).await;
 
-        Ok(Some(IngressResult { bundle, route }))
+        Ok(IngressResult::Routed(bundle, route))
     }
 
     /// Decode raw bytes into a parsed bundle.
@@ -126,40 +149,38 @@ impl Ingress<'_> {
         }
     }
 
-    /// Run ingress filters. Returns None if dropped.
-    async fn filter(&self, bundle: Bundle, data: Bytes) -> Option<(Bundle, Bytes)> {
+    /// Run filters for the given hook. Returns None if dropped.
+    async fn filter(
+        &self,
+        bundle: Bundle,
+        data: Bytes,
+        hook: Hook,
+    ) -> Result<Option<(Bundle, Bytes)>, crate::Error> {
         match self
             .filter_engine
-            .exec(
-                Hook::Ingress,
-                bundle,
-                data,
-                &self.key_store,
-                self.processing_pool,
-            )
-            .await
-            .trace_expect("Ingress filter execution failed")
+            .exec(hook, bundle, data, &self.key_store, &self.processing_pool)
+            .await?
         {
-            ExecResult::Continue(_, bundle, data) => Some((bundle, data)),
+            ExecResult::Continue(_, bundle, data) => Ok(Some((bundle, data))),
             ExecResult::Drop(_, reason) => {
                 if let Some(reason) = reason {
                     metrics::counter!("bpa.bundle.dropped", "reason" => reason_label(&reason))
                         .increment(1);
                 }
-                None
+                Ok(None)
             }
         }
     }
 
     /// Store bundle data and metadata. Returns None if duplicate.
-    async fn store_bundle(&self, mut bundle: Bundle, data: Bytes) -> cla::Result<Option<Bundle>> {
+    async fn store_bundle(&self, mut bundle: Bundle, data: Bytes) -> Option<Bundle> {
         let storage_name = self.store.save_data(data).await;
         bundle.metadata.storage_name = Some(storage_name.clone());
         if !self.store.insert_metadata(&bundle).await {
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
             self.store.delete_data(&storage_name).await;
-            return Ok(None);
+            return None;
         }
-        Ok(Some(bundle))
+        Some(bundle)
     }
 }

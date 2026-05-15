@@ -1,12 +1,17 @@
-use super::*;
-use hardy_bpv7::status_report::AdministrativeRecord;
+use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+use tracing::debug;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
 
-impl Dispatcher {
+use super::Bpa;
+use crate::bundle;
+use crate::services;
+
+impl Bpa {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle) {
         ::metrics::counter!("bpa.admin_record.received").increment(1);
 
-        // This is a bundle for an Admin Endpoint
         if !bundle.bundle.flags.is_admin_record {
             debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
@@ -24,11 +29,10 @@ impl Dispatcher {
         let payload_result = {
             let keys = self.key_store.current();
             bundle.bundle.block_data(1, &data, &**keys)
-        }; // keys dropped here, before any await
+        };
 
         let data = match payload_result {
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                // TODO: We are unable to decrypt the payload, what do we do?
                 return self.store.watch_bundle(bundle).await;
             }
             Err(e) => {
@@ -50,7 +54,6 @@ impl Dispatcher {
             Ok(AdministrativeRecord::BundleStatusReport(report)) => {
                 debug!("Received administrative record: {report:?}");
 
-                // Count each assertion type present in the report
                 if report.received.is_some() {
                     ::metrics::counter!("bpa.status_report.received", "type" => "reception")
                         .increment(1);
@@ -68,7 +71,6 @@ impl Dispatcher {
                         .increment(1);
                 }
 
-                // Find a live service to notify
                 if let Some(service) = self.rib.find_service(&report.bundle_id.source) {
                     if let Some(assertion) = report.received {
                         service
@@ -115,7 +117,6 @@ impl Dispatcher {
                             .await;
                     }
 
-                    // Just delete the bundle, there's no required counters or reporting
                     self.delete_bundle(bundle).await;
                 } else {
                     let desired = bundle::BundleStatus::WaitingForService {

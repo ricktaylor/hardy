@@ -12,7 +12,7 @@ pub(crate) mod agent;
 mod find;
 mod route;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FindResult {
     AdminEndpoint,
     Deliver(Arc<services::registry::Service>),
@@ -128,7 +128,7 @@ impl Rib {
         }
     }
 
-    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<bpa::Bpa>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {

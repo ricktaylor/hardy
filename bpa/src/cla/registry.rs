@@ -59,7 +59,7 @@ type ClaMap = HashMap<String, Arc<Cla>>;
 struct Sink {
     cla: Weak<Cla>,
     registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
+    dispatcher: Arc<bpa::Bpa>,
 }
 
 #[async_trait]
@@ -83,13 +83,14 @@ impl cla::Sink for Sink {
             .name
             .clone();
         self.dispatcher
-            .receive_bundle(
+            .receive(
                 bundle,
                 Some(cla_name),
                 peer_node.cloned(),
                 peer_addr.cloned(),
             )
             .await
+            .map_err(cla::Error::Internal)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -160,7 +161,7 @@ impl ClaRegistryBuilder {
         poll_channel_depth: usize,
         rib: &Arc<rib::Rib>,
         store: &Arc<storage::Store>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
     ) -> cla::Result<Arc<ClaRegistry>> {
         let peers = Arc::new(cla::peers::PeerTable::new());
         let registry = Arc::new(ClaRegistry {
@@ -227,7 +228,7 @@ impl ClaRegistry {
         self: &Arc<Self>,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        dispatcher: &Arc<bpa::Bpa>,
         policy: Option<Arc<dyn policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
@@ -302,7 +303,7 @@ impl ClaRegistry {
     async fn add_peer(
         &self,
         cla: Arc<Cla>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        dispatcher: Arc<bpa::Bpa>,
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {

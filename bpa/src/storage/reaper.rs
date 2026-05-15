@@ -25,8 +25,8 @@ use hardy_bpv7::eid::Eid;
 use time::OffsetDateTime;
 use tracing::{debug, error};
 
+use crate::bpa::Bpa;
 use crate::bundle::{Bundle, BundleStatus};
-use crate::dispatcher::Dispatcher;
 use crate::{Arc, BTreeSet};
 
 /// Cache entry for the reaper's expiry monitoring.
@@ -130,7 +130,7 @@ impl Reaper {
     /// 4. Spawn `refill_cache()` if cache is depleted
     ///
     /// Uses `select_biased!` to prioritize shutdown handling.
-    pub async fn run(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
+    pub async fn run(self: &Arc<Self>, dispatcher: Arc<Bpa>) {
         let mut repopulation_task: Option<hardy_async::JoinHandle<()>> = None;
 
         loop {

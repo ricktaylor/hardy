@@ -34,15 +34,15 @@ pub(crate) enum SendResult {
 ///
 /// Pipeline: load → decode → egress hook → encode → write to sink.
 ///
-/// Configured once, called for each bundle to send.
-pub(crate) struct Egress<'a> {
+/// Owned by the BPA, shared across all outbound destinations.
+pub(crate) struct Egress {
     pub store: Arc<Store>,
     pub key_store: Arc<KeyStore>,
     pub filter_engine: Arc<FilterEngine>,
-    pub processing_pool: &'a BoundedTaskPool,
+    pub processing_pool: Arc<BoundedTaskPool>,
 }
 
-impl Egress<'_> {
+impl Egress {
     /// Process a stored bundle and write it to the sink.
     pub async fn send(&self, bundle: Bundle, sink: &dyn Sink) -> Result<SendResult, crate::Error> {
         // 1. Load
@@ -53,12 +53,12 @@ impl Egress<'_> {
         // 2. Decode (TODO: re-parse for fresh bundle structure)
 
         // 3. Egress hook: filters and mutations (ext blocks, security, user filters)
-        let Some((_bundle, data)) = self.filter(bundle, data).await? else {
+        let Some((bundle, data)) = self.filter(bundle, data).await? else {
             return Ok(SendResult::Filtered);
         };
 
         // 4. Write to sink
-        match sink.write(data).await {
+        match sink.write(&bundle, data).await {
             Ok(()) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 Ok(SendResult::Sent)
@@ -80,7 +80,7 @@ impl Egress<'_> {
                 bundle,
                 data,
                 &self.key_store,
-                self.processing_pool,
+                &self.processing_pool,
             )
             .await?
         {

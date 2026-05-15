@@ -31,7 +31,7 @@ impl Peer {
         peer: u32,
         cla_addr: ClaAddress,
         store: Arc<storage::Store>,
-        dispatcher: Arc<dispatcher::Dispatcher>,
+        dispatcher: Arc<bpa::Bpa>,
         tasks: &hardy_async::TaskPool,
     ) {
         let controller = cla

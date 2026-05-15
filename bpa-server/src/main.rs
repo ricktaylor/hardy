@@ -245,6 +245,6 @@ async fn build(
         builder = builder.cla(name, cla, egress_policy);
     }
 
-    let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
+    let bpa = builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(bpa)
 }

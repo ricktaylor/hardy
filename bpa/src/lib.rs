@@ -36,7 +36,6 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
-mod dispatcher;
 pub(crate) mod egress;
 pub(crate) mod ingress;
 mod metrics;

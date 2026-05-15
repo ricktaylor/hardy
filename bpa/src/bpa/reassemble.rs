@@ -1,10 +1,10 @@
 use tracing::debug;
 
-use super::Dispatcher;
+use super::Bpa;
 use crate::bundle::{Bundle, BundleStatus};
 use crate::storage::adu_reassembly::ReassemblyResult;
 
-impl Dispatcher {
+impl Bpa {
     pub async fn reassemble(&self, mut bundle: Bundle) {
         let (_storage_name, data) = match self.store.adu_reassemble(&bundle).await {
             ReassemblyResult::NotReady => {
@@ -22,15 +22,16 @@ impl Dispatcher {
             ReassemblyResult::Done(storage_name, data) => (storage_name, data),
         };
 
-        metrics::counter!("bpa.bundle.reassembled").increment(1);
+        ::metrics::counter!("bpa.bundle.reassembled").increment(1);
+
+        use crate::ingress::IngressResult;
 
         // Reassembled bundle enters the full ingress pipeline
-        // Box::pin breaks the recursive async cycle: receive → route → reassemble → receive
-        if let Some(result) = Box::pin(self.ingress().receive(data, None, None, None))
-            .await
-            .unwrap_or(None)
+        // Box::pin breaks the recursive async cycle: receive -> route -> reassemble -> receive
+        if let Ok(IngressResult::Routed(bundle, route)) =
+            Box::pin(self.ingress.receive(data, None, None, None)).await
         {
-            Box::pin(self.handle_route(result.bundle, result.route)).await;
+            Box::pin(self.dispatch(bundle, route)).await;
         }
     }
 }

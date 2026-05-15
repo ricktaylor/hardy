@@ -1,5 +1,13 @@
-use super::*;
-use crate::egress::{Egress, SendResult};
+use bytes::Bytes;
+use hardy_async::async_trait;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+use tracing::{debug, error};
+
+use super::Bpa;
+use crate::bundle;
+use crate::cla;
+use crate::egress::SendResult;
 use crate::sink::Sink;
 
 /// Wraps a CLA + peer info as a Sink for egress.
@@ -11,7 +19,7 @@ struct ClaSink<'a> {
 
 #[async_trait]
 impl Sink for ClaSink<'_> {
-    async fn write(&self, data: Bytes) -> Result<(), crate::Error> {
+    async fn write(&self, _bundle: &bundle::Bundle, data: Bytes) -> Result<(), crate::Error> {
         match self.cla.forward(self.queue, self.cla_addr, data).await {
             Ok(cla::ForwardBundleResult::Sent) => Ok(()),
             Ok(cla::ForwardBundleResult::NoNeighbour) => Err("Neighbour unavailable".into()),
@@ -20,16 +28,7 @@ impl Sink for ClaSink<'_> {
     }
 }
 
-impl Dispatcher {
-    pub(crate) fn egress(&self) -> Egress<'_> {
-        Egress {
-            store: self.store.clone(),
-            key_store: self.key_store.clone(),
-            filter_engine: self.filter_engine.clone(),
-            processing_pool: &self.processing_pool,
-        }
-    }
-
+impl Bpa {
     #[cfg_attr(feature = "instrument", instrument(skip(self, cla, bundle), fields(bundle.id = %bundle.bundle.id)))]
     pub async fn forward_bundle(
         &self,
@@ -45,7 +44,7 @@ impl Dispatcher {
             cla_addr,
         };
 
-        match self.egress().send(bundle, &sink).await {
+        match self.egress.send(bundle, &sink).await {
             Ok(SendResult::Sent) => {
                 // TODO: reporting
             }

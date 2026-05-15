@@ -7,12 +7,12 @@ use tracing::instrument;
 
 use super::{RecoveryResponse, Store};
 use crate::Arc;
+use crate::bpa::Bpa;
 use crate::bundle::Bundle;
-use crate::dispatcher::Dispatcher;
 use crate::recover;
 
 impl Store {
-    pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
+    pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Bpa>) {
         let store = self.clone();
         let dispatcher = dispatcher.clone();
         hardy_async::spawn!(self.tasks, "store_check_task", async move {
@@ -38,7 +38,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: &Dispatcher) {
+    async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: &Bpa) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<RecoveryResponse>(16);
 
@@ -73,7 +73,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: &Dispatcher) {
+    async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: &Bpa) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (tx, rx) = flume::bounded::<Bundle>(16);
 

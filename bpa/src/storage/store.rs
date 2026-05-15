@@ -9,8 +9,8 @@ use tracing::error;
 use tracing::instrument;
 
 use super::{BundleStorage, MetadataStorage, Reaper, Sender};
+use crate::bpa::Bpa;
 use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
-use crate::dispatcher::Dispatcher;
 use crate::{Arc, Bytes};
 
 pub struct Store {
@@ -49,7 +49,7 @@ impl Store {
     ///
     /// Optionally runs crash recovery, then starts the reaper background task
     /// for bundle lifetime monitoring.
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
+    pub fn start(self: &Arc<Self>, dispatcher: Arc<Bpa>, recover_storage: bool) {
         if recover_storage {
             self.recover(&dispatcher);
         }
