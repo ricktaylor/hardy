@@ -1,21 +1,34 @@
-use alloc::string::String;
+use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use arc_swap::ArcSwap;
-use hardy_bpv7::bpsec::key::Key;
-use hardy_eid_patterns::EidPattern;
+use hardy_bpv7::bpsec::key::{Key, KeySource, Operation};
+use hardy_bpv7::eid::Eid;
 
-use super::pattern::{PatternKeySource, SecurityRole};
+use super::pattern::PatternKeySource;
 
-/// Holds a `PatternKeySource` and provides lock-free access.
+/// Sized wrapper around any [`KeySource`], enabling use with `ArcSwap`.
+pub struct KeyProvider(Box<dyn KeySource>);
+
+impl KeyProvider {
+    pub fn new(source: impl KeySource + 'static) -> Self {
+        Self(Box::new(source))
+    }
+}
+
+impl KeySource for KeyProvider {
+    fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
+        self.0.key(source, operations)
+    }
+}
+
+/// Holds a single [`KeyProvider`] with lock-free access.
 ///
-/// The source can be replaced atomically via `set()`, or modified
-/// incrementally via `add_key()`, `remove_key()`, `add_binding()`,
-/// `remove_binding()`. Incremental modifications clone the current
-/// source, apply the change, and swap atomically.
+/// The provider can wrap any [`KeySource`] implementation:
+/// `PatternKeySource` (default), a vault backend, etc.
+/// Swapping is atomic.
 pub struct KeyStore {
-    current: ArcSwap<PatternKeySource>,
+    provider: ArcSwap<KeyProvider>,
 }
 
 impl KeyStore {
@@ -23,53 +36,22 @@ impl KeyStore {
         Self::default()
     }
 
-    /// Replace the entire key source.
-    pub fn set(&self, source: Arc<PatternKeySource>) {
-        self.current.store(source);
+    /// Replace the current provider.
+    pub fn set(&self, provider: KeyProvider) {
+        self.provider.store(Arc::new(provider));
     }
 
-    /// Returns a guard to the current key source.
+    /// Returns a guard to the current provider.
     /// Lock-free: suitable for hot paths.
-    pub fn current(&self) -> arc_swap::Guard<Arc<PatternKeySource>> {
-        self.current.load()
-    }
-
-    /// Add or replace a key by `kid`.
-    pub fn add_key(&self, kid: String, key: Key) {
-        self.modify(|source| source.add_key(kid, key));
-    }
-
-    /// Remove a key by `kid`. Returns true if the key existed.
-    pub fn remove_key(&self, kid: &str) -> bool {
-        let mut removed = false;
-        self.modify(|source| removed = source.remove_key(kid));
-        removed
-    }
-
-    /// Add a binding (pattern + role + key IDs).
-    pub fn add_binding(&self, pattern: EidPattern, role: SecurityRole, kids: Vec<String>) {
-        self.modify(|source| source.add_binding(pattern, role, kids));
-    }
-
-    /// Remove all bindings matching the given pattern.
-    pub fn remove_binding(&self, pattern: &EidPattern) -> usize {
-        let mut count = 0;
-        self.modify(|source| count = source.remove_binding(pattern));
-        count
-    }
-
-    /// Clone the current source, apply a mutation, and swap atomically.
-    fn modify(&self, f: impl FnOnce(&mut PatternKeySource)) {
-        let mut source = (*self.current.load_full()).clone();
-        f(&mut source);
-        self.current.store(Arc::new(source));
+    pub fn current(&self) -> arc_swap::Guard<Arc<KeyProvider>> {
+        self.provider.load()
     }
 }
 
 impl Default for KeyStore {
     fn default() -> Self {
         Self {
-            current: ArcSwap::from_pointee(PatternKeySource::empty()),
+            provider: ArcSwap::from_pointee(KeyProvider::new(PatternKeySource::empty())),
         }
     }
 }

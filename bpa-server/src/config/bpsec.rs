@@ -288,7 +288,7 @@ mod tests {
             vec![binding("ipn:*.*", SecurityRoleConfig::Acceptor, &[])],
         );
         let err = config.build().unwrap_err();
-        assert!(err.to_string().contains("neither"));
+        assert!(err.to_string().contains("no keys"));
     }
 
     #[test]

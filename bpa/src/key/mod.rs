@@ -2,4 +2,4 @@ mod store;
 
 pub mod pattern;
 
-pub use store::KeyStore;
+pub use store::{KeyProvider, KeyStore};

@@ -13,6 +13,7 @@ use hardy_async::TaskPool;
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
 use hardy_bpa::filter::{Filter, Hook};
+use hardy_bpa::key::KeyProvider;
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "grpc")]
@@ -83,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
                         info!("Key file changed, reloading");
                         match config.build() {
                             Ok(source) => {
-                                bpa.set_key_source(Arc::new(source));
+                                bpa.set_key_provider(KeyProvider::new(source));
                                 info!("Keys reloaded successfully");
                             }
                             Err(e) => {
@@ -152,7 +153,7 @@ async fn build(
         let source = bpsec_config
             .build()
             .context("Failed to load BPSec configuration")?;
-        builder = builder.key_source(Arc::new(source));
+        builder = builder.key_provider(KeyProvider::new(source));
     }
 
     if config.storage.uses_cache() {
