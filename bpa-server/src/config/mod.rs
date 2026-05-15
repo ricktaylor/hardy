@@ -12,6 +12,7 @@ use tracing::Level;
 
 use crate::error::Error;
 
+pub mod bpsec;
 pub mod cla;
 pub mod policy;
 pub mod static_routes;
@@ -169,10 +170,10 @@ pub struct Config {
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
 
-    // Security configuration: keys and BPSec key bindings.
+    // BPSec configuration: keys and key bindings (RFC 9172).
     // Absent = no keys loaded, BPSec blocks will fail with NoKey.
     #[serde(default)]
-    pub security: Option<security::Config>,
+    pub bpsec: Option<bpsec::Config>,
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
@@ -530,7 +531,7 @@ node-ids:
     // Security config parses from YAML.
     #[test]
     #[serial]
-    fn security_config_parses() {
+    fn bpsec_config_parses() {
         let dir = tempfile::tempdir().unwrap();
 
         let keys_path = dir.path().join("keys.jwks");
@@ -549,22 +550,22 @@ node-ids:
         std::fs::write(
             &config_path,
             format!(
-                "security:\n  keys-file: \"{}\"\n  bindings:\n    - match: \"ipn:*.*\"\n      integrity-key: \"k\"\n",
+                "bpsec:\n  keys-file: \"{}\"\n  bindings:\n    - match: \"ipn:*.*\"\n      keys: [\"k\"]\n",
                 keys_path.display()
             ),
         )
         .unwrap();
 
         let config = Config::load(Some(config_path)).unwrap();
-        assert!(config.security.is_some());
-        assert_eq!(config.security.unwrap().bindings.len(), 1);
+        assert!(config.bpsec.is_some());
+        assert_eq!(config.bpsec.unwrap().bindings.len(), 1);
     }
 
     // No security section is valid (default None).
     #[test]
     #[serial]
-    fn no_security_config() {
-        let config = write_and_load("no-security.yaml", "");
-        assert!(config.security.is_none());
+    fn no_bpsec_config() {
+        let config = write_and_load("no-bpsec.yaml", "");
+        assert!(config.bpsec.is_none());
     }
 }

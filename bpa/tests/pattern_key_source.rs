@@ -1,7 +1,7 @@
 //! PatternKeySource tests
 //!
 //! Verifies EID-pattern-based key selection, specificity ordering,
-//! and operation-type routing (integrity vs confidentiality).
+//! and operation routing via key_ops.
 
 use std::collections::HashMap;
 
@@ -77,12 +77,10 @@ fn no_matching_policy_returns_none() {
         vec![(
             parse_pattern("ipn:0.99.*"),
             SecurityRole::Acceptor,
-            Some("k".into()),
-            None,
+            vec!["k".into()],
         )],
     );
 
-    // ipn:0.1.0 doesn't match ipn:0.99.*
     assert!(
         source
             .key(&parse_eid("ipn:0.1.0"), &[Operation::Verify])
@@ -97,8 +95,7 @@ fn wildcard_matches_any() {
         vec![(
             parse_pattern("ipn:*.*"),
             SecurityRole::Acceptor,
-            Some("fleet".into()),
-            None,
+            vec!["fleet".into()],
         )],
     );
 
@@ -113,30 +110,24 @@ fn specific_pattern_overrides_wildcard() {
     let source = PatternKeySource::new(
         keys(&[("fleet", hmac_key("fleet")), ("node42", hmac_key("node42"))]),
         vec![
-            // Wildcard — less specific
             (
                 parse_pattern("ipn:*.*"),
                 SecurityRole::Acceptor,
-                Some("fleet".into()),
-                None,
+                vec!["fleet".into()],
             ),
-            // Exact node — more specific
             (
                 parse_pattern("ipn:0.42.*"),
                 SecurityRole::Acceptor,
-                Some("node42".into()),
-                None,
+                vec!["node42".into()],
             ),
         ],
     );
 
-    // Node 42 should get the specific key
     let key = source
         .key(&parse_eid("ipn:0.42.0"), &[Operation::Verify])
         .expect("should match node42");
     assert_eq!(key.id.as_deref(), Some("node42"));
 
-    // Other nodes should get the fleet key
     let key = source
         .key(&parse_eid("ipn:0.1.0"), &[Operation::Verify])
         .expect("should match fleet");
@@ -144,75 +135,66 @@ fn specific_pattern_overrides_wildcard() {
 }
 
 #[test]
-fn integrity_vs_confidentiality_routing() {
+fn operation_routing_via_key_ops() {
+    // Both keys bound to the same pattern; key_ops determines selection
     let source = PatternKeySource::new(
         keys(&[("hmac", hmac_key("hmac")), ("aes", aes_key("aes"))]),
         vec![(
             parse_pattern("ipn:*.*"),
             SecurityRole::Acceptor,
-            Some("hmac".into()),
-            Some("aes".into()),
+            vec!["hmac".into(), "aes".into()],
         )],
     );
 
     let eid = parse_eid("ipn:0.1.0");
 
-    // Verify → integrity key
+    // Verify -> hmac (key_ops: sign, verify)
     let key = source.key(&eid, &[Operation::Verify]).unwrap();
     assert_eq!(key.id.as_deref(), Some("hmac"));
 
-    // Sign → integrity key
+    // Sign -> hmac
     let key = source.key(&eid, &[Operation::Sign]).unwrap();
     assert_eq!(key.id.as_deref(), Some("hmac"));
 
-    // Decrypt → confidentiality key
+    // Decrypt -> aes (key_ops: encrypt, decrypt, wrapKey, unwrapKey)
     let key = source.key(&eid, &[Operation::Decrypt]).unwrap();
     assert_eq!(key.id.as_deref(), Some("aes"));
 
-    // Encrypt → confidentiality key
+    // Encrypt -> aes
     let key = source.key(&eid, &[Operation::Encrypt]).unwrap();
     assert_eq!(key.id.as_deref(), Some("aes"));
 
-    // WrapKey → confidentiality key
+    // WrapKey -> aes
     let key = source.key(&eid, &[Operation::WrapKey]).unwrap();
-    assert_eq!(key.id.as_deref(), Some("aes"));
-
-    // UnwrapKey → confidentiality key
-    let key = source.key(&eid, &[Operation::UnwrapKey]).unwrap();
     assert_eq!(key.id.as_deref(), Some("aes"));
 }
 
 #[test]
-fn integrity_only_policy() {
+fn integrity_only_binding() {
+    // Only an HMAC key bound: no confidentiality key available
     let source = PatternKeySource::new(
         keys(&[("hmac", hmac_key("hmac"))]),
         vec![(
             parse_pattern("ipn:*.*"),
             SecurityRole::Acceptor,
-            Some("hmac".into()),
-            None,
+            vec!["hmac".into()],
         )],
     );
 
     let eid = parse_eid("ipn:0.1.0");
 
-    // Verify works
     assert!(source.key(&eid, &[Operation::Verify]).is_some());
-
-    // Decrypt returns None — no confidentiality key configured
     assert!(source.key(&eid, &[Operation::Decrypt]).is_none());
 }
 
 #[test]
 fn missing_kid_reference_returns_none() {
-    // Policy references "nonexistent" which isn't in the key map
     let source = PatternKeySource::new(
         keys(&[("real-key", hmac_key("real-key"))]),
         vec![(
             parse_pattern("ipn:*.*"),
             SecurityRole::Acceptor,
-            Some("nonexistent".into()),
-            None,
+            vec!["nonexistent".into()],
         )],
     );
 
@@ -224,28 +206,52 @@ fn missing_kid_reference_returns_none() {
 }
 
 #[test]
-fn mixed_operations_returns_first_matching() {
+fn key_order_determines_priority() {
+    // Both keys support Verify, but hmac is listed first
     let source = PatternKeySource::new(
         keys(&[("hmac", hmac_key("hmac")), ("aes", aes_key("aes"))]),
         vec![(
             parse_pattern("ipn:*.*"),
             SecurityRole::Acceptor,
-            Some("hmac".into()),
-            Some("aes".into()),
+            vec!["hmac".into(), "aes".into()],
         )],
     );
 
     let eid = parse_eid("ipn:0.1.0");
 
-    // [UnwrapKey, Verify] — UnwrapKey matches confidentiality first
-    let key = source
-        .key(&eid, &[Operation::UnwrapKey, Operation::Verify])
-        .unwrap();
-    assert_eq!(key.id.as_deref(), Some("aes"));
-
-    // [Verify, UnwrapKey] — Verify matches integrity first
-    let key = source
-        .key(&eid, &[Operation::Verify, Operation::UnwrapKey])
-        .unwrap();
+    // Verify matches hmac first (listed first, has Verify in key_ops)
+    let key = source.key(&eid, &[Operation::Verify]).unwrap();
     assert_eq!(key.id.as_deref(), Some("hmac"));
+}
+
+#[test]
+fn add_and_remove_key() {
+    let mut source = PatternKeySource::empty();
+    source.add_key("k1".into(), hmac_key("k1"));
+    source.add_binding(
+        parse_pattern("ipn:*.*"),
+        SecurityRole::Verifier,
+        vec!["k1".into()],
+    );
+
+    let eid = parse_eid("ipn:0.1.0");
+    assert!(source.key(&eid, &[Operation::Verify]).is_some());
+
+    source.remove_key("k1");
+    assert!(source.key(&eid, &[Operation::Verify]).is_none());
+}
+
+#[test]
+fn add_and_remove_binding() {
+    let mut source = PatternKeySource::empty();
+    source.add_key("k1".into(), hmac_key("k1"));
+
+    let pattern = parse_pattern("ipn:0.42.*");
+    source.add_binding(pattern.clone(), SecurityRole::Verifier, vec!["k1".into()]);
+
+    let eid = parse_eid("ipn:0.42.1");
+    assert!(source.key(&eid, &[Operation::Verify]).is_some());
+
+    source.remove_binding(&pattern);
+    assert!(source.key(&eid, &[Operation::Verify]).is_none());
 }
