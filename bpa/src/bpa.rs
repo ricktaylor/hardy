@@ -8,8 +8,7 @@ use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
-use crate::key::KeyStore;
-use crate::key::pattern::PatternKeySource;
+use crate::key::{KeyProvider, KeyStore};
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -279,9 +278,9 @@ impl Bpa {
         self.filter_engine.clear();
     }
 
-    /// Replace the key source used for BPSec operations.
-    pub fn set_key_source(&self, source: Arc<PatternKeySource>) {
-        self.key_store.set(source);
+    /// Replace the key provider used for BPSec operations.
+    pub fn set_key_provider(&self, provider: KeyProvider) {
+        self.key_store.set(provider);
     }
 
     /// Register a filter at a hook point

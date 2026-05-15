@@ -3,14 +3,13 @@
 //! Verifies set, snapshot isolation, and default (empty) behaviour.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use hardy_bpa::key::KeyStore;
 use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
+use hardy_bpa::key::{KeyProvider, KeyStore};
 use hardy_bpv7::bpsec::key::{Key, KeySource, Operation, Type};
 use hardy_bpv7::eid::Eid;
 
-fn make_source(kid: &str) -> Arc<PatternKeySource> {
+fn make_provider(kid: &str) -> KeyProvider {
     let key = Key {
         id: Some(kid.into()),
         key_type: Type::OctetSequence {
@@ -21,7 +20,7 @@ fn make_source(kid: &str) -> Arc<PatternKeySource> {
     };
     let mut keys = HashMap::new();
     keys.insert(kid.to_string(), key);
-    Arc::new(PatternKeySource::new(
+    KeyProvider::new(PatternKeySource::new(
         keys,
         vec![(
             "ipn:*.*".parse().unwrap(),
@@ -41,7 +40,7 @@ fn empty_store_returns_none() {
 #[test]
 fn set_source_then_lookup() {
     let store = KeyStore::new();
-    store.set(make_source("key-1"));
+    store.set(make_provider("key-1"));
 
     let keys = store.current();
     let eid: Eid = "ipn:0.1.0".parse().unwrap();
@@ -53,8 +52,8 @@ fn set_source_then_lookup() {
 #[test]
 fn set_replaces_previous() {
     let store = KeyStore::new();
-    store.set(make_source("key-1"));
-    store.set(make_source("key-2"));
+    store.set(make_provider("key-1"));
+    store.set(make_provider("key-2"));
 
     let keys = store.current();
     let eid: Eid = "ipn:0.1.0".parse().unwrap();
@@ -65,13 +64,13 @@ fn set_replaces_previous() {
 #[test]
 fn snapshot_isolation() {
     let store = KeyStore::new();
-    store.set(make_source("key-1"));
+    store.set(make_provider("key-1"));
 
     // Take a snapshot
     let snapshot = store.current();
 
     // Replace the source
-    store.set(make_source("key-2"));
+    store.set(make_provider("key-2"));
 
     let eid: Eid = "ipn:0.1.0".parse().unwrap();
 

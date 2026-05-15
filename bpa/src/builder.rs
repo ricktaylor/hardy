@@ -7,8 +7,7 @@ use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
-use crate::key::KeyStore;
-use crate::key::pattern::PatternKeySource;
+use crate::key::{KeyProvider, KeyStore};
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
 use crate::rib::RibBuilder;
@@ -141,9 +140,9 @@ impl BpaBuilder {
         self
     }
 
-    /// Set the key source for BPSec operations.
-    pub fn key_source(self, source: Arc<PatternKeySource>) -> Self {
-        self.key_store.set(source);
+    /// Set the key provider for BPSec operations.
+    pub fn key_provider(self, provider: KeyProvider) -> Self {
+        self.key_store.set(provider);
         self
     }
 
