@@ -1,14 +1,20 @@
+//! File watcher with debouncing.
+//!
+//! Monitors a single file for changes (create, modify, remove) and calls
+//! a callback. Supports native OS events and periodic polling (for Docker).
+
 use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
-use hardy_async::CancellationToken;
 use notify::event::{CreateKind, RemoveKind};
 use notify::{EventKind, PollWatcher, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
 use serde::{Deserialize, Serialize};
-use trace_err::TraceErrResult;
+use trace_err::*;
 use tracing::error;
+
+use crate::CancellationToken;
 
 /// How to detect file changes.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use hardy_async::watcher::WatchMode;
 use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{KeySet, Type};
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
-
-use crate::watcher::WatchMode;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]

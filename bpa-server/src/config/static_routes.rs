@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
+use hardy_async::watcher::WatchMode;
 use serde::{Deserialize, Serialize};
 
 use super::default_config_dir;
-use crate::watcher::WatchMode;
 
 fn default_watch() -> Option<WatchMode> {
     Some(WatchMode::Native)

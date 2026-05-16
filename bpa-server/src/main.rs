@@ -2,7 +2,6 @@ mod cli;
 mod config;
 mod error;
 mod static_routes;
-mod watcher;
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -10,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use hardy_async::TaskPool;
+use hardy_async::watcher;
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
 use hardy_bpa::filter::{Filter, Hook};

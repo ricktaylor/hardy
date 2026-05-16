@@ -3,13 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
+use hardy_async::watcher::{self, WatchMode};
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info};
-
-use crate::watcher;
-use crate::watcher::WatchMode;
 
 use super::loader;
 
