@@ -63,7 +63,7 @@ services:
       - "4556:4556"
     volumes:
       - ./bpa-server/config.yaml:/etc/hardy/config.yaml:ro
-      - ./bpa-server/keys.jwks:/etc/hardy/keys.jwks
+      - ./bpa-server/examples/keys.jwks:/etc/hardy/keys.jwks
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=127.0.0.1:50051"]
       interval: 5s
