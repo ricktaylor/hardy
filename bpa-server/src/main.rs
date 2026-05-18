@@ -66,16 +66,11 @@ async fn main() -> anyhow::Result<()> {
     hardy_async::signal::listen_for_cancel(&tasks);
 
     if let Some(ref bpsec_config) = bpsec_config {
-        if let Some(watch_mode) = bpsec_config.watch {
+        if let Some(watch_mode) = bpsec_config.watch.into() {
             let config = bpsec_config.clone();
             let bpa = bpa.clone();
             let keys_file = config.keys_file.clone();
             let cancel = tasks.cancel_token().clone();
-            info!(
-                "Monitoring key file '{}' for changes ({:?})",
-                keys_file.display(),
-                watch_mode
-            );
             hardy_async::spawn!(tasks, "key_file_watcher", async move {
                 watcher::watch(&keys_file, watch_mode, cancel, move || {
                     let config = config.clone();
@@ -196,7 +191,7 @@ async fn build(
         let agent = Arc::new(StaticRoutesAgent::new(
             routes_file,
             sr_config.priority,
-            sr_config.watch,
+            sr_config.watch.into(),
         ));
 
         builder = builder.routing_agent(sr_config.protocol_id, agent);

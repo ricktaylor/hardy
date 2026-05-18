@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use hardy_async::watcher::WatchMode;
 use hardy_bpa::key::pattern::{PatternKeySource, SecurityRole};
 use hardy_bpv7::bpsec::key::{KeySet, Type};
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+use super::WatchConfig;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
@@ -16,9 +17,9 @@ pub struct Config {
     pub keys_file: PathBuf,
 
     /// Watch the key file for changes and reload automatically.
-    /// Values: "native" (inotify/kqueue), "poll" (works in Docker). Absent to disable.
+    /// Values: "native" (default), "poll" (works in Docker), "none" to disable.
     #[serde(default)]
-    pub watch: Option<WatchMode>,
+    pub watch: WatchConfig,
 
     /// Key bindings: map EID patterns to keys and roles.
     /// Evaluated by specificity (most specific match wins).
@@ -164,7 +165,7 @@ mod tests {
     fn config_with(keys_path: &Path, bindings: Vec<KeyBindingConfig>) -> Config {
         Config {
             keys_file: keys_path.to_path_buf(),
-            watch: None,
+            watch: WatchConfig::None,
             bindings,
         }
     }
@@ -238,7 +239,7 @@ mod tests {
     fn missing_key_file() {
         let config = Config {
             keys_file: PathBuf::from("/nonexistent/keys.jwks"),
-            watch: None,
+            watch: WatchConfig::None,
             bindings: vec![],
         };
         assert!(config.build().is_err());

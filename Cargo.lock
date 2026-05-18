@@ -1824,7 +1824,6 @@ dependencies = [
  "hardy-async",
  "notify",
  "notify-debouncer-full",
- "serde",
  "spin 0.10.0",
  "time",
  "tokio",

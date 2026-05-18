@@ -141,7 +141,6 @@ impl RoutingAgent for StaticRoutesAgent {
         .await;
 
         if let Some(mode) = self.watch {
-            info!("Monitoring static routes file for changes ({mode:?})");
             self.start_watcher(mode);
         }
     }
