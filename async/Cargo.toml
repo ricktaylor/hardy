@@ -19,7 +19,7 @@ crate-type = ["rlib"]
 default = ["tokio"]
 std = ["time/std", "tracing/std", "dep:flume", "dep:futures"]
 tokio = ["std", "dep:tokio", "dep:tokio-util"]
-watcher = ["tokio", "dep:notify", "dep:notify-debouncer-full", "dep:flume"]
+watcher = ["std", "dep:notify", "dep:notify-debouncer-full"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
@@ -33,7 +33,6 @@ futures = { version = "0.3", default-features = false, features = ["alloc", "asy
 trace-err = "1"
 notify = { version = "8", optional = true, default-features = false, features = ["macos_kqueue"] }
 notify-debouncer-full = { version = "0.7", optional = true }
-flume = { version = "0.12", optional = true }
 
 # Future runtime support
 # smol = ["dep:async-executor", "dep:async-channel"]
