@@ -386,18 +386,13 @@ where
 ///
 /// This is useful for embedding pre-encoded CBOR data or other byte-oriented
 /// formats within a CBOR stream.  Use with `Raw`.
-pub struct BytesHeader<'a, V>(pub &'a V)
-where
-    V: AsRef<[u8]> + ?Sized;
+pub struct BytesHeader(pub u64);
 
-impl<'a, V> ToCbor for BytesHeader<'a, V>
-where
-    V: AsRef<[u8]> + ?Sized,
-{
+impl ToCbor for BytesHeader {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit_uint_minor(2, self.0.as_ref().len() as u64);
+        encoder.emit_uint_minor(2, self.0);
     }
 }
 

@@ -195,6 +195,22 @@ pub enum Payload<'a> {
     Decrypted(zeroize::Zeroizing<Box<[u8]>>),
 }
 
+impl Payload<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            Payload::Borrowed(items) => items.len(),
+            Payload::Decrypted(zeroizing) => zeroizing.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Payload::Borrowed(items) => items.is_empty(),
+            Payload::Decrypted(zeroizing) => zeroizing.is_empty(),
+        }
+    }
+}
+
 impl core::fmt::Debug for Payload<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Just delegate to the underlying slice formatter

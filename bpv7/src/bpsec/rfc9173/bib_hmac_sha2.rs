@@ -208,7 +208,7 @@ where
     }
 
     // Reduce copying here
-    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(&payload)).0);
+    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
     mac.update(payload.as_ref());
 
     Ok(mac.finalize().into_bytes())
