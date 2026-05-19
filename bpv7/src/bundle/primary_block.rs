@@ -119,7 +119,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             } else {
                 match (block.parse(), block.parse()) {
                     (Ok((offset, s1)), Ok((total_adu_length, s2))) => {
-                        if offset >= total_adu_length {
+                        if offset > total_adu_length {
                             Err(Error::InvalidFragmentInfo(offset, total_adu_length))
                         } else {
                             shortest = shortest && s1 && s2;
