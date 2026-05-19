@@ -34,7 +34,7 @@ instrument = [
 ]
 
 [dependencies]
-hardy-async = { version = "0.1", path = "../async" }
+hardy-async = { version = "0.1", path = "../async", features = ["watcher"] }
 hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
 hardy-bpa = { version = "0.1", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
 hardy-eid-patterns = { version = "0.3", path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
@@ -48,20 +48,17 @@ hardy-file-cla = { version = "0.1", path = "../file-cla", features = ["serde"], 
 hardy-otel = { version = "0.1", path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { version = "0.1", path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { version = "0.1", path = "../echo-service", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 serde = { version = "1", features = ["derive"] }
 directories = "6"
 getopts = "0.2"
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-notify-debouncer-full = "0.7"
-notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 trace-err = "1"
 chumsky = "0.12"
 anyhow = "1"
 thiserror = "2"
-flume = "0.12"
 serde_json = "1"
 
 [dev-dependencies]

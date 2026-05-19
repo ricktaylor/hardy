@@ -149,7 +149,7 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
         let agent = Arc::new(StaticRoutesAgent::new(
             routes_file,
             sr_config.priority,
-            sr_config.watch,
+            sr_config.watch.into(),
         ));
 
         builder = builder.routing_agent(sr_config.protocol_id, agent);

@@ -224,10 +224,8 @@ impl Rib {
                     self.notify_updated().await;
                 }
             }
-            Action::Forward(peer) => {
-                if self.store.reset_peer_queue(peer).await {
-                    self.notify_updated().await;
-                }
+            Action::Forward(peer) if self.store.reset_peer_queue(peer).await => {
+                self.notify_updated().await;
             }
             Action::Local(_) => {
                 self.notify_updated().await;
