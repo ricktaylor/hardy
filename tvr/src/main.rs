@@ -123,7 +123,13 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     // Load contact plan file if configured
     if let Some(contact_plan) = &config.contact_plan {
         info!("Loading contact plan from '{}'", contact_plan.display());
-        match parser::load_contacts(contact_plan, false, config.watch.is_some()).await {
+        match parser::load_contacts(
+            contact_plan,
+            false,
+            !matches!(config.watch, config::WatchConfig::None),
+        )
+        .await
+        {
             Ok(contacts) => {
                 let source = format!("file:{}", contact_plan.display());
                 if let Some(result) = scheduler_handle
@@ -141,7 +147,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
                 error!("Failed to load contact plan: {e}");
             }
         }
-        if let Some(watch_mode) = config.watch {
+        if let Some(watch_mode) = config.watch.into() {
             let contact_plan = contact_plan.clone();
             let source = format!("file:{}", contact_plan.display());
             let priority = config.priority;

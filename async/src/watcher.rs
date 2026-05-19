@@ -10,15 +10,13 @@ use std::time::Duration;
 use notify::event::{CreateKind, RemoveKind};
 use notify::{EventKind, PollWatcher, RecursiveMode};
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
-use serde::{Deserialize, Serialize};
 use trace_err::*;
 use tracing::error;
 
 use crate::CancellationToken;
 
 /// How to detect file changes.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug)]
 pub enum WatchMode {
     /// OS-native events (inotify/kqueue). Fast but does not work across Docker bind mounts.
     Native,

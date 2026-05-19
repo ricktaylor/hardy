@@ -1,7 +1,31 @@
+use std::path::PathBuf;
+
 use hardy_async::watcher::WatchMode;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tracing::Level;
+
+/// File watch configuration.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WatchConfig {
+    /// Watching disabled.
+    None,
+    /// OS-native events (inotify/kqueue).
+    #[default]
+    Native,
+    /// Periodic polling (~2s). Works in Docker.
+    Poll,
+}
+
+impl From<WatchConfig> for Option<WatchMode> {
+    fn from(config: WatchConfig) -> Self {
+        match config {
+            WatchConfig::None => Option::None,
+            WatchConfig::Native => Some(WatchMode::Native),
+            WatchConfig::Poll => Some(WatchMode::Poll),
+        }
+    }
+}
 
 mod log_level_serde {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -95,9 +119,9 @@ pub struct Config {
     pub contact_plan: Option<PathBuf>,
 
     // Watch the contact plan file for changes and auto-reload.
-    // Values: "native" (inotify/kqueue), "poll" (works in Docker). Absent to disable.
+    // Values: "native" (default), "poll" (works in Docker), "none" to disable.
     #[serde(default)]
-    pub watch: Option<WatchMode>,
+    pub watch: WatchConfig,
 
     // Socket address for the TVR gRPC session service.
     // Default: `[::1]:50052`.
@@ -164,7 +188,7 @@ mod tests {
         assert_eq!(config.agent_name, "hardy-tvr");
         assert_eq!(config.priority, 100);
         assert!(config.contact_plan.is_none());
-        assert!(config.watch.is_none());
+        assert!(matches!(config.watch, WatchConfig::Native));
         assert_eq!(
             config.grpc_listen,
             std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 50052))
@@ -195,10 +219,7 @@ grpc-listen: "[::]:9999"
             config.contact_plan.unwrap(),
             PathBuf::from("/etc/hardy/contacts")
         );
-        assert!(matches!(
-            config.watch,
-            Some(hardy_async::watcher::WatchMode::Poll)
-        ));
+        assert!(matches!(config.watch, WatchConfig::Poll));
     }
 
     // TOML config file works identically to YAML.
@@ -328,12 +349,12 @@ this-field-does-not-exist: 42
         );
     }
 
-    // Watch disabled when omitted.
+    // Watch disabled explicitly.
     #[test]
     #[serial]
     fn watch_disabled() {
-        let config = write_and_load("nowatch.yaml", "");
-        assert!(config.watch.is_none());
+        let config = write_and_load("nowatch.yaml", "watch: none\n");
+        assert!(matches!(config.watch, WatchConfig::None));
     }
 
     // Priority zero is valid.
