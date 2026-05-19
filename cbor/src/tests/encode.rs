@@ -1,4 +1,4 @@
-use super::encode::*;
+use crate::encode::*;
 use hex_literal::hex;
 
 #[test]
