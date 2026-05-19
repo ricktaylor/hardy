@@ -780,13 +780,7 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
 // Requirement 56: A BCB or BIB MUST NOT be added to a bundle if the 'Bundle is a
 // fragment' flag is set. (RFC 9172, Section 5.2)
 
-// GAP-3: Hardy rejects the YAML fragment bundle (offset=0, total=0) with
-// InvalidFragmentInfo because it enforces offset < total_adu_length.
-// RFC 9171 does not explicitly forbid a zero-length ADU fragment.
-// See bpsec_interop_gaps.md for details.
-
 #[test]
-#[ignore] // GAP-3: Hardy rejects YAML fragment bundle (offset=0, total=0)
 fn pics_56_1_cannot_add_bcb_to_fragment() {
     let incoming = hex_literal::hex!(
         "9F8A070100820282010282028202018202820201820018281A000F424000008507020000410086010100015823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164425114FF"
@@ -813,7 +807,6 @@ fn pics_56_1_cannot_add_bcb_to_fragment() {
 }
 
 #[test]
-#[ignore] // GAP-3: Hardy rejects YAML fragment bundle (offset=0, total=0)
 fn pics_56_1b_cannot_add_bib_to_fragment() {
     let incoming = hex_literal::hex!(
         "9F8A070100820282010282028202018202820201820018281A000F424000008507020000410086010100015823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164425114FF"
