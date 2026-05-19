@@ -32,7 +32,7 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 time = { version = "0.3", features = ["parsing"] }
-chumsky = "0.12"
+chumsky = "0.13"
 humantime = "2"
 flume = "0.12"
 metrics = "0.24"
