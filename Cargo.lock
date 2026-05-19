@@ -775,7 +775,6 @@ name = "bpsec-tests"
 version = "0.1.0"
 dependencies = [
  "hardy-bpv7",
- "hardy-bpv7-tools",
  "hex-literal",
  "serde_json",
 ]
