@@ -245,8 +245,21 @@ pub async fn start_server(
         }
     });
 
-    // Give the server a moment to bind
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_listen(addr).await;
 
     (grpc_addr, tasks)
+}
+
+async fn wait_for_listen(addr: std::net::SocketAddr) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if tokio::net::TcpStream::connect(addr).await.is_ok() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "gRPC server on {addr} not accepting connections after 2s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
