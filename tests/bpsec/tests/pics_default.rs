@@ -687,3 +687,144 @@ fn pics_26_1_tampered_block_flags_must_fail() {
         result
     );
 }
+
+// Requirement 36: If an encrypted payload block cannot be decrypted, the bundle
+// MUST be discarded and processed no further. (RFC 9172, Section 5.1.1)
+
+#[test]
+fn pics_36_1_payload_decrypt_wrong_key_must_discard() {
+    // Original + BCB on payload
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850C030100581B8101020182028203018182014C5477656C76653132313231328180850702000041008501010000583390EAB6457593379298A8724E16E61F837488E127212B59AC91F8A86287B7D07630A122C42BBA8CA26EECBCAB0F8124C2A42BDFFF"
+    );
+
+    let wrong_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "wrong_aesgcmkey",
+        "kty": "oct",
+        "alg": "dir",
+        "enc": "A256GCM",
+        "key_ops": ["encrypt", "decrypt"],
+        "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }))
+    .unwrap();
+    let wrong_keys = key::KeySet::new(vec![wrong_key]);
+
+    // Parse succeeds (payload stays encrypted at parse level)
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &wrong_keys)
+        .expect("Parse should succeed with encrypted payload");
+
+    // MUST FAIL: decryption with wrong key
+    let Err((_, err)) = Editor::new(&parsed.bundle, &incoming)
+        .remove_encryption(1, &wrong_keys)
+    else {
+        panic!("Expected decryption failure with wrong key");
+    };
+    assert!(
+        format!("{err:?}").contains("DecryptionFailed"),
+        "Expected DecryptionFailed, got: {err:?}"
+    );
+}
+
+// Requirement 37: If an encrypted security target other than the payload block
+// cannot be decrypted, then the associated security target and all security blocks
+// associated with that target MUST be discarded. (RFC 9172, Section 5.1.1)
+
+// GAP-2: Hardy propagates DecryptionFailed for non-payload BCB targets during
+// parsing instead of gracefully removing the target + BCB and keeping the bundle.
+// RFC 9172 Section 5.1.1 says non-payload decrypt failure should remove the
+// target and associated security blocks, not discard the entire bundle.
+// See bpsec_interop_gaps.md for details.
+
+#[test]
+#[ignore] // GAP-2: Hardy discards bundle on non-payload BCB decrypt failure instead of removing target
+fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
+    // Original + BCB on bundle-age only
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850C030100581B8102020182028203018182014C5477656C76653132313231328180850702000051C225655BB0AF8CC854641DA15AB6BE9FA285010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let wrong_key: key::Key = serde_json::from_value(serde_json::json!({
+        "kid": "wrong_aesgcmkey",
+        "kty": "oct",
+        "alg": "dir",
+        "enc": "A256GCM",
+        "key_ops": ["encrypt", "decrypt"],
+        "k": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }))
+    .unwrap();
+    let wrong_keys = key::KeySet::new(vec![wrong_key]);
+
+    // Per RFC 9172 Section 5.1.1: non-payload decrypt failure should remove
+    // the target + BCB, bundle survives.
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &wrong_keys)
+        .expect("Non-payload decrypt failure should not discard the bundle");
+
+    assert!(
+        !parsed.bundle.blocks.contains_key(&2),
+        "Bundle-age block should have been removed"
+    );
+    for (_, blk) in &parsed.bundle.blocks {
+        assert_ne!(
+            blk.block_type,
+            block::Type::BlockSecurity,
+            "BCB should have been removed"
+        );
+    }
+}
+
+// Requirement 56: A BCB or BIB MUST NOT be added to a bundle if the 'Bundle is a
+// fragment' flag is set. (RFC 9172, Section 5.2)
+
+// GAP-3: Hardy rejects the YAML fragment bundle (offset=0, total=0) with
+// InvalidFragmentInfo because it enforces offset < total_adu_length.
+// RFC 9171 does not explicitly forbid a zero-length ADU fragment.
+// See bpsec_interop_gaps.md for details.
+
+#[test]
+#[ignore] // GAP-3: Hardy rejects YAML fragment bundle (offset=0, total=0)
+fn pics_56_1_cannot_add_bcb_to_fragment() {
+    let incoming = hex_literal::hex!(
+        "9F8A070100820282010282028202018202820201820018281A000F424000008507020000410086010100015823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164425114FF"
+    );
+
+    let enc_key = confidentiality_key();
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Failed to parse fragment bundle");
+
+    assert!(
+        parsed.bundle.flags.is_fragment,
+        "Bundle should be a fragment"
+    );
+
+    let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
+        1,
+        encryptor::Context::AES_GCM(ScopeFlags::default()),
+        "ipn:3.1".parse().unwrap(),
+        &enc_key,
+    ) else {
+        panic!("Expected FragmentedBundle error");
+    };
+    assert!(matches!(err, encryptor::Error::FragmentedBundle));
+}
+
+#[test]
+#[ignore] // GAP-3: Hardy rejects YAML fragment bundle (offset=0, total=0)
+fn pics_56_1b_cannot_add_bib_to_fragment() {
+    let incoming = hex_literal::hex!(
+        "9F8A070100820282010282028202018202820201820018281A000F424000008507020000410086010100015823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164425114FF"
+    );
+
+    let sign_key = integrity_key();
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Failed to parse fragment bundle");
+
+    let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
+        1,
+        signer::Context::HMAC_SHA2(ScopeFlags::default()),
+        "ipn:3.1".parse().unwrap(),
+        &sign_key,
+    ) else {
+        panic!("Expected FragmentedBundle error");
+    };
+    assert!(matches!(err, signer::Error::FragmentedBundle));
+}
