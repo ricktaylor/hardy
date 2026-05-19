@@ -47,6 +47,9 @@ pub mod time;
 #[cfg(feature = "tokio")]
 pub mod signal;
 
+#[cfg(feature = "watcher")]
+pub mod watcher;
+
 // Re-export commonly used types at crate root
 pub use async_trait::async_trait;
 pub use bounded_task_pool::BoundedTaskPool;
