@@ -1,3 +1,4 @@
+use hardy_async::watcher::WatchMode;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::Level;
@@ -66,10 +67,6 @@ fn default_grpc_listen() -> std::net::SocketAddr {
     std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 50052)
 }
 
-fn default_watch() -> bool {
-    true
-}
-
 // TVR agent configuration, loaded from a TOML/YAML/JSON config file
 // with environment variable overrides (`HARDY_TVR_` prefix).
 #[derive(Serialize, Deserialize, Debug)]
@@ -97,10 +94,10 @@ pub struct Config {
     #[serde(default)]
     pub contact_plan: Option<PathBuf>,
 
-    // Whether to monitor the contact plan file for changes and auto-reload.
-    // Default: `true`.
-    #[serde(default = "default_watch")]
-    pub watch: bool,
+    // Watch the contact plan file for changes and auto-reload.
+    // Values: "native" (inotify/kqueue), "poll" (works in Docker). Absent to disable.
+    #[serde(default)]
+    pub watch: Option<WatchMode>,
 
     // Socket address for the TVR gRPC session service.
     // Default: `[::1]:50052`.
@@ -167,7 +164,7 @@ mod tests {
         assert_eq!(config.agent_name, "hardy-tvr");
         assert_eq!(config.priority, 100);
         assert!(config.contact_plan.is_none());
-        assert!(config.watch);
+        assert!(config.watch.is_none());
         assert_eq!(
             config.grpc_listen,
             std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 50052))
@@ -186,7 +183,7 @@ bpa-address: "http://10.0.0.1:50051"
 agent-name: "my-tvr"
 priority: 200
 contact-plan: "/etc/hardy/contacts"
-watch: false
+watch: poll
 grpc-listen: "[::]:9999"
 "#,
         );
@@ -198,7 +195,10 @@ grpc-listen: "[::]:9999"
             config.contact_plan.unwrap(),
             PathBuf::from("/etc/hardy/contacts")
         );
-        assert!(!config.watch);
+        assert!(matches!(
+            config.watch,
+            Some(hardy_async::watcher::WatchMode::Poll)
+        ));
     }
 
     // TOML config file works identically to YAML.
@@ -328,12 +328,12 @@ this-field-does-not-exist: 42
         );
     }
 
-    // Watch can be disabled.
+    // Watch disabled when omitted.
     #[test]
     #[serial]
     fn watch_disabled() {
-        let config = write_and_load("nowatch.yaml", "watch: false\n");
-        assert!(!config.watch);
+        let config = write_and_load("nowatch.yaml", "");
+        assert!(config.watch.is_none());
     }
 
     // Priority zero is valid.

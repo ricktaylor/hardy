@@ -11,7 +11,6 @@ mod cron;
 mod parser;
 mod scheduler;
 mod server;
-mod watcher;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -124,7 +123,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     // Load contact plan file if configured
     if let Some(contact_plan) = &config.contact_plan {
         info!("Loading contact plan from '{}'", contact_plan.display());
-        match parser::load_contacts(contact_plan, false, config.watch).await {
+        match parser::load_contacts(contact_plan, false, config.watch.is_some()).await {
             Ok(contacts) => {
                 let source = format!("file:{}", contact_plan.display());
                 if let Some(result) = scheduler_handle
@@ -142,13 +141,56 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
                 error!("Failed to load contact plan: {e}");
             }
         }
-        if config.watch {
-            watcher::start(
-                contact_plan.clone(),
-                config.priority,
-                scheduler_handle.clone(),
-                &tasks,
+        if let Some(watch_mode) = config.watch {
+            let contact_plan = contact_plan.clone();
+            let source = format!("file:{}", contact_plan.display());
+            let priority = config.priority;
+            let scheduler = scheduler_handle.clone();
+            let cancel = tasks.cancel_token().clone();
+
+            info!(
+                "Watching contact plan file '{}' for changes",
+                contact_plan.display()
             );
+
+            hardy_async::spawn!(tasks, "contact_plan_watcher", async move {
+                let watch_path = contact_plan.clone();
+                hardy_async::watcher::watch(&watch_path, watch_mode, cancel, move || {
+                    let contact_plan = contact_plan.clone();
+                    let source = source.clone();
+                    let scheduler = scheduler.clone();
+                    async move {
+                        if !contact_plan.exists() {
+                            info!("Contact plan file removed, withdrawing all contacts");
+                            scheduler.withdraw_all(&source).await;
+                            return;
+                        }
+
+                        info!("Reloading contact plan from '{}'", contact_plan.display());
+                        match parser::load_contacts(&contact_plan, true, true).await {
+                            Ok(contacts) => {
+                                if let Some(result) = scheduler
+                                    .replace_contacts(&source, contacts, priority)
+                                    .await
+                                {
+                                    info!(
+                                        "Contact plan reloaded: {} added, {} removed, {} unchanged",
+                                        result.added, result.removed, result.unchanged
+                                    );
+                                }
+                                metrics::counter!("tvr_file_reloads", "outcome" => "success")
+                                    .increment(1);
+                            }
+                            Err(e) => {
+                                error!("Failed to reload contact plan: {e}");
+                                metrics::counter!("tvr_file_reloads", "outcome" => "error")
+                                    .increment(1);
+                            }
+                        }
+                    }
+                })
+                .await;
+            });
         }
     }
 
