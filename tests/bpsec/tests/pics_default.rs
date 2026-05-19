@@ -711,6 +711,32 @@ fn pics_26_1_tampered_block_flags_must_fail() {
     );
 }
 
+// Requirement 27: If a received bundle contains a BCB, the receiving node MUST
+// determine whether it is the security acceptor. (RFC 9172, Section 5.1.1)
+
+#[test]
+fn pics_27_1_not_acceptor_bcb_passes_through() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850C030100581B8101020182028203018182014C5477656C76653132313231328180850702000041008501010000583390EAB6457593379298A8724E16E61F837488E127212B59AC91F8A86287B7D07630A122C42BBA8CA26EECBCAB0F8124C2A42BDFFF"
+    );
+
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Should parse without keys");
+
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BlockSecurity),
+        "BCB should be preserved"
+    );
+    assert!(
+        parsed.bundle.blocks[&1].bcb.is_some(),
+        "Payload should still be encrypted"
+    );
+}
+
 // Requirement 36: If an encrypted payload block cannot be decrypted, the bundle
 // MUST be discarded and processed no further. (RFC 9172, Section 5.1.1)
 
@@ -798,6 +824,86 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
             "BCB should have been removed"
         );
     }
+}
+
+// Requirement 42: If a received bundle contains a BIB, the receiving node MUST
+// determine whether it is the security acceptor. (RFC 9172, Section 5.1.2)
+
+#[test]
+fn pics_42_1_not_acceptor_bib_passes_through() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850B030000583F810101008202820301818182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D718507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Should parse without keys");
+
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BlockIntegrity),
+        "BIB should be preserved"
+    );
+}
+
+// Requirement 47: A BIB MUST NOT be processed if the security target of the BIB
+// is also the security target of a BCB in the bundle. (RFC 9172, Section 5.1.2)
+
+#[test]
+fn pics_47_1_bib_not_processed_when_target_encrypted() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850C040100581D820103020182028203018182014C5477656C7665313231323132828080850B030000584F438ED6218EB1C1FEB94E96A272CC4E004E4C437864E932D8B0D9701D00F916CEBC660D906FC4A68FFFD6CC28101C1F6C58E56824D62EDF7410B9C905ACBDA3CEF84DA12ED941991BEC88C11453BF03850702000041008501010000583390EAB6457593379298A8724E16E61F837488E127212B59AC91F8A86287B7D07630A122A4A2C8343500978F613F564529596403FF"
+    );
+
+    let keys = key::KeySet::new(vec![integrity_key()]);
+    let parsed =
+        bundle::ParsedBundle::parse_with_keys(&incoming, &keys).expect("Should parse successfully");
+
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BlockSecurity),
+        "BCB should be preserved"
+    );
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BlockIntegrity),
+        "Encrypted BIB should be preserved"
+    );
+}
+
+// Requirement 54: If a BIB integrity check passes at a waypoint, the node MUST NOT
+// remove the security operation from the BIB. (RFC 9172, Section 5.1.2)
+
+#[test]
+fn pics_54_1_verifier_keeps_bib() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850B030000583F810101008202820301818182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D718507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let keys = key::KeySet::new(vec![integrity_key()]);
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys)
+        .expect("Should parse and verify successfully");
+
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| b.block_type == block::Type::BlockIntegrity),
+        "BIB should be preserved after verification"
+    );
+    assert!(
+        parsed.bundle.blocks[&1].bib != block::BibCoverage::None,
+        "Payload should still have BIB coverage"
+    );
 }
 
 // Requirement 56: A BCB or BIB MUST NOT be added to a bundle if the 'Bundle is a
