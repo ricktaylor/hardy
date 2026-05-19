@@ -16,7 +16,6 @@ pub mod bpsec;
 pub mod cla;
 pub mod policy;
 pub mod static_routes;
-pub mod security;
 pub mod storage;
 
 /// File watch configuration for config files.
