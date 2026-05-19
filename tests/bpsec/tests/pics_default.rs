@@ -714,13 +714,17 @@ fn pics_36_1_payload_decrypt_wrong_key_must_discard() {
         .expect("Parse should succeed with encrypted payload");
 
     // MUST FAIL: decryption with wrong key
-    let Err((_, err)) = Editor::new(&parsed.bundle, &incoming)
-        .remove_encryption(1, &wrong_keys)
+    let Err((_, err)) = Editor::new(&parsed.bundle, &incoming).remove_encryption(1, &wrong_keys)
     else {
         panic!("Expected decryption failure with wrong key");
     };
     assert!(
-        format!("{err:?}").contains("DecryptionFailed"),
+        matches!(
+            err,
+            hardy_bpv7::editor::Error::Builder(hardy_bpv7::builder::Error::InternalError(
+                hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::DecryptionFailed)
+            ))
+        ),
         "Expected DecryptionFailed, got: {err:?}"
     );
 }
@@ -729,14 +733,7 @@ fn pics_36_1_payload_decrypt_wrong_key_must_discard() {
 // cannot be decrypted, then the associated security target and all security blocks
 // associated with that target MUST be discarded. (RFC 9172, Section 5.1.1)
 
-// GAP-2: Hardy propagates DecryptionFailed for non-payload BCB targets during
-// parsing instead of gracefully removing the target + BCB and keeping the bundle.
-// RFC 9172 Section 5.1.1 says non-payload decrypt failure should remove the
-// target and associated security blocks, not discard the entire bundle.
-// See bpsec_interop_gaps.md for details.
-
 #[test]
-#[ignore] // GAP-2: Hardy discards bundle on non-payload BCB decrypt failure instead of removing target
 fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
     // Original + BCB on bundle-age only
     let incoming = hex_literal::hex!(
@@ -754,16 +751,24 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
     .unwrap();
     let wrong_keys = key::KeySet::new(vec![wrong_key]);
 
-    // Per RFC 9172 Section 5.1.1: non-payload decrypt failure should remove
+    // RFC 9172 Section 5.1.1: non-payload decrypt failure should remove
     // the target + BCB, bundle survives.
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &wrong_keys)
-        .expect("Non-payload decrypt failure should not discard the bundle");
+    let rewritten = bundle::RewrittenBundle::parse_with_keys(&incoming, &wrong_keys)
+        .expect("Should not fail to parse");
+
+    let bundle = match &rewritten {
+        bundle::RewrittenBundle::Valid { bundle, .. }
+        | bundle::RewrittenBundle::Rewritten { bundle, .. } => bundle,
+        bundle::RewrittenBundle::Invalid { error, .. } => {
+            panic!("Bundle should survive non-payload decrypt failure, got: {error}")
+        }
+    };
 
     assert!(
-        !parsed.bundle.blocks.contains_key(&2),
+        !bundle.blocks.contains_key(&2),
         "Bundle-age block should have been removed"
     );
-    for (_, blk) in &parsed.bundle.blocks {
+    for (_, blk) in &bundle.blocks {
         assert_ne!(
             blk.block_type,
             block::Type::BlockSecurity,

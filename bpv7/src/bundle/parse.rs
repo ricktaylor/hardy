@@ -361,6 +361,15 @@ impl<'a> BlockParse<'a> {
                         has_undecrypted_bibs = true;
                     }
                 }
+                Err(_) if target_type != block::Type::Payload => {
+                    // RFC 9172 Section 5.1.1: non-payload decrypt failure removes
+                    // the target and associated security blocks, not the bundle.
+                    to_remove.push(target_number);
+                    self.blocks_to_remove.insert(target_number);
+                    if target_type == block::Type::BlockIntegrity {
+                        has_undecrypted_bibs = true;
+                    }
+                }
                 Err(e) => return Err(e.into()),
             }
         }
