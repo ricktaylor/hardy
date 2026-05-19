@@ -93,7 +93,8 @@ impl tokio_util::codec::Encoder<Bytes> for MtcpCodec {
     fn encode(&mut self, item: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
         // Write only the CBOR byte string header (major type 2 + length),
         // then the raw payload bytes.
-        let (header, _) = hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(&item));
+        let (header, _) =
+            hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(item.len() as u64));
         dst.extend_from_slice(&header);
         dst.put(item);
         Ok(())
