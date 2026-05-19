@@ -3,18 +3,42 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hardy_async::available_parallelism;
+use hardy_async::watcher::WatchMode;
 use hardy_bpa::filter::rfc9171;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
+use crate::error::Error;
+
 pub mod cla;
 pub mod policy;
+pub mod static_routes;
 pub mod storage;
 
-use crate::error::Error;
-use crate::static_routes;
+/// File watch configuration for config files.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WatchConfig {
+    /// Watching disabled.
+    None,
+    /// OS-native events (inotify/kqueue).
+    #[default]
+    Native,
+    /// Periodic polling (~2s). Works in Docker.
+    Poll,
+}
+
+impl From<WatchConfig> for Option<WatchMode> {
+    fn from(config: WatchConfig) -> Self {
+        match config {
+            WatchConfig::None => Option::None,
+            WatchConfig::Native => Some(WatchMode::Native),
+            WatchConfig::Poll => Some(WatchMode::Poll),
+        }
+    }
+}
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
@@ -110,7 +134,7 @@ pub struct Config {
 
     // Static Routes Configuration
     #[serde(default)]
-    pub static_routes: Option<static_routes::Config>,
+    pub static_routes: Option<crate::config::static_routes::Config>,
 
     // gRPC options
     #[serde(default)]

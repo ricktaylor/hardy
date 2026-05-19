@@ -6,7 +6,7 @@ use hardy_bpa::routes::Action;
 use hardy_eid_patterns::EidPattern;
 use tracing::{debug, error};
 
-use super::StaticRoute;
+use super::agent::StaticRoute;
 
 type Span = SimpleSpan<usize>;
 type Extra<'a> = extra::Err<Rich<'a, char, Span>>;
