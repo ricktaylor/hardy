@@ -43,6 +43,8 @@ struct BlockParse<'a> {
     blocks_to_check: HashSet<u64>,
     /// A set of blocks that are marked for removal (e.g., unsupported blocks).
     blocks_to_remove: HashSet<u64>,
+    /// Blocks that were successfully decrypted: (target_number, bcb_block_number).
+    decrypted_blocks: SmallVec<[(u64, u64); 8]>,
     /// A map of BCB block numbers to their parsed operation sets.
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
     /// A map of BIB block numbers to their targets, for duplicate target detection.
@@ -86,6 +88,7 @@ impl<'a> BlockParse<'a> {
             unique_blocks: HashSet::with_capacity(4), // PreviousNode, BundleAge, HopCount, Payload
             blocks_to_check: HashSet::with_capacity(8),
             blocks_to_remove: HashSet::with_capacity(4),
+            decrypted_blocks: SmallVec::new(),
             bcbs: HashMap::with_capacity(2),
             bib_targets: HashMap::with_capacity(4),
         }
@@ -350,13 +353,12 @@ impl<'a> BlockParse<'a> {
             ) {
                 Ok(plaintext) => {
                     self.decrypted_data.insert(target_number, plaintext);
-                    // Immediately check the decrypted block
+                    self.decrypted_blocks
+                        .push((target_number, bcb_block_number));
                     to_check.push((target_number, target_type));
                 }
                 Err(bpsec::Error::NoKey) => {
-                    // Can't decrypt, mark for removal so we don't try to parse it
                     to_remove.push(target_number);
-                    // Track if this was a BIB we couldn't decrypt
                     if target_type == block::Type::BlockIntegrity {
                         has_undecrypted_bibs = true;
                     }
@@ -638,13 +640,31 @@ impl<'a> BlockParse<'a> {
         }
     }
 
-    /// Reduces the set of BCBs by removing targets that are scheduled for removal.
+    /// Reduces the set of BCBs by removing targets that were removed or decrypted.
+    /// For decrypted targets: clears the block's `bcb` field and stores the
+    /// plaintext in `noncanonical_blocks` so `finish()` writes it to the output.
     fn reduce_bcbs(&mut self) {
-        // Remove BCB targets scheduled for removal
+        // Clear bcb metadata and store plaintext for decrypted blocks
+        for &(target, _) in &self.decrypted_blocks {
+            if let Some(block) = self.blocks.get_mut(&target) {
+                block.bcb = None;
+            }
+            if let Some(plaintext) = self.decrypted_data.get(&target) {
+                self.noncanonical_blocks
+                    .entry(target)
+                    .or_insert_with(|| Some(plaintext.to_vec().into()));
+            }
+        }
+
+        // Build set of targets to remove from BCB operations
+        let decrypted_targets: HashSet<u64> =
+            self.decrypted_blocks.iter().map(|&(t, _)| t).collect();
+
         for (bcb_block_number, mut bcb) in core::mem::take(&mut self.bcbs) {
             let old_len = bcb.operations.len();
-            bcb.operations
-                .retain(|k, _| !self.blocks_to_remove.contains(k));
+            bcb.operations.retain(|k, _| {
+                !self.blocks_to_remove.contains(k) && !decrypted_targets.contains(k)
+            });
             if bcb.operations.is_empty() {
                 self.noncanonical_blocks.remove(&bcb_block_number);
                 self.blocks_to_remove.insert(bcb_block_number);
@@ -778,9 +798,6 @@ fn parse_blocks(
         report_unsupported = true;
     }
 
-    // We are done with all decrypted content
-    parser.decrypted_data.clear();
-
     // NOTE: Bundle Age and primary block integrity checks have been moved to
     // the BPA ingress filter (rfc9171-filter feature) to allow:
     // 1. Configurable policy per deployment
@@ -788,9 +805,12 @@ fn parse_blocks(
     // 3. Interoperability with implementations that don't add CRC
 
     if matches!(parser.mode, ParseMode::Full) {
-        // Reduce BCB targets scheduled for removal
+        // Reduce BCB targets: remove decrypted and deleted targets from BCBs,
+        // store decrypted plaintext for rewriting, remove empty BCBs.
         parser.reduce_bcbs();
     }
+
+    parser.decrypted_data.clear();
 
     // Now rewrite blocks (if required)
     let (b, non_canonical) = parser.finish(bundle)?;
