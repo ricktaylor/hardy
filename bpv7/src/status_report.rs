@@ -384,9 +384,7 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
             }
             let canonical = a.is_definite();
 
-            let (code, s): (u64, bool) = a
-                .parse()
-                .map_field_err::<Error>("record type code")?;
+            let (code, s): (u64, bool) = a.parse().map_field_err::<Error>("record type code")?;
             if !s {
                 return Err(Error::NotCanonical);
             }

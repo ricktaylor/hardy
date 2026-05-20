@@ -28,9 +28,7 @@ fn parse_ranges<const D: usize>(
                     return Err(Error::NotCanonical);
                 }
 
-                let (id, id_s) = a
-                    .parse::<(u64, bool)>()
-                    .map_field_err::<Error>("id")?;
+                let (id, id_s) = a.parse::<(u64, bool)>().map_field_err::<Error>("id")?;
                 if !id_s {
                     return Err(Error::NotCanonical);
                 }
