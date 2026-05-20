@@ -18,10 +18,6 @@ pub enum Error {
     #[error("Invalid CRC Type {0}")]
     InvalidType(u64),
 
-    /// Indicates that the CRC value in a block has an unexpected length.
-    #[error("Block has unexpected CRC value length {0}")]
-    InvalidLength(usize),
-
     /// Indicates that a block has a CRC value but no CRC type was specified.
     #[error("Block has a CRC value with no CRC type specified")]
     UnexpectedCrcValue,
@@ -130,56 +126,29 @@ pub(super) fn parse_crc_value(
             ))
         }
     })?;
-    // Check we are at the end
     block.at_end()?;
     let crc_end = block.offset();
 
     // Now check CRC
     match (crc_type, crc_value) {
         (CrcType::None, None) => Ok(true),
-        (CrcType::None, _) => Err(Error::UnexpectedCrcValue),
-        (CrcType::CRC16_X25, Some((crc, shortest))) => {
-            let crc_value = u16::from_be_bytes(
-                data[crc.start..crc.end]
-                    .try_into()
-                    .map_err(|_| Error::InvalidLength(crc.len()))?,
-            );
-            let mut digest = X25.digest();
-            if crc.start > 0 {
-                digest.update(&data[0..crc.start]);
+        (CrcType::None, Some(_)) => Err(Error::UnexpectedCrcValue),
+        (_, None) => Err(Error::MissingCrc),
+        (crc_type, Some((crc, shortest))) => {
+            // Drive a Digest over the block bytes:
+            //   - everything before the CRC value
+            //   - zeros in the CRC value's slot
+            //   - anything after (e.g. trailing break for indefinite arrays)
+            // then compare against the wire-form CRC value bytes.
+            let mut digest = Digest::new(crc_type)?;
+            digest.push(&data[0..crc.start]);
+            digest.push_zeros();
+            digest.push(&data[crc.end..crc_end]);
+            if digest.finalize() != data[crc.start..crc.end] {
+                return Err(Error::IncorrectCrc);
             }
-            digest.update(&[0u8; 2]);
-            if crc_end > crc.end {
-                digest.update(&data[crc.end..crc_end]);
-            }
-            if crc_value != digest.finalize() {
-                Err(Error::IncorrectCrc)
-            } else {
-                Ok(shortest)
-            }
+            Ok(shortest)
         }
-        (CrcType::CRC32_CASTAGNOLI, Some((crc, shortest))) => {
-            let crc_value = u32::from_be_bytes(
-                data[crc.start..crc.end]
-                    .try_into()
-                    .map_err(|_| Error::InvalidLength(crc.len()))?,
-            );
-            let mut digest = CASTAGNOLI.digest();
-            if crc.start > 0 {
-                digest.update(&data[0..crc.start]);
-            }
-            digest.update(&[0u8; 4]);
-            if crc_end > crc.end {
-                digest.update(&data[crc.end..crc_end]);
-            }
-            if crc_value != digest.finalize() {
-                Err(Error::IncorrectCrc)
-            } else {
-                Ok(shortest)
-            }
-        }
-        (CrcType::Unrecognised(t), _) => Err(Error::InvalidType(t)),
-        _ => Err(Error::MissingCrc),
     }
 }
 
@@ -196,29 +165,99 @@ pub(super) fn parse_crc_value(
 /// # Returns
 /// A `Result` containing the data with the appended CRC, or an `Error` if the CRC type is invalid.
 pub(super) fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Result<Vec<u8>, Error> {
-    match crc_type {
-        CrcType::None => {}
-        CrcType::CRC16_X25 => {
-            // Append CBOR byte string header for a 2-byte string
-            data.push(0x42);
-            // Calculate CRC over the data so far, plus a 2-byte zero placeholder
-            let mut digest = X25.digest();
-            digest.update(&data);
-            digest.update(&[0; 2]);
-            // Append the final calculated CRC
-            data.extend_from_slice(&digest.finalize().to_be_bytes());
-        }
-        CrcType::CRC32_CASTAGNOLI => {
-            // Append CBOR byte string header for a 4-byte string
-            data.push(0x44);
-            // Calculate CRC over the data so far, plus a 4-byte zero placeholder
-            let mut digest = CASTAGNOLI.digest();
-            digest.update(&data);
-            digest.update(&[0; 4]);
-            // Append the final calculated CRC
-            data.extend_from_slice(&digest.finalize().to_be_bytes());
-        }
-        CrcType::Unrecognised(t) => return Err(Error::InvalidType(t)),
+    if matches!(crc_type, CrcType::None) {
+        return Ok(data);
     }
+    let mut digest = Digest::new(crc_type)?;
+    data.push(digest.cbor_head());
+    digest.push(&data);
+    digest.push_zeros();
+    data.extend_from_slice(&digest.finalize());
     Ok(data)
+}
+
+/// Incremental CRC builder/verifier.
+///
+/// Owns the per-CRC-type facts ({algorithm, value length, big-endian
+/// finalisation}) so the rest of the crate doesn't duplicate them.
+/// Construct with [`Digest::new`] (errors for [`CrcType::None`] and
+/// unrecognised types), push the block bytes through [`push`](Self::push)
+/// — substituting [`push_zeros`](Self::push_zeros) where the CRC value's
+/// own bytes live in the wire form — then [`finalize`](Self::finalize) to
+/// get the computed CRC value bytes. The parse path compares those bytes
+/// against the wire-form value (with a length pre-check via
+/// [`value_len`](Self::value_len)); the emit path appends them.
+/// `finalize` consumes the digest, so each instance is used exactly once.
+pub struct Digest {
+    state: DigestState,
+}
+
+enum DigestState {
+    Crc16(::crc::Digest<'static, u16>),
+    Crc32(::crc::Digest<'static, u32>),
+}
+
+impl Digest {
+    /// Constructs a new digest for the given CRC type. Errors for
+    /// [`CrcType::None`] (no CRC is expected — don't create a digest)
+    /// and [`CrcType::Unrecognised`] (unknown wire-form code).
+    pub fn new(crc_type: CrcType) -> Result<Self, Error> {
+        let state = match crc_type {
+            CrcType::CRC16_X25 => DigestState::Crc16(X25.digest()),
+            CrcType::CRC32_CASTAGNOLI => DigestState::Crc32(CASTAGNOLI.digest()),
+            CrcType::None => return Err(Error::UnexpectedCrcValue),
+            CrcType::Unrecognised(t) => return Err(Error::InvalidType(t)),
+        };
+        Ok(Self { state })
+    }
+
+    /// CBOR byte-string head byte for the wire-form CRC value
+    /// (`0x42` for CRC-16, `0x44` for CRC-32). Per RFC 9171 §4.2.2 the
+    /// CRC is always encoded as a definite-length byte string of the
+    /// type-specific width.
+    pub fn cbor_head(&self) -> u8 {
+        match self.state {
+            DigestState::Crc16(_) => 0x42,
+            DigestState::Crc32(_) => 0x44,
+        }
+    }
+
+    /// Pushes bytes into the running digest.
+    pub fn push(&mut self, data: &[u8]) {
+        match &mut self.state {
+            DigestState::Crc16(d) => d.update(data),
+            DigestState::Crc32(d) => d.update(data),
+        }
+    }
+
+    /// Pushes [`value_len`](Self::value_len) zero bytes into the running
+    /// digest. Used at the position where the wire-form CRC value lives —
+    /// the parse path then compares its actual bytes via
+    /// [`verify`](Self::verify); the emit path retrieves the computed
+    /// bytes via [`finalize`](Self::finalize). Returns the number of
+    /// zero bytes pushed for offset arithmetic.
+    pub fn push_zeros(&mut self) -> usize {
+        match self.state {
+            DigestState::Crc16(_) => {
+                self.push(&[0; 2]);
+                2
+            }
+            DigestState::Crc32(_) => {
+                self.push(&[0; 4]);
+                4
+            }
+        }
+    }
+
+    /// Finalises the digest and returns the computed CRC value as
+    /// big-endian bytes ([`value_len`](Self::value_len) bytes long).
+    /// Callers comparing against a wire-form value bytestring are
+    /// responsible for the length pre-check (compare against
+    /// [`value_len`](Self::value_len)) before comparing the bytes.
+    pub fn finalize(self) -> Vec<u8> {
+        match self.state {
+            DigestState::Crc16(d) => d.finalize().to_be_bytes().to_vec(),
+            DigestState::Crc32(d) => d.finalize().to_be_bytes().to_vec(),
+        }
+    }
 }
