@@ -1922,6 +1922,7 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "base64 0.23.0",
+ "bytes",
  "crc",
  "hardy-bpv7",
  "hardy-cbor",
@@ -1945,6 +1946,7 @@ dependencies = [
 name = "hardy-bpv7-fuzz"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "hardy-bpv7",
  "hardy-cbor",
  "libfuzzer-sys",
@@ -1956,6 +1958,7 @@ name = "hardy-bpv7-tools"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "hardy-bpv7",
  "hardy-cbor",
@@ -2229,6 +2232,7 @@ name = "hardy-tools"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "caps",
  "check_elevation",
  "clap",

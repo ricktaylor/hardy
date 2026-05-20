@@ -194,7 +194,9 @@ pub trait ApplicationSink: Send + Sync {
 /// Unlike [`Application`] which receives only payload, `Service` receives
 /// the raw bundle bytes. This enables system services like echo that need
 /// to inspect/modify bundle structure. Services can parse the bundle
-/// themselves using `CheckedBundle::parse()` if they have key access.
+/// themselves using `hardy_bpv7::checks::parse_canonicalize_with_provider()`
+/// if they have key access, or `hardy_bpv7::parse::parse()`
+/// for a structural-only parse without keys.
 ///
 /// # Sink Lifecycle
 ///

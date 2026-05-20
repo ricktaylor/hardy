@@ -78,6 +78,51 @@ impl Operation {
         }
     }
 
+    /// Encrypts the target block using this operation's context parameters
+    /// (e.g. AES-GCM scope flags), looking up the key on the bpsec source
+    /// EID via `key_source`. The target's plaintext is read from
+    /// `args.blocks.block(args.target)`. Returns a fresh operation carrying
+    /// the newly generated per-context state (e.g. a new AES-GCM IV) along
+    /// with the ciphertext; `self` is left untouched so the caller can
+    /// decide whether to replace the original entry.
+    ///
+    /// Works equally on an operation just constructed in memory (with
+    /// caller-chosen context parameters) and on one parsed from a wire
+    /// BCB — the method only inspects this operation's parameters and
+    /// the bytes in `args.blocks`.
+    #[allow(unused_variables)]
+    pub fn encrypt<K>(
+        &self,
+        key_source: &K,
+        args: OperationArgs,
+    ) -> Result<(Self, Box<[u8]>), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        // RFC 9172 Section 3.9: CRC must be removed from BCB targets.
+        if let Some((target_block, _)) = args.blocks.block(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(op) => {
+                let key = key_source
+                    .key(args.bpsec_source, &[key::Operation::Encrypt])
+                    .ok_or(Error::NoKey)?;
+                let (new_op, ciphertext) = rfc9173::bcb_aes_gcm::Operation::encrypt(
+                    key,
+                    op.parameters.flags.clone(),
+                    args,
+                )?;
+                Ok((Self::AES_GCM(new_op), ciphertext))
+            }
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
+        }
+    }
+
     fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
         match self {
             #[cfg(feature = "rfc9173")]

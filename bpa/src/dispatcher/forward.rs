@@ -17,7 +17,7 @@ impl Dispatcher {
 
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
-        // pair, so the updated Bundle must replace the pre-rewrite one.
+        // pair, so the rebuilt block map must replace the pre-rewrite one.
         let data = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
@@ -27,7 +27,7 @@ impl Dispatcher {
                 return self.store.watch_bundle(bundle).await;
             }
             Ok((new_bundle, data)) => {
-                bundle.bundle = new_bundle;
+                bundle.bundle.blocks = new_bundle.blocks;
                 data
             }
         };
@@ -88,7 +88,15 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
-    ) -> Result<(hardy_bpv7::bundle::Bundle, Bytes), hardy_bpv7::editor::Error> {
+    ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+        // Editor needs a `&Bundle`, so re-parse structurally.
+        // `editor::Error` has several `From` impls so disambiguate explicitly.
+        let hardy_bpv7::parse::Parsed {
+            data: source_data,
+            bundle: raw,
+            ..
+        } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
+
         // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
         // of an admin-record or anonymous bundle — the receiver has nowhere
         // meaningful to report to, and a conformant parser (ours included)
@@ -97,7 +105,7 @@ impl Dispatcher {
             !bundle.bundle.flags.is_admin_record && !bundle.bundle.id.source.is_null();
 
         // Previous Node Block
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &source_data)
+        let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(|(_, e)| e)?
             .with_flags(hardy_bpv7::block::Flags {
@@ -159,17 +167,11 @@ impl Dispatcher {
         // Egress filter chain
         let (new_bundle, chunks) = editor.rebuild_bundle()?;
 
-        // Try to modify the source buffer in place if exclusively owned
-        let data = match source_data.try_into_mut() {
-            Ok(buf) => {
-                let mut vec = buf.into();
-                hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                Bytes::from(vec)
-            }
-            Err(source_data) => {
-                Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &source_data))
-            }
-        };
-        Ok((new_bundle, data))
+        // Zero-copy in place if `source_data` uniquely owns; otherwise
+        // allocates a fresh buffer.
+        Ok((
+            new_bundle,
+            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
+        ))
     }
 }

@@ -58,9 +58,13 @@ impl BibeCla {
 
     /// Encapsulate an inner bundle into an outer bundle.
     fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
-        // Parse inner bundle to get lifetime for outer bundle
-        let parsed = ParsedBundle::parse(&inner, bpsec::no_keys)?;
-        let lifetime = parsed.bundle.lifetime;
+        // Parse inner bundle structurally to read its lifetime.
+        let hardy_bpv7::parse::Parsed {
+            data: inner,
+            bundle: parsed_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(inner)?;
+        let lifetime = parsed_bundle.primary.lifetime;
 
         // Build outer bundle with BIBE-PDU payload:
         // [transmission-id, total-length, segmented-offset, encapsulated-bundle-segment]

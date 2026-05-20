@@ -92,18 +92,20 @@ pub struct Command {
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
         let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
-        let mut data = self.input.read_all()?;
+        let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed { data, bundle, .. } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        // Get block payload
-        let block_data = if let Some(payload_str) = &self.payload {
+        // Get block payload (BlockBuilder::with_data wants Cow<[u8]>,
+        // so collapse to Vec<u8> here whichever source we picked).
+        let block_data: Vec<u8> = if let Some(payload_str) = &self.payload {
             // Treat as raw bytes
             payload_str.as_bytes().to_vec()
         } else if let Some(input) = &self.payload_file {
-            input.read_all()?
+            input.read_all()?.to_vec()
         } else {
             return Err(anyhow::anyhow!(
                 "Either --payload or --payload-file must be provided"
@@ -147,8 +149,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut data);
-
-        self.output.write_all(&data)
+        let out = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
+        self.output.write_all(&out)
     }
 }

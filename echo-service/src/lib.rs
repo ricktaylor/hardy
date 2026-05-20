@@ -54,21 +54,20 @@ impl EchoService {
         // stop rather than propagate, which would park it for a retry that can
         // never succeed. Only a failed send (below) is transient and worth a
         // retry. In practice the BPA already parsed these bytes at ingress.
-        let Ok(parsed) = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
+        let Ok(hardy_bpv7::parse::Parsed { data, bundle, .. }) = hardy_bpv7::parse::parse(data)
             .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))
         else {
             return Ok(());
         };
-        let bundle = parsed.bundle;
 
         // When a Response Is Sent: do not respond to a bundle with no return
         // path (null source), nor to an administrative record (which would risk
         // reflecting status reports and bundle loops).
-        if bundle.id.source.is_null() {
+        if bundle.primary.id.source.is_null() {
             debug!("Not echoing bundle from the null endpoint");
             return Ok(());
         }
-        if bundle.flags.is_admin_record {
+        if bundle.primary.flags.is_admin_record {
             debug!("Not echoing administrative record");
             return Ok(());
         }
@@ -80,8 +79,8 @@ impl EchoService {
         };
 
         debug!(
-            source = %bundle.id.source,
-            destination = %bundle.destination,
+            source = %bundle.primary.id.source,
+            destination = %bundle.primary.destination,
             "Received bundle, building echo response"
         );
 
@@ -90,15 +89,18 @@ impl EchoService {
         // a new creation timestamp. Adopt the request's lifetime (the BPA bounds
         // it by local policy as for any bundle).
         let mut builder =
-            hardy_bpv7::builder::Builder::new(bundle.destination.clone(), bundle.id.source.clone())
-                .with_lifetime(bundle.lifetime)
-                .with_flags(response_flags(&bundle.flags));
+            hardy_bpv7::builder::Builder::new(
+            bundle.primary.destination.clone(),
+            bundle.primary.id.source.clone(),
+        )
+                .with_lifetime(bundle.primary.lifetime)
+                .with_flags(response_flags(&bundle.primary.flags));
 
         // If the request asked for status reports, direct the response's reports
         // to the same report-to so an observer can follow both legs of the
         // exchange. The matching request flags are mirrored in response_flags.
-        if requested_status_reports(&bundle.flags) {
-            builder = builder.with_report_to(bundle.report_to.clone());
+        if requested_status_reports(&bundle.primary.flags) {
+            builder = builder.with_report_to(bundle.primary.report_to.clone());
         }
 
         // Building from an already-parsed bundle is deterministic, so a failure
@@ -112,8 +114,8 @@ impl EchoService {
         };
 
         debug!(
-            source = %bundle.destination,
-            destination = %bundle.id.source,
+            source = %bundle.primary.destination,
+            destination = %bundle.primary.id.source,
             "Sending echo response"
         );
 

@@ -178,7 +178,7 @@ impl Default for PatternKeyProvider {
 }
 
 impl hardy_bpa::keys::KeyProvider for PatternKeyProvider {
-    fn key_source(&self, _bundle: &hardy_bpv7::bundle::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
         Box::new(CurrentKeys(self.source.load_full()))
     }
 }
@@ -239,7 +239,7 @@ mod tests {
     use hardy_bpv7::{
         block,
         bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
-        bundle::RewrittenBundle,
+        checks,
     };
 
     use super::*;
@@ -568,7 +568,7 @@ mod tests {
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
 
-    fn count_bcbs(bundle: &hardy_bpv7::bundle::Bundle) -> usize {
+    fn count_bcbs(bundle: &hardy_bpv7::Bundle) -> usize {
         bundle
             .blocks
             .values()
@@ -576,19 +576,57 @@ mod tests {
             .count()
     }
 
+    // Run the keyed BPSec pipeline a BPA runs at ingress — §A classify, §B
+    // decrypt BCB-covered BIBs, §C7 verify — and return the parsed pieces for
+    // delivery-time assertions. Passing without error means nothing needed
+    // rewriting for this vector.
+    #[allow(clippy::type_complexity)]
+    fn a2_checked(
+        source: &PatternKeySource,
+    ) -> (
+        hardy_bpa::Bytes,
+        hardy_bpv7::Bundle,
+        HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+    ) {
+        let hardy_bpv7::parse::Parsed {
+            data,
+            mut bundle,
+            bcbs,
+            mut bibs,
+        } = hardy_bpv7::parse::parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE))
+            .expect("parse failed");
+
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        checks::classify_unrecognised_blocks(&bundle.blocks, &[]).expect("classify failed");
+        checks::classify_unsupported_bcbs(&bundle.blocks, &bcbs).expect("classify failed");
+        checks::classify_unsupported_bibs(&bundle.blocks, &bibs).expect("classify failed");
+        checks::decrypt_and_validate_covered_bibs(
+            &data,
+            source,
+            &mut bundle.blocks,
+            &bcbs,
+            &mut bibs,
+            &mut decrypted,
+            &no_updates,
+        )
+        .expect("covered-BIB decrypt failed");
+        checks::verify_all_bibs(&data, source, &bundle.blocks, &bibs, &decrypted, &no_updates)
+            .expect("BIB verify failed");
+
+        (data, bundle, bcbs)
+    }
+
     #[test]
     fn verifier_forwards_bcb_intact() {
         let source = a2_source(SecurityRole::Verifier);
-        let result = RewrittenBundle::parse_with_keys(&A2_BUNDLE, &source).expect("parse failed");
+        let (data, bundle, bcbs) = a2_checked(&source);
 
-        let RewrittenBundle::Valid { bundle, .. } = result else {
-            panic!("verifier must not rewrite the bundle");
-        };
         assert_eq!(count_bcbs(&bundle), 1);
 
         // The decrypt key is withheld at delivery: NoKey, payload stays encrypted
         assert!(matches!(
-            bundle.block_data(1, &A2_BUNDLE, &source),
+            hardy_bpv7::bpsec::block_data(1, &bundle.blocks, &data, &bcbs, &source),
             Err(hardy_bpv7::Error::InvalidBPSec(
                 hardy_bpv7::bpsec::Error::NoKey
             ))
@@ -598,15 +636,11 @@ mod tests {
     #[test]
     fn acceptor_decrypts_payload_at_delivery() {
         let source = a2_source(SecurityRole::Acceptor);
-        let result = RewrittenBundle::parse_with_keys(&A2_BUNDLE, &source).expect("parse failed");
+        let (data, bundle, bcbs) = a2_checked(&source);
 
-        let RewrittenBundle::Valid { bundle, .. } = result else {
-            panic!("payload BCB decryption is deferred to delivery, not parse");
-        };
         assert_eq!(count_bcbs(&bundle), 1);
 
-        let payload = bundle
-            .block_data(1, &A2_BUNDLE, &source)
+        let payload = hardy_bpv7::bpsec::block_data(1, &bundle.blocks, &data, &bcbs, &source)
             .expect("acceptor must decrypt the payload");
         assert_eq!(payload.as_ref(), b"Ready to generate a 32-byte payload");
     }
@@ -630,10 +664,17 @@ mod tests {
         )
     }
 
+    // `key_source` ignores the bundle for this provider; any parsed bundle do.
+    fn any_bundle() -> hardy_bpv7::Bundle {
+        hardy_bpv7::parse::parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE))
+            .expect("parse failed")
+            .bundle
+    }
+
     #[test]
     fn empty_provider_returns_none() {
         let provider = PatternKeyProvider::default();
-        let keys = provider.key_source(&Default::default(), &[]);
+        let keys = provider.key_source(&any_bundle(), &[]);
         assert!(keys.key(&Eid::default(), &[Operation::Verify]).is_none());
     }
 
@@ -642,7 +683,7 @@ mod tests {
         let provider = PatternKeyProvider::new(make_source("key-1"));
         provider.set(make_source("key-2"));
 
-        let keys = provider.key_source(&Default::default(), &[]);
+        let keys = provider.key_source(&any_bundle(), &[]);
         let key = keys
             .key(&parse_eid("ipn:0.1.0"), &[Operation::Verify])
             .unwrap();
@@ -654,7 +695,7 @@ mod tests {
         let provider = PatternKeyProvider::new(make_source("key-1"));
 
         // The KeySource handed out for a bundle is a point-in-time snapshot
-        let snapshot = provider.key_source(&Default::default(), &[]);
+        let snapshot = provider.key_source(&any_bundle(), &[]);
 
         provider.set(make_source("key-2"));
 
@@ -665,7 +706,7 @@ mod tests {
         assert_eq!(key.id.as_deref(), Some("key-1"));
 
         // A fresh snapshot returns key-2
-        let new_snapshot = provider.key_source(&Default::default(), &[]);
+        let new_snapshot = provider.key_source(&any_bundle(), &[]);
         let key = new_snapshot.key(&eid, &[Operation::Verify]).unwrap();
         assert_eq!(key.id.as_deref(), Some("key-2"));
     }

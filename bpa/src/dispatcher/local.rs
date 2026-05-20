@@ -63,12 +63,16 @@ impl Dispatcher {
                 }
             }
 
-            let (bundle, data) = builder
+            let (raw, data) = builder
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
-            let r = self.originate_bundle(bundle, Bytes::from(data)).await;
+            let data = Bytes::from(data);
+            let bundle = crate::bp7_parse::rich_from_built(raw, &data)
+                .map_err(|e| services::Error::Internal(e.into()))?;
+
+            let r = self.originate_bundle(bundle, data).await;
             if !matches!(r, Err(services::Error::DuplicateBundle)) {
                 break r;
             }
@@ -85,24 +89,18 @@ impl Dispatcher {
         expected_source: &Eid,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        // Parse the bundle (security boundary - can't trust service-provided bytes)
-        // Use CheckedBundle to canonicalize but preserve all blocks (including unknown extensions)
-        let checked = hardy_bpv7::bundle::CheckedBundle::parse(&data, self.key_provider())?;
+        // Parse the bundle (security boundary - can't trust service-provided bytes).
+        // Canonicalize but preserve all blocks (including unknown extensions).
+        let (parsed_bundle, chunks) =
+            crate::bp7_parse::parse_canonicalize_with_provider(data.clone(), self.key_provider())?;
 
         // Use rewritten data if canonicalization was needed
-        let (bundle, data) = if let Some(chunks) = checked.new_data {
-            let data = match data.try_into_mut() {
-                Ok(buf) => {
-                    let mut vec = buf.into();
-                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                    Bytes::from(vec)
-                }
-                Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
-            };
-            (checked.bundle, data)
+        let data = if let Some(chunks) = chunks {
+            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
         } else {
-            (checked.bundle, data)
+            data
         };
+        let bundle = parsed_bundle;
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
@@ -117,7 +115,7 @@ impl Dispatcher {
 
     async fn originate_bundle(
         self: &Arc<Self>,
-        bundle: hardy_bpv7::bundle::Bundle,
+        bundle: bundle::Bpv7Bundle,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
@@ -199,36 +197,58 @@ impl Dispatcher {
                 svc.on_receive(data, bundle.expiry()).await
             }
             services::registry::ServiceImpl::Application(app) => {
-                // Extract and decrypt payload for Application
-                let payload_result = {
-                    let key_source = self.key_source(&bundle.bundle, &data);
-                    bundle.bundle.block_data(1, &data, &*key_source)
-                }; // key_source dropped here, before any await
-
-                let payload = {
-                    match payload_result {
-                        Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
-                            // TODO: We are unable to decrypt the payload, what do we do?
-                            debug!("Failed to decrypt payload: No valid keys");
-                            return self.store.watch_bundle(bundle).await;
-                        }
-                        Err(e) => {
-                            // Other decryption error - skip delivery
-                            debug!("Received an invalid payload: {e}");
-
-                            // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
-
-                            return self
-                                .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                                .await;
-                        }
-                        Ok(hardy_bpv7::block::Payload::Borrowed(_)) => {
-                            data.slice(bundle.bundle.blocks.get(&1).unwrap().payload_range())
-                        }
-                        Ok(hardy_bpv7::block::Payload::Decrypted(decrypted)) => {
-                            Bytes::from_owner(decrypted)
+                // Extract and decrypt payload for Application.
+                // KeyProvider needs a &Bundle; scope the parse
+                // as a match expression so the parse OperationSets
+                // (which contain `Rc<…>` and are therefore `!Send`) are
+                // dropped at the arm boundary, before any `.await` in
+                // this async fn. Consume `data` into the parse and work
+                // from the authoritative buffer it returns (the streaming
+                // path concatenates pushes), converting the payload to an
+                // owned `Bytes` (zero-copy for the unencrypted case via
+                // `slice_ref`) before the arm ends.
+                let payload_result = match hardy_bpv7::parse::parse(data) {
+                    Ok(hardy_bpv7::parse::Parsed {
+                        data: buf,
+                        bundle: raw,
+                        bcbs: bcb_ops,
+                        ..
+                    }) => {
+                        let key_source = self.key_source(&raw, &buf);
+                        match hardy_bpv7::bpsec::block_data(
+                            1,
+                            &raw.blocks,
+                            &buf,
+                            &bcb_ops,
+                            &*key_source,
+                        ) {
+                            Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
+                            Ok(hardy_bpv7::block::Payload::Decrypted(d)) => {
+                                Ok(Bytes::from_owner(d))
+                            }
+                            Err(e) => Err(e),
                         }
                     }
+                    Err(e) => Err(e),
+                };
+
+                let payload = match payload_result {
+                    Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
+                        // TODO: We are unable to decrypt the payload, what do we do?
+                        debug!("Failed to decrypt payload: No valid keys");
+                        return self.store.watch_bundle(bundle).await;
+                    }
+                    Err(e) => {
+                        // Other decryption error - skip delivery
+                        debug!("Received an invalid payload: {e}");
+
+                        // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
+
+                        return self
+                            .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
+                            .await;
+                    }
+                    Ok(payload) => payload,
                 };
 
                 app.on_receive(

@@ -129,26 +129,36 @@ impl services::Service for EchoService {
     async fn on_unregister(&self) {}
 
     async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) -> services::Result<()> {
-        if let Some(sink) = self.sink.get()
-            && let Ok(parsed) =
-                hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-            && let Ok(editor) = hardy_bpv7::editor::Editor::new(&parsed.bundle, &data)
-                .with_source(parsed.bundle.destination.clone())
-            && let Ok(editor) = editor.with_destination(parsed.bundle.id.source.clone())
-            && let Ok(chunks) = editor.rebuild()
-        {
-            let reply = match data.try_into_mut() {
-                Ok(buf) => {
-                    let mut vec = buf.into();
-                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                    Bytes::from(vec)
-                }
-                Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
+        let Some(sink) = self.sink.get() else {
+            return Ok(());
+        };
+
+        // Parse + edit in a scoped block so the parse OperationSets
+        // (which contain `Rc<…>` and are therefore `!Send`) are dropped
+        // before any `.await` — otherwise the resulting future is !Send.
+        let (data, chunks) = {
+            let Ok(hardy_bpv7::parse::Parsed {
+                data, bundle: raw, ..
+            }) = hardy_bpv7::parse::parse(data)
+            else {
+                return Ok(());
             };
-            sink.send(reply).await.map(|_| ())
-        } else {
-            Ok(())
-        }
+            let Ok(editor) = hardy_bpv7::editor::Editor::new(&raw, &data)
+                .with_source(raw.primary.destination.clone())
+            else {
+                return Ok(());
+            };
+            let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
+                return Ok(());
+            };
+            let Ok(chunks) = editor.rebuild() else {
+                return Ok(());
+            };
+            (data, chunks)
+        };
+
+        let reply = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
+        sink.send(reply).await.map(|_| ())
     }
 
     async fn on_status_notify(
@@ -339,12 +349,14 @@ async fn app_to_cla_routing() {
     .expect("Timeout waiting for forwarded bundle")
     .expect("Channel closed");
 
-    // Parse and verify the forwarded bundle
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse forwarded bundle");
+    // Parse and verify the forwarded bundle (structural — no keys).
+    let hardy_bpv7::parse::Parsed {
+        bundle: parsed_bundle,
+        ..
+    } = hardy_bpv7::parse::parse(forwarded).expect("Failed to parse forwarded bundle");
 
-    assert_eq!(parsed.bundle.id.source, source_eid);
-    assert_eq!(parsed.bundle.destination, dest);
+    assert_eq!(parsed_bundle.primary.id.source, source_eid);
+    assert_eq!(parsed_bundle.primary.destination, dest);
 
     bpa.shutdown().await;
 }
@@ -415,17 +427,19 @@ async fn echo_round_trip() {
     .expect("Timeout waiting for echo reply")
     .expect("Channel closed");
 
-    // Parse and verify the echo reply
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse echo reply");
+    // Parse and verify the echo reply (structural — no keys).
+    let hardy_bpv7::parse::Parsed {
+        bundle: parsed_bundle,
+        ..
+    } = hardy_bpv7::parse::parse(forwarded).expect("Failed to parse echo reply");
 
     // Source and destination should be swapped
     assert_eq!(
-        parsed.bundle.destination, remote_source,
+        parsed_bundle.primary.destination, remote_source,
         "Echo reply destination should be the original source"
     );
     assert_eq!(
-        parsed.bundle.id.source, echo_dest,
+        parsed_bundle.primary.id.source, echo_dest,
         "Echo reply source should be the echo service"
     );
 
@@ -706,7 +720,7 @@ impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
         data: &[u8],
     ) -> Result<hardy_bpa::filter::ReadResult, hardy_bpa::Error> {
         let mut mismatch = self.mismatch.lock().unwrap();
-        match hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys) {
+        match hardy_bpv7::parse::parse(hardy_bpa::Bytes::copy_from_slice(data)) {
             Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
             Ok(parsed) => {
                 for (number, block) in &parsed.bundle.blocks {

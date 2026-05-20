@@ -49,27 +49,166 @@ impl Command {
         let key_store: bpsec::key::KeySet = self.key_args.try_into()?;
         let bundle_data = self.input.read_all()?;
 
-        let parsed = bundle::ParsedBundle::parse_with_keys(&bundle_data, &key_store)
+        // Structural parse + keyed BPSec validation in one pass.
+        let parse::Parsed {
+            data: bundle_data,
+            bundle: raw,
+            bcbs: bcb_ops,
+            bibs: bib_ops,
+        } = parse_with_keys(bundle_data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
+        // Section A diagnostics — `report_unsupported` is the OR of the
+        // three classify_* outputs. (Errors propagate from parse_with_keys;
+        // here we re-run the classify pass to read the flag.)
+        let report_unsupported = checks::classify_unrecognised_blocks(&raw.blocks, &[])
+            .map(|c| c.report_unsupported)
+            .unwrap_or(false)
+            || checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)
+                .map(|c| c.report_unsupported)
+                .unwrap_or(false)
+            || checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)
+                .map(|c| c.report_unsupported)
+                .unwrap_or(false);
+
+        // Decode the known extension blocks (PreviousNode / BundleAge /
+        // HopCount) once into typed fields. BCB-protected bodies stay
+        // opaque (decoded from plaintext only). Both output paths consume
+        // this: JSON serializes the fields, markdown reads them in its
+        // block walk (see `dump_block`).
+        let ext = extension_fields(&bundle_data, &raw.blocks)
+            .map_err(|e| anyhow::anyhow!("Failed to decode extension fields: {e}"))?;
+
         match self.format {
-            OutputFormat::Markdown => dump_markdown(parsed, &bundle_data, self.output, key_store),
-            OutputFormat::Json | OutputFormat::JsonPretty => {
-                dump_json(parsed, self.format == OutputFormat::JsonPretty, self.output)
-            }
+            OutputFormat::Markdown => dump_markdown(
+                &raw,
+                &ext,
+                report_unsupported,
+                &bundle_data,
+                self.output,
+                &BlockSecurity {
+                    keys: key_store,
+                    bib_ops,
+                    bcb_ops,
+                },
+            ),
+            OutputFormat::Json | OutputFormat::JsonPretty => dump_json(
+                &raw,
+                &ext,
+                self.format == OutputFormat::JsonPretty,
+                self.output,
+            ),
         }
     }
 }
 
-fn dump_json(parsed: bundle::ParsedBundle, pretty: bool, output: io::Output) -> anyhow::Result<()> {
-    if parsed.non_canonical {
+/// The BPSec material `dump_block` needs to verify and decrypt blocks:
+/// the key set plus the parsed BIB/BCB operation sets. Bundled so the
+/// markdown path threads one value instead of three.
+struct BlockSecurity {
+    keys: bpsec::key::KeySet,
+    bib_ops: std::collections::HashMap<u64, bpsec::bib::OperationSet>,
+    bcb_ops: std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
+}
+
+/// The typed values decoded from a bundle's known extension blocks, plus
+/// whether any was non-canonically encoded. Inspect-local — `validate`
+/// and `full_rewrite` have their own focused variants.
+#[derive(Default)]
+struct ExtFields {
+    previous_node: Option<eid::Eid>,
+    age: Option<core::time::Duration>,
+    hop_count: Option<hop_info::HopInfo>,
+    non_canonical: bool,
+}
+
+/// Decode PreviousNode / BundleAge / HopCount bodies from their plaintext
+/// wire bytes. Encrypted bodies (`b.bcb.is_some()`) are opaque and left
+/// at their `None` default. Errors on a malformed body.
+fn extension_fields(
+    data: &[u8],
+    blocks: &std::collections::HashMap<u64, block::Block>,
+) -> Result<ExtFields, hardy_bpv7::Error> {
+    let mut out = ExtFields::default();
+    for b in blocks.values() {
+        if b.bcb.is_some() {
+            continue;
+        }
+        // `data` is the full in-memory bundle from `parse_with_keys`.
+        let Some(body) = b.payload(data) else {
+            continue;
+        };
+        match b.block_type {
+            block::Type::PreviousNode => {
+                let (v, shortest) = parse_exact::<(eid::Eid, bool)>(body, "Previous Node Block")?;
+                out.non_canonical |= !shortest;
+                out.previous_node = Some(v);
+            }
+            block::Type::BundleAge => {
+                let v = parse_exact::<bundle_age::BundleAge>(body, "Bundle Age Block")?;
+                out.age = Some(v.into());
+            }
+            block::Type::HopCount => {
+                let (v, shortest) =
+                    parse_exact::<(hop_info::HopInfo, bool)>(body, "Hop Count Block")?;
+                out.non_canonical |= !shortest;
+                out.hop_count = Some(v);
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The `bundle inspect --format json` serialisation shape, built
+/// by-reference from a `Bundle` plus the decoded [`ExtFields`]. Field
+/// order and `#[serde(...)]` attributes define the tool's stable JSON
+/// output (covered by the shell tests).
+#[derive(serde::Serialize)]
+struct JsonBundle<'a> {
+    #[serde(flatten)]
+    id: &'a bundle::Id,
+    flags: &'a bundle::Flags,
+    crc_type: crc::CrcType,
+    destination: &'a eid::Eid,
+    report_to: &'a eid::Eid,
+    lifetime: core::time::Duration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_node: Option<&'a eid::Eid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    age: Option<core::time::Duration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hop_count: Option<&'a hop_info::HopInfo>,
+    blocks: &'a std::collections::HashMap<u64, block::Block>,
+}
+
+fn dump_json(
+    raw: &Bundle,
+    ext: &ExtFields,
+    pretty: bool,
+    output: io::Output,
+) -> anyhow::Result<()> {
+    if ext.non_canonical {
         eprintln!("Warning: Non-canonical, but semantically valid bundle");
     }
 
+    let bundle = JsonBundle {
+        id: &raw.primary.id,
+        flags: &raw.primary.flags,
+        crc_type: raw.primary.crc_type,
+        destination: &raw.primary.destination,
+        report_to: &raw.primary.report_to,
+        lifetime: raw.primary.lifetime,
+        previous_node: ext.previous_node.as_ref(),
+        age: ext.age,
+        hop_count: ext.hop_count.as_ref(),
+        blocks: &raw.blocks,
+    };
+
     let mut json = if pretty {
-        serde_json::to_string_pretty(&parsed.bundle)
+        serde_json::to_string_pretty(&bundle)
     } else {
-        serde_json::to_string(&parsed.bundle)
+        serde_json::to_string(&bundle)
     }
     .map_err(|e| anyhow::anyhow!("Failed to serialize bundle: {e}"))?;
     json.push('\n');
@@ -78,12 +217,15 @@ fn dump_json(parsed: bundle::ParsedBundle, pretty: bool, output: io::Output) -> 
 }
 
 fn dump_markdown(
-    bundle: bundle::ParsedBundle,
+    raw: &Bundle,
+    ext: &ExtFields,
+    report_unsupported: bool,
     data: &[u8],
     output: io::Output,
-    keys: bpsec::key::KeySet,
+    security: &BlockSecurity,
 ) -> anyhow::Result<()> {
-    if let Some(fragment_info) = &bundle.bundle.id.fragment_info {
+    let primary = &raw.primary;
+    if let Some(fragment_info) = &primary.id.fragment_info {
         output.write_str(format!(
             "# BPv7 ADU Fragment {} of {}\n\n",
             fragment_info.offset, fragment_info.total_adu_length
@@ -92,92 +234,92 @@ fn dump_markdown(
         output.write_str("# BPv7 Bundle\n\n")?;
     }
 
-    output.append_str(format!("Source: {}\n\n", bundle.bundle.id.source))?;
-    output.append_str(format!("Destination: {}\n\n", bundle.bundle.destination))?;
-    output.append_str(format!("Created: {}\n\n", bundle.bundle.id.timestamp))?;
+    output.append_str(format!("Source: {}\n\n", primary.id.source))?;
+    output.append_str(format!("Destination: {}\n\n", primary.destination))?;
+    output.append_str(format!("Created: {}\n\n", primary.id.timestamp))?;
     output.append_str(format!(
         "Lifetime: {}\n\n",
-        humantime::format_duration(bundle.bundle.lifetime)
+        humantime::format_duration(primary.lifetime)
     ))?;
 
     let mut notes: Vec<&'static str> = Vec::new();
 
-    if bundle.non_canonical {
+    if ext.non_canonical {
         notes.push("The bundle is not in canonical form\n");
     }
 
-    if bundle.report_unsupported {
+    if report_unsupported {
         notes.push("The bundle contains unsupported blocks\n");
     }
 
-    dump_crc(bundle.bundle.crc_type, &output)?;
+    dump_crc(primary.crc_type, &output)?;
 
-    if bundle.bundle.flags == bundle::Flags::default() {
+    if primary.flags == bundle::Flags::default() {
         output.append_str("Bundle Flags: None\n\n")?;
     } else {
         output.append_str("Bundle Flags:\n\n")?;
 
-        if bundle.bundle.flags.is_fragment {
+        if primary.flags.is_fragment {
             output.append_str("* Is a fragment\n")?;
 
-            if bundle.bundle.flags.is_admin_record {
+            if primary.flags.is_admin_record {
                 output.append_str("* ADU is an Administrative Record\n")?;
             }
 
-            if bundle.bundle.flags.do_not_fragment {
+            if primary.flags.do_not_fragment {
                 output.append_str("* Do not fragment\n")?;
             }
 
-            if bundle.bundle.flags.app_ack_requested {
+            if primary.flags.app_ack_requested {
                 output.append_str("* Application acknowledgement requested\n")?;
             }
 
-            if bundle.bundle.flags.report_status_time {
+            if primary.flags.report_status_time {
                 output.append_str("* Include status time with reports\n")?;
 
-                if !bundle.bundle.flags.receipt_report_requested
-                    || !bundle.bundle.flags.forward_report_requested
-                    || !bundle.bundle.flags.delivery_report_requested
-                    || !bundle.bundle.flags.delete_report_requested
+                if !primary.flags.receipt_report_requested
+                    || !primary.flags.forward_report_requested
+                    || !primary.flags.delivery_report_requested
+                    || !primary.flags.delete_report_requested
                 {
                     notes.push("Bundle flags request status time to be included with status reports, but no reports are requested.");
                 }
             }
 
-            if bundle.bundle.flags.receipt_report_requested {
+            if primary.flags.receipt_report_requested {
                 output.append_str("* Reception report requested\n")?;
             }
 
-            if bundle.bundle.flags.forward_report_requested {
+            if primary.flags.forward_report_requested {
                 output.append_str("* Forwarding report requested\n")?;
             }
 
-            if bundle.bundle.flags.delivery_report_requested {
+            if primary.flags.delivery_report_requested {
                 output.append_str("* Delivery report requested\n")?;
             }
 
-            if bundle.bundle.flags.delete_report_requested {
+            if primary.flags.delete_report_requested {
                 output.append_str("* Deletion report requested\n")?;
             }
 
-            if let Some(u) = bundle.bundle.flags.unrecognised {
+            if let Some(u) = primary.flags.unrecognised {
                 output.append_str(format!("* Unrecognised: {u:#x}\n",))?;
             }
 
             output.append_str("\n")?;
 
-            if (bundle.bundle.flags.receipt_report_requested
-                || bundle.bundle.flags.forward_report_requested
-                || bundle.bundle.flags.delivery_report_requested
-                || bundle.bundle.flags.delete_report_requested)
-                && bundle.bundle.report_to.is_null()
+            if (primary.flags.receipt_report_requested
+                || primary.flags.forward_report_requested
+                || primary.flags.delivery_report_requested
+                || primary.flags.delete_report_requested)
+                && primary.report_to.is_null()
             {
                 notes.push("Null endpoint EID specified for 'Report To', but status reports are requested.");
             }
         }
     }
 
-    output.append_str(format!("Report-To: {}\n\n", bundle.bundle.report_to))?;
+    output.append_str(format!("Report-To: {}\n\n", primary.report_to))?;
 
     if !notes.is_empty() {
         output.append_str("**Notes:**\n\n")?;
@@ -187,17 +329,25 @@ fn dump_markdown(
         output.append_str("\n")?;
     }
 
-    let blocks = bundle.bundle.blocks.keys().cloned().collect::<Vec<_>>();
+    let blocks = raw.blocks.keys().cloned().collect::<Vec<_>>();
     let mut blocks = blocks
         .into_iter()
-        .map(|n| (n, bundle.bundle.blocks.get(&n).unwrap()))
+        .map(|n| (n, raw.blocks.get(&n).unwrap()))
         .collect::<Vec<_>>();
 
     blocks.sort_by_key(|a| a.1.extent.start);
 
     for (block_number, block) in blocks {
         if block_number != 0 {
-            dump_block(&bundle.bundle, block_number, block, data, &output, &keys)?;
+            dump_block(
+                &raw.blocks,
+                block_number,
+                block,
+                data,
+                &output,
+                security,
+                ext,
+            )?;
         }
     }
 
@@ -216,12 +366,13 @@ fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_block(
-    bundle: &bundle::Bundle,
+    blocks: &std::collections::HashMap<u64, block::Block>,
     block_number: u64,
     block: &block::Block,
     data: &[u8],
     output: &io::Output,
-    keys: &bpsec::key::KeySet,
+    security: &BlockSecurity,
+    ext: &ExtFields,
 ) -> anyhow::Result<()> {
     output.append_str(format!("## Block {block_number}: "))?;
     match &block.block_type {
@@ -268,10 +419,15 @@ fn dump_block(
     if let hardy_bpv7::block::BibCoverage::Some(bib) = block.bib {
         output.append_str(format!("Signed by Integrity Block {bib}: "))?;
 
-        if let Err(e) = bundle.verify_block(block_number, data, keys) {
-            output.append_str(format!("Error {e}\n\n"))?;
-        } else {
-            output.append_str("✔\n\n")?;
+        match verify_block(
+            block_number,
+            blocks,
+            data,
+            &security.bib_ops,
+            &security.keys,
+        ) {
+            Err(e) => output.append_str(format!("Error {e}\n\n"))?,
+            Ok(_) => output.append_str("✔\n\n")?,
         }
     } else if matches!(block.bib, hardy_bpv7::block::BibCoverage::Maybe) {
         output.append_str("Signed by Integrity Block: Unknown (encrypted BIB)\n\n")?;
@@ -280,7 +436,13 @@ fn dump_block(
     let payload = if let Some(bcb) = block.bcb {
         output.append_str(format!("Encrypted by Security Block {bcb}: "))?;
 
-        match bundle.decrypt_block_data(block_number, data, keys) {
+        match bpsec::block_data(
+            block_number,
+            blocks,
+            data,
+            &security.bcb_ops,
+            &security.keys,
+        ) {
             Err(e) => {
                 output.append_str(format!("Error {e}\n\n"))?;
                 None
@@ -291,30 +453,45 @@ fn dump_block(
             }
         }
     } else {
-        bundle
-            .block_data(block_number, data, keys)
-            .map(Some)
-            .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?
+        Some(
+            bpsec::block_data(
+                block_number,
+                blocks,
+                data,
+                &security.bcb_ops,
+                &security.keys,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to get block data: {e}"))?,
+        )
     };
 
     if let Some(payload) = payload {
+        // Known extension blocks read their already-decoded value from
+        // `ext` (the single unpack shared with the JSON view); the
+        // security and opaque blocks decode their payload here, mirroring
+        // `dump_bib` / `dump_bcb`. A `None` field with a present payload
+        // is a BCB-decrypted known block (`ext` only unpacks plaintext) —
+        // fall back to the raw CBOR dump.
         match block.block_type {
             block::Type::Primary => unreachable!("Primary block handled separately"),
-            block::Type::PreviousNode => output.append_str(format!(
-                "Previous Node: {}\n\n",
-                bundle.previous_node.as_ref().unwrap()
-            )),
-            block::Type::BundleAge => output.append_str(format!(
-                "Bundle Age: {}\n\n",
-                humantime::format_duration(bundle.age.unwrap())
-            )),
-            block::Type::HopCount => {
-                let hop_count = bundle.hop_count.as_ref().unwrap();
-                output.append_str(format!(
+            block::Type::PreviousNode => match &ext.previous_node {
+                Some(eid) => output.append_str(format!("Previous Node: {eid}\n\n")),
+                None => dump_unknown(payload.as_ref(), output),
+            },
+            block::Type::BundleAge => match ext.age {
+                Some(age) => output.append_str(format!(
+                    "Bundle Age: {}\n\n",
+                    humantime::format_duration(age)
+                )),
+                None => dump_unknown(payload.as_ref(), output),
+            },
+            block::Type::HopCount => match &ext.hop_count {
+                Some(hop_count) => output.append_str(format!(
                     "Hop Count: {} of {}\n\n",
                     hop_count.count, hop_count.limit
-                ))
-            }
+                )),
+                None => dump_unknown(payload.as_ref(), output),
+            },
             block::Type::BlockIntegrity => dump_bib(payload.as_ref(), output),
             block::Type::BlockSecurity => dump_bcb(payload.as_ref(), output),
             block::Type::Payload | block::Type::Unrecognised(_) => {
@@ -322,9 +499,12 @@ fn dump_block(
             }
         }
     } else {
+        // Length of the block-specific data byte string. `block.data` is
+        // already relative to the block extent, so `end - start` gives the
+        // body length without going through `payload_range`.
         output.append_str(format!(
             "### Block Specific Data\n\n{} bytes of encrypted data\n\n",
-            block.data.len()
+            block.data.end - block.data.start
         ))
     }
 }

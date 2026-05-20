@@ -67,11 +67,11 @@ use crate::{
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChannelState {
-    /// Fast path is available. Senders try to send directly to the flume channel.
+    /// Fast path is available. Senders try to send directly to the in-memory channel.
     Open = 0,
 
     /// Fast path is closed. The background poller is draining bundles from
-    /// persistent storage into the flume channel.
+    /// persistent storage into the in-memory channel.
     Draining = 1,
 
     /// New bundles arrived while the poller was draining. This signals to the
@@ -420,7 +420,7 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bundle: crate::bundle::Bpv7Bundle {
                 id: hardy_bpv7::bundle::Id {
                     source: format!("ipn:0.{n}.1").parse().unwrap(),
                     timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
@@ -565,7 +565,7 @@ mod tests {
         }
 
         // Drain ALL bundles (unique + duplicates) and tombstone each.
-        // The poller re-opens when flume.len() < cap/2 and metadata is empty.
+        // The poller re-opens when the in-memory channel drains below cap/2 and metadata is empty.
         let mut seen = HashSet::new();
         let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         loop {
@@ -728,7 +728,7 @@ mod tests {
     }
 
     // Bundles sent in sequence should all arrive, preserving the set.
-    // Strict FIFO is guaranteed on the fast path (flume) and by received_at
+    // Strict FIFO is guaranteed on the fast path (in-memory channel) and by received_at
     // ordering on the slow path, but the concurrent poller makes strict
     // ordering non-deterministic across paths in a test environment.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
