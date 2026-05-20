@@ -35,7 +35,5 @@ use alloc::{
 pub mod decode;
 pub mod encode;
 
-mod decode_seq;
-
 #[cfg(test)]
 mod tests;

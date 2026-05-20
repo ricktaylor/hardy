@@ -819,140 +819,140 @@ fn malformed_cbor() {
 }
 
 #[test]
-fn tagged_marker_consumed_bytes() {
-    // TaggedMarker::from_cbor returns the bytes consumed by the marker head
+fn head_consumed_bytes() {
+    // Head::from_cbor returns the bytes consumed by the marker head
     // only — for arrays, maps, and indefinite-length strings the contained
     // items remain in the buffer. For definite-length strings the payload
     // is NOT included (just the head + length prefix).
 
     // Unsigned integer: 0x18 0x64 = uint 100, consumes 2 bytes
     let data = hex!("18 64");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(100)));
     assert_eq!(len, 2);
 
     // Negative integer: 0x20 = -1, consumes 1 byte
     let data = hex!("20");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::NegativeInteger(0)));
     assert_eq!(len, 1);
 
     // Definite byte string: 0x43 + 3 bytes payload — head is 1 byte,
     // payload length is encoded inline, consumed = 1 (head) only
     let data = hex!("43 01 02 03");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Bytes(Some(3))));
     assert_eq!(len, 1);
 
     // Definite text string: 0x65 "hello" — head is 1 byte
     let data = hex!("65 68 65 6c 6c 6f");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Text(Some(5))));
     assert_eq!(len, 1);
 
     // Definite byte string with 2-byte length: 0x58 0x03 + 3 bytes
     // Head = 1 byte marker + 1 byte length = 2 bytes consumed
     let data = hex!("58 03 01 02 03");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Bytes(Some(3))));
     assert_eq!(len, 2);
 
     // Indefinite byte string: 0x5F — just the head byte
     let data = hex!("5F 43 01 02 03 FF");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Bytes(None)));
     assert_eq!(len, 1);
 
     // Indefinite text string: 0x7F — just the head byte
     let data = hex!("7F 63 66 6f 6f FF");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Text(None)));
     assert_eq!(len, 1);
 
     // Definite array of 3: 0x83 — head only, elements not consumed
     let data = hex!("83 01 02 03");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Array(Some(3))));
     assert_eq!(len, 1);
 
     // Indefinite array: 0x9F — head only
     let data = hex!("9F 01 02 FF");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Array(None)));
     assert_eq!(len, 1);
 
     // Definite map of 1 pair: 0xA1 — head only
     let data = hex!("A1 01 02");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Map(Some(1))));
     assert_eq!(len, 1);
 
     // Indefinite map: 0xBF — head only
     let data = hex!("BF 01 02 FF");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Map(None)));
     assert_eq!(len, 1);
 
     // Tagged uint: tag 1 + uint 0 — tag head (2 bytes) + value head (1 byte) = 3
     let data = hex!("C1 00");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
     assert_eq!(m.tags, alloc::vec![1]);
     assert_eq!(len, 2);
 
     // Nested tags: tag 1, tag 2 + uint 0 = 3 bytes of tags + 1 byte value = 4
     let data = hex!("C1 C2 00");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
     assert_eq!(m.tags, alloc::vec![1, 2]);
     assert_eq!(len, 3);
 
     // False: 0xF4 — 1 byte
     let data = hex!("F4");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::False));
     assert_eq!(len, 1);
 
     // True: 0xF5 — 1 byte
     let data = hex!("F5");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::True));
     assert_eq!(len, 1);
 
     // Null: 0xF6 — 1 byte
     let data = hex!("F6");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Null));
     assert_eq!(len, 1);
 
     // Undefined: 0xF7 — 1 byte
     let data = hex!("F7");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Undefined));
     assert_eq!(len, 1);
 
     // Float16: 0xF9 + 2 bytes = 3 bytes
     let data = hex!("F9 3C 00");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Float(_)));
     assert_eq!(len, 3);
 
     // Float32: 0xFA + 4 bytes = 5 bytes
     let data = hex!("FA 47 C3 50 00");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Float(_)));
     assert_eq!(len, 5);
 
     // Float64: 0xFB + 8 bytes = 9 bytes
     let data = hex!("FB 7E 37 E4 3C 88 00 75 9C");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::Float(_)));
     assert_eq!(len, 9);
 
     // Break / End: 0xFF — 1 byte
     let data = hex!("FF");
-    let (m, _, len) = TaggedMarker::from_cbor(&data).unwrap();
-    assert!(matches!(m.marker, Marker::End));
+    let (m, _, len) = Head::from_cbor(&data).unwrap();
+    assert!(matches!(m.marker, Marker::Break));
     assert_eq!(len, 1);
 }
 
