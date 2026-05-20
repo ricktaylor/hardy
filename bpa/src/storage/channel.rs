@@ -1,8 +1,34 @@
 //! Hybrid memory/storage channel with backpressure.
 //!
-//! Provides a fast path (in-memory flume channel) and slow path (storage-backed)
-//! for bundle queuing. When the memory channel fills, bundles are persisted and
-//! a background poller drains them back into memory.
+//! Provides a fast path (in-memory [`hardy_async::closeable`] channel) and a
+//! slow path (storage lookup) for bundle queuing. When the in-memory buffer
+//! fills, sends spill to storage and a background poller drains them back
+//! into the buffer.
+//!
+//! # Delivery contract
+//!
+//! This channel does **not** persist bundles. The caller is responsible for
+//! having already inserted the bundle (blob + metadata) into the storage
+//! subsystem before invoking [`Sender::send`]; the channel only updates the
+//! metadata `status` column to match its configured target status, via
+//! [`Store::update_status`](super::store::Store::update_status). That update
+//! is fail-stop: on storage error the process aborts via `trace_expect`, so
+//! by the time a bundle is offered to the in-memory channel its status is
+//! durably persisted.
+//!
+//! Given that precondition, the channel guarantees **at-least-once**
+//! delivery from `Sender::send` to `Receiver::recv`:
+//!
+//! - On the fast path (in-memory buffer has space), the bundle is enqueued
+//!   directly. A subsequent poller cycle may *also* pull it from storage
+//!   and re-deliver it; consumers must tombstone delivered bundles to
+//!   suppress duplicates.
+//! - On the slow path (buffer full), the in-memory copy is dropped on the
+//!   floor and the poller recovers it via `MetadataStorage::poll_pending`
+//!   filtered by the channel's target status. The drop is safe because the
+//!   bundle's status is already persisted (see above).
+//!
+//! Consumers that need exactly-once must tombstone each delivered bundle.
 //!
 //! # State Machine
 //!
@@ -146,7 +172,21 @@ impl Sender {
 pub struct SendError(pub Bundle);
 
 impl Sender {
-    /// Send a bundle, updating its status to match the channel's target status.
+    /// Offer a bundle to the channel, updating its persistent status to
+    /// match the channel's target status.
+    ///
+    /// The bundle's blob and metadata must already be persisted in the
+    /// storage subsystem; see the module-level [delivery
+    /// contract](self#delivery-contract). This method updates the metadata
+    /// status (fail-stop on storage error) and then either enqueues the
+    /// bundle into the in-memory buffer (fast path) or relies on the
+    /// background poller to recover it from storage (slow path).
+    ///
+    /// Returns `Err(SendError(bundle))` only when the channel is closing or
+    /// the receiver has been dropped; in both cases the caller may recover
+    /// ownership of the bundle. A `Full` buffer is **not** an error from
+    /// the caller's perspective — the bundle is in storage and will be
+    /// drained by the poller.
     pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
         self.store
             .update_status(&mut bundle, &self.shared.status)
@@ -168,8 +208,11 @@ impl Sender {
                         return Err(SendError(b));
                     }
 
-                    Err(TrySendError::Full(_)) => {
-                        // Channel full - trigger slow path
+                    Err(TrySendError::Full(_dropped)) => {
+                        // Intentional drop: the bundle's status was just
+                        // durably updated by `update_status` above, so the
+                        // poller can recover it via `poll_pending`. See the
+                        // module-level delivery contract.
                         let _ = self.shared.compare_exchange_state(
                             ChannelState::Open,
                             ChannelState::Draining,
@@ -204,7 +247,7 @@ impl Sender {
         self.shared
             .store_state(ChannelState::Closing, Ordering::Release);
         // Cancel the closeable channel — receiver will drain then disconnect.
-        self.shared.tx.clone().close();
+        self.shared.tx.close();
         self.shared.notify.notify_one();
     }
 }
