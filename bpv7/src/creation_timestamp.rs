@@ -136,10 +136,24 @@ impl hardy_cbor::encode::ToCbor for CreationTimestamp {
 impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     type Error = Error;
 
+    /// Strict-canonical decode per RFC 9171 §4.1: non-shortest array
+    /// head, non-shortest sub-field encoding, and unexpected tags are
+    /// rejected with `NotCanonical`. Indefinite-length array encoding
+    /// is accepted (§4.1 carveout) and reflected in the returned
+    /// `shortest` flag as `false`.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+            if !shortest || !tags.is_empty() {
+                return Err(Error::NotCanonical);
+            }
             let (timestamp, s1) = a.parse().map_field_err::<Error>("bundle creation time")?;
+            if !s1 {
+                return Err(Error::NotCanonical);
+            }
             let (sequence_number, s2) = a.parse().map_field_err::<Error>("sequence number")?;
+            if !s2 {
+                return Err(Error::NotCanonical);
+            }
             Ok((
                 CreationTimestamp {
                     creation_time: if timestamp == 0 {
@@ -149,7 +163,7 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
                     },
                     sequence_number,
                 },
-                shortest && tags.is_empty() && a.is_definite() && s1 && s2,
+                a.is_definite(),
             ))
         })
         .map(|((v, s), len)| (v, s, len))

@@ -43,6 +43,11 @@ pub enum Error {
     #[error("Invalid fragment information: offset {0}, total length {1}")]
     InvalidFragmentInfo(u64, u64),
 
+    /// Indicates that a Hop Count Block has a hop limit outside the
+    /// RFC 9171 §4.4.3 range (1 through 255).
+    #[error("Hop Count Block has invalid hop limit {0} (must be in range 1..=255)")]
+    InvalidHopLimit(u64),
+
     /// Indicates that a bundle has multiple blocks of a type that should be unique.
     #[error("Bundle has multiple {0:?} blocks")]
     DuplicateBlocks(block::Type),
@@ -58,6 +63,14 @@ pub enum Error {
     /// Indicates that a bundle has been altered since it was parsed.
     #[error("Bundle has been altered since parsing")]
     Altered,
+
+    /// Indicates that the bundle bytes violate the canonical CBOR encoding
+    /// rules required by RFC 9171 (§4.1, §4.2.2, §4.3.2): non-deterministic
+    /// field encoding, definite-length outer bundle array, indefinite-length
+    /// block-type-specific data byte string, malformed CRC byte string head,
+    /// or unexpected CBOR tags.
+    #[error("Bundle violates RFC 9171 canonical CBOR encoding requirements")]
+    NotCanonical,
 
     /// Indicates that a bundle does not contain a block
     /// Usually returned from an accessor function, such as decrypt_block
