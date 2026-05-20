@@ -1,8 +1,19 @@
-use super::*;
-use proto::cla::*;
+use std::sync::{Arc, Weak};
+
+use hardy_async::{CancellationToken, async_trait};
+use hardy_bpa::cla::{self, Cla, ClaAddressType, ClaContext, ForwardBundleResult, context::PeerOp};
+use hardy_bpv7::eid::NodeId;
+use tracing::{error, info, warn};
+
+use crate::proto::cla::{
+    AddPeerRequest, DispatchBundleRequest, ForwardBundleRequest, ForwardBundleResponse,
+    RegisterClaRequest, RemovePeerRequest, bpa_to_cla, cla_client, cla_to_bpa,
+    forward_bundle_response,
+};
+use crate::proxy::{ProxyHandler, RpcProxy};
 
 async fn forward(
-    cla: &dyn hardy_bpa::cla::Cla,
+    cla: &dyn Cla,
     request: ForwardBundleRequest,
 ) -> Result<ForwardBundleResponse, tonic::Status> {
     let cla_addr = request
@@ -15,10 +26,8 @@ async fn forward(
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
-        hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
-        hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
-            forward_bundle_response::Result::NoNeighbour(())
-        }
+        ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
+        ForwardBundleResult::NoNeighbour => forward_bundle_response::Result::NoNeighbour(()),
     };
 
     Ok(ForwardBundleResponse {
@@ -26,89 +35,9 @@ async fn forward(
     })
 }
 
-struct Sink {
-    proxy: RpcProxy<ClaToBpa, BpaToCla>,
-}
-
-impl Sink {
-    async fn call(&self, msg: cla_to_bpa::Msg) -> hardy_bpa::cla::Result<bpa_to_cla::Msg> {
-        match self.proxy.call(msg).await {
-            Err(e) => Err(hardy_bpa::cla::Error::Internal(e.into())),
-            Ok(None) => Err(hardy_bpa::cla::Error::Disconnected),
-            Ok(Some(msg)) => Ok(msg),
-        }
-    }
-}
-
-#[async_trait]
-impl hardy_bpa::cla::Sink for Sink {
-    async fn dispatch(
-        &self,
-        bundle: hardy_bpa::Bytes,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
-    ) -> hardy_bpa::cla::Result<()> {
-        match self
-            .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
-                bundle,
-                peer_node_id: peer_node.map(|n| n.to_string()),
-                peer_addr: peer_addr.map(|a| a.clone().into()),
-            }))
-            .await?
-        {
-            bpa_to_cla::Msg::Dispatch(_) => Ok(()),
-            msg => {
-                warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::cla::Error::Internal(
-                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-                ))
-            }
-        }
-    }
-
-    async fn add_peer(
-        &self,
-        cla_addr: hardy_bpa::cla::ClaAddress,
-        node_ids: &[hardy_bpv7::eid::NodeId],
-    ) -> hardy_bpa::cla::Result<bool> {
-        match self
-            .call(cla_to_bpa::Msg::AddPeer(AddPeerRequest {
-                node_ids: node_ids.iter().map(|n| n.to_string()).collect(),
-                address: Some(cla_addr.into()),
-            }))
-            .await?
-        {
-            bpa_to_cla::Msg::AddPeer(response) => Ok(response.added),
-            msg => Err(hardy_bpa::cla::Error::Internal(
-                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-            )),
-        }
-    }
-
-    async fn remove_peer(
-        &self,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
-    ) -> hardy_bpa::cla::Result<bool> {
-        match self
-            .call(cla_to_bpa::Msg::RemovePeer(RemovePeerRequest {
-                address: Some(cla_addr.clone().into()),
-            }))
-            .await?
-        {
-            bpa_to_cla::Msg::RemovePeer(response) => Ok(response.removed),
-            msg => Err(hardy_bpa::cla::Error::Internal(
-                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-            )),
-        }
-    }
-
-    async fn unregister(&self) {
-        self.proxy.shutdown().await;
-    }
-}
-
 struct Handler {
-    cla: Weak<dyn hardy_bpa::cla::Cla>,
+    cla: Weak<dyn Cla>,
+    shutdown: CancellationToken,
 }
 
 #[async_trait]
@@ -138,6 +67,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
+        self.shutdown.cancel();
         if let Some(cla) = self.cla.upgrade() {
             cla.on_unregister().await;
         }
@@ -147,38 +77,36 @@ impl ProxyHandler for Handler {
 pub async fn register_cla(
     grpc_addr: String,
     name: String,
-    cla: Arc<dyn hardy_bpa::cla::Cla>,
-) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
+    cla: Arc<dyn Cla>,
+) -> cla::Result<Vec<NodeId>> {
     let mut cla_client = cla_client::ClaClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
-            hardy_bpa::cla::Error::Internal(e.into())
+            cla::Error::Internal(e.into())
         })?;
 
-    // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 
-    // Call the service's streaming method
     let mut channel_receiver = cla_client
         .register(tokio_stream::wrappers::ReceiverStream::new(rx))
         .await
         .map_err(|e| {
             error!("CLA Registration failed: {e}");
-            hardy_bpa::cla::Error::Internal(e.into())
+            cla::Error::Internal(e.into())
         })?
         .into_inner();
 
-    // Send the initial registration message.
     let response = match RpcProxy::send(
         &mut channel_sender,
         &mut channel_receiver,
         cla_to_bpa::Msg::Register(RegisterClaRequest {
             name: name.clone(),
             address_type: cla.address_type().map(|a| {
+                use crate::proto::cla::ClaAddressType as ProtoClaAddressType;
                 match a {
-                    hardy_bpa::cla::ClaAddressType::Tcp => ClaAddressType::Tcp,
-                    hardy_bpa::cla::ClaAddressType::Private => ClaAddressType::Private,
+                    ClaAddressType::Tcp => ProtoClaAddressType::Tcp,
+                    ClaAddressType::Private => ProtoClaAddressType::Private,
                 }
                 .into()
             }),
@@ -187,13 +115,13 @@ pub async fn register_cla(
     .await
     .map_err(|e| {
         error!("Failed to send registration: {e}");
-        hardy_bpa::cla::Error::Internal(e.into())
+        cla::Error::Internal(e.into())
     })? {
-        None => return Err(hardy_bpa::cla::Error::Disconnected),
+        None => return Err(cla::Error::Disconnected),
         Some(bpa_to_cla::Msg::Register(response)) => response,
         Some(msg) => {
             error!("CLA Registration failed: Unexpected response: {msg:?}");
-            return Err(hardy_bpa::cla::Error::Internal(
+            return Err(cla::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             ));
         }
@@ -203,24 +131,61 @@ pub async fn register_cla(
         .node_ids
         .into_iter()
         .try_fold(Vec::new(), |mut v, node_id| {
-            v.push(node_id.parse::<hardy_bpv7::eid::NodeId>()?);
+            v.push(node_id.parse::<NodeId>()?);
             Ok::<_, hardy_bpv7::eid::Error>(v)
         })
         .map_err(|e| {
             error!("Failed to parse node IDs in response: {e}");
-            hardy_bpa::cla::Error::Internal(e.into())
+            cla::Error::Internal(e.into())
         })?;
+
+    let (ingress_tx, ingress_rx) = flume::unbounded();
+    let (peer_tx, peer_rx) = flume::unbounded();
+    let shutdown = hardy_async::CancellationToken::new();
+    let ctx = ClaContext::new(ingress_tx, peer_tx, shutdown.clone());
 
     let handler = Box::new(Handler {
         cla: Arc::downgrade(&cla),
+        shutdown,
     });
 
-    // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler);
+    let proxy = Arc::new(RpcProxy::run(channel_sender, channel_receiver, handler));
 
-    // Call on_register()
-    cla.on_register(Box::new(Sink { proxy }), node_ids.as_slice())
-        .await;
+    // Bridge ingress bundles to gRPC dispatch calls
+    let proxy_for_ingress = proxy.clone();
+    tokio::spawn(async move {
+        while let Ok(msg) = ingress_rx.recv_async().await {
+            let grpc_msg = cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
+                bundle: msg.data,
+                peer_node_id: msg.peer_node.map(|n| n.to_string()),
+                peer_addr: msg.peer_addr.map(|a| a.into()),
+            });
+            if proxy_for_ingress.call(grpc_msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Bridge peer ops to gRPC calls
+    let proxy_for_peers = proxy.clone();
+    tokio::spawn(async move {
+        while let Ok(op) = peer_rx.recv_async().await {
+            let grpc_msg = match op {
+                PeerOp::Add(addr, ids) => cla_to_bpa::Msg::AddPeer(AddPeerRequest {
+                    node_ids: ids.iter().map(|n| n.to_string()).collect(),
+                    address: Some(addr.into()),
+                }),
+                PeerOp::Remove(addr) => cla_to_bpa::Msg::RemovePeer(RemovePeerRequest {
+                    address: Some(addr.into()),
+                }),
+            };
+            if proxy_for_peers.call(grpc_msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    cla.on_register(ctx, node_ids.as_slice()).await;
 
     info!("Proxy CLA {name} started");
     Ok(node_ids)

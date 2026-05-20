@@ -19,13 +19,6 @@ impl DecapService {
         }
     }
 
-    /// Unregister this service from the BPA.
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
-
     /// Extract inner bundle from outer bundle payload.
     fn decapsulate(&self, outer_bytes: Bytes) -> Result<Bytes, Error> {
         // Parse the outer bundle
@@ -84,7 +77,7 @@ impl Service for DecapService {
         match self.decapsulate(data) {
             Ok(inner) => {
                 debug!("BIBE decapsulated bundle, dispatching");
-                if let Err(e) = self.cla.dispatch(inner).await {
+                if let Err(e) = self.cla.dispatch(inner) {
                     warn!("Failed to dispatch decapsulated bundle: {e}");
                 }
             }

@@ -6,7 +6,6 @@
 
 use hardy_async::async_trait;
 use hardy_bpa::{cla, routes, services};
-use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── RoutingContext mock helper ────────────────────────────────────────
@@ -17,46 +16,13 @@ pub fn mock_routing_context() -> (routes::RoutingContext, flume::Receiver<routes
     (routes::RoutingContext::new(tx, token), rx)
 }
 
-// ── CLA Sink ──────────────────────────────────────────────────────────
+// ── ClaContext mock helper ────────────────────────────────────────────
 
-pub struct MockClaSink {
-    unregistered: AtomicBool,
-}
-
-impl MockClaSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl cla::Sink for MockClaSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn dispatch(
-        &self,
-        _bundle: hardy_bpa::Bytes,
-        _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        Ok(())
-    }
-
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
-        Ok(true)
-    }
-
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
-        Ok(true)
-    }
+pub fn mock_cla_context() -> cla::ClaContext {
+    let (ingress_tx, _) = flume::unbounded();
+    let (peer_tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    cla::ClaContext::new(ingress_tx, peer_tx, token)
 }
 
 // ── ServiceSink ───────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 
-use hardy_async::async_trait;
-use hardy_bpa::routes::{RouteOp, RoutingAgent, RoutingContext};
+use hardy_async::{CancellationToken, async_trait};
+use hardy_bpa::routes::{self, RouteOp, RoutingAgent, RoutingContext};
 use hardy_bpv7::eid::NodeId;
 use tracing::{error, info, warn};
 
@@ -13,6 +13,7 @@ use crate::proxy::{ProxyHandler, RpcProxy};
 
 struct Handler {
     agent: Weak<dyn RoutingAgent>,
+    shutdown: CancellationToken,
 }
 
 #[async_trait]
@@ -28,6 +29,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
+        self.shutdown.cancel();
         if let Some(agent) = self.agent.upgrade() {
             agent.on_unregister().await;
         }
@@ -38,12 +40,12 @@ pub async fn register_routing_agent(
     grpc_addr: String,
     name: String,
     agent: Arc<dyn RoutingAgent>,
-) -> hardy_bpa::routes::Result<Vec<NodeId>> {
+) -> routes::Result<Vec<NodeId>> {
     let mut client = routing_agent_client::RoutingAgentClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            routes::Error::Internal(e.into())
         })?;
 
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
@@ -53,7 +55,7 @@ pub async fn register_routing_agent(
         .await
         .map_err(|e| {
             error!("Routing agent registration failed: {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            routes::Error::Internal(e.into())
         })?
         .into_inner();
 
@@ -66,13 +68,13 @@ pub async fn register_routing_agent(
     .await
     .map_err(|e| {
         error!("Failed to send registration: {e}");
-        hardy_bpa::routes::Error::Internal(e.into())
+        routes::Error::Internal(e.into())
     })? {
-        None => return Err(hardy_bpa::routes::Error::Disconnected),
+        None => return Err(routes::Error::Disconnected),
         Some(bpa_to_agent::Msg::Register(response)) => response,
         Some(msg) => {
             error!("Routing agent registration failed: Unexpected response: {msg:?}");
-            return Err(hardy_bpa::routes::Error::Internal(
+            return Err(routes::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             ));
         }
@@ -87,20 +89,19 @@ pub async fn register_routing_agent(
         })
         .map_err(|e| {
             error!("Failed to parse node IDs in response: {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            routes::Error::Internal(e.into())
         })?;
+
+    let (route_tx, route_rx) = flume::unbounded();
+    let shutdown = hardy_async::CancellationToken::new();
+    let ctx = RoutingContext::new(route_tx, shutdown.clone());
 
     let handler = Box::new(Handler {
         agent: Arc::downgrade(&agent),
+        shutdown,
     });
 
-    // Start the proxy for ongoing RPC communication
     let proxy = Arc::new(RpcProxy::run(channel_sender, channel_receiver, handler));
-
-    // Create a channel pair: agent sends RouteOps, we translate to gRPC
-    let (route_tx, route_rx) = flume::unbounded();
-    let shutdown = hardy_async::CancellationToken::new();
-    let ctx = RoutingContext::new(route_tx, shutdown);
 
     // Spawn a task that reads RouteOps and sends them as gRPC messages
     let proxy_clone = proxy.clone();

@@ -52,48 +52,43 @@ impl RandomBundle {
 }
 
 pub struct NullCla {
-    sink: Once<Box<dyn hardy_bpa::cla::Sink>>,
+    ctx: Once<hardy_bpa::cla::ClaContext>,
 }
 
 impl NullCla {
     pub fn new() -> Self {
-        Self { sink: Once::new() }
+        Self { ctx: Once::new() }
     }
-    pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
-        self.sink
+    pub fn dispatch(&self, bundle: hardy_bpa::Bytes) {
+        self.ctx
             .get()
             .expect("dispatch called before registration")
-            .dispatch(bundle, None, None)
-            .await
+            .dispatch(bundle, None, None);
     }
 }
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
-        sink.add_peer(
+    async fn on_register(&self, ctx: hardy_bpa::cla::ClaContext, _node_ids: &[NodeId]) {
+        ctx.add_peer(
             hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
-            &[NodeId::Ipn(IpnNodeId {
+            vec![NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 2,
             })],
-        )
-        .await
-        .expect("add_peer failed");
+        );
 
-        self.sink.call_once(|| sink);
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {
-        let Some(sink) = self.sink.get() else {
+        let Some(ctx) = self.ctx.get() else {
             panic!("Extra unregister!");
         };
 
-        sink.remove_peer(&hardy_bpa::cla::ClaAddress::Private(
+        ctx.remove_peer(hardy_bpa::cla::ClaAddress::Private(
             "fuzz".as_bytes().into(),
-        ))
-        .await
-        .expect("remove_peer failed");
+        ));
     }
 
     async fn forward(

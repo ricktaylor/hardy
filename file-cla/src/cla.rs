@@ -1,33 +1,23 @@
-use std::slice;
-
 use super::*;
 use hardy_bpa::async_trait;
+use hardy_bpa::cla::ClaContext;
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
-        // Register all peers with the BPA
+    async fn on_register(&self, ctx: ClaContext, _node_ids: &[NodeId]) {
         for (eid, path) in &self.inboxes {
-            if let Err(e) = sink
-                .add_peer(
-                    hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
-                        path.as_bytes(),
-                    )),
-                    slice::from_ref(eid),
-                )
-                .await
-            {
-                warn!("add_peer() failed: {e}");
-                return;
-            }
+            ctx.add_peer(
+                hardy_bpa::cla::ClaAddress::Private(hardy_bpa::Bytes::copy_from_slice(
+                    path.as_bytes(),
+                )),
+                vec![eid.clone()],
+            );
         }
 
-        let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
-        let sink = self.sink.call_once(|| sink);
+        let ctx = self.ctx.call_once(|| ctx);
 
-        // Start the file watcher if outbox is configured
         if let Some(outbox) = &self.outbox {
-            self.start_watcher(sink.clone(), outbox.clone()).await;
+            self.start_watcher(ctx.clone(), outbox.clone()).await;
         }
     }
 
@@ -41,16 +31,15 @@ impl hardy_bpa::cla::Cla for Cla {
         cla_addr: &hardy_bpa::cla::ClaAddress,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
-        let _sink = self.sink.get().ok_or_else(|| {
+        if !self.ctx.get().is_some_and(|c| c.is_connected()) {
             error!("forward called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
-        })?;
+            return Err(hardy_bpa::cla::Error::Disconnected);
+        }
 
         if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
             && self.inboxes.values().any(|p| p == addr_str)
         {
-            // Write bundle to peer's inbox directory
             let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
                 Ok(id) => {
                     let mut filename = format!("{}_{}", id.source, id.timestamp)

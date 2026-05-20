@@ -1,23 +1,12 @@
 use super::*;
+use hardy_bpa::cla::ClaContext;
 use notify_debouncer_full::{
     DebouncedEvent, new_debouncer,
     notify::{EventKind, RecursiveMode, event::CreateKind},
 };
 
 impl Cla {
-    /// Starts the file watcher for the outbox directory.
-    ///
-    /// This function spawns two background tasks:
-    /// 1. `watcher_task`: Monitors the `outbox` directory for new files. When a new
-    ///    file is created, its path is sent to the `forwarder_task`.
-    /// 2. `forwarder_task`: Receives file paths, reads the file content as a bundle,
-    ///    dispatches it to the BPA via the `sink`, and then deletes the file.
-    ///
-    /// # Arguments
-    ///
-    /// * `sink` - The sink to dispatch bundles to the BPA.
-    /// * `outbox` - The path to the directory to watch for outgoing bundles.
-    pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
+    pub async fn start_watcher(&self, ctx: ClaContext, outbox: String) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
         let cancel_token = self.tasks.cancel_token().clone();
@@ -27,7 +16,7 @@ impl Cla {
 
         let cancel_token = self.tasks.cancel_token().clone();
         hardy_async::spawn!(self.tasks, "forwarder_task", async move {
-            forwarder_task(sink, path_rx, cancel_token).await
+            forwarder_task(ctx, path_rx, cancel_token).await
         });
     }
 }
@@ -87,7 +76,7 @@ async fn watcher_task(
 }
 
 async fn forwarder_task(
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: ClaContext,
     rx: flume::Receiver<PathBuf>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
@@ -97,13 +86,10 @@ async fn forwarder_task(
                 Err(_) => break,
                 Ok(path) => {
                     if let Ok(buffer) = tokio::fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
-                        match sink.dispatch(buffer.into(), None, None).await {
-                            Err(e) => warn!("Failed to dispatch bundle: {e}"),
-                            Ok(_) => debug!("Dispatched '{}'",path.display()),
-                        }
+                        ctx.dispatch(buffer.into(), None, None);
+                        debug!("Dispatched '{}'", path.display());
                     }
 
-                    // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
                     tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
                         warn!("Failed to remove file '{}': {e}", path.display());
                     });

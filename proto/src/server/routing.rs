@@ -4,6 +4,7 @@ use hardy_async::async_trait;
 use hardy_async::sync::spin::{Mutex, Once};
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingContext};
+use hardy_bpv7::eid::NodeId;
 use tracing::warn;
 
 use crate::proto::routing::{
@@ -75,7 +76,7 @@ impl RemoteRoutingAgent {
 
 #[async_trait]
 impl RoutingAgent for RemoteRoutingAgent {
-    async fn on_register(&self, ctx: RoutingContext, _node_ids: &[hardy_bpv7::eid::NodeId]) {
+    async fn on_register(&self, ctx: RoutingContext, _node_ids: &[NodeId]) {
         *self.ctx.lock() = Some(ctx);
     }
 

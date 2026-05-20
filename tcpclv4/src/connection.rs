@@ -3,7 +3,6 @@ use rand::seq::IteratorRandom;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
-    slice,
     sync::{Arc, Mutex},
 };
 
@@ -25,7 +24,7 @@ struct ConnectionPoolInner {
 
 struct ConnectionPool {
     inner: Mutex<ConnectionPoolInner>,
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: hardy_bpa::cla::ClaContext,
     max_idle: usize,
     remote_addr: hardy_bpa::cla::ClaAddress,
 }
@@ -33,7 +32,7 @@ struct ConnectionPool {
 impl ConnectionPool {
     fn new(
         conn: Connection,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        ctx: hardy_bpa::cla::ClaContext,
         remote_addr: SocketAddr,
         max_idle: usize,
     ) -> Self {
@@ -44,7 +43,7 @@ impl ConnectionPool {
                 idle: vec![conn],
                 peers: HashSet::new(),
             }),
-            sink,
+            ctx,
             max_idle,
             remote_addr: hardy_bpa::cla::ClaAddress::Tcp(remote_addr),
         }
@@ -75,20 +74,8 @@ impl ConnectionPool {
             .trace_expect("Failed to lock mutex")
             .peers
             .insert(node_id.clone())
-            && !self
-                .sink
-                .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
-                .await
-                .unwrap_or_else(|e| {
-                    warn!("add_peer failed: {e:?}");
-                    false
-                })
         {
-            self.inner
-                .lock()
-                .trace_expect("Failed to lock mutex")
-                .peers
-                .remove(&node_id);
+            self.ctx.add_peer(self.remote_addr.clone(), vec![node_id]);
         }
     }
 
@@ -111,7 +98,7 @@ impl ConnectionPool {
         };
 
         if remove_addr {
-            _ = self.sink.remove_peer(&self.remote_addr).await;
+            self.ctx.remove_peer(self.remote_addr.clone());
             true
         } else {
             false
@@ -223,10 +210,10 @@ impl ConnectionRegistry {
         pools.clear();
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, ctx, conn)))]
     pub async fn register_session(
         &self,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        ctx: hardy_bpa::cla::ClaContext,
         conn: Connection,
         remote_addr: SocketAddr,
         node_id: Option<NodeId>,
@@ -245,7 +232,7 @@ impl ConnectionRegistry {
             std::collections::hash_map::Entry::Vacant(e) => e
                 .insert(Arc::new(connection::ConnectionPool::new(
                     conn,
-                    sink,
+                    ctx,
                     remote_addr,
                     self.max_idle,
                 )))

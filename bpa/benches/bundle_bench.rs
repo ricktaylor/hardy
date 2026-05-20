@@ -13,7 +13,7 @@ use std::sync::Arc;
 // -- Inline CLA — captures arrival time inside forward() --
 
 struct BenchCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    ctx: hardy_async::sync::spin::Once<cla::ClaContext>,
     arrival_tx: flume::Sender<std::time::Instant>,
 }
 
@@ -22,7 +22,7 @@ impl BenchCla {
         let (tx, rx) = flume::bounded(4096);
         (
             Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
                 arrival_tx: tx,
             }),
             rx,
@@ -32,8 +32,8 @@ impl BenchCla {
 
 #[async_trait]
 impl cla::Cla for BenchCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, ctx: cla::ClaContext, _node_ids: &[NodeId]) {
+        self.ctx.call_once(|| ctx);
     }
     async fn on_unregister(&self) {}
     async fn forward(
@@ -91,15 +91,10 @@ fn get_state() -> &'static BenchState {
                 allocator_id: 0,
                 node_number: 2,
             });
-            cla.sink
-                .get()
-                .unwrap()
-                .add_peer(
-                    cla::ClaAddress::Private("peer".as_bytes().into()),
-                    &[remote_node],
-                )
-                .await
-                .unwrap();
+            cla.ctx.get().unwrap().add_peer(
+                cla::ClaAddress::Private("peer".as_bytes().into()),
+                vec![remote_node],
+            );
 
             // BPA intentionally not shut down — lives for process lifetime (like fuzz harness)
             std::mem::forget(bpa);
@@ -169,12 +164,10 @@ fn throughput_benchmark(c: &mut Criterion) {
             rt.block_on(async {
                 state
                     .cla
-                    .sink
+                    .ctx
                     .get()
                     .unwrap()
-                    .dispatch(Bytes::from(data), None, None)
-                    .await
-                    .unwrap();
+                    .dispatch(Bytes::from(data), None, None);
                 state.arrival_rx.recv_async().await.unwrap();
             });
         })

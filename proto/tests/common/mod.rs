@@ -62,10 +62,8 @@ impl BpaRegistration for MockBpa {
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
     ) -> cla::Result<Vec<NodeId>> {
-        let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());
-        cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
-            .await;
+        cla.on_register(mock_cla_context(), &self.node_ids).await;
         Ok(self.node_ids.clone())
     }
 
@@ -130,30 +128,8 @@ impl BpaRegistration for MockBpa {
 
 // ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
 
-struct ClaSinkWrapper(Arc<MockClaSink>);
 struct ServiceSinkWrapper(Arc<MockServiceSink>);
 struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
-
-#[async_trait]
-impl cla::Sink for ClaSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn dispatch(
-        &self,
-        b: hardy_bpa::Bytes,
-        pn: Option<&NodeId>,
-        pa: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        self.0.dispatch(b, pn, pa).await
-    }
-    async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
-        self.0.add_peer(a, n).await
-    }
-    async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
-        self.0.remove_peer(a).await
-    }
-}
 
 #[async_trait]
 impl services::ServiceSink for ServiceSinkWrapper {

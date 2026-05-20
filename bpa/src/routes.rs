@@ -42,7 +42,7 @@ pub enum Error {
     AlreadyExists(String),
 
     /// The connection to the BPA has been lost.
-    #[error("The sink is disconnected")]
+    #[error("Disconnected from BPA")]
     Disconnected,
 
     /// An internal error occurred.
@@ -111,6 +111,8 @@ pub trait RoutingAgent: Send + Sync {
 /// ```
 pub struct StaticRoutingAgent {
     routes: Vec<(EidPattern, Action, u32)>,
+    // Stored to keep the channel alive: dropping it would close the channel
+    // and trigger route removal by the receiver task.
     ctx: hardy_async::sync::spin::Once<RoutingContext>,
 }
 

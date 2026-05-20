@@ -18,7 +18,7 @@ pub struct ConnectionContext {
     pub segment_mru: u64,
     pub transfer_mru: u64,
     pub node_ids: Arc<[NodeId]>,
-    pub sink: Arc<dyn hardy_bpa::cla::Sink>,
+    pub ctx: hardy_bpa::cla::ClaContext,
     pub registry: Arc<connection::ConnectionRegistry>,
     pub tls_config: Option<Arc<tls::TlsConfig>>,
     pub session_cancel_token: tokio_util::sync::CancellationToken,
@@ -300,7 +300,7 @@ impl ConnectionContext {
         let session = session::Session::new(
             transport_reader,
             writer_handle,
-            self.sink.clone(),
+            self.ctx.clone(),
             peer_node,
             peer_addr,
             keepalive_duration,
@@ -315,7 +315,7 @@ impl ConnectionContext {
         // Register the client for addr
         self.registry
             .register_session(
-                self.sink.clone(),
+                self.ctx.clone(),
                 connection::Connection { tx, local_addr },
                 remote_addr,
                 peer_init.node_id,

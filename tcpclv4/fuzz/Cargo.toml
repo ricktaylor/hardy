@@ -15,7 +15,9 @@ path = "src/lib.rs"
 [dependencies]
 libfuzzer-sys = "0.4"
 hardy-tcpclv4 = { path = "..", features = ["serde"] }
+hardy-async = { version = "0.1", path = "../../async" }
 hardy-bpa = { version = "0.1", path = "../../bpa" }
+flume = "0.12"
 hardy-bpv7 = { version = "0.5", path = "../../bpv7" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "net"] }
 bytes = "1"
