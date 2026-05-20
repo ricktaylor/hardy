@@ -203,7 +203,7 @@ fn parse_status_assertion(
         }
         *canonical = *canonical && a.is_definite();
 
-        let status = require_canonical(a, "status")?;
+        let status = a.parse().map_field_err::<Error>("status")?;
         if status {
             if let Some((timestamp, s)) = a
                 .try_parse::<(dtn_time::DtnTime, bool)>()
