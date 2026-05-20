@@ -84,11 +84,11 @@ impl ServiceContext {
             .map_err(|_| Error::Disconnected)?
     }
 
-    pub async fn cancel(&self, bundle_id: &BundleId) -> Result<bool> {
+    pub async fn cancel(&self, bundle_id: BundleId) -> Result<bool> {
         let (reply_tx, reply_rx) = flume::bounded(1);
         self.ops
             .send_async(ServiceOp::Cancel {
-                bundle_id: bundle_id.clone(),
+                bundle_id,
                 reply: reply_tx,
             })
             .await

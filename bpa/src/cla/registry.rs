@@ -191,23 +191,33 @@ impl ClaRegistry {
         let (peer_tx, peer_rx) = flume::unbounded();
         let shutdown = self.tasks.cancel_token().child_token();
 
-        let ctx = cla::ClaContext::new(ingress_tx, peer_tx, shutdown);
+        let ctx = cla::ClaContext::new(ingress_tx, peer_tx, shutdown.clone());
 
         // Spawn ingress receiver: dispatches received bundles to the BPA
         let dispatcher_clone = dispatcher.clone();
         let cla_name = Arc::clone(&entry.name);
+        let ingress_cancel = shutdown.clone();
         hardy_async::spawn!(self.tasks, "cla_ingress_receiver", async move {
-            while let Ok(msg) = ingress_rx.recv_async().await {
-                if let Err(e) = dispatcher_clone
-                    .receive_bundle(
-                        msg.data,
-                        Some(cla_name.clone()),
-                        msg.peer_node,
-                        msg.peer_addr,
-                    )
-                    .await
-                {
-                    warn!("Failed to process ingress bundle: {e}");
+            use futures::FutureExt;
+            loop {
+                futures::select_biased! {
+                    _ = ingress_cancel.cancelled().fuse() => break,
+                    msg = ingress_rx.recv_async().fuse() => match msg {
+                        Ok(msg) => {
+                            if let Err(e) = dispatcher_clone
+                                .receive_bundle(
+                                    msg.data,
+                                    Some(cla_name.clone()),
+                                    msg.peer_node,
+                                    msg.peer_addr,
+                                )
+                                .await
+                            {
+                                warn!("Failed to process ingress bundle: {e}");
+                            }
+                        }
+                        Err(_) => break,
+                    },
                 }
             }
         });
@@ -218,24 +228,29 @@ impl ClaRegistry {
         let dispatcher_for_peers = dispatcher.clone();
         hardy_async::spawn!(self.tasks, "cla_peer_receiver", async move {
             use cla::context::PeerOp;
-            while let Ok(op) = peer_rx.recv_async().await {
-                match op {
-                    PeerOp::Add(addr, ids) => {
-                        registry
-                            .add_peer(
-                                entry_for_peers.clone(),
-                                dispatcher_for_peers.clone(),
-                                addr,
-                                &ids,
-                            )
-                            .await;
-                    }
-                    PeerOp::Remove(addr) => {
-                        registry.remove_peer(entry_for_peers.clone(), &addr).await;
-                    }
+            use futures::FutureExt;
+            loop {
+                futures::select_biased! {
+                    _ = shutdown.cancelled().fuse() => break,
+                    op = peer_rx.recv_async().fuse() => match op {
+                        Ok(PeerOp::Add(addr, ids)) => {
+                            registry
+                                .add_peer(
+                                    entry_for_peers.clone(),
+                                    dispatcher_for_peers.clone(),
+                                    addr,
+                                    &ids,
+                                )
+                                .await;
+                        }
+                        Ok(PeerOp::Remove(addr)) => {
+                            registry.remove_peer(entry_for_peers.clone(), &addr).await;
+                        }
+                        Err(_) => break,
+                    },
                 }
             }
-            // Channel closed: CLA disconnected
+            // Channel closed or shutdown: CLA disconnected
             registry.unregister(entry_for_peers).await;
         });
 

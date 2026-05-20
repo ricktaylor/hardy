@@ -94,7 +94,7 @@ impl Application {
         let bundle_id = BundleId::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
         self.ctx()?
-            .cancel(&bundle_id)
+            .cancel(bundle_id)
             .await
             .map(|cancelled| bpa_to_app::Msg::Cancel(CancelResponse { cancelled }))
             .map_err(|e| tonic::Status::from_error(e.into()))

@@ -161,11 +161,11 @@ pub trait Cla: Send + Sync {
     /// Called when the CLA is being unregistered.
     ///
     /// This is called in two scenarios:
-    /// 1. The CLA dropped its Sink (CLA-initiated disconnection)
+    /// 1. The CLA dropped all context clones (CLA-initiated disconnection)
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     ///
     /// The CLA should perform cleanup: close connections, stop background tasks,
-    /// and release resources. After this returns, the Sink is no longer functional.
+    /// and release resources.
     async fn on_unregister(&self);
 
     /// Returns the address type this CLA handles, if any.

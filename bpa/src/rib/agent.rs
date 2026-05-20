@@ -43,33 +43,30 @@ impl Rib {
         let (route_tx, route_rx) = flume::unbounded();
         let shutdown = self.tasks.cancel_token().child_token();
 
-        let ctx = RoutingContext::new(route_tx, shutdown);
+        let ctx = RoutingContext::new(route_tx, shutdown.clone());
 
         let rib = self.clone();
         let agent_name = name.clone();
         hardy_async::spawn!(self.tasks, "routing_agent_receiver", async move {
-            while let Ok(op) = route_rx.recv_async().await {
-                match op {
-                    RouteOp::Add {
-                        pattern,
-                        action,
-                        priority,
-                    } => {
-                        rib.add(pattern, agent_name.clone(), action.into(), priority)
-                            .await;
-                    }
-                    RouteOp::Remove {
-                        pattern,
-                        action,
-                        priority,
-                    } => {
-                        rib.remove(&pattern, &agent_name, action.into(), priority)
-                            .await;
-                    }
+            use futures::FutureExt;
+            loop {
+                futures::select_biased! {
+                    _ = shutdown.cancelled().fuse() => break,
+                    op = route_rx.recv_async().fuse() => match op {
+                        Ok(RouteOp::Add { pattern, action, priority }) => {
+                            rib.add(pattern, agent_name.clone(), action.into(), priority)
+                                .await;
+                        }
+                        Ok(RouteOp::Remove { pattern, action, priority }) => {
+                            rib.remove(&pattern, &agent_name, action.into(), priority)
+                                .await;
+                        }
+                        Err(_) => break,
+                    },
                 }
             }
 
-            // Channel closed: component disconnected
+            // Channel closed or shutdown: unregister
             rib.unregister_agent(&agent_name).await;
         });
 

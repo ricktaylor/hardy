@@ -200,7 +200,7 @@ impl Bpa {
         //
         // 1. Routing agents - Remove dynamic routes (prevents new forwarding decisions)
         // 2. CLAs - Stop external bundle sources (network I/O)
-        // 3. Services - Stop internal bundle sources (applications calling sink.send())
+        // 3. Services - Stop internal bundle sources (applications calling ctx.send())
         // 4. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
         // 5. RIB - No more routing lookups needed
         // 6. Store - No more data access needed
