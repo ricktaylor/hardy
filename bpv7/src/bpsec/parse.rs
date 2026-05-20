@@ -1,7 +1,23 @@
 use super::*;
+use crate::error::HasInvalidField;
 use alloc::rc::Rc;
 use core::ops::Range;
 use smallvec::SmallVec;
+
+fn require_canonical<T, const D: usize>(
+    seq: &mut hardy_cbor::decode::Series<D>,
+    field: &'static str,
+) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    match seq.parse::<(T, bool)>() {
+        Err(e) => Err(Error::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
+        Ok((t, true)) => Ok(t),
+    }
+}
 
 /// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
 /// content, so every encoding violation (non-shortest, indefinite-
@@ -28,14 +44,7 @@ fn parse_ranges<const D: usize>(
                     return Err(Error::NotCanonical);
                 }
 
-                let (id, id_s) = a.parse::<(u64, bool)>().map_field_err::<Error>("id")?;
-                if !id_s {
-                    return Err(Error::InvalidField {
-                        field: "id",
-                        source: Box::new(Error::NotCanonical),
-                    });
-                }
-
+                let id = require_canonical(a, "id")?;
                 let data_start = offset + outer_offset + a.offset();
                 a.skip_value(16).map_field_err::<Error>("value")?;
                 Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
@@ -166,35 +175,13 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             }
 
             // Context
-            let (context, s): (Context, bool) =
-                seq.parse().map_field_err::<Error>("security context id")?;
-            if !s {
-                return Err(Error::InvalidField {
-                    field: "security context id",
-                    source: Box::new(Error::NotCanonical),
-                });
-            }
+            let context = require_canonical(seq, "security context id")?;
 
             // Flags
-            let (flags, s): (u64, bool) = seq
-                .parse()
-                .map_field_err::<Error>("security context flags")?;
-            if !s {
-                return Err(Error::InvalidField {
-                    field: "security context flags",
-                    source: Box::new(Error::NotCanonical),
-                });
-            }
+            let flags: u64 = require_canonical(seq, "security context flags")?;
 
             // Source
-            let (source, s): (eid::Eid, bool) =
-                seq.parse().map_field_err::<Error>("security source")?;
-            if !s {
-                return Err(Error::InvalidField {
-                    field: "security source",
-                    source: Box::new(Error::NotCanonical),
-                });
-            }
+            let source = require_canonical(seq, "security source")?;
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
