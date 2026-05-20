@@ -234,28 +234,36 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     }
 }
 
+/// Decodes a definite-length untagged byte string from `data[range]`.
+///
+/// Per RFC 9172 §4 (deterministic CBOR, no §4.1 carveout), tagged or
+/// indefinite-length byte strings are rejected with `NotCanonical`.
 #[cfg(feature = "rfc9173")]
-pub fn decode_box(
-    range: Range<usize>,
-    data: &[u8],
-) -> Result<(Box<[u8]>, bool), hardy_cbor::decode::Error> {
+pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> {
     let data = &data[range.start..range.end];
     hardy_cbor::decode::parse_value(data, |v, s, tags| match v {
-        hardy_cbor::decode::Value::Bytes(r) => Ok((data[r].into(), s && tags.is_empty())),
-        hardy_cbor::decode::Value::ByteStream(ranges) => Ok((
-            ranges
-                .into_iter()
-                .fold(Vec::new(), |mut acc, r| {
-                    acc.extend_from_slice(&data[r]);
-                    acc
-                })
-                .into(),
-            false,
-        )),
+        hardy_cbor::decode::Value::Bytes(r) if s && tags.is_empty() => Ok(data[r].into()),
+        hardy_cbor::decode::Value::Bytes(_) | hardy_cbor::decode::Value::ByteStream(_) => {
+            Err(Error::NotCanonical)
+        }
         value => Err(hardy_cbor::decode::Error::IncorrectType(
             "Untagged definite-length byte string".to_string(),
             value.type_name(!tags.is_empty()),
-        )),
+        )
+        .into()),
     })
     .map(|v| v.0)
+}
+
+/// Decodes a value of type `T` from `data`, rejecting any non-shortest
+/// encoding with `NotCanonical`. Used for rfc9173 parameter/result
+/// values whose leaf parser is `hardy_cbor`-error-typed (e.g. `ShaVariant`,
+/// `ScopeFlags`, `AesVariant`).
+#[cfg(feature = "rfc9173")]
+pub fn require_canonical_value<T>(data: &[u8]) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor<Error = hardy_cbor::decode::Error>,
+{
+    let (v, s) = hardy_cbor::decode::parse::<(T, bool)>(data)?;
+    if !s { Err(Error::NotCanonical) } else { Ok(v) }
 }
