@@ -20,10 +20,16 @@ pub fn mock_cla_context() -> cla::ClaContext {
     cla::ClaContext::new(ingress_tx, peer_tx, token)
 }
 
-// ── ServiceContext mock helper ────────────────────────────────────────
+// ── Service/App context mock helpers ─────────────────────────────────
 
 pub fn mock_service_context(endpoint: hardy_bpv7::eid::Eid) -> services::ServiceContext {
     let (tx, _) = flume::unbounded();
     let token = hardy_async::CancellationToken::new();
     services::ServiceContext::new(tx, endpoint, token)
+}
+
+pub fn mock_app_context(endpoint: hardy_bpv7::eid::Eid) -> services::AppContext {
+    let (tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    services::AppContext::new(tx, endpoint, token)
 }

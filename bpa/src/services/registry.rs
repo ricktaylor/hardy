@@ -12,7 +12,9 @@ use crate::dispatcher::Dispatcher;
 use crate::node_ids::NodeIds;
 use crate::rib::Rib;
 use crate::services::context::ServiceOp;
-use crate::services::{self, Application, Service as ServiceTrait, ServiceContext, StatusNotify};
+use crate::services::{
+    self, AppContext, Application, Service as ServiceTrait, ServiceContext, StatusNotify,
+};
 use crate::{Arc, HashMap};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
@@ -253,7 +255,6 @@ impl ServiceRegistry {
 
         let (ops_tx, ops_rx) = flume::unbounded();
         let shutdown = self.tasks.cancel_token().child_token();
-        let ctx = ServiceContext::new(ops_tx, eid.clone(), shutdown.clone());
 
         // Spawn receiver task for service operations
         let registry = self.clone();
@@ -318,8 +319,14 @@ impl ServiceRegistry {
         });
 
         match &service.service {
-            ServiceImpl::LowLevel(s) => s.on_register(&eid, ctx).await,
-            ServiceImpl::Application(a) => a.on_register(&eid, ctx).await,
+            ServiceImpl::LowLevel(s) => {
+                let ctx = ServiceContext::new(ops_tx, eid.clone(), shutdown.clone());
+                s.on_register(&eid, ctx).await;
+            }
+            ServiceImpl::Application(a) => {
+                let ctx = AppContext::new(ops_tx, eid.clone(), shutdown.clone());
+                a.on_register(&eid, ctx).await;
+            }
         }
         dispatcher.poll_service_waiting(&eid).await;
         metrics::gauge!("bpa.service.registered").increment(1.0);
@@ -365,7 +372,7 @@ mod tests {
     use crate::bpa::{Bpa, BpaRegistration};
 
     struct TestApp {
-        ctx: hardy_async::sync::spin::Once<ServiceContext>,
+        ctx: hardy_async::sync::spin::Once<AppContext>,
     }
 
     impl TestApp {
@@ -380,7 +387,7 @@ mod tests {
 
     #[async_trait]
     impl Application for TestApp {
-        async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+        async fn on_register(&self, _source: &Eid, ctx: AppContext) {
             self.ctx.call_once(|| ctx);
         }
         async fn on_unregister(&self) {}
@@ -427,7 +434,7 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // Dropping the ServiceContext triggers channel close, which the receiver
+    // Dropping the AppContext triggers channel close, which the receiver
     // task detects and unregisters the service. The service ID is then freed
     // for re-registration on the same BPA instance.
     #[tokio::test]
@@ -439,11 +446,11 @@ mod tests {
 
         // Register with a Mutex-based app so we can take the context
         struct DroppableApp {
-            ctx: std::sync::Mutex<Option<ServiceContext>>,
+            ctx: std::sync::Mutex<Option<AppContext>>,
         }
         #[async_trait]
         impl services::Application for DroppableApp {
-            async fn on_register(&self, _: &Eid, ctx: ServiceContext) {
+            async fn on_register(&self, _: &Eid, ctx: AppContext) {
                 *self.ctx.lock().unwrap() = Some(ctx);
             }
             async fn on_unregister(&self) {}

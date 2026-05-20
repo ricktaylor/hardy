@@ -1,7 +1,7 @@
 use super::*;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
-use hardy_bpa::services::ServiceContext;
+use hardy_bpa::services::AppContext;
 use hardy_bpv7::eid::Eid;
 
 #[derive(Arbitrary)]
@@ -38,7 +38,7 @@ pub struct Msg {
 }
 
 pub struct PipeService {
-    ctx: Once<ServiceContext>,
+    ctx: Once<AppContext>,
 }
 
 impl PipeService {
@@ -63,7 +63,7 @@ impl PipeService {
 
 #[async_trait]
 impl hardy_bpa::services::Application for PipeService {
-    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+    async fn on_register(&self, _source: &Eid, ctx: AppContext) {
         self.ctx.call_once(|| ctx);
     }
 

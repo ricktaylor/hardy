@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::Bytes;
 
-pub use context::ServiceContext;
+pub use context::{AppContext, ServiceContext};
 
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -86,7 +86,7 @@ pub enum StatusNotify {
 ///
 /// # Context Lifecycle
 ///
-/// The Application receives a [`ServiceContext`] in [`on_register`](Self::on_register).
+/// The Application receives an [`AppContext`] in [`on_register`](Self::on_register).
 /// Clone and store it if needed beyond initialization.
 /// Dropping all clones closes the channels, triggering unregistration.
 #[async_trait]
@@ -96,7 +96,7 @@ pub trait Application: Send + Sync {
     /// # Arguments
     /// * `source` - The endpoint ID assigned to this application
     /// * `ctx` - Channel-based context for sending bundles and managing lifecycle.
-    async fn on_register(&self, source: &Eid, ctx: ServiceContext);
+    async fn on_register(&self, source: &Eid, ctx: AppContext);
 
     /// Called when the Application is being unregistered.
     ///
@@ -125,7 +125,7 @@ pub trait Application: Send + Sync {
     );
 }
 
-/// Options controlling bundle construction when sending via [`ServiceContext::send`].
+/// Options controlling bundle construction when sending via [`AppContext::send`].
 ///
 /// All fields default to `false`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

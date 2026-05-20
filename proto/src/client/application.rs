@@ -1,7 +1,7 @@
 use std::sync::{Arc, Weak};
 
 use hardy_async::{CancellationToken, async_trait};
-use hardy_bpa::services::{self, Application, ServiceContext, StatusNotify, context::ServiceOp};
+use hardy_bpa::services::{self, AppContext, Application, StatusNotify, context::ServiceOp};
 use hardy_bpv7::bundle::Id as BundleId;
 use hardy_bpv7::eid::{self, Eid};
 use hardy_bpv7::status_report::ReasonCode;
@@ -212,7 +212,7 @@ pub async fn register_application_service(
 
     let (ops_tx, ops_rx) = flume::unbounded();
     let shutdown = CancellationToken::new();
-    let ctx = ServiceContext::new(ops_tx, eid.clone(), shutdown.clone());
+    let ctx = AppContext::new(ops_tx, eid.clone(), shutdown.clone());
 
     let handler = Box::new(Handler {
         service: Arc::downgrade(&service),

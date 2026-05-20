@@ -56,7 +56,7 @@ impl cla::Cla for PipelineCla {
 // ---------------------------------------------------------------------------
 
 struct TestApp {
-    ctx: hardy_async::sync::spin::Once<services::ServiceContext>,
+    ctx: hardy_async::sync::spin::Once<services::AppContext>,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
@@ -75,7 +75,7 @@ impl TestApp {
 
 #[async_trait]
 impl services::Application for TestApp {
-    async fn on_register(&self, _source: &Eid, ctx: services::ServiceContext) {
+    async fn on_register(&self, _source: &Eid, ctx: services::AppContext) {
         self.ctx.call_once(|| ctx);
     }
 

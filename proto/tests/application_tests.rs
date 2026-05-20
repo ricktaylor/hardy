@@ -5,7 +5,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::services::{Application, ServiceContext, StatusNotify};
+use hardy_bpa::services::{AppContext, Application, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ struct MockApplication {
     registered: AtomicBool,
     received: AtomicBool,
     status_notified: AtomicBool,
-    ctx: hardy_async::sync::spin::Mutex<Option<ServiceContext>>,
+    ctx: hardy_async::sync::spin::Mutex<Option<AppContext>>,
 }
 
 impl MockApplication {
@@ -28,14 +28,14 @@ impl MockApplication {
         }
     }
 
-    fn take_ctx(&self) -> Option<ServiceContext> {
+    fn take_ctx(&self) -> Option<AppContext> {
         self.ctx.lock().take()
     }
 }
 
 #[async_trait]
 impl Application for MockApplication {
-    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+    async fn on_register(&self, _source: &Eid, ctx: AppContext) {
         *self.ctx.lock() = Some(ctx);
         self.registered.store(true, Ordering::Relaxed);
     }

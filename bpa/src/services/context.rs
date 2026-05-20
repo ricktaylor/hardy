@@ -26,28 +26,54 @@ pub enum ServiceOp {
 }
 
 #[derive(Clone)]
-pub struct ServiceContext {
+struct ContextInner {
     ops: Sender<ServiceOp>,
     endpoint: Eid,
     shutdown: CancellationToken,
 }
 
+impl ContextInner {
+    async fn cancel(&self, bundle_id: BundleId) -> Result<bool> {
+        let (reply_tx, reply_rx) = flume::bounded(1);
+        self.ops
+            .send_async(ServiceOp::Cancel {
+                bundle_id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Error::Disconnected)?;
+        reply_rx
+            .recv_async()
+            .await
+            .map_err(|_| Error::Disconnected)?
+    }
+}
+
+/// Context for low-level services that send raw bundle bytes.
+#[derive(Clone)]
+pub struct ServiceContext {
+    inner: ContextInner,
+}
+
 impl ServiceContext {
     pub fn new(ops: Sender<ServiceOp>, endpoint: Eid, shutdown: CancellationToken) -> Self {
         Self {
-            ops,
-            endpoint,
-            shutdown,
+            inner: ContextInner {
+                ops,
+                endpoint,
+                shutdown,
+            },
         }
     }
 
     pub fn endpoint(&self) -> &Eid {
-        &self.endpoint
+        &self.inner.endpoint
     }
 
     pub async fn send_raw(&self, data: Bytes) -> Result<BundleId> {
         let (reply_tx, reply_rx) = flume::bounded(1);
-        self.ops
+        self.inner
+            .ops
             .send_async(ServiceOp::SendRaw {
                 data,
                 reply: reply_tx,
@@ -60,6 +86,40 @@ impl ServiceContext {
             .map_err(|_| Error::Disconnected)?
     }
 
+    pub async fn cancel(&self, bundle_id: BundleId) -> Result<bool> {
+        self.inner.cancel(bundle_id).await
+    }
+
+    pub fn shutdown_token(&self) -> &CancellationToken {
+        &self.inner.shutdown
+    }
+
+    pub fn is_connected(&self) -> bool {
+        !self.inner.ops.is_disconnected()
+    }
+}
+
+/// Context for high-level applications that send payloads with destination and options.
+#[derive(Clone)]
+pub struct AppContext {
+    inner: ContextInner,
+}
+
+impl AppContext {
+    pub fn new(ops: Sender<ServiceOp>, endpoint: Eid, shutdown: CancellationToken) -> Self {
+        Self {
+            inner: ContextInner {
+                ops,
+                endpoint,
+                shutdown,
+            },
+        }
+    }
+
+    pub fn endpoint(&self) -> &Eid {
+        &self.inner.endpoint
+    }
+
     pub async fn send(
         &self,
         destination: Eid,
@@ -68,7 +128,8 @@ impl ServiceContext {
         options: Option<SendOptions>,
     ) -> Result<BundleId> {
         let (reply_tx, reply_rx) = flume::bounded(1);
-        self.ops
+        self.inner
+            .ops
             .send_async(ServiceOp::Send {
                 destination,
                 data,
@@ -85,25 +146,14 @@ impl ServiceContext {
     }
 
     pub async fn cancel(&self, bundle_id: BundleId) -> Result<bool> {
-        let (reply_tx, reply_rx) = flume::bounded(1);
-        self.ops
-            .send_async(ServiceOp::Cancel {
-                bundle_id,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Error::Disconnected)?;
-        reply_rx
-            .recv_async()
-            .await
-            .map_err(|_| Error::Disconnected)?
+        self.inner.cancel(bundle_id).await
     }
 
     pub fn shutdown_token(&self) -> &CancellationToken {
-        &self.shutdown
+        &self.inner.shutdown
     }
 
     pub fn is_connected(&self) -> bool {
-        !self.ops.is_disconnected()
+        !self.inner.ops.is_disconnected()
     }
 }

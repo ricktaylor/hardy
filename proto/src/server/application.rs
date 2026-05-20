@@ -4,7 +4,7 @@ use hardy_async::async_trait;
 use hardy_async::sync::spin::{Mutex, Once};
 use hardy_bpa::Bytes;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::services::{self, ServiceContext, StatusNotify};
+use hardy_bpa::services::{self, AppContext, StatusNotify};
 use hardy_bpv7::bundle::Id as BundleId;
 use hardy_bpv7::eid::{self, Eid, Service as EidService};
 use hardy_bpv7::status_report::ReasonCode;
@@ -25,12 +25,12 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 }
 
 struct Application {
-    ctx: Mutex<Option<ServiceContext>>,
+    ctx: Mutex<Option<AppContext>>,
     proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
-    fn ctx(&self) -> Result<ServiceContext, tonic::Status> {
+    fn ctx(&self) -> Result<AppContext, tonic::Status> {
         self.ctx
             .lock()
             .clone()
@@ -107,7 +107,7 @@ impl Application {
 
 #[async_trait]
 impl services::Application for Application {
-    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+    async fn on_register(&self, _source: &Eid, ctx: AppContext) {
         *self.ctx.lock() = Some(ctx);
     }
 

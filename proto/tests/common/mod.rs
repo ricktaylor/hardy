@@ -88,7 +88,7 @@ impl BpaRegistration for MockBpa {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
         *self.last_application.lock() = Some(application.clone());
         application
-            .on_register(&endpoint, mock_service_context(endpoint.clone()))
+            .on_register(&endpoint, mock_app_context(endpoint.clone()))
             .await;
         Ok(endpoint)
     }
