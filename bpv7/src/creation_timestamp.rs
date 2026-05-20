@@ -146,13 +146,21 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
-            let (timestamp, s1) = a.parse().map_field_err::<Error>("bundle creation time")?;
+            let (timestamp, s1): (u64, bool) =
+                a.parse().map_field_err::<Error>("bundle creation time")?;
             if !s1 {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "bundle creation time",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
-            let (sequence_number, s2) = a.parse().map_field_err::<Error>("sequence number")?;
+            let (sequence_number, s2): (u64, bool) =
+                a.parse().map_field_err::<Error>("sequence number")?;
             if !s2 {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "sequence number",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             Ok((
                 CreationTimestamp {

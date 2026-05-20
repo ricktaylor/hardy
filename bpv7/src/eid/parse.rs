@@ -281,7 +281,10 @@ impl hardy_cbor::decode::FromCbor for Eid {
 
             let (scheme, s): (u64, bool) = a.parse().map_field_err::<Error>("EID scheme")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "EID scheme",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
 
             match scheme {
