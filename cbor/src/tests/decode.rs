@@ -897,14 +897,14 @@ fn head_consumed_bytes() {
     let data = hex!("C1 00");
     let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
-    assert_eq!(m.tags, alloc::vec![1]);
+    assert_eq!(m.tags.as_slice(), &[1u64]);
     assert_eq!(len, 2);
 
     // Nested tags: tag 1, tag 2 + uint 0 = 3 bytes of tags + 1 byte value = 4
     let data = hex!("C1 C2 00");
     let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
-    assert_eq!(m.tags, alloc::vec![1, 2]);
+    assert_eq!(m.tags.as_slice(), &[1u64, 2]);
     assert_eq!(len, 3);
 
     // False: 0xF4 — 1 byte

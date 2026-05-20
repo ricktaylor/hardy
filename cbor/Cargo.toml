@@ -19,6 +19,7 @@ crate-type = ["rlib"]
 thiserror = { version = "2", default-features = false }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 num-traits = { version = "0.2", default-features = false }
+smallvec = "1"
 
 [dev-dependencies]
 hex-literal = "1"

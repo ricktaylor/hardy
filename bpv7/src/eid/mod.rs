@@ -386,14 +386,9 @@ impl core::fmt::Display for Eid {
                 )
             }
             Eid::Unknown { scheme, data } => {
-                let r = hardy_cbor::decode::parse_value(data, |value, _, _| {
+                let r = hardy_cbor::decode::parse_value(data, |mut value, _, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DisplayError>::into)?;
-                    match value {
-                        hardy_cbor::decode::Value::Array(a) => a.skip_to_end(16),
-                        hardy_cbor::decode::Value::Map(m) => m.skip_to_end(16),
-                        _ => Ok(true),
-                    }
-                    .map_err(Into::<DisplayError>::into)
+                    value.skip(16).map_err(Into::<DisplayError>::into)
                 });
                 match r {
                     Ok(_) => Ok(()),

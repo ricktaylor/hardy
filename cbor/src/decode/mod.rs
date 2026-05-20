@@ -82,6 +82,35 @@ let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
 assert_eq!(len, bytes.len());
 ```
 
+## 3. Low-level Head
+
+Parse a [`Head`] when you want to dispatch on type and length without
+constructing a [`Value`] or running a closure. Useful on hot paths where
+you intend to stream a byte/text payload straight to a sink, or to skip
+an item you know you don't need.
+
+```
+use hardy_cbor::decode::{self, FromCbor, Head, Marker};
+
+// CBOR for `24(h'deadbeef')` — tag 24 wrapping a 4-byte byte string
+let bytes = &[0xd8, 0x18, 0x44, 0xde, 0xad, 0xbe, 0xef];
+
+// Peek at just the head: get the type, tags, and length of the head
+// itself without touching the payload.
+let (head, _shortest, head_len) = Head::from_cbor(bytes).unwrap();
+assert_eq!(head.tags.as_slice(), &[24]);
+
+match head.marker {
+    Marker::Bytes(Some(payload_len)) => {
+        // The payload sits at `head_len..head_len + payload_len`.
+        // Stream it directly — no intermediate allocation or Value.
+        let payload = &bytes[head_len..head_len + payload_len as usize];
+        assert_eq!(payload, b"\xde\xad\xbe\xef");
+    }
+    _ => panic!("expected a definite-length byte string"),
+}
+```
+
 [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
 use super::*;
@@ -236,16 +265,27 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
         }
     }
 
-    /// Skips over the content of the current value.
+    /// Finishes consuming this value, advancing the cursor past any nested
+    /// items.
     ///
-    /// For simple types this does nothing. For arrays and maps it consumes
-    /// all nested items until the end of the sequence is reached. Returns
-    /// whether every nested marker was minimally encoded; indefiniteness is
-    /// not considered (use [`Series::is_definite`] on the value itself if
-    /// you need that signal).
-    #[deprecated(
-        note = "use `decode::skip_value` on the byte slice, or `Series::skip_value` inside a sequence — both avoid the chunk-list and Series allocations made by parse_value"
-    )]
+    /// For scalars this is a no-op. For arrays and maps it walks every
+    /// remaining nested item until the end of the sequence. Returns
+    /// whether every nested marker was minimally encoded;
+    /// definite-vs-indefinite of the sequence itself is not considered
+    /// (use [`Series::is_definite`] on the value for that).
+    ///
+    /// # Which skip to use
+    ///
+    /// - If you do **not** need the [`Value`], call [`decode::skip_value`]
+    ///   on the byte slice. It walks the wire format directly and pays no
+    ///   chunk-list or `Series` allocation.
+    /// - If you are inside a sequence and want to skip a single item
+    ///   without parsing it, call [`Series::skip_value`].
+    /// - If you have already called [`decode::parse_value`] (typically
+    ///   because you needed the `Value` to inspect or format it) and now
+    ///   need to advance the cursor past the rest of that value, use this
+    ///   method. The allocations have already been paid; this just
+    ///   finishes the parse.
     pub fn skip(&mut self, mut max_recursion: usize) -> Result<bool, Error> {
         match self {
             Value::Array(a) => {

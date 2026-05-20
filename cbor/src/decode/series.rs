@@ -391,20 +391,33 @@ fn sequence_debug_fmt<const D: usize>(
 
 impl<const D: usize> core::fmt::Debug for Series<'_, D> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Debug needs to advance through the remaining items to format them,
+        // but `fmt` takes `&self` and can't mutate `*self.offset`. Build a
+        // throwaway `Series` that walks the same logical position without
+        // touching the real cursor:
+        //
+        //   - `data` is re-based to start at the original's current offset
+        //     so the clone's local `offset = 0` corresponds to where the
+        //     real cursor is now.
+        //   - `count` and `parsed` are carried across unchanged. They are
+        //     in the same units (items from the *start* of the sequence,
+        //     not from the clone's view), so the definite-length
+        //     termination check `self.parsed >= count` in `at_end` keeps
+        //     working as the clone advances `parsed`. Carrying `count`
+        //     without `parsed` (or vice versa) would either over- or
+        //     under-count and read past the end or stop early.
         let mut offset = 0;
-        {
-            let mut self_cloned = Series::<D> {
-                data: &self.data[*self.offset..],
-                count: self.count,
-                offset: &mut offset,
-                parsed: self.parsed,
-            };
+        let mut self_cloned = Series::<D> {
+            data: &self.data[*self.offset..],
+            count: self.count,
+            offset: &mut offset,
+            parsed: self.parsed,
+        };
 
-            match sequence_debug_fmt(&mut self_cloned, 16) {
-                Ok(s) => write!(f, "{s:?}"),
-                Err(DebugError::Rollup(s)) => write!(f, "{s:?}"),
-                Err(DebugError::Decode(e)) => write!(f, "<Error: {e}>"),
-            }
+        match sequence_debug_fmt(&mut self_cloned, 16) {
+            Ok(s) => write!(f, "{s:?}"),
+            Err(DebugError::Rollup(s)) => write!(f, "{s:?}"),
+            Err(DebugError::Decode(e)) => write!(f, "<Error: {e}>"),
         }
     }
 }
