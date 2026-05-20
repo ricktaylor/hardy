@@ -167,7 +167,8 @@ fn throughput_benchmark(c: &mut Criterion) {
                     .ctx
                     .get()
                     .unwrap()
-                    .dispatch(Bytes::from(data), None, None);
+                    .dispatch(Bytes::from(data), None, None)
+                    .await;
                 state.arrival_rx.recv_async().await.unwrap();
             });
         })

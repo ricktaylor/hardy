@@ -26,11 +26,12 @@ impl BibeCla {
         Ok(())
     }
 
-    pub(crate) fn dispatch(&self, bundle: Bytes) -> Result<(), Error> {
+    pub(crate) async fn dispatch(&self, bundle: Bytes) -> Result<(), Error> {
         self.ctx
             .get()
             .ok_or(Error::NotRegistered)?
-            .dispatch(bundle, None, None);
+            .dispatch(bundle, None, None)
+            .await;
         Ok(())
     }
 
@@ -84,6 +85,7 @@ impl Cla for BibeCla {
             .map_err(|e| hardy_bpa::cla::Error::Internal(e.into()))?;
 
         self.dispatch(encapsulated)
+            .await
             .map_err(|e| hardy_bpa::cla::Error::Internal(e.into()))?;
 
         Ok(ForwardBundleResult::Sent)

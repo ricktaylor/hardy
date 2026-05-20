@@ -37,12 +37,20 @@ impl ClaContext {
         }
     }
 
-    pub fn dispatch(&self, data: Bytes, peer_node: Option<NodeId>, peer_addr: Option<ClaAddress>) {
-        let _ = self.ingress.send(IngressBundle {
-            data,
-            peer_node,
-            peer_addr,
-        });
+    pub async fn dispatch(
+        &self,
+        data: Bytes,
+        peer_node: Option<NodeId>,
+        peer_addr: Option<ClaAddress>,
+    ) {
+        let _ = self
+            .ingress
+            .send_async(IngressBundle {
+                data,
+                peer_node,
+                peer_addr,
+            })
+            .await;
     }
 
     pub fn add_peer(&self, cla_addr: ClaAddress, node_ids: Vec<NodeId>) {

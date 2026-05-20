@@ -155,11 +155,13 @@ where
             // Send the bundle to the BPA
             // NOTE: This may block if BoundedTaskPool is full, but keepalives
             // are handled by the separate writer task so the session stays alive.
-            self.ctx.dispatch(
-                bundle.freeze(),
-                self.peer_node.clone(),
-                self.peer_addr.clone(),
-            );
+            self.ctx
+                .dispatch(
+                    bundle.freeze(),
+                    self.peer_node.clone(),
+                    self.peer_addr.clone(),
+                )
+                .await;
 
             metrics::counter!("tcpclv4.transfers.received").increment(1);
         }

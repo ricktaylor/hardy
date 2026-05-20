@@ -73,7 +73,7 @@ impl Service for DecapService {
         match self.decapsulate(data) {
             Ok(inner) => {
                 debug!("BIBE decapsulated bundle, dispatching");
-                if let Err(e) = self.cla.dispatch(inner) {
+                if let Err(e) = self.cla.dispatch(inner).await {
                     warn!("Failed to dispatch decapsulated bundle: {e}");
                 }
             }

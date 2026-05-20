@@ -63,7 +63,7 @@ async fn receive_loop<S>(
             result = framed.next() => match result {
                 Some(Ok(bundle)) => {
                     debug!(%remote_addr, len = bundle.len(), "Received bundle");
-                    ctx.dispatch(bundle, None, peer_addr.clone());
+                    ctx.dispatch(bundle, None, peer_addr.clone()).await;
                 }
                 Some(Err(e)) => {
                     debug!(%remote_addr, "Connection error: {e}");

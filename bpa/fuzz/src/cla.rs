@@ -59,11 +59,12 @@ impl NullCla {
     pub fn new() -> Self {
         Self { ctx: Once::new() }
     }
-    pub fn dispatch(&self, bundle: hardy_bpa::Bytes) {
+    pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) {
         self.ctx
             .get()
             .expect("dispatch called before registration")
-            .dispatch(bundle, None, None);
+            .dispatch(bundle, None, None)
+            .await;
     }
 }
 

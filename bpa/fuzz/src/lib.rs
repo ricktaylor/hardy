@@ -193,11 +193,11 @@ impl Msg {
                     match msg {
                         Msg::Cla(bundle) => {
                             if let Ok(b) = bundle.into_bundle() {
-                                cla.dispatch(b);
+                                cla.dispatch(b).await;
                             }
                         }
                         Msg::ClaBytes(bytes) => {
-                            cla.dispatch(bytes.into());
+                            cla.dispatch(bytes.into()).await;
                         }
                         Msg::Service(msg) => {
                             _ = service

@@ -60,7 +60,9 @@ impl Cla {
 
         let peer_addr: Option<ClaAddress> = request.peer_addr.map(|a| a.try_into()).transpose()?;
 
-        self.ctx()?.dispatch(request.bundle, peer_node, peer_addr);
+        self.ctx()?
+            .dispatch(request.bundle, peer_node, peer_addr)
+            .await;
 
         Ok(bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
     }

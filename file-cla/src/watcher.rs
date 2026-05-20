@@ -86,7 +86,7 @@ async fn forwarder_task(
                 Err(_) => break,
                 Ok(path) => {
                     if let Ok(buffer) = tokio::fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
-                        ctx.dispatch(buffer.into(), None, None);
+                        ctx.dispatch(buffer.into(), None, None).await;
                         debug!("Dispatched '{}'", path.display());
                     }
 

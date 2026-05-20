@@ -139,7 +139,7 @@ pub async fn register_cla(
             cla::Error::Internal(e.into())
         })?;
 
-    let (ingress_tx, ingress_rx) = flume::unbounded();
+    let (ingress_tx, ingress_rx) = flume::bounded(16);
     let (peer_tx, peer_rx) = flume::unbounded();
     let shutdown = hardy_async::CancellationToken::new();
     let ctx = ClaContext::new(ingress_tx, peer_tx, shutdown.clone());

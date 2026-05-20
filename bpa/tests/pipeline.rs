@@ -395,7 +395,8 @@ async fn echo_round_trip() {
     cla.ctx
         .get()
         .unwrap()
-        .dispatch(inbound, Some(remote_node), None);
+        .dispatch(inbound, Some(remote_node), None)
+        .await;
 
     // The echo service should reflect the bundle back:
     // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
@@ -461,7 +462,7 @@ async fn local_delivery() {
     let inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
-    cla.ctx.get().unwrap().dispatch(inbound, None, None);
+    cla.ctx.get().unwrap().dispatch(inbound, None, None).await;
 
     // Application should receive the payload
     let (source, payload) =
@@ -528,7 +529,7 @@ async fn throughput() {
 
     // Warm up
     for (i, bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.ctx.get().unwrap().dispatch(bundle, None, None);
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
             .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
@@ -540,7 +541,7 @@ async fn throughput() {
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
     for (i, bundle) in test_bundles.into_iter().enumerate() {
-        cla.ctx.get().unwrap().dispatch(bundle, None, None);
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         last_arrival =
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
                 .await
@@ -613,7 +614,7 @@ async fn forwarding_latency() {
 
     // Warm up
     for (i, bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.ctx.get().unwrap().dispatch(bundle, None, None);
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
             .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
@@ -627,7 +628,7 @@ async fn forwarding_latency() {
 
     for (i, bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
-        cla.ctx.get().unwrap().dispatch(bundle, None, None);
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         let arrived =
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
                 .await

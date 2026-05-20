@@ -104,7 +104,7 @@ async fn cla_cli_02_dispatch_bundle() {
     let ctx = cla.take_ctx().expect("CLA should have a context");
 
     let bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
-    ctx.dispatch(bundle_data, None, None);
+    ctx.dispatch(bundle_data, None, None).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

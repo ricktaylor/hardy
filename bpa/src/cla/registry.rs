@@ -187,7 +187,7 @@ impl ClaRegistry {
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
-        let (ingress_tx, ingress_rx) = flume::unbounded();
+        let (ingress_tx, ingress_rx) = flume::bounded(self.poll_channel_depth);
         let (peer_tx, peer_rx) = flume::unbounded();
         let shutdown = self.tasks.cancel_token().child_token();
 
