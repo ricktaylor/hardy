@@ -1965,6 +1965,7 @@ dependencies = [
  "half",
  "hex-literal",
  "num-traits",
+ "smallvec",
  "thiserror",
 ]
 

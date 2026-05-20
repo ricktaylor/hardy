@@ -1,4 +1,15 @@
 use super::*;
+use smallvec::SmallVec;
+
+/// Tag list carried inside a [`Head`].
+///
+/// Stored inline up to one tag — the overwhelmingly common case for BPv7
+/// (most items untagged; the occasional CRC, BPSec, or CBOR-in-CBOR wrap
+/// uses a single tag). Items with two or more tags spill to the heap.
+/// Picking inline capacity 1 keeps the struct size close to `Vec<u64>`
+/// while removing the per-parse allocation that the previous `Vec`
+/// representation paid on every untagged item.
+pub type Tags = SmallVec<[u64; 1]>;
 
 /// The head of a single CBOR data item.
 ///
@@ -116,8 +127,9 @@ pub enum Marker {
 ///   them.
 pub struct Head {
     /// CBOR major-type-6 tags preceding the item, in encoding order. Empty
-    /// if the item is untagged.
-    pub tags: Vec<u64>,
+    /// if the item is untagged. Stored inline for the common 0-1 tag case;
+    /// see [`Tags`] for details.
+    pub tags: Tags,
     /// The decoded marker for the item itself.
     pub marker: Marker,
 }
@@ -155,7 +167,8 @@ impl FromCbor for Head {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (tags, mut shortest, mut offset) = parse_tags(data)?;
+        let mut tags = Tags::new();
+        let (mut shortest, mut offset) = parse_tags(data, &mut tags)?;
         let Some(marker) = data.get(offset) else {
             return Err(Error::NeedMoreData(1));
         };
@@ -299,8 +312,7 @@ impl FromCbor for Head {
     }
 }
 
-fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
-    let mut tags = Vec::new();
+fn parse_tags(data: &[u8], tags: &mut Tags) -> Result<(bool, usize), Error> {
     let mut offset = 0;
     let mut shortest = true;
 
@@ -316,7 +328,7 @@ fn parse_tags(data: &[u8]) -> Result<(Vec<u64>, bool, usize), Error> {
             _ => break,
         }
     }
-    Ok((tags, shortest, offset))
+    Ok((shortest, offset))
 }
 
 #[inline]

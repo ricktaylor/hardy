@@ -343,18 +343,9 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     }
 
     let mut results = Vec::new();
-    while let Ok((s, len)) = hardy_cbor::decode::parse_value(data, |v, _, _| {
+    while let Ok((s, len)) = hardy_cbor::decode::parse_value(data, |mut v, _, _| {
         let s = format!("{v:?}");
-
-        match v {
-            hardy_cbor::decode::Value::Array(array) => {
-                array.skip_to_end(16)?;
-            }
-            hardy_cbor::decode::Value::Map(map) => {
-                map.skip_to_end(16)?;
-            }
-            _ => {}
-        }
+        v.skip(16)?;
         Ok::<_, hardy_cbor::decode::Error>(s)
     }) {
         results.push(s);
