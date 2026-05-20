@@ -292,11 +292,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                 1 => a
                     .parse_value(|value, s, tags| {
                         if !tags.is_empty() {
-                            return Err(hardy_cbor::decode::Error::IncorrectType(
-                                "Untagged Text String or Unsigned Integer 0".to_string(),
-                                value.type_name(!tags.is_empty()),
-                            )
-                            .into());
+                            return Err(Error::NotCanonical);
                         }
                         match value {
                             hardy_cbor::decode::Value::UnsignedInteger(0) => {
@@ -335,7 +331,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             }
                             value => Err(hardy_cbor::decode::Error::IncorrectType(
                                 "Untagged Text String or Unsigned Integer 0".to_string(),
-                                value.type_name(!tags.is_empty()),
+                                value.type_name(false),
                             )
                             .into()),
                         }
