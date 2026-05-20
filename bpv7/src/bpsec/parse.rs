@@ -30,7 +30,10 @@ fn parse_ranges<const D: usize>(
 
                 let (id, id_s) = a.parse::<(u64, bool)>().map_field_err::<Error>("id")?;
                 if !id_s {
-                    return Err(Error::NotCanonical);
+                    return Err(Error::InvalidField {
+                        field: "id",
+                        source: Box::new(Error::NotCanonical),
+                    });
                 }
 
                 let data_start = offset + outer_offset + a.offset();
@@ -163,9 +166,13 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             }
 
             // Context
-            let (context, s) = seq.parse().map_field_err::<Error>("security context id")?;
+            let (context, s): (Context, bool) =
+                seq.parse().map_field_err::<Error>("security context id")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "security context id",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
 
             // Flags
@@ -173,13 +180,20 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 .parse()
                 .map_field_err::<Error>("security context flags")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "security context flags",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
 
             // Source
-            let (source, s) = seq.parse().map_field_err::<Error>("security source")?;
+            let (source, s): (eid::Eid, bool) =
+                seq.parse().map_field_err::<Error>("security source")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "security source",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);

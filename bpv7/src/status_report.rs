@@ -27,6 +27,12 @@ pub enum Error {
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
+    /// Indicates a violation of the canonical CBOR encoding requirements
+    /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
+    /// array head, or unexpected tags in a status-report field.
+    #[error("Status report violates RFC 9171 canonical CBOR encoding requirements")]
+    NotCanonical,
+
     /// Error resulting from invalid CBOR data.
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
@@ -185,9 +191,12 @@ fn parse_status_assertion(
         }
         *canonical = *canonical && a.is_definite();
 
-        let (status, s) = a.parse().map_field_err::<Error>("status")?;
+        let (status, s): (bool, bool) = a.parse().map_field_err::<Error>("status")?;
         if !s {
-            return Err(Error::NotCanonical);
+            return Err(Error::InvalidField {
+                field: "status",
+                source: Box::new(Error::NotCanonical),
+            });
         }
 
         if status {
@@ -196,7 +205,10 @@ fn parse_status_assertion(
                 .map_field_err::<Error>("timestamp")?
             {
                 if !s {
-                    return Err(Error::NotCanonical);
+                    return Err(Error::InvalidField {
+                        field: "timestamp",
+                        source: Box::new(Error::NotCanonical),
+                    });
                 }
                 if timestamp.millisecs() == 0 {
                     Ok::<_, Error>(Some(StatusAssertion(None)))
@@ -302,20 +314,30 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
             })
             .map_field_err::<Error>("bundle status information")?;
 
-            let (reason, s) = a.parse().map_field_err::<Error>("reason")?;
+            let (reason, s): (ReasonCode, bool) = a.parse().map_field_err::<Error>("reason")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "reason",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             report.reason = reason;
 
-            let (source, s) = a.parse().map_field_err::<Error>("source")?;
+            let (source, s): (eid::Eid, bool) = a.parse().map_field_err::<Error>("source")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "source",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
 
-            let (timestamp, s) = a.parse().map_field_err::<Error>("timestamp")?;
+            let (timestamp, s): (creation_timestamp::CreationTimestamp, bool) =
+                a.parse().map_field_err::<Error>("timestamp")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "timestamp",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
 
             report.bundle_id = bundle::Id {
@@ -329,13 +351,19 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                 .map_field_err::<Error>("fragment offset")?
             {
                 if !s {
-                    return Err(Error::NotCanonical);
+                    return Err(Error::InvalidField {
+                        field: "fragment offset",
+                        source: Box::new(Error::NotCanonical),
+                    });
                 }
-                let (total_adu_length, s) = a
+                let (total_adu_length, s): (u64, bool) = a
                     .parse()
                     .map_field_err::<Error>("fragment total ADU length")?;
                 if !s {
-                    return Err(Error::NotCanonical);
+                    return Err(Error::InvalidField {
+                        field: "fragment total ADU length",
+                        source: Box::new(Error::NotCanonical),
+                    });
                 }
                 report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
@@ -386,7 +414,10 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
 
             let (code, s): (u64, bool) = a.parse().map_field_err::<Error>("record type code")?;
             if !s {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "record type code",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             match code {
                 1u64 => {
