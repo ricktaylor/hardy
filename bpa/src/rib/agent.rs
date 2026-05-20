@@ -1,67 +1,25 @@
-use super::*;
-use hardy_eid_patterns::EidPattern;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use hardy_bpv7::eid::NodeId;
+use tracing::info;
+
+use super::Rib;
+use super::context::{RouteOp, RoutingContext};
+use crate::hash_map;
+use crate::routes::{self, RoutingAgent};
 
 pub(crate) struct Agent {
-    agent: Arc<dyn routes::RoutingAgent>,
+    agent: Arc<dyn RoutingAgent>,
     pub(crate) name: String,
-}
-
-struct Sink {
-    agent: Weak<Agent>,
-    rib: Arc<Rib>,
-}
-
-#[async_trait]
-impl routes::RoutingSink for Sink {
-    async fn unregister(&self) {
-        if let Some(agent) = self.agent.upgrade() {
-            self.rib.unregister_agent(agent).await;
-        }
-    }
-
-    async fn add_route(
-        &self,
-        pattern: EidPattern,
-        action: routes::Action,
-        priority: u32,
-    ) -> routes::Result<bool> {
-        let agent = self.agent.upgrade().ok_or(routes::Error::Disconnected)?;
-        Ok(self
-            .rib
-            .add(pattern, agent.name.clone(), action.into(), priority)
-            .await)
-    }
-
-    async fn remove_route(
-        &self,
-        pattern: &EidPattern,
-        action: &routes::Action,
-        priority: u32,
-    ) -> routes::Result<bool> {
-        let agent = self.agent.upgrade().ok_or(routes::Error::Disconnected)?;
-        Ok(self
-            .rib
-            .remove(pattern, &agent.name, action.clone().into(), priority)
-            .await)
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(agent) = self.agent.upgrade() {
-            let rib = self.rib.clone();
-            hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
-                rib.unregister_agent(agent).await;
-            });
-        }
-    }
 }
 
 impl Rib {
     pub(crate) async fn register_agent(
         self: &Arc<Self>,
         name: String,
-        agent: Arc<dyn routes::RoutingAgent>,
+        agent: Arc<dyn RoutingAgent>,
     ) -> routes::Result<Vec<NodeId>> {
         let agent = {
             let mut agents = self.agents.lock();
@@ -71,29 +29,57 @@ impl Rib {
 
             info!("Registered new routing agent: {name}");
 
-            e.insert(Arc::new(Agent { agent, name })).clone()
+            e.insert(Arc::new(Agent {
+                agent,
+                name: name.clone(),
+            }))
+            .clone()
         };
 
         metrics::gauge!("bpa.rib.agents").increment(1.0);
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
-        agent
-            .agent
-            .on_register(
-                Box::new(Sink {
-                    agent: Arc::downgrade(&agent),
-                    rib: self.clone(),
-                }),
-                &node_ids,
-            )
-            .await;
+        let (route_tx, route_rx) = flume::unbounded();
+        let shutdown = self.tasks.cancel_token().child_token();
+
+        let ctx = RoutingContext::new(route_tx, shutdown);
+
+        let rib = self.clone();
+        let agent_name = name.clone();
+        hardy_async::spawn!(self.tasks, "routing_agent_receiver", async move {
+            while let Ok(op) = route_rx.recv_async().await {
+                match op {
+                    RouteOp::Add {
+                        pattern,
+                        action,
+                        priority,
+                    } => {
+                        rib.add(pattern, agent_name.clone(), action.into(), priority)
+                            .await;
+                    }
+                    RouteOp::Remove {
+                        pattern,
+                        action,
+                        priority,
+                    } => {
+                        rib.remove(&pattern, &agent_name, action.into(), priority)
+                            .await;
+                    }
+                }
+            }
+
+            // Channel closed: component disconnected
+            rib.unregister_agent(&agent_name).await;
+        });
+
+        agent.agent.on_register(ctx, &node_ids).await;
 
         Ok(node_ids)
     }
 
-    async fn unregister_agent(&self, agent: Arc<Agent>) {
-        let agent = self.agents.lock().remove(&agent.name);
+    pub(crate) async fn unregister_agent(&self, name: &str) {
+        let agent = self.agents.lock().remove(name);
 
         if let Some(agent) = agent {
             metrics::gauge!("bpa.rib.agents").decrement(1.0);

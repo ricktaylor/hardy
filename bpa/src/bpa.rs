@@ -110,11 +110,11 @@ use crate::{Arc, otel_metrics, services};
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routes::RoutingSink`] in
-/// [`routes::RoutingAgent::on_register`]. Key Sink methods:
+/// Routing agents receive a [`routes::RoutingContext`] in
+/// [`routes::RoutingAgent::on_register`]. Key context methods:
 ///
-/// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
-/// - `unregister()` - Disconnect from the BPA
+/// - `add_route()` / `remove_route()` - Manage routes in the RIB (fire-and-forget via channel)
+/// - Dropping the context disconnects from the BPA
 ///
 /// For simple static route sets, use [`routes::StaticRoutingAgent`] instead
 /// of implementing the trait manually.
@@ -175,7 +175,7 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Register a Routing Agent with the BPA.
     ///
-    /// The routing agent will receive a [`routes::RoutingSink`] via
+    /// The routing agent will receive a [`routes::RoutingContext`] in
     /// [`routes::RoutingAgent::on_register`] for managing routes in the RIB.
     ///
     /// # Arguments

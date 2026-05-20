@@ -1,16 +1,25 @@
-use super::*;
-use proto::routing::*;
+use std::sync::Arc;
 
-type RoutingSink = Arc<dyn hardy_bpa::routes::RoutingSink>;
+use hardy_async::async_trait;
+use hardy_async::sync::spin::{Mutex, Once};
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::routes::{Action, RoutingAgent, RoutingContext};
+use tracing::warn;
+
+use crate::proto::routing::{
+    AddRouteRequest, AddRouteResponse, AgentToBpa, BpaToAgent, RegisterRoutingAgentResponse,
+    RemoveRouteRequest, RemoveRouteResponse, agent_to_bpa, bpa_to_agent, routing_agent_server,
+};
+use crate::proxy::{ProxyHandler, RpcProxy};
 
 struct RemoteRoutingAgent {
-    sink: Mutex<Option<RoutingSink>>,
+    ctx: Mutex<Option<RoutingContext>>,
     proxy: Once<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
 }
 
 impl RemoteRoutingAgent {
-    fn sink(&self) -> Result<RoutingSink, tonic::Status> {
-        self.sink
+    fn ctx(&self) -> Result<RoutingContext, tonic::Status> {
+        self.ctx
             .lock()
             .clone()
             .ok_or(tonic::Status::unavailable("Unregistered"))
@@ -25,18 +34,16 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routes::Action = request
+        let action: Action = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
 
-        let added = self
-            .sink()?
-            .add_route(pattern, action, request.priority)
-            .await
-            .map_err(|e| tonic::Status::from_error(e.into()))?;
+        self.ctx()?.add_route(pattern, action, request.priority);
 
-        Ok(bpa_to_agent::Msg::AddRoute(AddRouteResponse { added }))
+        Ok(bpa_to_agent::Msg::AddRoute(AddRouteResponse {
+            added: true,
+        }))
     }
 
     async fn remove_route(
@@ -48,43 +55,32 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routes::Action = request
+        let action: Action = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
 
-        let removed = self
-            .sink()?
-            .remove_route(&pattern, &action, request.priority)
-            .await
-            .map_err(|e| tonic::Status::from_error(e.into()))?;
+        self.ctx()?
+            .remove_route(&pattern, &action, request.priority);
 
         Ok(bpa_to_agent::Msg::RemoveRoute(RemoveRouteResponse {
-            removed,
+            removed: true,
         }))
     }
 
-    /// Take the sink and unregister from the BPA. No-op if already taken.
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
+    fn disconnect(&self) {
+        self.ctx.lock().take();
     }
 }
 
 #[async_trait]
-impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::routes::RoutingSink>,
-        _node_ids: &[hardy_bpv7::eid::NodeId],
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
+impl RoutingAgent for RemoteRoutingAgent {
+    async fn on_register(&self, ctx: RoutingContext, _node_ids: &[hardy_bpv7::eid::NodeId]) {
+        *self.ctx.lock() = Some(ctx);
     }
 
     async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
+        if self.ctx.lock().take().is_none() {
             return;
         }
 
@@ -120,7 +116,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.agent.unregister().await;
+        self.agent.disconnect();
         if let Some(proxy) = self.agent.proxy.get() {
             proxy.cancel();
         }
@@ -128,7 +124,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -144,8 +140,6 @@ impl routing_agent_server::RoutingAgent for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "routing_session", async move {
             run_routing_session(channel_sender, channel_receiver, bpa).await;
@@ -160,14 +154,13 @@ impl routing_agent_server::RoutingAgent for Service {
 async fn run_routing_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToAgent, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<AgentToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
 ) {
     let agent = Arc::new(RemoteRoutingAgent {
-        sink: Mutex::new(None),
+        ctx: Mutex::new(None),
         proxy: Once::new(),
     });
 
-    // Wait for the client's registration message and process it
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
             agent_to_bpa::Msg::Register(request) => {
@@ -198,7 +191,6 @@ async fn run_routing_session(
         return;
     }
 
-    // Start the proxy for ongoing communication
     let handler = Box::new(Handler {
         agent: agent.clone(),
     });
@@ -209,7 +201,7 @@ async fn run_routing_session(
 
 /// Create a new RoutingAgent gRPC service.
 pub fn new_routing_agent_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) -> routing_agent_server::RoutingAgentServer<Service> {
     routing_agent_server::RoutingAgentServer::new(Service {
@@ -222,140 +214,55 @@ pub fn new_routing_agent_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routes::RoutingAgent;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // ── Mock BPA routing sink ────────────────────────────────────────
-
-    struct MockSink {
-        unregistered: AtomicBool,
-    }
-
-    impl MockSink {
-        fn new() -> Self {
-            Self {
-                unregistered: AtomicBool::new(false),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl hardy_bpa::routes::RoutingSink for MockSink {
-        async fn unregister(&self) {
-            self.unregistered.store(true, Ordering::Relaxed);
-        }
-
-        async fn add_route(
-            &self,
-            _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routes::Action,
-            _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
-            Ok(true)
-        }
-
-        async fn remove_route(
-            &self,
-            _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routes::Action,
-            _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
-            Ok(true)
-        }
-    }
-
-    // A mock sink whose `unregister()` re-enters `agent.on_unregister()`,
-    // simulating the BPA calling back into the agent during cleanup.
-    struct ReentrantSink {
-        agent: Arc<RemoteRoutingAgent>,
-    }
-
-    #[async_trait]
-    impl hardy_bpa::routes::RoutingSink for ReentrantSink {
-        async fn unregister(&self) {
-            self.agent.on_unregister().await;
-        }
-
-        async fn add_route(
-            &self,
-            _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routes::Action,
-            _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
-            Ok(true)
-        }
-
-        async fn remove_route(
-            &self,
-            _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routes::Action,
-            _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
-            Ok(true)
-        }
-    }
-
-    // ── Tests ────────────────────────────────────────────────────────
-
-    // SRV-02: After registration stores a sink, `sink()` returns it.
+    // SRV-02: After registration stores a context, `ctx()` returns it.
     #[test]
-    fn srv_02_sink_available_after_register() {
+    fn srv_02_ctx_available_after_register() {
         let agent = RemoteRoutingAgent {
-            sink: Mutex::new(None),
+            ctx: Mutex::new(None),
             proxy: Once::new(),
         };
 
-        // Before registration: no sink
-        assert!(agent.sink().is_err());
+        assert!(agent.ctx().is_err());
 
-        // Simulate on_register storing a sink
-        *agent.sink.lock() = Some(Arc::new(MockSink::new()));
+        let (tx, _rx) = flume::unbounded();
+        let token = hardy_async::CancellationToken::new();
+        *agent.ctx.lock() = Some(RoutingContext::new(tx, token));
 
-        // After registration: sink available
-        assert!(agent.sink().is_ok());
+        assert!(agent.ctx().is_ok());
     }
 
-    // SRV-03: After the sink is taken (unregistration), `sink()` returns
+    // SRV-03: After the context is taken (unregistration), `ctx()` returns
     // `Err(Unavailable)`.
     #[test]
-    fn srv_03_sink_unavailable_after_unregister() {
+    fn srv_03_ctx_unavailable_after_unregister() {
+        let (tx, _rx) = flume::unbounded();
+        let token = hardy_async::CancellationToken::new();
         let agent = RemoteRoutingAgent {
-            sink: Mutex::new(Some(Arc::new(MockSink::new()) as RoutingSink)),
+            ctx: Mutex::new(Some(RoutingContext::new(tx, token))),
             proxy: Once::new(),
         };
 
-        assert!(agent.sink().is_ok());
+        assert!(agent.ctx().is_ok());
 
-        // Simulate unregistration: take the sink
-        agent.sink.lock().take();
+        agent.ctx.lock().take();
 
-        let err = agent.sink().err().expect("sink() should return Err");
+        let err = agent.ctx().err().expect("ctx() should return Err");
         assert_eq!(err.code(), tonic::Code::Unavailable);
     }
 
-    // SRV-04: `unregister()` releases the spin lock before awaiting
-    // `sink.unregister()`, so a re-entrant `on_unregister()` callback
-    // does not deadlock.
-    //
-    // This is a regression test for a real bug where the spin lock was
-    // held across `.await` in `if let Some(sink) = self.sink.lock().take()`.
-    #[tokio::test]
-    async fn srv_04_spin_lock_not_held_across_await() {
-        let agent = Arc::new(RemoteRoutingAgent {
-            sink: Mutex::new(None),
+    // SRV-04: `disconnect()` does not deadlock (no async await while holding lock).
+    #[test]
+    fn srv_04_disconnect_no_deadlock() {
+        let (tx, _rx) = flume::unbounded();
+        let token = hardy_async::CancellationToken::new();
+        let agent = RemoteRoutingAgent {
+            ctx: Mutex::new(Some(RoutingContext::new(tx, token))),
             proxy: Once::new(),
-        });
+        };
 
-        // Install a sink that re-enters on_unregister when unregistered
-        let reentrant_sink = Arc::new(ReentrantSink {
-            agent: agent.clone(),
-        });
-        *agent.sink.lock() = Some(reentrant_sink);
+        agent.disconnect();
 
-        // This must complete without deadlock. If the spin lock were held
-        // across the await, the re-entrant on_unregister() would spin forever.
-        tokio::time::timeout(std::time::Duration::from_secs(2), agent.unregister())
-            .await
-            .expect("unregister() should not deadlock");
+        assert!(agent.ctx().is_err());
     }
 }

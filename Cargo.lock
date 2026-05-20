@@ -2128,6 +2128,7 @@ dependencies = [
 name = "hardy-proto"
 version = "0.1.0"
 dependencies = [
+ "flume",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",

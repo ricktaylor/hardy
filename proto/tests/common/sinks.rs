@@ -9,47 +9,12 @@ use hardy_bpa::{cla, routes, services};
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── RoutingSink ───────────────────────────────────────────────────────
+// ── RoutingContext mock helper ────────────────────────────────────────
 
-pub struct MockRoutingSink {
-    unregistered: AtomicBool,
-}
-
-impl MockRoutingSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-
-    pub fn is_unregistered(&self) -> bool {
-        self.unregistered.load(Ordering::Relaxed)
-    }
-}
-
-#[async_trait]
-impl routes::RoutingSink for MockRoutingSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn add_route(
-        &self,
-        _pattern: hardy_eid_patterns::EidPattern,
-        _action: routes::Action,
-        _priority: u32,
-    ) -> routes::Result<bool> {
-        Ok(true)
-    }
-
-    async fn remove_route(
-        &self,
-        _pattern: &hardy_eid_patterns::EidPattern,
-        _action: &routes::Action,
-        _priority: u32,
-    ) -> routes::Result<bool> {
-        Ok(true)
-    }
+pub fn mock_routing_context() -> (routes::RoutingContext, flume::Receiver<routes::RouteOp>) {
+    let (tx, rx) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    (routes::RoutingContext::new(tx, token), rx)
 }
 
 // ── CLA Sink ──────────────────────────────────────────────────────────
