@@ -56,7 +56,7 @@ impl cla::Cla for PipelineCla {
 // ---------------------------------------------------------------------------
 
 struct TestApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+    ctx: hardy_async::sync::spin::Once<services::ServiceContext>,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
@@ -65,7 +65,7 @@ impl TestApp {
         let (tx, rx) = flume::bounded(16);
         (
             Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
                 received_tx: tx,
             }),
             rx,
@@ -75,8 +75,8 @@ impl TestApp {
 
 #[async_trait]
 impl services::Application for TestApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, _source: &Eid, ctx: services::ServiceContext) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
@@ -107,27 +107,27 @@ impl services::Application for TestApp {
 // ---------------------------------------------------------------------------
 
 struct EchoService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    ctx: hardy_async::sync::spin::Once<services::ServiceContext>,
 }
 
 impl EchoService {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+            ctx: hardy_async::sync::spin::Once::new(),
         })
     }
 }
 
 #[async_trait]
 impl services::Service for EchoService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, _endpoint: &Eid, ctx: services::ServiceContext) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
 
     async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
-        if let Some(sink) = self.sink.get()
+        if let Some(ctx) = self.ctx.get()
             && let Ok(parsed) =
                 hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
             && let Ok(editor) = hardy_bpv7::editor::Editor::new(&parsed.bundle, &data)
@@ -143,7 +143,7 @@ impl services::Service for EchoService {
                 }
                 Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
             };
-            let _ = sink.send(reply).await;
+            let _ = ctx.send_raw(reply).await;
         }
     }
 
@@ -315,7 +315,7 @@ async fn app_to_cla_routing() {
 
     // Send a bundle to the remote node
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    app.sink
+    app.ctx
         .get()
         .unwrap()
         .send(

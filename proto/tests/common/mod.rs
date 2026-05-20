@@ -73,10 +73,9 @@ impl BpaRegistration for MockBpa {
         service: Arc<dyn services::Service>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
-        let sink = Arc::new(MockServiceSink::new());
         *self.last_service.lock() = Some(service.clone());
         service
-            .on_register(&endpoint, Box::new(ServiceSinkWrapper(sink)))
+            .on_register(&endpoint, mock_service_context(endpoint.clone()))
             .await;
         Ok(endpoint)
     }
@@ -87,10 +86,9 @@ impl BpaRegistration for MockBpa {
         application: Arc<dyn services::Application>,
     ) -> services::Result<hardy_bpv7::eid::Eid> {
         let endpoint: hardy_bpv7::eid::Eid = "ipn:1.42".parse().unwrap();
-        let sink = Arc::new(MockApplicationSink::new());
         *self.last_application.lock() = Some(application.clone());
         application
-            .on_register(&endpoint, Box::new(ApplicationSinkWrapper(sink)))
+            .on_register(&endpoint, mock_service_context(endpoint.clone()))
             .await;
         Ok(endpoint)
     }
@@ -123,43 +121,6 @@ impl BpaRegistration for MockBpa {
         agent.on_register(ctx, &self.node_ids).await;
 
         Ok(self.node_ids.clone())
-    }
-}
-
-// ── Sink wrappers (delegate to Arc<Mock>) ─────────────────────────────
-
-struct ServiceSinkWrapper(Arc<MockServiceSink>);
-struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
-
-#[async_trait]
-impl services::ServiceSink for ServiceSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn send(&self, d: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(d).await
-    }
-    async fn cancel(&self, id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.0.cancel(id).await
-    }
-}
-
-#[async_trait]
-impl services::ApplicationSink for ApplicationSinkWrapper {
-    async fn unregister(&self) {
-        self.0.unregister().await;
-    }
-    async fn send(
-        &self,
-        dest: hardy_bpv7::eid::Eid,
-        data: hardy_bpa::Bytes,
-        lt: core::time::Duration,
-        opts: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(dest, data, lt, opts).await
-    }
-    async fn cancel(&self, id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.0.cancel(id).await
     }
 }
 

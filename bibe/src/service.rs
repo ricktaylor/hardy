@@ -1,21 +1,17 @@
 use super::*;
-use hardy_bpa::services::{Service, ServiceSink, StatusNotify};
+use hardy_bpa::services::{Service, ServiceContext, StatusNotify};
 
-/// BIBE Decapsulation Service.
-///
-/// Receives outer bundles, extracts the inner bundle from the payload,
-/// and re-injects it into the BPA via the CLA's dispatch method.
 pub struct DecapService {
     cla: Arc<cla::BibeCla>,
-    sink: Once<Box<dyn ServiceSink>>,
+    // Stored to keep the channel alive
+    ctx: Once<ServiceContext>,
 }
 
 impl DecapService {
-    /// Create a new DecapService using the given CLA for dispatch.
     pub fn new(cla: Arc<cla::BibeCla>) -> Self {
         Self {
             cla,
-            sink: Once::new(),
+            ctx: Once::new(),
         }
     }
 
@@ -64,8 +60,8 @@ impl DecapService {
 
 #[async_trait]
 impl Service for DecapService {
-    async fn on_register(&self, endpoint: &Eid, sink: Box<dyn ServiceSink>) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, endpoint: &Eid, ctx: ServiceContext) {
+        self.ctx.call_once(|| ctx);
         debug!("BIBE DecapService registered at {endpoint}");
     }
 

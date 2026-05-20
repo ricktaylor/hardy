@@ -1,6 +1,7 @@
 use super::*;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
+use hardy_bpa::services::ServiceContext;
 use hardy_bpv7::eid::Eid;
 
 #[derive(Arbitrary)]
@@ -37,12 +38,12 @@ pub struct Msg {
 }
 
 pub struct PipeService {
-    sink: Once<Box<dyn hardy_bpa::services::ApplicationSink>>,
+    ctx: Once<ServiceContext>,
 }
 
 impl PipeService {
     pub fn new() -> Self {
-        Self { sink: Once::new() }
+        Self { ctx: Once::new() }
     }
 
     pub async fn send(
@@ -52,7 +53,7 @@ impl PipeService {
         lifetime: core::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        self.sink
+        self.ctx
             .get()
             .expect("send called before registration")
             .send(destination, data, lifetime, options)
@@ -62,16 +63,12 @@ impl PipeService {
 
 #[async_trait]
 impl hardy_bpa::services::Application for PipeService {
-    async fn on_register(
-        &self,
-        _source: &Eid,
-        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
-    ) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {
-        if self.sink.get().is_none() {
+        if self.ctx.get().is_none() {
             panic!("Extra unregister!");
         }
     }
@@ -83,7 +80,6 @@ impl hardy_bpa::services::Application for PipeService {
         _ack_requested: bool,
         _payload: hardy_bpa::Bytes,
     ) {
-        // Do nothing
     }
 
     async fn on_status_notify(
@@ -94,6 +90,5 @@ impl hardy_bpa::services::Application for PipeService {
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Do nothing
     }
 }

@@ -1,31 +1,52 @@
-use super::*;
-use proto::service::*;
+use std::sync::Arc;
 
-type AppSink = Arc<dyn hardy_bpa::services::ApplicationSink>;
+use hardy_async::async_trait;
+use hardy_async::sync::spin::{Mutex, Once};
+use hardy_bpa::Bytes;
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::services::{self, ServiceContext, StatusNotify};
+use hardy_bpv7::bundle::Id as BundleId;
+use hardy_bpv7::eid::{self, Eid, Service as EidService};
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::{error, warn};
+
+use crate::proto::service::{
+    AppReceiveRequest, AppSendRequest, AppToBpa, BpaToApp, CancelRequest, CancelResponse,
+    RegisterResponse, SendResponse, StatusNotifyRequest, app_send_request, app_to_bpa,
+    application_server, bpa_to_app, register_request, status_notify_request,
+};
+use crate::proxy::{ProxyHandler, RpcProxy};
+
+fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: t.unix_timestamp(),
+        nanos: t.nanosecond() as i32,
+    }
+}
 
 struct Application {
-    sink: Mutex<Option<AppSink>>,
+    ctx: Mutex<Option<ServiceContext>>,
     proxy: Once<RpcProxy<Result<BpaToApp, tonic::Status>, AppToBpa>>,
 }
 
 impl Application {
-    fn sink(&self) -> Result<AppSink, tonic::Status> {
-        self.sink
+    fn ctx(&self) -> Result<ServiceContext, tonic::Status> {
+        self.ctx
             .lock()
             .clone()
             .ok_or(tonic::Status::unavailable("Unregistered"))
     }
 
-    async fn call(&self, msg: bpa_to_app::Msg) -> hardy_bpa::services::Result<app_to_bpa::Msg> {
+    async fn call(&self, msg: bpa_to_app::Msg) -> services::Result<app_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
-            hardy_bpa::services::Error::Disconnected
+            services::Error::Disconnected
         })?;
 
         match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+            Ok(None) => Err(services::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(services::Error::Internal(e.into())),
         }
     }
 
@@ -37,7 +58,7 @@ impl Application {
                 f &= !(f2 as u32);
                 b
             };
-            options = Some(hardy_bpa::services::SendOptions {
+            options = Some(services::SendOptions {
                 do_not_fragment: test_bit(app_send_request::SendOptions::DoNotFragment),
                 request_ack: test_bit(app_send_request::SendOptions::RequestAck),
                 report_status_time: test_bit(app_send_request::SendOptions::ReportStatusTime),
@@ -51,14 +72,11 @@ impl Application {
             }
         }
 
-        self.sink()?
+        self.ctx()?
             .send(
-                request
-                    .destination
-                    .parse()
-                    .map_err(|e: hardy_bpv7::eid::Error| {
-                        tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
-                    })?,
+                request.destination.parse().map_err(|e: eid::Error| {
+                    tonic::Status::invalid_argument(format!("Invalid eid: {e}"))
+                })?,
                 request.payload,
                 std::time::Duration::from_millis(request.lifetime),
                 options,
@@ -73,35 +91,28 @@ impl Application {
     }
 
     async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
-        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        let bundle_id = BundleId::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
-        self.sink()?
+        self.ctx()?
             .cancel(&bundle_id)
             .await
             .map(|cancelled| bpa_to_app::Msg::Cancel(CancelResponse { cancelled }))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
+    fn disconnect(&self) {
+        self.ctx.lock().take();
     }
 }
 
 #[async_trait]
-impl hardy_bpa::services::Application for Application {
-    async fn on_register(
-        &self,
-        _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ApplicationSink>,
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
+impl services::Application for Application {
+    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+        *self.ctx.lock() = Some(ctx);
     }
 
     async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
+        if self.ctx.lock().take().is_none() {
             return;
         }
 
@@ -112,10 +123,10 @@ impl hardy_bpa::services::Application for Application {
 
     async fn on_receive(
         &self,
-        source: hardy_bpv7::eid::Eid,
+        source: Eid,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
-        payload: hardy_bpa::Bytes,
+        payload: Bytes,
     ) {
         match self
             .call(bpa_to_app::Msg::Receive(AppReceiveRequest {
@@ -138,10 +149,10 @@ impl hardy_bpa::services::Application for Application {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        from: &hardy_bpv7::eid::Eid,
-        kind: hardy_bpa::services::StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
+        bundle_id: &BundleId,
+        from: &Eid,
+        kind: StatusNotify,
+        reason: ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
         match self
@@ -149,18 +160,10 @@ impl hardy_bpa::services::Application for Application {
                 bundle_id: bundle_id.to_key(),
                 from: from.to_string(),
                 kind: match kind {
-                    hardy_bpa::services::StatusNotify::Received => {
-                        status_notify_request::StatusKind::Received
-                    }
-                    hardy_bpa::services::StatusNotify::Forwarded => {
-                        status_notify_request::StatusKind::Forwarded
-                    }
-                    hardy_bpa::services::StatusNotify::Delivered => {
-                        status_notify_request::StatusKind::Delivered
-                    }
-                    hardy_bpa::services::StatusNotify::Deleted => {
-                        status_notify_request::StatusKind::Deleted
-                    }
+                    StatusNotify::Received => status_notify_request::StatusKind::Received,
+                    StatusNotify::Forwarded => status_notify_request::StatusKind::Forwarded,
+                    StatusNotify::Delivered => status_notify_request::StatusKind::Delivered,
+                    StatusNotify::Deleted => status_notify_request::StatusKind::Deleted,
                 }
                 .into(),
                 reason: reason.into(),
@@ -205,7 +208,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.app.unregister().await;
+        self.app.disconnect();
         if let Some(proxy) = self.app.proxy.get() {
             proxy.cancel();
         }
@@ -213,7 +216,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -229,8 +232,6 @@ impl application_server::Application for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "application_session", async move {
             run_application_session(channel_sender, channel_receiver, bpa).await;
@@ -245,10 +246,10 @@ impl application_server::Application for Service {
 async fn run_application_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToApp, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<AppToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
 ) {
     let app = Arc::new(Application {
-        sink: Mutex::new(None),
+        ctx: Mutex::new(None),
         proxy: Once::new(),
     });
 
@@ -259,10 +260,8 @@ async fn run_application_session(
                     .service_id
                     .as_ref()
                     .map(|service_id| match service_id {
-                        register_request::ServiceId::Dtn(s) => {
-                            hardy_bpv7::eid::Service::Dtn(s.clone().into())
-                        }
-                        register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
+                        register_request::ServiceId::Dtn(s) => EidService::Dtn(s.clone().into()),
+                        register_request::ServiceId::Ipn(s) => EidService::Ipn(*s),
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
                 let endpoint_id = bpa
@@ -288,15 +287,13 @@ async fn run_application_session(
         return;
     }
 
-    // Start the proxy for ongoing communication
     let handler = Box::new(Handler { app: app.clone() });
     app.proxy
         .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
-/// Create a new Application gRPC service.
 pub fn new_application_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) -> application_server::ApplicationServer<Service> {
     application_server::ApplicationServer::new(Service {

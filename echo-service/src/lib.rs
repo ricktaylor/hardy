@@ -1,28 +1,16 @@
-/*!
-Bundle echo service for the Hardy BPA.
-
-Implements a simple echo (ping) service that reflects received bundles back
-to their source, as defined by the BPv7 bundle delivery model (RFC 9171 §5.6).
-Each incoming bundle is re-built with the source and destination swapped, then
-injected back into the BPA for forwarding.
-
-# Key types
-
-- [`EchoService`] — the service implementation, one instance per registered endpoint.
-*/
-
+use hardy_async::async_trait;
 use hardy_async::sync::spin::Once;
-use hardy_bpa::async_trait;
+use hardy_bpa::Bytes;
+use hardy_bpa::services::{Service, ServiceContext, StatusNotify};
+use hardy_bpv7::bpsec;
+use hardy_bpv7::bundle::{Id as BundleId, ParsedBundle};
+use hardy_bpv7::editor::{Chunk, Editor};
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
 use tracing::{debug, warn};
 
-/// A BPA service that echoes received bundles back to their source.
-///
-/// When a bundle is delivered to a registered endpoint, the service swaps the
-/// source and destination EIDs and sends the bundle back through the BPA.
-/// This is the DTN equivalent of ICMP echo (ping).
 pub struct EchoService {
-    /// Communication channel back to the BPA, set once during registration.
-    sink: Once<Box<dyn hardy_bpa::services::ServiceSink>>,
+    ctx: Once<ServiceContext>,
 }
 
 impl Default for EchoService {
@@ -32,21 +20,13 @@ impl Default for EchoService {
 }
 
 impl EchoService {
-    /// Creates a new `EchoService` with no BPA sink attached.
     pub fn new() -> Self {
-        EchoService { sink: Once::new() }
+        EchoService { ctx: Once::new() }
     }
 
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
-
-    async fn echo(&self, data: hardy_bpa::Bytes) -> Result<(), hardy_bpa::Error> {
-        if let Some(sink) = self.sink.get() {
-            // Parse the bundle
-            let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
+    async fn echo(&self, data: Bytes) -> Result<(), Box<dyn core::error::Error + Send + Sync>> {
+        if let Some(ctx) = self.ctx.get() {
+            let bundle = ParsedBundle::parse(&data, bpsec::no_keys)
                 .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))?
                 .bundle;
 
@@ -56,8 +36,7 @@ impl EchoService {
                 "Received bundle, reflecting back to source"
             );
 
-            // Swap source and destination
-            let chunks = hardy_bpv7::editor::Editor::new(&bundle, &data)
+            let chunks = Editor::new(&bundle, &data)
                 .with_source(bundle.destination.clone())
                 .map_err(|(_, e)| {
                     debug!("Failed to set source Eid: {e:?}");
@@ -80,15 +59,13 @@ impl EchoService {
             let reply = match data.try_into_mut() {
                 Ok(buf) => {
                     let mut vec = buf.into();
-                    hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                    hardy_bpa::Bytes::from(vec)
+                    Chunk::flatten_inplace(chunks, &mut vec);
+                    Bytes::from(vec)
                 }
-                Err(original) => {
-                    hardy_bpa::Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original))
-                }
+                Err(original) => Bytes::from(Chunk::flatten(chunks, &original)),
             };
 
-            sink.send(reply).await.inspect_err(|e| {
+            ctx.send_raw(reply).await.inspect_err(|e| {
                 warn!("Failed to send reply: {e:?}");
             })?;
         }
@@ -97,35 +74,26 @@ impl EchoService {
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for EchoService {
-    /// Stores the BPA sink for later use when echoing bundles.
-    async fn on_register(
-        &self,
-        _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ServiceSink>,
-    ) {
-        self.sink.call_once(|| sink);
+impl Service for EchoService {
+    async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+        self.ctx.call_once(|| ctx);
     }
 
-    /// No-op; no resources to release beyond the sink itself.
-    async fn on_unregister(&self) {
-        // Nothing to clean up
-    }
+    async fn on_unregister(&self) {}
 
-    /// No-op; the echo service does not act on status reports.
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &hardy_bpv7::eid::Eid,
-        _kind: hardy_bpa::services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _bundle_id: &BundleId,
+        _from: &Eid,
+        _kind: StatusNotify,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Do nothing
     }
 
-    /// Called when a bundle arrives
-    async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
-        _ = self.echo(data).await;
+    async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
+        if let Err(e) = self.echo(data).await {
+            warn!("Echo failed: {e:?}");
+        }
     }
 }

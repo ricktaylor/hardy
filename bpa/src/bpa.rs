@@ -43,7 +43,7 @@ use crate::{Arc, otel_metrics, services};
 /// Each component type receives a Context in `on_register()`:
 /// - CLAs receive [`cla::ClaContext`]
 /// - Routing agents receive [`routes::RoutingContext`]
-/// - Services receive `ServiceSink` / `ApplicationSink` (migration pending)
+/// - Services and Applications receive [`services::ServiceContext`]
 ///
 /// Clone and store the Context if needed beyond initialization.
 /// Dropping all clones closes the channels and triggers unregistration.
@@ -70,9 +70,8 @@ use crate::{Arc, otel_metrics, services};
 ///
 /// # For Service Implementors
 ///
-/// Services receive [`services::ServiceSink`] (low-level) or
-/// [`services::ApplicationSink`] (high-level) in their `on_register` methods.
-/// (Service context migration is pending in Phase 3.)
+/// Services and Applications receive a [`services::ServiceContext`] in their
+/// `on_register` methods for sending bundles via channels.
 #[async_trait]
 pub trait BpaRegistration: Send + Sync {
     /// Register a Convergence Layer Adapter with the BPA.

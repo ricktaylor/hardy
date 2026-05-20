@@ -1,5 +1,19 @@
-use super::*;
-use hardy_bpv7::eid::Eid;
+use alloc::vec::Vec;
+
+use futures::FutureExt;
+#[cfg(test)]
+use hardy_async::async_trait;
+use hardy_bpv7::bundle::Id as BundleId;
+use hardy_bpv7::eid::{Eid, Service as EidService};
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::{error, info};
+
+use crate::dispatcher::Dispatcher;
+use crate::node_ids::NodeIds;
+use crate::rib::Rib;
+use crate::services::context::ServiceOp;
+use crate::services::{self, Application, Service as ServiceTrait, ServiceContext, StatusNotify};
+use crate::{Arc, HashMap};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -10,23 +24,23 @@ use hardy_bpv7::eid::Eid;
 /// Distinguishes between low-level Service and high-level Application registrations
 pub enum ServiceImpl {
     /// Low-level service with full bundle access
-    LowLevel(Arc<dyn services::Service>),
+    LowLevel(Arc<dyn ServiceTrait>),
     /// High-level application receiving only payload
-    Application(Arc<dyn services::Application>),
+    Application(Arc<dyn Application>),
 }
 
 pub struct Service {
     pub service: ServiceImpl,
-    pub service_id: hardy_bpv7::eid::Service,
+    pub service_id: EidService,
 }
 
 impl Service {
     pub async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &BundleId,
         from: &Eid,
         kind: StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
+        reason: ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
         match &self.service {
@@ -34,7 +48,7 @@ impl Service {
                 svc.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
-            services::registry::ServiceImpl::Application(app) => {
+            ServiceImpl::Application(app) => {
                 app.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
@@ -76,100 +90,7 @@ impl core::fmt::Debug for Service {
     }
 }
 
-/// Sink implementation for both Service and Application traits
-struct Sink {
-    service: Weak<Service>,
-    /// Full EID for this service (pre-resolved at activation time)
-    eid: Eid,
-    registry: Arc<ServiceRegistry>,
-    node_ids: Arc<node_ids::NodeIds>,
-    rib: Arc<rib::Rib>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-}
-
-impl Sink {
-    async fn unregister_inner(&self) {
-        if let Some(service) = self.service.upgrade() {
-            if let Err(e) = self
-                .registry
-                .unregister(service, &self.node_ids, &self.rib)
-                .await
-            {
-                error!("Failed to unregister service: {e}");
-            }
-        }
-    }
-
-    async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        if bundle_id.source != self.eid {
-            return Ok(false);
-        }
-        Ok(self.dispatcher.cancel_local_dispatch(bundle_id).await)
-    }
-}
-
-#[async_trait]
-impl services::ServiceSink for Sink {
-    async fn unregister(&self) {
-        self.unregister_inner().await
-    }
-
-    async fn send(&self, data: Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        self.dispatcher.local_dispatch_raw(&self.eid, data).await
-    }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
-    }
-}
-
-#[async_trait]
-impl services::ApplicationSink for Sink {
-    async fn unregister(&self) {
-        self.unregister_inner().await
-    }
-
-    async fn send(
-        &self,
-        destination: Eid,
-        data: Bytes,
-        lifetime: core::time::Duration,
-        options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        self.dispatcher
-            .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
-            .await
-    }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(service) = self.service.upgrade() {
-            let registry = self.registry.clone();
-            let node_ids = self.node_ids.clone();
-            let rib = self.rib.clone();
-            hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
-                if let Err(e) = registry.unregister(service, &node_ids, &rib).await {
-                    error!("Failed to unregister service: {e}");
-                }
-            });
-        }
-    }
-}
-
-type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
+type ServiceMap = HashMap<EidService, Arc<Service>>;
 
 pub(crate) struct ServiceRegistryBuilder {
     services: ServiceMap,
@@ -182,11 +103,7 @@ impl ServiceRegistryBuilder {
         }
     }
 
-    pub fn insert(
-        &mut self,
-        service_id: hardy_bpv7::eid::Service,
-        service: ServiceImpl,
-    ) -> services::Result<()> {
+    pub fn insert(&mut self, service_id: EidService, service: ServiceImpl) -> services::Result<()> {
         if self.services.contains_key(&service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
@@ -201,9 +118,9 @@ impl ServiceRegistryBuilder {
 
     pub async fn build(
         self,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Arc<ServiceRegistry>> {
         let registry = Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(self.services),
@@ -231,7 +148,7 @@ pub(crate) struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    pub async fn shutdown(&self, node_ids: &node_ids::NodeIds, rib: &Arc<rib::Rib>) {
+    pub async fn shutdown(&self, node_ids: &NodeIds, rib: &Arc<Rib>) {
         let services = self
             .services
             .lock()
@@ -254,11 +171,11 @@ impl ServiceRegistry {
 
     pub async fn register_service(
         self: &Arc<Self>,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn services::Service>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        service_id: EidService,
+        service: Arc<dyn ServiceTrait>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
         self.register(&service_id, node_ids, rib, dispatcher).await
@@ -266,11 +183,11 @@ impl ServiceRegistry {
 
     pub async fn register_application(
         self: &Arc<Self>,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn services::Application>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        service_id: EidService,
+        application: Arc<dyn Application>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
         self.register(&service_id, node_ids, rib, dispatcher).await
@@ -279,10 +196,10 @@ impl ServiceRegistry {
     /// Register a service with a dynamically assigned IPN service number.
     pub async fn register_dynamic_service(
         self: &Arc<Self>,
-        service: Arc<dyn services::Service>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        service: Arc<dyn ServiceTrait>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
         self.register_service(service_id, service, node_ids, rib, dispatcher)
@@ -292,28 +209,24 @@ impl ServiceRegistry {
     /// Register an application with a dynamically assigned IPN service number.
     pub async fn register_dynamic_application(
         self: &Arc<Self>,
-        application: Arc<dyn services::Application>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        application: Arc<dyn Application>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
         self.register_application(service_id, application, node_ids, rib, dispatcher)
             .await
     }
 
-    fn allocate_dynamic_id(&self) -> hardy_bpv7::eid::Service {
+    fn allocate_dynamic_id(&self) -> EidService {
         let id = self
             .next_dynamic
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        hardy_bpv7::eid::Service::Ipn(id)
+        EidService::Ipn(id)
     }
 
-    fn insert_inner(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: ServiceImpl,
-    ) -> services::Result<()> {
+    fn insert_inner(&self, service_id: EidService, service: ServiceImpl) -> services::Result<()> {
         let mut services = self.services.lock();
         if services.contains_key(&service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
@@ -328,27 +241,85 @@ impl ServiceRegistry {
 
     async fn register(
         self: &Arc<Self>,
-        service_id: &hardy_bpv7::eid::Service,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
+        service_id: &EidService,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
+        dispatcher: &Arc<Dispatcher>,
     ) -> services::Result<Eid> {
         let service = self.services.lock().get(service_id).cloned().unwrap();
         let eid = node_ids.resolve_eid(service_id)?;
 
         rib.add_service(eid.clone(), service.clone()).await;
 
-        let sink = Sink {
-            service: Arc::downgrade(&service),
-            eid: eid.clone(),
-            registry: self.clone(),
-            node_ids: Arc::new(node_ids.clone()),
-            rib: rib.clone(),
-            dispatcher: dispatcher.clone(),
-        };
+        let (ops_tx, ops_rx) = flume::unbounded();
+        let shutdown = self.tasks.cancel_token().child_token();
+        let ctx = ServiceContext::new(ops_tx, eid.clone(), shutdown.clone());
+
+        // Spawn receiver task for service operations
+        let registry = self.clone();
+        let service_for_task = service.clone();
+        let eid_for_task = eid.clone();
+        let node_ids_for_task = Arc::new(node_ids.clone());
+        let rib_for_task = rib.clone();
+        let dispatcher_for_task = dispatcher.clone();
+        let cancel = shutdown.clone();
+        hardy_async::spawn!(self.tasks, "service_ops_receiver", async move {
+            loop {
+                futures::select_biased! {
+                    _ = cancel.cancelled().fuse() => break,
+                    op = ops_rx.recv_async().fuse() => match op {
+                        Ok(op) => match op {
+                            ServiceOp::SendRaw { data, reply } => {
+                                let result = dispatcher_for_task
+                                    .local_dispatch_raw(&eid_for_task, data)
+                                    .await;
+                                let _ = reply.send(result);
+                            }
+                            ServiceOp::Send {
+                                destination,
+                                data,
+                                lifetime,
+                                options,
+                                reply,
+                            } => {
+                                let result = dispatcher_for_task
+                                    .local_dispatch(
+                                        eid_for_task.clone(),
+                                        destination,
+                                        data,
+                                        lifetime,
+                                        options,
+                                    )
+                                    .await;
+                                let _ = reply.send(result);
+                            }
+                            ServiceOp::Cancel { bundle_id, reply } => {
+                                let result = if bundle_id.source != eid_for_task {
+                                    Ok(false)
+                                } else {
+                                    Ok(dispatcher_for_task
+                                        .cancel_local_dispatch(&bundle_id)
+                                        .await)
+                                };
+                                let _ = reply.send(result);
+                            }
+                        },
+                        Err(_) => break,
+                    },
+                }
+            }
+            // Channel closed or shutdown cancelled: unregister
+            if let Err(e) = registry
+                .unregister(service_for_task, &node_ids_for_task, &rib_for_task)
+                .await
+            {
+                error!("Failed to unregister service: {e}");
+            }
+        });
+
         match &service.service {
-            ServiceImpl::LowLevel(s) => s.on_register(&eid, Box::new(sink)).await,
-            ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
+            ServiceImpl::LowLevel(s) => s.on_register(&eid, ctx).await,
+            ServiceImpl::Application(a) => a.on_register(&eid, ctx).await,
         }
         dispatcher.poll_service_waiting(&eid).await;
         metrics::gauge!("bpa.service.registered").increment(1.0);
@@ -358,8 +329,8 @@ impl ServiceRegistry {
     async fn unregister(
         &self,
         service: Arc<Service>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
     ) -> services::Result<()> {
         let service = self.services.lock().remove(&service.service_id);
 
@@ -373,8 +344,8 @@ impl ServiceRegistry {
     async fn unregister_service(
         &self,
         service: Arc<Service>,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        node_ids: &NodeIds,
+        rib: &Arc<Rib>,
     ) -> services::Result<()> {
         let eid = node_ids.resolve_eid(&service.service_id)?;
         rib.remove_service(&eid, service.clone()).await;
@@ -394,13 +365,13 @@ mod tests {
     use crate::bpa::{Bpa, BpaRegistration};
 
     struct TestApp {
-        sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+        ctx: hardy_async::sync::spin::Once<ServiceContext>,
     }
 
     impl TestApp {
         fn new() -> Self {
             Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
             }
         }
     }
@@ -408,18 +379,14 @@ mod tests {
     use super::*;
 
     #[async_trait]
-    impl services::Application for TestApp {
-        async fn on_register(
-            &self,
-            _source: &hardy_bpv7::eid::Eid,
-            sink: Box<dyn services::ApplicationSink>,
-        ) {
-            self.sink.call_once(|| sink);
+    impl Application for TestApp {
+        async fn on_register(&self, _source: &Eid, ctx: ServiceContext) {
+            self.ctx.call_once(|| ctx);
         }
         async fn on_unregister(&self) {}
         async fn on_receive(
             &self,
-            _source: hardy_bpv7::eid::Eid,
+            _source: Eid,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
             _payload: bytes::Bytes,
@@ -427,10 +394,10 @@ mod tests {
         }
         async fn on_status_notify(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
-            _from: &hardy_bpv7::eid::Eid,
-            _kind: services::StatusNotify,
-            _reason: hardy_bpv7::status_report::ReasonCode,
+            _bundle_id: &BundleId,
+            _from: &Eid,
+            _kind: StatusNotify,
+            _reason: ReasonCode,
             _timestamp: Option<time::OffsetDateTime>,
         ) {
         }
@@ -442,7 +409,7 @@ mod tests {
         let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
-        let svc_id = hardy_bpv7::eid::Service::Ipn(42);
+        let svc_id = EidService::Ipn(42);
 
         // First registration should succeed
         let app1 = Arc::new(TestApp::new());
@@ -460,36 +427,56 @@ mod tests {
         bpa.shutdown().await;
     }
 
-    // After an application drops its sink (unregisters), the service ID should be freed
-    // for re-registration.
+    // Dropping the ServiceContext triggers channel close, which the receiver
+    // task detects and unregisters the service. The service ID is then freed
+    // for re-registration on the same BPA instance.
     #[tokio::test]
-    async fn test_cleanup() {
+    async fn test_context_drop_unregisters() {
         let bpa = Bpa::builder().build().await.unwrap();
         bpa.start(false);
 
-        let svc_id = hardy_bpv7::eid::Service::Ipn(99);
+        let svc_id = EidService::Ipn(99);
 
-        // Register
-        let app1 = Arc::new(TestApp::new());
-        let result = bpa.register_application(svc_id.clone(), app1.clone()).await;
+        // Register with a Mutex-based app so we can take the context
+        struct DroppableApp {
+            ctx: std::sync::Mutex<Option<ServiceContext>>,
+        }
+        #[async_trait]
+        impl services::Application for DroppableApp {
+            async fn on_register(&self, _: &Eid, ctx: ServiceContext) {
+                *self.ctx.lock().unwrap() = Some(ctx);
+            }
+            async fn on_unregister(&self) {}
+            async fn on_receive(&self, _: Eid, _: time::OffsetDateTime, _: bool, _: bytes::Bytes) {}
+            async fn on_status_notify(
+                &self,
+                _: &BundleId,
+                _: &Eid,
+                _: StatusNotify,
+                _: ReasonCode,
+                _: Option<time::OffsetDateTime>,
+            ) {
+            }
+        }
+
+        let app = Arc::new(DroppableApp {
+            ctx: std::sync::Mutex::new(None),
+        });
+        let result = bpa.register_application(svc_id.clone(), app.clone()).await;
         assert!(result.is_ok());
 
-        // Unregister via the sink
-        app1.sink
-            .get()
-            .expect("Sink should be set")
-            .unregister()
-            .await;
+        // Drop the context to trigger channel-close unregistration
+        app.ctx.lock().unwrap().take();
 
-        // Small yield to let the unregister propagate
-        tokio::task::yield_now().await;
+        // Give the receiver task time to detect the close and unregister
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Re-registration with the same service number should now succeed
+        // Re-registration with the same service number should succeed
         let app2 = Arc::new(TestApp::new());
         let result = bpa.register_application(svc_id, app2).await;
         assert!(
             result.is_ok(),
-            "Re-registration after cleanup should succeed, got: {result:?}"
+            "Re-registration after context drop should succeed, got: {result:?}"
         );
 
         bpa.shutdown().await;
