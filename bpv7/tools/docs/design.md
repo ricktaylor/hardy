@@ -49,7 +49,7 @@ This design allows the same key file to be used for both signing and encryption 
 The tool directly uses the library's public API:
 - `Builder` for bundle creation
 - `Editor` for bundle modification
-- `ParsedBundle`, `CheckedBundle`, `RewrittenBundle` for parsing
+- `ParsedBundle`, `RewrittenBundle`, and `parse::parse_canonicalize_with_*` free fns for parsing
 - `bpsec` module for security operations
 
 ### Testing

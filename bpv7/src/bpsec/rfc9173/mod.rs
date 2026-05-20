@@ -16,6 +16,10 @@ fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
     Ok(buf)
 }
 
+// Tests live in `bpv7/tests/rfc9173.rs` (integration tests using the
+// public API — keys, Signer/Encryptor/Editor — per the
+// inline-tests-vs-tests/ split convention).
+
 /// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct ScopeFlags {

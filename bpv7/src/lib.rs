@@ -5,7 +5,9 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 # Key Modules
 
-- [`bundle`]: Contains the primary [`Bundle`](bundle::Bundle) struct and related components.
+- [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types.
+- [`parse`]: The streaming wire parser ([`parse`](parse::parse) / [`BundleParser`](parse::BundleParser)).
+- [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
 - [`eid`]: Implements Endpoint Identifiers (EIDs) as defined in BPv7.
@@ -32,7 +34,7 @@ let (bundle, cbor) = Builder::new(source.clone(), destination.clone())
     .build(CreationTimestamp::now())
     .unwrap();
 
-assert_eq!(bundle.destination, destination);
+assert_eq!(bundle.primary.destination, destination);
 assert!(!cbor.is_empty());
 ```
 
@@ -42,7 +44,7 @@ The following example demonstrates how to parse a BPv7 bundle from its CBOR repr
 
 ```rust,cfg(feature = "std")
 use hardy_bpv7::builder::Builder;
-use hardy_bpv7::bundle::ParsedBundle;
+use hardy_bpv7::parse;
 use hardy_bpv7::block;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
@@ -55,15 +57,16 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
     .build(CreationTimestamp::now())
     .unwrap();
 
-// Parse the bundle from the CBOR data (no keys needed for this bundle).
-let bundle = ParsedBundle::parse(&cbor, hardy_bpv7::bpsec::no_keys).unwrap().bundle;
+// Structural parse — the cheapest entry point. Returns the authoritative
+// byte buffer, the primary block + blocks map, and the decoded BPSec
+// OperationSets. Slice with `&buf[block.payload_range()]`. Layer keyed
+// BPSec validation on top by composing the primitives in
+// `hardy_bpv7::checks` (`classify_*`, `decrypt_and_validate_covered_bibs`,
+// `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 
-assert_eq!(bundle.id, original_bundle.id);
-assert_eq!(bundle.destination, original_bundle.destination);
-
-// Alternatively, if you have a KeySet for decryption/verification:
-let keys = hardy_bpv7::bpsec::key::KeySet::EMPTY;
-let bundle2 = ParsedBundle::parse_with_keys(&cbor, &keys).unwrap().bundle;
+assert_eq!(parsed.bundle.primary.id, original_bundle.primary.id);
+assert_eq!(parsed.bundle.primary.destination, original_bundle.primary.destination);
 ```
 
 # `no_std` Support
@@ -108,7 +111,7 @@ pub mod bpsec;
 pub mod builder;
 pub mod bundle;
 pub mod bundle_age;
-pub mod cmp;
+pub mod checks;
 pub mod crc;
 pub mod creation_timestamp;
 pub mod dtn_time;
@@ -116,7 +119,14 @@ pub mod editor;
 pub mod eid;
 pub mod hop_info;
 pub mod lifetime;
+pub mod parse;
+pub mod primary_block;
+pub mod rewrite;
 pub mod status_report;
 
 mod error;
 pub use error::Error;
+
+/// The structural bpv7 bundle type (primary block + blocks map),
+/// re-exported so consumers can use the short path `hardy_bpv7::Bundle`.
+pub use bundle::Bundle;

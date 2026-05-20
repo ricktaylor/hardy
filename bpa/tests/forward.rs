@@ -300,10 +300,9 @@ async fn streaming_cla_receives_single_final_segment() {
     };
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.id.source, source_eid);
-    assert_eq!(parsed.bundle.destination, dest);
+    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.destination, dest);
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
@@ -340,10 +339,9 @@ async fn buffered_cla_receives_whole_bundle() {
     let Event::Forward(data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering CLA to assemble the bundle");
     };
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse forwarded bundle");
-    assert_eq!(parsed.bundle.id.source, source_eid);
-    assert_eq!(parsed.bundle.destination, dest);
+    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.destination, dest);
 
     bpa.shutdown().await;
 }
@@ -439,7 +437,7 @@ async fn buffering_cla_concats_multi_segment_stream() {
     let mut rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
 
     let result = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
         .unwrap();
     assert!(matches!(result, cla::ForwardBundleResult::Sent));
@@ -456,7 +454,7 @@ async fn buffering_cla_is_zero_copy_for_single_final() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    cla.forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+    cla.forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
         .unwrap();
 
@@ -474,7 +472,7 @@ async fn buffering_cla_truncated_stream_is_cancelled() {
     let mut rx = feed(vec![Segment::Next(data.slice(..4))]).await;
 
     let Err(err) = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
     else {
         panic!("Expected a truncated stream to fail");
@@ -492,7 +490,7 @@ async fn buffering_cla_rejects_under_delivering_stream() {
     let mut rx = feed(vec![Segment::Final(short.clone())]).await;
 
     let Err(err) = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle.primary.id, data.len() as u64, &mut rx)
         .await
     else {
         panic!("Expected an under-delivering stream to fail");
@@ -511,7 +509,10 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
     let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) = cla.forward(None, &addr, &bundle.id, 4, &mut rx).await else {
+    let Err(err) = cla
+        .forward(None, &addr, &bundle.primary.id, 4, &mut rx)
+        .await
+    else {
         panic!("Expected an oversize stream to fail");
     };
     assert!(matches!(

@@ -15,7 +15,6 @@ use hardy_bpa::{
     stream::{Receiver, Segment},
 };
 use hardy_bpv7::{
-    bundle::ParsedBundle,
     eid::{Eid, IpnNodeId, NodeId},
     status_report::{AdministrativeRecord, ReasonCode},
 };
@@ -288,9 +287,10 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 /// The identity of a bundle built by [`build_bundle`], for direct
 /// `on_deliver` calls.
 fn bundle_id_of(data: &Bytes) -> hardy_bpv7::bundle::Id {
-    hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
+    hardy_bpv7::parse::parse(data.clone())
         .expect("Failed to parse built bundle")
         .bundle
+        .primary
         .id
 }
 
@@ -404,11 +404,16 @@ async fn streaming_service_receives_single_final_segment() {
     };
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse delivered bundle");
-    assert_eq!(bundle_id, parsed.bundle.id);
-    assert_eq!(parsed.bundle.id.source, "ipn:0.2.1".parse().unwrap());
-    assert_eq!(parsed.bundle.destination, "ipn:0.1.7".parse().unwrap());
+    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse delivered bundle");
+    assert_eq!(bundle_id, parsed.bundle.primary.id);
+    assert_eq!(
+        parsed.bundle.primary.id.source,
+        "ipn:0.2.1".parse().unwrap()
+    );
+    assert_eq!(
+        parsed.bundle.primary.destination,
+        "ipn:0.1.7".parse().unwrap()
+    );
 
     assert!(events_rx.is_empty());
     bpa.shutdown().await;
@@ -428,10 +433,12 @@ async fn buffered_service_receives_whole_bundle() {
     let Event::Received(bundle_id, data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering service to assemble the bundle");
     };
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse delivered bundle");
-    assert_eq!(bundle_id, parsed.bundle.id);
-    assert_eq!(parsed.bundle.destination, "ipn:0.1.7".parse().unwrap());
+    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse delivered bundle");
+    assert_eq!(bundle_id, parsed.bundle.primary.id);
+    assert_eq!(
+        parsed.bundle.primary.destination,
+        "ipn:0.1.7".parse().unwrap()
+    );
 
     bpa.shutdown().await;
 }
@@ -553,11 +560,16 @@ async fn expiry_mid_delivery_resolves_once() {
     let Some(hardy_bpa::stream::Segment::Final(report)) = segments.last() else {
         panic!("Expected a whole report bundle");
     };
-    let parsed = ParsedBundle::parse(report, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse report bundle");
-    let payload = report.slice(parsed.bundle.blocks.get(&1).unwrap().payload_range());
+    let parsed = hardy_bpv7::parse::parse(report.clone()).expect("Failed to parse report bundle");
+    let payload = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .unwrap()
+        .payload(&parsed.data)
+        .expect("Report payload extent out of bounds");
     let AdministrativeRecord::BundleStatusReport(status) =
-        hardy_cbor::decode::parse(payload.as_ref()).expect("Failed to parse admin record");
+        hardy_cbor::decode::parse(payload).expect("Failed to parse admin record");
     assert!(status.deleted.is_some(), "expected a deletion assertion");
     assert!(status.received.is_none() && status.delivered.is_none());
     assert_eq!(status.reason, ReasonCode::LifetimeExpired);

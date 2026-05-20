@@ -494,7 +494,7 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bundle: crate::bundle::Bpv7Bundle {
                 id: hardy_bpv7::bundle::Id {
                     source: format!("ipn:0.{n}.1").parse().unwrap(),
                     timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),

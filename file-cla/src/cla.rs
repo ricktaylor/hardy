@@ -1,7 +1,6 @@
-use std::slice;
-
 use super::*;
 use hardy_bpa::async_trait;
+use std::slice;
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {

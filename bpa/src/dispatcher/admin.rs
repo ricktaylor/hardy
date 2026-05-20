@@ -21,10 +21,30 @@ impl Dispatcher {
             return;
         };
 
-        let payload_result = {
-            let key_source = self.key_source(&bundle.bundle, &data);
-            bundle.bundle.block_data(1, &data, &*key_source)
-        }; // key_source dropped here, before any await
+        // KeyProvider needs a &Bundle; do the structural
+        // re-parse + key lookup + block_data inline. Scope it as a match
+        // expression so the parse OperationSets (which contain
+        // `Rc<…>` and are therefore `!Send`) are dropped at the arm
+        // boundary, before any `.await` in this async fn. Consume `data`
+        // into the parse and work from the authoritative buffer it
+        // returns (the streaming path concatenates pushes), converting
+        // the payload to an owned `Bytes` before the arm ends.
+        let payload_result = match hardy_bpv7::parse::parse(data) {
+            Ok(hardy_bpv7::parse::Parsed {
+                data: buf,
+                bundle: raw,
+                bcbs: bcb_ops,
+                ..
+            }) => {
+                let key_source = self.key_source(&raw, &buf);
+                match hardy_bpv7::bpsec::block_data(1, &raw.blocks, &buf, &bcb_ops, &*key_source) {
+                    Ok(hardy_bpv7::block::Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
+                    Ok(hardy_bpv7::block::Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        };
 
         let data = match payload_result {
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
