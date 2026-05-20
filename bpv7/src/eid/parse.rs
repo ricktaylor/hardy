@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::CaptureFieldErr;
+use crate::error::{CaptureFieldErr, HasInvalidField};
 use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
@@ -281,10 +281,10 @@ impl hardy_cbor::decode::FromCbor for Eid {
 
             let (scheme, s): (u64, bool) = a.parse().map_field_err::<Error>("EID scheme")?;
             if !s {
-                return Err(Error::InvalidField {
-                    field: "EID scheme",
-                    source: Box::new(Error::NotCanonical),
-                });
+                return Err(Error::invalid_field(
+                    "EID scheme",
+                    Error::NotCanonical.into(),
+                ));
             }
 
             match scheme {

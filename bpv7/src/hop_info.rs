@@ -6,7 +6,7 @@ loops and to control the bundle's lifetime in the network.
 */
 
 use super::*;
-use error::CaptureFieldErr;
+use error::HasInvalidField;
 
 /// Contains hop limit and hop count information for a bundle.
 ///
@@ -29,6 +29,18 @@ impl hardy_cbor::encode::ToCbor for HopInfo {
     }
 }
 
+fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    match a.parse::<(T, bool)>() {
+        Err(e) => Err(Error::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
+        Ok((t, true)) => Ok(t),
+    }
+}
+
 impl hardy_cbor::decode::FromCbor for HopInfo {
     type Error = Error;
 
@@ -46,23 +58,11 @@ impl hardy_cbor::decode::FromCbor for HopInfo {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
-            let (limit, s1): (u64, bool) = a.parse().map_field_err::<Error>("hop limit")?;
-            if !s1 {
-                return Err(Error::InvalidField {
-                    field: "hop limit",
-                    source: Box::new(Error::NotCanonical),
-                });
-            }
+            let limit = require_canonical(a, "hop limit")?;
             if limit == 0 || limit > 255 {
                 return Err(Error::InvalidHopLimit(limit));
             }
-            let (count, s2): (u64, bool) = a.parse().map_field_err::<Error>("hop count")?;
-            if !s2 {
-                return Err(Error::InvalidField {
-                    field: "hop count",
-                    source: Box::new(Error::NotCanonical),
-                });
-            }
+            let count = require_canonical(a, "hop count")?;
             // `shortest` here means "would round-trip to identical bytes
             // under canonical emission" — i.e. the array was definite-
             // length. Indefinite arrays are RFC-permitted but trigger
