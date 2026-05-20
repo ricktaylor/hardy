@@ -1,7 +1,6 @@
 use arc_swap::ArcSwap;
 use hardy_async::sync::Mutex;
 use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
 
 use super::chain::{FilterChain, FilterChainBuilder};
 use super::{Error, ExecResult, Filter, Hook};
@@ -125,7 +124,7 @@ impl FilterEngine {
         key_provider: F,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
+        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let hook_label = hook.label();
         let filters = self.filters.load();

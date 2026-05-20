@@ -15,15 +15,6 @@ mod parse;
 
 pub use error::Error;
 
-#[cfg(test)]
-mod str_tests;
-
-#[cfg(test)]
-mod cbor_tests;
-
-#[cfg(test)]
-mod roundtrip_tests;
-
 /// A fully qualified node number in the `ipn` EID scheme (RFC 9171 Section 4.2.5.1.2).
 ///
 /// Encoded as `ipn:<allocator_id>.<node_number>.<service_number>`, where

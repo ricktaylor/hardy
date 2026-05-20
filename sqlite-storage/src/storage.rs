@@ -805,16 +805,26 @@ mod tests {
 
         let source: Eid = "ipn:1.0".parse().unwrap();
         let dest: Eid = format!("ipn:2.{dest_service}").parse().unwrap();
-        let (_bundle, data) = Builder::new(source, dest)
+        let (raw, _data) = Builder::new(source, dest)
             .with_payload(b"test".to_vec().into())
             .build(CreationTimestamp::now())
             .unwrap();
 
-        let parsed =
-            hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys).unwrap();
-
+        // The storage tests below only read `bundle.bundle.id`, so we
+        // skip the parse round-trip and reshape Builder's raw output into
+        // the rich `Bpv7Bundle` directly. (Editor-touching tests still
+        // need to re-parse for wire-aligned block numbers — see memory.)
         hardy_bpa::bundle::Bundle {
-            bundle: parsed.bundle,
+            bundle: hardy_bpa::bundle::Bpv7Bundle {
+                id: raw.primary.id,
+                flags: raw.primary.flags,
+                crc_type: raw.primary.crc_type,
+                destination: raw.primary.destination,
+                report_to: raw.primary.report_to,
+                lifetime: raw.primary.lifetime,
+                blocks: raw.blocks,
+                ..Default::default()
+            },
             metadata: hardy_bpa::bundle::BundleMetadata::default(),
         }
     }

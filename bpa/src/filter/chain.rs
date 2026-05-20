@@ -2,7 +2,6 @@ use core::ops::ControlFlow;
 
 use hardy_async::TaskPool;
 use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
 use hardy_bpv7::status_report::ReasonCode;
 use trace_err::*;
 use tracing::debug;
@@ -240,7 +239,7 @@ impl Level {
         key_provider: &F,
     ) -> Result<ControlFlow<Option<ReasonCode>>, crate::Error>
     where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
+        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource>,
     {
         for filter in &self.writers {
             match filter.filter(bundle, data).await? {
@@ -250,15 +249,21 @@ impl Level {
                         mutation.metadata = true;
                         bundle.metadata.writable = writable;
                     }
-                    if let Some(mut new_data) = new_data {
+                    if let Some(new_data) = new_data {
                         debug!("WriteFilter rewrote bundle data");
                         mutation.data = true;
-                        let parsed = CheckedBundle::parse(&new_data, key_provider)?;
-                        if let Some(chunks) = parsed.new_data {
-                            hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut new_data);
-                        }
-                        *data = Bytes::from(new_data);
-                        bundle.bundle = parsed.bundle;
+                        let new_data = Bytes::from(new_data);
+                        let (parsed_bundle, chunks) =
+                            crate::bp7_parse::parse_canonicalize_with_provider(
+                                new_data.clone(),
+                                key_provider,
+                            )?;
+                        *data = if let Some(chunks) = chunks {
+                            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, new_data)
+                        } else {
+                            new_data
+                        };
+                        bundle.bundle = parsed_bundle;
                     }
                 }
                 WriteResult::Drop(reason) => {
@@ -289,7 +294,7 @@ impl FilterChain {
         key_provider: F,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
+        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
     {
         let mut mutation = Mutation::default();
 

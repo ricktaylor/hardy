@@ -1,4 +1,4 @@
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use super::Bpv7Bundle;
 use hardy_bpv7::eid::Eid;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

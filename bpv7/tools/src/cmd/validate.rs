@@ -26,21 +26,26 @@ impl Command {
 
         let mut count_failed: usize = 0;
         for input in self.files {
-            let bundle = input.read_all()?;
+            let bytes = input.read_all()?;
 
-            match hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&bundle, &key_store) {
+            // Structural parse + keyed BPSec validation, then check the
+            // known extension blocks for canonical encoding (the only
+            // other user-visible diagnostic this command reports).
+            let result = parse_with_keys(bytes, &key_store)
+                .and_then(|parsed| known_blocks_canonical(&parsed.data, &parsed.bundle.blocks));
+
+            match result {
                 Err(e) => {
                     eprintln!("{}: Failed to parse bundle: {e}", input.filepath());
                     count_failed += 1;
                 }
-                Ok(hardy_bpv7::bundle::ParsedBundle { non_canonical, .. }) => {
-                    if non_canonical {
-                        eprintln!(
-                            "{}: Non-canonical, but semantically valid bundle",
-                            input.filepath()
-                        );
-                        count_failed += 1;
-                    }
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "{}: Non-canonical, but semantically valid bundle",
+                        input.filepath()
+                    );
+                    count_failed += 1;
                 }
             }
         }
@@ -51,4 +56,42 @@ impl Command {
             Err(anyhow::anyhow!("{count_failed} files failed to validate"))
         }
     }
+}
+
+/// Check the known plaintext extension blocks (PreviousNode / BundleAge /
+/// HopCount) for canonical encoding. Returns `Ok(true)` when all are
+/// shortest-form, `Ok(false)` when any is non-canonical, and `Err` when a
+/// body is malformed. Encrypted bodies (`b.bcb.is_some()`) are opaque and
+/// skipped.
+fn known_blocks_canonical(
+    data: &[u8],
+    blocks: &std::collections::HashMap<u64, hardy_bpv7::block::Block>,
+) -> Result<bool, hardy_bpv7::Error> {
+    for b in blocks.values() {
+        if b.bcb.is_some() {
+            continue;
+        }
+        // `data` is the full in-memory bundle from `parse_with_keys`.
+        let Some(body) = b.payload(data) else {
+            continue;
+        };
+        let shortest = match b.block_type {
+            hardy_bpv7::block::Type::PreviousNode => {
+                parse_exact::<(hardy_bpv7::eid::Eid, bool)>(body, "Previous Node Block")?.1
+            }
+            hardy_bpv7::block::Type::HopCount => {
+                parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(body, "Hop Count Block")?.1
+            }
+            hardy_bpv7::block::Type::BundleAge => {
+                // Always canonical; decoded only to reject a malformed body.
+                parse_exact::<hardy_bpv7::bundle_age::BundleAge>(body, "Bundle Age Block")?;
+                true
+            }
+            _ => true,
+        };
+        if !shortest {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

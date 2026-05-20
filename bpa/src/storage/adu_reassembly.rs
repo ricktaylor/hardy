@@ -73,12 +73,13 @@ impl Store {
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
 
         let total_adu_len = fragment_info.total_adu_length;
-        let payload = &bundle
+        let r = bundle
             .bundle
             .blocks
             .get(&1)
             .trace_expect("Bundle without payload?!")
             .payload_range();
+        let payload: Range<usize> = r.start as usize..r.end as usize;
 
         let mut adu_totals = payload.len() as u64;
         let mut results = FragmentSet {
@@ -125,12 +126,14 @@ impl Store {
                                 timestamp == bundle.bundle.id.timestamp &&
                                 let Some(fragment_info) = &bundle.bundle.id.fragment_info
                             {
-                                let payload = &bundle
+                                let r = bundle
                                     .bundle
                                     .blocks
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
                                     .payload_range();
+                                let payload: Range<usize> =
+                                    r.start as usize..r.end as usize;
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
@@ -275,8 +278,21 @@ impl Store {
             new_data[offset..offset + len].copy_from_slice(adu.as_ref());
         }
 
-        // Rewrite primary block
-        let mut editor = Editor::new(&bundle.bundle, &old_data);
+        // Rewrite primary block — Editor needs a `&Bundle`; re-parse structurally.
+        // Consume `old_data` into the parse and use the authoritative
+        // buffer it returns (the streaming path concatenates pushes).
+        let (old_data, raw) = match hardy_bpv7::parse::parse(old_data) {
+            Ok(hardy_bpv7::parse::Parsed {
+                data: buf,
+                bundle: b,
+                ..
+            }) => (buf, b),
+            Err(e) => {
+                debug!("Failed to re-parse stored bundle: {e}");
+                return None;
+            }
+        };
+        let mut editor = Editor::new(&raw, &old_data);
         editor = match editor.with_fragment_info(None) {
             Ok(e) => e,
             Err((_, e)) => {
@@ -300,15 +316,9 @@ impl Store {
             },
         };
 
-        // Write the rewritten bundle now for safety
-        let new_data = match old_data.try_into_mut() {
-            Ok(buf) => {
-                let mut vec = buf.into();
-                Chunk::flatten_inplace(chunks, &mut vec);
-                Bytes::from(vec)
-            }
-            Err(original) => Bytes::from(Chunk::flatten(chunks, &original)),
-        };
+        // Write the rewritten bundle now for safety. Zero-copy when
+        // `old_data` uniquely owns; otherwise allocates a fresh buffer.
+        let new_data = Chunk::flatten_bytes(chunks, old_data);
         let new_storage_name = self.save_data(new_data.clone()).await;
         Some((new_storage_name, new_data))
     }
@@ -346,9 +356,30 @@ mod tests {
         store.save_data(Bytes::from(data.to_vec())).await
     }
 
+    /// Structural parse + reshape to the rich `crate::bundle::Bpv7Bundle`
+    /// the BPA wrapper expects. Used by tests that build bundles via
+    /// `Editor::flatten` and need to feed them back through the BPA's
+    /// `Bundle { bundle, metadata }` container; the keyed parse_preserve
+    /// pipeline would just do this same reshape after redundant BPSec
+    /// validation.
+    fn rich_from_bytes(data: &[u8]) -> crate::bundle::Bpv7Bundle {
+        let hardy_bpv7::parse::Parsed { bundle: raw, .. } =
+            hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
+        crate::bundle::Bpv7Bundle {
+            id: raw.primary.id,
+            flags: raw.primary.flags,
+            crc_type: raw.primary.crc_type,
+            destination: raw.primary.destination,
+            report_to: raw.primary.report_to,
+            lifetime: raw.primary.lifetime,
+            blocks: raw.blocks,
+            ..Default::default()
+        }
+    }
+
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
         let bundle = Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bundle: crate::bundle::Bpv7Bundle {
                 id: id.clone(),
                 destination: "ipn:0.2.1".parse().unwrap(),
                 lifetime: core::time::Duration::from_secs(3600),
@@ -526,14 +557,21 @@ mod tests {
         let payload = b"HelloWorld"; // 10 bytes, split into 5+5
 
         // Build a complete bundle
-        let (complete_bundle, complete_data) =
+        let (_complete_bundle, complete_data) =
             hardy_bpv7::builder::Builder::new(source.clone(), dest.clone())
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload[..]))
                 .build(ts.clone())
                 .unwrap();
 
+        // Editor needs a `&Bundle`; re-parse structurally.
+        let hardy_bpv7::parse::Parsed {
+            data: complete_data,
+            bundle: raw_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
+
         // Create fragment 0: offset=0, total=10, payload="Hello"
-        let frag0_data = Editor::new(&complete_bundle, &complete_data)
+        let frag0_data = Editor::new(&raw_bundle, &complete_data)
             .with_fragment_info(Some(FragmentInfo {
                 offset: 0,
                 total_adu_length: 10,
@@ -550,7 +588,7 @@ mod tests {
             .unwrap();
 
         // Create fragment 1: offset=5, total=10, payload="World"
-        let frag1_data = Editor::new(&complete_bundle, &complete_data)
+        let frag1_data = Editor::new(&raw_bundle, &complete_data)
             .with_fragment_info(Some(FragmentInfo {
                 offset: 5,
                 total_adu_length: 10,
@@ -566,15 +604,13 @@ mod tests {
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
-        // Parse fragments back to get Bundle structs with correct block ranges
-        let bundle0 =
-            hardy_bpv7::bundle::ParsedBundle::parse(&frag0_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
-        let bundle1 =
-            hardy_bpv7::bundle::ParsedBundle::parse(&frag1_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+        // We control these bytes (they came from `Editor::flatten` of the
+        // complete bundle), so a structural parse is enough — no need to
+        // run keyed BPSec validation. The BPA `Bundle { bundle, metadata }`
+        // container below still holds the rich `crate::bundle::Bpv7Bundle`,
+        // so reshape inline.
+        let bundle0 = rich_from_bytes(&frag0_data);
+        let bundle1 = rich_from_bytes(&frag1_data);
 
         // Store fragment data
         let name0 = store_bytes(&store, &frag0_data).await;
@@ -592,8 +628,10 @@ mod tests {
         store.insert_metadata(&meta_bundle).await;
 
         // Get payload ranges from the parsed bundles
-        let payload0_range = bundle0.blocks.get(&1).unwrap().payload_range();
-        let payload1_range = bundle1.blocks.get(&1).unwrap().payload_range();
+        let r0 = bundle0.blocks.get(&1).unwrap().payload_range();
+        let r1 = bundle1.blocks.get(&1).unwrap().payload_range();
+        let payload0_range: Range<usize> = r0.start as usize..r0.end as usize;
+        let payload1_range: Range<usize> = r1.start as usize..r1.end as usize;
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
@@ -609,22 +647,23 @@ mod tests {
 
         let (_, reassembled_data) = result.unwrap();
 
-        // Parse the reassembled bundle and verify
-        let reassembled_bundle =
-            hardy_bpv7::bundle::ParsedBundle::parse(&reassembled_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+        // Parse the reassembled bundle structurally and verify.
+        let hardy_bpv7::parse::Parsed {
+            data: reassembled_data,
+            bundle: reassembled_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(reassembled_data).unwrap();
 
         // Should no longer be a fragment
         assert!(
-            reassembled_bundle.id.fragment_info.is_none(),
+            reassembled_bundle.primary.id.fragment_info.is_none(),
             "Reassembled bundle should not have fragment_info"
         );
 
         // Extract and verify the payload
         let payload_block = reassembled_bundle.blocks.get(&1).unwrap();
-        let payload_range = payload_block.payload_range();
-        let reassembled_payload = &reassembled_data[payload_range];
+        let r = payload_block.payload_range();
+        let reassembled_payload = &reassembled_data[r.start as usize..r.end as usize];
         assert_eq!(
             reassembled_payload, payload,
             "Reassembled payload should be 'HelloWorld'"

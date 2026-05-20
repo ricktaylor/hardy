@@ -66,11 +66,12 @@ impl Command {
             ));
         }
 
-        // Get payload data
-        let payload_data = if let Some(payload_str) = &self.payload {
+        // Get payload data. `Input::read_all` now hands back a `Bytes`,
+        // so collapse both branches to `Vec<u8>` for the Builder.
+        let payload_data: Vec<u8> = if let Some(payload_str) = &self.payload {
             payload_str.as_bytes().to_vec()
         } else if let Some(input) = &self.payload_file {
-            input.read_all()?
+            input.read_all()?.to_vec()
         } else {
             return Err(anyhow::anyhow!(
                 "Either --payload or --payload-file must be provided"

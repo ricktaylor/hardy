@@ -28,12 +28,16 @@ impl DecapService {
 
     /// Extract inner bundle from outer bundle payload.
     fn decapsulate(&self, outer_bytes: Bytes) -> Result<Bytes, Error> {
-        // Parse the outer bundle
-        let parsed = ParsedBundle::parse(&outer_bytes, bpsec::no_keys)?;
+        // Structural parse — we only need the payload block range; no
+        // BPSec validation is required to decapsulate.
+        let hardy_bpv7::parse::Parsed {
+            data: outer_bytes,
+            bundle: parsed_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(outer_bytes)?;
 
         // Get payload block (block number 1) and its range within outer_bytes
-        let payload_block = parsed
-            .bundle
+        let payload_block = parsed_bundle
             .blocks
             .get(&1)
             .ok_or(hardy_bpv7::Error::MissingBlock(1))?;
@@ -41,7 +45,7 @@ impl DecapService {
 
         // Payload is BIBE-PDU: [transmission-id, total-length, segmented-offset, bundle-segment]
         // For complete bundles: all three ints are 0
-        let payload = outer_bytes.slice(payload_range);
+        let payload = outer_bytes.slice(payload_range.start as usize..payload_range.end as usize);
         let (inner_range, len) = hardy_cbor::decode::parse_array(
             &payload,
             |a, _shortest, _tags| -> Result<_, hardy_cbor::decode::Error> {

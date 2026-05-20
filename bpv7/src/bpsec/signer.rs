@@ -83,7 +83,7 @@ impl<'a> Signer<'a> {
         source: eid::Eid,
         key: &'a key::Key,
     ) -> Result<Self, (Self, Error)> {
-        if self.original.flags.is_fragment {
+        if self.original.primary.flags.is_fragment {
             return Err((self, Error::FragmentedBundle));
         }
 
@@ -181,13 +181,10 @@ impl<'a> Signer<'a> {
                         // register the bytes, so the IPPT (which reads the
                         // primary via `block(0)`) and the rebuilt bundle agree
                         // on the CRC-removed form.
-                        let canonical =
-                            crate::bundle::primary_block::PrimaryBlock::emit_with_crc_type(
-                                self.original,
-                                crc::CrcType::None,
-                            )
-                            .map_err(editor::Error::from)?;
-                        editor.set_canonical_primary(canonical.into());
+                        let mut primary = self.original.primary.clone();
+                        primary.crc_type = crc::CrcType::None;
+                        let canonical = primary.emit().map_err(editor::Error::from)?;
+                        editor.set_canonical_primary(primary, canonical.into());
                     } else {
                         editor = editor
                             .update_block_inner(*target)
@@ -261,5 +258,10 @@ fn build_bib_data(
         ));
     }
 
-    unreachable!("Unsupported BIB context");
+    // Reachable when no security context feature is enabled (e.g.
+    // `--no-default-features` with no `rfc9173`), or when a caller
+    // somehow constructs `Context::__Reserved`. Type-safe by signature
+    // now rather than by an unreachable!() panic.
+    let _ = (context, args, key);
+    Err(bpsec::Error::UnsupportedOperation)
 }

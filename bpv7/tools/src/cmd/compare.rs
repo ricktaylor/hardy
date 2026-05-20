@@ -1,5 +1,4 @@
 use super::*;
-use hardy_bpv7::cmp::compare_bundles;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -22,7 +21,7 @@ impl Command {
         let data_a = self.bundle_a.read_all()?;
         let data_b = self.bundle_b.read_all()?;
 
-        let diffs = compare_bundles(&data_a, &data_b)
+        let diffs = crate::compare::compare_bundles(&data_a, &data_b)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         if diffs.is_empty() {

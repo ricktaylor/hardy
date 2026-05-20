@@ -138,7 +138,7 @@ impl Dispatcher {
         // Check reports are enabled
         if self.status_reports {
             // Build the bundle
-            let (bundle, data) = hardy_bpv7::builder::Builder::new(
+            let (raw, data) = hardy_bpv7::builder::Builder::new(
                 self.node_ids.get_admin_endpoint(report_to),
                 report_to.clone(),
             )
@@ -149,6 +149,10 @@ impl Dispatcher {
             .with_payload(payload.into())
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
             .trace_expect("Failed to create new bundle");
+
+            let data = Bytes::from(data);
+            let bundle = crate::bp7_parse::rich_from_built(raw, &data)
+                .trace_expect("Failed to reshape built bundle");
 
             // Wrap in bundle::Bundle with Dispatching status — status reports
             // are internally generated, so they skip both the Originate and
@@ -162,7 +166,6 @@ impl Dispatcher {
             };
 
             // Store (no Originate filter - not user-originated)
-            let data = Bytes::from(data);
             if !self.store.store(&mut bundle, &data).await {
                 // Duplicate status report - shouldn't happen but handle gracefully
                 debug!("Duplicate status report bundle");

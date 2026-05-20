@@ -62,35 +62,46 @@ pub struct UnknownOperation {
     pub results: HashMap<u64, Box<[u8]>>,
 }
 
+/// Bounds-checked slice into a BPSec-related `source_data` buffer.
+///
+/// Every parameter/result range stored in an [`AbstractSyntaxBlock`]
+/// originally came from parsing `source_data`, so under normal use the
+/// range is in-bounds. The check guards against a caller passing a
+/// partial slice (early-block-processing case) or a mismatched buffer —
+/// it converts a release-mode panic into a clean [`Error::SourceOutOfRange`].
+pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8], Error> {
+    data.get(range.clone()).ok_or(Error::SourceOutOfRange {
+        start: range.start,
+        end: range.end,
+        source_len: data.len(),
+    })
+}
+
 impl UnknownOperation {
     pub fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
     ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
         let param_count = asb.parameters.len();
-        let parameters = Rc::from(asb.parameters.into_iter().fold(
-            HashMap::with_capacity(param_count),
-            |mut map, (id, range)| {
-                map.insert(id, source_data[range].into());
-                map
-            },
-        ));
+        let mut parameters = HashMap::with_capacity(param_count);
+        for (id, range) in asb.parameters {
+            parameters.insert(id, bounded_slice(source_data, range)?.into());
+        }
+        let parameters = Rc::from(parameters);
 
         // Unpack results
         let mut operations = HashMap::with_capacity(asb.results.len());
         for (target, results) in asb.results {
             let result_count = results.len();
+            let mut result_map = HashMap::with_capacity(result_count);
+            for (id, range) in results {
+                result_map.insert(id, bounded_slice(source_data, range)?.into());
+            }
             operations.insert(
                 target,
                 Self {
                     parameters: parameters.clone(),
-                    results: results.into_iter().fold(
-                        HashMap::with_capacity(result_count),
-                        |mut map, (id, range)| {
-                            map.insert(id, source_data[range].into());
-                            map
-                        },
-                    ),
+                    results: result_map,
                 },
             );
         }

@@ -1,5 +1,4 @@
 use super::*;
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -12,7 +11,7 @@ fn next_seq() -> u64 {
 pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpv7::bundle::Bundle {
+    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
         id: hardy_bpv7::bundle::Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
@@ -39,7 +38,7 @@ pub fn bundle_with_status(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpv7::bundle::Bundle {
+    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
         id: hardy_bpv7::bundle::Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
@@ -74,7 +73,7 @@ pub fn bundle_with_expiry(
     let ts = CreationTimestamp::try_from(creation_time)
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
-    let bpv7 = hardy_bpv7::bundle::Bundle {
+    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
         id: hardy_bpv7::bundle::Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: ts,
@@ -102,7 +101,7 @@ pub fn bundle_with_fragment(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpv7::bundle::Bundle {
+    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
         id: hardy_bpv7::bundle::Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),

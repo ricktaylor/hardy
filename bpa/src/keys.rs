@@ -14,10 +14,17 @@ use alloc::boxed::Box;
 pub trait KeyProvider: Send + Sync {
     /// Returns the [`KeySource`] to use for this bundle.
     ///
+    /// The bundle argument is the parser-internal `Bundle`
+    /// (primary block + blocks map). Implementations that need extracted
+    /// extension fields (`previous_node`, `age`, `hop_count`) should call
+    /// `hardy_bpv7::checks::extract_extension_block_fields`
+    /// explicitly — those fields are *not* populated when the key
+    /// provider is invoked, because keyed BPSec hasn't run yet.
+    ///
     /// [`KeySource`]: hardy_bpv7::bpsec::key::KeySource
     fn key_source(
         &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
+        bundle: &hardy_bpv7::Bundle,
         data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>;
 }
@@ -28,7 +35,7 @@ pub(crate) struct NullKeyProvider;
 impl KeyProvider for NullKeyProvider {
     fn key_source(
         &self,
-        _bundle: &hardy_bpv7::bundle::Bundle,
+        _bundle: &hardy_bpv7::Bundle,
         _data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         Box::new(hardy_bpv7::bpsec::key::KeySet::EMPTY)

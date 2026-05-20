@@ -42,6 +42,7 @@ thiserror = { version = "2", default-features = false }
 time = { version = "0.3", default-features = false, features = ["macros"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
+bytes = "1"
 crc = "3"
 sha2 = { version = "0.11", default-features = false, optional = true }
 rand = { version = "0.10", default-features = false, features = ["alloc","sys_rng"], optional = true }

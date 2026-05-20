@@ -12,7 +12,7 @@ use error::require_canonical;
 ///
 /// The hop limit is the maximum number of hops a bundle is allowed to traverse,
 /// while the hop count is the number of hops it has already traversed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HopInfo {
     /// The maximum number of hops the bundle is allowed to traverse.

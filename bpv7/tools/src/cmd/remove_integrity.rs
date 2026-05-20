@@ -29,13 +29,17 @@ impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
         let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
 
-        let mut data = self.input.read_all()?;
+        let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed {
+            data, bundle: raw, ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
+        use hardy_bpv7::bpsec::edit::BPSecEditor;
+        let editor = hardy_bpv7::editor::Editor::new(&raw, &data)
             .remove_integrity(self.block)
             .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
 
@@ -43,8 +47,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut data);
-
-        self.output.write_all(&data)
+        let out = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
+        self.output.write_all(&out)
     }
 }

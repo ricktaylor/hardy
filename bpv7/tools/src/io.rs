@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::{
     borrow::Cow,
     io::{Read, Write},
@@ -11,18 +12,24 @@ pub enum Input {
 }
 
 impl Input {
-    pub fn read_all(&self) -> anyhow::Result<Vec<u8>> {
-        match self {
+    /// Slurp the entire input into an owned [`Bytes`] buffer (single
+    /// `Vec<u8>` allocation, no copy on the `Vec → Bytes` conversion).
+    /// Callers that need byte-slice access just deref (`&buf`); callers
+    /// that need to mutate in place (e.g. `Chunk::flatten_inplace`)
+    /// reclaim a `Vec<u8>` via `Bytes::try_into_mut`.
+    pub fn read_all(&self) -> anyhow::Result<Bytes> {
+        let vec = match self {
             Self::StdIn => {
                 let mut buffer = Vec::new();
                 std::io::BufReader::new(std::io::stdin())
                     .read_to_end(&mut buffer)
                     .map_err(|e| anyhow::anyhow!("Failed to read from stdin: {e}"))?;
-                Ok(buffer)
+                buffer
             }
             Self::Path(f) => std::fs::read(f)
-                .map_err(|e| anyhow::anyhow!("Failed to read from '{}': {e}", f.display())),
-        }
+                .map_err(|e| anyhow::anyhow!("Failed to read from '{}': {e}", f.display()))?,
+        };
+        Ok(Bytes::from(vec))
     }
 
     pub fn filepath<'a>(&'a self) -> Cow<'a, str> {

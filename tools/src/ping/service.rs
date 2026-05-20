@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::{bpsec, bundle::ParsedBundle, eid::Eid, status_report::AdministrativeRecord};
+use hardy_bpv7::{eid::Eid, status_report::AdministrativeRecord};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -596,9 +596,9 @@ impl hardy_bpa::services::Service for Service {
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
 
-        // Parse the bundle (the client does not use BPSec).
-        let bundle = match ParsedBundle::parse(&data, bpsec::no_keys) {
-            Ok(b) => b.bundle,
+        // Parse the bundle structurally (the client does not use BPSec).
+        let hardy_bpv7::parse::Parsed { data, bundle, .. } = match hardy_bpv7::parse::parse(data) {
+            Ok(b) => b,
             Err(e) => {
                 eprintln!("Failed to parse bundle: {e}");
                 return Ok(());
@@ -613,16 +613,16 @@ impl hardy_bpa::services::Service for Service {
 
         // Status reports arrive as administrative records; handle before the
         // source check, since they originate at intermediate nodes.
-        if bundle.flags.is_admin_record {
-            self.handle_status_report(payload_data, &bundle.id.source);
+        if bundle.primary.flags.is_admin_record {
+            self.handle_status_report(payload_data, &bundle.primary.id.source);
             return Ok(());
         }
 
         // A ping response must be sourced by the echo endpoint we pinged.
-        if !same_endpoint(&bundle.id.source, &self.destination) {
+        if !same_endpoint(&bundle.primary.id.source, &self.destination) {
             eprintln!(
                 "Ignoring bundle from unexpected source EID '{}'",
-                bundle.id.source
+                bundle.primary.id.source
             );
             return Ok(());
         }
@@ -681,7 +681,7 @@ impl hardy_bpa::services::Service for Service {
             if !self.quiet {
                 println!(
                     "Reply from {}: seq={} rtt={}",
-                    bundle.id.source,
+                    bundle.primary.id.source,
                     payload.seqno,
                     humantime::format_duration(rtt)
                 );

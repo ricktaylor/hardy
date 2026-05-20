@@ -1,7 +1,6 @@
-use std::slice;
-
 use super::*;
 use hardy_bpa::async_trait;
+use std::slice;
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
@@ -51,14 +50,19 @@ impl hardy_bpa::cla::Cla for Cla {
             && self.inboxes.values().any(|p| p == addr_str)
         {
             // Write bundle to peer's inbox directory
-            let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
-                Ok(id) => {
+            let (bundle, path) = match hardy_bpv7::parse::parse(bundle) {
+                Ok(hardy_bpv7::parse::Parsed {
+                    data: bundle,
+                    bundle: b,
+                    ..
+                }) => {
+                    let id = b.primary.id;
                     let mut filename = format!("{}_{}", id.source, id.timestamp)
                         .replace(['\\', '/', ':', ' '], "_");
                     if let Some(fragment_info) = id.fragment_info {
                         filename.push_str(format!("_fragment_{}", fragment_info.offset).as_str());
                     }
-                    PathBuf::from(addr_str).join(filename)
+                    (bundle, PathBuf::from(addr_str).join(filename))
                 }
                 Err(e) => {
                     warn!("Ignoring invalid bundle: {e}");

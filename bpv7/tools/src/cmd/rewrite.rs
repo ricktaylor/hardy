@@ -26,14 +26,10 @@ impl Command {
 
         let data = self.input.read_all()?;
 
-        let data = match hardy_bpv7::bundle::RewrittenBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-        {
-            hardy_bpv7::bundle::RewrittenBundle::Valid { .. } => data,
-            hardy_bpv7::bundle::RewrittenBundle::Rewritten { new_data, .. } => {
-                hardy_bpv7::editor::Chunk::flatten(new_data, &data).into()
-            }
-            hardy_bpv7::bundle::RewrittenBundle::Invalid { error, .. } => {
+        let data = match super::full_rewrite(data.clone(), &key_store) {
+            Ok(None) => data,
+            Ok(Some(chunks)) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data),
+            Err(error) => {
                 return Err(anyhow::anyhow!("Failed to parse bundle: {error}"));
             }
         };

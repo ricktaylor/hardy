@@ -39,6 +39,7 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
+mod bp7_parse;
 mod dispatcher;
 mod otel_metrics;
 

@@ -94,67 +94,6 @@ impl hardy_cbor::decode::FromCbor for CrcType {
     }
 }
 
-/// Parses and validates the CRC value of a block.
-///
-/// This function is intended for internal use by the bundle parsing logic.
-/// It reads the CRC value from the block, calculates the CRC of the block's content,
-/// and compares the two to ensure data integrity.
-///
-/// # Arguments
-/// * `data` - The raw byte slice of the entire block.
-/// * `block` - A mutable reference to the CBOR array decoder for the block.
-/// * `crc_type` - The type of CRC to use for validation.
-///
-/// # Returns
-/// A `Result` containing a boolean indicating if the CBOR encoding was in its shortest form, or an `Error` if validation fails.
-pub(super) fn parse_crc_value(
-    data: &[u8],
-    block: &mut hardy_cbor::decode::Array,
-    crc_type: CrcType,
-) -> Result<bool, Error> {
-    // Parse CRC
-    let crc_start = block.offset();
-    let crc_value = block.try_parse_value(|value, shortest, tags| {
-        if let hardy_cbor::decode::Value::Bytes(crc) = value {
-            Ok((
-                crc.start + crc_start..crc.end + crc_start,
-                shortest && tags.is_empty(),
-            ))
-        } else {
-            Err(Error::InvalidCBOR(
-                hardy_cbor::decode::Error::IncorrectType(
-                    "Definite-length Byte String".to_string(),
-                    value.type_name(!tags.is_empty()),
-                ),
-            ))
-        }
-    })?;
-    block.at_end()?;
-    let crc_end = block.offset();
-
-    // Now check CRC
-    match (crc_type, crc_value) {
-        (CrcType::None, None) => Ok(true),
-        (CrcType::None, Some(_)) => Err(Error::UnexpectedCrcValue),
-        (_, None) => Err(Error::MissingCrc),
-        (crc_type, Some((crc, shortest))) => {
-            // Drive a Digest over the block bytes:
-            //   - everything before the CRC value
-            //   - zeros in the CRC value's slot
-            //   - anything after (e.g. trailing break for indefinite arrays)
-            // then compare against the wire-form CRC value bytes.
-            let mut digest = Digest::new(crc_type)?;
-            digest.push(&data[0..crc.start]);
-            digest.push_zeros();
-            digest.push(&data[crc.end..crc_end]);
-            if !digest.verify(&data[crc.start..crc.end]) {
-                return Err(Error::IncorrectCrc);
-            }
-            Ok(shortest)
-        }
-    }
-}
-
 /// Appends a CRC value to a block's data.
 ///
 /// This function is intended for internal use when creating a bundle.

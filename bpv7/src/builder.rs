@@ -14,7 +14,10 @@ pub enum Error {
     InternalError(#[from] error::Error),
 }
 
-/// A builder for creating a new [`bundle::Bundle`].
+/// A builder for creating a new bundle.
+///
+/// [`Builder::build`] returns the parsed [`bundle::Bundle`]
+/// view alongside the encoded wire bytes.
 ///
 /// See [`Builder::new()`] for more information.
 pub struct Builder<'a> {
@@ -29,7 +32,7 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    /// Creates a new [`Builder`] for creating a [`bundle::Bundle`].
+    /// Creates a new [`Builder`] for creating a bundle.
     ///
     /// # Examples
     /// ```
@@ -121,48 +124,55 @@ impl<'a> Builder<'a> {
             .build(hardy_cbor::encode::emit(hop_info).0.into())
     }
 
-    /// Builds the [`bundle::Bundle`] with the given timestamp.
+    /// Builds the bundle with the given timestamp, returning the parsed
+    /// [`Bundle`](crate::bundle::Bundle) view (primary block + blocks map) alongside
+    /// the encoded wire bytes.
     pub fn build(
         self,
         timestamp: creation_timestamp::CreationTimestamp,
     ) -> Result<(bundle::Bundle, Box<[u8]>), Error> {
-        let mut bundle = bundle::Bundle {
-            report_to: self.report_to.unwrap_or(self.source.clone()),
+        let primary = primary_block::PrimaryBlock {
+            flags: self.bundle_flags,
             id: bundle::Id {
-                source: self.source,
+                source: self.source.clone(),
                 timestamp,
                 ..Default::default()
             },
-            flags: self.bundle_flags.clone(),
             crc_type: self.crc_type,
             destination: self.destination,
+            report_to: self.report_to.unwrap_or(self.source),
             lifetime: self.lifetime,
-            ..Default::default()
         };
 
+        let mut blocks = HashMap::new();
         let data = hardy_cbor::encode::try_emit_array(None, |a| {
-            // Emit primary block
-            let primary_bytes = bundle::primary_block::PrimaryBlock::emit(&bundle)?;
+            // Emit primary block — capture the actual extent in the
+            // outer wire stream (after the `0x9F` array head). Discarding
+            // this and using `0..primary_bytes.len()` would leave
+            // `block.extent` pointing one byte too early; downstream
+            // slices via `block.extent` would read the outer array head
+            // instead of the primary's own array head.
+            let primary_bytes = primary.emit()?;
             let extent = a.emit(&hardy_cbor::encode::Raw(&primary_bytes));
-            bundle.blocks.insert(
+            blocks.insert(
                 0,
-                bundle::primary_block::PrimaryBlock::as_block(bundle.crc_type, extent),
+                primary_block::PrimaryBlock::as_block(primary.crc_type, extent),
             );
 
-            // Emit extension blocks, numbered from 2 (primary is 0, payload is 1)
-            for (index, block) in self.extensions.into_iter().enumerate() {
-                let block_number = index as u64 + 2;
-                bundle
-                    .blocks
-                    .insert(block_number, block.build(block_number, a)?);
+            // Emit extension blocks
+            for (block_number, block) in self.extensions.into_iter().enumerate() {
+                blocks.insert(
+                    block_number as u64,
+                    block.build(block_number as u64 + 2, a)?,
+                );
             }
 
             // Emit payload
-            bundle.blocks.insert(1, self.payload.build(1, a)?);
+            blocks.insert(1, self.payload.build(1, a)?);
             Ok::<_, Error>(())
         })?;
 
-        Ok((bundle, data.into()))
+        Ok((bundle::Bundle { primary, blocks }, data.into()))
     }
 }
 
@@ -253,7 +263,8 @@ impl<'a> BlockTemplate<'a> {
                     a.emit(&block_number);
                     a.emit(&self.block.flags);
                     a.emit(&self.block.crc_type);
-                    self.block.data = a.emit(&hardy_cbor::encode::Bytes(&data));
+                    let data_range = a.emit(&hardy_cbor::encode::Bytes(&data));
+                    self.block.data = data_range.start as u64..data_range.end as u64;
                     if !matches!(self.block.crc_type, crc::CrcType::None) {
                         a.skip_value();
                     }
@@ -282,7 +293,7 @@ impl<'a> BlockTemplate<'a> {
     }
 }
 
-/// A template for creating a new [`bundle::Bundle`].
+/// A template for creating a new bundle via [`Builder`].
 #[derive(Default)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize))]
 pub struct BundleTemplate {

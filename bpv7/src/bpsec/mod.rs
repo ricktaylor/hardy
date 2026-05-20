@@ -7,16 +7,26 @@ pub mod bib;
 /// Cryptographic key types and key source abstraction for BPSec operations.
 pub mod key;
 
+/// BPSec-aware editing primitives ([`BPSecEditor`] extension trait on
+/// [`crate::editor::Editor`]). Cascade-through-encrypted-BIB block
+/// removal, integrity stripping, and decryption.
+///
+/// [`BPSecEditor`]: edit::BPSecEditor
+pub mod edit;
+
 mod error;
+pub use error::Error;
+
 mod parse;
 
 /// RFC 9173 default security contexts (BIB-HMAC-SHA2 and BCB-AES-GCM).
 #[cfg(feature = "rfc9173")]
 pub mod rfc9173;
 
-// Signer and encryptor require at least one security context to be enabled.
-// The internal "bpsec" feature is automatically enabled by context features
-// (rfc9173, and future cose).
+// Signer and encryptor always compile. Without any security context
+// feature enabled (e.g. rfc9173), their `Context` enums only carry the
+// `__Reserved` placeholder variant — callers cannot construct a useful
+// context, and the build paths return `Error::UnsupportedOperation`.
 /// Bundle encryption API for adding BCB blocks to bundles.
 #[cfg(feature = "bpsec")]
 pub mod encryptor;
@@ -25,8 +35,6 @@ pub mod encryptor;
 pub mod signer;
 
 use crate::error::CaptureFieldErr;
-
-pub use error::Error;
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -91,4 +99,81 @@ pub trait BlockSet<'a> {
     /// Returns the block and its payload for the given block number, or `None` if absent.
     fn block(&'a self, block_number: u64)
     -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
+}
+
+/// The canonical [`BlockSet`] over a parsed bundle held wholly in memory:
+/// a blocks map plus the contiguous bundle bytes the offsets index into.
+/// Each block's payload is the raw wire body ([`block::Block::payload`]) —
+/// no decryption, no staged rewrites. This is the BlockSet to use when
+/// feeding [`block_data`] / signer / encryptor for an in-memory bundle.
+pub struct PlainBlockSet<'a> {
+    /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
+    pub blocks: &'a HashMap<u64, block::Block>,
+    /// The complete, contiguous bundle byte stream the offsets index into.
+    pub source_data: &'a [u8],
+}
+
+impl<'a> BlockSet<'a> for PlainBlockSet<'a> {
+    fn block(
+        &'a self,
+        block_number: u64,
+    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        let block = self.blocks.get(&block_number)?;
+        Some((
+            block,
+            block
+                .payload(self.source_data)
+                .map(block::Payload::Borrowed),
+        ))
+    }
+}
+
+/// Return block `block_number`'s plaintext: a borrowed slice of
+/// `source_data` when the block is unencrypted, or the BCB-decrypted
+/// bytes (via `bcb_ops` + `keys`) when it is. `source_data` MUST be the
+/// complete in-memory bundle the blocks were parsed from.
+///
+/// Composes [`PlainBlockSet`] with the BCB decrypt op so consumers
+/// (BPA delivery, `bundle` CLI) don't each re-implement it.
+pub fn block_data<'a, K>(
+    block_number: u64,
+    blocks: &'a HashMap<u64, block::Block>,
+    source_data: &'a [u8],
+    bcb_ops: &HashMap<u64, bcb::OperationSet>,
+    keys: &K,
+) -> Result<block::Payload<'a>, crate::Error>
+where
+    K: key::KeySource + ?Sized,
+{
+    let target = blocks
+        .get(&block_number)
+        .ok_or(crate::Error::MissingBlock(block_number))?;
+
+    let Some(bcb_num) = target.bcb else {
+        // Unencrypted — the raw wire body is the plaintext.
+        return target
+            .payload(source_data)
+            .map(block::Payload::Borrowed)
+            .ok_or(crate::Error::Altered);
+    };
+
+    let opset = bcb_ops.get(&bcb_num).ok_or(crate::Error::Altered)?;
+    let op = opset
+        .operations
+        .get(&block_number)
+        .ok_or(crate::Error::Altered)?;
+    op.decrypt(
+        keys,
+        bcb::OperationArgs {
+            bpsec_source: &opset.source,
+            target: block_number,
+            source: bcb_num,
+            blocks: &PlainBlockSet {
+                blocks,
+                source_data,
+            },
+        },
+    )
+    .map(block::Payload::Decrypted)
+    .map_err(crate::Error::InvalidBPSec)
 }

@@ -58,7 +58,6 @@ Enabled by default via the `rfc9173` feature flag:
 | `rfc9173` | yes | RFC 9173 security contexts (BIB-HMAC-SHA2, BCB-AES-GCM, key wrap). Enables `hmac`, `sha2`, `aes-gcm`, `aes-kw`, `rand` |
 | `std` | no | Enables system clock access (`CreationTimestamp::now()`) and propagates `std` to dependencies |
 | `serde` | no | Enables `Serialize`/`Deserialize` on bundle types. Requires `std` |
-| `bpsec` | no | Internal: enables BPSec signing/encryption modules. Automatically enabled by `rfc9173` |
 | `critical-section` | no | Atomic fallback via `portable-atomic` for targets without native CAS (e.g. Cortex-M0) |
 
 ## Usage
@@ -77,12 +76,12 @@ let (bundle, cbor) = Builder::new(source, destination)
     .build(CreationTimestamp::now())
     .unwrap();
 
-// Parse it back
-use hardy_bpv7::bundle::ParsedBundle;
-let parsed = ParsedBundle::parse(&cbor, hardy_bpv7::bpsec::no_keys)
-    .unwrap()
-    .bundle;
-assert_eq!(parsed.id, bundle.id);
+// Parse it back. `parse::parse` is the structural entry point; layer
+// keyed BPSec validation on top with the primitives in `hardy_bpv7::checks`
+// (`classify_*`, `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
+use hardy_bpv7::parse;
+let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
+assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
 ```
 
 ### Embedded / `no_std`

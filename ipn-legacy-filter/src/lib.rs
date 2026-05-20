@@ -5,11 +5,15 @@ This Egress WriteFilter rewrites IPN 3-element EIDs to legacy 2-element format
 for peers that require the older encoding.
 */
 
-use hardy_bpa::async_trait;
-use hardy_bpa::bundle::Bundle;
-use hardy_bpa::filter::{WriteFilter, WriteResult};
-use hardy_bpv7::editor::{Chunk, Editor};
-use hardy_bpv7::eid::Eid;
+use hardy_bpa::{
+    async_trait,
+    bundle::Bundle,
+    filter::{WriteFilter, WriteResult},
+};
+use hardy_bpv7::{
+    editor::{Chunk, Editor},
+    eid::Eid,
+};
 
 /// Configuration for IPN 2-element legacy encoding filter
 #[derive(Debug, Clone)]
@@ -66,7 +70,12 @@ impl WriteFilter for IpnLegacyFilter {
             return Ok(WriteResult::Continue(None, None));
         }
 
-        let mut editor = Editor::new(&bundle.bundle, data);
+        // Editor needs a `&Bundle`, so re-parse structurally.
+        let hardy_bpv7::parse::Parsed {
+            data, bundle: raw, ..
+        } = hardy_bpv7::parse::parse(hardy_bpa::Bytes::copy_from_slice(data))
+            .map_err(hardy_bpv7::editor::Error::from)?;
+        let mut editor = Editor::new(&raw, &data);
 
         if let Eid::Ipn {
             fqnn,
@@ -94,7 +103,7 @@ impl WriteFilter for IpnLegacyFilter {
                 .map_err(|(_, e)| e)?;
         }
 
-        let data = editor.rebuild().map(|c| Chunk::flatten(c, data))?;
+        let data = editor.rebuild().map(|c| Chunk::flatten(c, &data))?;
 
         Ok(WriteResult::Continue(None, Some(data.into())))
     }
@@ -105,8 +114,8 @@ mod tests {
     use super::*;
     use hardy_bpa::bundle::BundleMetadata;
     use hardy_bpv7::builder::Builder;
-    use hardy_bpv7::bundle::ParsedBundle;
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
+    use hardy_bpv7::parse;
 
     fn make_config(patterns: &[&str]) -> Config {
         Config(patterns.iter().map(|p| p.parse().unwrap()).collect())
@@ -116,7 +125,7 @@ mod tests {
         let src: Eid = source.parse().unwrap();
         let dst: Eid = dest.parse().unwrap();
 
-        let (bpv7_bundle, data) = Builder::new(src, dst)
+        let (raw, data) = Builder::new(src, dst)
             .with_payload(std::borrow::Cow::Borrowed(b"test"))
             .build(CreationTimestamp::now())
             .unwrap();
@@ -125,7 +134,16 @@ mod tests {
         metadata.read_only.next_hop = next_hop.map(|nh| nh.parse().unwrap());
 
         let bundle = Bundle {
-            bundle: bpv7_bundle,
+            bundle: hardy_bpa::bundle::Bpv7Bundle {
+                id: raw.primary.id,
+                flags: raw.primary.flags,
+                crc_type: raw.primary.crc_type,
+                destination: raw.primary.destination,
+                report_to: raw.primary.report_to,
+                lifetime: raw.primary.lifetime,
+                blocks: raw.blocks,
+                ..Default::default()
+            },
             metadata,
         };
         (bundle, data.into())
@@ -225,17 +243,20 @@ mod tests {
             "allocator_id!=0: 3-element should be rewritten to 2-element"
         );
 
-        let parsed = ParsedBundle::parse(&new_data, hardy_bpv7::bpsec::no_keys).unwrap();
+        let hardy_bpv7::parse::Parsed {
+            bundle: parsed_bundle,
+            ..
+        } = parse::parse(hardy_bpa::Bytes::copy_from_slice(&new_data)).unwrap();
 
         assert!(
-            matches!(parsed.bundle.id.source, Eid::LegacyIpn { .. }),
+            matches!(parsed_bundle.primary.id.source, Eid::LegacyIpn { .. }),
             "Source should be LegacyIpn, got {:?}",
-            parsed.bundle.id.source
+            parsed_bundle.primary.id.source
         );
         assert!(
-            matches!(parsed.bundle.destination, Eid::LegacyIpn { .. }),
+            matches!(parsed_bundle.primary.destination, Eid::LegacyIpn { .. }),
             "Destination should be LegacyIpn, got {:?}",
-            parsed.bundle.destination
+            parsed_bundle.primary.destination
         );
     }
 }

@@ -6,7 +6,6 @@ and the generic `Block` struct that represents all extension blocks.
 
 use super::*;
 use core::ops::Range;
-use error::CaptureFieldErr;
 
 /// Represents the processing control flags for a BPv7 block.
 ///
@@ -296,10 +295,15 @@ pub struct Block {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub bcb: Option<u64>,
-    /// The range of bytes in the source data that this block occupies, including the CBOR array wrapper.
-    pub extent: Range<usize>,
-    /// The range of bytes within the `extent` that represents the block-specific data.
-    pub data: Range<usize>,
+    /// The range of bytes in the source data that this block occupies,
+    /// including the CBOR array wrapper. `u64` to match the wire-stream
+    /// offset domain (CBOR offsets are `u64`, streamed bundles need not
+    /// fit in `usize`). Callers with the bundle in memory cast to
+    /// `usize` at the slice point.
+    pub extent: Range<u64>,
+    /// The range of bytes within the `extent` that represents the
+    /// block-specific data. `u64`, see [`Block::extent`].
+    pub data: Range<u64>,
 }
 
 impl Default for Block {
@@ -317,14 +321,28 @@ impl Default for Block {
 }
 
 impl Block {
-    /// Calculates the absolute range of the block's payload within the original bundle byte array.
-    pub fn payload_range(&self) -> Range<usize> {
+    /// Bundle-absolute byte offsets of the block's payload within the
+    /// wire stream. Honest `Range<u64>` — callers that have the bundle
+    /// in memory cast to `usize` at the slice point.
+    pub fn payload_range(&self) -> Range<u64> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
 
-    /// Returns a reference to the block's payload within the original bundle byte array.
+    /// Returns the block's payload bytes, sliced from `source`.
+    ///
+    /// `source` MUST be the complete, contiguous bundle byte stream the
+    /// block's offsets were parsed against (the `Bytes` returned by
+    /// [`parse::parse`](crate::parse::parse), or the
+    /// buffer a `Builder`/`Editor` produced) — the offsets are
+    /// bundle-absolute. Returns `None` if they fall outside `source`.
+    ///
+    /// This is the in-memory convenience over [`Self::payload_range`]: it
+    /// assumes the whole bundle is resident. When the bundle body may not
+    /// be held in RAM (e.g. range-reading a large bundle from storage),
+    /// use [`Self::payload_range`] and fetch the range directly instead.
     pub fn payload<'a>(&self, source: &'a [u8]) -> Option<&'a [u8]> {
-        source.get(self.payload_range())
+        let r = self.payload_range();
+        source.get(r.start as usize..r.end as usize)
     }
 
     /// Emits the block as a CBOR-encoded byte array.
@@ -335,7 +353,7 @@ impl Block {
         data: &[u8],
         array: &mut hardy_cbor::encode::Array,
     ) -> Result<(), Error> {
-        self.extent = array.emit(&hardy_cbor::encode::Raw(&crc::append_crc_value(
+        let extent = array.emit(&hardy_cbor::encode::Raw(&crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
                 Some(if let crc::CrcType::None = self.crc_type {
@@ -349,7 +367,8 @@ impl Block {
                     a.emit(&self.flags);
                     a.emit(&self.crc_type);
 
-                    self.data = a.emit(&hardy_cbor::encode::Bytes(data));
+                    let data_range = a.emit(&hardy_cbor::encode::Bytes(data));
+                    self.data = data_range.start as u64..data_range.end as u64;
 
                     // CRC
                     if let crc::CrcType::None = self.crc_type {
@@ -359,178 +378,7 @@ impl Block {
                 },
             ),
         )?));
+        self.extent = extent.start as u64..extent.end as u64;
         Ok(())
-    }
-}
-
-/// A helper struct used during bundle parsing to associate a block with its block number.
-#[derive(Clone)]
-pub(crate) struct BlockWithNumber {
-    /// The block number.
-    pub number: u64,
-    /// The block itself.
-    pub block: Block,
-    /// The block's payload, if it was parsed from an indefinite-length byte string.
-    pub payload: Option<Box<[u8]>>,
-}
-
-impl hardy_cbor::decode::FromCbor for BlockWithNumber {
-    type Error = Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |arr, mut shortest, tags| {
-            shortest = shortest && tags.is_empty() && arr.is_definite();
-
-            let block_type = arr
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("block type code")?;
-
-            let block_number =
-                arr.parse()
-                    .map_field_err::<Error>("block number")
-                    .map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })?;
-            match (block_number, block_type) {
-                (1, Type::Payload) => {}
-                (0, _) | (1, _) | (_, Type::Primary) | (_, Type::Payload) => {
-                    return Err(Error::InvalidBlockNumber(block_number, block_type));
-                }
-                _ => {}
-            }
-
-            let flags = arr
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("block processing control flags")?;
-
-            let crc_type = arr
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("CRC type")?;
-
-            // Stash start of data
-            let payload_start = arr.offset();
-            let (payload, payload_range) = arr.parse_value(|value, s, tags| {
-                shortest = shortest && s;
-                if shortest {
-                    // Appendix B of RFC9171
-                    let mut seen_24 = false;
-                    for tag in tags {
-                        match *tag {
-                            24 if !seen_24 => seen_24 = true,
-                            _ => {
-                                shortest = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                match value {
-                    hardy_cbor::decode::Value::Bytes(r) => {
-                        Ok((None, payload_start + r.start..payload_start + r.end))
-                    }
-                    hardy_cbor::decode::Value::ByteStream(ranges) => {
-                        shortest = false;
-                        Ok((
-                            Some(
-                                ranges
-                                    .into_iter()
-                                    .fold(Vec::new(), |mut acc, r| {
-                                        // `r` is relative to the value start
-                                        // (`payload_start`), as in the definite
-                                        // `Bytes` arm above — rebase it into
-                                        // `data` before slicing.
-                                        acc.extend_from_slice(
-                                            &data[payload_start + r.start..payload_start + r.end],
-                                        );
-                                        acc
-                                    })
-                                    .into(),
-                            ),
-                            0..0,
-                        ))
-                    }
-                    value => Err(hardy_cbor::decode::Error::IncorrectType(
-                        "Byte String".to_string(),
-                        value.type_name(!tags.is_empty()),
-                    )),
-                }
-            })?;
-
-            // Check CRC
-            shortest = crc::parse_crc_value(data, arr, crc_type)? && shortest;
-
-            Ok((
-                BlockWithNumber {
-                    number: block_number,
-                    block: Block {
-                        block_type,
-                        flags,
-                        crc_type,
-                        data: payload_range,
-                        ..Default::default()
-                    },
-                    payload,
-                },
-                shortest,
-            ))
-        })
-        .map(|((mut block, shortest), len)| {
-            block.block.extent.end = len;
-            (block, shortest, len)
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use hardy_cbor::decode::FromCbor;
-
-    use super::*;
-
-    // A block whose block-type-specific data is a CBOR indefinite-length byte
-    // string must be reassembled from the payload chunks, not from the block
-    // header. Regression for the ByteStream offset bug (rescan R-1): the chunk
-    // ranges are relative to the value start, so they must be rebased into the
-    // block buffer before slicing.
-    #[test]
-    fn indefinite_length_byte_string_payload_reassembles_correctly() {
-        // Block array [type=10 (HopCount), number=2, flags=0, crc_type=0, data].
-        // data = indefinite-length byte string { "HEL", "LO" } == "HELLO".
-        let block = [
-            0x85, // array(5)
-            0x0A, // block type 10 (HopCount)
-            0x02, // block number 2
-            0x00, // flags
-            0x00, // crc type (None)
-            0x5F, // indefinite-length byte string
-            0x43, b'H', b'E', b'L', // chunk "HEL"
-            0x42, b'L', b'O', // chunk "LO"
-            0xFF, // break
-        ];
-
-        let (parsed, shortest, len) =
-            BlockWithNumber::from_cbor(&block).expect("block should parse");
-
-        assert_eq!(len, block.len());
-        assert!(!shortest, "indefinite-length encoding is not shortest-form");
-        assert_eq!(
-            parsed.payload.as_deref(),
-            Some(&b"HELLO"[..]),
-            "indefinite-length byte-string payload must reassemble to the payload bytes"
-        );
     }
 }

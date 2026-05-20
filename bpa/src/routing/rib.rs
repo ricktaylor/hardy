@@ -8,7 +8,6 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
-    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
@@ -26,7 +25,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet,
-    bundle::{Bundle, BundleMetadata},
+    bundle::{Bpv7Bundle, Bundle, BundleMetadata},
     cla::{ClaAddressType, registry::Cla},
     dispatcher::Dispatcher,
     hash_map::Entry as HashMapEntry,

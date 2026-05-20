@@ -26,20 +26,26 @@ impl Command {
 
         let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // `parse_with_keys` runs Section C7 with the keys, so a
+        // successful return means every BIB whose key we have verified.
+        // We only need to report whether THIS block was BIB-covered.
+        let parse::Parsed { bundle, .. } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to verify block: {e}"))?;
 
-        if bundle
-            .verify_block(self.block, &data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to verify block: {e}"))?
-        {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
+        let target = bundle
+            .blocks
+            .get(&self.block)
+            .ok_or_else(|| anyhow::anyhow!("Bundle has no block {}", self.block))?;
+        match target.bib {
+            hardy_bpv7::block::BibCoverage::Some(_) => Ok(()),
+            hardy_bpv7::block::BibCoverage::None => Err(anyhow::anyhow!(
                 "Block {} is not protected by a BIB",
                 self.block
-            ))
+            )),
+            hardy_bpv7::block::BibCoverage::Maybe => Err(anyhow::anyhow!(
+                "Block {} is covered by a BIB whose body could not be decrypted (NoKey)",
+                self.block
+            )),
         }
     }
 }
