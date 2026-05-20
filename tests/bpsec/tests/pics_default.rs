@@ -2,6 +2,7 @@
 //!
 //! Tests RFC 9173 default security contexts against Hardy.
 
+use bpsec_tests::{PolicyAction, check_required_bcb, check_required_bib};
 use hardy_bpv7::block;
 use hardy_bpv7::bpsec::encryptor;
 use hardy_bpv7::bpsec::key;
@@ -737,6 +738,25 @@ fn pics_27_1_not_acceptor_bcb_passes_through() {
     );
 }
 
+// Requirement 34: If policy requires confidentiality on a target and no BCB is
+// present, the node MUST process per security policy. (RFC 9172, Section 5.1.1)
+
+#[test]
+fn pics_34_1_missing_required_bcb_must_fail() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Should parse successfully");
+
+    assert_eq!(
+        check_required_bcb(&parsed.bundle, 1),
+        PolicyAction::Reject,
+        "Policy should reject: no BCB on payload"
+    );
+}
+
 // Requirement 36: If an encrypted payload block cannot be decrypted, the bundle
 // MUST be discarded and processed no further. (RFC 9172, Section 5.1.1)
 
@@ -876,6 +896,59 @@ fn pics_47_1_bib_not_processed_when_target_encrypted() {
             .values()
             .any(|b| b.block_type == block::Type::BlockIntegrity),
         "Encrypted BIB should be preserved"
+    );
+}
+
+// Requirement 48: If policy requires integrity on a target and no BIB is present,
+// the node MUST process per security policy. (RFC 9172, Section 5.1.2)
+
+#[test]
+fn pics_48_1_missing_required_bib_on_payload_must_fail() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Should parse successfully");
+
+    assert_eq!(
+        check_required_bib(&parsed.bundle, 1),
+        PolicyAction::Reject,
+        "Policy should reject: no BIB on payload"
+    );
+}
+
+// Requirement 49: If policy requires integrity on a non-payload target and no BIB
+// is present, the target block SHOULD be removed. (RFC 9172, Section 5.1.2)
+
+#[test]
+fn pics_49_1_missing_required_bib_on_extension_removes_target() {
+    let incoming = hex_literal::hex!(
+        "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
+        .expect("Should parse successfully");
+
+    assert_eq!(
+        check_required_bib(&parsed.bundle, 2),
+        PolicyAction::RemoveBlock(2),
+        "Policy should remove bundle-age: no BIB on non-payload target"
+    );
+
+    let result = Editor::new(&parsed.bundle, &incoming)
+        .remove_block(2)
+        .map_err(|(_, e)| e)
+        .unwrap()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &incoming))
+        .unwrap();
+
+    let reparsed = bundle::ParsedBundle::parse_with_keys(&result, &key::KeySet::EMPTY)
+        .expect("Should re-parse");
+    assert!(
+        reparsed.bundle.age.is_none(),
+        "Bundle-age block should have been removed"
     );
 }
 
