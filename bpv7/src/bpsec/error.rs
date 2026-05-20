@@ -97,6 +97,9 @@ pub enum Error {
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
+    #[error("BPSec block violates RFC 9172 canonical CBOR encoding requirements")]
+    NotCanonical,
+
     #[error("Unsupported operation")]
     UnsupportedOperation,
 

@@ -48,14 +48,20 @@ impl hardy_cbor::decode::FromCbor for HopInfo {
             }
             let (limit, s1): (u64, bool) = a.parse().map_field_err::<Error>("hop limit")?;
             if !s1 {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "hop limit",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             if limit == 0 || limit > 255 {
                 return Err(Error::InvalidHopLimit(limit));
             }
-            let (count, s2) = a.parse().map_field_err::<Error>("hop count")?;
+            let (count, s2): (u64, bool) = a.parse().map_field_err::<Error>("hop count")?;
             if !s2 {
-                return Err(Error::NotCanonical);
+                return Err(Error::InvalidField {
+                    field: "hop count",
+                    source: Box::new(Error::NotCanonical),
+                });
             }
             // `shortest` here means "would round-trip to identical bytes
             // under canonical emission" — i.e. the array was definite-
