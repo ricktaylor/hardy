@@ -1,4 +1,4 @@
-use super::{decode::*, *};
+use super::*;
 use thiserror::Error;
 
 /// A stateful iterator for decoding a sequence of CBOR items, such as an array or a map.
@@ -231,7 +231,7 @@ impl<'a, const D: usize> Series<'a, D> {
         }
 
         let data = &self.data[*self.offset..];
-        let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        let (marker, shortest, mut offset) = parse::<(Head, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Array(count) => {
                 let mut a = Array::try_new(data, count, &mut offset)?;
@@ -265,7 +265,7 @@ impl<'a, const D: usize> Series<'a, D> {
         }
 
         let data = &self.data[*self.offset..];
-        let (marker, shortest, mut offset) = parse::<(TaggedMarker, bool, usize)>(data)?;
+        let (marker, shortest, mut offset) = parse::<(Head, bool, usize)>(data)?;
         let value = match marker.marker {
             Marker::Map(count) => {
                 let mut m = Map::try_new(data, count, &mut offset)?;
