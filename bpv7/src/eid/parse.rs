@@ -321,11 +321,10 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             hardy_cbor::decode::Value::TextStream(parts) => {
                                 // Indefinite-length text: RFC-permitted,
                                 // non-canonical.
-                                let combined =
-                                    parts.iter().fold(String::new(), |mut acc, s| {
-                                        acc.push_str(s);
-                                        acc
-                                    });
+                                let combined = parts.iter().fold(String::new(), |mut acc, s| {
+                                    acc.push_str(s);
+                                    acc
+                                });
                                 parse_dtn
                                     .parse(&combined)
                                     .map(|e| (e, false))
