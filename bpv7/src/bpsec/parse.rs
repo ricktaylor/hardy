@@ -3,9 +3,11 @@ use alloc::rc::Rc;
 use core::ops::Range;
 use smallvec::SmallVec;
 
+/// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
+/// content, so every encoding violation (non-shortest, indefinite-
+/// length, unexpected tags) is rejected with `NotCanonical`.
 fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
-    shortest: &mut bool,
     mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
     if seq.at_end()? {
@@ -14,21 +16,24 @@ fn parse_ranges<const D: usize>(
 
     offset += seq.offset();
     seq.parse_array(|a, s, tags| {
-        *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+        if !s || !tags.is_empty() || !a.is_definite() {
+            return Err(Error::NotCanonical);
+        }
         let mut outer_offset = a.offset();
 
         let mut map = HashMap::new();
         while !a.at_end()? {
             let (id, r) = a.parse_array(|a, s, tags| {
-                *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+                if !s || !tags.is_empty() || !a.is_definite() {
+                    return Err(Error::NotCanonical);
+                }
 
-                let id = a
+                let (id, id_s) = a
                     .parse::<(u64, bool)>()
-                    .map(|(v, s)| {
-                        *shortest = *shortest && s;
-                        v
-                    })
                     .map_field_err::<Error>("id")?;
+                if !id_s {
+                    return Err(Error::NotCanonical);
+                }
 
                 let data_start = offset + outer_offset + a.offset();
                 a.skip_value(16).map_field_err::<Error>("value")?;
@@ -122,18 +127,30 @@ pub struct AbstractSyntaxBlock {
 impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
+    /// Strict-canonical decode per RFC 9172 §3.6 + §4: ASB field encodings
+    /// MUST conform to RFC 8949 Deterministically Encoded CBOR with **no
+    /// indefinite-length carveout** (RFC 9171 §4.1's carveout does not
+    /// apply here). Any non-shortest scalar, unexpected tag, or
+    /// indefinite-length container is rejected with `NotCanonical`. The
+    /// returned `shortest` flag is therefore always `true` on `Ok`.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_sequence(data, |seq| {
-            let mut shortest = true;
-
             // Targets
             let targets = seq
                 .parse_array(|a, s, tags| {
-                    shortest = shortest && s && tags.is_empty() && a.is_definite();
+                    if !s || !tags.is_empty() || !a.is_definite() {
+                        return Err(Error::NotCanonical);
+                    }
                     let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
-                    while let Some((block, s, _)) = a.try_parse()? {
-                        shortest = shortest && s;
-
+                    // The third tuple element from try_parse on a
+                    // FromCbor 3-tuple is the consumed `usize` length;
+                    // u64's FromCbor folds tag-emptiness into the
+                    // `shortest` flag, so checking `!s` here covers
+                    // both non-shortest and unexpected tags.
+                    while let Some((block, s, _)) = a.try_parse::<(u64, bool, usize)>()? {
+                        if !s {
+                            return Err(Error::NotCanonical);
+                        }
                         // Check for duplicates
                         if targets.contains(&block) {
                             return Err(Error::DuplicateOpTarget);
@@ -148,31 +165,24 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             }
 
             // Context
-            let context = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security context id")?;
+            let (context, s) = seq.parse().map_field_err::<Error>("security context id")?;
+            if !s {
+                return Err(Error::NotCanonical);
+            }
 
             // Flags
-            let flags: u64 = seq
+            let (flags, s): (u64, bool) = seq
                 .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
                 .map_field_err::<Error>("security context flags")?;
+            if !s {
+                return Err(Error::NotCanonical);
+            }
 
             // Source
-            let source = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security source")?;
+            let (source, s) = seq.parse().map_field_err::<Error>("security source")?;
+            if !s {
+                return Err(Error::NotCanonical);
+            }
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
@@ -181,7 +191,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             let parameters = if flags & 1 == 0 {
                 HashMap::new()
             } else {
-                parse_ranges(seq, &mut shortest, 0)
+                parse_ranges(seq, 0)
                     .map_field_err::<Error>("security context parameters")?
                     .unwrap_or_default()
             };
@@ -189,12 +199,14 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             // Target Results
             let offset = seq.offset();
             let results = seq.parse_array(|a, s, tags| {
-                shortest = shortest && s && tags.is_empty() && a.is_definite();
+                if !s || !tags.is_empty() || !a.is_definite() {
+                    return Err(Error::NotCanonical);
+                }
 
                 let mut results = HashMap::with_capacity(targets.len());
                 let mut idx = 0;
-                while let Some(target_results) = parse_ranges(a, &mut shortest, offset)
-                    .map_field_err::<Error>("security results")?
+                while let Some(target_results) =
+                    parse_ranges(a, offset).map_field_err::<Error>("security results")?
                 {
                     results.insert(
                         *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,
@@ -216,7 +228,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     parameters,
                     results,
                 },
-                shortest,
+                true,
             ))
         })
         .map(|((v, s), len)| (v, s, len))
