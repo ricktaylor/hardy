@@ -117,6 +117,18 @@ impl hardy_cbor::decode::FromCbor for Flags {
     }
 }
 
+impl Flags {
+    pub fn primary() -> Self {
+        Self {
+            must_replicate: true,
+            report_on_failure: true,
+            delete_bundle_on_failure: true,
+            delete_block_on_failure: false,
+            unrecognised: None,
+        }
+    }
+}
+
 /// The type of a BPv7 block, as defined in RFC 9171 Section 4.2.1.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

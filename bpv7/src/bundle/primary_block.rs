@@ -156,6 +156,7 @@ impl PrimaryBlock {
     pub fn as_block(crc_type: crc::CrcType, extent: core::ops::Range<usize>) -> block::Block {
         block::Block {
             block_type: block::Type::Primary,
+            flags: block::Flags::primary(),
             crc_type,
             data: 0..extent.len(),
             extent,
