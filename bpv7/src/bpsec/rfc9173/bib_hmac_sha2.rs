@@ -53,36 +53,17 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    fn from_cbor(
-        parameters: HashMap<u64, Range<usize>>,
-        data: &[u8],
-    ) -> Result<(Self, bool), Error> {
-        let mut shortest = true;
+    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
         let mut result = Self::default();
         for (id, range) in parameters {
             match id {
-                1 => {
-                    result.variant = hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })?;
-                }
-                2 => {
-                    result.key = Some(parse::decode_box(range, data).map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })?);
-                }
-                3 => {
-                    result.flags = hardy_cbor::decode::parse(&data[range]).map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })?;
-                }
+                1 => result.variant = parse::require_canonical_value(&data[range])?,
+                2 => result.key = Some(parse::decode_box(range, data)?),
+                3 => result.flags = parse::require_canonical_value(&data[range])?,
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
-        Ok((result, shortest))
+        Ok(result)
     }
 }
 
@@ -119,22 +100,16 @@ impl hardy_cbor::encode::ToCbor for Parameters {
 pub struct Results(pub Box<[u8]>);
 
 impl Results {
-    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<(Self, bool), Error> {
-        let mut shortest = true;
+    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
         let mut r = None;
         for (id, range) in results {
             match id {
-                1 => {
-                    r = Some(parse::decode_box(range, data).map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })?);
-                }
+                1 => r = Some(parse::decode_box(range, data)?),
                 _ => return Err(Error::InvalidContextResult(id)),
             }
         }
 
-        Ok((Self(r.ok_or(Error::InvalidContextResult(1))?), shortest))
+        Ok(Self(r.ok_or(Error::InvalidContextResult(1))?))
     }
 }
 
@@ -471,14 +446,9 @@ impl Operation {
 pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
-) -> Result<(eid::Eid, HashMap<u64, bib::Operation>, bool), Error> {
-    let mut shortest = false;
+) -> Result<(eid::Eid, HashMap<u64, bib::Operation>), Error> {
     let parameters = Rc::from(
         Parameters::from_cbor(asb.parameters, data)
-            .map(|(p, s)| {
-                shortest = s;
-                p
-            })
             .map_field_err::<Error>("RFC9173 HMAC-SHA2 parameters")?,
     );
 
@@ -490,13 +460,9 @@ pub fn parse(
             bib::Operation::HMAC_SHA2(Operation {
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
-                    .map(|(v, s)| {
-                        shortest = shortest && s;
-                        v
-                    })
                     .map_field_err::<Error>("RFC9173 HMAC-SHA2 results")?,
             }),
         );
     }
-    Ok((asb.source, operations, shortest))
+    Ok((asb.source, operations))
 }
