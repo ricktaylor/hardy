@@ -159,7 +159,7 @@ impl<T> Mutex<T> {
     ///
     /// Returns a guard that releases the lock when dropped.
     #[inline]
-    pub fn lock(&self) -> MutexGuard<'_, T> {
+    pub fn lock(&self) -> MutexGuard<'_, T, spin::Spin> {
         self.0.lock()
     }
 
@@ -167,7 +167,7 @@ impl<T> Mutex<T> {
     ///
     /// Returns `Some(guard)` if the lock was acquired, `None` if it was already held.
     #[inline]
-    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T, spin::Spin>> {
         self.0.try_lock()
     }
 
