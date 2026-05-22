@@ -97,8 +97,6 @@ pub enum Marker {
     Simple(u8),
     /// A floating-point value (CBOR major type 7).
     Float(f64),
-    /// An 'break' marker for indefinite length items
-    Break,
 }
 
 /// A [`Marker`] preceded by zero or more CBOR semantic tags.
@@ -158,7 +156,6 @@ impl core::fmt::Display for Head {
             Marker::Undefined => write!(f, "{prefix} Undefined"),
             Marker::Simple(v) => write!(f, "{prefix} Simple Value {v}"),
             Marker::Float(_) => write!(f, "{prefix} Float"),
-            Marker::Break => write!(f, "End of sequence marker"),
         }
     }
 }
@@ -298,11 +295,6 @@ impl FromCbor for Head {
                 }
                 (Marker::Float(v), shortest, 8)
             }
-            // A break code is only a valid End marker when untagged.
-            // `offset == 1` means no tag bytes preceded it (offset = tag
-            // bytes consumed + 1 for the marker byte). A tagged break
-            // falls through to the catch-all and is rejected.
-            (7, 31) if offset == 1 => (Marker::Break, true, 0),
             (7, minor) => {
                 return Err(Error::InvalidSimpleType(minor));
             }
