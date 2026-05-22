@@ -412,16 +412,11 @@ pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize)
 }
 
 #[inline]
-fn checked_offset(offset: usize, len: u64) -> Result<usize, Error> {
-    usize::try_from(len)
+fn offset_extent(data: &[u8], offset: usize, len: u64) -> Result<Range<usize>, Error> {
+    let end = usize::try_from(len)
         .ok()
         .and_then(|len| offset.checked_add(len))
-        .ok_or(Error::TooBig)
-}
-
-#[inline]
-fn offset_extent(data: &[u8], offset: usize, len: u64) -> Result<Range<usize>, Error> {
-    let end = checked_offset(offset, len)?;
+        .ok_or(Error::TooBig)?;
     if end > data.len() {
         Err(Error::NeedMoreData(end - data.len()))
     } else {
