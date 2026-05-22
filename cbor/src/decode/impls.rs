@@ -151,13 +151,12 @@ where
         // Peek at the head only — far cheaper than parse_value, which
         // materialises chunk lists and constructs nested Series for the
         // common Some(T) case where we throw the parse away and call
-        // T::from_cbor again. Only an untagged Undefined is None; a
-        // tagged Undefined is structurally a tagged item and is handed
-        // to T::from_cbor (typically failing for primitive T, but
-        // letting custom T see the tag if it cares).
+        // T::from_cbor again. Any Undefined marker is treated as None,
+        // tagged or not; the tag presence is folded into `shortest` so
+        // callers can flag the non-canonical wrapping if they care.
         let (head, shortest, len) = parse::<(Head, bool, usize)>(data)?;
-        if matches!(head.marker, Marker::Undefined) && head.tags.is_empty() {
-            Ok((None, shortest, len))
+        if matches!(head.marker, Marker::Undefined) {
+            Ok((None, shortest && head.tags.is_empty(), len))
         } else {
             T::from_cbor(data).map(|(v, s, len)| (Some(v), s, len))
         }
