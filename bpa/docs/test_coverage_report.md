@@ -111,7 +111,7 @@ All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
 
 ### Performance Results (2026-04-13)
 
-Test machine: Intel Xeon @ 2.20GHz, 4 cores, 15 GB RAM, Debian 12, x86_64. Tokio multi-thread (4 workers). In-memory storage, no I/O.
+Test machine: Intel Xeon @ 2.20GHz, 4 cores, 16 GB RAM, Debian 12, x86_64. Tokio multi-thread (4 workers). In-memory storage, no I/O.
 
 | Measurement | Method | Result |
 | :--- | :--- | :--- |
