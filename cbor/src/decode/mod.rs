@@ -352,33 +352,40 @@ pub fn skip_value(data: &[u8], mut max_recursion: usize) -> Result<(bool, usize)
     let (marker, mut shortest, mut offset) = parse::<(Head, bool, usize)>(data)?;
     match marker.marker {
         Marker::Bytes(Some(v)) | Marker::Text(Some(v)) => {
-            Ok((shortest, checked_offset(offset, v)?))
+            Ok((shortest, offset_extent(data, offset, v)?.end))
         }
         Marker::Bytes(None) => loop {
+            // Check for the break stop code directly, before parsing a
+            // Head — Head::from_cbor rejects 0xFF as it is not a data
+            // item. This mirrors `Series::at_end`.
+            if data.get(offset) == Some(&0xFF) {
+                return Ok((shortest, offset + 1));
+            }
             let (inner_marker, inner_shortest, len) =
                 parse::<(Head, bool, usize)>(&data[offset..])?;
             offset = offset.checked_add(len).ok_or(Error::TooBig)?;
 
             match inner_marker.marker {
                 Marker::Bytes(Some(len)) if inner_marker.tags.is_empty() => {
-                    offset = checked_offset(offset, len)?;
+                    offset = offset_extent(data, offset, len)?.end;
                     shortest &= inner_shortest;
                 }
-                Marker::Break => return Ok((shortest, offset)),
                 _ => return Err(Error::InvalidChunk),
             }
         },
         Marker::Text(None) => loop {
+            if data.get(offset) == Some(&0xFF) {
+                return Ok((shortest, offset + 1));
+            }
             let (inner_marker, inner_shortest, len) =
                 parse::<(Head, bool, usize)>(&data[offset..])?;
             offset = offset.checked_add(len).ok_or(Error::TooBig)?;
 
             match inner_marker.marker {
                 Marker::Text(Some(len)) if inner_marker.tags.is_empty() => {
-                    offset = checked_offset(offset, len)?;
+                    offset = offset_extent(data, offset, len)?.end;
                     shortest &= inner_shortest;
                 }
-                Marker::Break => return Ok((shortest, offset)),
                 _ => return Err(Error::InvalidChunk),
             }
         },
@@ -449,6 +456,12 @@ where
         Marker::Bytes(None) => {
             let mut chunks = Vec::new();
             loop {
+                // Break stop code terminates the indefinite-length string.
+                // Detected directly because Head::from_cbor rejects 0xFF.
+                if data.get(offset) == Some(&0xFF) {
+                    offset += 1;
+                    break f(Value::ByteStream(chunks), shortest, &marker.tags);
+                }
                 let (inner_marker, inner_shortest, len) =
                     parse::<(Head, bool, usize)>(&data[offset..])?;
 
@@ -460,9 +473,6 @@ where
                         offset = extent.end;
                         chunks.push(extent);
                         shortest &= inner_shortest;
-                    }
-                    Marker::Break => {
-                        break f(Value::ByteStream(chunks), shortest, &marker.tags);
                     }
                     _ => {
                         return Err(Error::InvalidChunk.into());
@@ -482,6 +492,10 @@ where
         Marker::Text(None) => {
             let mut chunks = Vec::new();
             loop {
+                if data.get(offset) == Some(&0xFF) {
+                    offset += 1;
+                    break f(Value::TextStream(&chunks), shortest, &marker.tags);
+                }
                 let (inner_marker, inner_shortest, len) =
                     parse::<(Head, bool, usize)>(&data[offset..])?;
 
@@ -493,9 +507,6 @@ where
                         offset = extent.end;
                         chunks.push(core::str::from_utf8(&data[extent]).map_err(Into::into)?);
                         shortest &= inner_shortest;
-                    }
-                    Marker::Break => {
-                        break f(Value::TextStream(&chunks), shortest, &marker.tags);
                     }
                     _ => {
                         return Err(Error::InvalidChunk.into());
@@ -519,7 +530,6 @@ where
         Marker::Undefined => f(Value::Undefined, shortest, &marker.tags),
         Marker::Simple(v) => f(Value::Simple(v), shortest, &marker.tags),
         Marker::Float(v) => f(Value::Float(v), shortest, &marker.tags),
-        Marker::Break => return Err(Error::InvalidSimpleType(31).into()),
     }
     .map(|r| (r, offset))
 }

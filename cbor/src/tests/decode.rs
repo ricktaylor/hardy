@@ -949,11 +949,21 @@ fn head_consumed_bytes() {
     assert!(matches!(m.marker, Marker::Float(_)));
     assert_eq!(len, 9);
 
-    // Break / End: 0xFF — 1 byte
+    // Break stop code: 0xFF is a control byte, not a data item, so
+    // Head::from_cbor rejects it. Callers that need to detect it as an
+    // indefinite-length terminator do so by direct byte comparison.
     let data = hex!("FF");
-    let (m, _, len) = Head::from_cbor(&data).unwrap();
-    assert!(matches!(m.marker, Marker::Break));
-    assert_eq!(len, 1);
+    assert!(matches!(
+        Head::from_cbor(&data),
+        Err(Error::InvalidSimpleType(31))
+    ));
+
+    // Tagged 0xFF is also rejected — a tagged control byte is malformed.
+    let data = hex!("C0 FF");
+    assert!(matches!(
+        Head::from_cbor(&data),
+        Err(Error::InvalidSimpleType(31))
+    ));
 }
 
 // Regression: skip_value on a definite-length map must skip 2*N items,
@@ -1010,6 +1020,134 @@ fn skip_to_end_sequence() {
         Ok::<_, Error>(())
     })
     .unwrap();
+}
+
+// Series::Debug on a partially-consumed array prepends `...` so the reader
+// can see the rendering doesn't start at item zero.
+#[test]
+fn debug_array_mid_drain() {
+    // [1, 2, 3]
+    parse_array(&hex!("83 01 02 03"), |a, _, _| {
+        let _: u64 = a.parse()?; // consume the 1
+        let s = format!("{a:?}");
+        // Items 2 and 3 remain; leading `...` signals prior consumption.
+        assert!(s.contains("..."), "expected leading ..., got {s}");
+        assert!(
+            s.contains('2') && s.contains('3'),
+            "expected 2 and 3, got {s}"
+        );
+        // Drain the rest so parse_array's complete() doesn't return AdditionalItems.
+        a.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Series::Debug on a map between key and value (odd `parsed`) renders the
+// dangling value paired with `...`, keeping subsequent pairs aligned.
+// Without this, the value would be misread as a key and every following
+// pair would be shifted by one item.
+#[test]
+fn debug_map_mid_pair() {
+    // {1: 2, 3: 4} — definite-length, 2 pairs.
+    parse_map(&hex!("A2 01 02 03 04"), |m, _, _| {
+        let _: u64 = m.parse()?; // consume key 1; value 2 still pending
+        let s = format!("{m:?}");
+        // Expect `...: 2` for the dangling value and `3: 4` for the remaining pair.
+        assert!(s.contains("..."), "expected ... placeholder, got {s}");
+        assert!(s.contains('2'), "expected dangling value 2, got {s}");
+        assert!(
+            s.contains('3') && s.contains('4'),
+            "expected pair 3:4, got {s}"
+        );
+        // Drain the rest so parse_map's complete() doesn't return AdditionalItems.
+        m.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Series::Debug on a map after a full pair was consumed (even `parsed > 0`)
+// leads with a `...: ...` placeholder pair so the rendering doesn't
+// silently look like the whole map.
+#[test]
+fn debug_map_mid_pairs_even() {
+    // {1: 2, 3: 4}
+    parse_map(&hex!("A2 01 02 03 04"), |m, _, _| {
+        let _: u64 = m.parse()?; // key 1
+        let _: u64 = m.parse()?; // value 2 — parsed = 2 (even, > 0)
+        let s = format!("{m:?}");
+        assert!(s.contains("..."), "expected placeholder pair, got {s}");
+        assert!(
+            s.contains('3') && s.contains('4'),
+            "expected pair 3:4, got {s}"
+        );
+        // Drain the rest so parse_map's complete() doesn't return AdditionalItems.
+        m.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Regression: Series::count() must not panic when called on a fully-consumed
+// Sequence (D=0). `at_end` sets `self.count = Some(self.parsed)` once the
+// input is drained, and `count() = self.count.map(|c| c / D)` previously
+// divided by zero in that state.
+#[test]
+fn sequence_count_after_drain() {
+    parse_sequence(&hex!("01 02 03"), |s| {
+        while !s.at_end()? {
+            let _: u64 = s.parse()?;
+        }
+        // Drained, at_end true, count now Some(parsed) — must not panic.
+        assert_eq!(s.count(), Some(3));
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+}
+
+// Regression: skip_value must bounds-check definite-length string payloads
+// against the input buffer. A malformed item claiming more bytes than the
+// buffer holds previously returned an out-of-range offset that the next
+// parse step misreported as NeedMoreData(1) (or similar) — losing the
+// actual shortfall and obscuring the error site. The bounds check now
+// surfaces the correct NeedMoreData at the right point.
+#[test]
+fn skip_value_truncated_definite_strings() {
+    // bytes(4) header but only 2 payload bytes follow — short by 2.
+    assert!(matches!(
+        skip_value(&hex!("44 DE AD"), 16),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // text(4) header but only 2 payload bytes follow — short by 2.
+    assert!(matches!(
+        skip_value(&hex!("64 41 42"), 16),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // bytes(8-byte length) claiming a huge payload against a tiny buffer.
+    // header is 1 marker + 8 length bytes = 9 bytes; payload claimed is
+    // 1_000_000 bytes; buffer is 9 bytes — short by 1_000_000.
+    assert!(matches!(
+        skip_value(&hex!("5B 00 00 00 00 00 0F 42 40"), 16),
+        Err(Error::NeedMoreData(1_000_000))
+    ));
+
+    // Same regression inside an indefinite-length byte string: a chunk
+    // claiming more bytes than the buffer holds.
+    // 5F (bytes indef) 44 (bytes(4)) DE AD — chunk claims 4, only 2 follow.
+    assert!(matches!(
+        skip_value(&hex!("5F 44 DE AD"), 16),
+        Err(Error::NeedMoreData(2))
+    ));
+
+    // Same for indefinite-length text string.
+    // 7F (text indef) 64 (text(4)) 41 42 — chunk claims 4, only 2 follow.
+    assert!(matches!(
+        skip_value(&hex!("7F 64 41 42"), 16),
+        Err(Error::NeedMoreData(2))
+    ));
 }
 
 // Regression: skip_value on an indefinite-length map with an odd number

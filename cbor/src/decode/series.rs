@@ -53,7 +53,11 @@ impl<'a, const D: usize> Series<'a, D> {
     /// Returns `None` for indefinite-length sequences until they have been fully parsed.
     #[inline]
     pub fn count(&self) -> Option<usize> {
-        self.count.map(|c| c / D)
+        // `D.max(1)` mirrors `try_new`: for D == 0 (Sequence) the stored
+        // count is already item-count (try_new doesn't multiply), and
+        // `at_end` may set it after consuming all input — dividing by D
+        // directly would panic.
+        self.count.map(|c| c / D.max(1))
     }
 
     /// Returns `true` if the sequence has a definite length.
@@ -125,12 +129,16 @@ impl<'a, const D: usize> Series<'a, D> {
     /// Returns a boolean indicating if all skipped values were in canonical form.
     /// The `max_recursion` parameter prevents stack overflows on deeply nested structures.
     pub fn skip_to_end(&mut self, max_recursion: usize) -> Result<bool, Error> {
+        // Drain one item per iteration regardless of `D`. The previous
+        // implementation skipped `D` items per outer step (a whole pair
+        // for maps), which silently over-shot the end and returned
+        // `NoMoreItems` when called on a map starting at odd `parsed`
+        // (e.g. between a key and its value). Per-item draining handles
+        // any starting parity; pair-atomicity for indefinite maps is
+        // already enforced by `at_end`'s `is_multiple_of(D)` check.
         let mut shortest = true;
         while !self.at_end()? {
             shortest &= self.skip_value(max_recursion)?;
-            for _ in 1..D {
-                shortest &= self.skip_value(max_recursion)?;
-            }
         }
         Ok(shortest)
     }
@@ -334,8 +342,50 @@ fn sequence_debug_fmt<const D: usize>(
     if max_recursion == 0 {
         return Err(Error::MaxRecursion.into());
     }
+    // `resumed` is only true at the top-level Debug call when the original
+    // had already parsed items before Debug ran — nested calls always start
+    // with `parsed == 0` because nested Series are freshly constructed by
+    // parse_value. Use it to emit a leading `...` marker so the reader can
+    // see this rendering does not start at item zero.
+    let resumed = sequence.parsed > 0;
     if D == 2 {
         let mut items = Vec::new();
+
+        if resumed {
+            if !sequence.parsed.is_multiple_of(2) {
+                // Odd parity: a key was consumed but its value wasn't.
+                // The next item on the wire is the dangling value; pair
+                // it with `<...>` so the rendering stays aligned. Without
+                // this, the value would be parsed as a key and every
+                // subsequent pair would be misaligned.
+                //
+                // at_end() may return Error::PartialMap here if the break
+                // byte immediately follows — propagated as normal.
+                if !sequence.at_end()? {
+                    match sequence.parse_value(|value, shortest, tags| {
+                        debug_fmt(value, shortest, tags, max_recursion - 1)
+                    }) {
+                        Ok(value) => items.push((SequenceDebugInfo::Unknown, value)),
+                        Err(e) => {
+                            let item = match e {
+                                DebugError::Decode(e) => {
+                                    SequenceDebugInfo::Value(format!("<Error: {e}>"))
+                                }
+                                DebugError::Rollup(item) => item,
+                            };
+                            items.push((SequenceDebugInfo::Unknown, item));
+                            return Err(DebugError::Rollup(SequenceDebugInfo::Map(items)));
+                        }
+                    }
+                }
+            } else {
+                // Even parity > 0: complete pairs were consumed. Lead with
+                // a `...: ...` placeholder pair so the reader knows the
+                // rendering doesn't cover the whole map.
+                items.push((SequenceDebugInfo::Unknown, SequenceDebugInfo::Unknown));
+            }
+        }
+
         while !sequence.at_end()? {
             match sequence.parse_value(|value, shortest, tags| {
                 debug_fmt(value, shortest, tags, max_recursion - 1)
@@ -370,6 +420,11 @@ fn sequence_debug_fmt<const D: usize>(
         Ok(SequenceDebugInfo::Map(items))
     } else {
         let mut items = Vec::new();
+        if resumed {
+            // Partial-drain marker: signals the rendering doesn't start at
+            // item zero. Renders as `[..., item, item]`.
+            items.push(SequenceDebugInfo::Unknown);
+        }
         while !sequence.at_end()? {
             match sequence.parse_value(|value, shortest, tags| {
                 debug_fmt(value, shortest, tags, max_recursion - 1)
