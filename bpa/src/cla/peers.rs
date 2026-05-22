@@ -1,4 +1,11 @@
-use super::*;
+use alloc::sync::{Arc, Weak};
+
+use trace_err::TraceErrOption;
+
+use super::egress_queue;
+use super::registry::ClaEntry;
+use crate::cla::ClaAddress;
+use crate::{HashMap, bundle, dispatcher, policy, storage};
 
 // PeerTable uses hardy_async::sync::spin::RwLock because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -11,12 +18,12 @@ struct PeerInner {
 }
 
 pub struct Peer {
-    cla: Weak<registry::Cla>,
+    cla: Weak<ClaEntry>,
     inner: hardy_async::sync::spin::Once<PeerInner>,
 }
 
 impl Peer {
-    pub fn new(cla: Weak<registry::Cla>) -> Self {
+    pub fn new(cla: Weak<ClaEntry>) -> Self {
         Self {
             cla,
             inner: hardy_async::sync::spin::Once::new(),
@@ -27,7 +34,7 @@ impl Peer {
     pub async fn start(
         &self,
         poll_channel_depth: usize,
-        cla: Arc<registry::Cla>,
+        cla: Arc<ClaEntry>,
         peer: u32,
         cla_addr: ClaAddress,
         store: Arc<storage::store::Store>,
