@@ -56,7 +56,7 @@ impl<'a, const D: usize> Series<'a, D> {
         // For D == 0 (Sequence) the stored count is already item-count
         // (try_new doesn't multiply), and `at_end` may set it after
         // consuming all input — dividing by D directly would panic.
-        self.count.map(|c| if D == 0 { c } else { c / D })
+        self.count.map(|c| c / D.max(1))
     }
 
     /// Returns `true` if the sequence has a definite length.
