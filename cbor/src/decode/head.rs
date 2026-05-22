@@ -166,10 +166,55 @@ impl FromCbor for Head {
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let mut tags = Tags::new();
         let (mut shortest, mut offset) = parse_tags(data, &mut tags)?;
-        let Some(marker) = data.get(offset) else {
-            return Err(Error::NeedMoreData(1));
+
+        // Fast path: 9 bytes = 1 marker + at most 8 value bytes. All reads
+        // below are bounds-check-free. Majors 0-5 are handled in full here;
+        // majors 6 (unreachable post-parse_tags) and 7 (simple/float/break)
+        // fall through to the slow match below for their per-minor logic.
+        let marker = if let Some(&[marker, b0, b1, b2, b3, b4, b5, b6, b7]) =
+            data[offset..].first_chunk::<9>()
+        {
+            offset += 1;
+            let major = marker >> 5;
+            let minor = marker & 0x1F;
+
+            if major <= 5 {
+                // Indef-length: minor 31, only valid for majors 2-5.
+                // For majors 0-1 with minor 31, fall through to
+                // parse_uint_minor_fast which returns InvalidMinorValue.
+                if minor == 31 && major >= 2 {
+                    let m = match major {
+                        2 => Marker::Bytes(None),
+                        3 => Marker::Text(None),
+                        4 => Marker::Array(None),
+                        5 => Marker::Map(None),
+                        _ => unreachable!(),
+                    };
+                    return Ok((Head { tags, marker: m }, shortest, offset));
+                }
+
+                let (v, s, len) = parse_uint_minor_fast(minor, [b0, b1, b2, b3, b4, b5, b6, b7])?;
+                let m = match major {
+                    0 => Marker::UnsignedInteger(v),
+                    1 => Marker::NegativeInteger(v),
+                    2 => Marker::Bytes(Some(v)),
+                    3 => Marker::Text(Some(v)),
+                    4 => Marker::Array(Some(v)),
+                    5 => Marker::Map(Some(v)),
+                    _ => unreachable!(),
+                };
+                return Ok((Head { tags, marker: m }, shortest && s, offset + len));
+            }
+
+            // Major 6 or 7 — fall through to slow match.
+            marker
+        } else {
+            let Some(marker) = data.get(offset) else {
+                return Err(Error::NeedMoreData(1));
+            };
+            offset += 1;
+            *marker
         };
-        offset += 1;
         let data = &data[offset..];
 
         let (marker, shortest, len) = match (marker >> 5, marker & 0x1F) {
@@ -308,16 +353,32 @@ fn parse_tags(data: &[u8], tags: &mut Tags) -> Result<(bool, usize), Error> {
     let mut offset = 0;
     let mut shortest = true;
 
-    while let Some(marker) = data.get(offset) {
-        match (marker >> 5, marker & 0x1F) {
-            (6, minor) => {
-                offset += 1;
-                let (tag, s, o) = parse_uint_minor(minor, &data[offset..])?;
-                tags.push(tag);
-                shortest &= s;
-                offset = offset.checked_add(o).ok_or(Error::TooBig)?;
+    loop {
+        if let Some(&[marker, b0, b1, b2, b3, b4, b5, b6, b7]) = data[offset..].first_chunk::<9>() {
+            match (marker >> 5, marker & 0x1F) {
+                (6, minor) => {
+                    offset += 1;
+                    let (tag, s, o) =
+                        parse_uint_minor_fast(minor, [b0, b1, b2, b3, b4, b5, b6, b7])?;
+                    tags.push(tag);
+                    shortest &= s;
+                    offset = offset.checked_add(o).ok_or(Error::TooBig)?;
+                }
+                _ => break,
             }
-            _ => break,
+        } else if let Some(marker) = data.get(offset) {
+            match (marker >> 5, marker & 0x1F) {
+                (6, minor) => {
+                    offset += 1;
+                    let (tag, s, o) = parse_uint_minor(minor, &data[offset..])?;
+                    tags.push(tag);
+                    shortest &= s;
+                    offset = offset.checked_add(o).ok_or(Error::TooBig)?;
+                }
+                _ => break,
+            }
+        } else {
+            break;
         }
     }
     Ok((shortest, offset))
@@ -355,6 +416,28 @@ fn parse_uint_minor(minor: u8, data: &[u8]) -> Result<(u64, bool, usize), Error>
             Ok((v, v > u32::MAX as u64, 8))
         }
         val if val < 24 => Ok((val as u64, true, 0)),
+        _ => Err(Error::InvalidMinorValue(minor)),
+    }
+}
+
+#[inline]
+fn parse_uint_minor_fast(minor: u8, data: [u8; 8]) -> Result<(u64, bool, usize), Error> {
+    // All reads below are on a fixed-size array — no bounds checks.
+    match minor {
+        v if v < 24 => Ok((v as u64, true, 0)),
+        24 => Ok((data[0] as u64, data[0] > 23, 1)),
+        25 => {
+            let v = u16::from_be_bytes([data[0], data[1]]);
+            Ok((v as u64, v > u8::MAX as u16, 2))
+        }
+        26 => {
+            let v = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            Ok((v as u64, v > u16::MAX as u32, 4))
+        }
+        27 => {
+            let v = u64::from_be_bytes(data);
+            Ok((v, v > u32::MAX as u64, 8))
+        }
         _ => Err(Error::InvalidMinorValue(minor)),
     }
 }

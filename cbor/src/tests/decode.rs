@@ -1171,3 +1171,61 @@ fn skip_value_indefinite_map_partial() {
     assert!(shortest);
     assert_eq!(len, 2);
 }
+
+// Regression: Head::from_cbor's fast path (first_chunk::<9>) must report
+// the same byte count as the slow path. Previously, parse_uint_minor_fast
+// returned `1 + extra` while the caller had already incremented offset by
+// 1, double-counting the marker byte. Only surfaces when the buffer has
+// at least 9 bytes available — minimal-byte tests fall to the slow path
+// and miss it.
+#[test]
+fn head_fast_path_byte_count() {
+    // 1-byte uint (minor < 24), padded so the fast path fires.
+    let mut data = hex!("00").to_vec();
+    data.resize(16, 0);
+    let (v, s, len) = parse::<(u64, bool, usize)>(&data).unwrap();
+    assert_eq!(v, 0);
+    assert!(s);
+    assert_eq!(len, 1, "1-byte uint must report len=1 even when buffered");
+
+    // 2-byte uint (minor 24).
+    let mut data = hex!("18 7B").to_vec(); // 123
+    data.resize(16, 0);
+    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
+    assert_eq!(v, 123);
+    assert_eq!(len, 2);
+
+    // 3-byte uint (minor 25).
+    let mut data = hex!("19 01 00").to_vec(); // 256
+    data.resize(16, 0);
+    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
+    assert_eq!(v, 256);
+    assert_eq!(len, 3);
+
+    // 9-byte uint (minor 27) — fast path exactly fits.
+    let mut data = hex!("1B 00 00 00 01 00 00 00 00").to_vec(); // 2^32
+    data.resize(16, 0);
+    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
+    assert_eq!(v, 1u64 << 32);
+    assert_eq!(len, 9);
+}
+
+// Regression: Head::from_cbor's fast path must AND in parse_tags's
+// `shortest` flag. Previously the fast-path "minor" arms returned just
+// the value's `s`, dropping the tags' shortness.
+#[test]
+fn head_fast_path_preserves_tags_shortest() {
+    // Tag 5 encoded with minor 24 (non-canonical — could fit in minor 0..23).
+    // Followed by uint 0 (canonical). Padded so the fast path fires.
+    // c8 05 = tag(5) in 1-byte form (non-canonical); 00 = uint 0.
+    let mut data = hex!("C8 05 00").to_vec();
+    data.resize(16, 0);
+    let (head, s, len) = parse::<(Head, bool, usize)>(&data).unwrap();
+    assert_eq!(head.tags.as_slice(), &[5]);
+    assert!(matches!(head.marker, Marker::UnsignedInteger(0)));
+    assert!(
+        !s,
+        "non-canonical tag encoding must propagate shortest=false through fast path"
+    );
+    assert_eq!(len, 3);
+}
