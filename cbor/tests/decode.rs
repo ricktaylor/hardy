@@ -1,4 +1,4 @@
-use crate::{decode::*, *};
+use hardy_cbor::decode::*;
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
@@ -804,7 +804,7 @@ fn malformed_cbor() {
     // Build a nested array 300 levels deep: [[[[...]]]]
     // Each level is 0x81 (definite array of 1 item) with 0x00 at the centre
     let depth = 300usize;
-    let mut nested = alloc::vec![0x81u8; depth];
+    let mut nested = vec![0x81u8; depth];
     nested.push(0x00); // innermost value: unsigned 0
     assert!(matches!(
         skip_value(&nested, 16), // limit recursion to 16 levels
@@ -813,7 +813,7 @@ fn malformed_cbor() {
 
     // Verify skip succeeds when within recursion limit
     let shallow_depth = 5usize;
-    let mut shallow = alloc::vec![0x81u8; shallow_depth];
+    let mut shallow = vec![0x81u8; shallow_depth];
     shallow.push(0x00);
     skip_value(&shallow, 16).unwrap(); // 5 levels, limit 16 — should succeed
 }
