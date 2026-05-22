@@ -2,6 +2,8 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
+use hardy_async::TaskPool;
+use hardy_async::channel::Sender;
 use hardy_bpv7::eid::NodeId;
 use tracing::{debug, info};
 
@@ -76,8 +78,8 @@ pub(crate) struct ClaRegistry {
     store: Arc<Store>,
     peers: Arc<PeerTable>,
     poll_channel_depth: usize,
-    tasks: hardy_async::TaskPool,
-    drop_tx: flume::Sender<Weak<ClaEntry>>,
+    tasks: TaskPool,
+    drop_tx: Sender<Weak<ClaEntry>>,
 }
 
 impl ClaRegistry {
@@ -87,8 +89,8 @@ impl ClaRegistry {
         store: Arc<Store>,
         peers: Arc<PeerTable>,
         poll_channel_depth: usize,
-        tasks: hardy_async::TaskPool,
-        drop_tx: flume::Sender<Weak<ClaEntry>>,
+        tasks: TaskPool,
+        drop_tx: Sender<Weak<ClaEntry>>,
     ) -> Self {
         Self {
             node_ids,
@@ -161,7 +163,7 @@ impl ClaRegistry {
     }
 
     pub(super) fn signal_dropped(&self, cla: Weak<ClaEntry>) {
-        let _ = self.drop_tx.send(cla);
+        let _ = self.drop_tx.try_send(cla);
     }
 
     pub(super) async fn unregister(&self, name: &str) {

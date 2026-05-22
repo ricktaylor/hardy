@@ -52,7 +52,7 @@ impl ClaRegistryBuilder {
         dispatcher: &Arc<Dispatcher>,
     ) -> cla::Result<Arc<ClaRegistry>> {
         let peers = Arc::new(PeerTable::new());
-        let (drop_tx, drop_rx) = flume::unbounded();
+        let (drop_tx, drop_rx) = hardy_async::channel::unbounded();
         let tasks = hardy_async::TaskPool::new();
 
         let registry = Arc::new(ClaRegistry::new(
@@ -67,7 +67,7 @@ impl ClaRegistryBuilder {
 
         let reconciler_registry = registry.clone();
         hardy_async::spawn!(tasks, "cla_drop_reconciler", async move {
-            while let Ok(weak_cla) = drop_rx.recv_async().await {
+            while let Ok(weak_cla) = drop_rx.recv().await {
                 if let Some(cla) = weak_cla.upgrade() {
                     reconciler_registry.unregister(&cla.name).await;
                 }
