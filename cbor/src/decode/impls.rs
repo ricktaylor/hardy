@@ -148,12 +148,18 @@ where
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        match parse_value(data, |value, shortest, tags| match value {
-            Value::Undefined => Ok(Some(shortest && tags.is_empty())),
-            _ => Ok(None),
-        })? {
-            (Some(shortest), len) => Ok((None, shortest, len)),
-            (None, _) => T::from_cbor(data).map(|(v, shortest, len)| (Some(v), shortest, len)),
+        // Peek at the head only — far cheaper than parse_value, which
+        // materialises chunk lists and constructs nested Series for the
+        // common Some(T) case where we throw the parse away and call
+        // T::from_cbor again. Only an untagged Undefined is None; a
+        // tagged Undefined is structurally a tagged item and is handed
+        // to T::from_cbor (typically failing for primitive T, but
+        // letting custom T see the tag if it cares).
+        let (head, shortest, len) = parse::<(Head, bool, usize)>(data)?;
+        if matches!(head.marker, Marker::Undefined) && head.tags.is_empty() {
+            Ok((None, shortest, len))
+        } else {
+            T::from_cbor(data).map(|(v, s, len)| (Some(v), s, len))
         }
     }
 }

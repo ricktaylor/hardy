@@ -53,11 +53,10 @@ impl<'a, const D: usize> Series<'a, D> {
     /// Returns `None` for indefinite-length sequences until they have been fully parsed.
     #[inline]
     pub fn count(&self) -> Option<usize> {
-        // `D.max(1)` mirrors `try_new`: for D == 0 (Sequence) the stored
-        // count is already item-count (try_new doesn't multiply), and
-        // `at_end` may set it after consuming all input — dividing by D
-        // directly would panic.
-        self.count.map(|c| c / D.max(1))
+        // For D == 0 (Sequence) the stored count is already item-count
+        // (try_new doesn't multiply), and `at_end` may set it after
+        // consuming all input — dividing by D directly would panic.
+        self.count.map(|c| if D == 0 { c } else { c / D })
     }
 
     /// Returns `true` if the sequence has a definite length.
