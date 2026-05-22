@@ -855,16 +855,3 @@ impl_tuple_emit_functions!(13; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5,
 impl_tuple_emit_functions!(14; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13));
 impl_tuple_emit_functions!(15; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14));
 impl_tuple_emit_functions!(16; (T0, 0), (T1, 1), (T2, 2), (T3, 3), (T4, 4), (T5, 5), (T6, 6), (T7, 7), (T8, 8), (T9, 9), (T10, 10), (T11, 11), (T12, 12), (T13, 13), (T14, 14), (T15, 15));
-
-// This is only exposed for testing
-#[cfg(test)]
-pub(crate) fn emit_simple_value(value: u8) -> Vec<u8> {
-    match value {
-        20 | 21 | 23 | 24..=31 => panic!("Invalid simple value, use bool or Option<T>"),
-        _ => {
-            let mut e = Encoder::new();
-            e.emit_uint_minor(7, value as u64);
-            e.build()
-        }
-    }
-}
