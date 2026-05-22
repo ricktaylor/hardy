@@ -107,6 +107,7 @@ pub mod block;
 pub mod bpsec;
 pub mod builder;
 pub mod bundle;
+pub mod bundle_age;
 pub mod cmp;
 pub mod crc;
 pub mod creation_timestamp;
@@ -114,6 +115,7 @@ pub mod dtn_time;
 pub mod editor;
 pub mod eid;
 pub mod hop_info;
+pub mod lifetime;
 pub mod status_report;
 
 mod error;

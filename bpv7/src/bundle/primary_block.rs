@@ -104,14 +104,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 v
             });
 
-            // Parse lifetime
-            let lifetime = block
-                .parse::<(u64, bool)>()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    core::time::Duration::from_millis(v)
-                })
-                .map_err(Into::into);
+            let lifetime = block.parse::<lifetime::Lifetime>().map(Into::into);
 
             // Parse fragment parts
             let fragment_info = if !flags.is_fragment {
@@ -279,7 +272,7 @@ impl PrimaryBlock {
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
                     a.emit(&bundle.id.timestamp);
-                    a.emit(&(bundle.lifetime.as_millis() as u64));
+                    a.emit(&lifetime::Lifetime::from(bundle.lifetime));
 
                     // Fragment info
                     if let Some(fragment_info) = &bundle.id.fragment_info {
