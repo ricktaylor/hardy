@@ -1799,6 +1799,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "flume",
+ "futures",
  "hardy-async",
  "notify",
  "notify-debouncer-full",
@@ -2057,6 +2058,7 @@ version = "0.5.0"
 dependencies = [
  "directories",
  "flume",
+ "futures",
  "hardy-bpa",
  "libc",
  "memmap2",
@@ -2143,7 +2145,6 @@ version = "0.5.0"
 dependencies = [
  "base64",
  "directories",
- "flume",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-cbor",
@@ -4428,7 +4429,6 @@ name = "storage-tests"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "flume",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-localdisk-storage",
