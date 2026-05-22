@@ -1218,7 +1218,7 @@ fn head_fast_path_preserves_tags_shortest() {
     // Tag 5 encoded with minor 24 (non-canonical — could fit in minor 0..23).
     // Followed by uint 0 (canonical). Padded so the fast path fires.
     // c8 05 = tag(5) in 1-byte form (non-canonical); 00 = uint 0.
-    let mut data = hex!("C8 05 00").to_vec();
+    let mut data = hex!("D8 05 00").to_vec();
     data.resize(16, 0);
     let (head, s, len) = parse::<(Head, bool, usize)>(&data).unwrap();
     assert_eq!(head.tags.as_slice(), &[5]);
