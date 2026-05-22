@@ -456,14 +456,21 @@ impl<'a> BlockParse<'a> {
                 Ok(false)
             }
             block::Type::BundleAge => {
+                // `BundleAge::from_cbor` is strict-canonical — a bare
+                // uint has no §4.1 indefinite-length carveout, so any
+                // non-shortest encoding errors out here rather than
+                // landing in the rewrite path. The remaining `!s` case
+                // is trailing garbage after the encoded value, which
+                // `noncanonical_blocks` recovers by re-emitting just
+                // the canonical body bytes.
                 let (v, s) = self
-                    .parse_payload(block_number)
+                    .parse_payload::<bundle_age::BundleAge>(block_number)
                     .map_field_err::<Error>("Bundle Age Block")?;
                 if !s {
                     self.noncanonical_blocks
                         .insert(block_number, Some(hardy_cbor::encode::emit(&v).0.into()));
                 }
-                bundle.age = Some(core::time::Duration::from_millis(v));
+                bundle.age = Some(v.into());
                 Ok(false)
             }
             block::Type::HopCount => {
