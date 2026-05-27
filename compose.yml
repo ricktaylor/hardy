@@ -51,7 +51,7 @@ services:
       dockerfile: ./bpa-server/Dockerfile
       args:
         CARGO_ARGS: "--features hardy-bpa-server/sqlite-storage,hardy-bpa-server/postgres-storage,hardy-bpa-server/s3-storage"
-    image: hardy-bpa-server:latest
+    image: ghcr.io/ricktaylor/hardy/hardy-bpa-server:latest
     restart: unless-stopped
     command: ["-u"]
     environment:
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: ./bpa-server/Dockerfile
-    image: hardy-bpa-server:latest
+    image: ghcr.io/ricktaylor/hardy/hardy-bpa-server:latest
     restart: unless-stopped
     environment:
       HARDY_BPA_SERVER_CONFIG_FILE: /etc/hardy/config.yaml
