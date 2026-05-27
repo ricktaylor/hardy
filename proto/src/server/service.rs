@@ -1,34 +1,52 @@
-use super::*;
-use proto::service::*;
+use std::sync::Arc;
 
-type ServiceSink = Arc<dyn hardy_bpa::services::ServiceSink>;
+use hardy_async::async_trait;
+use hardy_async::sync::spin::{Mutex, Once};
+use hardy_bpa::Bytes;
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::services::{self, ServiceContext, StatusNotify};
+use hardy_bpv7::bundle::Id as BundleId;
+use hardy_bpv7::eid::{Eid, Service as EidService};
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::{error, warn};
+
+use crate::proto::service::{
+    BpaToService, CancelRequest, CancelResponse, RegisterResponse, SendResponse,
+    ServiceReceiveRequest, ServiceSendRequest, ServiceToBpa, StatusNotifyRequest, bpa_to_service,
+    service_server, service_to_bpa, status_notify_request,
+};
+use crate::proxy::{ProxyHandler, RpcProxy};
+
+fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: t.unix_timestamp(),
+        nanos: t.nanosecond() as i32,
+    }
+}
 
 struct LowLevelService {
-    sink: Mutex<Option<ServiceSink>>,
+    ctx: Mutex<Option<ServiceContext>>,
     proxy: Once<RpcProxy<Result<BpaToService, tonic::Status>, ServiceToBpa>>,
 }
 
 impl LowLevelService {
-    fn sink(&self) -> Result<ServiceSink, tonic::Status> {
-        self.sink
+    fn ctx(&self) -> Result<ServiceContext, tonic::Status> {
+        self.ctx
             .lock()
             .clone()
             .ok_or(tonic::Status::unavailable("Unregistered"))
     }
 
-    async fn call(
-        &self,
-        msg: bpa_to_service::Msg,
-    ) -> hardy_bpa::services::Result<service_to_bpa::Msg> {
+    async fn call(&self, msg: bpa_to_service::Msg) -> services::Result<service_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
-            hardy_bpa::services::Error::Disconnected
+            services::Error::Disconnected
         })?;
 
         match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::services::Error::Disconnected),
+            Ok(None) => Err(services::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::services::Error::Internal(e.into())),
+            Err(e) => Err(services::Error::Internal(e.into())),
         }
     }
 
@@ -36,8 +54,8 @@ impl LowLevelService {
         &self,
         request: ServiceSendRequest,
     ) -> Result<bpa_to_service::Msg, tonic::Status> {
-        self.sink()?
-            .send(request.data)
+        self.ctx()?
+            .send_raw(request.data)
             .await
             .map(|bundle_id| {
                 bpa_to_service::Msg::Send(SendResponse {
@@ -48,35 +66,28 @@ impl LowLevelService {
     }
 
     async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_service::Msg, tonic::Status> {
-        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        let bundle_id = BundleId::from_key(&request.bundle_id)
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
-        self.sink()?
-            .cancel(&bundle_id)
+        self.ctx()?
+            .cancel(bundle_id)
             .await
             .map(|cancelled| bpa_to_service::Msg::Cancel(CancelResponse { cancelled }))
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
+    fn disconnect(&self) {
+        self.ctx.lock().take();
     }
 }
 
 #[async_trait]
-impl hardy_bpa::services::Service for LowLevelService {
-    async fn on_register(
-        &self,
-        _endpoint: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ServiceSink>,
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
+impl services::Service for LowLevelService {
+    async fn on_register(&self, _endpoint: &Eid, ctx: ServiceContext) {
+        *self.ctx.lock() = Some(ctx);
     }
 
     async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
+        if self.ctx.lock().take().is_none() {
             return;
         }
 
@@ -85,7 +96,7 @@ impl hardy_bpa::services::Service for LowLevelService {
         }
     }
 
-    async fn on_receive(&self, data: hardy_bpa::Bytes, expiry: time::OffsetDateTime) {
+    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime) {
         match self
             .call(bpa_to_service::Msg::Receive(ServiceReceiveRequest {
                 data,
@@ -105,10 +116,10 @@ impl hardy_bpa::services::Service for LowLevelService {
 
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        from: &hardy_bpv7::eid::Eid,
-        kind: hardy_bpa::services::StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
+        bundle_id: &BundleId,
+        from: &Eid,
+        kind: StatusNotify,
+        reason: ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {
         match self
@@ -116,18 +127,10 @@ impl hardy_bpa::services::Service for LowLevelService {
                 bundle_id: bundle_id.to_key(),
                 from: from.to_string(),
                 kind: match kind {
-                    hardy_bpa::services::StatusNotify::Received => {
-                        status_notify_request::StatusKind::Received
-                    }
-                    hardy_bpa::services::StatusNotify::Forwarded => {
-                        status_notify_request::StatusKind::Forwarded
-                    }
-                    hardy_bpa::services::StatusNotify::Delivered => {
-                        status_notify_request::StatusKind::Delivered
-                    }
-                    hardy_bpa::services::StatusNotify::Deleted => {
-                        status_notify_request::StatusKind::Deleted
-                    }
+                    StatusNotify::Received => status_notify_request::StatusKind::Received,
+                    StatusNotify::Forwarded => status_notify_request::StatusKind::Forwarded,
+                    StatusNotify::Delivered => status_notify_request::StatusKind::Delivered,
+                    StatusNotify::Deleted => status_notify_request::StatusKind::Deleted,
                 }
                 .into(),
                 reason: reason.into(),
@@ -172,7 +175,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.svc.unregister().await;
+        self.svc.disconnect();
         if let Some(proxy) = self.svc.proxy.get() {
             proxy.cancel();
         }
@@ -180,7 +183,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct GrpcService {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -197,8 +200,6 @@ impl service_server::Service for GrpcService {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "service_session", async move {
             run_service_session(channel_sender, channel_receiver, bpa).await;
@@ -213,10 +214,10 @@ impl service_server::Service for GrpcService {
 async fn run_service_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToService, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ServiceToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
 ) {
     let svc = Arc::new(LowLevelService {
-        sink: Mutex::new(None),
+        ctx: Mutex::new(None),
         proxy: Once::new(),
     });
 
@@ -227,10 +228,12 @@ async fn run_service_session(
                     .service_id
                     .as_ref()
                     .map(|service_id| match service_id {
-                        register_request::ServiceId::Dtn(s) => {
-                            hardy_bpv7::eid::Service::Dtn(s.clone().into())
+                        crate::proto::service::register_request::ServiceId::Dtn(s) => {
+                            EidService::Dtn(s.clone().into())
                         }
-                        register_request::ServiceId::Ipn(s) => hardy_bpv7::eid::Service::Ipn(*s),
+                        crate::proto::service::register_request::ServiceId::Ipn(s) => {
+                            EidService::Ipn(*s)
+                        }
                     })
                     .ok_or_else(|| tonic::Status::invalid_argument("service_id is required"))?;
                 let endpoint_id = bpa
@@ -258,15 +261,13 @@ async fn run_service_session(
         return;
     }
 
-    // Start the proxy for ongoing communication
     let handler = Box::new(Handler { svc: svc.clone() });
     svc.proxy
         .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
-/// Create a new low-level Service gRPC service.
 pub fn new_endpoint_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) -> service_server::ServiceServer<GrpcService> {
     service_server::ServiceServer::new(GrpcService {

@@ -39,7 +39,7 @@ where
 {
     reader: R,
     writer: writer::WriterHandle<codec::Error>,
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: hardy_bpa::cla::ClaContext,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
     peer_addr: Option<hardy_bpa::cla::ClaAddress>,
     keepalive_interval: Option<tokio::time::Duration>,
@@ -63,7 +63,7 @@ where
     pub fn new(
         reader: R,
         writer: writer::WriterHandle<codec::Error>,
-        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        ctx: hardy_bpa::cla::ClaContext,
         peer_node: Option<hardy_bpv7::eid::NodeId>,
         peer_addr: Option<hardy_bpa::cla::ClaAddress>,
         keepalive_interval: Option<tokio::time::Duration>,
@@ -78,7 +78,7 @@ where
         Self {
             reader,
             writer,
-            sink,
+            ctx,
             peer_node,
             peer_addr,
             keepalive_interval,
@@ -155,17 +155,13 @@ where
             // Send the bundle to the BPA
             // NOTE: This may block if BoundedTaskPool is full, but keepalives
             // are handled by the separate writer task so the session stays alive.
-            self.sink
+            self.ctx
                 .dispatch(
                     bundle.freeze(),
-                    self.peer_node.as_ref(),
-                    self.peer_addr.as_ref(),
+                    self.peer_node.clone(),
+                    self.peer_addr.clone(),
                 )
-                .await
-                .map_err(|e| {
-                    debug!("CLA dispatch failed: {e:?}");
-                    Error::Shutdown(codec::SessionTermReasonCode::Unknown)
-                })?;
+                .await;
 
             metrics::counter!("tcpclv4.transfers.received").increment(1);
         }

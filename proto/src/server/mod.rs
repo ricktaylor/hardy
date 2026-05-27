@@ -4,20 +4,11 @@
 //! services, and applications to connect to a BPA instance.
 
 use super::*;
-use hardy_async::sync::spin::Once;
-use proxy::*;
 
 mod application;
 mod cla;
 mod routing;
 mod service;
-
-fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
-    prost_types::Timestamp {
-        seconds: (t.unix_timestamp_nanos() / 1_000_000_000) as i64,
-        nanos: (t.unix_timestamp_nanos() % 1_000_000_000) as i32,
-    }
-}
 
 /// Configuration for the gRPC server.
 #[derive(Debug, Clone)]

@@ -8,16 +8,15 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla::{self, ClaAddress, ForwardBundleResult};
+use hardy_bpa::cla::{self, ClaAddress, ClaContext, ForwardBundleResult};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// A mock CLA that records lifecycle callbacks and forward requests.
 struct MockCla {
     registered: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
+    ctx: hardy_async::sync::spin::Mutex<Option<ClaContext>>,
     forwarded: AtomicBool,
 }
 
@@ -25,13 +24,13 @@ impl MockCla {
     fn new() -> Self {
         Self {
             registered: AtomicBool::new(false),
-            sink: hardy_async::sync::spin::Mutex::new(None),
+            ctx: hardy_async::sync::spin::Mutex::new(None),
             forwarded: AtomicBool::new(false),
         }
     }
 
-    fn take_sink(&self) -> Option<Box<dyn cla::Sink>> {
-        self.sink.lock().take()
+    fn take_ctx(&self) -> Option<ClaContext> {
+        self.ctx.lock().take()
     }
 
     fn is_forwarded(&self) -> bool {
@@ -41,8 +40,8 @@ impl MockCla {
 
 #[async_trait]
 impl cla::Cla for MockCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        *self.sink.lock() = Some(sink);
+    async fn on_register(&self, ctx: ClaContext, _node_ids: &[NodeId]) {
+        *self.ctx.lock() = Some(ctx);
         self.registered.store(true, Ordering::Relaxed);
     }
 
@@ -79,12 +78,11 @@ async fn cla_cli_01_registration() {
         "CLA should have received on_register"
     );
     assert!(
-        cla.sink.lock().is_some(),
-        "CLA should have a sink after registration"
+        cla.ctx.lock().is_some(),
+        "CLA should have a context after registration"
     );
 
-    // Clean up
-    drop(cla.take_sink());
+    drop(cla.take_ctx());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
@@ -103,22 +101,18 @@ async fn cla_cli_02_dispatch_bundle() {
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
+    let ctx = cla.take_ctx().expect("CLA should have a context");
 
     let bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
-    sink.dispatch(bundle_data, None, None)
-        .await
-        .expect("dispatch should succeed");
+    ctx.dispatch(bundle_data, None, None).await;
 
-    // Clean up
-    sink.unregister().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(ctx);
     server_tasks.shutdown().await;
 }
 
 // CLA-CLI-03: Forward bundle from BPA to CLA.
-//
-// The BPA calls `forward()` on the server-side RemoteCla, which
-// proxies the request to the client-side MockCla.
 #[tokio::test]
 async fn cla_cli_03_forward_bundle() {
     let bpa = Arc::new(MockBpa::new());
@@ -134,7 +128,6 @@ async fn cla_cli_03_forward_bundle() {
 
     assert!(!cla.is_forwarded());
 
-    // The BPA pushes a forward request via the server-side CLA proxy
     let server_cla = bpa
         .last_cla
         .lock()
@@ -157,8 +150,7 @@ async fn cla_cli_03_forward_bundle() {
         "MockCla should have received the forward request"
     );
 
-    // Clean up
-    drop(cla.take_sink());
+    drop(cla.take_ctx());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }
@@ -177,19 +169,15 @@ async fn cla_cli_04_add_peer() {
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
+    let ctx = cla.take_ctx().expect("CLA should have a context");
 
     let addr = ClaAddress::Tcp("192.168.1.1:4556".parse().unwrap());
     let peer_node: NodeId = "ipn:2.0".parse().unwrap();
-    let added = sink
-        .add_peer(addr, &[peer_node])
-        .await
-        .expect("add_peer should succeed");
+    ctx.add_peer(addr, vec![peer_node]);
 
-    assert!(added, "peer should be added");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Clean up
-    sink.unregister().await;
+    drop(ctx);
     server_tasks.shutdown().await;
 }
 
@@ -207,17 +195,13 @@ async fn cla_cli_05_remove_peer() {
         .await
         .expect("registration should succeed");
 
-    let sink = cla.take_sink().expect("CLA should have a sink");
+    let ctx = cla.take_ctx().expect("CLA should have a context");
 
     let addr = ClaAddress::Tcp("192.168.1.1:4556".parse().unwrap());
-    let removed = sink
-        .remove_peer(&addr)
-        .await
-        .expect("remove_peer should succeed");
+    ctx.remove_peer(addr);
 
-    assert!(removed, "peer should be removed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Clean up
-    sink.unregister().await;
+    drop(ctx);
     server_tasks.shutdown().await;
 }

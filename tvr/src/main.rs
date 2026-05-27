@@ -111,10 +111,12 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    // Start scheduler task (sink is now available after registration)
+    // Start scheduler task (context is now available after registration)
     {
-        let sink = agent.sink().expect("sink should be set after registration");
-        scheduler::start(scheduler_rx, sink, &tasks);
+        let ctx = agent
+            .routing_ctx()
+            .expect("context should be set after registration");
+        scheduler::start(scheduler_rx, ctx, &tasks);
     }
 
     // Start TVR gRPC session server
@@ -203,9 +205,6 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     info!("Started successfully");
 
     tasks.cancel_token().cancelled().await;
-
-    // Gracefully unregister from the BPA
-    agent.unregister().await;
 
     tasks.shutdown().await;
 

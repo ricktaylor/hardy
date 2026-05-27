@@ -30,105 +30,53 @@ use crate::{Arc, otel_metrics, services};
 ///
 /// 2. **Registration**: `register(&Arc<Self>, &dyn BpaRegistration)` calls the
 ///    appropriate `register_*` method. The BPA calls `on_register()` on the component,
-///    providing a Sink for communication back to the BPA.
+///    providing a Context for channel-based communication back to the BPA.
 ///
-/// 3. **Active**: Component uses Sink methods to interact with the BPA. The Sink
-///    remains valid until unregistration.
+/// 3. **Active**: Component uses Context methods to interact with the BPA.
 ///
-/// 4. **Unregistration**: Either the component calls `sink.unregister()`, or the BPA
-///    initiates shutdown and calls `on_unregister()`.
+/// 4. **Unregistration**: Component drops all Context clones (channels close,
+///    BPA detects disconnection), or the BPA initiates shutdown and calls
+///    `on_unregister()`.
 ///
-/// # Sink Storage Requirement
+/// # Context Lifecycle
 ///
-/// **Components MUST store the Sink for their entire active lifetime.**
+/// Each component type receives a Context in `on_register()`:
+/// - CLAs receive [`cla::ClaContext`]
+/// - Routing agents receive [`routes::RoutingContext`]
+/// - Services and Applications receive [`services::ServiceContext`]
 ///
-/// The Sink is provided in `on_register()` and must be retained (typically in
-/// a `spin::Once<T>` or `OnceLock<T>`) until unregistration. If `on_register()`
-/// returns without storing the Sink, the Sink is dropped and the component is
-/// automatically unregistered.
-///
-/// ```ignore
-/// pub struct MyComponent {
-///     sink: spin::Once<Box<dyn Sink>>,
-///     // ... other fields
-/// }
-///
-/// impl MyTrait for MyComponent {
-///     fn on_register(&self, sink: Box<dyn Sink>) {
-///         // MUST store the sink - dropping it triggers unregistration
-///         self.sink.set(sink);
-///     }
-/// }
-/// ```
-///
-/// # Post-Disconnection Behaviour
-///
-/// After unregistration, the Sink remains stored but becomes non-functional:
-/// all operations return `Error::Disconnected`. Components don't need defensive
-/// patterns like `Option<Sink>` with `take()` in `on_unregister()` - the Sink
-/// can remain stored and post-disconnection calls simply fail gracefully.
-///
-/// This means `on_unregister()` only handles component-specific cleanup (stopping
-/// tasks, closing connections), not Sink lifecycle management.
-///
-/// # Recommended Implementation Pattern
-///
-/// ```ignore
-/// impl MyComponent {
-///     /// Creates a new component. Validates configuration eagerly.
-///     pub fn new(config: &Config) -> Result<Self, Error> {
-///         // Validate and prepare resources
-///         Ok(Self { sink: spin::Once::new(), /* ... */ })
-///     }
-///
-///     /// Registers with the BPA. Returns after Sink is stored.
-///     pub async fn register(
-///         self: &Arc<Self>,
-///         bpa: &dyn BpaRegistration,
-///     ) -> Result<(), Error> {
-///         bpa.register_xxx(/* ... */, self.clone(), /* ... */).await?;
-///         Ok(())
-///     }
-///
-///     /// Explicit unregistration.
-///     pub async fn unregister(&self) {
-///         if let Some(sink) = self.sink.get() {
-///             sink.unregister().await;
-///         }
-///     }
-/// }
-/// ```
+/// Clone and store the Context if needed beyond initialization.
+/// Dropping all clones closes the channels and triggers unregistration.
 ///
 /// # For CLA Implementors
 ///
-/// CLAs receive callbacks via the [`cla::Sink`] trait, which is provided
-/// in [`cla::Cla::on_register`]. Key Sink methods:
+/// CLAs receive a [`cla::ClaContext`] in [`cla::Cla::on_register`].
+/// Key context methods:
 ///
-/// - `dispatch()` - Submit received bundles to the BPA
-/// - `add_peer()` / `remove_peer()` - Manage peer connections (keyed by CL address)
-/// - `unregister()` - Disconnect from the BPA
+/// - `dispatch()` - Submit received bundles to the BPA (fire-and-forget via channel)
+/// - `add_peer()` / `remove_peer()` - Manage peer connections
+/// - Dropping the context disconnects from the BPA
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routes::RoutingSink`] in
-/// [`routes::RoutingAgent::on_register`]. Key Sink methods:
+/// Routing agents receive a [`routes::RoutingContext`] in
+/// [`routes::RoutingAgent::on_register`]. Key context methods:
 ///
-/// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
-/// - `unregister()` - Disconnect from the BPA
+/// - `add_route()` / `remove_route()` - Manage routes in the RIB (fire-and-forget via channel)
+/// - Dropping the context disconnects from the BPA
 ///
 /// For simple static route sets, use [`routes::StaticRoutingAgent`] instead
 /// of implementing the trait manually.
 ///
 /// # For Service Implementors
 ///
-/// Services receive [`services::ServiceSink`] (low-level, full bundle access) or
-/// [`services::ApplicationSink`] (high-level, payload-only), provided in their
-/// respective `on_register` methods.
+/// Services and Applications receive a [`services::ServiceContext`] in their
+/// `on_register` methods for sending bundles via channels.
 #[async_trait]
 pub trait BpaRegistration: Send + Sync {
     /// Register a Convergence Layer Adapter with the BPA.
     ///
-    /// The CLA will receive a [`cla::Sink`] via [`cla::Cla::on_register`]
+    /// The CLA will receive a [`cla::ClaContext`] in [`cla::Cla::on_register`]
     /// for communicating back to the BPA.
     ///
     /// # Arguments
@@ -175,7 +123,7 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Register a Routing Agent with the BPA.
     ///
-    /// The routing agent will receive a [`routes::RoutingSink`] via
+    /// The routing agent will receive a [`routes::RoutingContext`] in
     /// [`routes::RoutingAgent::on_register`] for managing routes in the RIB.
     ///
     /// # Arguments
@@ -252,7 +200,7 @@ impl Bpa {
         //
         // 1. Routing agents - Remove dynamic routes (prevents new forwarding decisions)
         // 2. CLAs - Stop external bundle sources (network I/O)
-        // 3. Services - Stop internal bundle sources (applications calling sink.send())
+        // 3. Services - Stop internal bundle sources (applications calling ctx.send())
         // 4. Dispatcher - Drain remaining in-flight bundles (all sources now closed)
         // 5. RIB - No more routing lookups needed
         // 6. Store - No more data access needed

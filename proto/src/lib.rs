@@ -20,10 +20,8 @@ unregistration, ensuring automatic cleanup on disconnect or crash.
   with configurable service endpoints.
 */
 
-use hardy_async::sync::spin::Mutex;
 use hardy_bpa::async_trait;
-use hardy_bpv7::eid;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub(crate) mod proto;

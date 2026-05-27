@@ -1,5 +1,4 @@
 use super::*;
-use proxy::*;
 
 mod application;
 mod cla;

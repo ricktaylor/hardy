@@ -1,11 +1,10 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routes::{Action, RoutingSink};
+use hardy_bpa::routes::{Action, RoutingContext};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -636,16 +635,14 @@ fn contacts_match(a: &Contact, b: &Contact) -> bool {
 
 // ── Core loop ───────────────────────────────────────────────────────
 
-async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
+fn apply_route_op(ctx: &RoutingContext, op: PendingRouteOp) {
     match op {
         PendingRouteOp::Add {
             pattern,
             action,
             priority,
         } => {
-            if let Err(e) = sink.add_route(pattern, action, priority).await {
-                warn!("Failed to add route: {e}");
-            }
+            ctx.add_route(pattern, action, priority);
             metrics::counter!("tvr_route_installs").increment(1);
         }
         PendingRouteOp::Remove {
@@ -653,9 +650,7 @@ async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
             action,
             priority,
         } => {
-            if let Err(e) = sink.remove_route(&pattern, &action, priority).await {
-                warn!("Failed to remove route: {e}");
-            }
+            ctx.remove_route(&pattern, &action, priority);
             metrics::counter!("tvr_route_withdrawals").increment(1);
         }
     }
@@ -668,11 +663,7 @@ fn update_gauges(sched: &Scheduler) {
 }
 
 // Start the scheduler task.
-pub fn start(
-    receiver: SchedulerReceiver,
-    sink: Arc<dyn RoutingSink>,
-    tasks: &hardy_async::TaskPool,
-) {
+pub fn start(receiver: SchedulerReceiver, ctx: RoutingContext, tasks: &hardy_async::TaskPool) {
     let rx = receiver.rx;
     let cancel = tasks.cancel_token().clone();
 
@@ -696,7 +687,7 @@ pub fn start(
                 _ = tokio::time::sleep_until(wake_at) => {
                     let now = OffsetDateTime::now_utc();
                     for op in sched.process_due_events(now) {
-                        apply_route_op(&*sink, op).await;
+                        apply_route_op(&ctx, op);
                     }
                 }
                 cmd = rx.recv_async() => {
@@ -717,7 +708,7 @@ pub fn start(
                                             skipped += 1;
                                         }
                                         if let Some(op) = op {
-                                            apply_route_op(&*sink, op).await;
+                                            apply_route_op(&ctx, op);
                                         }
                                     }
                                     debug!("Add for '{source}': added={added}, active={active}, skipped={skipped}");
@@ -726,20 +717,20 @@ pub fn start(
                                 Command::Remove { source, contacts, reply } => {
                                     let (result, ops) = sched.handle_remove(&source, &contacts);
                                     for op in ops {
-                                        apply_route_op(&*sink, op).await;
+                                        apply_route_op(&ctx, op);
                                     }
                                     let _ = reply.send(result);
                                 }
                                 Command::Replace { source, contacts, default_priority, reply } => {
                                     let (result, ops) = sched.handle_replace(&source, contacts, default_priority, now);
                                     for op in ops {
-                                        apply_route_op(&*sink, op).await;
+                                        apply_route_op(&ctx, op);
                                     }
                                     let _ = reply.send(result);
                                 }
                                 Command::WithdrawAll { source } => {
                                     for op in sched.withdraw_source(&source) {
-                                        apply_route_op(&*sink, op).await;
+                                        apply_route_op(&ctx, op);
                                     }
                                 }
                             }

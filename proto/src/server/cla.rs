@@ -1,32 +1,47 @@
-use super::*;
-use proto::cla::*;
+use std::sync::Arc;
 
-type ClaSink = Arc<dyn hardy_bpa::cla::Sink>;
+use hardy_async::async_trait;
+use hardy_async::sync::spin::{Mutex, Once};
+use hardy_bpa::Bytes;
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::cla::{
+    self, Cla as ClaTrait, ClaAddress, ClaAddressType as BpaClaAddressType, ClaContext,
+    ForwardBundleResult,
+};
+use hardy_bpv7::eid::NodeId;
+use tracing::{error, warn};
+
+use crate::proto::cla::{
+    AddPeerRequest, AddPeerResponse, BpaToCla, ClaAddressType, ClaToBpa, DispatchBundleRequest,
+    DispatchBundleResponse, ForwardBundleRequest, RegisterClaResponse, RemovePeerRequest,
+    RemovePeerResponse, bpa_to_cla, cla_server, cla_to_bpa, forward_bundle_response,
+};
+use crate::proxy::{ProxyHandler, RpcProxy};
 
 struct Cla {
-    sink: Mutex<Option<ClaSink>>,
+    ctx: Mutex<Option<ClaContext>>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
-    address_type: std::sync::OnceLock<Option<hardy_bpa::cla::ClaAddressType>>,
+    address_type: std::sync::OnceLock<Option<BpaClaAddressType>>,
 }
 
 impl Cla {
-    fn sink(&self) -> Result<ClaSink, tonic::Status> {
-        self.sink
+    fn ctx(&self) -> Result<ClaContext, tonic::Status> {
+        self.ctx
             .lock()
             .clone()
             .ok_or(tonic::Status::unavailable("Unregistered"))
     }
 
-    async fn call(&self, msg: bpa_to_cla::Msg) -> hardy_bpa::cla::Result<cla_to_bpa::Msg> {
+    async fn call(&self, msg: bpa_to_cla::Msg) -> cla::Result<cla_to_bpa::Msg> {
         let proxy = self.proxy.get().ok_or_else(|| {
             error!("call made before on_register!");
-            hardy_bpa::cla::Error::Disconnected
+            cla::Error::Disconnected
         })?;
 
         match proxy.call(msg).await {
-            Ok(None) => Err(hardy_bpa::cla::Error::Disconnected),
+            Ok(None) => Err(cla::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
-            Err(e) => Err(hardy_bpa::cla::Error::Internal(e.into())),
+            Err(e) => Err(cla::Error::Internal(e.into())),
         }
     }
 
@@ -34,7 +49,7 @@ impl Cla {
         &self,
         request: DispatchBundleRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let peer_node: Option<hardy_bpv7::eid::NodeId> = request
+        let peer_node: Option<NodeId> = request
             .peer_node_id
             .map(|s| {
                 s.parse().map_err(|e| {
@@ -43,14 +58,13 @@ impl Cla {
             })
             .transpose()?;
 
-        let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
-            request.peer_addr.map(|a| a.try_into()).transpose()?;
+        let peer_addr: Option<ClaAddress> = request.peer_addr.map(|a| a.try_into()).transpose()?;
 
-        self.sink()?
-            .dispatch(request.bundle, peer_node.as_ref(), peer_addr.as_ref())
-            .await
-            .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
-            .map_err(|e| tonic::Status::from_error(e.into()))
+        self.ctx()?
+            .dispatch(request.bundle, peer_node, peer_addr)
+            .await;
+
+        Ok(bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
     }
 
     async fn add_peer(&self, request: AddPeerRequest) -> Result<bpa_to_cla::Msg, tonic::Status> {
@@ -68,49 +82,40 @@ impl Cla {
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
-            .add_peer(cla_addr, &node_ids)
-            .await
-            .map(|added| bpa_to_cla::Msg::AddPeer(AddPeerResponse { added }))
-            .map_err(|e| tonic::Status::from_error(e.into()))
+        self.ctx()?.add_peer(cla_addr, node_ids);
+
+        Ok(bpa_to_cla::Msg::AddPeer(AddPeerResponse { added: true }))
     }
 
     async fn remove_peer(
         &self,
         request: RemovePeerRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
-        let cla_addr = request
+        let cla_addr: ClaAddress = request
             .address
             .ok_or(tonic::Status::invalid_argument("Missing address"))?
             .try_into()?;
 
-        self.sink()?
-            .remove_peer(&cla_addr)
-            .await
-            .map(|removed| bpa_to_cla::Msg::RemovePeer(RemovePeerResponse { removed }))
-            .map_err(|e| tonic::Status::from_error(e.into()))
+        self.ctx()?.remove_peer(cla_addr);
+
+        Ok(bpa_to_cla::Msg::RemovePeer(RemovePeerResponse {
+            removed: true,
+        }))
     }
 
-    async fn unregister(&self) {
-        let sink = self.sink.lock().take();
-        if let Some(sink) = sink {
-            sink.unregister().await;
-        }
+    fn disconnect(&self) {
+        self.ctx.lock().take();
     }
 }
 
 #[async_trait]
-impl hardy_bpa::cla::Cla for Cla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn hardy_bpa::cla::Sink>,
-        _node_ids: &[hardy_bpv7::eid::NodeId],
-    ) {
-        *self.sink.lock() = Some(Arc::from(sink));
+impl ClaTrait for Cla {
+    async fn on_register(&self, ctx: ClaContext, _node_ids: &[NodeId]) {
+        *self.ctx.lock() = Some(ctx);
     }
 
     async fn on_unregister(&self) {
-        if self.sink.lock().take().is_none() {
+        if self.ctx.lock().take().is_none() {
             return;
         }
 
@@ -119,16 +124,16 @@ impl hardy_bpa::cla::Cla for Cla {
         }
     }
 
-    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
+    fn address_type(&self) -> Option<BpaClaAddressType> {
         self.address_type.get().copied().flatten()
     }
 
     async fn forward(
         &self,
         queue: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle: hardy_bpa::Bytes,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+        cla_addr: &ClaAddress,
+        bundle: Bytes,
+    ) -> cla::Result<ForwardBundleResult> {
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                 bundle,
@@ -138,19 +143,17 @@ impl hardy_bpa::cla::Cla for Cla {
             .await?
         {
             cla_to_bpa::Msg::Forward(response) => match response.result {
-                None => Err(hardy_bpa::cla::Error::Internal(
+                None => Err(cla::Error::Internal(
                     tonic::Status::internal("Invalid result code").into(),
                 )),
-                Some(forward_bundle_response::Result::Sent(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
-                }
+                Some(forward_bundle_response::Result::Sent(_)) => Ok(ForwardBundleResult::Sent),
                 Some(forward_bundle_response::Result::NoNeighbour(_)) => {
-                    Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+                    Ok(ForwardBundleResult::NoNeighbour)
                 }
             },
             msg => {
                 warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::cla::Error::Internal(
+                Err(cla::Error::Internal(
                     tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
                 ))
             }
@@ -185,7 +188,7 @@ impl ProxyHandler for Handler {
     }
 
     async fn on_close(&self) {
-        self.cla.unregister().await;
+        self.cla.disconnect();
         if let Some(proxy) = self.cla.proxy.get() {
             proxy.cancel();
         }
@@ -193,7 +196,7 @@ impl ProxyHandler for Handler {
 }
 
 pub struct Service {
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
     session_tasks: hardy_async::TaskPool,
     channel_size: usize,
 }
@@ -209,8 +212,6 @@ impl cla_server::Cla for Service {
         let (channel_sender, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let channel_receiver = request.into_inner();
 
-        // Spawn the registration handshake and proxy — we must return the
-        // response stream immediately so the client can start sending messages.
         let bpa = self.bpa.clone();
         hardy_async::spawn!(self.session_tasks, "cla_session", async move {
             run_cla_session(channel_sender, channel_receiver, bpa).await;
@@ -225,15 +226,14 @@ impl cla_server::Cla for Service {
 async fn run_cla_session(
     mut channel_sender: tokio::sync::mpsc::Sender<Result<BpaToCla, tonic::Status>>,
     mut channel_receiver: tonic::Streaming<ClaToBpa>,
-    bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: Arc<dyn BpaRegistration>,
 ) {
     let cla = Arc::new(Cla {
-        sink: Mutex::new(None),
+        ctx: Mutex::new(None),
         proxy: Once::new(),
         address_type: std::sync::OnceLock::new(),
     });
 
-    // Wait for the client's registration message and process it
     let result = RpcProxy::recv(&mut channel_sender, &mut channel_receiver, |msg| async {
         match msg {
             cla_to_bpa::Msg::Register(request) => {
@@ -241,10 +241,8 @@ async fn run_cla_session(
                     request
                         .address_type
                         .map(|address_type| match address_type.try_into() {
-                            Ok(ClaAddressType::Tcp) => hardy_bpa::cla::ClaAddressType::Tcp,
-                            Err(_) | Ok(ClaAddressType::Private) => {
-                                hardy_bpa::cla::ClaAddressType::Private
-                            }
+                            Ok(ClaAddressType::Tcp) => BpaClaAddressType::Tcp,
+                            Err(_) | Ok(ClaAddressType::Private) => BpaClaAddressType::Private,
                         });
                 let _ = cla.address_type.set(address_type);
                 let node_ids = bpa
@@ -272,15 +270,13 @@ async fn run_cla_session(
         return;
     }
 
-    // Start the proxy for ongoing communication
     let handler = Box::new(Handler { cla: cla.clone() });
     cla.proxy
         .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
 }
 
-/// Create a new CLA gRPC service.
 pub fn new_cla_service(
-    bpa: &Arc<dyn hardy_bpa::bpa::BpaRegistration>,
+    bpa: &Arc<dyn BpaRegistration>,
     tasks: &hardy_async::TaskPool,
 ) -> cla_server::ClaServer<Service> {
     cla_server::ClaServer::new(Service {

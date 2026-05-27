@@ -1,75 +1,49 @@
 use super::*;
-use hardy_bpa::cla::{Cla, ClaAddress, ForwardBundleResult, Sink};
+use hardy_bpa::cla::{Cla, ClaAddress, ClaContext, ForwardBundleResult};
 
-/// BIBE CLA for encapsulation.
-///
-/// Implements `forward()` to encapsulate bundles and re-inject them into the BPA.
-/// Virtual peers are registered via `add_tunnel()` with ClaAddress containing
-/// the CBOR-encoded destination EID for the outer bundle.
 pub struct BibeCla {
     tunnel_source: Eid,
-    sink: Once<Box<dyn Sink>>,
+    ctx: Once<ClaContext>,
 }
 
 impl BibeCla {
-    /// Create a new BibeCla with the given tunnel source EID.
     pub fn new(tunnel_source: Eid) -> Self {
         Self {
             tunnel_source,
-            sink: Once::new(),
+            ctx: Once::new(),
         }
     }
 
-    /// Unregister this CLA from the BPA.
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
-
-    /// Register a tunnel destination as a virtual peer.
-    ///
-    /// The `tunnel_id` NodeId becomes routable, and bundles forwarded to it
-    /// will be encapsulated with `decap_endpoint` as the outer destination.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
-        // Encode the decap endpoint as CBOR
         let cbor_bytes = hardy_cbor::encode::emit(&decap_endpoint).0;
         let cla_addr = ClaAddress::Private(cbor_bytes.into());
 
-        // Register as a peer - this creates the local route entry
-        self.sink
+        self.ctx
             .get()
             .ok_or(Error::NotRegistered)?
-            .add_peer(cla_addr, &[tunnel_id])
-            .await?;
+            .add_peer(cla_addr, vec![tunnel_id]);
 
         Ok(())
     }
 
-    /// Dispatch a bundle into the BPA (used by DecapService).
     pub(crate) async fn dispatch(&self, bundle: Bytes) -> Result<(), Error> {
-        self.sink
+        self.ctx
             .get()
             .ok_or(Error::NotRegistered)?
             .dispatch(bundle, None, None)
-            .await?;
+            .await;
         Ok(())
     }
 
-    /// Encapsulate an inner bundle into an outer bundle.
     fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
-        // Parse inner bundle to get lifetime for outer bundle
         let parsed = ParsedBundle::parse(&inner, bpsec::no_keys)?;
         let lifetime = parsed.bundle.lifetime;
 
-        // Build outer bundle with BIBE-PDU payload:
-        // [transmission-id, total-length, segmented-offset, encapsulated-bundle-segment]
-        // For complete bundles: [0, 0, 0, bundle-bytes]
         let payload = hardy_cbor::encode::emit_array(Some(4), |a| {
-            a.emit(&0u64); // transmission-id
-            a.emit(&0u64); // total-length
-            a.emit(&0u64); // segmented-offset
-            a.emit(inner.as_ref()); // encapsulated-bundle-segment
+            a.emit(&0u64);
+            a.emit(&0u64);
+            a.emit(&0u64);
+            a.emit(inner.as_ref());
         });
 
         let (_bundle, data) =
@@ -84,8 +58,8 @@ impl BibeCla {
 
 #[async_trait]
 impl Cla for BibeCla {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, ctx: ClaContext, _node_ids: &[NodeId]) {
+        self.ctx.call_once(|| ctx);
         debug!("BIBE CLA registered");
     }
 
@@ -99,38 +73,21 @@ impl Cla for BibeCla {
         cla_addr: &ClaAddress,
         bundle: Bytes,
     ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
-        // Decode destination EID from CBOR in ClaAddress
-        let ClaAddress::Private(dest_bytes) = cla_addr else {
-            warn!("BIBE forward called with non-Private ClaAddress");
+        let ClaAddress::Private(addr_bytes) = cla_addr else {
             return Ok(ForwardBundleResult::NoNeighbour);
         };
 
-        let outer_dest: Eid = match hardy_cbor::decode::parse(dest_bytes) {
-            Ok(eid) => eid,
-            Err(e) => {
-                warn!("Failed to decode destination EID from ClaAddress: {e}");
-                return Ok(ForwardBundleResult::NoNeighbour);
-            }
-        };
+        let outer_dest: Eid = hardy_cbor::decode::parse(addr_bytes)
+            .map_err(|e: hardy_bpv7::eid::Error| hardy_bpa::cla::Error::Internal(e.into()))?;
 
-        debug!("BIBE encapsulating bundle to {outer_dest}");
+        let encapsulated = self
+            .encapsulate(bundle, outer_dest)
+            .map_err(|e| hardy_bpa::cla::Error::Internal(e.into()))?;
 
-        // Encapsulate the bundle
-        let outer = match self.encapsulate(bundle, outer_dest) {
-            Ok(outer) => outer,
-            Err(e) => {
-                warn!("BIBE encapsulation failed: {e}");
-                return Ok(ForwardBundleResult::NoNeighbour);
-            }
-        };
+        self.dispatch(encapsulated)
+            .await
+            .map_err(|e| hardy_bpa::cla::Error::Internal(e.into()))?;
 
-        // Dispatch the outer bundle back into the BPA
-        match self.dispatch(outer).await {
-            Ok(()) => Ok(ForwardBundleResult::Sent),
-            Err(e) => {
-                warn!("BIBE dispatch failed: {e}");
-                Ok(ForwardBundleResult::NoNeighbour)
-            }
-        }
+        Ok(ForwardBundleResult::Sent)
     }
 }

@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use hardy_async::TaskPool;
-use hardy_async::sync::spin::Once;
 use hardy_async::watcher::{self, WatchMode};
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routes::{Action, RoutingAgent, RoutingContext};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info};
@@ -22,8 +21,8 @@ pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
     watch: Option<WatchMode>,
-    sink: Once<Arc<dyn RoutingSink>>,
-    routes: Arc<Mutex<Vec<StaticRoute>>>,
+    ctx: hardy_async::sync::spin::Once<RoutingContext>,
+    routes: Mutex<Vec<StaticRoute>>,
     tasks: TaskPool,
 }
 
@@ -33,8 +32,8 @@ impl StaticRoutesAgent {
             routes_file,
             priority,
             watch,
-            sink: Once::new(),
-            routes: Arc::new(Mutex::new(Vec::new())),
+            ctx: hardy_async::sync::spin::Once::new(),
+            routes: Mutex::new(Vec::new()),
             tasks: TaskPool::new(),
         }
     }
@@ -43,18 +42,24 @@ impl StaticRoutesAgent {
         let watch_path = self.routes_file.clone();
         let routes_file = self.routes_file.clone();
         let priority = self.priority;
-        let sink = self.sink.get().unwrap().clone();
-        let routes = self.routes.clone();
+        let ctx = self.ctx.get().unwrap().clone();
+        let routes = self.routes.lock().unwrap();
+        let routes_vec = routes.clone();
+        drop(routes);
+        let routes_mutex = std::sync::Arc::new(Mutex::new(routes_vec));
         let cancel = self.tasks.cancel_token().clone();
+
+        // Re-share the routes mutex for the watcher
+        let routes_ref = routes_mutex.clone();
 
         hardy_async::spawn!(self.tasks, "static_routes_watcher", async move {
             watcher::watch(&watch_path, mode, cancel, move || {
                 let routes_file = routes_file.clone();
-                let sink = sink.clone();
-                let routes = routes.clone();
+                let ctx = ctx.clone();
+                let routes = routes_ref.clone();
                 async move {
                     info!("Reloading static routes from '{}'", routes_file.display());
-                    reload_routes(&routes_file, priority, &*sink, &routes, true).await;
+                    reload_routes(&routes_file, priority, &ctx, &routes, true).await;
                 }
             })
             .await;
@@ -65,7 +70,7 @@ impl StaticRoutesAgent {
 async fn reload_routes(
     routes_file: &Path,
     priority: u32,
-    sink: &dyn RoutingSink,
+    ctx: &RoutingContext,
     routes: &Mutex<Vec<StaticRoute>>,
     ignore_errors: bool,
 ) {
@@ -92,19 +97,15 @@ async fn reload_routes(
     };
 
     for r in &to_remove {
-        sink.remove_route(&r.pattern, &r.action, r.priority.unwrap_or(priority))
-            .await
-            .ok();
+        ctx.remove_route(&r.pattern, &r.action, r.priority.unwrap_or(priority));
     }
 
     for r in &to_add {
-        sink.add_route(
+        ctx.add_route(
             r.pattern.clone(),
             r.action.clone(),
             r.priority.unwrap_or(priority),
-        )
-        .await
-        .ok();
+        );
     }
 
     {
@@ -118,9 +119,8 @@ async fn reload_routes(
 
 #[hardy_async::async_trait]
 impl RoutingAgent for StaticRoutesAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        let sink: Arc<dyn RoutingSink> = sink.into();
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, ctx: RoutingContext, _node_ids: &[NodeId]) {
+        self.ctx.call_once(|| ctx);
 
         info!(
             "Loading static routes from '{}'",
@@ -130,7 +130,7 @@ impl RoutingAgent for StaticRoutesAgent {
         reload_routes(
             &self.routes_file,
             self.priority,
-            &**self.sink.get().unwrap(),
+            self.ctx.get().unwrap(),
             &self.routes,
             false,
         )

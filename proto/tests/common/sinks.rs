@@ -1,163 +1,35 @@
-//! Mock sink implementations for testing.
-//!
-//! Each mock tracks `unregister()` calls via an `AtomicBool`.
-//! Other methods return success with no side effects.
+//! Mock context helpers for testing.
 #![allow(dead_code)]
 
-use hardy_async::async_trait;
 use hardy_bpa::{cla, routes, services};
-use hardy_bpv7::eid::NodeId;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── RoutingSink ───────────────────────────────────────────────────────
+// ── RoutingContext mock helper ────────────────────────────────────────
 
-pub struct MockRoutingSink {
-    unregistered: AtomicBool,
+pub fn mock_routing_context() -> (routes::RoutingContext, flume::Receiver<routes::RouteOp>) {
+    let (tx, rx) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    (routes::RoutingContext::new(tx, token), rx)
 }
 
-impl MockRoutingSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
+// ── ClaContext mock helper ────────────────────────────────────────────
 
-    pub fn is_unregistered(&self) -> bool {
-        self.unregistered.load(Ordering::Relaxed)
-    }
+pub fn mock_cla_context() -> cla::ClaContext {
+    let (ingress_tx, _) = flume::unbounded();
+    let (peer_tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    cla::ClaContext::new(ingress_tx, peer_tx, token)
 }
 
-#[async_trait]
-impl routes::RoutingSink for MockRoutingSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
+// ── Service/App context mock helpers ─────────────────────────────────
 
-    async fn add_route(
-        &self,
-        _pattern: hardy_eid_patterns::EidPattern,
-        _action: routes::Action,
-        _priority: u32,
-    ) -> routes::Result<bool> {
-        Ok(true)
-    }
-
-    async fn remove_route(
-        &self,
-        _pattern: &hardy_eid_patterns::EidPattern,
-        _action: &routes::Action,
-        _priority: u32,
-    ) -> routes::Result<bool> {
-        Ok(true)
-    }
+pub fn mock_service_context(endpoint: hardy_bpv7::eid::Eid) -> services::ServiceContext {
+    let (tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    services::ServiceContext::new(tx, endpoint, token)
 }
 
-// ── CLA Sink ──────────────────────────────────────────────────────────
-
-pub struct MockClaSink {
-    unregistered: AtomicBool,
-}
-
-impl MockClaSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl cla::Sink for MockClaSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn dispatch(
-        &self,
-        _bundle: hardy_bpa::Bytes,
-        _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        Ok(())
-    }
-
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
-        Ok(true)
-    }
-
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
-        Ok(true)
-    }
-}
-
-// ── ServiceSink ───────────────────────────────────────────────────────
-
-pub struct MockServiceSink {
-    unregistered: AtomicBool,
-}
-
-impl MockServiceSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl services::ServiceSink for MockServiceSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn send(&self, _data: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
-            "mock sink: send not implemented".into(),
-        ))
-    }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
-    }
-}
-
-// ── ApplicationSink ───────────────────────────────────────────────────
-
-pub struct MockApplicationSink {
-    unregistered: AtomicBool,
-}
-
-impl MockApplicationSink {
-    pub fn new() -> Self {
-        Self {
-            unregistered: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl services::ApplicationSink for MockApplicationSink {
-    async fn unregister(&self) {
-        self.unregistered.store(true, Ordering::Relaxed);
-    }
-
-    async fn send(
-        &self,
-        _destination: hardy_bpv7::eid::Eid,
-        _data: hardy_bpa::Bytes,
-        _lifetime: core::time::Duration,
-        _options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        Err(services::Error::Internal(
-            "mock sink: send not implemented".into(),
-        ))
-    }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
-    }
+pub fn mock_app_context(endpoint: hardy_bpv7::eid::Eid) -> services::AppContext {
+    let (tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    services::AppContext::new(tx, endpoint, token)
 }

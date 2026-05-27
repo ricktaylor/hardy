@@ -15,7 +15,7 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 struct PipelineCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    ctx: hardy_async::sync::spin::Once<cla::ClaContext>,
     forwarded_tx: flume::Sender<Bytes>,
 }
 
@@ -24,7 +24,7 @@ impl PipelineCla {
         let (tx, rx) = flume::bounded(16);
         (
             Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
                 forwarded_tx: tx,
             }),
             rx,
@@ -34,8 +34,8 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, ctx: cla::ClaContext, _node_ids: &[NodeId]) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
@@ -56,7 +56,7 @@ impl cla::Cla for PipelineCla {
 // ---------------------------------------------------------------------------
 
 struct TestApp {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+    ctx: hardy_async::sync::spin::Once<services::AppContext>,
     received_tx: flume::Sender<(Eid, Bytes)>,
 }
 
@@ -65,7 +65,7 @@ impl TestApp {
         let (tx, rx) = flume::bounded(16);
         (
             Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
                 received_tx: tx,
             }),
             rx,
@@ -75,8 +75,8 @@ impl TestApp {
 
 #[async_trait]
 impl services::Application for TestApp {
-    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, _source: &Eid, ctx: services::AppContext) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
@@ -107,27 +107,27 @@ impl services::Application for TestApp {
 // ---------------------------------------------------------------------------
 
 struct EchoService {
-    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    ctx: hardy_async::sync::spin::Once<services::ServiceContext>,
 }
 
 impl EchoService {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
+            ctx: hardy_async::sync::spin::Once::new(),
         })
     }
 }
 
 #[async_trait]
 impl services::Service for EchoService {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, _endpoint: &Eid, ctx: services::ServiceContext) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
 
     async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
-        if let Some(sink) = self.sink.get()
+        if let Some(ctx) = self.ctx.get()
             && let Ok(parsed) =
                 hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
             && let Ok(editor) = hardy_bpv7::editor::Editor::new(&parsed.bundle, &data)
@@ -143,7 +143,7 @@ impl services::Service for EchoService {
                 }
                 Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
             };
-            let _ = sink.send(reply).await;
+            let _ = ctx.send_raw(reply).await;
         }
     }
 
@@ -163,7 +163,7 @@ impl services::Service for EchoService {
 // ---------------------------------------------------------------------------
 
 struct TimedCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    ctx: hardy_async::sync::spin::Once<cla::ClaContext>,
     arrival_tx: flume::Sender<tokio::time::Instant>,
 }
 
@@ -172,7 +172,7 @@ impl TimedCla {
         let (tx, rx) = flume::bounded(4096);
         (
             Arc::new(Self {
-                sink: hardy_async::sync::spin::Once::new(),
+                ctx: hardy_async::sync::spin::Once::new(),
                 arrival_tx: tx,
             }),
             rx,
@@ -182,8 +182,8 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
+    async fn on_register(&self, ctx: cla::ClaContext, _node_ids: &[NodeId]) {
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {}
@@ -301,12 +301,10 @@ async fn app_to_cla_routing() {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
+    cla.ctx
         .get()
         .unwrap()
-        .add_peer(peer_addr, &[remote_node])
-        .await
-        .unwrap();
+        .add_peer(peer_addr, vec![remote_node]);
 
     // Register an application to send from
     let (app, _app_rx) = TestApp::new();
@@ -317,7 +315,7 @@ async fn app_to_cla_routing() {
 
     // Send a bundle to the remote node
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
-    app.sink
+    app.ctx
         .get()
         .unwrap()
         .send(
@@ -383,12 +381,10 @@ async fn echo_round_trip() {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
+    cla.ctx
         .get()
         .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+        .add_peer(peer_addr, vec![remote_node.clone()]);
 
     // Build an inbound bundle: from remote node, to our echo service
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
@@ -396,12 +392,11 @@ async fn echo_round_trip() {
     let inbound = build_bundle(&remote_source, &echo_dest, b"ping");
 
     // Dispatch it as if received from the CLA
-    cla.sink
+    cla.ctx
         .get()
         .unwrap()
-        .dispatch(inbound, Some(&remote_node), None)
-        .await
-        .unwrap();
+        .dispatch(inbound, Some(remote_node), None)
+        .await;
 
     // The echo service should reflect the bundle back:
     // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
@@ -467,12 +462,7 @@ async fn local_delivery() {
     let inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(inbound, None, None)
-        .await
-        .unwrap();
+    cla.ctx.get().unwrap().dispatch(inbound, None, None).await;
 
     // Application should receive the payload
     let (source, payload) =
@@ -520,12 +510,10 @@ async fn throughput() {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
+    cla.ctx
         .get()
         .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+        .add_peer(peer_addr, vec![remote_node]);
 
     let src: Eid = "ipn:0.3.1".parse().unwrap();
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
@@ -541,12 +529,7 @@ async fn throughput() {
 
     // Warm up
     for (i, bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(bundle, None, None)
-            .await
-            .unwrap();
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
             .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
@@ -558,12 +541,7 @@ async fn throughput() {
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
     for (i, bundle) in test_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(bundle, None, None)
-            .await
-            .unwrap();
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         last_arrival =
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
                 .await
@@ -617,12 +595,10 @@ async fn forwarding_latency() {
         allocator_id: 0,
         node_number: 2,
     });
-    cla.sink
+    cla.ctx
         .get()
         .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+        .add_peer(peer_addr, vec![remote_node]);
 
     let src: Eid = "ipn:0.3.1".parse().unwrap();
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
@@ -638,12 +614,7 @@ async fn forwarding_latency() {
 
     // Warm up
     for (i, bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(bundle, None, None)
-            .await
-            .unwrap();
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
             .unwrap_or_else(|_| panic!("Timeout waiting for warmup bundle {i}"))
@@ -657,12 +628,7 @@ async fn forwarding_latency() {
 
     for (i, bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(bundle, None, None)
-            .await
-            .unwrap();
+        cla.ctx.get().unwrap().dispatch(bundle, None, None).await;
         let arrived =
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
                 .await

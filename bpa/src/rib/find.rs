@@ -231,8 +231,8 @@ fn find_recurse<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::route::tests::{add_route, make_rib};
     use super::*;
-    use rib::route::tests::{add_route, make_rib};
 
     // Add a local forward entry directly (sync, no store interaction).
     fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {

@@ -33,11 +33,10 @@ impl hardy_bpa::cla::Cla for Cla {
         Some(hardy_bpa::cla::ClaAddressType::Tcp)
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
-        // Store sink and node_ids in single atomic operation
+    #[cfg_attr(feature = "instrument", instrument(skip(self, ctx)))]
+    async fn on_register(&self, ctx: hardy_bpa::cla::ClaContext, node_ids: &[NodeId]) {
         self.inner.call_once(|| Inner {
-            sink: sink.into(),
+            ctx,
             node_ids: node_ids.into(),
         });
 

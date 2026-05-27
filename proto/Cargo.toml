@@ -25,6 +25,7 @@ hardy-async = { version = "0.1", path = "../async" }
 hardy-bpv7 = { version = "0.5", path = "../bpv7" }
 hardy-bpa = { version = "0.1", path = "../bpa" }
 hardy-eid-patterns = { version = "0.3", path = "../eid-patterns" }
+flume = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 tokio-stream = "0.1"
 tonic = "0.14"

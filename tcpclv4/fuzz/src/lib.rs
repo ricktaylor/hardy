@@ -1,53 +1,20 @@
-// Shared infrastructure for TCPCLv4 fuzz targets.
-//
-// Provides a mock BPA and CLA setup that can be used by both the passive
-// (listener) and active (connector) fuzz targets.
-
-use bytes::Bytes;
-use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::cla;
 use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-// A mock CLA Sink that accepts everything and discards it.
-//
-// Dispatched bundles are silently dropped. Peer add/remove always succeeds.
-pub struct MockSink;
-
-#[async_trait]
-impl cla::Sink for MockSink {
-    async fn unregister(&self) {}
-
-    async fn dispatch(
-        &self,
-        _bundle: Bytes,
-        _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        Ok(())
-    }
-
-    async fn add_peer(
-        &self,
-        _cla_addr: cla::ClaAddress,
-        _node_ids: &[NodeId],
-    ) -> cla::Result<bool> {
-        Ok(true)
-    }
-
-    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
-        Ok(true)
-    }
+fn mock_cla_context() -> cla::ClaContext {
+    let (ingress_tx, _) = flume::unbounded();
+    let (peer_tx, _) = flume::unbounded();
+    let token = hardy_async::CancellationToken::new();
+    cla::ClaContext::new(ingress_tx, peer_tx, token)
 }
 
-// A mock BPA that registers CLAs by immediately calling `on_register` with a
-// `MockSink` and a default node ID.
 pub struct MockBpa;
 
-#[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for MockBpa {
+#[hardy_bpa::async_trait]
+impl BpaRegistration for MockBpa {
     async fn register_cla(
         &self,
         _name: String,
@@ -58,7 +25,7 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
             allocator_id: 0,
             node_number: 1,
         })];
-        cla.on_register(Box::new(MockSink), &node_ids).await;
+        cla.on_register(mock_cla_context(), &node_ids).await;
         Ok(node_ids)
     }
 
@@ -101,10 +68,6 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     }
 }
 
-// The listen address for fuzz targets.
-//
-// Defaults to `[::1]:4556`. Override with `FUZZ_LISTEN_ADDR` env var
-// to avoid port conflicts in CI or parallel fuzzing (e.g., `FUZZ_LISTEN_ADDR=[::1]:0`).
 pub fn fuzz_addr() -> SocketAddr {
     std::env::var("FUZZ_LISTEN_ADDR")
         .ok()
@@ -117,7 +80,6 @@ pub fn fuzz_addr() -> SocketAddr {
         )))
 }
 
-// Session config tuned for fuzzing — short timeouts to avoid blocking.
 fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
     hardy_tcpclv4::config::SessionConfig {
         contact_timeout: 2,
@@ -126,8 +88,6 @@ fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
     }
 }
 
-// Create a TCPCLv4 CLA with default config, registered against a mock BPA,
-// listening on `fuzz_addr()`.
 pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
     let config = hardy_tcpclv4::config::Config {
         address: Some(fuzz_addr()),
@@ -145,8 +105,6 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
     cla
 }
 
-// Create a TCPCLv4 CLA with no listener (for active/connect fuzzing).
-// The CLA is registered against a mock BPA and ready to `connect()`.
 pub async fn setup_connector() -> Arc<hardy_tcpclv4::Cla> {
     let config = hardy_tcpclv4::config::Config {
         address: None,
