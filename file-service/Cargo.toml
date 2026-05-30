@@ -33,5 +33,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
+humantime = "2"
+humantime-serde = "1"
 nix = { version = "0.30", features = ["fs"] }
 time = { version = "0.3", default-features = false }

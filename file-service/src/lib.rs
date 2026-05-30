@@ -17,7 +17,7 @@ use tracing::{info, warn};
 mod reader;
 mod writer;
 
-const DEFAULT_LIFETIME_SECS: u64 = 86400;
+const DEFAULT_LIFETIME: Duration = Duration::from_secs(86400);
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -93,11 +93,11 @@ pub struct FileService {
 impl FileService {
     pub fn new(
         destination: Eid,
-        lifetime: Option<u64>,
+        lifetime: Option<Duration>,
         send_path: Option<PathBuf>,
         recv_dir: Option<PathBuf>,
     ) -> Result<Self, Error> {
-        let lifetime = Duration::from_secs(lifetime.unwrap_or(DEFAULT_LIFETIME_SECS));
+        let lifetime = lifetime.unwrap_or(DEFAULT_LIFETIME);
 
         if let Some(path) = &send_path {
             ensure_fifo(path)?;
