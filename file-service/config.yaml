@@ -1,0 +1,6 @@
+bpa-address: "http://[::1]:50051"
+service-id: 42
+destination: "ipn:1.42"
+lifetime: 86400
+send-path: /tmp/hardy/send
+recv-dir: /tmp/hardy/recv
