@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use hardy_async::{CancellationToken, TaskPool};
@@ -57,7 +57,7 @@ async fn run(
 
 // Each call reopens the FIFO: a reader fd reaches EOF when the writer closes,
 // so we must reopen to accept the next writer.
-async fn read_one_payload(path: &PathBuf) -> std::io::Result<Vec<u8>> {
+async fn read_one_payload(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut file = tokio::net::unix::pipe::OpenOptions::new().open_receiver(path)?;
     file.readable().await?;
     let mut buf = Vec::new();

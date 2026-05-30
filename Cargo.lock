@@ -2051,15 +2051,20 @@ dependencies = [
 name = "hardy-file-service"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
+ "config",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
+ "hardy-proto",
  "nix",
  "serde",
  "thiserror",
  "time",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

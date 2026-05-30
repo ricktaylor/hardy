@@ -11,20 +11,27 @@ categories = ["network-programming"]
 
 [lib]
 path = "src/lib.rs"
-crate-type = ["rlib"]
+
+[[bin]]
+name = "hardy-file-service"
+path = "src/main.rs"
 
 [features]
 default = []
-serde = ["dep:serde", "hardy-bpa/serde", "hardy-bpv7/serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
 hardy-async = { version = "0.1", path = "../async" }
 hardy-bpa = { version = "0.1", path = "../bpa" }
-hardy-bpv7 = { version = "0.5", path = "../bpv7" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
+hardy-proto = { version = "0.1", path = "../proto" }
 tracing = { version = "0.1", default-features = false }
-tokio = { version = "1", features = ["macros", "io-util", "net", "fs", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["macros", "io-util", "net", "fs", "time", "rt-multi-thread"] }
 thiserror = "2"
-serde = { version = "1", features = ["derive"], optional = true }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+config = { version = "0.15", features = ["yaml", "toml", "json"] }
 nix = { version = "0.30", features = ["fs"] }
 time = { version = "0.3", default-features = false }
