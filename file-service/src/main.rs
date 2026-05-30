@@ -43,8 +43,8 @@ async fn main() -> anyhow::Result<()> {
     let service = Arc::new(FileService::new(
         config.destination,
         config.lifetime,
-        config.send_path,
-        config.recv_dir,
+        config.outbox,
+        config.inbox,
     )?);
 
     info!("Connecting to BPA at {}", config.bpa_address);

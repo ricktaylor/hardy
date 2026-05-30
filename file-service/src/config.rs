@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::path::PathBuf;
 
 use hardy_bpv7::eid::{Eid, Service};
@@ -50,14 +51,14 @@ pub struct Config {
 
     pub destination: Eid,
 
-    #[serde(default)]
-    pub lifetime: Option<u64>,
+    #[serde(default, with = "humantime_serde")]
+    pub lifetime: Option<Duration>,
 
     #[serde(default)]
-    pub send_path: Option<PathBuf>,
+    pub outbox: Option<PathBuf>,
 
     #[serde(default)]
-    pub recv_dir: Option<PathBuf>,
+    pub inbox: Option<PathBuf>,
 }
 
 impl Config {
