@@ -19,18 +19,6 @@ mod writer;
 
 const DEFAULT_LIFETIME_SECS: u64 = 86400;
 
-#[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Config {
-    pub destination: Eid,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub lifetime: Option<u64>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub send_path: Option<PathBuf>,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub recv_dir: Option<PathBuf>,
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Failed to create FIFO '{path}': {source}")]
@@ -103,21 +91,26 @@ pub struct FileService {
 }
 
 impl FileService {
-    pub fn new(config: Config) -> Result<Self, Error> {
-        let lifetime = Duration::from_secs(config.lifetime.unwrap_or(DEFAULT_LIFETIME_SECS));
+    pub fn new(
+        destination: Eid,
+        lifetime: Option<u64>,
+        send_path: Option<PathBuf>,
+        recv_dir: Option<PathBuf>,
+    ) -> Result<Self, Error> {
+        let lifetime = Duration::from_secs(lifetime.unwrap_or(DEFAULT_LIFETIME_SECS));
 
-        if let Some(path) = &config.send_path {
+        if let Some(path) = &send_path {
             ensure_fifo(path)?;
         }
-        if let Some(path) = &config.recv_dir {
+        if let Some(path) = &recv_dir {
             ensure_dir(path)?;
         }
 
         Ok(Self {
-            destination: config.destination,
+            destination,
             lifetime,
-            send_path: config.send_path,
-            recv_dir: config.recv_dir,
+            send_path,
+            recv_dir,
             sink: Once::new(),
             tasks: TaskPool::new(),
         })
