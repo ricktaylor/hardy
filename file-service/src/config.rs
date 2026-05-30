@@ -1,7 +1,7 @@
 use core::time::Duration;
 use std::path::PathBuf;
 
-use hardy_bpv7::eid::{Eid, Service};
+use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -47,9 +47,11 @@ pub struct Config {
     #[serde(default = "default_bpa_address")]
     pub bpa_address: String,
 
-    pub service_id: Service,
+    #[serde(default)]
+    pub service_id: Option<u32>,
 
-    pub destination: Eid,
+    #[serde(default)]
+    pub destination: Option<Eid>,
 
     #[serde(default, with = "humantime_serde")]
     pub lifetime: Option<Duration>,
