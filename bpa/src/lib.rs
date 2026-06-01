@@ -13,14 +13,16 @@ This crate is `no_std` compatible with a heap allocator. Feature flags control f
 - **`rfc9173`**: Enables RFC 9173 security contexts via hardy-bpv7.
 - **`serde`**: Enables serialization support for metadata.
 - **`instrument`**: Enables span instrumentation.
+- **`critical-section`**: Forwards to hardy-bpv7. Required on targets
+  without native 64-bit atomics (e.g. thumbv6m / Cortex-M0).
 
 ## Current Limitations
 
 Full `no_std` support is blocked by:
-- `flume` (channel implementation) - std-only
 - `metrics` (observability) - std-only
 
-These are planned for future work with alternative implementations.
+This is planned for future work via a `hardy-metrics` facade crate
+that provides no-op shims under `no_std`.
 
 ## Embedded Targets
 
@@ -29,7 +31,8 @@ RNG backend via the [`getrandom`](https://docs.rs/getrandom) crate's
 [custom backend](https://docs.rs/getrandom/latest/getrandom/#custom-backend) mechanism.
 
 For targets without native 64-bit atomics, enable the `critical-section` feature on
-`hardy-bpv7` and provide a critical-section implementation from your HAL.
+`hardy-bpa` (which forwards to `hardy-bpv7`) and provide a critical-section
+implementation from your HAL.
 
 See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed instructions.
 */
@@ -52,6 +55,7 @@ pub mod policy;
 pub mod routes;
 pub mod services;
 pub mod storage;
+pub mod stream;
 
 // The generic error type
 pub type Error = Box<dyn core::error::Error + Send + Sync>;

@@ -1,22 +1,21 @@
 use core::num::NonZeroUsize;
 
-use crate::Arc;
-use crate::bpa::Bpa;
-use crate::cla::Cla;
-use crate::cla::registry::ClaRegistryBuilder;
-use crate::dispatcher::Dispatcher;
-use crate::filter::validity::BundleValidityFilter;
-use crate::filter::{Filter, FilterEngine, Hook};
-use crate::keys::registry::Registry as KeyRegistry;
-use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
-use crate::rib::RibBuilder;
-use crate::routes::RoutingAgent;
-use crate::services::registry::ServiceRegistryBuilder;
-use crate::services::{self, Service};
-use crate::storage::{
-    BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-    MetadataMemStorage, MetadataStorage, Store,
+use crate::{
+    Arc,
+    bpa::Bpa,
+    cla::{Cla, registry::ClaRegistryBuilder},
+    dispatcher::Dispatcher,
+    filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
+    keys::registry::Registry as KeyRegistry,
+    node_ids::NodeIds,
+    policy::EgressPolicy,
+    rib::RibBuilder,
+    routes::RoutingAgent,
+    services::{self, Service, registry::ServiceRegistryBuilder},
+    storage::{
+        BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+        MetadataMemStorage, MetadataStorage, store::Store,
+    },
 };
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
@@ -155,7 +154,7 @@ impl BpaBuilder {
     }
 
     /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));

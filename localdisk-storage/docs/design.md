@@ -65,12 +65,21 @@ The trade-off is that memory-mapped files don't work reliably on network filesys
 On startup, the storage performs a parallel directory walk using multiple threads. Each thread processes subdirectories independently, emitting `(storage_name, creation_timestamp)` pairs to a recovery channel.
 
 The walk applies several cleanup rules:
+
 - Temporary files (`.tmp` extension) are deleted as incomplete writes
 - Zero-length placeholder files are deleted
 - Empty directories are removed after processing
 - Files created after the walk started are ignored (they're new bundles being written concurrently)
 
 The timestamp check prevents a race condition where concurrent writes could be mistaken for recovery candidates.
+
+#### Internal flume + bridge pump
+
+The walk runs inside `tokio::task::spawn_blocking` and uses `std::fs` (synchronous I/O), so it needs a blocking-friendly channel for emitting results. The trait surface, however, takes a `&dyn Sender<RecoveryResponse>` (see [bpa storage subsystem design](../../bpa/docs/storage_subsystem_design.md#streaming-results-via-sendert)) — async-only.
+
+`recover()` bridges these by creating an internal `flume::bounded(parallelism * 16)`: the walk tasks `flume::Sender::send` into it (blocking, with `is_disconnected()` early-exit), and a sibling pump task in the same `recover()` future pulls from the flume receiver and forwards items to the external `Sender` via `send().await`. When the walk completes it drops its `flume_tx`, the pump's `recv_async` returns `Disconnected`, and the pump exits. When the external consumer goes away first, the pump's `stream.send` errors, the pump returns and drops `flume_rx`, and the walk's next `is_disconnected()` check stops the walk.
+
+This keeps the existing walk code unchanged while presenting the `Sender`-shaped trait surface.
 
 ## Configuration
 

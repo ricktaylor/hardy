@@ -3,13 +3,13 @@
 //! Monitors a single file for changes (create, modify, remove) and calls
 //! a callback. Supports native OS events and periodic polling (for Docker).
 
-use std::future::Future;
-use std::path::Path;
-use std::time::Duration;
-
-use notify::event::{CreateKind, RemoveKind};
-use notify::{EventKind, PollWatcher, RecursiveMode};
+use core::{future::Future, time::Duration};
+use notify::{
+    EventKind, PollWatcher, RecursiveMode,
+    event::{CreateKind, RemoveKind},
+};
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
+use std::path::Path;
 use trace_err::*;
 use tracing::error;
 

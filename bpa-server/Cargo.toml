@@ -22,6 +22,7 @@ ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
 echo = ["dep:hardy-echo-service"]
 instrument = [
     "tracing/attributes",
+    "hardy-async/instrument",
     "hardy-bpa/instrument",
     "hardy-proto?/instrument",
     "hardy-sqlite-storage?/instrument",

@@ -1,5 +1,4 @@
 use core::ops::Range;
-
 use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::bundle::Id as Bpv7Id;
 use hardy_bpv7::editor::{Chunk, Editor};
@@ -7,9 +6,13 @@ use time::OffsetDateTime;
 use trace_err::*;
 use tracing::{debug, error};
 
+use crate::{
+    Arc, Bytes, HashMap,
+    bundle::{Bundle, BundleStatus},
+    stream::ChannelSender,
+};
+
 use super::store::Store;
-use crate::bundle::{Bundle, BundleStatus};
-use crate::{Arc, Bytes, HashMap};
 
 pub enum ReassemblyResult {
     /// Not all sibling fragments have arrived; fragment data is still in storage.
@@ -94,23 +97,24 @@ impl Store {
             .into(),
         };
 
-        let (tx, rx) = flume::bounded::<Bundle>(16);
+        let (stream, rx) = ChannelSender::<Bundle>::bounded(16);
 
         join!(
             // Producer: poll for fragment bundles
             async {
                 let _ = self
                     .metadata_storage
-                    .poll_adu_fragments(tx, status)
+                    .poll_adu_fragments(&stream, status)
                     .await
                     .inspect_err(|e| error!("Failed to poll store for fragmented bundles: {e}"));
-                // When tx is dropped, consumer will see channel close and return result
+                // When stream is dropped, consumer will see channel close and return result
+                drop(stream);
             },
             // Consumer: collect fragments
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 // Done (>= is just so we can capture invalid bundles and handle them at re-dispatch)
                                 break (adu_totals >= total_adu_len).then_some(results);
@@ -428,7 +432,7 @@ mod tests {
         // Build a complete bundle
         let (complete_bundle, complete_data) =
             hardy_bpv7::builder::Builder::new(source.clone(), dest.clone())
-                .with_payload(std::borrow::Cow::Borrowed(&payload[..]))
+                .with_payload(alloc::borrow::Cow::Borrowed(&payload[..]))
                 .build(ts.clone())
                 .unwrap();
 
@@ -443,7 +447,7 @@ mod tests {
             .update_block(1)
             .map_err(|(_, e)| e)
             .unwrap()
-            .with_data(std::borrow::Cow::Borrowed(&b"Hello"[..]))
+            .with_data(alloc::borrow::Cow::Borrowed(&b"Hello"[..]))
             .rebuild()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
@@ -460,7 +464,7 @@ mod tests {
             .update_block(1)
             .map_err(|(_, e)| e)
             .unwrap()
-            .with_data(std::borrow::Cow::Borrowed(&b"World"[..]))
+            .with_data(alloc::borrow::Cow::Borrowed(&b"World"[..]))
             .rebuild()
             .rebuild()
             .map(|c| Chunk::flatten(c, &complete_data))
