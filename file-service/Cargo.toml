@@ -1,12 +1,12 @@
 [package]
 name = "hardy-file-service"
-description = "A FIFO-based file service for sending and receiving bundle payloads"
+description = "A file-based service for sending and receiving bundle payloads"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords = ["dtn", "bpv7", "service", "fifo", "bundle-protocol"]
+keywords = ["dtn", "bpv7", "service", "file", "bundle-protocol"]
 categories = ["network-programming"]
 
 [lib]
@@ -27,7 +27,7 @@ hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
 hardy-proto = { version = "0.1", path = "../proto" }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["macros", "io-util", "net", "fs", "time", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "fs", "time", "rt-multi-thread"] }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -35,5 +35,6 @@ serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 humantime = "2"
 humantime-serde = "1"
-nix = { version = "0.30", features = ["fs"] }
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+flume = "0.12"
 time = { version = "0.3", default-features = false }

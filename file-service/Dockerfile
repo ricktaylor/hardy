@@ -17,13 +17,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
 COPY patches/ patches/
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json -p hardy-file-service
 COPY . .
 RUN cargo build --release --bin hardy-file-service
 
 # ── Stage 4: minimal runtime image ───────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12 AS runtime
+FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 COPY --from=builder \
     /build/target/release/hardy-file-service \
     /usr/local/bin/hardy-file-service
+USER nonroot
 ENTRYPOINT ["/usr/local/bin/hardy-file-service"]
