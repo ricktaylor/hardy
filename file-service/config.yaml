@@ -27,8 +27,8 @@ destination: "ipn:1.42"
 # Files dropped here are read, sent as bundles, then deleted.
 # Supports concurrent writers. Detects completed writes (close) and
 # renames (mv). Dotfiles (.*) are ignored for atomic write patterns.
-outbox: /home/spierrot_aalyria_com/git/hardy/data/outbox
+outbox: /tmp/hardy/outbox
 
 # Path to the inbox directory.
 # Incoming bundle payloads are written as individual files here.
-inbox: /home/spierrot_aalyria_com/git/hardy/data/inbox
+inbox: /tmp/hardy/inbox
