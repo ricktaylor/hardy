@@ -65,15 +65,17 @@ pub struct Config {
 
 impl Config {
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
-        let config_file = config_file
-            .or_else(|| {
-                std::env::var("HARDY_FILE_SERVICE_CONFIG_FILE")
-                    .ok()
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(default_config_path);
+        let (config_file, required) = match config_file.or_else(|| {
+            std::env::var("HARDY_FILE_SERVICE_CONFIG_FILE")
+                .ok()
+                .map(PathBuf::from)
+        }) {
+            Some(path) => (path, true),
+            None => (default_config_path(), false),
+        };
 
-        let source_file = config::File::with_name(&config_file.to_string_lossy());
+        let source_file =
+            config::File::with_name(&config_file.to_string_lossy()).required(required);
         let source_env = config::Environment::with_prefix("HARDY_FILE_SERVICE")
             .prefix_separator("_")
             .separator("__")
@@ -86,7 +88,9 @@ impl Config {
             .build()?
             .try_deserialize()?;
 
-        eprintln!("Loaded configuration from '{}'", config_file.display());
+        if required || config_file.exists() {
+            eprintln!("Loaded configuration from '{}'", config_file.display());
+        }
         Ok(config)
     }
 }

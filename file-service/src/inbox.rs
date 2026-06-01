@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hardy_bpv7::eid::Eid;
-use tracing::{debug, warn};
+use tracing::{debug, error};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -27,7 +27,7 @@ pub async fn write_to_dir(dir: &Path, payload: &[u8], source: &Eid) {
             );
         }
         Err(e) => {
-            warn!(
+            error!(
                 source = %source,
                 "Failed to write payload to '{}': {e}",
                 path.display()
