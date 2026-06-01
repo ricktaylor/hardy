@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::CaptureFieldErr;
+use crate::error::{CaptureFieldErr, HasInvalidField};
 use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
@@ -160,27 +160,50 @@ impl TryFrom<Cow<'_, str>> for Eid {
     }
 }
 
+/// Decodes an `ipn` SSP array (2-element legacy or 3-element per RFC 9758).
+///
+/// Non-shortest individual uints are rejected as `NotCanonical` (RFC 9171
+/// §4.1: scalars MUST be deterministic; uints have no indefinite variant).
+/// `array_canonical` is the canonical-shortest signal for the wrapping
+/// array passed by the caller (false if the outer EID array or this SSP
+/// array used indefinite-length encoding); the returned bool combines
+/// that with the per-encoding canonical signal (3-element form with
+/// `allocator_id=0` is RFC-valid but not the recommended form per
+/// RFC 9758 §6.1.2, so returns `false` to trigger a rewrite).
 fn ipn_from_cbor(
     value: &mut hardy_cbor::decode::Array,
-    shortest: bool,
+    array_canonical: bool,
 ) -> Result<(Eid, bool), Error> {
-    let (a, s1) = value.parse()?;
-    let (b, s2) = value.parse()?;
-    let (c, shortest) = if let Some((c, s3)) = value.try_parse()? {
-        (Some(c), shortest && s1 && s2 && s3)
+    let (a, s1): (u64, bool) = value.parse()?;
+    if !s1 {
+        return Err(Error::NotCanonical);
+    }
+    let (b, s2): (u64, bool) = value.parse()?;
+    if !s2 {
+        return Err(Error::NotCanonical);
+    }
+    let c: Option<u64> = if let Some((c, s3, _)) = value.try_parse::<(u64, bool, usize)>()? {
+        if !s3 {
+            return Err(Error::NotCanonical);
+        }
+        Some(c)
     } else {
-        (None, shortest && s1 && s2)
+        None
     };
 
     const U32_MAX: u64 = u32::MAX as u64;
 
     match (a, b, c) {
-        (0, 0, None) => Ok((Eid::Null, shortest)),
+        (0, 0, Some(0)) | (0, 0, None) => Ok((Eid::Null, array_canonical)),
         (0, 0, Some(_)) | (0, _, None) => Ok((Eid::Null, false)),
         (a, _, Some(_)) if a > U32_MAX => Err(Error::IpnInvalidAllocatorId(a)),
         (_, n, Some(_)) if n > U32_MAX => Err(Error::IpnInvalidNodeNumber(n)),
         (_, _, Some(s)) | (_, s, None) if s > U32_MAX => Err(Error::IpnInvalidServiceNumber(s)),
-        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => Ok((Eid::LocalNode(s as u32), shortest)),
+        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => {
+            Ok((Eid::LocalNode(s as u32), array_canonical))
+        }
+        // 3-element form with allocator=0: RFC 9758 §6.1.2 RECOMMENDS
+        // the 2-element form here, so flag for rewrite.
         (0, n, Some(s)) => Ok((
             Eid::Ipn {
                 fqnn: IpnNodeId {
@@ -199,7 +222,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            shortest,
+            array_canonical,
         )),
         (n, s, None) if n <= U32_MAX => Ok((
             Eid::Ipn {
@@ -209,7 +232,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            shortest,
+            array_canonical,
         )),
         (fqnn, s, None) => Ok((
             Eid::LegacyIpn {
@@ -219,7 +242,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            shortest,
+            array_canonical,
         )),
     }
 }
@@ -227,50 +250,99 @@ fn ipn_from_cbor(
 impl hardy_cbor::decode::FromCbor for Eid {
     type Error = error::Error;
 
+    /// Strict-canonical decode with the RFC 9171 §4.1 indefinite-length
+    /// carveout.
+    ///
+    /// Rejected as `NotCanonical`:
+    ///   * non-shortest outer array head, non-shortest scheme uint,
+    ///     non-shortest SSP scalars (uints, text head)
+    ///   * unexpected tags on any item
+    ///
+    /// Accepted but flagged `shortest == false` (caller may re-emit
+    /// canonical):
+    ///   * indefinite-length outer EID array
+    ///   * indefinite-length `ipn` SSP array
+    ///   * indefinite-length dtn text (CBOR text stream)
+    ///   * dtn null encoded as `Text("none")` (RFC 9171 §4.2.5.1.1
+    ///     mandates `uint 0`; the text form is unambiguous on the wire
+    ///     because any real dtn URI's SSP starts with "//", so we
+    ///     accept and queue a rewrite to uint 0)
+    ///   * 3-element ipn EID with `allocator_id == 0` (RFC 9758
+    ///     §6.1.2 recommends the 2-element form)
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
-            shortest = shortest && tags.is_empty() && a.is_definite();
+        hardy_cbor::decode::parse_array(data, |a, s, tags| {
+            if !s || !tags.is_empty() {
+                return Err(Error::NotCanonical);
+            }
+            // Indefinite-length outer EID array: RFC-permitted but not
+            // canonical-shortest. The carry-through bool below picks
+            // this up so the returned `shortest` flag reflects it.
+            let outer_canonical = a.is_definite();
 
-            match a
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("EID scheme")?
-            {
+            let (scheme, s): (u64, bool) = a.parse().map_field_err::<Error>("EID scheme")?;
+            if !s {
+                return Err(Error::invalid_field(
+                    "EID scheme",
+                    Error::NotCanonical.into(),
+                ));
+            }
+
+            match scheme {
                 0 => Err(Error::UnsupportedScheme(0)),
                 1 => a
                     .parse_value(|value, s, tags| {
-                        shortest = shortest && s && tags.is_empty();
+                        if !tags.is_empty() {
+                            return Err(Error::NotCanonical);
+                        }
                         match value {
-                            hardy_cbor::decode::Value::UnsignedInteger(0)
-                            | hardy_cbor::decode::Value::Text("none") => Ok((Eid::Null, shortest)),
-                            hardy_cbor::decode::Value::Text(s) => parse_dtn
-                                .parse(s)
-                                .map(|e| (e, shortest))
-                                .map_err(|e| Error::ParseError(e.to_string())),
-                            hardy_cbor::decode::Value::TextStream(s) => {
-                                let s = s.iter().fold(String::new(), |mut acc, s| {
+                            hardy_cbor::decode::Value::UnsignedInteger(0) => {
+                                if !s {
+                                    return Err(Error::NotCanonical);
+                                }
+                                Ok((Eid::Null, outer_canonical))
+                            }
+                            hardy_cbor::decode::Value::Text("none") => {
+                                if !s {
+                                    return Err(Error::NotCanonical);
+                                }
+                                // Non-canonical: §4.2.5.1.1 says uint 0.
+                                Ok((Eid::Null, false))
+                            }
+                            hardy_cbor::decode::Value::Text(text) => {
+                                if !s {
+                                    return Err(Error::NotCanonical);
+                                }
+                                parse_dtn
+                                    .parse(text)
+                                    .map(|e| (e, outer_canonical))
+                                    .map_err(|e| Error::ParseError(e.to_string()))
+                            }
+                            hardy_cbor::decode::Value::TextStream(parts) => {
+                                // Indefinite-length text: RFC-permitted,
+                                // non-canonical.
+                                let combined = parts.iter().fold(String::new(), |mut acc, s| {
                                     acc.push_str(s);
                                     acc
                                 });
                                 parse_dtn
-                                    .parse(&s)
-                                    .map(|e| (e, shortest))
+                                    .parse(&combined)
+                                    .map(|e| (e, false))
                                     .map_err(|e| Error::ParseError(e.to_string()))
                             }
                             value => Err(hardy_cbor::decode::Error::IncorrectType(
-                                "Untagged Text String or O".to_string(),
-                                value.type_name(!tags.is_empty()),
+                                "Untagged Text String or Unsigned Integer 0".to_string(),
+                                value.type_name(false),
                             )
                             .into()),
                         }
                     })
                     .map_field_err::<Error>("'dtn' scheme-specific part"),
                 2 => match a.parse_value(|value, s, tags| match value {
-                    hardy_cbor::decode::Value::Array(a) => {
-                        ipn_from_cbor(a, shortest && s && tags.is_empty() && a.is_definite())
+                    hardy_cbor::decode::Value::Array(arr) => {
+                        if !s || !tags.is_empty() {
+                            return Err(Error::NotCanonical);
+                        }
+                        ipn_from_cbor(arr, outer_canonical && arr.is_definite())
                     }
                     value => Err(hardy_cbor::decode::Error::IncorrectType(
                         "Untagged Array".to_string(),
@@ -284,6 +356,9 @@ impl hardy_cbor::decode::FromCbor for Eid {
                     r => r,
                 },
                 scheme => {
+                    // Unknown scheme: we can't validate the content;
+                    // stash the raw bytes for round-trip. Canonical
+                    // flag reflects only the outer-array shape.
                     let start = a.offset();
                     a.skip_value(16)?;
                     Ok((
@@ -291,7 +366,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             scheme,
                             data: data[start..a.offset()].into(),
                         },
-                        shortest,
+                        outer_canonical,
                     ))
                 }
             }

@@ -30,6 +30,12 @@ pub enum Error {
         source: Box<dyn core::error::Error + Send + Sync>,
     },
 
+    /// Indicates a violation of the canonical CBOR encoding requirements
+    /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
+    /// array head, or unexpected tags in an EID field.
+    #[error("EID violates RFC 9171 canonical CBOR encoding requirements")]
+    NotCanonical,
+
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 }

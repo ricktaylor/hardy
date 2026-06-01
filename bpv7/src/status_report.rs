@@ -6,7 +6,7 @@ on the status of a bundle. This can include events like bundle reception, forwar
 */
 
 use super::*;
-use crate::error::CaptureFieldErr;
+use crate::error::{CaptureFieldErr, HasInvalidField};
 use thiserror::Error;
 
 /// Errors that can occur when working with status reports.
@@ -26,6 +26,12 @@ pub enum Error {
         field: &'static str,
         source: Box<dyn core::error::Error + Send + Sync>,
     },
+
+    /// Indicates a violation of the canonical CBOR encoding requirements
+    /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
+    /// array head, or unexpected tags in a status-report field.
+    #[error("Status report violates RFC 9171 canonical CBOR encoding requirements")]
+    NotCanonical,
 
     /// Error resulting from invalid CBOR data.
     #[error(transparent)]
@@ -173,32 +179,43 @@ fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAs
     }
 }
 
+fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    match a.parse::<(T, bool)>() {
+        Err(e) => Err(Error::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
+        Ok((t, true)) => Ok(t),
+    }
+}
+
 fn parse_status_assertion(
     a: &mut hardy_cbor::decode::Array,
-    shortest: &mut bool,
+    canonical: &mut bool,
 ) -> Result<Option<StatusAssertion>, Error> {
     a.parse_array(|a, s, tags| {
-        *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+        // RFC 9171 §4.1 carveout: indefinite-length array OK; non-shortest
+        // array head and unexpected tags are RFC violations.
+        if !s || !tags.is_empty() {
+            return Err(Error::NotCanonical);
+        }
+        *canonical = *canonical && a.is_definite();
 
-        let status = a
-            .parse()
-            .map(|(v, s)| {
-                *shortest = *shortest && s;
-                v
-            })
-            .map_field_err::<Error>("status")?;
-
+        let status = a.parse().map_field_err::<Error>("status")?;
         if status {
-            if let Some(timestamp) = a
+            if let Some((timestamp, s)) = a
                 .try_parse::<(dtn_time::DtnTime, bool)>()
-                .map(|o| {
-                    o.map(|(v, s)| {
-                        *shortest = *shortest && s;
-                        v
-                    })
-                })
                 .map_field_err::<Error>("timestamp")?
             {
+                if !s {
+                    return Err(Error::invalid_field(
+                        "timestamp",
+                        Error::NotCanonical.into(),
+                    ));
+                }
+
                 if timestamp.millisecs() == 0 {
                     Ok::<_, Error>(Some(StatusAssertion(None)))
                 } else {
@@ -272,50 +289,40 @@ impl hardy_cbor::encode::ToCbor for BundleStatusReport {
 impl hardy_cbor::decode::FromCbor for BundleStatusReport {
     type Error = Error;
 
+    /// Strict-canonical-with-§4.1-carveout decode: non-shortest scalars
+    /// and unexpected tags are RFC violations and rejected;
+    /// indefinite-length arrays are RFC-permitted and demote the
+    /// returned `shortest` flag without erroring.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
-            shortest = shortest && tags.is_empty() && a.is_definite();
+        hardy_cbor::decode::parse_array(data, |a, s, tags| {
+            if !s || !tags.is_empty() {
+                return Err(Error::NotCanonical);
+            }
+            let mut canonical = a.is_definite();
 
             let mut report = Self::default();
             a.parse_array(|a, s, tags| {
-                shortest = shortest && s && tags.is_empty() && a.is_definite();
+                if !s || !tags.is_empty() {
+                    return Err(Error::NotCanonical);
+                }
+                canonical = canonical && a.is_definite();
 
-                report.received = parse_status_assertion(a, &mut shortest)
+                report.received = parse_status_assertion(a, &mut canonical)
                     .map_field_err::<Error>("received status")?;
-                report.forwarded = parse_status_assertion(a, &mut shortest)
+                report.forwarded = parse_status_assertion(a, &mut canonical)
                     .map_field_err::<Error>("forwarded status")?;
-                report.delivered = parse_status_assertion(a, &mut shortest)
+                report.delivered = parse_status_assertion(a, &mut canonical)
                     .map_field_err::<Error>("delivered status")?;
-                report.deleted = parse_status_assertion(a, &mut shortest)
+                report.deleted = parse_status_assertion(a, &mut canonical)
                     .map_field_err::<Error>("deleted status")?;
 
                 Ok::<_, Self::Error>(())
             })
             .map_field_err::<Error>("bundle status information")?;
 
-            report.reason = a
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("reason")?;
-
-            let source = a
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("source")?;
-
-            let timestamp = a
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("timestamp")?;
+            report.reason = require_canonical(a, "reason")?;
+            let source = require_canonical(a, "source")?;
+            let timestamp = require_canonical(a, "timestamp")?;
 
             report.bundle_id = bundle::Id {
                 source,
@@ -323,15 +330,23 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
                 fragment_info: None,
             };
 
-            if let Some(offset) = a.try_parse().map_field_err::<Error>("fragment offset")? {
+            if let Some((offset, s, _)) = a
+                .try_parse::<(u64, bool, usize)>()
+                .map_field_err::<Error>("fragment offset")?
+            {
+                if !s {
+                    return Err(Error::invalid_field(
+                        "fragment offset",
+                        Box::new(Error::NotCanonical),
+                    ));
+                }
+                let total_adu_length = require_canonical(a, "fragment total ADU length")?;
                 report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
-                    total_adu_length: a
-                        .parse()
-                        .map_field_err::<Error>("fragment total ADU length")?,
+                    total_adu_length,
                 });
             }
-            Ok((report, shortest))
+            Ok((report, canonical))
         })
         .map(|((v, s), len)| (v, s, len))
     }
@@ -360,21 +375,24 @@ impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
 impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
     type Error = Error;
 
+    /// Strict-canonical-with-§4.1-carveout decode: non-shortest scalars
+    /// and unexpected tags are RFC violations and rejected;
+    /// indefinite-length arrays are RFC-permitted and demote the
+    /// returned `shortest` flag without erroring.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, mut shortest, tags| {
-            shortest = shortest && !tags.is_empty() && a.is_definite();
+        hardy_cbor::decode::parse_array(data, |a, s, tags| {
+            // Original code had `!tags.is_empty()` here (inverted);
+            // canonical semantics is `tags.is_empty()`. Fixed.
+            if !s || !tags.is_empty() {
+                return Err(Error::NotCanonical);
+            }
+            let canonical = a.is_definite();
 
-            match a
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("record type code")?
-            {
+            let code = require_canonical(a, "record type code")?;
+            match code {
                 1u64 => {
                     let (r, s) = a.parse().map_field_err::<Error>("bundle status report")?;
-                    Ok((Self::BundleStatusReport(r), shortest && s))
+                    Ok((Self::BundleStatusReport(r), canonical && s))
                 }
                 v => Err(Error::UnknownAdminRecordType(v)),
             }

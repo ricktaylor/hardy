@@ -1,11 +1,29 @@
 use super::*;
+use crate::error::HasInvalidField;
 use alloc::rc::Rc;
 use core::ops::Range;
 use smallvec::SmallVec;
 
+fn require_canonical<T, const D: usize>(
+    seq: &mut hardy_cbor::decode::Series<D>,
+    field: &'static str,
+) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    match seq.parse::<(T, bool)>() {
+        Err(e) => Err(Error::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
+        Ok((t, true)) => Ok(t),
+    }
+}
+
+/// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
+/// content, so every encoding violation (non-shortest, indefinite-
+/// length, unexpected tags) is rejected with `NotCanonical`.
 fn parse_ranges<const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
-    shortest: &mut bool,
     mut offset: usize,
 ) -> Result<Option<HashMap<u64, Range<usize>>>, Error> {
     if seq.at_end()? {
@@ -14,22 +32,19 @@ fn parse_ranges<const D: usize>(
 
     offset += seq.offset();
     seq.parse_array(|a, s, tags| {
-        *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+        if !s || !tags.is_empty() || !a.is_definite() {
+            return Err(Error::NotCanonical);
+        }
         let mut outer_offset = a.offset();
 
         let mut map = HashMap::new();
         while !a.at_end()? {
             let (id, r) = a.parse_array(|a, s, tags| {
-                *shortest = *shortest && s && tags.is_empty() && a.is_definite();
+                if !s || !tags.is_empty() || !a.is_definite() {
+                    return Err(Error::NotCanonical);
+                }
 
-                let id = a
-                    .parse::<(u64, bool)>()
-                    .map(|(v, s)| {
-                        *shortest = *shortest && s;
-                        v
-                    })
-                    .map_field_err::<Error>("id")?;
-
+                let id = require_canonical(a, "id")?;
                 let data_start = offset + outer_offset + a.offset();
                 a.skip_value(16).map_field_err::<Error>("value")?;
                 Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
@@ -122,18 +137,30 @@ pub struct AbstractSyntaxBlock {
 impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
     type Error = self::Error;
 
+    /// Strict-canonical decode per RFC 9172 §3.6 + §4: ASB field encodings
+    /// MUST conform to RFC 8949 Deterministically Encoded CBOR with **no
+    /// indefinite-length carveout** (RFC 9171 §4.1's carveout does not
+    /// apply here). Any non-shortest scalar, unexpected tag, or
+    /// indefinite-length container is rejected with `NotCanonical`. The
+    /// returned `shortest` flag is therefore always `true` on `Ok`.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_sequence(data, |seq| {
-            let mut shortest = true;
-
             // Targets
             let targets = seq
                 .parse_array(|a, s, tags| {
-                    shortest = shortest && s && tags.is_empty() && a.is_definite();
+                    if !s || !tags.is_empty() || !a.is_definite() {
+                        return Err(Error::NotCanonical);
+                    }
                     let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
-                    while let Some((block, s, _)) = a.try_parse()? {
-                        shortest = shortest && s;
-
+                    // The third tuple element from try_parse on a
+                    // FromCbor 3-tuple is the consumed `usize` length;
+                    // u64's FromCbor folds tag-emptiness into the
+                    // `shortest` flag, so checking `!s` here covers
+                    // both non-shortest and unexpected tags.
+                    while let Some((block, s, _)) = a.try_parse::<(u64, bool, usize)>()? {
+                        if !s {
+                            return Err(Error::NotCanonical);
+                        }
                         // Check for duplicates
                         if targets.contains(&block) {
                             return Err(Error::DuplicateOpTarget);
@@ -148,31 +175,13 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             }
 
             // Context
-            let context = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security context id")?;
+            let context = require_canonical(seq, "security context id")?;
 
             // Flags
-            let flags: u64 = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security context flags")?;
+            let flags: u64 = require_canonical(seq, "security context flags")?;
 
             // Source
-            let source = seq
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_field_err::<Error>("security source")?;
+            let source = require_canonical(seq, "security source")?;
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
@@ -181,7 +190,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             let parameters = if flags & 1 == 0 {
                 HashMap::new()
             } else {
-                parse_ranges(seq, &mut shortest, 0)
+                parse_ranges(seq, 0)
                     .map_field_err::<Error>("security context parameters")?
                     .unwrap_or_default()
             };
@@ -189,12 +198,14 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             // Target Results
             let offset = seq.offset();
             let results = seq.parse_array(|a, s, tags| {
-                shortest = shortest && s && tags.is_empty() && a.is_definite();
+                if !s || !tags.is_empty() || !a.is_definite() {
+                    return Err(Error::NotCanonical);
+                }
 
                 let mut results = HashMap::with_capacity(targets.len());
                 let mut idx = 0;
-                while let Some(target_results) = parse_ranges(a, &mut shortest, offset)
-                    .map_field_err::<Error>("security results")?
+                while let Some(target_results) =
+                    parse_ranges(a, offset).map_field_err::<Error>("security results")?
                 {
                     results.insert(
                         *targets.get(idx).ok_or(Error::MismatchedTargetResult)?,
@@ -216,35 +227,43 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     parameters,
                     results,
                 },
-                shortest,
+                true,
             ))
         })
         .map(|((v, s), len)| (v, s, len))
     }
 }
 
+/// Decodes a definite-length untagged byte string from `data[range]`.
+///
+/// Per RFC 9172 §4 (deterministic CBOR, no §4.1 carveout), tagged or
+/// indefinite-length byte strings are rejected with `NotCanonical`.
 #[cfg(feature = "rfc9173")]
-pub fn decode_box(
-    range: Range<usize>,
-    data: &[u8],
-) -> Result<(Box<[u8]>, bool), hardy_cbor::decode::Error> {
+pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> {
     let data = &data[range.start..range.end];
     hardy_cbor::decode::parse_value(data, |v, s, tags| match v {
-        hardy_cbor::decode::Value::Bytes(r) => Ok((data[r].into(), s && tags.is_empty())),
-        hardy_cbor::decode::Value::ByteStream(ranges) => Ok((
-            ranges
-                .into_iter()
-                .fold(Vec::new(), |mut acc, r| {
-                    acc.extend_from_slice(&data[r]);
-                    acc
-                })
-                .into(),
-            false,
-        )),
+        hardy_cbor::decode::Value::Bytes(r) if s && tags.is_empty() => Ok(data[r].into()),
+        hardy_cbor::decode::Value::Bytes(_) | hardy_cbor::decode::Value::ByteStream(_) => {
+            Err(Error::NotCanonical)
+        }
         value => Err(hardy_cbor::decode::Error::IncorrectType(
             "Untagged definite-length byte string".to_string(),
             value.type_name(!tags.is_empty()),
-        )),
+        )
+        .into()),
     })
     .map(|v| v.0)
+}
+
+/// Decodes a value of type `T` from `data`, rejecting any non-shortest
+/// encoding with `NotCanonical`. Used for rfc9173 parameter/result
+/// values whose leaf parser is `hardy_cbor`-error-typed (e.g. `ShaVariant`,
+/// `ScopeFlags`, `AesVariant`).
+#[cfg(feature = "rfc9173")]
+pub fn require_canonical_value<T>(data: &[u8]) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor<Error = hardy_cbor::decode::Error>,
+{
+    let (v, s) = hardy_cbor::decode::parse::<(T, bool)>(data)?;
+    if !s { Err(Error::NotCanonical) } else { Ok(v) }
 }
