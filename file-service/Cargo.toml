@@ -35,6 +35,6 @@ serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 humantime = "2"
 humantime-serde = "1"
-notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+notify = "8"
 flume = "0.12"
 time = { version = "0.3", default-features = false }

@@ -22,9 +22,8 @@ COPY . .
 RUN cargo build --release --bin hardy-file-service
 
 # ── Stage 4: minimal runtime image ───────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian12 AS runtime
 COPY --from=builder \
     /build/target/release/hardy-file-service \
     /usr/local/bin/hardy-file-service
-USER nonroot
 ENTRYPOINT ["/usr/local/bin/hardy-file-service"]
