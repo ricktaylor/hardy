@@ -20,7 +20,7 @@ pub use error::Error;
 
 const DEFAULT_LIFETIME: Duration = Duration::from_secs(86400);
 
-fn ensure_dir(path: &Path) -> Result<(), Error> {
+pub(crate) fn ensure_dir(path: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(path).map_err(|e| Error::CreateDir {
         path: path.display().to_string(),
         source: e,

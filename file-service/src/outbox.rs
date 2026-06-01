@@ -2,14 +2,17 @@ use core::time::Duration;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use flume::Receiver;
 use hardy_async::{BoundedTaskPool, CancellationToken, TaskPool};
 use hardy_bpa::services::ApplicationSink;
 use hardy_bpv7::eid::Eid;
 use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, error, info, warn};
 
 use crate::Error;
+
+const ERRORS_DIR: &str = "errors";
 
 pub fn start(
     tasks: &TaskPool,
@@ -18,6 +21,9 @@ pub fn start(
     destination: Eid,
     lifetime: Duration,
 ) -> Result<(), Error> {
+    let errors_dir = outbox.join(ERRORS_DIR);
+    crate::ensure_dir(&errors_dir)?;
+
     let (event_tx, event_rx) = flume::unbounded();
 
     let mut watcher = RecommendedWatcher::new(
@@ -56,7 +62,7 @@ pub fn start(
 
 async fn run(
     sink: Arc<dyn ApplicationSink>,
-    event_rx: flume::Receiver<notify::Event>,
+    event_rx: Receiver<Event>,
     outbox: PathBuf,
     destination: Eid,
     lifetime: Duration,
@@ -64,6 +70,7 @@ async fn run(
 ) {
     info!("Watching outbox '{}'", outbox.display());
 
+    let errors_dir = outbox.join(ERRORS_DIR);
     let senders = BoundedTaskPool::default();
 
     'outer: loop {
@@ -87,8 +94,9 @@ async fn run(
             }
             let sink = sink.clone();
             let destination = destination.clone();
+            let errors_dir = errors_dir.clone();
             let spawn_fut = hardy_async::spawn!(senders, "outbox_send", async move {
-                process_file(path, sink, destination, lifetime).await;
+                process_file(path, sink, destination, lifetime, &errors_dir).await;
             });
             tokio::select! {
                 _ = spawn_fut => {}
@@ -112,7 +120,18 @@ fn is_file_ready(kind: &EventKind) -> bool {
 fn is_processable(path: &Path) -> bool {
     let name = path.file_name().and_then(|name| name.to_str());
     let ext = path.extension().and_then(|ext| ext.to_str());
-    name.is_some_and(|n| !n.starts_with('.')) && ext != Some("processing")
+    name.is_some_and(|n| !n.starts_with('.'))
+        && ext != Some("processing")
+        && !path.parent().is_some_and(|p| p.ends_with(ERRORS_DIR))
+}
+
+async fn move_to_errors(from: &Path, errors_dir: &Path) {
+    if let Some(name) = from.file_name() {
+        let dest = errors_dir.join(name);
+        if let Err(e) = tokio::fs::rename(from, &dest).await {
+            error!("Failed to move '{}' to errors: {e}", from.display());
+        }
+    }
 }
 
 async fn process_file(
@@ -120,19 +139,21 @@ async fn process_file(
     sink: Arc<dyn ApplicationSink>,
     destination: Eid,
     lifetime: Duration,
+    errors_dir: &Path,
 ) {
     let mut processing_name = path.file_name().unwrap_or_default().to_os_string();
     processing_name.push(".processing");
     let processing_path = path.with_file_name(processing_name);
     if let Err(e) = tokio::fs::rename(&path, &processing_path).await {
-        debug!("Skipping '{}': {e}", path.display());
+        error!("Failed to claim '{}': {e}", path.display());
         return;
     }
 
     let payload = match tokio::fs::read(&processing_path).await {
         Ok(payload) => payload,
         Err(e) => {
-            warn!("Failed to read '{}': {e}", processing_path.display());
+            error!("Failed to read '{}': {e}", processing_path.display());
+            move_to_errors(&processing_path, errors_dir).await;
             return;
         }
     };
@@ -156,13 +177,8 @@ async fn process_file(
             }
         }
         Err(e) => {
-            warn!(
-                "Failed to send bundle from '{}': {e}. Restoring file.",
-                path.display()
-            );
-            if let Err(e) = tokio::fs::rename(&processing_path, &path).await {
-                error!("Failed to restore '{}': {e}", path.display());
-            }
+            error!("Failed to send bundle from '{}': {e}", path.display());
+            move_to_errors(&processing_path, errors_dir).await;
         }
     }
 }
