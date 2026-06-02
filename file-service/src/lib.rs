@@ -219,7 +219,7 @@ mod tests {
     }
 
     fn test_eid() -> Eid {
-        Eid::from_str("ipn:2.1.42").unwrap()
+        Eid::from_str("ipn:1.42").unwrap()
     }
 
     #[tokio::test]

@@ -11,6 +11,10 @@ filesystem interfaces:
 
 It connects to the BPA via gRPC using the Application service.
 
+Not to be confused with `hardy-file-cla`, which is a convergence layer adapter
+that moves raw serialized bundles between the filesystem and the BPA. This crate
+operates at the application layer, working with payloads rather than bundles.
+
 ## Architecture
 
 ```mermaid

@@ -30,7 +30,7 @@ struct Args {
     #[arg(short, long)]
     service_id: Option<u32>,
 
-    /// Destination EID for outgoing bundles (e.g. "ipn:2.1.42")
+    /// Destination EID for outgoing bundles (e.g. "ipn:1.42")
     #[arg(short, long)]
     destination: Option<Eid>,
 }
