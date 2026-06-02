@@ -33,12 +33,10 @@ fn parse_and_rewrite(
     } = parse::parse(Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate); collect deletables.
-    let a1 = checks::classify_unrecognised_blocks(&bundle.blocks, &[])?;
-    let _ = checks::classify_unsupported_bcbs(&bundle.blocks, &bcb_ops)?;
-    let a3 = checks::classify_unsupported_bibs(&bundle.blocks, &bib_ops)?;
+    let classification = checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
     let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(a1.deletable);
-    for n in &a3.deletable {
+    to_remove.extend(classification.unrecognised_deletable);
+    for n in &classification.bib_deletable {
         to_remove.insert(*n);
         bib_ops.remove(n);
     }

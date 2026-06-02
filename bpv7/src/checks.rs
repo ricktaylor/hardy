@@ -67,56 +67,53 @@ where
     }
 }
 
-/// Output of [`classify_unrecognised_blocks`].
+/// Output of [`classify_unsupported`]: the blocks this node can't process,
+/// classified by what the caller may do about them.
 #[derive(Debug, Default)]
-pub struct UnrecognisedClassification {
-    /// Block numbers whose flags request `delete_block_on_failure`.
-    /// Caller decides whether to honour the request.
-    pub deletable: SmallVec<[u64; 4]>,
-    /// At least one unrecognised block had `report_on_failure` set.
-    pub report_unsupported: bool,
-}
-
-/// Output of [`classify_unsupported_bcbs`].
-#[derive(Debug, Default)]
-pub struct UnsupportedBcbClassification {
-    /// At least one unsupported-context BCB had `report_on_failure` set.
-    pub report_unsupported: bool,
-}
-
-/// Output of [`classify_unsupported_bibs`].
-#[derive(Debug, Default)]
-pub struct UnsupportedBibClassification {
-    /// Plaintext BIB block numbers with `delete_block_on_failure`.
-    /// Caller decides whether to honour: removing each from its own
-    /// `bib_ops` map and scheduling the block for removal.
-    pub deletable: SmallVec<[u64; 4]>,
-    /// At least one unsupported-context BIB had `report_on_failure` set.
+pub struct Classification {
+    /// Unrecognised blocks flagged `delete_block_on_failure`. The caller
+    /// decides whether to honour the request (schedule them for removal).
+    pub unrecognised_deletable: SmallVec<[u64; 4]>,
+    /// Plaintext BIB blocks with an unrecognised security context, flagged
+    /// `delete_block_on_failure`. The caller decides whether to honour:
+    /// removing each from its own `bib_ops` map and scheduling the block
+    /// for removal.
+    pub bib_deletable: SmallVec<[u64; 4]>,
+    /// At least one unrecognised block or unsupported-context BCB/BIB had
+    /// `report_on_failure` set.
     pub report_unsupported: bool,
 }
 
 // ===== Section A — unrecognised / unsupported classification =====
 
-/// A1: Scan `Type::Unrecognised` blocks. Per-flag classification only.
-/// Returns `Err(Error::Unsupported(n))` if any block has
-/// `delete_bundle_on_failure`.
+/// §A: Classify the blocks this node can't process — `Type::Unrecognised`
+/// blocks (A1), BCBs with an unrecognised security context (A2), and
+/// plaintext BIBs with an unrecognised security context (A3) — into the
+/// per-flag [`Classification`] facts. Returns `Err(Error::Unsupported(n))`
+/// if any such block sets `delete_bundle_on_failure`.
 ///
 /// `supported` lists block-type codes the caller actually understands
-/// (e.g. extension types it has registered handlers for). A
-/// `Type::Unrecognised(t)` block whose `t` is in `supported` is treated
-/// as recognised — it never counts as unsupported and so never triggers
-/// the delete/report/error handling below. Pass `&[]` when the caller
-/// supports no extension types beyond the bpv7 built-ins.
-pub fn classify_unrecognised_blocks(
+/// (e.g. extension types it has registered handlers for); a
+/// `Type::Unrecognised(t)` block whose `t` is in `supported` is treated as
+/// recognised and ignored. Pass `&[]` when the caller supports no
+/// extension types beyond the bpv7 built-ins.
+///
+/// BCB-encrypted BIBs aren't visible here — their bodies are ciphertext;
+/// they surface in §B after decryption. Pure classification: the caller
+/// decides whether to honour the `*_deletable` lists.
+pub fn classify_unsupported(
     blocks: &HashMap<u64, block::Block>,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     supported: &[u64],
-) -> Result<UnrecognisedClassification, Error> {
-    let mut out = UnrecognisedClassification::default();
+) -> Result<Classification, Error> {
+    let mut out = Classification::default();
+
+    // A1 — unrecognised blocks.
     for (&block_number, block) in blocks {
         let block::Type::Unrecognised(block_type) = block.block_type else {
             continue;
         };
-        // The caller understands this block type, so it isn't "unsupported".
         if supported.contains(&block_type) {
             continue;
         }
@@ -127,20 +124,11 @@ pub fn classify_unrecognised_blocks(
             out.report_unsupported = true;
         }
         if block.flags.delete_block_on_failure {
-            out.deletable.push(block_number);
+            out.unrecognised_deletable.push(block_number);
         }
     }
-    Ok(out)
-}
 
-/// A2: Scan BCBs with unrecognised security contexts. Returns
-/// `Err(Error::Unsupported(n))` if any such BCB has
-/// `delete_bundle_on_failure`.
-pub fn classify_unsupported_bcbs(
-    blocks: &HashMap<u64, block::Block>,
-    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
-) -> Result<UnsupportedBcbClassification, Error> {
-    let mut out = UnsupportedBcbClassification::default();
+    // A2 — BCBs with an unrecognised security context.
     for (&bcb_block_number, ops) in bcb_ops {
         if !ops.is_unsupported() {
             continue;
@@ -156,21 +144,8 @@ pub fn classify_unsupported_bcbs(
             out.report_unsupported = true;
         }
     }
-    Ok(out)
-}
 
-/// A3: Scan plaintext BIBs with unrecognised security contexts. Pure
-/// classification — caller is responsible for removing the listed
-/// `deletable` entries from its own `bib_ops` map if it intends to
-/// honour the deletes. Encrypted BIBs (those whose body is BCB-protected)
-/// are not visible here; they surface in Section B after decryption.
-/// Returns `Err(Error::Unsupported(n))` if any such BIB has
-/// `delete_bundle_on_failure`.
-pub fn classify_unsupported_bibs(
-    blocks: &HashMap<u64, block::Block>,
-    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<UnsupportedBibClassification, Error> {
-    let mut out = UnsupportedBibClassification::default();
+    // A3 — plaintext BIBs with an unrecognised security context.
     for (&bib_block_number, ops) in bib_ops {
         if !ops.is_unsupported() {
             continue;
@@ -186,9 +161,10 @@ pub fn classify_unsupported_bibs(
             out.report_unsupported = true;
         }
         if flags.delete_block_on_failure {
-            out.deletable.push(bib_block_number);
+            out.bib_deletable.push(bib_block_number);
         }
     }
+
     Ok(out)
 }
 

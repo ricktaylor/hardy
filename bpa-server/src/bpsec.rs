@@ -598,9 +598,7 @@ mod tests {
 
         let mut decrypted = HashMap::new();
         let no_updates = HashMap::new();
-        checks::classify_unrecognised_blocks(&bundle.blocks, &[]).expect("classify failed");
-        checks::classify_unsupported_bcbs(&bundle.blocks, &bcbs).expect("classify failed");
-        checks::classify_unsupported_bibs(&bundle.blocks, &bibs).expect("classify failed");
+        checks::classify_unsupported(&bundle.blocks, &bcbs, &bibs, &[]).expect("classify failed");
         checks::decrypt_and_validate_covered_bibs(
             &data,
             source,

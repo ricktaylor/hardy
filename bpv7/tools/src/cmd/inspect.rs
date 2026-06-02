@@ -61,15 +61,9 @@ impl Command {
         // Section A diagnostics — `report_unsupported` is the OR of the
         // three classify_* outputs. (Errors propagate from parse_with_keys;
         // here we re-run the classify pass to read the flag.)
-        let report_unsupported = checks::classify_unrecognised_blocks(&raw.blocks, &[])
+        let report_unsupported = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])
             .map(|c| c.report_unsupported)
-            .unwrap_or(false)
-            || checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)
-                .map(|c| c.report_unsupported)
-                .unwrap_or(false)
-            || checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)
-                .map(|c| c.report_unsupported)
-                .unwrap_or(false);
+            .unwrap_or(false);
 
         // Decode the known extension blocks (PreviousNode / BundleAge /
         // HopCount) once into typed fields. BCB-protected bodies stay

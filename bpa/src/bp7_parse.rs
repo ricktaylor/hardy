@@ -98,11 +98,8 @@ where
     let key_source = key_provider(&raw, &data);
 
     // §A — observe report_unsupported; Preserve never schedules removals.
-    let a1 = checks::classify_unrecognised_blocks(&raw.blocks, &[])?;
-    let a2 = checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)?;
-    let a3 = checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)?;
     let report_unsupported =
-        a1.report_unsupported || a2.report_unsupported || a3.report_unsupported;
+        checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])?.report_unsupported;
 
     // §B + §C8 + §C7 — composed keyed verification. NoKey is soft for
     // every §C8 block type (the BPA may lack keys for an inbound bundle it
@@ -160,13 +157,10 @@ where
     } = parse::parse(data)?;
     let key_source = key_provider(&raw, &data);
 
-    // §A — observe report_unsupported (Canonicalize doesn't act on it,
-    // but we still want to catch `Unsupported(n)` for blocks flagged
-    // `delete_bundle_on_failure`, which the classify helpers propagate
-    // as `Err`).
-    let _ = checks::classify_unrecognised_blocks(&raw.blocks, &[])?;
-    let _ = checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)?;
-    let _ = checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)?;
+    // §A — Canonicalize doesn't act on the classification, but still
+    // catches `Unsupported(n)` for `delete_bundle_on_failure` blocks
+    // (propagated as `Err`).
+    checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])?;
 
     // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal
     // for HopCount (RFC 9171 requires processing) and unclocked BundleAge
@@ -272,15 +266,12 @@ fn parse_full_inner(
     mut bib_ops: HashMap<u64, bpsec::bib::OperationSet>,
 ) -> Result<(Option<Vec<Chunk>>, ExtractedExtensionFields, bool), hardy_bpv7::Error> {
     // §A — classify; collect deletables; observe report_unsupported.
-    let a1 = checks::classify_unrecognised_blocks(&raw.blocks, &[])?;
-    let a2 = checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)?;
-    let a3 = checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)?;
-    let report_unsupported =
-        a1.report_unsupported || a2.report_unsupported || a3.report_unsupported;
+    let classification = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])?;
+    let report_unsupported = classification.report_unsupported;
 
     let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(a1.deletable);
-    for n in &a3.deletable {
+    to_remove.extend(classification.unrecognised_deletable);
+    for n in &classification.bib_deletable {
         to_remove.insert(*n);
         bib_ops.remove(n);
     }

@@ -56,9 +56,7 @@ fn validate_with_keys(
     } = parse::parse(::bytes::Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate)
-    let _ = checks::classify_unrecognised_blocks(&bundle.blocks, &[])?;
-    let _ = checks::classify_unsupported_bcbs(&bundle.blocks, &bcb_ops)?;
-    let _ = checks::classify_unsupported_bibs(&bundle.blocks, &bib_ops)?;
+    checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
 
     // §B — decrypt + validate BCB-covered BIBs (NoKey is soft)
     let mut decrypted = std::collections::HashMap::new();
