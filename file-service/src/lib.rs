@@ -79,7 +79,7 @@ impl Application for FileService {
         let sink: &Arc<dyn ApplicationSink> = self.sink.call_once(|| Arc::from(sink));
 
         if let Some(outbox) = &self.outbox {
-            if let Err(e) = outbox::start(
+            if let Err(e) = outbox::run(
                 &self.tasks,
                 sink.clone(),
                 outbox.clone(),

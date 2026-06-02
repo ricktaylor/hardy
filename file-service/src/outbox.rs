@@ -11,11 +11,11 @@ use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, error, info, warn};
 
-use crate::Error;
+use crate::{Error, ensure_dir};
 
 const ERRORS_DIR: &str = "errors";
 
-pub fn start(
+pub fn run(
     tasks: &TaskPool,
     sink: Arc<dyn ApplicationSink>,
     outbox: PathBuf,
@@ -23,7 +23,7 @@ pub fn start(
     lifetime: Duration,
 ) -> Result<(), Error> {
     let errors_dir = outbox.join(ERRORS_DIR);
-    crate::ensure_dir(&errors_dir)?;
+    ensure_dir(&errors_dir)?;
 
     let (event_tx, event_rx) = flume::unbounded();
     let startup_tx = event_tx.clone();
@@ -53,18 +53,17 @@ pub fn start(
             source: e,
         })?;
 
-    emit_existing_files(&outbox, startup_tx);
-
     let cancel_token = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "outbox_watcher", async move {
         let _watcher = watcher;
-        run(sink, event_rx, outbox, destination, lifetime, cancel_token).await;
+        emit_existing_files(&outbox, startup_tx).await;
+        process_events(sink, event_rx, outbox, destination, lifetime, cancel_token).await;
     });
 
     Ok(())
 }
 
-async fn run(
+async fn process_events(
     sink: Arc<dyn ApplicationSink>,
     event_rx: Receiver<Event>,
     outbox: PathBuf,
@@ -114,8 +113,8 @@ async fn run(
     info!("Stopped watching outbox '{}'", outbox.display());
 }
 
-fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
-    let entries = match std::fs::read_dir(outbox) {
+async fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
+    let entries = match tokio::fs::read_dir(outbox).await {
         Ok(entries) => entries,
         Err(e) => {
             error!("Failed to scan outbox '{}': {e}", outbox.display());
@@ -123,10 +122,12 @@ fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
         }
     };
 
+    let errors_dir = outbox.join(ERRORS_DIR);
     let mut recovered = 0;
     let mut existing = 0;
+    let mut entries = entries;
 
-    for entry in entries.flatten() {
+    while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -135,26 +136,21 @@ fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if name.ends_with(".processing") {
-            let original = path.with_file_name(name.strip_suffix(".processing").unwrap());
+            let original_name = name.strip_suffix(".processing").unwrap();
+            let original = path.with_file_name(original_name);
             if original.exists() {
                 warn!(
                     "Cannot recover '{}': original file already exists, moving to errors",
                     path.display()
                 );
-                let errors_dir = outbox.join(ERRORS_DIR);
-                if let Err(e) =
-                    std::fs::rename(&path, errors_dir.join(path.file_name().unwrap_or_default()))
-                {
-                    error!("Failed to move '{}' to errors: {e}", path.display());
-                }
+                move_to_errors(&path, path.file_name().unwrap_or_default(), &errors_dir).await;
                 continue;
             }
-            if let Err(e) = std::fs::rename(&path, &original) {
+            if let Err(e) = tokio::fs::rename(&path, &original).await {
                 error!("Failed to recover '{}': {e}", path.display());
                 continue;
             }
             recovered += 1;
-            // Watcher will fire MOVED_TO for this rename, no synthetic event needed
         } else if is_processable(&path) {
             existing += 1;
             if tx
@@ -323,8 +319,8 @@ mod tests {
         assert!(!is_processable(Path::new("/outbox/errors/failed.bin")));
     }
 
-    #[test]
-    fn emit_existing_recovers_orphaned_files() {
+    #[tokio::test]
+    async fn emit_existing_recovers_orphaned_files() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
@@ -332,18 +328,15 @@ mod tests {
         fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         assert!(outbox.join("test.bin").exists());
         assert!(!outbox.join("test.bin.processing").exists());
-
-        // Watcher would fire MOVED_TO, so no synthetic event for recovered files
-        // but there might be zero or more events depending on timing
         drop(rx);
     }
 
-    #[test]
-    fn emit_existing_queues_regular_files() {
+    #[tokio::test]
+    async fn emit_existing_queues_regular_files() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
@@ -353,7 +346,7 @@ mod tests {
         fs::write(outbox.join(".hidden"), "ignored").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         let mut events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 2);
@@ -367,8 +360,8 @@ mod tests {
         assert_eq!(paths, vec!["a.bin", "b.bin"]);
     }
 
-    #[test]
-    fn emit_existing_handles_collision() {
+    #[tokio::test]
+    async fn emit_existing_handles_collision() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
@@ -377,15 +370,15 @@ mod tests {
         fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
 
         let (tx, _rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         assert!(outbox.join("test.bin").exists());
         assert!(!outbox.join("test.bin.processing").exists());
         assert!(outbox.join(ERRORS_DIR).join("test.bin.processing").exists());
     }
 
-    #[test]
-    fn emit_existing_skips_directories() {
+    #[tokio::test]
+    async fn emit_existing_skips_directories() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
@@ -393,14 +386,14 @@ mod tests {
         fs::write(outbox.join("real.bin"), "data").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 1);
     }
 
-    #[test]
-    fn emit_existing_skips_dotfiles() {
+    #[tokio::test]
+    async fn emit_existing_skips_dotfiles() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
@@ -409,21 +402,21 @@ mod tests {
         fs::write(outbox.join("visible.bin"), "visible").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 1);
         assert!(events[0].paths[0].ends_with("visible.bin"));
     }
 
-    #[test]
-    fn emit_existing_empty_dir() {
+    #[tokio::test]
+    async fn emit_existing_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
         let outbox = dir.path();
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx);
+        emit_existing_files(outbox, tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert!(events.is_empty());
