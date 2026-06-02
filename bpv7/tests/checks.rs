@@ -73,12 +73,10 @@ fn parse_full_for_test(
     let bytes = Bytes::copy_from_slice(data);
     let (data, mut raw, bcb_ops, mut bib_ops) = raw_parse_tuple(bytes)?;
 
-    let a1 = checks::classify_unrecognised_blocks(&raw.blocks, &[])?;
-    let _ = checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)?;
-    let a3 = checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)?;
+    let classification = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])?;
     let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(a1.deletable);
-    for n in &a3.deletable {
+    to_remove.extend(classification.unrecognised_deletable);
+    for n in &classification.bib_deletable {
         to_remove.insert(*n);
         bib_ops.remove(n);
     }
@@ -248,15 +246,20 @@ fn build_parse_roundtrip() {
     assert!(bib_ops.is_empty(), "Builder output has no BIBs");
     // Full mode would additionally classify unrecognised/unsupported
     // blocks. Builder output has none, so no deletables either.
-    let a1 = checks::classify_unrecognised_blocks(&raw_bundle.blocks, &[]).unwrap();
+    let classification =
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]).unwrap();
     assert!(
-        a1.deletable.is_empty(),
+        classification.unrecognised_deletable.is_empty(),
         "Builder has no unrecognised blocks"
     );
-    let a2 = checks::classify_unsupported_bcbs(&raw_bundle.blocks, &bcb_ops).unwrap();
-    assert!(!a2.report_unsupported, "Builder has no unsupported BCBs");
-    let a3 = checks::classify_unsupported_bibs(&raw_bundle.blocks, &bib_ops).unwrap();
-    assert!(a3.deletable.is_empty(), "Builder has no unsupported BIBs");
+    assert!(
+        classification.bib_deletable.is_empty(),
+        "Builder has no unsupported BIBs"
+    );
+    assert!(
+        !classification.report_unsupported,
+        "Builder has no unsupported blocks"
+    );
 }
 
 // Requirement: LLR 1.1.14
@@ -316,18 +319,19 @@ fn unknown_block_discard() {
     modified.extend_from_slice(&data[insert_pos..]);
 
     // Preserve-mode semantics demonstrated via primitives: parse keeps every
-    // block, classify_unrecognised_blocks identifies block 2 as deletable,
+    // block, classify_unsupported identifies block 2 as deletable,
     // and a Preserve-mode caller ignores the deletable list (block 2 stays).
-    let (modified, raw_bundle, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&modified))
-        .expect("parse accepts the unknown block");
+    let (modified, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified))
+            .expect("parse accepts the unknown block");
     assert!(
         raw_bundle.blocks.contains_key(&2),
         "parse should preserve unknown block 2"
     );
-    let classification = checks::classify_unrecognised_blocks(&raw_bundle.blocks, &[])
+    let classification = checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[])
         .expect("unknown block has no delete_bundle_on_failure flag");
     assert!(
-        classification.deletable.contains(&2),
+        classification.unrecognised_deletable.contains(&2),
         "block 2 is marked deletable (delete_block_on_failure flag set) — \
          Preserve-mode callers ignore this list"
     );
