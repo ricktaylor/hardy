@@ -1,0 +1,11 @@
+[package]
+name = "bpsec-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+hardy-bpv7 = { version = "0.5", path = "../../bpv7", features = ["rfc9173", "serde", "std"] }
+hex-literal = "1"
+serde_json = "1"
