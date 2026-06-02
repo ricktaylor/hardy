@@ -311,23 +311,24 @@ impl BundleParser {
         // Borrow the bcbs map so we can hand it back to the caller
         // intact at the end.
         for (bcb_block_number, ops) in &self.bcbs {
-            let bcb_block = bundle
-                .blocks
-                .get(bcb_block_number)
-                .expect("BCB memoised but missing from bundle.blocks");
-
             // Per-OperationSet rules (including §3.9 duplicate-target
             // check via the already-stamped .bcb fields). Single source
             // of truth shared with the post-decrypt keyed filter.
-            checks::check_bcb(ops, *bcb_block_number, &bcb_block.flags, &bundle.blocks)?;
+            ops.check(
+                *bcb_block_number,
+                &bpsec::PlainBlockSet {
+                    blocks: &bundle.blocks,
+                    source_data: data,
+                },
+            )?;
 
-            // Stamp each target. check_bcb has already verified every
-            // target exists and is not claimed by a different BCB.
+            // Stamp each target. OperationSet::check has already verified
+            // every target exists and is not claimed by a different BCB.
             for &target_number in ops.operations.keys() {
                 bundle
                     .blocks
                     .get_mut(&target_number)
-                    .expect("check_bcb verified every target exists")
+                    .expect("OperationSet::check verified every target exists")
                     .bcb = Some(*bcb_block_number);
             }
         }
@@ -367,15 +368,21 @@ impl BundleParser {
             // Per-OperationSet rules (including §2.6 duplicate-target
             // check via the already-stamped .bib fields). Single source
             // of truth shared with the post-decrypt keyed filter.
-            checks::check_bib(&ops, bib_block_number, &bundle.blocks)?;
+            ops.check(
+                bib_block_number,
+                &bpsec::PlainBlockSet {
+                    blocks: &bundle.blocks,
+                    source_data: data,
+                },
+            )?;
 
-            // Stamp each target. check_bib has already verified every
-            // target exists and is not claimed by a different BIB.
+            // Stamp each target. OperationSet::check has already verified
+            // every target exists and is not claimed by a different BIB.
             for &target_number in ops.operations.keys() {
                 bundle
                     .blocks
                     .get_mut(&target_number)
-                    .expect("check_bib verified every target exists")
+                    .expect("OperationSet::check verified every target exists")
                     .bib = block::BibCoverage::Some(bib_block_number);
             }
 

@@ -99,6 +99,15 @@ pub trait BlockSet<'a> {
     /// Returns the block and its payload for the given block number, or `None` if absent.
     fn block(&'a self, block_number: u64)
     -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
+
+    /// Returns just the block header for the given block number, or `None`
+    /// if absent — for callers (e.g. per-OperationSet structural
+    /// validation) that need only the header fields, not the payload. The
+    /// default delegates to [`block`](BlockSet::block); impls override it
+    /// when they can resolve the header without computing the payload.
+    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        self.block(block_number).map(|(block, _)| block)
+    }
 }
 
 /// The canonical [`BlockSet`] over a parsed bundle held wholly in memory:
@@ -125,6 +134,10 @@ impl<'a> BlockSet<'a> for PlainBlockSet<'a> {
                 .payload(self.source_data)
                 .map(block::Payload::Borrowed),
         ))
+    }
+
+    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        self.blocks.get(&block_number)
     }
 }
 
