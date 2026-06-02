@@ -519,9 +519,11 @@ where
     // the ciphertext. The caller must have staged the new BIB plaintext
     // into the editor already, so `EditorBlockSet` surfaces it via
     // `args.blocks.block(target)`.
+    // Invariant: `remove_blocks` only re-encrypts a BIB that is a target of
+    // this BCB, so the OperationSet always has an entry for it.
     let template_op = operations.get(&bib_block_number).unwrap_or_else(|| {
         panic!(
-            "reencrypt_covered_bib: BCB OperationSet missing entry for target BIB {bib_block_number}"
+            "BCB OperationSet must contain the target BIB {bib_block_number} being re-encrypted (logic bug)"
         )
     });
     let editor_bs = EditorBlockSet { editor };
@@ -546,9 +548,8 @@ where
     let editor = editor
         .update_block_inner(bib_block_number)
         .unwrap_or_else(|(_, e)| {
-            panic!(
-                "Editor update_block_inner({bib_block_number}) failed overwriting BIB with ciphertext: {e}"
-            )
+            // Unreachable: BIB {bib_block_number} is an existing block.
+            panic!("update_block on existing BIB {bib_block_number} cannot fail (logic bug): {e}")
         })
         .with_data(ciphertext.into_vec().into())
         .rebuild();
@@ -564,9 +565,8 @@ where
     let editor = editor
         .update_block_inner(bcb_block_number)
         .unwrap_or_else(|(_, e)| {
-            panic!(
-                "Editor update_block_inner({bcb_block_number}) failed writing re-encrypted BCB OperationSet: {e}"
-            )
+            // Unreachable: BCB {bcb_block_number} is an existing block.
+            panic!("update_block on existing BCB {bcb_block_number} cannot fail (logic bug): {e}")
         })
         .with_data(hardy_cbor::encode::emit(&new_bcb_opset).0.into())
         .rebuild();

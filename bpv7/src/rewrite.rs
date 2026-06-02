@@ -24,6 +24,16 @@ use editor::{Chunk, Editor};
 ///
 /// Caller is responsible for the "nothing to do" short-circuit on
 /// empty `to_update` + empty `to_remove`: don't call this in that case.
+///
+/// **Precondition:** the bundle's BCB/BIB OperationSets must already have
+/// been validated — every in-tree caller runs [`crate::checks::verify`]
+/// first, which parses and accepts those OperationSets and decrypts every
+/// covered BIB. The editor operations below only re-parse those same
+/// (already-accepted) OperationSets and re-decrypt those same BIBs with the
+/// same `key_source`, so on a validated bundle they cannot fail; an editor
+/// error here is an unreachable invariant violation (a logic bug), and is
+/// surfaced as a panic carrying the underlying error rather than a
+/// recoverable `Err`.
 #[allow(clippy::result_large_err)]
 pub fn apply_rewrites<'a>(
     data: &'a [u8],
@@ -42,10 +52,13 @@ pub fn apply_rewrites<'a>(
     let removed_any = if to_remove.is_empty() {
         false
     } else {
+        // Unreachable on a validated bundle (see precondition): the cascade
+        // only re-parses already-accepted OperationSets and re-decrypts BIBs
+        // `checks::verify` already decrypted, so an error is a logic bug.
         let (ed, removed) = editor
             .remove_blocks(to_remove, key_source)
             .unwrap_or_else(|(_, e)| {
-                panic!("bpsec::edit::remove_blocks failed on parsed bundle: {e}")
+                panic!("remove_blocks on a validated bundle cannot fail (logic bug): {e}")
             });
         editor = ed;
         !removed.is_empty()
@@ -55,17 +68,21 @@ pub fn apply_rewrites<'a>(
         return Ok(None);
     }
 
-    // Non-canonical re-emits.
+    // Non-canonical re-emits. `block_number` comes from `to_update`, which
+    // only names existing blocks, so `update_block` cannot fail here.
     for (block_number, payload) in to_update {
         editor = editor
             .update_block_inner(block_number)
-            .unwrap_or_else(|(_, e)| panic!("Editor update_block failed on parsed bundle: {e}"))
+            .unwrap_or_else(|(_, e)| {
+                panic!("update_block on an existing block cannot fail (logic bug): {e}")
+            })
             .with_data(payload.into())
             .rebuild();
     }
 
+    // Re-serialising a bundle the editor just assembled cannot fail.
     let (new_bundle, chunks) = editor
         .rebuild_bundle()
-        .unwrap_or_else(|e| panic!("Editor rebuild failed on parsed bundle: {e}"));
+        .unwrap_or_else(|e| panic!("rebuild of a validated bundle cannot fail (logic bug): {e}"));
     Ok(Some((new_bundle, chunks)))
 }
