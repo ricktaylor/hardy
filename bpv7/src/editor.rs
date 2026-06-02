@@ -873,7 +873,7 @@ impl<'a> Editor<'a> {
     /// Remove a target block from a BCB's operation set.
     /// If the BCB becomes empty, recursively remove it.
     #[allow(clippy::result_large_err)]
-    fn remove_from_bcb_targets(
+    pub(crate) fn remove_from_bcb_targets(
         mut self,
         target_block: u64,
         bcb_block: u64,
