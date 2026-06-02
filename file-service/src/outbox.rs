@@ -161,6 +161,7 @@ async fn process_file(
     };
 
     if payload.is_empty() {
+        debug!("Discarding empty file '{}'", path.display());
         if let Err(e) = tokio::fs::remove_file(&processing_path).await {
             warn!(
                 "Failed to remove empty file '{}': {e}",
