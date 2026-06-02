@@ -1,30 +1,26 @@
-//! BPA-local Bundle parse pipelines, replacing the deleted
-//! `hardy_bpv7::checks::parse_{preserve,canonicalize,full}_with_*`
-//! wrappers. Each helper composes the per-section `bundle::parse`
-//! helpers directly and reshapes the parser-internal
-//! `Bundle` into the rich [`Bpv7Bundle`] BPA stores.
+//! BPA-local keyed Bundle parse pipelines. Each composes the per-section
+//! [`hardy_bpv7::checks`] helpers (and [`rewrite::apply_rewrites`]) and
+//! reshapes the structurally-parsed `Bundle` into the rich
+//! [`Bpv7Bundle`] the BPA stores.
 //!
-//! Three modes mirror what the bpv7 orchestrator used to do via
-//! `ParseMode`:
+//! Three entry points, differing in how much they rewrite:
 //!
 //! * [`parse_preserve_with_provider`] — keyed validation, **no
-//!   rewriting**. Used by `dispatcher::restart` to re-check stored
-//!   data on startup.
-//! * [`parse_canonicalize_with_provider`] — keyed validation +
-//!   canonical re-emit of non-shortest extension fields. **Does not**
-//!   remove unrecognised/unsupported blocks. Used by
-//!   `dispatcher::local::local_dispatch_raw` (Service hand-in) and
-//!   the WriteFilter loop in `filter::chain`.
-//! * [`parse_full_with_provider`] — the full ingress pipeline: drops
-//!   `delete_block_on_failure`-flagged unknowns, applies the cascade
-//!   re-encryption of BCB-covered BIBs when their target list shrinks,
-//!   queues canonical re-emits. Used by `dispatcher::ingress`. Error
-//!   shape preserves the "Invalid" arm so callers can emit a status
-//!   report against the partially-parsed bundle.
+//!   rewriting**. Used by `dispatcher::restart` to re-check stored data
+//!   on startup.
+//! * [`parse_canonicalize_with_provider`] — keyed validation + canonical
+//!   re-emit of non-shortest extension fields; does **not** remove
+//!   unrecognised/unsupported blocks. Used by
+//!   `dispatcher::local::local_dispatch_raw` (Service hand-in) and the
+//!   write-filter loop in `filter::chain`.
+//! * [`parse_full_with_provider`] — the ingress pipeline: drops
+//!   `delete_block_on_failure`-flagged unknowns, cascades re-encryption
+//!   of BCB-covered BIBs when their target list shrinks, and queues
+//!   canonical re-emits. Used by `dispatcher::ingress`; on a partial
+//!   parse it returns the recoverable bundle so the caller can emit a
+//!   status report.
 //!
-//! See `bpv7/src/bundle/parse.rs` for the per-section helpers each
-//! pipeline composes; the NoKey policy on §C8 is the only place where
-//! these modes differ in side-channel behaviour.
+//! The §C8 NoKey policy is the only behavioural difference between them.
 
 use crate::bundle::Bpv7Bundle;
 use crate::{HashMap, HashSet};
@@ -80,7 +76,7 @@ pub(crate) fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode 
 }
 
 // ---------------------------------------------------------------------------
-// Preserve mode — validate, no rewriting
+// Preserve — validate, no rewriting
 // ---------------------------------------------------------------------------
 
 /// Returns `(bundle, non_canonical, report_unsupported)` on success.
@@ -108,10 +104,12 @@ where
     let report_unsupported =
         a1.report_unsupported || a2.report_unsupported || a3.report_unsupported;
 
-    // §B — decrypt + validate BCB-covered BIBs.
+    // §B + §C8 + §C7 — composed keyed verification. NoKey is soft for
+    // every §C8 block type (the BPA may lack keys for an inbound bundle it
+    // didn't originate); a §C8 decrypt failure is rejected.
     let mut decrypted = HashMap::new();
     let no_updates = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let facts = checks::verify(
         &data,
         &*key_source,
         &mut raw.blocks,
@@ -120,35 +118,9 @@ where
         &mut decrypted,
         &no_updates,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut raw.blocks);
+    if !facts.failed.is_empty() {
+        return Err(bpsec::Error::DecryptionFailed.into());
     }
-
-    // §C8 — decrypt BCB-protected extension blocks. Preserve mode treats
-    // NoKey as soft for every block type: the BPA may legitimately lack
-    // keys for an inbound bundle it didn't originate.
-    for outcome in checks::decrypt_extension_block_targets(
-        &data,
-        &*key_source,
-        &raw.blocks,
-        &bcb_ops,
-        &decrypted,
-        &no_updates,
-    )? {
-        if let checks::DecryptOutcome::Decrypted(p) = outcome.outcome {
-            decrypted.insert(outcome.block_number, p);
-        }
-    }
-
-    // §C7 — verify every BIB.
-    checks::verify_all_bibs(
-        &data,
-        &*key_source,
-        &raw.blocks,
-        &bib_ops,
-        &decrypted,
-        &no_updates,
-    )?;
 
     // §D — extract extension fields + observe non_canonical.
     let extracted = extract_extension_block_fields(&data, &raw.blocks, &decrypted)?;
@@ -162,7 +134,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Canonicalize mode — validate + canonical re-emit (no block removal)
+// Canonicalize — validate + canonical re-emit (no block removal)
 // ---------------------------------------------------------------------------
 
 /// Returns `(bundle, Option<chunks>)` on success. `Some(chunks)` means
@@ -196,10 +168,13 @@ where
     let _ = checks::classify_unsupported_bcbs(&raw.blocks, &bcb_ops)?;
     let _ = checks::classify_unsupported_bibs(&raw.blocks, &bib_ops)?;
 
-    // §B — decrypt + validate BCB-covered BIBs.
+    // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal
+    // for HopCount (RFC 9171 requires processing) and unclocked BundleAge
+    // (only liveness signal); soft for clocked BundleAge and PreviousNode
+    // (CLA provides previous node). A §C8 decrypt failure is rejected.
     let mut decrypted = HashMap::new();
     let mut to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let facts = checks::verify(
         &data,
         &*key_source,
         &mut raw.blocks,
@@ -208,46 +183,17 @@ where
         &mut decrypted,
         &to_update,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut raw.blocks);
+    if !facts.failed.is_empty() {
+        return Err(bpsec::Error::DecryptionFailed.into());
     }
-
-    // §C8 — decrypt BCB-protected extension blocks. Strict NoKey policy:
-    // fatal for HopCount (RFC 9171 requires processing) and unclocked
-    // BundleAge (only liveness signal); soft for clocked BundleAge and
-    // PreviousNode (CLA provides previous node).
     let is_clocked = raw.primary.id.timestamp.is_clocked();
-    for outcome in checks::decrypt_extension_block_targets(
-        &data,
-        &*key_source,
-        &raw.blocks,
-        &bcb_ops,
-        &decrypted,
-        &to_update,
-    )? {
-        match outcome.outcome {
-            checks::DecryptOutcome::Decrypted(p) => {
-                decrypted.insert(outcome.block_number, p);
-            }
-            checks::DecryptOutcome::NoKey => match outcome.block_type {
-                block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-                block::Type::BundleAge if !is_clocked => {
-                    return Err(bpsec::Error::NoKey.into());
-                }
-                _ => {}
-            },
+    for (_, block_type) in &facts.nokey_ext {
+        match block_type {
+            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
+            block::Type::BundleAge if !is_clocked => return Err(bpsec::Error::NoKey.into()),
+            _ => {}
         }
     }
-
-    // §C7 — verify every BIB.
-    checks::verify_all_bibs(
-        &data,
-        &*key_source,
-        &raw.blocks,
-        &bib_ops,
-        &decrypted,
-        &to_update,
-    )?;
 
     // §D — queue canonical re-emits.
     let extracted = extract_extension_block_fields(&data, &raw.blocks, &decrypted)?;
@@ -271,13 +217,12 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Full mode — validate + block removal + canonical re-emit
+// Full — validate + block removal + canonical re-emit
 // ---------------------------------------------------------------------------
 
 /// Returns `Ok((bundle, Option<chunks>, non_canonical, report_unsupported))`
-/// on success, mirroring the deleted `parse_full_with_provider`. On
-/// failure returns either `Err((Some(bundle), error))` — partial
-/// parse, bundle ID is recoverable so the caller may emit a status
+/// on success. On failure returns either `Err((Some(bundle), error))` —
+/// partial parse, bundle ID is recoverable so the caller may emit a status
 /// report (see [`status_report_reason_for`]) — or `Err((None, error))`
 /// for a hard parse failure (no bundle, no status report possible).
 #[allow(clippy::type_complexity, clippy::result_large_err)]
@@ -316,8 +261,8 @@ where
     }
 }
 
-/// The bulk of Full-mode logic, isolated so the caller can wrap errors
-/// with the partial-bundle reshape uniformly.
+/// The bulk of [`parse_full_with_provider`]'s logic, isolated so the
+/// caller can wrap errors with the partial-bundle reshape uniformly.
 #[allow(clippy::type_complexity)]
 fn parse_full_inner(
     data: &[u8],
@@ -340,10 +285,12 @@ fn parse_full_inner(
         bib_ops.remove(n);
     }
 
-    // §B — decrypt + validate BCB-covered BIBs.
+    // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 as in
+    // [`parse_canonicalize_with_provider`]. A §C8 decrypt failure is
+    // rejected.
     let mut decrypted = HashMap::new();
     let mut to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let facts = checks::verify(
         data,
         key_source,
         &mut raw.blocks,
@@ -352,44 +299,17 @@ fn parse_full_inner(
         &mut decrypted,
         &to_update,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut raw.blocks);
+    if !facts.failed.is_empty() {
+        return Err(bpsec::Error::DecryptionFailed.into());
     }
-
-    // §C8 — decrypt BCB-protected extension blocks. Strict NoKey policy
-    // (see [`parse_canonicalize_with_provider`] for rationale).
     let is_clocked = raw.primary.id.timestamp.is_clocked();
-    for outcome in checks::decrypt_extension_block_targets(
-        data,
-        key_source,
-        &raw.blocks,
-        &bcb_ops,
-        &decrypted,
-        &to_update,
-    )? {
-        match outcome.outcome {
-            checks::DecryptOutcome::Decrypted(p) => {
-                decrypted.insert(outcome.block_number, p);
-            }
-            checks::DecryptOutcome::NoKey => match outcome.block_type {
-                block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-                block::Type::BundleAge if !is_clocked => {
-                    return Err(bpsec::Error::NoKey.into());
-                }
-                _ => {}
-            },
+    for (_, block_type) in &facts.nokey_ext {
+        match block_type {
+            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
+            block::Type::BundleAge if !is_clocked => return Err(bpsec::Error::NoKey.into()),
+            _ => {}
         }
     }
-
-    // §C7 — verify every BIB.
-    checks::verify_all_bibs(
-        data,
-        key_source,
-        &raw.blocks,
-        &bib_ops,
-        &decrypted,
-        &to_update,
-    )?;
 
     // §D — queue canonical re-emits.
     let extracted = extract_extension_block_fields(data, &raw.blocks, &decrypted)?;
@@ -490,7 +410,7 @@ pub(crate) fn extract_extension_block_fields<V: AsRef<[u8]>>(
         } else if is_encrypted {
             None
         } else {
-            // `data` is the full in-memory bundle from `parse::parse`.
+            // `data` is the complete in-memory bundle from `parse::parse`.
             target_block.payload(data)
         };
         let Some(payload) = payload else { continue };

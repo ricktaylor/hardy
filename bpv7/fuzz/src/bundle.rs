@@ -1,19 +1,18 @@
 use bytes::Bytes;
-use hardy_bpv7::{
-    bpsec::{self, key},
-    checks, parse, rewrite,
-};
+use hardy_bpv7::{bpsec::key, checks, parse, rewrite};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-/// Local Full-mode parse for the fuzz harness — replaces the previous
-/// `parse_full_with_keys` wrapper by composing the per-section
-/// `bundle::parse` helpers directly: classify A1/A2/A3 (with the §A
-/// delete-block list), §B decrypt-and-validate BCB-covered BIBs, §C8
-/// decrypt BCB-protected extension blocks (NoKey is fatal for HopCount
-/// and unclocked BundleAge — same policy as Full mode), §C7 verify all
-/// BIBs, §D extract extension-block fields, then `apply_rewrites`
-/// (§E) for the rewrite chunks.
+/// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
+/// classify A1/A2/A3 (with the §A delete-block list), `checks::verify`
+/// (§B decrypt-and-validate BCB-covered BIBs, §C8 decrypt BCB-protected
+/// extension blocks, §C7 verify all BIBs), §D decode the extension-block
+/// fields it can (skipping anything that didn't decrypt), then
+/// `apply_rewrites` (§E) for the rewrite chunks.
+///
+/// This is **not** a security acceptor: it enforces no NoKey /
+/// decrypt-failure policy. The goal is to drive the parse/decode paths and
+/// the rewrite-convergence property, not to make accept/reject decisions.
 ///
 /// Returns:
 /// * `Ok(Some(chunks))` when blocks were removed or canonical re-emits
@@ -22,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 /// * `Ok(None)` when the bundle parsed cleanly with no rewrites needed.
 /// * `Err(err)` for any parse / validation failure.
 #[allow(clippy::result_large_err)]
-fn parse_full(
+fn parse_and_rewrite(
     data: &[u8],
     keys: &key::KeySet,
 ) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
@@ -44,54 +43,22 @@ fn parse_full(
         bib_ops.remove(n);
     }
 
-    // §B — decrypt + validate BCB-covered BIBs.
+    // §B + §C8 + §C7 — composed keyed verification, to exercise the
+    // parser's decrypt/verify paths. The fuzzer is not a security acceptor,
+    // so it enforces no NoKey/decrypt-failure policy: the returned
+    // `VerifyFacts` (which blocks were NoKey / failed) are ignored, and
+    // anything that did decrypt lands in `decrypted` for §D to decode
+    // below. A genuine structural or BIB-verify error still propagates as a
+    // parse failure.
     let mut decrypted = HashMap::new();
     let to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    checks::verify(
         &data,
         keys,
         &mut bundle.blocks,
         &bcb_ops,
         &mut bib_ops,
         &mut decrypted,
-        &to_update,
-    )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut bundle.blocks);
-    }
-
-    // §C8 — decrypt BCB-protected extension blocks. Full-mode NoKey
-    // policy: fatal for HopCount and unclocked BundleAge; soft for
-    // PreviousNode and clocked BundleAge.
-    for outcome in checks::decrypt_extension_block_targets(
-        &data,
-        keys,
-        &bundle.blocks,
-        &bcb_ops,
-        &decrypted,
-        &to_update,
-    )? {
-        match outcome.outcome {
-            checks::DecryptOutcome::Decrypted(p) => {
-                decrypted.insert(outcome.block_number, p);
-            }
-            checks::DecryptOutcome::NoKey => match outcome.block_type {
-                hardy_bpv7::block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-                hardy_bpv7::block::Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
-                    return Err(bpsec::Error::NoKey.into());
-                }
-                _ => {}
-            },
-        }
-    }
-
-    // §C7 — verify every BIB.
-    checks::verify_all_bibs(
-        &data,
-        keys,
-        &bundle.blocks,
-        &bib_ops,
-        &decrypted,
         &to_update,
     )?;
 
@@ -129,12 +96,12 @@ where
     }
 }
 
-/// Fuzz-local copy of the (now bpa-owned) §D canonical-rewrite step:
-/// returns the `(block_number, canonical_payload)` re-emits for
-/// non-shortest plaintext PreviousNode/HopCount blocks. All three known
-/// types are decoded (BundleAge too) so the accept/error surface matches
-/// the real Full-mode pipeline, even though only PreviousNode/HopCount
-/// can produce a rewrite.
+/// §D decode step: decode every known extension block
+/// (PreviousNode / BundleAge / HopCount) from its decrypted-or-wire bytes
+/// — exercising the decoders and surfacing malformed-body errors — and
+/// return the `(block_number, canonical_payload)` re-emits for any
+/// non-shortest *plaintext* PreviousNode/HopCount (the only ones that can
+/// be canonically re-emitted). Blocks that didn't decrypt are skipped.
 fn extract_canonical_rewrites<V: AsRef<[u8]>>(
     data: &[u8],
     blocks: &HashMap<u64, hardy_bpv7::block::Block>,
@@ -162,7 +129,7 @@ fn extract_canonical_rewrites<V: AsRef<[u8]>>(
         } else if is_encrypted {
             None
         } else {
-            // `data` is the full in-memory bundle from `parse::parse`.
+            // `data` is the complete in-memory bundle from `parse::parse`.
             b.payload(data)
         };
         let Some(payload) = payload else { continue };
@@ -249,11 +216,11 @@ pub fn test_bundle(orig_data: &[u8]) {
     });
 
     // First parse: if the input gets rewritten, replay the rewrite back
-    // through the full pipeline and assert it converges (i.e. the rewrite
+    // back through the pipeline and assert it converges (i.e. the rewrite
     // output is itself Valid — no further rewriting, no error).
-    if let Ok(Some(chunks)) = parse_full(orig_data, keys) {
+    if let Ok(Some(chunks)) = parse_and_rewrite(orig_data, keys) {
         let new_data = hardy_bpv7::editor::Chunk::flatten(chunks, orig_data);
-        match parse_full(&new_data, keys) {
+        match parse_and_rewrite(&new_data, keys) {
             Ok(None) => {}
             Ok(Some(_)) => {
                 eprintln!("Original: {orig_data:02x?}");

@@ -171,10 +171,11 @@ pub(crate) fn full_rewrite(
         bib_ops.remove(n);
     }
 
-    // §B — decrypt + validate BCB-covered BIBs.
+    // §B + §C8 + §C7 — composed keyed verification (strict NoKey for
+    // HopCount + unclocked BundleAge; a §C8 decrypt failure is rejected).
     let mut decrypted = HashMap::new();
     let mut to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let facts = checks::verify(
         &data,
         keys,
         &mut bundle.blocks,
@@ -183,45 +184,20 @@ pub(crate) fn full_rewrite(
         &mut decrypted,
         &to_update,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut bundle.blocks);
+    if !facts.failed.is_empty() {
+        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
-
-    // §C8 — decrypt BCB-protected extension blocks (strict NoKey for
-    // HopCount + unclocked BundleAge).
-    for outcome in checks::decrypt_extension_block_targets(
-        &data,
-        keys,
-        &bundle.blocks,
-        &bcb_ops,
-        &decrypted,
-        &to_update,
-    )? {
-        match outcome.outcome {
-            checks::DecryptOutcome::Decrypted(p) => {
-                decrypted.insert(outcome.block_number, p);
+    for (_, block_type) in &facts.nokey_ext {
+        match block_type {
+            hardy_bpv7::block::Type::HopCount => {
+                return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
-            checks::DecryptOutcome::NoKey => match outcome.block_type {
-                hardy_bpv7::block::Type::HopCount => {
-                    return Err(hardy_bpv7::bpsec::Error::NoKey.into());
-                }
-                hardy_bpv7::block::Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
-                    return Err(hardy_bpv7::bpsec::Error::NoKey.into());
-                }
-                _ => {}
-            },
+            hardy_bpv7::block::Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
+                return Err(hardy_bpv7::bpsec::Error::NoKey.into());
+            }
+            _ => {}
         }
     }
-
-    // §C7 — verify every BIB.
-    checks::verify_all_bibs(
-        &data,
-        keys,
-        &bundle.blocks,
-        &bib_ops,
-        &decrypted,
-        &to_update,
-    )?;
 
     // §D — canonicalize known plaintext extension blocks. A non-shortest
     // PreviousNode/HopCount body is re-emitted in canonical form; an
