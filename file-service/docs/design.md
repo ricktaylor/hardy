@@ -103,6 +103,8 @@ When the BPA delivers a bundle payload via `on_receive()`:
 
 - **Unique filenames required**: writers must use unique filenames. If a writer
   overwrites a file before the service claims it, the original payload is lost.
+- **Empty files are discarded**: zero-byte files are deleted without sending.
+  They are not moved to errors.
 - **Linux only**: `IN_CLOSE_WRITE` is a Linux inotify event. The `notify` crate
   falls back to polling on non-Linux platforms.
 - **Single destination**: all outbox files are sent to the same destination EID.
