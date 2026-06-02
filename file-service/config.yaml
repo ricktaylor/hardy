@@ -1,0 +1,34 @@
+# Configuration for the hardy-file-service.
+# Note: Commented out values represent the default settings.
+
+# The logging level for the application.
+# Can be one of: trace, debug, info, warn, error
+# log-level: "info"
+
+# The gRPC endpoint of the BPA to register with.
+# bpa-address: "http://[::1]:50051"
+
+# The service identifier to register with the BPA.
+# This is the IPN service number that identifies this file service
+# endpoint on the local node. Can also be set via --service-id.
+service-id: 42
+
+# The destination EID for outgoing bundles.
+# All files dropped in the outbox directory are sent as bundles to
+# this endpoint. Can also be set via --destination.
+destination: "ipn:1.42"
+
+# The bundle lifetime.
+# Bundles that are not delivered within this time will be discarded.
+# Accepts human-readable durations: "24h", "30m", "7d", "1h30m", etc.
+# lifetime: "24h"
+
+# Path to the outbox directory.
+# Files dropped here are read, sent as bundles, then deleted.
+# Supports concurrent writers. Detects completed writes (close) and
+# renames (mv). Dotfiles (.*) are ignored for atomic write patterns.
+outbox: /tmp/hardy/outbox
+
+# Path to the inbox directory.
+# Incoming bundle payloads are written as individual files here.
+inbox: /tmp/hardy/inbox
