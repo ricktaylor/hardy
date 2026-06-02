@@ -104,6 +104,51 @@ impl OperationSet {
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
     }
+
+    /// Per-OperationSet structural validation of this BIB against the
+    /// bundle's blocks: every target must exist (RFC 9172 §3.6) and not be
+    /// a security block (§3.9, mirrored to also reject targeting a BIB),
+    /// no target may already be covered by a different BIB (§2.6), and a
+    /// target that is BCB-encrypted requires this BIB to be BCB-encrypted
+    /// too (§3.9). Pure inspection — stamps no coverage; the caller stamps
+    /// after a successful return.
+    ///
+    /// §3.8 (a BCB targeting a BIB must share a target with it) is not
+    /// checked here — it fires only for BCB-encrypted BIBs whose
+    /// OperationSet can't be decoded without keys. Shared by the
+    /// structural parser ([`crate::parse`]) and the keyed
+    /// [`crate::checks::verify`] pass as the single source of truth for
+    /// the per-OperationSet BIB rules.
+    pub fn check<'a, B>(&self, bib_block_number: u64, blocks: &'a B) -> Result<(), Error>
+    where
+        B: BlockSet<'a> + ?Sized,
+    {
+        // Whether this BIB is itself protected by a BCB — used by the §3.9
+        // check on each target.
+        let bib_bcb = blocks
+            .block_header(bib_block_number)
+            .expect("OperationSet::check called with a bib_block_number not in the block set")
+            .bcb;
+
+        for &target_number in self.operations.keys() {
+            let target_block = blocks
+                .block_header(target_number)
+                .ok_or(Error::MissingSecurityTarget)?;
+            if matches!(
+                target_block.block_type,
+                block::Type::BlockSecurity | block::Type::BlockIntegrity
+            ) {
+                return Err(Error::InvalidBIBTarget);
+            }
+            if matches!(target_block.bib, block::BibCoverage::Some(n) if n != bib_block_number) {
+                return Err(Error::DuplicateOpTarget);
+            }
+            if target_block.bcb.is_some() && bib_bcb.is_none() {
+                return Err(Error::BIBMustBeEncrypted);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl hardy_cbor::encode::ToCbor for OperationSet {

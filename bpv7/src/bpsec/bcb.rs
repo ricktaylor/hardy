@@ -181,6 +181,50 @@ impl OperationSet {
             .next()
             .is_some_and(|op| op.can_share())
     }
+
+    /// Per-OperationSet structural validation of this BCB against the
+    /// bundle's blocks (RFC 9172 §3.6 / §3.7): the BCB MUST NOT set
+    /// delete-block-on-failure, every target must exist, no target may be
+    /// the primary block or another security block, a payload target
+    /// requires must-replicate, and no target may already be covered by a
+    /// different BCB. Pure inspection — stamps no coverage; the caller
+    /// stamps after a successful return. Cross-BCB uniqueness (§2.6) is
+    /// not checked here (it needs every operation in view at once).
+    ///
+    /// Shared by the structural parser ([`crate::parse`]) and the keyed
+    /// [`crate::checks::verify`] pass as the single source of truth for
+    /// the per-OperationSet BCB rules.
+    pub fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
+    where
+        B: BlockSet<'a> + ?Sized,
+    {
+        let bcb_block = blocks
+            .block_header(bcb_block_number)
+            .expect("OperationSet::check called with a bcb_block_number not in the block set");
+        if bcb_block.flags.delete_block_on_failure {
+            return Err(Error::BCBDeleteFlag);
+        }
+        let must_replicate = bcb_block.flags.must_replicate;
+
+        for &target_number in self.operations.keys() {
+            let target_block = blocks
+                .block_header(target_number)
+                .ok_or(Error::MissingSecurityTarget)?;
+            match target_block.block_type {
+                block::Type::Primary | block::Type::BlockSecurity => {
+                    return Err(Error::InvalidBCBTarget);
+                }
+                block::Type::Payload if !must_replicate => {
+                    return Err(Error::BCBMustReplicate);
+                }
+                _ => {}
+            }
+            if matches!(target_block.bcb, Some(n) if n != bcb_block_number) {
+                return Err(Error::DuplicateOpTarget);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl hardy_cbor::encode::ToCbor for OperationSet {
