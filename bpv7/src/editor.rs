@@ -935,13 +935,14 @@ impl<'a> Editor<'a> {
         self.blocks.keys().copied()
     }
 
-    // `remove_integrity` / `remove_encryption` live on
-    // [`crate::bpsec::edit::BPSecEditor`] — Editor itself stays
-    // BPSec-agnostic (no `KeySource`). Pull the trait into scope to
-    // recover method syntax:
+    // `remove_integrity` lives on [`crate::bpsec::edit::BPSecEditor`]
+    // (pull the trait into scope for method syntax); `remove_encryption`
+    // is the free fn [`crate::bpsec::edit::remove_encryption`]. Editor
+    // itself stays BPSec-agnostic (no `KeySource`):
     //
     //     use hardy_bpv7::bpsec::edit::BPSecEditor;
-    //     editor.remove_encryption(block_number, &keys)?;
+    //     let editor = editor.remove_integrity(block_number)?;
+    //     let editor = bpsec::edit::remove_encryption(editor, block_number, &keys)?;
 
     /// Rebuild the bundle, applying all of the modifications.
     ///
