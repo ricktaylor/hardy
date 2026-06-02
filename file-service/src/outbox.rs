@@ -96,8 +96,9 @@ async fn run(
             let sink = sink.clone();
             let destination = destination.clone();
             let errors_dir = errors_dir.clone();
+            let task_cancel = cancel.clone();
             let spawn_fut = hardy_async::spawn!(senders, "outbox_send", async move {
-                process_file(path, sink, destination, lifetime, &errors_dir).await;
+                process_file(path, sink, destination, lifetime, &errors_dir, task_cancel).await;
             });
             tokio::select! {
                 _ = spawn_fut => {}
@@ -139,6 +140,7 @@ async fn process_file(
     destination: Eid,
     lifetime: Duration,
     errors_dir: &Path,
+    cancel: CancellationToken,
 ) {
     let name = path.file_name().unwrap_or_default().to_os_string();
     let mut processing_name = name.clone();
@@ -169,7 +171,16 @@ async fn process_file(
     }
 
     debug!(dest = %destination, bytes = payload.len(), "Sending payload from '{}'", path.display());
-    match sink.send(destination, payload.into(), lifetime, None).await {
+    let result = tokio::select! {
+        result = sink.send(destination, payload.into(), lifetime, None) => result,
+        _ = cancel.cancelled() => {
+            warn!("Cancelled sending '{}'", path.display());
+            move_to_errors(&processing_path, &name, errors_dir).await;
+            return;
+        }
+    };
+
+    match result {
         Ok(id) => {
             debug!("Sent bundle {id}");
             if let Err(e) = tokio::fs::remove_file(&processing_path).await {
