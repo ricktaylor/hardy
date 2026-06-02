@@ -2053,7 +2053,6 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-proto",
- "humantime",
  "humantime-serde",
  "notify",
  "serde",

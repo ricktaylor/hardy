@@ -33,7 +33,6 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
-humantime = "2"
 humantime-serde = "1"
 notify = "8"
 flume = "0.12"

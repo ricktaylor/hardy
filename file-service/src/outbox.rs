@@ -1,4 +1,5 @@
 use core::time::Duration;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -125,12 +126,10 @@ fn is_processable(path: &Path) -> bool {
         && !path.parent().is_some_and(|p| p.ends_with(ERRORS_DIR))
 }
 
-async fn move_to_errors(from: &Path, errors_dir: &Path) {
-    if let Some(name) = from.file_name() {
-        let dest = errors_dir.join(name);
-        if let Err(e) = tokio::fs::rename(from, &dest).await {
-            error!("Failed to move '{}' to errors: {e}", from.display());
-        }
+async fn move_to_errors(from: &Path, name: &OsStr, errors_dir: &Path) {
+    let dest = errors_dir.join(name);
+    if let Err(e) = tokio::fs::rename(from, &dest).await {
+        error!("Failed to move '{}' to errors: {e}", from.display());
     }
 }
 
@@ -141,9 +140,10 @@ async fn process_file(
     lifetime: Duration,
     errors_dir: &Path,
 ) {
-    let mut processing_name = path.file_name().unwrap_or_default().to_os_string();
+    let name = path.file_name().unwrap_or_default().to_os_string();
+    let mut processing_name = name.clone();
     processing_name.push(".processing");
-    let processing_path = path.with_file_name(processing_name);
+    let processing_path = path.with_file_name(&processing_name);
     if let Err(e) = tokio::fs::rename(&path, &processing_path).await {
         error!("Failed to claim '{}': {e}", path.display());
         return;
@@ -153,7 +153,7 @@ async fn process_file(
         Ok(payload) => payload,
         Err(e) => {
             error!("Failed to read '{}': {e}", processing_path.display());
-            move_to_errors(&processing_path, errors_dir).await;
+            move_to_errors(&processing_path, &name, errors_dir).await;
             return;
         }
     };
@@ -178,7 +178,7 @@ async fn process_file(
         }
         Err(e) => {
             error!("Failed to send bundle from '{}': {e}", path.display());
-            move_to_errors(&processing_path, errors_dir).await;
+            move_to_errors(&processing_path, &name, errors_dir).await;
         }
     }
 }
