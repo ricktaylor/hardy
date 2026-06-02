@@ -113,47 +113,20 @@ impl<'a> BPSecEditor for Editor<'a> {
                 Err(e) => return Err((self, e)),
             };
 
-            // Decrypt the BIB body.
-            let plaintext = {
-                let bcb_op = match bcb_opset.operations.get(&bib_num) {
-                    Some(op) => op,
-                    None => continue,
-                };
-                let block_set = EditorBlockSet { editor: self };
-                let result = bcb_op.decrypt(
-                    key_source,
-                    bcb::OperationArgs {
-                        bpsec_source: &bcb_opset.source,
-                        target: bib_num,
-                        source: bcb_num,
-                        blocks: &block_set,
-                    },
-                );
-                self = block_set.editor;
-                match result {
-                    Ok(p) => p,
-                    // NoKey: leave the BIB encrypted. Caller's `to_remove`
-                    // entries that this BIB protects will hit
-                    // remove_from_bib_targets failing to parse the
-                    // ciphertext OpSet and surface as an error.
-                    Err(Error::NoKey) => continue,
-                    Err(e) => return Err((self, e.into())),
-                }
-            };
-
-            // Parse the BIB OperationSet from plaintext.
-            let bib_opset = match hardy_cbor::decode::parse::<bib::OperationSet>(&plaintext) {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        crate::error::Error::InvalidField {
-                            field: "BIB Abstract Syntax Block",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ));
-                }
+            // Decrypt + parse the BIB body.
+            let (editor, outcome) =
+                decrypt_covered_bib(self, &bcb_opset, bib_num, bcb_num, key_source);
+            self = editor;
+            let (plaintext, bib_opset) = match outcome {
+                CoveredBib::NotCovered => continue,
+                // NoKey: leave the BIB encrypted. Caller's `to_remove`
+                // entries that this BIB protects will hit
+                // remove_from_bib_targets failing to parse the ciphertext
+                // OpSet and surface as an error.
+                CoveredBib::DecryptFailed(Error::NoKey) => continue,
+                CoveredBib::DecryptFailed(e) => return Err((self, e.into())),
+                CoveredBib::ParseFailed(e) => return Err((self, e)),
+                CoveredBib::Decrypted(plaintext, opset) => (plaintext, opset),
             };
 
             let dead_count = bib_opset
@@ -241,18 +214,20 @@ impl<'a> BPSecEditor for Editor<'a> {
     }
 }
 
-/// Remove the encryption from a block in the bundle.
+/// Remove the encryption from a block in the bundle: decrypt the target
+/// under its BCB, rewrite it in plaintext, and drop the target from the
+/// BCB (removing the BCB entirely if it has no remaining targets).
 ///
-/// Note that this will rewrite (or remove) the target and the BCB
-/// block.
+/// Per RFC 9172 Section 3.8 ("A BCB MUST NOT target a BIB unless it shares
+/// a security target with that BIB"), any BIB *in the same BCB* that also
+/// covers the decrypted block must itself be decrypted and stripped. That
+/// path is reached only by future multi-target security contexts:
+/// BCB-AES-GCM (RFC 9173) keeps its IV in the context parameters and so
+/// cannot share a BCB across targets ([`bcb::Operation::can_share`] is
+/// false).
 ///
-/// Per RFC 9172 Section 3.8: "A BCB MUST NOT target a BIB unless it
-/// shares a security target with that BIB." Therefore, when
-/// decrypting a block, any encrypted BIB that targets that block
-/// must also be decrypted and the signature removed.
-///
-/// On error, returns the editor along with the error so it can be
-/// reused for recovery.
+/// On error, returns the editor along with the error so it can be reused
+/// for recovery.
 #[allow(clippy::result_large_err)]
 pub fn remove_encryption<'a, K>(
     mut editor: Editor<'a>,
@@ -269,170 +244,105 @@ where
     let Some((target_block, _)) = editor.block(block_number) else {
         return Err((editor, EditorError::NoSuchBlock(block_number)));
     };
-
     let Some(bcb) = target_block.bcb else {
         return Err((editor, Error::NotEncrypted.into()));
     };
+    let original_block = target_block.clone();
 
-    if let Some((_, Some(bcb_payload))) = editor.block(bcb) {
-        let original_block = target_block.clone();
+    let opset = match decode_bcb_opset(&editor, bcb) {
+        Ok(Some(opset)) => opset,
+        Ok(None) => return Ok(editor),
+        Err(e) => return Err((editor, e)),
+    };
 
-        let mut opset = match hardy_cbor::decode::parse::<bcb::OperationSet>(bcb_payload) {
-            Ok(opset) => opset,
-            Err(e) => {
-                return Err((
-                    editor,
-                    crate::error::Error::InvalidField {
-                        field: "BCB Abstract Syntax Block",
-                        source: e.into(),
-                    }
-                    .into(),
-                ));
-            }
-        };
+    // The BCB might not actually list this block (inconsistent bundle):
+    // nothing to decrypt, leave it untouched.
+    let Some(op) = opset.operations.get(&block_number) else {
+        return Ok(editor);
+    };
 
-        if let Some(op) = opset.operations.remove(&block_number) {
-            // Decrypt the target payload
-            let block_set = EditorBlockSet { editor };
-            let mut target_payload = match op.decrypt(
-                key_source,
-                bcb::OperationArgs {
-                    bpsec_source: &opset.source,
-                    target: block_number,
-                    source: bcb,
-                    blocks: &block_set,
-                },
-            ) {
-                Ok(t) => t,
-                Err(e) => {
-                    return Err((block_set.editor, e.into()));
+    // Decrypt the target payload.
+    let block_set = EditorBlockSet { editor };
+    let mut target_payload = match op.decrypt(
+        key_source,
+        bcb::OperationArgs {
+            bpsec_source: &opset.source,
+            target: block_number,
+            source: bcb,
+            blocks: &block_set,
+        },
+    ) {
+        Ok(t) => t,
+        Err(e) => return Err((block_set.editor, e.into())),
+    };
+    editor = block_set.editor;
+
+    // Steal the plaintext out of the Zeroizing guard — this is an explicit
+    // 'remove the encryption', so dropping the guard is intended.
+    let target_payload: Box<[u8]> = core::mem::take(&mut target_payload);
+
+    // Rewrite the block in plaintext. Only restore a CRC when no BIB
+    // covers it — RFC 9172 §3.8 (and §4.8 for BCBs) forbid CRCs on
+    // BIB/BCB targets. `BibCoverage::Maybe` means a BCB-encrypted BIB
+    // exists whose targets we can't enumerate yet; assume the worst (it
+    // might cover this block) and leave the CRC off.
+    let mut block = editor
+        .update_block_inner(block_number)?
+        .with_data(target_payload.into_vec().into());
+    if matches!(original_block.bib, block::BibCoverage::None)
+        && matches!(original_block.crc_type, crc::CrcType::None)
+    {
+        block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
+    }
+    editor = block.rebuild();
+
+    // §3.8 share-target handshake (multi-target contexts only — see the
+    // doc comment): strip any BIB in this BCB that also covers the
+    // now-decrypted block.
+    if opset.can_share() {
+        let bib_targets: SmallVec<[u64; 4]> = opset
+            .operations
+            .keys()
+            .copied()
+            .filter(|&target| {
+                editor
+                    .block(target)
+                    .is_some_and(|(blk, _)| matches!(blk.block_type, block::Type::BlockIntegrity))
+            })
+            .collect();
+
+        for bib_block_num in bib_targets {
+            let (ed, outcome) = decrypt_covered_bib(editor, &opset, bib_block_num, bcb, key_source);
+            editor = ed;
+            let (plaintext, bib_opset) = match outcome {
+                CoveredBib::NotCovered => continue,
+                // Can't decrypt the BIB — leaving it would violate §3.8.
+                CoveredBib::DecryptFailed(_) => {
+                    return Err((editor, EditorError::CannotDecryptRelatedBib(bib_block_num)));
                 }
+                CoveredBib::ParseFailed(e) => return Err((editor, e)),
+                CoveredBib::Decrypted(plaintext, opset) => (plaintext, opset),
             };
 
-            // Steal the content of the decrypted payload
-            // This is safe as this function is an explicit 'remove the encryption', hence
-            // removing the Zeroizing<> is valid
-            let target_payload: Box<[u8]> = core::mem::take(&mut target_payload);
-
-            // Replace the block payload
-            let mut block = block_set
-                .editor
-                .update_block_inner(block_number)?
-                .with_data(target_payload.into_vec().into());
-            // Only restore a CRC when we're sure no BIB covers this
-            // block — RFC 9172 §3.8 (and §4.8 for BCBs) forbid CRCs on
-            // BIB/BCB targets. `BibCoverage::Maybe` means a BCB-encrypted
-            // BIB exists whose targets we can't enumerate yet; assume
-            // the worst (it might cover this block) and leave CRC off.
-            if matches!(original_block.bib, block::BibCoverage::None)
-                && matches!(original_block.crc_type, crc::CrcType::None)
-            {
-                block = block.with_crc_type(crc::CrcType::CRC32_CASTAGNOLI);
-            }
-            editor = block.rebuild();
-
-            // RFC 9172 Section 3.8: "A BCB MUST NOT target a BIB unless it shares a
-            // security target with that BIB."
-            //
-            // Now that we've decrypted block_number and removed it from the BCB targets,
-            // any encrypted BIB that targets block_number would violate this rule.
-            // We must decrypt such BIBs and remove the signature.
-
-            // Handle BIBs within this same BCB's targets.
-            // Note: BCB-AES-GCM (RFC 9173) cannot have multiple targets due to IV
-            // uniqueness requirements, so this code path is for future security
-            // contexts (e.g., COSE-based) that may support multi-target BCBs.
-            if opset.can_share() {
-                let bib_targets: SmallVec<[u64; 4]> = opset
-                    .operations
-                    .keys()
-                    .filter(|&&target| {
-                        if let Some((blk, _)) = editor.block(target) {
-                            matches!(blk.block_type, block::Type::BlockIntegrity)
-                        } else {
-                            false
-                        }
-                    })
-                    .copied()
-                    .collect();
-
-                for bib_block_num in bib_targets {
-                    let Some(bib_op) = opset.operations.get(&bib_block_num) else {
-                        continue;
-                    };
-
-                    // Decrypt the BIB to inspect its targets
-                    let block_set = EditorBlockSet { editor };
-                    let mut decrypted_bib = match bib_op.decrypt(
-                        key_source,
-                        bcb::OperationArgs {
-                            bpsec_source: &opset.source,
-                            target: bib_block_num,
-                            source: bcb,
-                            blocks: &block_set,
-                        },
-                    ) {
-                        Ok(t) => t,
-                        Err(_) => {
-                            // We can't decrypt the BIB - this would leave the bundle in an
-                            // invalid state per RFC 9172 Section 3.8
-                            return Err((
-                                block_set.editor,
-                                EditorError::CannotDecryptRelatedBib(bib_block_num),
-                            ));
-                        }
-                    };
-                    editor = block_set.editor;
-
-                    // Parse the decrypted BIB to check its targets
-                    let bib_opset =
-                        match hardy_cbor::decode::parse::<bib::OperationSet>(&decrypted_bib) {
-                            Ok(opset) => opset,
-                            Err(e) => {
-                                return Err((
-                                    editor,
-                                    crate::error::Error::InvalidField {
-                                        field: "BIB Abstract Syntax Block",
-                                        source: e.into(),
-                                    }
-                                    .into(),
-                                ));
-                            }
-                        };
-
-                    // Check if the BIB targets the block we just decrypted
-                    if bib_opset.operations.contains_key(&block_number) {
-                        // The BIB targets our decrypted block - decrypt the BIB and remove signature
-                        let decrypted_bib: Box<[u8]> = core::mem::take(&mut decrypted_bib);
-                        editor = editor
-                            .update_block_inner(bib_block_num)?
-                            .with_data(decrypted_bib.into_vec().into())
-                            .rebuild();
-
-                        // Remove the BIB from the BCB's target list
-                        opset.operations.remove(&bib_block_num);
-
-                        // Now remove the signature from the decrypted block (and restore CRC)
-                        editor = remove_integrity_inner(editor, block_number, bib_block_num)?;
-                    }
-                    // If BIB doesn't target our block, leave it encrypted
-                }
-            }
-
-            // Update/remove the current BCB
-            if opset.operations.is_empty() {
-                editor = editor.remove_block_inner(bcb)?;
-            } else {
-                // Rewrite BCB
+            // Only act on BIBs that actually cover the decrypted block;
+            // others stay encrypted.
+            if bib_opset.operations.contains_key(&block_number) {
+                // Stage the plaintext so remove_integrity_inner reads it,
+                // drop the BIB's now-redundant BCB protection, then strip
+                // its signature over the decrypted block.
                 editor = editor
-                    .update_block_inner(bcb)?
-                    .with_data(hardy_cbor::encode::emit(&opset).0.into())
+                    .update_block_inner(bib_block_num)?
+                    .with_data(plaintext.as_ref().to_vec().into())
                     .rebuild();
+                editor = editor.remove_from_bcb_targets(bib_block_num, bcb)?;
+                editor = remove_integrity_inner(editor, block_number, bib_block_num)?;
             }
         }
     }
 
-    Ok(editor)
+    // Drop the decrypted block from the BCB (removing the BCB entirely if
+    // it now has no targets).
+    editor.remove_from_bcb_targets(block_number, bcb)
 }
 
 // ===========================================================================
@@ -465,6 +375,67 @@ fn decode_bcb_opset(
             source: e.into(),
         }
         .into()),
+    }
+}
+
+/// Outcome of decrypting and parsing a BCB-covered BIB's OperationSet.
+/// The failure policy is left to the caller: `NoKey` is a soft skip during
+/// a bulk delete but a hard error when decrypting a block for delivery.
+enum CoveredBib {
+    /// The BCB OperationSet has no entry for this BIB — nothing to do.
+    NotCovered,
+    /// Decryption failed; carries the BPSec error (e.g. [`Error::NoKey`]).
+    DecryptFailed(Error),
+    /// Decryption succeeded but the plaintext is not a valid BIB OpSet.
+    ParseFailed(EditorError),
+    /// Decryption and parse succeeded — the plaintext and its OperationSet.
+    Decrypted(zeroize::Zeroizing<Box<[u8]>>, bib::OperationSet),
+}
+
+/// Decrypt a BCB-covered BIB body and parse its OperationSet, using the
+/// per-target `Operation` already decoded into `bcb_opset`. Threads the
+/// editor through (the [`EditorBlockSet`] borrows it for the AAD lookup)
+/// and returns it alongside the [`CoveredBib`] outcome.
+fn decrypt_covered_bib<'a, K>(
+    editor: Editor<'a>,
+    bcb_opset: &bcb::OperationSet,
+    bib_num: u64,
+    bcb_num: u64,
+    key_source: &K,
+) -> (Editor<'a>, CoveredBib)
+where
+    K: key::KeySource + ?Sized,
+{
+    let Some(bcb_op) = bcb_opset.operations.get(&bib_num) else {
+        return (editor, CoveredBib::NotCovered);
+    };
+    let block_set = EditorBlockSet { editor };
+    let result = bcb_op.decrypt(
+        key_source,
+        bcb::OperationArgs {
+            bpsec_source: &bcb_opset.source,
+            target: bib_num,
+            source: bcb_num,
+            blocks: &block_set,
+        },
+    );
+    let editor = block_set.editor;
+    let plaintext = match result {
+        Ok(p) => p,
+        Err(e) => return (editor, CoveredBib::DecryptFailed(e)),
+    };
+    match hardy_cbor::decode::parse::<bib::OperationSet>(&plaintext) {
+        Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),
+        Err(e) => (
+            editor,
+            CoveredBib::ParseFailed(
+                crate::error::Error::InvalidField {
+                    field: "BIB Abstract Syntax Block",
+                    source: e.into(),
+                }
+                .into(),
+            ),
+        ),
     }
 }
 
