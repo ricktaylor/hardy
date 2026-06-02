@@ -85,7 +85,7 @@ fn parse_full_for_test(
 
     let mut decrypted = HashMap::new();
     let to_update: HashMap<u64, Vec<u8>> = HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let facts = checks::verify(
         &data,
         keys,
         &mut raw.blocks,
@@ -94,33 +94,18 @@ fn parse_full_for_test(
         &mut decrypted,
         &to_update,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut raw.blocks);
+    if !facts.failed.is_empty() {
+        return Err(bpsec::Error::DecryptionFailed.into());
     }
-
-    for outcome in checks::decrypt_extension_block_targets(
-        &data,
-        keys,
-        &raw.blocks,
-        &bcb_ops,
-        &decrypted,
-        &to_update,
-    )? {
-        match outcome.outcome {
-            checks::DecryptOutcome::Decrypted(p) => {
-                decrypted.insert(outcome.block_number, p);
+    for (_, block_type) in &facts.nokey_ext {
+        match block_type {
+            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
+            block::Type::BundleAge if !raw.primary.id.timestamp.is_clocked() => {
+                return Err(bpsec::Error::NoKey.into());
             }
-            checks::DecryptOutcome::NoKey => match outcome.block_type {
-                block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-                block::Type::BundleAge if !raw.primary.id.timestamp.is_clocked() => {
-                    return Err(bpsec::Error::NoKey.into());
-                }
-                _ => {}
-            },
+            _ => {}
         }
     }
-
-    checks::verify_all_bibs(&data, keys, &raw.blocks, &bib_ops, &decrypted, &to_update)?;
 
     // §D (extension-field extraction / canonical re-emit) is a BPA concern
     // and now lives in `hardy-bpa`; the cascade-test bundles carry no

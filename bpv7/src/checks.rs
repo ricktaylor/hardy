@@ -1,11 +1,16 @@
 /*!
 Composable BPSec validation primitives over a structurally-parsed bundle.
 
-Each helper is mode-agnostic: it produces facts (classifications,
-per-block decrypt outcomes, coverage stamps) and applies no policy of its
+Each helper is policy-free: it produces facts (classifications,
+decrypt/verify outcomes, coverage stamps) and applies no policy of its
 own. Consumers — the BPA ingress pipeline, the bpv7 CLI tools — compose
-the helpers they need and layer their own policy on top. The structural
-parser lives in [`crate::parse`]; rewrite application in [`crate::rewrite`].
+the helpers they need (or call [`verify`] for the whole keyed pass) and
+layer their own policy on top. The structural parser lives in
+[`crate::parse`]; rewrite application in [`crate::rewrite`].
+
+The §A–§E pipeline these helpers implement — what each `A1` / `A2` /
+`A3` / `B` / `B6` / `C7` / `C8` / `D` / `E` label means — is documented
+in `bpv7/docs/parser_design.md`.
 */
 
 use super::*;
@@ -84,27 +89,6 @@ pub struct UnsupportedBibClassification {
     pub deletable: SmallVec<[u64; 4]>,
     /// At least one unsupported-context BIB had `report_on_failure` set.
     pub report_unsupported: bool,
-}
-
-/// Outcome for a single BCB-protected extension block in
-/// [`decrypt_extension_block_targets`].
-#[derive(Debug)]
-pub enum DecryptOutcome {
-    /// Decryption succeeded; the plaintext is returned for the caller to
-    /// stash into its `decrypted_data` map.
-    Decrypted(zeroize::Zeroizing<Box<[u8]>>),
-    /// No key was available. Caller applies the mode-specific NoKey
-    /// policy (Preserve-soft / Full-strict for HopCount + unclocked
-    /// BundleAge / soft for clocked BundleAge + PreviousNode).
-    NoKey,
-}
-
-/// Per-block result returned by [`decrypt_extension_block_targets`].
-#[derive(Debug)]
-pub struct DecryptedExtensionBlock {
-    pub block_number: u64,
-    pub block_type: block::Type,
-    pub outcome: DecryptOutcome,
 }
 
 // ===== Section A — unrecognised / unsupported classification =====
@@ -333,79 +317,6 @@ pub fn resolve_bib_coverage_maybes(blocks: &mut HashMap<u64, block::Block>) {
     }
 }
 
-// ===== Section C8 — decrypt BCB-protected extension blocks =====
-
-/// C8: Decrypt BCB-protected `PreviousNode` / `BundleAge` / `HopCount`
-/// blocks. Mode-agnostic: returns per-target outcomes (success or NoKey).
-/// Caller folds successes into its own `decrypted_data` and applies the
-/// NoKey policy (today: Preserve-soft, Full/Canonicalize-strict for
-/// `HopCount` and unclocked `BundleAge`, soft for clocked `BundleAge`
-/// and `PreviousNode`).
-///
-/// The parser only handles blocks it actually needs to process —
-/// payload and `Unrecognised` blocks aren't decrypted here. Any
-/// non-NoKey decrypt error (e.g. AEAD authentication failure) returns
-/// `Err` immediately: the bundle is corrupt regardless of policy.
-pub fn decrypt_extension_block_targets(
-    data: &[u8],
-    key_source: &dyn bpsec::key::KeySource,
-    blocks: &HashMap<u64, block::Block>,
-    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
-    decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
-    to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<Vec<DecryptedExtensionBlock>, Error> {
-    let to_decrypt: Vec<(u64, block::Type, u64)> = blocks
-        .iter()
-        .filter_map(|(&n, b)| {
-            matches!(
-                b.block_type,
-                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
-            )
-            .then(|| b.bcb.map(|bcb_n| (n, b.block_type, bcb_n)))
-            .flatten()
-        })
-        .collect();
-
-    let mut outcomes = Vec::with_capacity(to_decrypt.len());
-    for (target_number, target_type, bcb_block_number) in to_decrypt {
-        let bcb_op_set = bcb_ops
-            .get(&bcb_block_number)
-            .expect("BCB referenced by encrypted block must be in bcb_ops");
-
-        let outcome = {
-            let block_set = BundleBlockSet {
-                blocks,
-                source_data: data,
-                decrypted_data,
-                to_update,
-            };
-            let bcb_op = bcb_op_set
-                .operations
-                .get(&target_number)
-                .expect("BCB protects this target");
-            match bcb_op.decrypt(
-                key_source,
-                bpsec::bcb::OperationArgs {
-                    bpsec_source: &bcb_op_set.source,
-                    target: target_number,
-                    source: bcb_block_number,
-                    blocks: &block_set,
-                },
-            ) {
-                Ok(p) => DecryptOutcome::Decrypted(p),
-                Err(bpsec::Error::NoKey) => DecryptOutcome::NoKey,
-                Err(e) => return Err(e.into()),
-            }
-        };
-        outcomes.push(DecryptedExtensionBlock {
-            block_number: target_number,
-            block_type: target_type,
-            outcome,
-        });
-    }
-    Ok(outcomes)
-}
-
 // ===== Section C7 — verify all BIBs =====
 
 /// C7: Verify every BIB OperationSet against its targets. NoKey on
@@ -451,6 +362,113 @@ pub fn verify_all_bibs(
         }
     }
     Ok(())
+}
+
+// ===== Composed keyed verification (B + C8 + C7) =====
+
+/// Per-operation outcomes from [`verify`] that the caller layers policy
+/// on. Successful decrypts are stashed into `decrypted` and BIB coverage
+/// is stamped on `blocks` in place during the call; these are the
+/// outcomes that still need a policy decision.
+#[derive(Debug, Default)]
+pub struct VerifyFacts {
+    /// BCB-protected extension blocks whose ciphertext did not
+    /// authenticate (`DecryptionFailed`) — corruption (RFC 9172 §5.1.1).
+    /// Caller applies the failure policy: failure-drop (Verifier/Acceptor)
+    /// or reject.
+    pub failed: SmallVec<[u64; 4]>,
+    /// BCB-protected extension blocks for which no key was available, with
+    /// their block type — caller applies the per-type NoKey policy
+    /// (Preserve-soft; strict for `HopCount` + unclocked `BundleAge`).
+    pub nokey_ext: SmallVec<[(u64, block::Type); 4]>,
+}
+
+/// Composed keyed verification, replacing the hand-rolled
+/// B → resolve → C8 → C7 pipeline that every keyed call site used to
+/// repeat:
+/// * §B — [`decrypt_and_validate_covered_bibs`], collapsing residual
+///   `Maybe` coverage via [`resolve_bib_coverage_maybes`] when every
+///   covered BIB decrypted;
+/// * §C8 — decrypt BCB-protected `PreviousNode` / `BundleAge` /
+///   `HopCount`, recording per-block `Decrypted`/`NoKey`/`Failed`
+///   outcomes;
+/// * §C7 — [`verify_all_bibs`].
+///
+/// Successful decrypts (covered BIBs and extension blocks) are stashed
+/// into `decrypted`; BIB coverage is stamped on `blocks`. Returns the
+/// [`VerifyFacts`] the caller applies its policy to. A non-`NoKey` /
+/// non-`DecryptionFailed` BPSec error, or a BIB-verify failure, fails the
+/// whole call.
+pub fn verify(
+    data: &[u8],
+    key_source: &dyn bpsec::key::KeySource,
+    blocks: &mut HashMap<u64, block::Block>,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
+    decrypted: &mut HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
+    to_update: &HashMap<u64, Vec<u8>>,
+) -> Result<VerifyFacts, Error> {
+    let mut facts = VerifyFacts::default();
+
+    // §B — decrypt + validate BCB-covered BIBs; resolve coverage if all
+    // decrypted.
+    if decrypt_and_validate_covered_bibs(
+        data, key_source, blocks, bcb_ops, bib_ops, decrypted, to_update,
+    )? {
+        resolve_bib_coverage_maybes(blocks);
+    }
+
+    // §C8 — decrypt BCB-protected extension blocks.
+    let to_decrypt: Vec<(u64, block::Type, u64)> = blocks
+        .iter()
+        .filter_map(|(&n, b)| {
+            matches!(
+                b.block_type,
+                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
+            )
+            .then(|| b.bcb.map(|bcb_n| (n, b.block_type, bcb_n)))
+            .flatten()
+        })
+        .collect();
+    for (target_number, target_type, bcb_block_number) in to_decrypt {
+        let bcb_op_set = bcb_ops
+            .get(&bcb_block_number)
+            .expect("BCB referenced by encrypted block must be in bcb_ops");
+        let result = {
+            let block_set = BundleBlockSet {
+                blocks,
+                source_data: data,
+                decrypted_data: decrypted,
+                to_update,
+            };
+            let bcb_op = bcb_op_set
+                .operations
+                .get(&target_number)
+                .expect("BCB protects this target");
+            bcb_op.decrypt(
+                key_source,
+                bpsec::bcb::OperationArgs {
+                    bpsec_source: &bcb_op_set.source,
+                    target: target_number,
+                    source: bcb_block_number,
+                    blocks: &block_set,
+                },
+            )
+        };
+        match result {
+            Ok(p) => {
+                decrypted.insert(target_number, p);
+            }
+            Err(bpsec::Error::NoKey) => facts.nokey_ext.push((target_number, target_type)),
+            Err(bpsec::Error::DecryptionFailed) => facts.failed.push(target_number),
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // §C7 — verify every BIB.
+    verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?;
+
+    Ok(facts)
 }
 
 // ===== Per-OperationSet structural checks (shared with the parser) =====
