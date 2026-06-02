@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use hardy_async::TaskPool;
+use hardy_async::watcher;
 use hardy_bpa::bpa::Bpa;
 use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
 use hardy_bpa::filter::{Filter, Hook};
+use hardy_bpa::key::KeyProvider;
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "grpc")]
@@ -55,12 +57,41 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "grpc")]
     let grpc_config = config.grpc.take();
 
-    let bpa = build(config, args.upgrade_storage).await?;
+    let bpsec_config = config.bpsec.take();
+    let bpa = build(config, &bpsec_config, args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
+
+    if let Some(ref bpsec_config) = bpsec_config {
+        if let Some(watch_mode) = bpsec_config.watch.into() {
+            let config = bpsec_config.clone();
+            let bpa = bpa.clone();
+            let keys_file = config.keys_file.clone();
+            let cancel = tasks.cancel_token().clone();
+            hardy_async::spawn!(tasks, "key_file_watcher", async move {
+                watcher::watch(&keys_file, watch_mode, cancel, move || {
+                    let config = config.clone();
+                    let bpa = bpa.clone();
+                    async move {
+                        info!("Key file changed, reloading");
+                        match config.build() {
+                            Ok(source) => {
+                                bpa.set_key_provider(KeyProvider::new(source));
+                                info!("Keys reloaded successfully");
+                            }
+                            Err(e) => {
+                                error!("Failed to reload keys: {e}. Keeping previous keys.");
+                            }
+                        }
+                    }
+                })
+                .await;
+            });
+        }
+    }
 
     #[cfg(feature = "grpc")]
     if let Some(grpc_config) = grpc_config {
@@ -86,7 +117,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build a BPA from the given configuration.
-async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<Arc<Bpa>> {
+async fn build(
+    config: config::Config,
+    bpsec_config: &Option<config::bpsec::Config>,
+    upgrade_storage: bool,
+) -> anyhow::Result<Arc<Bpa>> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
 
     let mut builder = Bpa::builder()
@@ -107,6 +142,13 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
 
     if let Some(service_priority) = config.service_priority {
         builder = builder.service_priority(service_priority);
+    }
+
+    if let Some(bpsec_config) = bpsec_config {
+        let source = bpsec_config
+            .build()
+            .context("Failed to load BPSec configuration")?;
+        builder = builder.key_provider(KeyProvider::new(source));
     }
 
     if config.storage.uses_cache() {

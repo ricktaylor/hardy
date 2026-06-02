@@ -40,7 +40,7 @@ impl Dispatcher {
                 filter::Hook::Egress,
                 bundle,
                 data,
-                self.key_provider(),
+                &self.key_store,
                 &self.processing_pool,
             )
             .await

@@ -8,6 +8,7 @@ use crate::cla::registry::ClaRegistry;
 use crate::cla::{self, Cla};
 use crate::dispatcher::Dispatcher;
 use crate::filter::{self, Filter, FilterEngine, Hook};
+use crate::key::{KeyProvider, KeyStore};
 use crate::policy::EgressPolicy;
 use crate::rib::Rib;
 use crate::routes::{self, RoutingAgent};
@@ -204,6 +205,7 @@ pub struct Bpa {
     node_ids: Arc<crate::node_ids::NodeIds>,
     store: Arc<Store>,
     rib: Arc<Rib>,
+    key_store: Arc<KeyStore>,
     cla_registry: Arc<ClaRegistry>,
     service_registry: Arc<ServiceRegistry>,
     filter_engine: Arc<FilterEngine>,
@@ -211,10 +213,12 @@ pub struct Bpa {
 }
 
 impl Bpa {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         node_ids: Arc<crate::node_ids::NodeIds>,
         store: Arc<Store>,
         rib: Arc<Rib>,
+        key_store: Arc<KeyStore>,
         cla_registry: Arc<ClaRegistry>,
         service_registry: Arc<ServiceRegistry>,
         filter_engine: Arc<FilterEngine>,
@@ -224,6 +228,7 @@ impl Bpa {
             node_ids,
             store,
             rib,
+            key_store,
             cla_registry,
             service_registry,
             filter_engine,
@@ -271,6 +276,11 @@ impl Bpa {
         self.rib.shutdown().await;
         self.store.shutdown().await;
         self.filter_engine.clear();
+    }
+
+    /// Replace the key provider used for BPSec operations.
+    pub fn set_key_provider(&self, provider: KeyProvider) {
+        self.key_store.set(provider);
     }
 
     /// Register a filter at a hook point

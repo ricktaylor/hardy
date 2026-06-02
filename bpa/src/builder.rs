@@ -7,7 +7,7 @@ use crate::cla::registry::ClaRegistryBuilder;
 use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
-use crate::keys::registry::Registry as KeyRegistry;
+use crate::key::{KeyProvider, KeyStore};
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
 use crate::rib::RibBuilder;
@@ -38,7 +38,7 @@ pub struct BpaBuilder {
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     filter_engine: Arc<FilterEngine>,
-    keys_registry: Arc<KeyRegistry>,
+    key_store: Arc<KeyStore>,
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
     rib_builder: RibBuilder,
@@ -140,6 +140,12 @@ impl BpaBuilder {
         self
     }
 
+    /// Set the key provider for BPSec operations.
+    pub fn key_provider(self, provider: KeyProvider) -> Self {
+        self.key_store.set(provider);
+        self
+    }
+
     /// Register a filter immediately.
     pub fn filter(
         self,
@@ -186,7 +192,7 @@ impl BpaBuilder {
             .build(node_ids.clone(), store.clone())
             .await?;
         let filter_engine = self.filter_engine;
-        let keys_registry = self.keys_registry;
+        let key_store = self.key_store;
 
         let dispatcher = Dispatcher::new(
             self.status_reports,
@@ -195,7 +201,7 @@ impl BpaBuilder {
             node_ids.clone(),
             store.clone(),
             rib.clone(),
-            keys_registry,
+            key_store.clone(),
             filter_engine.clone(),
         );
 
@@ -220,6 +226,7 @@ impl BpaBuilder {
             node_ids,
             store,
             rib,
+            key_store,
             cla_registry,
             service_registry,
             filter_engine,
@@ -269,13 +276,13 @@ impl Default for BpaBuilder {
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
-        let keys_registry = Arc::new(KeyRegistry::new());
+        let key_store = Arc::new(KeyStore::new());
 
         Self {
             poll_channel_depth,
             processing_pool_size,
             filter_engine,
-            keys_registry,
+            key_store,
             status_reports: false,
             lru_capacity: None,
             max_cached_bundle_size: DEFAULT_MAX_CACHED_BUNDLE_SIZE,

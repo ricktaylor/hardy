@@ -26,6 +26,20 @@ storage:
     region: us-east-1
     force-path-style: true
 
+bpsec:
+  keys-file: /etc/hardy/keys.jwks
+  watch: poll
+  bindings:
+    - match: "ipn:*.*"
+      role: acceptor
+      keys: ["test-hmac", "test-aes"]
+    - match: "ipn:0.2.*"
+      role: verifier
+      keys: ["test-hmac"]
+    - match: "ipn:0.3.*"
+      role: source
+      keys: ["test-hmac", "test-aes"]
+
 rfc9171-validity:
   primary-block-integrity: true
   bundle-age-required: true

@@ -12,6 +12,7 @@ use tracing::Level;
 
 use crate::error::Error;
 
+pub mod bpsec;
 pub mod cla;
 pub mod policy;
 pub mod static_routes;
@@ -167,6 +168,11 @@ pub struct Config {
     // Absent key = service disabled.
     #[serde(default)]
     pub built_in_services: BuiltInServicesConfig,
+
+    // BPSec configuration: keys and key bindings (RFC 9172).
+    // Absent = no keys loaded, BPSec blocks will fail with NoKey.
+    #[serde(default)]
+    pub bpsec: Option<bpsec::Config>,
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
@@ -519,5 +525,46 @@ node-ids:
   - "dtn://my-node/"
 "#,
         );
+    }
+
+    // Security config parses from YAML.
+    #[test]
+    #[serial]
+    fn bpsec_config_parses() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let keys_path = dir.path().join("keys.jwks");
+        std::fs::write(
+            &keys_path,
+            r#"{ "keys": [{ "kid": "k", "kty": "oct", "k": "AAAA", "key_ops": ["verify"] }] }"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&keys_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "bpsec:\n  keys-file: \"{}\"\n  bindings:\n    - match: \"ipn:*.*\"\n      keys: [\"k\"]\n",
+                keys_path.display()
+            ),
+        )
+        .unwrap();
+
+        let config = Config::load(Some(config_path)).unwrap();
+        assert!(config.bpsec.is_some());
+        assert_eq!(config.bpsec.unwrap().bindings.len(), 1);
+    }
+
+    // No security section is valid (default None).
+    #[test]
+    #[serial]
+    fn no_bpsec_config() {
+        let config = write_and_load("no-bpsec.yaml", "");
+        assert!(config.bpsec.is_none());
     }
 }

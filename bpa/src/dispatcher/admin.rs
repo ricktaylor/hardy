@@ -22,9 +22,9 @@ impl Dispatcher {
         };
 
         let payload_result = {
-            let key_source = self.key_source(&bundle.bundle, &data);
-            bundle.bundle.block_data(1, &data, &*key_source)
-        }; // key_source dropped here, before any await
+            let keys = self.key_store.current();
+            bundle.bundle.block_data(1, &data, &**keys)
+        }; // keys dropped here, before any await
 
         let data = match payload_result {
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {

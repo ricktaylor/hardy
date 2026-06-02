@@ -1,11 +1,10 @@
 use arc_swap::ArcSwap;
 use hardy_async::sync::Mutex;
-use hardy_bpv7::bpsec::key::KeySource;
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
 
 use super::chain::{FilterChain, FilterChainBuilder};
 use super::{Error, ExecResult, Filter, Hook};
 use crate::bundle::Bundle;
+use crate::key::KeyStore;
 use crate::{Arc, Bytes};
 
 /// Built filter chains for all hooks, ready to execute.
@@ -104,22 +103,19 @@ impl FilterEngine {
     }
 
     /// Load the current filters lock-free, then execute.
-    pub async fn exec<F>(
+    pub async fn exec(
         &self,
         hook: Hook,
         bundle: Bundle,
         data: Bytes,
-        key_provider: F,
+        key_store: &Arc<KeyStore>,
         pool: &hardy_async::BoundedTaskPool,
-    ) -> Result<ExecResult, crate::Error>
-    where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
-    {
+    ) -> Result<ExecResult, crate::Error> {
         let hook_label = hook.label();
         let filters = self.filters.load();
         let result = filters
             .chain(&hook)
-            .exec(pool, bundle, data, key_provider)
+            .exec(pool, bundle, data, key_store)
             .await;
 
         match &result {
