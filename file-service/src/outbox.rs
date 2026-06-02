@@ -3,7 +3,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flume::Receiver;
+use flume::{Receiver, Sender};
 use hardy_async::{BoundedTaskPool, CancellationToken, TaskPool};
 use hardy_bpa::services::ApplicationSink;
 use hardy_bpv7::eid::Eid;
@@ -26,6 +26,7 @@ pub fn start(
     crate::ensure_dir(&errors_dir)?;
 
     let (event_tx, event_rx) = flume::unbounded();
+    let startup_tx = event_tx.clone();
 
     let mut watcher = RecommendedWatcher::new(
         move |result| match result {
@@ -51,6 +52,8 @@ pub fn start(
             path: outbox.display().to_string(),
             source: e,
         })?;
+
+    emit_existing_files(&outbox, startup_tx);
 
     let cancel_token = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "outbox_watcher", async move {
@@ -111,6 +114,68 @@ async fn run(
     info!("Stopped watching outbox '{}'", outbox.display());
 }
 
+fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
+    let entries = match std::fs::read_dir(outbox) {
+        Ok(entries) => entries,
+        Err(e) => {
+            error!("Failed to scan outbox '{}': {e}", outbox.display());
+            return;
+        }
+    };
+
+    let mut recovered = 0;
+    let mut existing = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        if name.ends_with(".processing") {
+            let original = path.with_file_name(name.strip_suffix(".processing").unwrap());
+            if original.exists() {
+                warn!(
+                    "Cannot recover '{}': original file already exists, moving to errors",
+                    path.display()
+                );
+                let errors_dir = outbox.join(ERRORS_DIR);
+                if let Err(e) =
+                    std::fs::rename(&path, errors_dir.join(path.file_name().unwrap_or_default()))
+                {
+                    error!("Failed to move '{}' to errors: {e}", path.display());
+                }
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&path, &original) {
+                error!("Failed to recover '{}': {e}", path.display());
+                continue;
+            }
+            recovered += 1;
+            // Watcher will fire MOVED_TO for this rename, no synthetic event needed
+        } else if is_processable(&path) {
+            existing += 1;
+            if tx
+                .send(Event {
+                    kind: EventKind::Access(AccessKind::Close(AccessMode::Write)),
+                    paths: vec![path],
+                    ..Event::default()
+                })
+                .is_err()
+            {
+                error!("Failed to queue existing file event");
+                break;
+            }
+        }
+    }
+
+    if recovered > 0 || existing > 0 {
+        info!("Startup: recovered {recovered} orphaned, queued {existing} existing file(s)");
+    }
+}
+
 fn is_file_ready(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -147,7 +212,11 @@ async fn process_file(
     processing_name.push(".processing");
     let processing_path = path.with_file_name(&processing_name);
     if let Err(e) = tokio::fs::rename(&path, &processing_path).await {
-        error!("Failed to claim '{}': {e}", path.display());
+        if e.kind() == std::io::ErrorKind::NotFound {
+            debug!("Skipping '{}': already claimed", path.display());
+        } else {
+            error!("Failed to claim '{}': {e}", path.display());
+        }
         return;
     }
 

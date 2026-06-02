@@ -51,6 +51,22 @@ sequenceDiagram
 
 ## Outbox Pipeline
 
+### Startup Recovery
+
+On startup, before the event loop begins:
+
+1. The watcher is started (events begin queuing in the channel).
+2. Orphaned `.processing` files from a previous crash are renamed back to their
+   original names. The watcher catches these renames as `MOVED_TO` events.
+   If the original file already exists, the `.processing` file is moved to
+   `errors/` to avoid overwriting.
+3. Pre-existing regular files are injected as synthetic `CLOSE_WRITE` events
+   into the same channel.
+4. The event loop starts and processes all queued events uniformly.
+
+The rename claim in `process_file` deduplicates events from both the startup
+scan and the watcher.
+
 ### Event Detection
 
 The outbox directory is monitored using Linux inotify via the `notify` crate.
@@ -105,6 +121,9 @@ When the BPA delivers a bundle payload via `on_receive()`:
   overwrites a file before the service claims it, the original payload is lost.
 - **Empty files are discarded**: zero-byte files are deleted without sending.
   They are not moved to errors.
+- **Inbox write is silent loss**: the Application trait's `on_receive` has no
+  return value. If an inbox write fails, the BPA considers the bundle delivered.
+  Monitor logs for `error!` level messages.
 - **Linux only**: `IN_CLOSE_WRITE` is a Linux inotify event. The `notify` crate
   falls back to polling on non-Linux platforms.
 - **Single destination**: all outbox files are sent to the same destination EID.
