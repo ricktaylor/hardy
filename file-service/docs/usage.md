@@ -7,7 +7,7 @@
 ```bash
 cargo run -p hardy-file-service -- \
   --service-id 42 \
-  --destination "ipn:2.1.42" \
+  --destination "ipn:1.42" \
   -c file-service/config.yaml
 ```
 
@@ -17,7 +17,7 @@ cargo run -p hardy-file-service -- \
 docker run -v ./outbox:/data/outbox -v ./inbox:/data/inbox \
   hardy-file-service \
   --service-id 42 \
-  --destination "ipn:2.1.42"
+  --destination "ipn:1.42"
 ```
 
 ### Docker Compose
@@ -86,7 +86,7 @@ Configuration is layered (highest priority first):
 # log-level: "info"
 # lifetime: "24h"
 service-id: 42
-destination: "ipn:2.1.42"
+destination: "ipn:1.42"
 outbox: /data/outbox
 inbox: /data/inbox
 ```
@@ -96,7 +96,7 @@ inbox: /data/inbox
 ```bash
 HARDY_FILE_SERVICE_BPA_ADDRESS="http://bpa:50051"
 HARDY_FILE_SERVICE_SERVICE_ID=42
-HARDY_FILE_SERVICE_DESTINATION="ipn:2.1.42"
+HARDY_FILE_SERVICE_DESTINATION="ipn:1.42"
 HARDY_FILE_SERVICE_LIFETIME="1h"
 HARDY_FILE_SERVICE_OUTBOX=/data/outbox
 HARDY_FILE_SERVICE_INBOX=/data/inbox
