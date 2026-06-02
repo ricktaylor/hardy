@@ -47,6 +47,10 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
         };
         Some((block, payload.map(block::Payload::Borrowed)))
     }
+
+    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
+        self.blocks.get(&block_number)
+    }
 }
 
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, Error>
@@ -275,9 +279,15 @@ pub fn decrypt_and_validate_covered_bibs(
         // Per-OperationSet structural rules — single source of truth
         // shared with the keyless parser. The §3.9 "if target is
         // BCB-encrypted then BIB must be BCB-encrypted" check inside
-        // `check_bib` is trivially satisfied here because we only reach
-        // this branch for BCB-encrypted BIBs.
-        check_bib(&bib_op_set, bib_block_number, blocks)?;
+        // `OperationSet::check` is trivially satisfied here because we only
+        // reach this branch for BCB-encrypted BIBs.
+        bib_op_set.check(
+            bib_block_number,
+            &bpsec::PlainBlockSet {
+                blocks: &*blocks,
+                source_data: data,
+            },
+        )?;
 
         // §3.8 BCB-shares-target-with-BIB. Only fires when the BCB
         // context permits sharing — BCB-AES-GCM cannot (IV uniqueness).
@@ -295,7 +305,7 @@ pub fn decrypt_and_validate_covered_bibs(
         for &target_number in bib_op_set.operations.keys() {
             blocks
                 .get_mut(&target_number)
-                .expect("check_bib verified every target exists")
+                .expect("OperationSet::check verified every target exists")
                 .bib = block::BibCoverage::Some(bib_block_number);
         }
 
@@ -336,7 +346,7 @@ pub fn verify_all_bibs(
         for (&target_number, op) in &ops.operations {
             let target_block = blocks
                 .get(&target_number)
-                .expect("check_bib verified targets exist");
+                .expect("OperationSet::check verified targets exist");
             if target_block.bcb.is_some() && !decrypted_data.contains_key(&target_number) {
                 continue;
             }
@@ -471,111 +481,6 @@ pub fn verify(
     Ok(facts)
 }
 
-// ===== Per-OperationSet structural checks (shared with the parser) =====
-
-/// Per-OperationSet structural validation of a BIB against a parsed
-/// `Bundle`. Checks the rules that depend only on this one BIB's
-/// targets — every target block number exists in the bundle (§3.6)
-/// and no target is a security block (§3.9: BIB MUST NOT target a
-/// BCB, mirrored to also reject BIB-targets-BIB).
-///
-/// Does NOT check rules that require seeing every BIB at once (the
-/// §2.6 "security operations unique per (service, target)" rule —
-/// i.e. no duplicate targets across BIBs); that orchestration stays
-/// at the caller, which holds the running cross-BIB target map.
-///
-/// Pure inspection: no mutation of `bundle`, no stamping of `bib`
-/// coverage. The caller stamps after a successful return.
-///
-/// Intended to migrate to a method on `bpsec::bib::OperationSet` once
-/// the BIB OperationSet API stabilises. The structural [`crate::parse`]
-/// pass and the keyed BPSec filter both call this, so it is the single
-/// source of truth for the per-OperationSet rules.
-///
-/// Note: RFC 9172 §3.8 (BCB-targeting-BIB must share a target with
-/// the BIB) is *not* checked here — that rule fires only for
-/// BCB-encrypted BIBs whose OperationSet we cannot decode without
-/// keys. See `bpv7/docs/TODO.md` "Keyed BPSec filter: RFC 9172 §3.8".
-pub fn check_bib(
-    ops: &bpsec::bib::OperationSet,
-    bib_block_number: u64,
-    blocks: &HashMap<u64, block::Block>,
-) -> Result<(), Error> {
-    // Whether this BIB is itself protected by a BCB — load once, used
-    // by the §3.9 check on each target.
-    let bib_bcb = blocks
-        .get(&bib_block_number)
-        .expect("check_bib called with a bib_block_number not in blocks")
-        .bcb;
-
-    for &target_number in ops.operations.keys() {
-        let target_block = blocks
-            .get(&target_number)
-            .ok_or(bpsec::Error::MissingSecurityTarget)?;
-        if matches!(
-            target_block.block_type,
-            block::Type::BlockSecurity | block::Type::BlockIntegrity
-        ) {
-            return Err(bpsec::Error::InvalidBIBTarget.into());
-        }
-        if matches!(target_block.bib, block::BibCoverage::Some(n) if n != bib_block_number) {
-            return Err(bpsec::Error::DuplicateOpTarget.into());
-        }
-        // RFC 9172 §3.9: a BIB whose target block is encrypted with a
-        // BCB MUST itself be encrypted with a BCB. (The stricter
-        // "same BCB or a superset BCB" rule requires decrypting both;
-        // we mirror the legacy parser's "any BCB" check here.)
-        if target_block.bcb.is_some() && bib_bcb.is_none() {
-            return Err(bpsec::Error::BIBMustBeEncrypted.into());
-        }
-    }
-    Ok(())
-}
-
-/// Per-OperationSet structural validation of a BCB against a parsed
-/// `Bundle`. Checks the rules that depend only on this one BCB's flags
-/// and targets — the BCB MUST NOT set delete-block-on-failure (§3.7),
-/// every target block must exist (§3.6), the BCB MUST NOT target the
-/// primary block or another BCB (§3.7), and if the BCB targets the
-/// payload it MUST set must-replicate (§3.7).
-///
-/// Does NOT check rules that require seeing every BCB at once (the
-/// §2.6 "security operations unique per (service, target)" rule —
-/// i.e. no duplicate targets across BCBs); that orchestration stays
-/// at the caller, which holds the running cross-BCB target map.
-///
-/// Pure inspection: no mutation of `bundle`, no stamping of `bcb`
-/// coverage. The caller stamps after a successful return.
-///
-/// Intended to migrate to a method on `bpsec::bcb::OperationSet` once
-/// the BCB OperationSet API stabilises. The structural [`crate::parse`]
-/// pass and the keyed BPSec filter both call this, so it is the single
-/// source of truth for the per-OperationSet BCB rules.
-pub fn check_bcb(
-    ops: &bpsec::bcb::OperationSet,
-    bcb_block_number: u64,
-    bcb_flags: &block::Flags,
-    blocks: &HashMap<u64, block::Block>,
-) -> Result<(), Error> {
-    if bcb_flags.delete_block_on_failure {
-        return Err(bpsec::Error::BCBDeleteFlag.into());
-    }
-    for &target_number in ops.operations.keys() {
-        let target_block = blocks
-            .get(&target_number)
-            .ok_or(bpsec::Error::MissingSecurityTarget)?;
-        match target_block.block_type {
-            block::Type::Primary | block::Type::BlockSecurity => {
-                return Err(bpsec::Error::InvalidBCBTarget.into());
-            }
-            block::Type::Payload if !bcb_flags.must_replicate => {
-                return Err(bpsec::Error::BCBMustReplicate.into());
-            }
-            _ => {}
-        }
-        if matches!(target_block.bcb, Some(n) if n != bcb_block_number) {
-            return Err(bpsec::Error::DuplicateOpTarget.into());
-        }
-    }
-    Ok(())
-}
+// Per-OperationSet structural checks live as `check` methods on
+// `bpsec::bib::OperationSet` / `bpsec::bcb::OperationSet`, the single
+// source of truth shared with the structural parser.
