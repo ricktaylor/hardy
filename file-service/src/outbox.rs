@@ -193,7 +193,14 @@ fn is_processable(path: &Path) -> bool {
 }
 
 async fn move_to_errors(from: &Path, name: &OsStr, errors_dir: &Path) {
-    let dest = errors_dir.join(name);
+    let mut dest = errors_dir.join(name);
+    let mut counter = 1u32;
+    while dest.exists() {
+        let mut suffixed = name.to_os_string();
+        suffixed.push(format!(".{counter}"));
+        dest = errors_dir.join(suffixed);
+        counter += 1;
+    }
     if let Err(e) = tokio::fs::rename(from, &dest).await {
         error!("Failed to move '{}' to errors: {e}", from.display());
     }
@@ -261,5 +268,179 @@ async fn process_file(
             error!("Failed to send bundle from '{}': {e}", path.display());
             move_to_errors(&processing_path, &name, errors_dir).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::CreateKind;
+    use std::fs;
+
+    #[test]
+    fn close_write_is_ready() {
+        assert!(is_file_ready(&EventKind::Access(AccessKind::Close(
+            AccessMode::Write
+        ))));
+    }
+
+    #[test]
+    fn moved_to_is_ready() {
+        assert!(is_file_ready(&EventKind::Modify(ModifyKind::Name(
+            RenameMode::To
+        ))));
+    }
+
+    #[test]
+    fn create_is_not_ready() {
+        assert!(!is_file_ready(&EventKind::Create(CreateKind::File)));
+    }
+
+    #[test]
+    fn close_read_is_not_ready() {
+        assert!(!is_file_ready(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
+    }
+
+    #[test]
+    fn regular_file_is_processable() {
+        assert!(is_processable(Path::new("/outbox/payload.bin")));
+    }
+
+    #[test]
+    fn dotfile_is_not_processable() {
+        assert!(!is_processable(Path::new("/outbox/.tmp_file")));
+    }
+
+    #[test]
+    fn processing_file_is_not_processable() {
+        assert!(!is_processable(Path::new("/outbox/payload.bin.processing")));
+    }
+
+    #[test]
+    fn errors_dir_file_is_not_processable() {
+        assert!(!is_processable(Path::new("/outbox/errors/failed.bin")));
+    }
+
+    #[test]
+    fn emit_existing_recovers_orphaned_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+
+        fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        assert!(outbox.join("test.bin").exists());
+        assert!(!outbox.join("test.bin.processing").exists());
+
+        // Watcher would fire MOVED_TO, so no synthetic event for recovered files
+        // but there might be zero or more events depending on timing
+        drop(rx);
+    }
+
+    #[test]
+    fn emit_existing_queues_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+
+        fs::write(outbox.join("a.bin"), "payload_a").unwrap();
+        fs::write(outbox.join("b.bin"), "payload_b").unwrap();
+        fs::write(outbox.join(".hidden"), "ignored").unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        let mut events: Vec<_> = rx.drain().collect();
+        assert_eq!(events.len(), 2);
+
+        let mut paths: Vec<_> = events
+            .drain(..)
+            .flat_map(|e| e.paths)
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["a.bin", "b.bin"]);
+    }
+
+    #[test]
+    fn emit_existing_handles_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+
+        fs::write(outbox.join("test.bin"), "original").unwrap();
+        fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
+
+        let (tx, _rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        assert!(outbox.join("test.bin").exists());
+        assert!(!outbox.join("test.bin.processing").exists());
+        assert!(outbox.join(ERRORS_DIR).join("test.bin.processing").exists());
+    }
+
+    #[test]
+    fn emit_existing_skips_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+        fs::create_dir_all(outbox.join("subdir")).unwrap();
+        fs::write(outbox.join("real.bin"), "data").unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        let events: Vec<_> = rx.drain().collect();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn emit_existing_skips_dotfiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+
+        fs::write(outbox.join(".hidden"), "hidden").unwrap();
+        fs::write(outbox.join("visible.bin"), "visible").unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        let events: Vec<_> = rx.drain().collect();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].paths[0].ends_with("visible.bin"));
+    }
+
+    #[test]
+    fn emit_existing_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = dir.path();
+        fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
+
+        let (tx, rx) = flume::unbounded();
+        emit_existing_files(outbox, tx);
+
+        let events: Vec<_> = rx.drain().collect();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn is_processable_no_extension() {
+        assert!(is_processable(Path::new("/outbox/noext")));
+    }
+
+    #[test]
+    fn is_processable_multiple_dots() {
+        assert!(is_processable(Path::new("/outbox/file.tar.gz")));
+    }
+
+    #[test]
+    fn is_processable_just_processing_extension() {
+        assert!(!is_processable(Path::new("/outbox/file.processing")));
     }
 }

@@ -37,3 +37,6 @@ humantime-serde = "1"
 notify = "8"
 flume = "0.12"
 time = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

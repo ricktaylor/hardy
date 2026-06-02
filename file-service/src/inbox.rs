@@ -35,3 +35,54 @@ pub async fn write_to_dir(dir: &Path, payload: &[u8], source: &Eid) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[tokio::test]
+    async fn write_creates_file_with_correct_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Eid::from_str("ipn:1.42").unwrap();
+
+        write_to_dir(dir.path(), b"hello", &source).await;
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(entries.len(), 1);
+
+        let content = std::fs::read(entries[0].path()).unwrap();
+        assert_eq!(content, b"hello");
+    }
+
+    #[tokio::test]
+    async fn write_generates_unique_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Eid::from_str("ipn:1.42").unwrap();
+
+        write_to_dir(dir.path(), b"first", &source).await;
+        write_to_dir(dir.path(), b"second", &source).await;
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(entries.len(), 2);
+
+        let names: Vec<_> = entries
+            .iter()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_ne!(names[0], names[1]);
+    }
+
+    #[tokio::test]
+    async fn filename_sanitizes_special_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Eid::from_str("dtn://node/svc").unwrap();
+
+        write_to_dir(dir.path(), b"data", &source).await;
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert!(!name.contains('/'));
+        assert!(!name.contains(':'));
+    }
+}
