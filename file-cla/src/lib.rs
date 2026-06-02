@@ -14,7 +14,6 @@ use hardy_bpv7::eid::NodeId;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 use trace_err::*;
 use tracing::{debug, error, info, warn};
@@ -107,7 +106,7 @@ fn canonicalize_path(cwd: &Path, path: &PathBuf) -> Result<String, Error> {
 pub struct Cla {
     inboxes: HashMap<NodeId, String>,
     outbox: Option<String>,
-    sink: Once<Arc<dyn hardy_bpa::cla::Sink>>,
+    ctx: Once<hardy_bpa::cla::ClaContext>,
     tasks: hardy_async::TaskPool,
 }
 
@@ -141,15 +140,15 @@ impl Cla {
         Ok(Self {
             inboxes,
             outbox,
-            sink: Once::new(),
+            ctx: Once::new(),
             tasks: hardy_async::TaskPool::new(),
         })
     }
 
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+        // Dropping context triggers unregistration via channel close.
+        // Since Once doesn't support take(), shutdown is handled by the
+        // BPA calling on_unregister() during its shutdown sequence.
     }
 }

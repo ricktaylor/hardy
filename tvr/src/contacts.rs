@@ -1,10 +1,9 @@
 use crate::scheduler::SchedulerHandle;
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routes::{Action, RoutingAgent, RoutingContext};
 use hardy_bpv7::eid::NodeId;
-use std::sync::Arc;
 use tracing::{debug, info};
 
-// A scheduled contact — the canonical internal representation used by
+// A scheduled contact: the canonical internal representation used by
 // both the file parser and gRPC session service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contact {
@@ -43,11 +42,11 @@ pub enum Schedule {
 }
 
 // The TVR routing agent. Manages the RIB and projects active contacts
-// into the BPA's FIB via the RoutingSink.
+// into the BPA's FIB via the RoutingContext.
 pub struct TvrAgent {
     default_priority: u32,
     scheduler: SchedulerHandle,
-    sink: hardy_async::sync::spin::Once<Arc<dyn RoutingSink>>,
+    ctx: hardy_async::sync::spin::Once<RoutingContext>,
 }
 
 impl TvrAgent {
@@ -57,7 +56,7 @@ impl TvrAgent {
         Self {
             default_priority,
             scheduler,
-            sink: hardy_async::sync::spin::Once::new(),
+            ctx: hardy_async::sync::spin::Once::new(),
         }
     }
 
@@ -71,28 +70,20 @@ impl TvrAgent {
         &self.scheduler
     }
 
-    // Get the stored sink (available after registration).
-    pub fn sink(&self) -> Option<Arc<dyn RoutingSink>> {
-        self.sink.get().cloned()
-    }
-
-    // Explicitly unregister from the BPA.
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
+    // Get the stored context (available after registration).
+    pub fn routing_ctx(&self) -> Option<RoutingContext> {
+        self.ctx.get().cloned()
     }
 }
 
 #[hardy_bpa::async_trait]
 impl RoutingAgent for TvrAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, node_ids: &[NodeId]) {
+    async fn on_register(&self, ctx: RoutingContext, node_ids: &[NodeId]) {
         info!(
             "TVR agent registered, node IDs: {:?}",
             node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
         );
-        let sink: Arc<dyn RoutingSink> = sink.into();
-        self.sink.call_once(|| sink);
+        self.ctx.call_once(|| ctx);
     }
 
     async fn on_unregister(&self) {

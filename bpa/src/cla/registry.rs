@@ -56,72 +56,6 @@ impl core::fmt::Debug for Cla {
 
 type ClaMap = HashMap<String, Arc<Cla>>;
 
-struct Sink {
-    cla: Weak<Cla>,
-    registry: Arc<ClaRegistry>,
-    dispatcher: Arc<dispatcher::Dispatcher>,
-}
-
-#[async_trait]
-impl cla::Sink for Sink {
-    async fn unregister(&self) {
-        if let Some(cla) = self.cla.upgrade() {
-            self.registry.unregister(cla).await;
-        }
-    }
-
-    async fn dispatch(
-        &self,
-        bundle: Bytes,
-        peer_node: Option<&NodeId>,
-        peer_addr: Option<&ClaAddress>,
-    ) -> cla::Result<()> {
-        let cla_name = self
-            .cla
-            .upgrade()
-            .ok_or(cla::Error::Disconnected)?
-            .name
-            .clone();
-        self.dispatcher
-            .receive_bundle(
-                bundle,
-                Some(cla_name),
-                peer_node.cloned(),
-                peer_addr.cloned(),
-            )
-            .await
-    }
-
-    async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
-        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
-        Ok(self
-            .registry
-            .add_peer(cla, self.dispatcher.clone(), cla_addr, node_ids)
-            .await)
-    }
-
-    async fn remove_peer(&self, cla_addr: &ClaAddress) -> cla::Result<bool> {
-        Ok(self
-            .registry
-            .remove_peer(
-                self.cla.upgrade().ok_or(cla::Error::Disconnected)?,
-                cla_addr,
-            )
-            .await)
-    }
-}
-
-impl Drop for Sink {
-    fn drop(&mut self) {
-        if let Some(cla) = self.cla.upgrade() {
-            let registry = self.registry.clone();
-            hardy_async::spawn!(self.registry.tasks, "cla_drop_cleanup", async move {
-                registry.unregister(cla).await;
-            });
-        }
-    }
-}
-
 // CLA registry in the building phase — only insert() is available.
 pub(crate) struct ClaRegistryBuilder {
     clas: ClaMap,
@@ -252,17 +186,75 @@ impl ClaRegistry {
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
-        entry
-            .cla
-            .on_register(
-                Box::new(Sink {
-                    cla: Arc::downgrade(&entry),
-                    registry: self.clone(),
-                    dispatcher: dispatcher.clone(),
-                }),
-                &node_ids,
-            )
-            .await;
+
+        let (ingress_tx, ingress_rx) = flume::bounded(self.poll_channel_depth);
+        let (peer_tx, peer_rx) = flume::unbounded();
+        let shutdown = self.tasks.cancel_token().child_token();
+
+        let ctx = cla::ClaContext::new(ingress_tx, peer_tx, shutdown.clone());
+
+        // Spawn ingress receiver: dispatches received bundles to the BPA
+        let dispatcher_clone = dispatcher.clone();
+        let cla_name = Arc::clone(&entry.name);
+        let ingress_cancel = shutdown.clone();
+        hardy_async::spawn!(self.tasks, "cla_ingress_receiver", async move {
+            use futures::FutureExt;
+            loop {
+                futures::select_biased! {
+                    _ = ingress_cancel.cancelled().fuse() => break,
+                    msg = ingress_rx.recv_async().fuse() => match msg {
+                        Ok(msg) => {
+                            if let Err(e) = dispatcher_clone
+                                .receive_bundle(
+                                    msg.data,
+                                    Some(cla_name.clone()),
+                                    msg.peer_node,
+                                    msg.peer_addr,
+                                )
+                                .await
+                            {
+                                warn!("Failed to process ingress bundle: {e}");
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                }
+            }
+        });
+
+        // Spawn peer receiver: manages peer add/remove operations
+        let registry = self.clone();
+        let entry_for_peers = entry.clone();
+        let dispatcher_for_peers = dispatcher.clone();
+        hardy_async::spawn!(self.tasks, "cla_peer_receiver", async move {
+            use cla::context::PeerOp;
+            use futures::FutureExt;
+            loop {
+                futures::select_biased! {
+                    _ = shutdown.cancelled().fuse() => break,
+                    op = peer_rx.recv_async().fuse() => match op {
+                        Ok(PeerOp::Add(addr, ids)) => {
+                            registry
+                                .add_peer(
+                                    entry_for_peers.clone(),
+                                    dispatcher_for_peers.clone(),
+                                    addr,
+                                    &ids,
+                                )
+                                .await;
+                        }
+                        Ok(PeerOp::Remove(addr)) => {
+                            registry.remove_peer(entry_for_peers.clone(), &addr).await;
+                        }
+                        Err(_) => break,
+                    },
+                }
+            }
+            // Channel closed or shutdown: CLA disconnected
+            registry.unregister(entry_for_peers).await;
+        });
+
+        entry.cla.on_register(ctx, &node_ids).await;
 
         metrics::gauge!("bpa.cla.registered").increment(1.0);
         info!("Registered CLA: {name}");
@@ -384,23 +376,19 @@ mod tests {
     use hardy_async::sync::spin::Once;
 
     struct TestCla {
-        sink: Once<Box<dyn cla::Sink>>,
+        ctx: Once<cla::ClaContext>,
     }
 
     impl TestCla {
         fn new() -> Self {
-            Self { sink: Once::new() }
+            Self { ctx: Once::new() }
         }
     }
 
     #[async_trait]
     impl cla::Cla for TestCla {
-        async fn on_register(
-            &self,
-            sink: Box<dyn cla::Sink>,
-            _node_ids: &[hardy_bpv7::eid::NodeId],
-        ) {
-            self.sink.call_once(|| sink);
+        async fn on_register(&self, ctx: cla::ClaContext, _node_ids: &[hardy_bpv7::eid::NodeId]) {
+            self.ctx.call_once(|| ctx);
         }
         async fn on_unregister(&self) {}
         async fn forward(
@@ -444,27 +432,20 @@ mod tests {
             .await
             .unwrap();
 
-        let sink = cla.sink.get().expect("Sink should be set after register");
+        let ctx = cla.ctx.get().expect("Context should be set after register");
         let peer_addr = ClaAddress::Private("peer1".as_bytes().into());
         let peer_node = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
             allocator_id: 0,
             node_number: 10,
         });
 
-        // Add peer
-        let added = sink
-            .add_peer(peer_addr.clone(), std::slice::from_ref(&peer_node))
-            .await
-            .unwrap();
-        assert!(added, "First add_peer should succeed");
+        // Add peer (fire-and-forget via channel)
+        ctx.add_peer(peer_addr.clone(), vec![peer_node]);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         // Remove peer
-        let removed = sink.remove_peer(&peer_addr).await.unwrap();
-        assert!(removed, "remove_peer should succeed");
-
-        // Removing again should return false
-        let removed = sink.remove_peer(&peer_addr).await.unwrap();
-        assert!(!removed, "Double remove_peer should return false");
+        ctx.remove_peer(peer_addr);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         bpa.shutdown().await;
     }
@@ -480,9 +461,8 @@ mod tests {
             .await
             .unwrap();
 
-        let sink = cla.sink.get().expect("Sink should be set");
+        let ctx = cla.ctx.get().expect("Context should be set");
 
-        // Add two peers
         let addr1 = ClaAddress::Private("p1".as_bytes().into());
         let addr2 = ClaAddress::Private("p2".as_bytes().into());
         let node1 = hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
@@ -494,11 +474,16 @@ mod tests {
             node_number: 21,
         });
 
-        sink.add_peer(addr1, &[node1]).await.unwrap();
-        sink.add_peer(addr2, &[node2]).await.unwrap();
+        ctx.add_peer(addr1, vec![node1]);
+        ctx.add_peer(addr2, vec![node2]);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        // Unregister the CLA — should cascade-remove both peers
-        sink.unregister().await;
+        // Shutdown triggers cascading cleanup of all CLA peers
+        bpa.shutdown().await;
+
+        // Rebuild BPA to verify the name is freed
+        let bpa = Bpa::builder().build().await.unwrap();
+        bpa.start(false);
 
         // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());

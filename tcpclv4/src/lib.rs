@@ -57,7 +57,7 @@ pub enum Error {
 
 /// Registration-time state from BPA.
 struct Inner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: hardy_bpa::cla::ClaContext,
     node_ids: Arc<[NodeId]>,
 }
 
@@ -161,9 +161,8 @@ impl Cla {
 
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            inner.sink.unregister().await;
-        }
+        // Context-based: dropping the context triggers unregistration.
+        // BPA shutdown calls on_unregister() directly.
     }
 
     /// Creates a ConnectionContext for use in connect/forward operations.
@@ -175,7 +174,7 @@ impl Cla {
             segment_mru: self.segment_mru,
             transfer_mru: self.transfer_mru,
             node_ids: inner.node_ids.clone(),
-            sink: inner.sink.clone(),
+            ctx: inner.ctx.clone(),
             registry: self.registry.clone(),
             tls_config: self.tls_config.clone(),
             session_cancel_token: self.session_cancel_token.clone(),

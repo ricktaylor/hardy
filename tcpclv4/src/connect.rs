@@ -273,7 +273,7 @@ impl Connector {
         let session = session::Session::new(
             transport_reader,
             writer_handle,
-            self.ctx.sink.clone(),
+            self.ctx.ctx.clone(),
             peer_node,
             peer_addr,
             keepalive_duration,
@@ -288,7 +288,7 @@ impl Connector {
         // Kick off the run() as a background task
         // Extract what we need to avoid capturing `self` (which has Arc<TaskPool>)
         let registry = self.ctx.registry.clone();
-        let sink = self.ctx.sink.clone();
+        let ctx = self.ctx.ctx.clone();
         let remote_addr = *remote_addr;
 
         // Spawn the writer task first
@@ -299,7 +299,7 @@ impl Connector {
         hardy_async::spawn!(self.tasks, "active_session_task", async move {
             registry
                 .register_session(
-                    sink,
+                    ctx,
                     connection::Connection { tx, local_addr },
                     remote_addr,
                     peer_init.node_id,

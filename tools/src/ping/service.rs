@@ -93,7 +93,7 @@ struct SharedState {
 }
 
 pub struct Service {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ServiceSink>>,
+    ctx: std::sync::OnceLock<hardy_bpa::services::ServiceContext>,
     node_id: String,
     destination: Eid,
     lifetime: std::time::Duration,
@@ -128,7 +128,7 @@ impl Service {
         };
 
         Self {
-            sink: std::sync::OnceLock::new(),
+            ctx: std::sync::OnceLock::new(),
             node_id: args.node_id().unwrap().to_string(),
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
@@ -384,14 +384,12 @@ impl Service {
             eprintln!("Sending ping {seq_no}...");
         }
 
-        // Get sink first (may block on OnceLock initialization)
-        let sink = self.sink.wait();
+        let ctx = self.ctx.wait();
 
-        // Record send time immediately before the actual send for accurate RTT
         let send_time = time::OffsetDateTime::now_utc();
 
-        let id = sink
-            .send(bundle_bytes.into())
+        let id = ctx
+            .send_raw(bundle_bytes.into())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send bundle: {e}"))?;
 
@@ -434,9 +432,8 @@ impl Service {
 
 #[async_trait]
 impl hardy_bpa::services::Service for Service {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
-        // Ensure single initialization
-        self.sink.get_or_init(|| sink);
+    async fn on_register(&self, _endpoint: &Eid, ctx: hardy_bpa::services::ServiceContext) {
+        self.ctx.get_or_init(|| ctx);
     }
 
     async fn on_unregister(&self) {

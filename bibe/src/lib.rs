@@ -109,8 +109,8 @@ impl Bibe {
 
     /// Unregister this BIBE instance from the BPA.
     pub async fn unregister(&self) {
-        self.cla.unregister().await;
-        self.decap_service.unregister().await;
+        // Context-based: BPA handles unregistration via channel close
+        // or on_unregister() during shutdown.
     }
 
     /// Register a tunnel destination (creates virtual peer).

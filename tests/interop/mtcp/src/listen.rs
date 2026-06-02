@@ -1,5 +1,6 @@
 use super::*;
 use futures::StreamExt;
+use hardy_bpa::cla::ClaContext;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_util::bytes::Bytes;
@@ -9,7 +10,7 @@ pub struct Listener {
     pub address: SocketAddr,
     pub framing: config::Framing,
     pub max_bundle_size: u64,
-    pub sink: Arc<dyn hardy_bpa::cla::Sink>,
+    pub ctx: ClaContext,
 }
 
 impl Listener {
@@ -28,12 +29,12 @@ impl Listener {
                 result = listener.accept() => match result {
                     Ok((stream, remote_addr)) => {
                         debug!(%remote_addr, "Accepted connection");
-                        let sink = self.sink.clone();
+                        let ctx = self.ctx.clone();
                         let framing = self.framing.clone();
                         let max_bundle_size = self.max_bundle_size;
                         let cancel = tasks.cancel_token().clone();
                         hardy_async::spawn!(tasks, "mtcp_rx", async move {
-                            handle_connection(stream, remote_addr, framing, max_bundle_size, sink, cancel).await;
+                            handle_connection(stream, remote_addr, framing, max_bundle_size, ctx, cancel).await;
                         });
                     }
                     Err(e) => {
@@ -51,7 +52,7 @@ impl Listener {
 async fn receive_loop<S>(
     framed: &mut S,
     remote_addr: SocketAddr,
-    sink: &Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: &ClaContext,
     peer_addr: &Option<hardy_bpa::cla::ClaAddress>,
     cancel: &hardy_async::CancellationToken,
 ) where
@@ -62,10 +63,7 @@ async fn receive_loop<S>(
             result = framed.next() => match result {
                 Some(Ok(bundle)) => {
                     debug!(%remote_addr, len = bundle.len(), "Received bundle");
-                    if let Err(e) = sink.dispatch(bundle, None, peer_addr.as_ref()).await {
-                        warn!(%remote_addr, "Dispatch failed: {e:?}");
-                        return;
-                    }
+                    ctx.dispatch(bundle, None, peer_addr.clone()).await;
                 }
                 Some(Err(e)) => {
                     debug!(%remote_addr, "Connection error: {e}");
@@ -89,7 +87,7 @@ async fn handle_connection(
     remote_addr: SocketAddr,
     framing: config::Framing,
     max_bundle_size: u64,
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    ctx: ClaContext,
     cancel: hardy_async::CancellationToken,
 ) {
     stream
@@ -102,11 +100,11 @@ async fn handle_connection(
     match framing {
         config::Framing::Mtcp => {
             let mut framed = codec::MtcpCodec::new(max_bundle_size).framed(stream);
-            receive_loop(&mut framed, remote_addr, &sink, &peer_addr, &cancel).await;
+            receive_loop(&mut framed, remote_addr, &ctx, &peer_addr, &cancel).await;
         }
         config::Framing::Stcp => {
             let mut framed = codec::StcpCodec::new(max_bundle_size).framed(stream);
-            receive_loop(&mut framed, remote_addr, &sink, &peer_addr, &cancel).await;
+            receive_loop(&mut framed, remote_addr, &ctx, &peer_addr, &cancel).await;
         }
     }
 }
