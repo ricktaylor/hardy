@@ -67,6 +67,7 @@ impl FileService {
         if let Some(sink) = self.sink.get() {
             sink.unregister().await;
         }
+        self.tasks.shutdown().await;
     }
 }
 
