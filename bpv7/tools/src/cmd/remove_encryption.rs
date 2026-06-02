@@ -38,10 +38,12 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        use hardy_bpv7::bpsec::edit::BPSecEditor;
-        let editor = hardy_bpv7::editor::Editor::new(&raw, &data)
-            .remove_encryption(self.block, &key_store)
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
+        let editor = hardy_bpv7::bpsec::edit::remove_encryption(
+            hardy_bpv7::editor::Editor::new(&raw, &data),
+            self.block,
+            &key_store,
+        )
+        .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
 
         let chunks = editor
             .rebuild()

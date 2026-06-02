@@ -678,8 +678,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
 
     // 4. Remove BCB from payload only
     let raw = raw_of(&encrypted_bytes);
-    let editor = Editor::new(&raw, &encrypted_bytes)
-        .remove_encryption(1, &all_keys)
+    let editor = bpsec::edit::remove_encryption(Editor::new(&raw, &encrypted_bytes), 1, &all_keys)
         .map_err(|(_, e)| e)
         .expect("Failed to remove BCB from payload");
     let decrypted_bytes = editor
@@ -1034,8 +1033,7 @@ fn test_bcb_without_bib_removal() {
 
     // 3. Remove BCB using Editor::remove_encryption
     let raw = raw_of(&encrypted_bytes);
-    let editor = Editor::new(&raw, &encrypted_bytes)
-        .remove_encryption(1, &keys)
+    let editor = bpsec::edit::remove_encryption(Editor::new(&raw, &encrypted_bytes), 1, &keys)
         .map_err(|(_, e)| e)
         .expect("Failed to remove BCB");
     let decrypted_bytes = editor
@@ -1097,7 +1095,7 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     let _ = bundle;
 
     // Attempt to remove encryption from payload block (which is not encrypted)
-    let result = Editor::new(&raw, &bundle_bytes).remove_encryption(1, &keys);
+    let result = bpsec::edit::remove_encryption(Editor::new(&raw, &bundle_bytes), 1, &keys);
 
     // Should fail with NotEncrypted error
     let Err((_, e)) = result else {
