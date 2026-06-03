@@ -38,6 +38,18 @@ fn default_bpa_address() -> String {
     "http://[::1]:50051".to_string()
 }
 
+fn default_outbox() -> PathBuf {
+    PathBuf::from("/tmp/hardy/outbox")
+}
+
+fn default_errors() -> PathBuf {
+    PathBuf::from("/tmp/hardy/errors")
+}
+
+fn default_inbox() -> PathBuf {
+    PathBuf::from("/tmp/hardy/inbox")
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -56,11 +68,14 @@ pub struct Config {
     #[serde(default, with = "humantime_serde")]
     pub lifetime: Option<Duration>,
 
-    #[serde(default)]
-    pub outbox: Option<PathBuf>,
+    #[serde(default = "default_outbox")]
+    pub outbox: PathBuf,
 
-    #[serde(default)]
-    pub inbox: Option<PathBuf>,
+    #[serde(default = "default_errors")]
+    pub errors: PathBuf,
+
+    #[serde(default = "default_inbox")]
+    pub inbox: PathBuf,
 }
 
 impl Config {
@@ -116,8 +131,9 @@ mod tests {
         assert!(config.service_id.is_none());
         assert!(config.destination.is_none());
         assert!(config.lifetime.is_none());
-        assert!(config.outbox.is_none());
-        assert!(config.inbox.is_none());
+        assert_eq!(config.outbox, PathBuf::from("/tmp/hardy/outbox"));
+        assert_eq!(config.errors, PathBuf::from("/tmp/hardy/errors"));
+        assert_eq!(config.inbox, PathBuf::from("/tmp/hardy/inbox"));
     }
 
     #[test]
@@ -140,8 +156,8 @@ inbox: /tmp/in
         assert_eq!(config.service_id, Some(99));
         assert!(config.destination.is_some());
         assert_eq!(config.lifetime, Some(Duration::from_secs(3600)));
-        assert_eq!(config.outbox, Some(PathBuf::from("/tmp/out")));
-        assert_eq!(config.inbox, Some(PathBuf::from("/tmp/in")));
+        assert_eq!(config.outbox, PathBuf::from("/tmp/out"));
+        assert_eq!(config.inbox, PathBuf::from("/tmp/in"));
     }
 
     #[test]

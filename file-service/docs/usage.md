@@ -87,8 +87,9 @@ Configuration is layered (highest priority first):
 # lifetime: "24h"
 service-id: 42
 destination: "ipn:1.42"
-outbox: /data/outbox
-inbox: /data/inbox
+# outbox: /tmp/hardy/outbox
+# errors: /tmp/hardy/errors
+# inbox: /tmp/hardy/inbox
 ```
 
 ### Environment variables
@@ -99,6 +100,7 @@ HARDY_FILE_SERVICE_SERVICE_ID=42
 HARDY_FILE_SERVICE_DESTINATION="ipn:1.42"
 HARDY_FILE_SERVICE_LIFETIME="1h"
 HARDY_FILE_SERVICE_OUTBOX=/data/outbox
+HARDY_FILE_SERVICE_ERRORS=/data/errors
 HARDY_FILE_SERVICE_INBOX=/data/inbox
 ```
 
@@ -111,19 +113,20 @@ HARDY_FILE_SERVICE_INBOX=/data/inbox
 | service-id | - | yes | IPN service number |
 | destination | - | yes | Destination EID for outgoing bundles |
 | lifetime | 24h | no | Bundle lifetime (human-readable) |
-| outbox | - | no | Directory to watch for outgoing files |
-| inbox | - | no | Directory to write incoming payloads |
+| outbox | /tmp/hardy/outbox | no | Directory to watch for outgoing files |
+| errors | /tmp/hardy/errors | no | Directory for failed send attempts |
+| inbox | /tmp/hardy/inbox | no | Directory to write incoming payloads |
 
 ## Error handling
 
 ### Outbox errors
 
-Failed files are moved to `outbox/errors/`. Inspect and re-submit
-by moving them back:
+Failed files are moved to the errors directory. Inspect and re-submit
+by moving them back to the outbox:
 
 ```bash
-ls outbox/errors/
-mv outbox/errors/failed_file.bin outbox/
+ls /tmp/hardy/errors/
+mv /tmp/hardy/errors/failed_file.bin /tmp/hardy/outbox/
 ```
 
 ### Inbox errors

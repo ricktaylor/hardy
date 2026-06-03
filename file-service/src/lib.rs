@@ -10,7 +10,7 @@ use hardy_bpv7::bundle::Id;
 use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::ReasonCode;
 use time::OffsetDateTime;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 mod error;
 mod inbox;
@@ -31,8 +31,9 @@ pub(crate) fn ensure_dir(path: &Path) -> Result<(), Error> {
 pub struct FileService {
     destination: Eid,
     lifetime: Duration,
-    outbox: Option<PathBuf>,
-    inbox: Option<PathBuf>,
+    outbox: PathBuf,
+    errors: PathBuf,
+    inbox: PathBuf,
     sink: Once<Arc<dyn ApplicationSink>>,
     tasks: TaskPool,
 }
@@ -41,22 +42,21 @@ impl FileService {
     pub fn new(
         destination: Eid,
         lifetime: Option<Duration>,
-        outbox: Option<PathBuf>,
-        inbox: Option<PathBuf>,
+        outbox: PathBuf,
+        errors: PathBuf,
+        inbox: PathBuf,
     ) -> Result<Self, Error> {
         let lifetime = lifetime.unwrap_or(DEFAULT_LIFETIME);
 
-        if let Some(path) = &outbox {
-            ensure_dir(path)?;
-        }
-        if let Some(path) = &inbox {
-            ensure_dir(path)?;
-        }
+        ensure_dir(&outbox)?;
+        ensure_dir(&errors)?;
+        ensure_dir(&inbox)?;
 
         Ok(Self {
             destination,
             lifetime,
             outbox,
+            errors,
             inbox,
             sink: Once::new(),
             tasks: TaskPool::new(),
@@ -83,17 +83,16 @@ impl Application for FileService {
 
         let sink: &Arc<dyn ApplicationSink> = self.sink.call_once(|| Arc::from(sink));
 
-        if let Some(outbox) = &self.outbox {
-            if let Err(e) = outbox::run(
-                &self.tasks,
-                sink.clone(),
-                outbox.clone(),
-                self.destination.clone(),
-                self.lifetime,
-            ) {
-                error!("Failed to start outbox watcher: {e}");
-                sink.unregister().await;
-            }
+        if let Err(e) = outbox::run(
+            &self.tasks,
+            sink.clone(),
+            self.outbox.clone(),
+            self.errors.clone(),
+            self.destination.clone(),
+            self.lifetime,
+        ) {
+            error!("Failed to start outbox watcher: {e}");
+            sink.unregister().await;
         }
     }
 
@@ -108,11 +107,7 @@ impl Application for FileService {
         _ack_requested: bool,
         payload: Bytes,
     ) {
-        if let Some(inbox) = &self.inbox {
-            inbox::write_to_dir(inbox, &payload, &source).await;
-        } else {
-            warn!("Received payload from {source} but no inbox configured");
-        }
+        inbox::write_to_dir(&self.inbox, &payload, &source).await;
     }
 
     async fn on_status_notify(
@@ -228,6 +223,39 @@ mod tests {
         Eid::from_str("ipn:1.42").unwrap()
     }
 
+    struct TestDirs {
+        _dir: tempfile::TempDir,
+        outbox: PathBuf,
+        errors: PathBuf,
+        inbox: PathBuf,
+    }
+
+    impl TestDirs {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let outbox = dir.path().join("outbox");
+            let errors = dir.path().join("errors");
+            let inbox = dir.path().join("inbox");
+            Self {
+                _dir: dir,
+                outbox,
+                errors,
+                inbox,
+            }
+        }
+
+        fn service(&self) -> FileService {
+            FileService::new(
+                test_eid(),
+                Some(Duration::from_secs(60)),
+                self.outbox.clone(),
+                self.errors.clone(),
+                self.inbox.clone(),
+            )
+            .unwrap()
+        }
+    }
+
     #[tokio::test]
     async fn outbox_sends_file_as_bundle() {
         let dir = tempfile::tempdir().unwrap();
@@ -236,8 +264,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -273,8 +302,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -303,8 +333,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            None,
-            Some(inbox.clone()),
+            dir.path().join("outbox"),
+            dir.path().join("errors"),
+            inbox.clone(),
         )
         .unwrap();
 
@@ -334,8 +365,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -371,8 +403,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -401,8 +434,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -430,8 +464,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -443,11 +478,12 @@ mod tests {
         std::fs::write(outbox.join("will_fail.bin"), "doomed payload").unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        let errors = dir.path().join("errors");
         assert!(!outbox.join("will_fail.bin").exists());
         assert!(!outbox.join("will_fail.bin.processing").exists());
-        assert!(outbox.join("errors").join("will_fail.bin").exists());
+        assert!(errors.join("will_fail.bin").exists());
         assert_eq!(
-            std::fs::read(outbox.join("errors").join("will_fail.bin")).unwrap(),
+            std::fs::read(errors.join("will_fail.bin")).unwrap(),
             b"doomed payload"
         );
 
@@ -464,8 +500,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -499,8 +536,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -543,9 +581,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_without_outbox_or_inbox() {
-        let service =
-            FileService::new(test_eid(), Some(Duration::from_secs(60)), None, None).unwrap();
+    async fn service_with_defaults() {
+        let dirs = TestDirs::new();
+        let service = dirs.service();
 
         let (_mock, sink) = mock_sink();
         service
@@ -572,8 +610,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -602,8 +641,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -635,8 +675,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -669,8 +710,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -700,8 +742,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -728,8 +771,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -758,8 +802,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -812,8 +857,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            None,
-            Some(inbox.clone()),
+            dir.path().join("outbox"),
+            dir.path().join("errors"),
+            inbox.clone(),
         )
         .unwrap();
 
@@ -838,8 +884,14 @@ mod tests {
     #[test]
     fn new_uses_default_lifetime() {
         let dir = tempfile::tempdir().unwrap();
-        let service =
-            FileService::new(test_eid(), None, Some(dir.path().join("outbox")), None).unwrap();
+        let service = FileService::new(
+            test_eid(),
+            None,
+            dir.path().join("outbox"),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
+        )
+        .unwrap();
         assert_eq!(service.lifetime, DEFAULT_LIFETIME);
     }
 
@@ -849,7 +901,14 @@ mod tests {
         let outbox = dir.path().join("deep/nested/outbox");
         let inbox = dir.path().join("deep/nested/inbox");
 
-        FileService::new(test_eid(), None, Some(outbox.clone()), Some(inbox.clone())).unwrap();
+        FileService::new(
+            test_eid(),
+            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            inbox.clone(),
+        )
+        .unwrap();
 
         assert!(outbox.is_dir());
         assert!(inbox.is_dir());
@@ -865,8 +924,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -878,18 +938,19 @@ mod tests {
         std::fs::write(outbox.join("collide.bin"), "first attempt").unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        assert!(outbox.join("errors/collide.bin").exists());
+        let errors = dir.path().join("errors");
+        assert!(errors.join("collide.bin").exists());
         assert_eq!(
-            std::fs::read_to_string(outbox.join("errors/collide.bin")).unwrap(),
+            std::fs::read_to_string(errors.join("collide.bin")).unwrap(),
             "first attempt"
         );
 
         std::fs::write(outbox.join("collide.bin"), "second attempt").unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        assert!(outbox.join("errors/collide.bin.1").exists());
+        assert!(errors.join("collide.bin.1").exists());
         assert_eq!(
-            std::fs::read_to_string(outbox.join("errors/collide.bin.1")).unwrap(),
+            std::fs::read_to_string(errors.join("collide.bin.1")).unwrap(),
             "second attempt"
         );
 
@@ -907,8 +968,9 @@ mod tests {
         let service = FileService::new(
             dest.clone(),
             Some(Duration::from_secs(3600)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -938,8 +1000,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -971,8 +1034,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -1010,8 +1074,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            Some(outbox.clone()),
-            None,
+            outbox.clone(),
+            dir.path().join("errors"),
+            dir.path().join("inbox"),
         )
         .unwrap();
 
@@ -1041,8 +1106,9 @@ mod tests {
         let service = FileService::new(
             test_eid(),
             Some(Duration::from_secs(60)),
-            None,
-            Some(inbox.clone()),
+            dir.path().join("outbox"),
+            dir.path().join("errors"),
+            inbox.clone(),
         )
         .unwrap();
 

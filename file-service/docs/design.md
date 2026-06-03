@@ -99,8 +99,9 @@ When a file event is detected:
 2. The file content is read into memory.
 3. The payload is sent to the BPA via `sink.send(destination, payload, lifetime)`.
 4. On success: the `.processing` file is deleted.
-5. On failure: the `.processing` file is moved to `outbox/errors/` for operator
-   inspection.
+5. On failure: the `.processing` file is moved to the errors directory for
+   operator inspection. The errors directory defaults to `/tmp/hardy/errors`
+   and can be configured separately from the outbox.
 
 ### Concurrency
 

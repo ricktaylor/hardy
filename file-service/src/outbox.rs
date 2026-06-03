@@ -11,20 +11,16 @@ use notify::event::{AccessKind, AccessMode, ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, error, info, warn};
 
-use crate::{Error, ensure_dir};
-
-const ERRORS_DIR: &str = "errors";
+use crate::Error;
 
 pub fn run(
     tasks: &TaskPool,
     sink: Arc<dyn ApplicationSink>,
     outbox: PathBuf,
+    errors_dir: PathBuf,
     destination: Eid,
     lifetime: Duration,
 ) -> Result<(), Error> {
-    let errors_dir = outbox.join(ERRORS_DIR);
-    ensure_dir(&errors_dir)?;
-
     let (event_tx, event_rx) = flume::unbounded();
     let startup_tx = event_tx.clone();
 
@@ -56,8 +52,16 @@ pub fn run(
     let cancel_token = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "outbox_watcher", async move {
         let _watcher = watcher;
-        emit_existing_files(&outbox, startup_tx).await;
-        process_events(sink, event_rx, outbox, destination, lifetime, cancel_token).await;
+        emit_existing_files(&outbox, &errors_dir, startup_tx).await;
+        process_events(
+            sink,
+            event_rx,
+            errors_dir,
+            destination,
+            lifetime,
+            cancel_token,
+        )
+        .await;
     });
 
     Ok(())
@@ -66,14 +70,11 @@ pub fn run(
 async fn process_events(
     sink: Arc<dyn ApplicationSink>,
     event_rx: Receiver<Event>,
-    outbox: PathBuf,
+    errors_dir: PathBuf,
     destination: Eid,
     lifetime: Duration,
     cancel: CancellationToken,
 ) {
-    info!("Watching outbox '{}'", outbox.display());
-
-    let errors_dir = outbox.join(ERRORS_DIR);
     let senders = BoundedTaskPool::default();
 
     'outer: loop {
@@ -110,10 +111,10 @@ async fn process_events(
     }
 
     senders.shutdown().await;
-    info!("Stopped watching outbox '{}'", outbox.display());
+    info!("Stopped watching outbox");
 }
 
-async fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
+async fn emit_existing_files(outbox: &Path, errors_dir: &Path, tx: Sender<Event>) {
     let entries = match tokio::fs::read_dir(outbox).await {
         Ok(entries) => entries,
         Err(e) => {
@@ -121,8 +122,6 @@ async fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
             return;
         }
     };
-
-    let errors_dir = outbox.join(ERRORS_DIR);
     let mut recovered = 0;
     let mut existing = 0;
     let mut entries = entries;
@@ -143,7 +142,7 @@ async fn emit_existing_files(outbox: &Path, tx: Sender<Event>) {
                     "Cannot recover '{}': original file already exists, moving to errors",
                     path.display()
                 );
-                move_to_errors(&path, path.file_name().unwrap_or_default(), &errors_dir).await;
+                move_to_errors(&path, original_name.as_ref(), errors_dir).await;
                 continue;
             }
             if let Err(e) = tokio::fs::rename(&path, &original).await {
@@ -273,6 +272,8 @@ mod tests {
     use notify::event::CreateKind;
     use std::fs;
 
+    const ERRORS_DIR: &str = "errors";
+
     #[test]
     fn close_write_is_ready() {
         assert!(is_file_ready(&EventKind::Access(AccessKind::Close(
@@ -323,7 +324,7 @@ mod tests {
         fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         assert!(outbox.join("test.bin").exists());
         assert!(!outbox.join("test.bin.processing").exists());
@@ -341,7 +342,7 @@ mod tests {
         fs::write(outbox.join(".hidden"), "ignored").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         let mut events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 2);
@@ -365,11 +366,11 @@ mod tests {
         fs::write(outbox.join("test.bin.processing"), "orphaned").unwrap();
 
         let (tx, _rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         assert!(outbox.join("test.bin").exists());
         assert!(!outbox.join("test.bin.processing").exists());
-        assert!(outbox.join(ERRORS_DIR).join("test.bin.processing").exists());
+        assert!(outbox.join(ERRORS_DIR).join("test.bin").exists());
     }
 
     #[tokio::test]
@@ -381,7 +382,7 @@ mod tests {
         fs::write(outbox.join("real.bin"), "data").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 1);
@@ -397,7 +398,7 @@ mod tests {
         fs::write(outbox.join("visible.bin"), "visible").unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert_eq!(events.len(), 1);
@@ -411,7 +412,7 @@ mod tests {
         fs::create_dir_all(outbox.join(ERRORS_DIR)).unwrap();
 
         let (tx, rx) = flume::unbounded();
-        emit_existing_files(outbox, tx).await;
+        emit_existing_files(outbox, &outbox.join(ERRORS_DIR), tx).await;
 
         let events: Vec<_> = rx.drain().collect();
         assert!(events.is_empty());
