@@ -656,4 +656,29 @@ mod cascade_reencryption_tests {
         );
         assert!(new_bundle.blocks.contains_key(&1), "payload survives");
     }
+
+    // The producers (Signer/Encryptor) must only ever emit bundles that the
+    // validator's structural rules (`bib`/`bcb::OperationSet::check`, run inside
+    // `parse::parse`) accept. This is currently guaranteed by construction; this
+    // test makes the invariant explicit and is the place to extend when a new
+    // security context enables multi-target (shared) BCBs.
+    #[test]
+    fn producer_output_satisfies_structural_check() {
+        let (_, base) =
+            builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_payload(b"payload data".as_slice().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+
+        // Signer output -> bib::OperationSet::check (plaintext BIB) inside parse.
+        let signed = sign(&base, &[1], &sign_key());
+        parse::parse(Bytes::copy_from_slice(&signed))
+            .expect("signer output must pass structural check");
+
+        // Encryptor output -> bcb::OperationSet::check inside parse. Encrypting
+        // the signed payload also encrypts its BIB (sign-before-encrypt).
+        let encrypted = encrypt(&signed, 1, &enc_key());
+        parse::parse(Bytes::copy_from_slice(&encrypted))
+            .expect("encryptor output must pass structural check");
+    }
 }
