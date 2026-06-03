@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         destination,
         config.lifetime,
         config.outbox,
+        config.errors,
         config.inbox,
     )?);
 

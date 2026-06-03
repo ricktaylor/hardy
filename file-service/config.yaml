@@ -29,6 +29,10 @@ destination: "ipn:1.42"
 # renames (mv). Dotfiles (.*) are ignored for atomic write patterns.
 outbox: /tmp/hardy/outbox
 
+# Path to the errors directory.
+# Failed send attempts are moved here for operator inspection.
+# errors: /tmp/hardy/errors
+
 # Path to the inbox directory.
 # Incoming bundle payloads are written as individual files here.
 inbox: /tmp/hardy/inbox
