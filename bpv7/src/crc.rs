@@ -144,7 +144,7 @@ pub(super) fn parse_crc_value(
             digest.push(&data[0..crc.start]);
             digest.push_zeros();
             digest.push(&data[crc.end..crc_end]);
-            if digest.finalize() != data[crc.start..crc.end] {
+            if !digest.verify(&data[crc.start..crc.end]) {
                 return Err(Error::IncorrectCrc);
             }
             Ok(shortest)
@@ -181,13 +181,13 @@ pub(super) fn append_crc_value(crc_type: CrcType, mut data: Vec<u8>) -> Result<V
 /// Owns the per-CRC-type facts ({algorithm, value length, big-endian
 /// finalisation}) so the rest of the crate doesn't duplicate them.
 /// Construct with [`Digest::new`] (errors for [`CrcType::None`] and
-/// unrecognised types), push the block bytes through [`push`](Self::push)
-/// — substituting [`push_zeros`](Self::push_zeros) where the CRC value's
-/// own bytes live in the wire form — then [`finalize`](Self::finalize) to
-/// get the computed CRC value bytes. The parse path compares those bytes
-/// against the wire-form value (with a length pre-check via
-/// [`value_len`](Self::value_len)); the emit path appends them.
-/// `finalize` consumes the digest, so each instance is used exactly once.
+/// unrecognised types), then push the block bytes through
+/// [`push`](Self::push) — substituting [`push_zeros`](Self::push_zeros)
+/// where the CRC value's own bytes live in the wire form. The parse path
+/// checks the result against the wire-form value with
+/// [`verify`](Self::verify) (no allocation); the emit path retrieves the
+/// computed bytes with [`finalize`](Self::finalize) and appends them.
+/// Both consume the digest, so each instance is used exactly once.
 pub struct Digest {
     state: DigestState,
 }
@@ -230,12 +230,12 @@ impl Digest {
         }
     }
 
-    /// Pushes [`value_len`](Self::value_len) zero bytes into the running
-    /// digest. Used at the position where the wire-form CRC value lives —
-    /// the parse path then compares its actual bytes via
-    /// [`verify`](Self::verify); the emit path retrieves the computed
-    /// bytes via [`finalize`](Self::finalize). Returns the number of
-    /// zero bytes pushed for offset arithmetic.
+    /// Pushes the CRC value's width in zero bytes (2 for CRC-16, 4 for
+    /// CRC-32) into the running digest. Used at the position where the
+    /// wire-form CRC value lives — the parse path then compares its
+    /// actual bytes via [`verify`](Self::verify); the emit path retrieves
+    /// the computed bytes via [`finalize`](Self::finalize). Returns the
+    /// number of zero bytes pushed for offset arithmetic.
     pub fn push_zeros(&mut self) -> usize {
         match self.state {
             DigestState::Crc16(_) => {
@@ -249,11 +249,22 @@ impl Digest {
         }
     }
 
+    /// Finalises the digest and checks the computed CRC value against an
+    /// `expected` wire-form value bytestring, returning `true` on a match.
+    /// This is the parse path: the comparison is made against the
+    /// big-endian bytes on the stack, so — unlike [`finalize`](Self::finalize)
+    /// — nothing is allocated. A length mismatch compares as unequal.
+    pub fn verify(self, expected: &[u8]) -> bool {
+        match self.state {
+            DigestState::Crc16(d) => expected == d.finalize().to_be_bytes(),
+            DigestState::Crc32(d) => expected == d.finalize().to_be_bytes(),
+        }
+    }
+
     /// Finalises the digest and returns the computed CRC value as
-    /// big-endian bytes ([`value_len`](Self::value_len) bytes long).
-    /// Callers comparing against a wire-form value bytestring are
-    /// responsible for the length pre-check (compare against
-    /// [`value_len`](Self::value_len)) before comparing the bytes.
+    /// big-endian bytes (2 for CRC-16, 4 for CRC-32). This is the emit
+    /// path; the parse path checks against the wire-form value with
+    /// [`verify`](Self::verify) instead, which avoids the allocation.
     pub fn finalize(self) -> Vec<u8> {
         match self.state {
             DigestState::Crc16(d) => d.finalize().to_be_bytes().to_vec(),
