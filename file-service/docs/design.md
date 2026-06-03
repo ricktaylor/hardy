@@ -110,7 +110,11 @@ sent in parallel with backpressure.
 ### Shutdown
 
 On cancellation signal the event loop exits and waits for all in-flight send
-tasks to complete before returning.
+tasks to complete. Tasks still awaiting a BPA response are cancelled and their
+`.processing` files are renamed back to the original name so the next startup
+picks them up. The task pool is drained before the BPA sink is unregistered,
+ensuring in-flight sends complete against a live connection. Only genuine send
+failures land in `errors/`.
 
 ## Inbox Pipeline
 
@@ -128,6 +132,8 @@ When the BPA delivers a bundle payload via `on_receive()`:
 - **Inbox write is silent loss**: the Application trait's `on_receive` has no
   return value. If an inbox write fails, the BPA considers the bundle delivered.
   Monitor logs for `error!` level messages.
-- **Linux only**: `IN_CLOSE_WRITE` is a Linux inotify event. The `notify` crate
-  falls back to polling on non-Linux platforms.
+- **Linux only**: `IN_CLOSE_WRITE` is a Linux inotify event. Non-Linux
+  platforms are not supported. Docker Desktop on macOS/Windows uses a VM
+  that does not propagate inotify events across bind mounts. Native Linux
+  Docker with bind mounts works correctly.
 - **Single destination**: all outbox files are sent to the same destination EID.
