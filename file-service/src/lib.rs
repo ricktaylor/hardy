@@ -92,6 +92,7 @@ impl Application for FileService {
                 self.lifetime,
             ) {
                 error!("Failed to start outbox watcher: {e}");
+                sink.unregister().await;
             }
         }
     }
