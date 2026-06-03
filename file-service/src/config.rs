@@ -88,9 +88,111 @@ impl Config {
             .build()?
             .try_deserialize()?;
 
-        if required || config_file.exists() {
+        if required {
             eprintln!("Loaded configuration from '{}'", config_file.display());
         }
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    fn write_and_load(name: &str, content: &str) -> Config {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        Config::load(Some(path)).unwrap()
+    }
+
+    #[test]
+    #[serial]
+    fn empty_config_has_defaults() {
+        let config = write_and_load("empty.yaml", "");
+        assert_eq!(config.log_level, Level::INFO);
+        assert_eq!(config.bpa_address, "http://[::1]:50051");
+        assert!(config.service_id.is_none());
+        assert!(config.destination.is_none());
+        assert!(config.lifetime.is_none());
+        assert!(config.outbox.is_none());
+        assert!(config.inbox.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn yaml_overrides_defaults() {
+        let config = write_and_load(
+            "test.yaml",
+            r#"
+bpa-address: "http://10.0.0.1:50051"
+log-level: "debug"
+service-id: 99
+destination: "ipn:5.42"
+lifetime: "1h"
+outbox: /tmp/out
+inbox: /tmp/in
+"#,
+        );
+        assert_eq!(config.log_level, Level::DEBUG);
+        assert_eq!(config.bpa_address, "http://10.0.0.1:50051");
+        assert_eq!(config.service_id, Some(99));
+        assert!(config.destination.is_some());
+        assert_eq!(config.lifetime, Some(Duration::from_secs(3600)));
+        assert_eq!(config.outbox, Some(PathBuf::from("/tmp/out")));
+        assert_eq!(config.inbox, Some(PathBuf::from("/tmp/in")));
+    }
+
+    #[test]
+    #[serial]
+    fn env_overrides_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.yaml");
+        std::fs::write(
+            &path,
+            "log-level: info\nbpa-address: \"http://file:50051\"\n",
+        )
+        .unwrap();
+
+        unsafe { std::env::set_var("HARDY_FILE_SERVICE_LOG_LEVEL", "error") };
+        unsafe { std::env::set_var("HARDY_FILE_SERVICE_BPA_ADDRESS", "http://env:50051") };
+        let config = Config::load(Some(path)).unwrap();
+        unsafe { std::env::remove_var("HARDY_FILE_SERVICE_LOG_LEVEL") };
+        unsafe { std::env::remove_var("HARDY_FILE_SERVICE_BPA_ADDRESS") };
+
+        assert_eq!(config.log_level, Level::ERROR);
+        assert_eq!(config.bpa_address, "http://env:50051");
+    }
+
+    #[test]
+    #[serial]
+    fn missing_explicit_config_errors() {
+        let result = Config::load(Some(PathBuf::from("/nonexistent/path/config")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn missing_default_config_uses_defaults() {
+        let result = Config::load(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn humantime_lifetime_parsing() {
+        let config = write_and_load("lifetime.yaml", "lifetime: \"30m\"\n");
+        assert_eq!(config.lifetime, Some(Duration::from_secs(1800)));
+    }
+
+    #[test]
+    #[serial]
+    fn invalid_log_level_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "log-level: banana\n").unwrap();
+        let result = Config::load(Some(path));
+        assert!(result.is_err());
     }
 }

@@ -61,10 +61,10 @@ Incoming bundles appear as files in the inbox directory:
 
 ```bash
 ls inbox/
-# ipn_2.1.42_1234567890_0
-# ipn_2.1.42_1234567891_1
+# ipn_1.42_1234567890_0
+# ipn_1.42_1234567891_1
 
-cat inbox/ipn_2.1.42_1234567890_0
+cat inbox/ipn_1.42_1234567890_0
 # (bundle payload)
 ```
 

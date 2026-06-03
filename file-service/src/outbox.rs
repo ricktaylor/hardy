@@ -183,9 +183,7 @@ fn is_file_ready(kind: &EventKind) -> bool {
 fn is_processable(path: &Path) -> bool {
     let name = path.file_name().and_then(|name| name.to_str());
     let ext = path.extension().and_then(|ext| ext.to_str());
-    name.is_some_and(|n| !n.starts_with('.'))
-        && ext != Some("processing")
-        && !path.parent().is_some_and(|p| p.ends_with(ERRORS_DIR))
+    name.is_some_and(|n| !n.starts_with('.')) && ext != Some("processing")
 }
 
 async fn move_to_errors(from: &Path, name: &OsStr, errors_dir: &Path) {
@@ -247,8 +245,10 @@ async fn process_file(
     let result = tokio::select! {
         result = sink.send(destination, payload.into(), lifetime, None) => result,
         _ = cancel.cancelled() => {
-            warn!("Cancelled sending '{}'", path.display());
-            move_to_errors(&processing_path, &name, errors_dir).await;
+            warn!("Cancelled sending '{}', restoring for next startup", path.display());
+            if let Err(e) = tokio::fs::rename(&processing_path, &path).await {
+                error!("Failed to restore '{}': {e}", path.display());
+            }
             return;
         }
     };
@@ -312,11 +312,6 @@ mod tests {
     #[test]
     fn processing_file_is_not_processable() {
         assert!(!is_processable(Path::new("/outbox/payload.bin.processing")));
-    }
-
-    #[test]
-    fn errors_dir_file_is_not_processable() {
-        assert!(!is_processable(Path::new("/outbox/errors/failed.bin")));
     }
 
     #[tokio::test]

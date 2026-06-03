@@ -64,16 +64,21 @@ impl FileService {
     }
 
     pub async fn unregister(&self) {
+        self.tasks.shutdown().await;
         if let Some(sink) = self.sink.get() {
             sink.unregister().await;
         }
-        self.tasks.shutdown().await;
     }
 }
 
 #[async_trait]
 impl Application for FileService {
     async fn on_register(&self, source: &Eid, sink: Box<dyn ApplicationSink>) {
+        if self.sink.get().is_some() {
+            error!("on_register called twice, ignoring");
+            return;
+        }
+
         info!("File service registered at {source}");
 
         let sink: &Arc<dyn ApplicationSink> = self.sink.call_once(|| Arc::from(sink));
