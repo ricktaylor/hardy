@@ -5,7 +5,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 # Key Modules
 
-- [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types.
+- [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
 - [`parse`]: The streaming wire parser ([`parse`](parse::parse) / [`BundleParser`](parse::BundleParser)).
 - [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.

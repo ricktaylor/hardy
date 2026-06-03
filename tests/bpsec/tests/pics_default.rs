@@ -2,14 +2,15 @@
 //!
 //! Tests RFC 9173 default security contexts against Hardy.
 
-use hardy_bpv7::block;
-use hardy_bpv7::bpsec::encryptor;
-use hardy_bpv7::bpsec::key;
-use hardy_bpv7::bpsec::rfc9173::ScopeFlags;
-use hardy_bpv7::bpsec::signer;
-use hardy_bpv7::bundle;
-use hardy_bpv7::cmp::compare_bundles;
-use hardy_bpv7::editor::{Chunk, Editor};
+use bytes::Bytes;
+use hardy_bpv7::{
+    block,
+    bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
+    bundle, checks,
+    editor::{Chunk, Editor},
+    parse, rewrite,
+};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PolicyAction {
@@ -61,9 +62,17 @@ fn confidentiality_key() -> key::Key {
 }
 
 fn assert_bundles_equivalent(actual: &[u8], expected: &[u8]) {
-    let diffs = compare_bundles(actual, expected).expect("Failed to parse bundles for comparison");
-    let diffs: Vec<_> = diffs.into_iter().filter(|d| !d.contains("CRC")).collect();
-    assert!(diffs.is_empty(), "Bundles differ:\n{}", diffs.join("\n"));
+    // `semantic_eq` ignores CRC type/presence (a transport choice), so no
+    // diff filtering is needed here.
+    let actual = parse::parse(Bytes::copy_from_slice(actual)).expect("Failed to parse actual");
+    let expected =
+        parse::parse(Bytes::copy_from_slice(expected)).expect("Failed to parse expected");
+    assert!(
+        actual
+            .bundle
+            .semantic_eq(&actual.data, &expected.bundle, &expected.data),
+        "Bundles are not semantically equivalent"
+    );
 }
 
 // Requirement 1: The same security service MUST NOT be applied to a security
@@ -76,8 +85,8 @@ fn pics_1_1_duplicate_bcb_on_payload_must_fail() {
     );
 
     let enc_key = confidentiality_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     // MUST FAIL: bundle already includes a BCB with target payload
     let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
@@ -98,9 +107,8 @@ fn pics_1_2_duplicate_bib_on_payload_must_fail() {
     );
 
     let sign_key = integrity_key();
-    let keys = key::KeySet::new(vec![sign_key.clone()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     // MUST FAIL: bundle already includes a BIB with target payload
     let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
@@ -128,8 +136,7 @@ fn pics_2_1_source_sign_payload_and_bundle_age() {
 
     let sign_key = integrity_key();
     let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse");
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let signed = signer::Signer::new(&parsed.bundle, &incoming)
         .sign_block(
@@ -163,8 +170,7 @@ fn pics_2_2_acceptor_verify_and_remove_bib() {
         "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
 
-    let keys = key::KeySet::new(vec![integrity_key()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys).unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
     let result = Editor::new(&parsed.bundle, &incoming)
         .remove_integrity(1)
@@ -192,8 +198,7 @@ fn pics_2_3_source_encrypt_payload_and_bundle_age() {
 
     let enc_key = confidentiality_key();
     let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse");
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let encrypted = encryptor::Encryptor::new(&parsed.bundle, &incoming)
         .encrypt_block(
@@ -228,17 +233,18 @@ fn pics_2_4_acceptor_decrypt_and_remove_bcb() {
     );
 
     let keys = key::KeySet::new(vec![confidentiality_key()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys).unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
-    let result = Editor::new(&parsed.bundle, &incoming)
-        .remove_encryption(1, &keys)
+    let mut editor = Editor::new(&parsed.bundle, &parsed.data);
+    editor = bpsec::edit::remove_encryption(editor, 1, &keys)
         .map_err(|(_, e)| e)
-        .unwrap()
-        .remove_encryption(2, &keys)
+        .unwrap();
+    editor = bpsec::edit::remove_encryption(editor, 2, &keys)
         .map_err(|(_, e)| e)
-        .unwrap()
+        .unwrap();
+    let result = editor
         .rebuild()
-        .map(|c| Chunk::flatten(c, &incoming))
+        .map(|c| Chunk::flatten(c, &parsed.data))
         .unwrap();
 
     assert_bundles_equivalent(&result, &outgoing);
@@ -262,7 +268,7 @@ fn pics_2_5_source_sign_then_encrypt_both() {
         ..ScopeFlags::default()
     };
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY).unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
     let signed = signer::Signer::new(&parsed.bundle, &incoming)
         .sign_block(
@@ -284,8 +290,7 @@ fn pics_2_5_source_sign_then_encrypt_both() {
         .rebuild()
         .unwrap();
 
-    let keys = key::KeySet::new(vec![sign_key.clone()]);
-    let parsed_signed = bundle::ParsedBundle::parse_with_keys(&signed, &keys).unwrap();
+    let parsed_signed = parse::parse(Bytes::copy_from_slice(&signed)).unwrap();
 
     let encrypted = encryptor::Encryptor::new(&parsed_signed.bundle, &signed)
         .encrypt_block(
@@ -315,47 +320,54 @@ fn pics_2_6_acceptor_decrypt_then_verify_both() {
     );
 
     let all_keys = key::KeySet::new(vec![integrity_key(), confidentiality_key()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &all_keys).unwrap();
+    let parse::Parsed {
+        data,
+        bundle: mut raw,
+        bcbs,
+        bibs: mut bib_ops,
+    } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
 
-    // Decrypt content blocks via Editor
-    let decrypted = Editor::new(&parsed.bundle, &incoming)
-        .remove_encryption(1, &all_keys)
+    // Acceptor: confirm every protected target authenticates. This decrypts
+    // the content blocks and the BCB-covered BIB, and verifies every BIB.
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
+    let facts = checks::verify(
+        &data,
+        &all_keys,
+        &mut raw.blocks,
+        &bcbs,
+        &mut bib_ops,
+        &mut decrypted,
+        &no_updates,
+    )
+    .expect("verification succeeds");
+    assert!(facts.failed.is_empty());
+
+    // Strip the verified protection: decrypt the content blocks, then remove
+    // every security block.
+    let bpsec_blocks: HashSet<u64> = raw
+        .blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            )
+        })
+        .map(|(&n, _)| n)
+        .collect();
+    let mut editor = Editor::new(&raw, &data);
+    editor = bpsec::edit::remove_encryption(editor, 1, &all_keys)
         .map_err(|(_, e)| e)
-        .unwrap()
-        .remove_encryption(2, &all_keys)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .map(|c| Chunk::flatten(c, &incoming))
         .unwrap();
-
-    // Full re-parse to decrypt remaining BCB target (BIB) and verify it
-    let rewritten = bundle::RewrittenBundle::parse_with_keys(&decrypted, &all_keys).unwrap();
-    let (bundle2, data2) = match rewritten {
-        bundle::RewrittenBundle::Valid { bundle, .. } => (bundle, decrypted),
-        bundle::RewrittenBundle::Rewritten {
-            bundle, new_data, ..
-        } => {
-            let flat = Chunk::flatten(new_data, &decrypted);
-            (bundle, flat.to_vec().into_boxed_slice())
-        }
-        bundle::RewrittenBundle::Invalid { error, .. } => {
-            panic!("Re-parse after decryption failed: {error}")
-        }
-    };
-
-    // Remove verified BIBs via Editor (acceptor role)
-    let mut ed = Editor::new(&bundle2, &data2);
-    for &bn in &[1u64, 2] {
-        if bundle2
-            .blocks
-            .get(&bn)
-            .is_some_and(|b| b.bib != block::BibCoverage::None)
-        {
-            ed = ed.remove_integrity(bn).map_err(|(_, e)| e).unwrap();
-        }
-    }
-    let result = ed.rebuild().map(|c| Chunk::flatten(c, &data2)).unwrap();
+    editor = bpsec::edit::remove_encryption(editor, 2, &all_keys)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let (editor, _) = editor
+        .remove_blocks(bpsec_blocks, &all_keys)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let result = editor.rebuild().map(|c| Chunk::flatten(c, &data)).unwrap();
 
     assert_bundles_equivalent(&result, &outgoing);
 }
@@ -377,9 +389,7 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
         include_security_header: false,
         ..ScopeFlags::default()
     };
-    let all_keys = key::KeySet::new(vec![integrity_key(), confidentiality_key()]);
-
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY).unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).unwrap();
 
     let step1 = signer::Signer::new(&parsed.bundle, &incoming)
         .sign_block(
@@ -393,7 +403,7 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
         .rebuild()
         .unwrap();
 
-    let p1 = bundle::ParsedBundle::parse_with_keys(&step1, &all_keys).unwrap();
+    let p1 = parse::parse(Bytes::copy_from_slice(&step1)).unwrap();
 
     let step2 = encryptor::Encryptor::new(&p1.bundle, &step1)
         .encrypt_block(
@@ -407,7 +417,7 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
         .rebuild()
         .unwrap();
 
-    let p2 = bundle::ParsedBundle::parse_with_keys(&step2, &all_keys).unwrap();
+    let p2 = parse::parse(Bytes::copy_from_slice(&step2)).unwrap();
 
     let step3 = signer::Signer::new(&p2.bundle, &step2)
         .sign_block(
@@ -421,7 +431,7 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
         .rebuild()
         .unwrap();
 
-    let p3 = bundle::ParsedBundle::parse_with_keys(&step3, &all_keys).unwrap();
+    let p3 = parse::parse(Bytes::copy_from_slice(&step3)).unwrap();
 
     let step4 = encryptor::Encryptor::new(&p3.bundle, &step3)
         .encrypt_block(2, encryptor::Context::AES_GCM(flags), src, &enc_key)
@@ -443,47 +453,54 @@ fn pics_2_8_acceptor_decrypt_and_verify_interleaved() {
     );
 
     let all_keys = key::KeySet::new(vec![integrity_key(), confidentiality_key()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &all_keys).unwrap();
+    let parse::Parsed {
+        data,
+        bundle: mut raw,
+        bcbs,
+        bibs: mut bib_ops,
+    } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
 
-    // Decrypt content blocks via Editor
-    let decrypted = Editor::new(&parsed.bundle, &incoming)
-        .remove_encryption(1, &all_keys)
+    // Acceptor: confirm every protected target authenticates. This decrypts
+    // the content blocks and both BCB-covered BIBs, and verifies every BIB.
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
+    let facts = checks::verify(
+        &data,
+        &all_keys,
+        &mut raw.blocks,
+        &bcbs,
+        &mut bib_ops,
+        &mut decrypted,
+        &no_updates,
+    )
+    .expect("verification succeeds");
+    assert!(facts.failed.is_empty());
+
+    // Strip the verified protection: decrypt the content blocks, then remove
+    // every security block.
+    let bpsec_blocks: HashSet<u64> = raw
+        .blocks
+        .iter()
+        .filter(|(_, b)| {
+            matches!(
+                b.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            )
+        })
+        .map(|(&n, _)| n)
+        .collect();
+    let mut editor = Editor::new(&raw, &data);
+    editor = bpsec::edit::remove_encryption(editor, 1, &all_keys)
         .map_err(|(_, e)| e)
-        .unwrap()
-        .remove_encryption(2, &all_keys)
-        .map_err(|(_, e)| e)
-        .unwrap()
-        .rebuild()
-        .map(|c| Chunk::flatten(c, &incoming))
         .unwrap();
-
-    // Full re-parse to decrypt remaining BCB targets (BIBs) and verify them
-    let rewritten = bundle::RewrittenBundle::parse_with_keys(&decrypted, &all_keys).unwrap();
-    let (bundle2, data2) = match rewritten {
-        bundle::RewrittenBundle::Valid { bundle, .. } => (bundle, decrypted),
-        bundle::RewrittenBundle::Rewritten {
-            bundle, new_data, ..
-        } => {
-            let flat = Chunk::flatten(new_data, &decrypted);
-            (bundle, flat.to_vec().into_boxed_slice())
-        }
-        bundle::RewrittenBundle::Invalid { error, .. } => {
-            panic!("Re-parse after decryption failed: {error}")
-        }
-    };
-
-    // Remove verified BIBs via Editor (acceptor role)
-    let mut ed = Editor::new(&bundle2, &data2);
-    for &bn in &[1u64, 2] {
-        if bundle2
-            .blocks
-            .get(&bn)
-            .is_some_and(|b| b.bib != block::BibCoverage::None)
-        {
-            ed = ed.remove_integrity(bn).map_err(|(_, e)| e).unwrap();
-        }
-    }
-    let result = ed.rebuild().map(|c| Chunk::flatten(c, &data2)).unwrap();
+    editor = bpsec::edit::remove_encryption(editor, 2, &all_keys)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let (editor, _) = editor
+        .remove_blocks(bpsec_blocks, &all_keys)
+        .map_err(|(_, e)| e)
+        .unwrap();
+    let result = editor.rebuild().map(|c| Chunk::flatten(c, &data)).unwrap();
 
     assert_bundles_equivalent(&result, &outgoing);
 }
@@ -498,9 +515,8 @@ fn pics_7_1_bib_cannot_target_bib() {
     );
 
     let sign_key = integrity_key();
-    let keys = key::KeySet::new(vec![sign_key.clone()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     let bib_bn = parsed
         .bundle
@@ -529,8 +545,8 @@ fn pics_7_2_bib_cannot_target_bcb() {
     );
 
     let sign_key = integrity_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     let bcb_bn = parsed
         .bundle
@@ -563,8 +579,8 @@ fn pics_14_1_bcb_cannot_target_bcb() {
     );
 
     let enc_key = confidentiality_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     let bcb_bn = parsed
         .bundle
@@ -596,8 +612,8 @@ fn pics_15_1_bcb_cannot_target_primary() {
     );
 
     let enc_key = confidentiality_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     // MUST FAIL: a BCB cannot target the primary block (block 0)
     let Err((_, err)) = encryptor::Encryptor::new(&parsed.bundle, &incoming).encrypt_block(
@@ -622,10 +638,8 @@ fn pics_16_1_bcb_cannot_target_bib_directly() {
     );
 
     let enc_key = confidentiality_key();
-    let sign_key = integrity_key();
-    let keys = key::KeySet::new(vec![sign_key]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     let bib_bn = parsed
         .bundle
@@ -665,10 +679,8 @@ fn pics_21_1_bib_split_on_partial_encrypt() {
     );
 
     let enc_key = confidentiality_key();
-    let sign_key = integrity_key();
-    let keys = key::KeySet::new(vec![sign_key]);
     let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys).expect("Failed to parse");
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let flags = ScopeFlags {
         include_security_header: false,
@@ -695,8 +707,8 @@ fn pics_22_1_cannot_sign_encrypted_block() {
     );
 
     let sign_key = integrity_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse incoming bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse incoming bundle");
 
     // MUST FAIL: cannot sign a block that is already encrypted
     let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
@@ -723,8 +735,27 @@ fn pics_26_1_tampered_block_flags_must_fail() {
 
     let keys = key::KeySet::new(vec![integrity_key()]);
 
+    // Structural parse succeeds; the tampered payload flags only surface when
+    // the BIB is verified.
+    let parse::Parsed {
+        data,
+        bundle: mut raw,
+        bcbs,
+        bibs: mut bib_ops,
+    } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse succeeds");
+
     // MUST FAIL: BIB verification fails because payload block flags were tampered
-    let result = bundle::ParsedBundle::parse_with_keys(&incoming, &keys);
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
+    let result = checks::verify(
+        &data,
+        &keys,
+        &mut raw.blocks,
+        &bcbs,
+        &mut bib_ops,
+        &mut decrypted,
+        &no_updates,
+    );
     assert!(
         matches!(
             result,
@@ -732,8 +763,7 @@ fn pics_26_1_tampered_block_flags_must_fail() {
                 hardy_bpv7::bpsec::Error::IntegrityCheckFailed
             ))
         ),
-        "Expected IntegrityCheckFailed, got: {:?}",
-        result
+        "Expected IntegrityCheckFailed, got: {result:?}"
     );
 }
 
@@ -746,8 +776,8 @@ fn pics_27_1_not_acceptor_bcb_passes_through() {
         "9F88070000820282010282028202018202820201820018281A000F4240850C030100581B8101020182028203018182014C5477656C76653132313231328180850702000041008501010000583390EAB6457593379298A8724E16E61F837488E127212B59AC91F8A86287B7D07630A122C42BBA8CA26EECBCAB0F8124C2A42BDFFF"
     );
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Should parse without keys");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse without keys");
 
     assert!(
         parsed
@@ -772,8 +802,8 @@ fn pics_34_1_missing_required_bcb_must_fail() {
         "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Should parse successfully");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse successfully");
 
     assert_eq!(
         check_required_bcb(&parsed.bundle, 1),
@@ -804,12 +834,12 @@ fn pics_36_1_payload_decrypt_wrong_key_must_discard() {
     let wrong_keys = key::KeySet::new(vec![wrong_key]);
 
     // Parse succeeds (payload stays encrypted at parse level)
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &wrong_keys)
+    let parsed = parse::parse(Bytes::copy_from_slice(&incoming))
         .expect("Parse should succeed with encrypted payload");
 
     // MUST FAIL: decryption with wrong key
-    let Err((_, err)) = Editor::new(&parsed.bundle, &incoming).remove_encryption(1, &wrong_keys)
-    else {
+    let editor = Editor::new(&parsed.bundle, &parsed.data);
+    let Err((_, err)) = bpsec::edit::remove_encryption(editor, 1, &wrong_keys) else {
         panic!("Expected decryption failure with wrong key");
     };
     assert!(
@@ -845,18 +875,44 @@ fn pics_37_1_non_payload_decrypt_wrong_key_removes_target() {
     .unwrap();
     let wrong_keys = key::KeySet::new(vec![wrong_key]);
 
-    // RFC 9172 Section 5.1.1: non-payload decrypt failure should remove
-    // the target + BCB, bundle survives.
-    let rewritten = bundle::RewrittenBundle::parse_with_keys(&incoming, &wrong_keys)
-        .expect("Should not fail to parse");
+    // Structural parse + keyed verification. The bundle-age content is
+    // BCB-protected and cannot be authenticated with the wrong key, so it
+    // surfaces in `facts.failed` rather than failing the call outright.
+    let parse::Parsed {
+        data,
+        bundle: mut raw,
+        bcbs,
+        bibs: mut bib_ops,
+    } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse succeeds");
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
+    let facts = checks::verify(
+        &data,
+        &wrong_keys,
+        &mut raw.blocks,
+        &bcbs,
+        &mut bib_ops,
+        &mut decrypted,
+        &no_updates,
+    )
+    .expect("a recoverable decrypt failure returns facts, not an error");
 
-    let bundle = match &rewritten {
-        bundle::RewrittenBundle::Valid { bundle, .. }
-        | bundle::RewrittenBundle::Rewritten { bundle, .. } => bundle,
-        bundle::RewrittenBundle::Invalid { error, .. } => {
-            panic!("Bundle should survive non-payload decrypt failure, got: {error}")
+    // RFC 9172 Section 5.1.1: a non-payload target that cannot be decrypted is
+    // removed along with the security block protecting it; the bundle survives.
+    let mut to_remove: HashSet<u64> = HashSet::new();
+    for &target in &facts.failed {
+        assert_ne!(target, 1, "a payload failure must discard the whole bundle");
+        to_remove.insert(target);
+        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
+            to_remove.insert(bcb);
         }
-    };
+    }
+    assert!(!to_remove.is_empty(), "the wrong key should fail a decrypt");
+
+    let (bundle, _chunks) =
+        rewrite::apply_rewrites(&data, &raw, &wrong_keys, HashMap::new(), to_remove)
+            .expect("apply_rewrites")
+            .expect("at least one block was removed");
 
     assert!(
         !bundle.blocks.contains_key(&2),
@@ -880,8 +936,8 @@ fn pics_42_1_not_acceptor_bib_passes_through() {
         "9F88070000820282010282028202018202820201820018281A000F4240850B030000583F810101008202820301818182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D718507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Should parse without keys");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse without keys");
 
     assert!(
         parsed
@@ -902,9 +958,8 @@ fn pics_47_1_bib_not_processed_when_target_encrypted() {
         "9F88070000820282010282028202018202820201820018281A000F4240850C040100581D820103020182028203018182014C5477656C7665313231323132828080850B030000584F438ED6218EB1C1FEB94E96A272CC4E004E4C437864E932D8B0D9701D00F916CEBC660D906FC4A68FFFD6CC28101C1F6C58E56824D62EDF7410B9C905ACBDA3CEF84DA12ED941991BEC88C11453BF03850702000041008501010000583390EAB6457593379298A8724E16E61F837488E127212B59AC91F8A86287B7D07630A122A4A2C8343500978F613F564529596403FF"
     );
 
-    let keys = key::KeySet::new(vec![integrity_key()]);
     let parsed =
-        bundle::ParsedBundle::parse_with_keys(&incoming, &keys).expect("Should parse successfully");
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse successfully");
 
     assert!(
         parsed
@@ -933,8 +988,8 @@ fn pics_48_1_missing_required_bib_on_payload_must_fail() {
         "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Should parse successfully");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse successfully");
 
     assert_eq!(
         check_required_bib(&parsed.bundle, 1),
@@ -952,8 +1007,8 @@ fn pics_49_1_missing_required_bib_on_extension_removes_target() {
         "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
     );
 
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Should parse successfully");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Should parse successfully");
 
     assert_eq!(
         check_required_bib(&parsed.bundle, 2),
@@ -969,10 +1024,9 @@ fn pics_49_1_missing_required_bib_on_extension_removes_target() {
         .map(|c| Chunk::flatten(c, &incoming))
         .unwrap();
 
-    let reparsed = bundle::ParsedBundle::parse_with_keys(&result, &key::KeySet::EMPTY)
-        .expect("Should re-parse");
+    let reparsed = parse::parse(Bytes::copy_from_slice(&result)).expect("Should re-parse");
     assert!(
-        reparsed.bundle.age.is_none(),
+        !reparsed.bundle.blocks.contains_key(&2),
         "Bundle-age block should have been removed"
     );
 }
@@ -987,19 +1041,33 @@ fn pics_54_1_verifier_keeps_bib() {
     );
 
     let keys = key::KeySet::new(vec![integrity_key()]);
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &keys)
-        .expect("Should parse and verify successfully");
+    let parse::Parsed {
+        data,
+        bundle: mut raw,
+        bcbs,
+        bibs: mut bib_ops,
+    } = parse::parse(Bytes::copy_from_slice(&incoming)).expect("structural parse");
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
+    checks::verify(
+        &data,
+        &keys,
+        &mut raw.blocks,
+        &bcbs,
+        &mut bib_ops,
+        &mut decrypted,
+        &no_updates,
+    )
+    .expect("verification succeeds");
 
     assert!(
-        parsed
-            .bundle
-            .blocks
+        raw.blocks
             .values()
             .any(|b| b.block_type == block::Type::BlockIntegrity),
         "BIB should be preserved after verification"
     );
     assert!(
-        parsed.bundle.blocks[&1].bib != block::BibCoverage::None,
+        raw.blocks[&1].bib != block::BibCoverage::None,
         "Payload should still have BIB coverage"
     );
 }
@@ -1014,11 +1082,11 @@ fn pics_56_1_cannot_add_bcb_to_fragment() {
     );
 
     let enc_key = confidentiality_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse fragment bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse fragment bundle");
 
     assert!(
-        parsed.bundle.flags.is_fragment,
+        parsed.bundle.primary.flags.is_fragment,
         "Bundle should be a fragment"
     );
 
@@ -1040,8 +1108,8 @@ fn pics_56_1b_cannot_add_bib_to_fragment() {
     );
 
     let sign_key = integrity_key();
-    let parsed = bundle::ParsedBundle::parse_with_keys(&incoming, &key::KeySet::EMPTY)
-        .expect("Failed to parse fragment bundle");
+    let parsed =
+        parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse fragment bundle");
 
     let Err((_, err)) = signer::Signer::new(&parsed.bundle, &incoming).sign_block(
         1,
