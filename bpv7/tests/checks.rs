@@ -211,6 +211,67 @@ fn truncated_bundle() {
     }
 }
 
+// A large payload (> chunk_size) that is truncated must not parse as
+// complete. The streaming-fallback branch in parse_blocks returns Ok
+// even when the buffer is short; parse() must detect and reject it.
+#[test]
+fn truncated_large_payload() {
+    // 50 000-byte payload triggers the streaming fallback whenever the
+    // buffer is truncated (the shortfall greatly exceeds chunk_size).
+    let (_, full_data) =
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+
+    // Confirm the complete bundle parses successfully.
+    assert!(
+        parse::parse(Bytes::copy_from_slice(&full_data)).is_ok(),
+        "complete large-payload bundle should parse"
+    );
+
+    // Truncate to just the primary block + payload block header (well before
+    // the payload body ends). parse() must return an error, not Ok.
+    let truncated = &full_data[..200];
+    assert!(
+        parse::parse(Bytes::copy_from_slice(truncated)).is_err(),
+        "truncated large-payload bundle must not parse as complete"
+    );
+}
+
+// A payload byte-string whose declared length pushes the payload block's
+// `extent.end` to exactly `usize::MAX`, then truncated so the streaming
+// fallback is taken. parse()'s post-finish completeness check must report a
+// truncation error, not overflow on `payload_end + 1`.
+#[test]
+fn crafted_max_extent_payload() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload("Hi".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // First 50 bytes = outer array + primary block + payload block header up
+    // to and including the payload crc_type byte; index 50 is the payload
+    // body's byte-string head (0x42 for the 2-byte "Hi").
+    assert_eq!(
+        good[50], 0x42,
+        "layout assumption: payload body head at index 50"
+    );
+
+    let mut evil = good[..50].to_vec();
+    // 0x5b = byte string with an 8-byte length. Length chosen so
+    // block_start(45) + data_start(14) + len + trailer(5) == u64::MAX:
+    // len = u64::MAX - 64 = 0xFFFF_FFFF_FFFF_FFBF.
+    evil.push(0x5b);
+    evil.extend_from_slice(&0xFFFF_FFFF_FFFF_FFBF_u64.to_be_bytes());
+
+    // Must return a truncation error, not panic on overflow.
+    assert!(
+        parse::parse(Bytes::copy_from_slice(&evil)).is_err(),
+        "crafted max-extent payload must be rejected, not overflow"
+    );
+}
+
 // Requirement: Trailing Data
 #[test]
 fn trailing_data() {
