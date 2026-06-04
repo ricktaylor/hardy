@@ -724,6 +724,74 @@ mod cascade_reencryption_tests {
         assert!(bundle.blocks.contains_key(&1), "payload must survive");
     }
 
+    // RFC 9172 §5.1.1: when remove_blocks is called on a target whose
+    // covering BIB is BCB-encrypted with a wrong key, the cascade
+    // leniently continues past the DecryptionFailed (instead of erroring)
+    // and removes the target and all named security blocks cleanly.
+    //
+    // This exercises the edit-level failure-drop path directly — without
+    // going through checks::verify — and confirms the DecryptFailed →
+    // continue change in bpsec::edit::remove_blocks.
+    #[test]
+    fn remove_blocks_failure_drop_with_undecryptable_bib() {
+        let sign_k = sign_key();
+        let enc_k = enc_key();
+
+        // sign([2]) → encrypt(2): the encryptor auto-encrypts the BIB
+        // covering block 2, so the resulting bundle has:
+        //   block 2 — unknown ext (BCB-encrypted, BibCoverage::Maybe)
+        //   block 3 — BIB covering block 2 (BCB-encrypted)
+        //   block 4 — BCB over block 2
+        //   block 5 — BCB over BIB(3)
+        let base = build_with_unknown_block();
+        let signed = sign(&base, &[2], &sign_k);
+        let encrypted = encrypt(&signed, 2, &enc_k);
+
+        // Parse structurally to find block numbers (no keys needed).
+        let (enc_bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
+        let bib_num = find_bib(&raw).expect("BIB present");
+        let bcb_over_2 = raw.blocks[&2].bcb.expect("block 2 is BCB-encrypted");
+        let bcb_over_bib = raw.blocks[&bib_num].bcb.expect("BIB is BCB-encrypted");
+
+        // Wrong enc key (same kid, wrong bytes) → DecryptionFailed (not
+        // NoKey) when remove_blocks tries to stage the BIB in step 2.
+        let wrong_enc_k: bpsec::key::Key = serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
+        }))
+        .unwrap();
+        let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
+
+        // §5.1.1 failure-drop at the editor level: include the corrupt
+        // block and all its associated security blocks in to_remove.
+        // remove_blocks hits DecryptFailed on BIB staging and continues
+        // (was a hard error before this fix); all four blocks are removed.
+        let to_remove: HashSet<u64> = [2, bib_num, bcb_over_2, bcb_over_bib].into_iter().collect();
+        let (bundle, _chunks) =
+            rewrite::apply_rewrites(&enc_bytes, &raw, &wrong_keys, HashMap::new(), to_remove)
+                .expect("apply_rewrites")
+                .expect("at least one block was removed");
+
+        assert!(
+            !bundle.blocks.contains_key(&2),
+            "corrupt block must be dropped"
+        );
+        assert!(!bundle.blocks.contains_key(&bib_num), "BIB must be dropped");
+        assert!(
+            !bundle.blocks.contains_key(&bcb_over_2),
+            "BCB over corrupt block must be dropped"
+        );
+        assert!(
+            !bundle.blocks.contains_key(&bcb_over_bib),
+            "BCB over BIB must be dropped"
+        );
+        assert!(bundle.blocks.contains_key(&1), "payload must survive");
+    }
+
     // The producers (Signer/Encryptor) must only ever emit bundles that the
     // validator's structural rules (`bib`/`bcb::OperationSet::check`, run inside
     // `parse::parse`) accept. This is currently guaranteed by construction; this
