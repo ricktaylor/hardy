@@ -250,20 +250,26 @@ fn crafted_max_extent_payload() {
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
 
-    // First 50 bytes = outer array + primary block + payload block header up
-    // to and including the payload crc_type byte; index 50 is the payload
-    // body's byte-string head (0x42 for the 2-byte "Hi").
-    assert_eq!(
-        good[50], 0x42,
-        "layout assumption: payload body head at index 50"
-    );
+    // Locate the payload block start by parsing — the primary block's size
+    // varies with the creation-timestamp encoding, so it can't be hardcoded.
+    // Then graft a fresh CRC-32 payload block header (`86 01 01 04 02 5b` + an
+    // 8-byte length) declaring a byte string whose length pushes the block's
+    // extent.end to exactly u64::MAX:
+    //   extent.end = block_start + header(14) + len + crc_trailer(5)
+    // so len = u64::MAX - block_start - 19.
+    let block_start = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start;
+    let len = u64::MAX - block_start - 19;
 
-    let mut evil = good[..50].to_vec();
-    // 0x5b = byte string with an 8-byte length. Length chosen so
-    // block_start(45) + data_start(14) + len + trailer(5) == u64::MAX:
-    // len = u64::MAX - 64 = 0xFFFF_FFFF_FFFF_FFBF.
-    evil.push(0x5b);
-    evil.extend_from_slice(&0xFFFF_FFFF_FFFF_FFBF_u64.to_be_bytes());
+    let mut evil = good[..block_start as usize].to_vec();
+    evil.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
+    evil.extend_from_slice(&len.to_be_bytes());
 
     // Must return a truncation error, not panic on overflow.
     assert!(
