@@ -170,19 +170,21 @@ pub fn classify_unsupported(
 
 // ===== Section B — decrypt-and-validate BCB-encrypted BIBs =====
 
-/// B: For every BCB-encrypted BIB, decrypt the body, parse the
+/// §B: For every BCB-encrypted BIB, decrypt the body, parse the
 /// `bib::OperationSet`, run §3.8 / §3.9 structural checks, stamp BIB
 /// coverage on every target, stash the plaintext into `decrypted_data`,
 /// and insert the freshly-decoded OperationSet into `bib_ops`.
 ///
-/// Returns `true` iff every encrypted BIB decrypted. When the caller
-/// receives `true` it should invoke [`resolve_bib_coverage_maybes`] to
-/// collapse residual `BibCoverage::Maybe` markers. On `false`, the eager
-/// `Maybe` markers stamped by the parser stay put — an undecrypted BIB
-/// might still claim them as targets.
+/// Returns the block numbers of any BIBs that failed to decrypt
+/// (`DecryptionFailed` — ciphertext corrupt, RFC 9172 §5.1.1). The
+/// caller applies the failure policy: for a Verifier, failure-drop
+/// (schedule for removal); for a strict acceptor, reject the bundle.
 ///
-/// NoKey on any individual BIB is soft (loop continues, returns `false`
-/// at end). Any non-NoKey BPSec error fails the whole call.
+/// `NoKey` on any individual BIB is a soft skip (loop continues; that
+/// BIB's `BibCoverage::Maybe` markers are left in place). Any non-NoKey,
+/// non-`DecryptionFailed` BPSec error fails the whole call. When all
+/// covered BIBs decrypted with no failures, residual `BibCoverage::Maybe`
+/// markers are collapsed to `None` before returning.
 pub fn decrypt_and_validate_covered_bibs(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
@@ -191,8 +193,9 @@ pub fn decrypt_and_validate_covered_bibs(
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &mut HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<bool, Error> {
-    let mut all_decrypted = true;
+) -> Result<SmallVec<[u64; 4]>, Error> {
+    let mut had_nokey = false;
+    let mut failed: SmallVec<[u64; 4]> = SmallVec::new();
 
     // Snapshot the encrypted-BIB block-number list up front so the loop
     // body can mutate `blocks` (coverage stamping) without conflicting
@@ -239,7 +242,14 @@ pub fn decrypt_and_validate_covered_bibs(
             ) {
                 Ok(p) => p,
                 Err(bpsec::Error::NoKey) => {
-                    all_decrypted = false;
+                    had_nokey = true;
+                    continue;
+                }
+                Err(bpsec::Error::DecryptionFailed) => {
+                    // RFC 9172 §5.1.1: ciphertext corrupt — surface as a
+                    // failed fact. Caller applies failure-drop policy.
+                    // Coverage stamps are NOT applied (targets remain Maybe).
+                    failed.push(bib_block_number);
                     continue;
                 }
                 Err(e) => return Err(e.into()),
@@ -289,18 +299,18 @@ pub fn decrypt_and_validate_covered_bibs(
         bib_ops.insert(bib_block_number, bib_op_set);
     }
 
-    Ok(all_decrypted)
-}
-
-/// §B6: Collapse residual `BibCoverage::Maybe` markers to `None`. Call
-/// only when [`decrypt_and_validate_covered_bibs`] returned `true`; if
-/// any encrypted BIB returned NoKey the `Maybe` markers must stay put.
-pub fn resolve_bib_coverage_maybes(blocks: &mut HashMap<u64, block::Block>) {
-    for block in blocks.values_mut() {
-        if matches!(block.bib, block::BibCoverage::Maybe) {
-            block.bib = block::BibCoverage::None;
+    // Collapse residual Maybe markers only when every covered BIB both
+    // decrypted and authenticated. A NoKey BIB may still claim any Maybe
+    // target; a failed BIB leaves its targets unknown until it is dropped.
+    if !had_nokey && failed.is_empty() {
+        for block in blocks.values_mut() {
+            if matches!(block.bib, block::BibCoverage::Maybe) {
+                block.bib = block::BibCoverage::None;
+            }
         }
     }
+
+    Ok(failed)
 }
 
 // ===== Section C7 — verify all BIBs =====
@@ -369,22 +379,20 @@ pub struct VerifyFacts {
     pub nokey_ext: SmallVec<[(u64, block::Type); 4]>,
 }
 
-/// Composed keyed verification, replacing the hand-rolled
-/// B → resolve → C8 → C7 pipeline that every keyed call site used to
-/// repeat:
-/// * §B — [`decrypt_and_validate_covered_bibs`], collapsing residual
-///   `Maybe` coverage via [`resolve_bib_coverage_maybes`] when every
-///   covered BIB decrypted;
-/// * §C8 — decrypt BCB-protected `PreviousNode` / `BundleAge` /
-///   `HopCount`, recording per-block `Decrypted`/`NoKey`/`Failed`
-///   outcomes;
-/// * §C7 — [`verify_all_bibs`].
+/// Composed keyed verification: §B → §C8 → §C7.
 ///
-/// Successful decrypts (covered BIBs and extension blocks) are stashed
-/// into `decrypted`; BIB coverage is stamped on `blocks`. Returns the
-/// [`VerifyFacts`] the caller applies its policy to. A non-`NoKey` /
-/// non-`DecryptionFailed` BPSec error, or a BIB-verify failure, fails the
-/// whole call.
+/// * §B — [`decrypt_and_validate_covered_bibs`]: decrypts and validates
+///   BCB-covered BIBs, stamps BIB coverage, collapses residual `Maybe`
+///   markers when every covered BIB decrypted with no failures.
+/// * §C8 — decrypts BCB-protected `PreviousNode` / `BundleAge` /
+///   `HopCount`, recording per-block outcomes.
+/// * §C7 — [`verify_all_bibs`]: verifies all BIB OperationSets.
+///
+/// Successful decrypts are stashed into `decrypted`; BIB coverage is
+/// stamped on `blocks`. Returns [`VerifyFacts`] — the caller applies its
+/// policy to `failed` (corrupt blocks, RFC 9172 §5.1.1) and `nokey_ext`.
+/// A non-`NoKey` / non-`DecryptionFailed` BPSec error, or a BIB-verify
+/// failure, propagates as `Err`.
 pub fn verify(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
@@ -397,12 +405,11 @@ pub fn verify(
     let mut facts = VerifyFacts::default();
 
     // §B — decrypt + validate BCB-covered BIBs; resolve coverage if all
-    // decrypted.
-    if decrypt_and_validate_covered_bibs(
+    // decrypted with no failures (done inside the call).
+    let failed_bibs = decrypt_and_validate_covered_bibs(
         data, key_source, blocks, bcb_ops, bib_ops, decrypted, to_update,
-    )? {
-        resolve_bib_coverage_maybes(blocks);
-    }
+    )?;
+    facts.failed.extend(failed_bibs);
 
     // §C8 — decrypt BCB-protected extension blocks.
     let to_decrypt: Vec<(u64, block::Type, u64)> = blocks
