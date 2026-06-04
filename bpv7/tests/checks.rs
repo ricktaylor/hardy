@@ -92,8 +92,16 @@ fn parse_full_for_test(
         &mut decrypted,
         &to_update,
     )?;
-    if !facts.failed.is_empty() {
-        return Err(bpsec::Error::DecryptionFailed.into());
+    // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
+    // non-payload → remove the target and its security block.
+    for &target in &facts.failed {
+        if target == 1 {
+            return Err(bpsec::Error::DecryptionFailed.into());
+        }
+        to_remove.insert(target);
+        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
+            to_remove.insert(bcb);
+        }
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
@@ -655,6 +663,65 @@ mod cascade_reencryption_tests {
             "All BCBs (orphaned by BIB drop) must be dropped"
         );
         assert!(new_bundle.blocks.contains_key(&1), "payload survives");
+    }
+
+    // RFC 9172 §5.1.1: when the BIB protecting an extension block is itself
+    // BCB-encrypted with a wrong key (DecryptionFailed), the BIB and its BCB
+    // are failure-dropped; the payload and bundle survive.
+    #[test]
+    fn corrupt_covered_bib_is_failure_dropped() {
+        let sign_k = sign_key();
+        let enc_k = enc_key();
+
+        // Build a bundle where the payload BIB is BCB-encrypted.
+        // sign(payload) → encrypt(payload) auto-encrypts the BIB covering it.
+        let (_, base) =
+            builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_payload(b"payload data".as_slice().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let signed = sign(&base, &[1], &sign_k);
+        let encrypted = encrypt(&signed, 1, &enc_k);
+
+        // Capture which block is the BIB and which BCB protects it (using
+        // correct keys) so we can assert their removal precisely.
+        let (pre, _) = parse_full_for_test(
+            &encrypted,
+            &bpsec::key::KeySet::new(vec![sign_k.clone(), enc_k.clone()]),
+        )
+        .expect("correct keys parse");
+        let bib_num = find_bib(&pre).expect("BIB present");
+        let bib_bcb_num = pre.blocks[&bib_num].bcb.expect("BIB must be BCB-encrypted");
+
+        // A wrong enc key with the same kid → decrypt attempt produces
+        // DecryptionFailed (not NoKey) at the §B BIB-decryption stage.
+        let wrong_enc_k: bpsec::key::Key = serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "A128KW",
+            "enc": "A128GCM",
+            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
+            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
+        }))
+        .unwrap();
+        let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
+
+        // parse_full_for_test applies §5.1.1 failure-drop: the corrupt BIB
+        // and the BCB that was protecting it are removed. The payload block
+        // survives (it remains BCB-encrypted under its own separate BCB,
+        // which is left intact — the payload itself is not corrupt).
+        let (bundle, _chunks) = parse_full_for_test(&encrypted, &wrong_keys)
+            .expect("§5.1.1 failure-drop: bundle survives a corrupt covered BIB");
+
+        assert!(
+            !bundle.blocks.contains_key(&bib_num),
+            "corrupt BIB must be dropped"
+        );
+        assert!(
+            !bundle.blocks.contains_key(&bib_bcb_num),
+            "BCB protecting the corrupt BIB must be dropped"
+        );
+        assert!(bundle.blocks.contains_key(&1), "payload must survive");
     }
 
     // The producers (Signer/Encryptor) must only ever emit bundles that the

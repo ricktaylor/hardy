@@ -58,10 +58,11 @@ fn validate_with_keys(
     // §A — classify (Unsupported errors propagate)
     checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
 
-    // §B — decrypt + validate BCB-covered BIBs (NoKey is soft)
+    // §B — decrypt + validate BCB-covered BIBs (NoKey is soft;
+    // DecryptionFailed is rejected — test helper is not a Verifier)
     let mut decrypted = std::collections::HashMap::new();
     let no_updates = std::collections::HashMap::new();
-    let all = checks::decrypt_and_validate_covered_bibs(
+    let failed_bibs = checks::decrypt_and_validate_covered_bibs(
         &data,
         keys,
         &mut bundle.blocks,
@@ -70,8 +71,8 @@ fn validate_with_keys(
         &mut decrypted,
         &no_updates,
     )?;
-    if all {
-        checks::resolve_bib_coverage_maybes(&mut bundle.blocks);
+    if !failed_bibs.is_empty() {
+        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
     // §C7 — verify every BIB with the supplied keys (NoKey is soft)
