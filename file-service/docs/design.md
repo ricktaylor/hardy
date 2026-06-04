@@ -63,7 +63,7 @@ On startup, before the event loop begins:
 2. Orphaned `.processing` files from a previous crash are renamed back to their
    original names. The watcher catches these renames as `MOVED_TO` events.
    If the original file already exists, the `.processing` file is moved to
-   `errors/` to avoid overwriting.
+   the errors directory to avoid overwriting.
 3. Pre-existing regular files are injected as synthetic `CLOSE_WRITE` events
    into the same channel.
 4. The event loop starts and processes all queued events uniformly.
@@ -87,7 +87,6 @@ Files are skipped if:
 - The filename starts with `.` (dotfiles). This allows atomic write patterns
   where a writer creates `.tmp_xyz` then renames to `final_name`.
 - The filename ends with `.processing` (internal claim marker).
-- The file is inside the `errors/` subdirectory.
 
 ### Claim and Send
 
@@ -110,12 +109,11 @@ sent in parallel with backpressure.
 
 ### Shutdown
 
-On cancellation signal the event loop exits and waits for all in-flight send
-tasks to complete. Tasks still awaiting a BPA response are cancelled and their
-`.processing` files are renamed back to the original name so the next startup
-picks them up. The task pool is drained before the BPA sink is unregistered,
-ensuring in-flight sends complete against a live connection. Only genuine send
-failures land in `errors/`.
+On cancellation signal the event loop stops accepting new events. In-flight
+sends are cancelled via the shared cancellation token: `process_file` takes
+the cancel branch, renames `.processing` back to the original name, and
+returns. The next startup recovers these files and resends them. Only genuine
+send failures (BPA rejected the bundle) land in `errors/`.
 
 ## Inbox Pipeline
 
@@ -137,4 +135,9 @@ When the BPA delivers a bundle payload via `on_receive()`:
   platforms are not supported. Docker Desktop on macOS/Windows uses a VM
   that does not propagate inotify events across bind mounts. Native Linux
   Docker with bind mounts works correctly.
+- **At-least-once delivery**: `select_biased!` prioritizes the send result
+  over the cancel signal, so a completed send is always acknowledged. However,
+  if the process is killed (SIGKILL) between a successful send and the file
+  deletion, the next startup resends the file. Acceptable for DTN
+  (at-least-once semantics).
 - **Single destination**: all outbox files are sent to the same destination EID.

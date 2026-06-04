@@ -38,7 +38,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config = Config::load(args.config)?;
+    let config = Config::load(args.config, args.service_id, args.destination)?;
 
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::from_level(config.log_level).into())
@@ -49,18 +49,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("{PKG_NAME} version {PKG_VERSION} starting...");
 
-    let service_id = args
-        .service_id
-        .or(config.service_id)
-        .ok_or_else(|| anyhow::anyhow!("service-id is required (via --service-id or config)"))?;
-
-    let destination = args
-        .destination
-        .or(config.destination)
-        .ok_or_else(|| anyhow::anyhow!("destination is required (via --destination or config)"))?;
-
     let service = Arc::new(FileService::new(
-        destination,
+        config.destination,
         config.lifetime,
         config.outbox,
         config.errors,
@@ -71,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     let remote_bpa = RemoteBpa::new(config.bpa_address);
     let eid = remote_bpa
-        .register_application(Service::Ipn(service_id), service.clone())
+        .register_application(Service::Ipn(config.service_id), service.clone())
         .await
         .map_err(|e| anyhow::anyhow!("Application registration failed: {e}"))?;
 

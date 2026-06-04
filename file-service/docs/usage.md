@@ -11,10 +11,20 @@ cargo run -p hardy-file-service -- \
   -c file-service/config.yaml
 ```
 
-### Docker
+### Docker (native Linux only)
+
+inotify events do not propagate across VM boundaries.
+Docker Desktop on macOS/Windows is not supported.
 
 ```bash
-docker run -v ./outbox:/data/outbox -v ./inbox:/data/inbox \
+docker run \
+  -e HARDY_FILE_SERVICE_BPA_ADDRESS="http://host.docker.internal:50051" \
+  -e HARDY_FILE_SERVICE_OUTBOX=/data/outbox \
+  -e HARDY_FILE_SERVICE_ERRORS=/data/errors \
+  -e HARDY_FILE_SERVICE_INBOX=/data/inbox \
+  -v ./data/outbox:/data/outbox \
+  -v ./data/errors:/data/errors \
+  -v ./data/inbox:/data/inbox \
   hardy-file-service \
   --service-id 42 \
   --destination "ipn:1.42"
@@ -29,9 +39,11 @@ file-service:
   environment:
     HARDY_FILE_SERVICE_BPA_ADDRESS: "http://hardy:50051"
     HARDY_FILE_SERVICE_OUTBOX: /data/outbox
+    HARDY_FILE_SERVICE_ERRORS: /data/errors
     HARDY_FILE_SERVICE_INBOX: /data/inbox
   volumes:
     - ./data/outbox:/data/outbox
+    - ./data/errors:/data/errors
     - ./data/inbox:/data/inbox
 ```
 

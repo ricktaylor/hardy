@@ -2062,6 +2062,7 @@ dependencies = [
  "clap",
  "config",
  "flume",
+ "futures",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
