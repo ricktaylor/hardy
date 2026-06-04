@@ -408,11 +408,34 @@ impl BundleParser {
     }
 
     fn parse_start(&mut self, data: &[u8]) -> Result<usize, Error> {
-        // Bundle outer array head — RFC 9171 §4.1 (normative): SHALL be a
-        // CBOR indefinite-length array. The only legal first byte is 0x9F.
+        // Bundle outer array head. RFC 9171 §4.1: a bundle SHALL be
+        // represented as a CBOR *indefinite-length* array, so the only
+        // conformant first byte is 0x9F. A definite-length outer array is
+        // therefore non-conformant — and §4.1 explicitly lets an
+        // implementation "MAY discard any sequence of bytes that does not
+        // conform", which is what we do (slow_bundle_array_error maps the
+        // definite-length head to NotCanonical).
+        //
+        // §4.1 also grants a MAY-*accept* carve-out (definite-length arrays
+        // are its worked example): an implementation may accept the
+        // non-conformant bytes and "transform [them] into conformant BP
+        // structure before processing", the transform itself being out of
+        // scope. We deliberately decline it. It is optional; every real
+        // BPv7 encoder emits the indefinite form; and the RFC's model is a
+        // transform pre-pass, not a second framing mode — whereas the outer
+        // 0xFF break is load-bearing both here (loop termination) and in
+        // parse() (the completeness check). If a definite-length sender ever
+        // turns up, add a normalisation shim in front of BundleParser
+        // rather than making this parser bimodal.
+        //
+        // Note the asymmetry with BlockHeader, which accepts 0x85/0x86/0x9F:
+        // individual block arrays MAY be definite OR indefinite (§4.1's
+        // deterministic-encoding rule, "indefinite-length items are not
+        // prohibited"). Only the *outer* array is pinned to indefinite.
+        //
         // Appendix B's CDDL `bpv7_start = bundle / #6.55799(bundle)` is
-        // informational and explicitly subordinate to the textual spec
-        // (`§4.1`), so the self-describing CBOR tag is rejected here.
+        // informational and "the textual representation rules" on conflict,
+        // so the self-describing CBOR tag (0xD9D9F7) is rejected here too.
         let offset = match data.first() {
             Some(&0x9F) => 1,
             None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
@@ -842,15 +865,45 @@ pub fn parse(data: Bytes) -> Result<Parsed, Error> {
     };
 
     let parsed = parser.finish(data)?;
-    if parsed
+
+    // For one-shot parse(), enforce that the bundle is complete. The inline
+    // payload path (small payload) already consumed the outer 0xFF and checked
+    // for trailing data before returning Ok. Only the streaming-fallback path
+    // (large payload body that didn't fit in the buffer) can reach here without
+    // having done so — that path is designed for the multi-push BPA use case,
+    // not one-shot use.
+    //
+    // `extent.end` is a u64 derived from an attacker-controlled byte-string
+    // length: it can exceed both the buffer and `usize` (on 32-bit targets).
+    // Do the buffer-bounds test in u64 space *before* any cast — casting first
+    // would truncate the high bits on 32-bit and could let a huge declared
+    // payload alias onto an in-bounds index, falsely accepting a truncated
+    // bundle. If the payload ends at or past the buffer end, the outer break
+    // can't be present, so the bundle was truncated.
+    let payload_end = parsed
         .bundle
         .blocks
         .get(&1)
         .ok_or(Error::MissingPayload)?
         .extent
-        .end
-        < (parsed.data.len() - 1) as u64
-    {
+        .end;
+    let data_len = parsed.data.len() as u64;
+    if payload_end >= data_len {
+        let needed = payload_end.saturating_add(1).saturating_sub(data_len);
+        return Err(Error::InvalidCBOR(CborError::NeedMoreData(
+            usize::try_from(needed).unwrap_or(usize::MAX),
+        )));
+    }
+
+    // payload_end < data_len <= usize::MAX, so the cast is lossless and the
+    // index is in bounds. The outer bundle array is always indefinite-length
+    // (parse_start enforces 0x9F as the only legal first byte), so in a
+    // complete, valid bundle the outer 0xFF break sits at payload_end with
+    // nothing after it. Checking the actual byte there is more robust than the
+    // old `data.len() - 1` arithmetic: if the §4.1 MAY-accept carve-out for
+    // definite-length outer arrays is ever implemented, this must be revisited.
+    let payload_end = payload_end as usize;
+    if parsed.data[payload_end] != 0xFF || payload_end + 1 != parsed.data.len() {
         return Err(Error::AdditionalData);
     }
 
