@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use flume::{Receiver, Sender};
+use futures::{FutureExt, select_biased};
 use hardy_async::{BoundedTaskPool, CancellationToken, TaskPool};
 use hardy_bpa::services::ApplicationSink;
 use hardy_bpv7::eid::Eid;
@@ -24,6 +25,8 @@ pub fn run(
     let (event_tx, event_rx) = flume::unbounded();
     let startup_tx = event_tx.clone();
 
+    // inotify-only: we rely on CLOSE_WRITE and MOVED_TO events which
+    // PollWatcher cannot deliver. This limits us to native Linux.
     let mut watcher = RecommendedWatcher::new(
         move |result| match result {
             Ok(event) => {
@@ -100,12 +103,12 @@ async fn process_events(
             let destination = destination.clone();
             let errors_dir = errors_dir.clone();
             let task_cancel = cancel.clone();
-            let spawn_fut = hardy_async::spawn!(senders, "outbox_send", async move {
-                process_file(path, sink, destination, lifetime, &errors_dir, task_cancel).await;
-            });
-            tokio::select! {
-                _ = spawn_fut => {}
-                _ = cancel.cancelled() => break 'outer,
+
+            select_biased! {
+                _ = hardy_async::spawn!(senders, "outbox_send", async move {
+                    process_file(path, sink, destination, lifetime, &errors_dir, task_cancel).await;
+                }).fuse() => {}
+                _ = cancel.cancelled().fuse() => break 'outer,
             }
         }
     }
@@ -241,9 +244,9 @@ async fn process_file(
     }
 
     debug!(dest = %destination, bytes = payload.len(), "Sending payload from '{}'", path.display());
-    let result = tokio::select! {
-        result = sink.send(destination, payload.into(), lifetime, None) => result,
-        _ = cancel.cancelled() => {
+    let result = select_biased! {
+        result = sink.send(destination, payload.into(), lifetime, None).fuse() => result,
+        _ = cancel.cancelled().fuse() => {
             warn!("Cancelled sending '{}', restoring for next startup", path.display());
             if let Err(e) = tokio::fs::rename(&processing_path, &path).await {
                 error!("Failed to restore '{}': {e}", path.display());

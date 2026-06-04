@@ -36,6 +36,7 @@ config = { version = "0.15", features = ["yaml", "toml", "json"] }
 humantime-serde = "1"
 notify = "8"
 flume = "0.12"
+futures = "0.3"
 time = { version = "0.3", default-features = false }
 
 [dev-dependencies]
