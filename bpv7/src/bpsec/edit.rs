@@ -48,12 +48,15 @@ pub trait BPSecEditor: Sized {
     /// For cascade-aware single-block removal, call this with a
     /// 1-element set and inspect the returned set.
     ///
-    /// Lenient: when the cascade would partially shrink a BCB-encrypted
-    /// BIB and no Encrypt-capable key is available on the protecting
-    /// BCB's source EID, the affected BIB's covered targets are silently
-    /// retained in the bundle. The alternative — a bundle with BIB
-    /// references to removed blocks — would be worse than honouring
-    /// fewer `delete_block_on_failure` flags.
+    /// Lenient on two fronts: (a) when the cascade would partially shrink
+    /// a BCB-encrypted BIB and no Encrypt-capable key is available, the
+    /// affected BIB's covered targets are silently retained — a dangling
+    /// BIB reference would be worse; (b) a BCB-encrypted BIB that cannot
+    /// be decrypted at all (NoKey or DecryptionFailed) is left encrypted
+    /// and skipped during staging. If such a BIB is in `blocks` it is
+    /// removed wholesale in the cascade step via `remove_block_inner`,
+    /// which strips it from its BCB's plaintext OperationSet without
+    /// needing to read the BIB body.
     ///
     /// All-dead shrinks (every target of a covering BIB is in `blocks`)
     /// need no Encrypt key: the cascade empties the OperationSet and
@@ -123,8 +126,12 @@ impl<'a> BPSecEditor for Editor<'a> {
                 // entries that this BIB protects will hit
                 // remove_from_bib_targets failing to parse the ciphertext
                 // OpSet and surface as an error.
-                CoveredBib::DecryptFailed(Error::NoKey) => continue,
-                CoveredBib::DecryptFailed(e) => return Err((self, e.into())),
+                // NoKey or DecryptionFailed: leave the BIB encrypted and
+                // skip staging. A corrupt (undecryptable) BIB is handled
+                // the same as NoKey — it is leniently retained here and
+                // removed wholesale in step 4 if the caller included it
+                // in `to_remove` (RFC 9172 §5.1.1 failure-drop).
+                CoveredBib::DecryptFailed => continue,
                 CoveredBib::ParseFailed(e) => return Err((self, e)),
                 CoveredBib::Decrypted(plaintext, opset) => (plaintext, opset),
             };
@@ -317,7 +324,7 @@ where
             let (plaintext, bib_opset) = match outcome {
                 CoveredBib::NotCovered => continue,
                 // Can't decrypt the BIB — leaving it would violate §3.8.
-                CoveredBib::DecryptFailed(_) => {
+                CoveredBib::DecryptFailed => {
                     return Err((editor, EditorError::CannotDecryptRelatedBib(bib_block_num)));
                 }
                 CoveredBib::ParseFailed(e) => return Err((editor, e)),
@@ -384,8 +391,8 @@ fn decode_bcb_opset(
 enum CoveredBib {
     /// The BCB OperationSet has no entry for this BIB — nothing to do.
     NotCovered,
-    /// Decryption failed; carries the BPSec error (e.g. [`Error::NoKey`]).
-    DecryptFailed(Error),
+    /// Decryption failed (NoKey or DecryptionFailed).
+    DecryptFailed,
     /// Decryption succeeded but the plaintext is not a valid BIB OpSet.
     ParseFailed(EditorError),
     /// Decryption and parse succeeded — the plaintext and its OperationSet.
@@ -422,7 +429,7 @@ where
     let editor = block_set.editor;
     let plaintext = match result {
         Ok(p) => p,
-        Err(e) => return (editor, CoveredBib::DecryptFailed(e)),
+        Err(_) => return (editor, CoveredBib::DecryptFailed),
     };
     match hardy_cbor::decode::parse::<bib::OperationSet>(&plaintext) {
         Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),

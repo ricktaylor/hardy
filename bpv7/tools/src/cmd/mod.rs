@@ -12,32 +12,31 @@ use std::collections::HashMap;
 ///
 /// Stages run:
 /// * structural parse (`parse::parse`);
-/// * Section A — `classify_unsupported`, which surfaces
-///   `Error::Unsupported(n)` if a block flagged `delete_bundle_on_failure`
-///   is unknown/unsupported;
-/// * Section B — `decrypt_and_validate_covered_bibs` with the supplied
-///   keys (surfaces BCB AEAD failures; `NoKey` is a soft skip), plus
-///   `resolve_bib_coverage_maybes` when every covered BIB decrypted;
-/// * Section C7 — `verify_all_bibs` with the supplied keys (surfaces BIB
-///   verification failures; `NoKey` is a soft skip).
+/// * §A — `classify_unsupported`, which surfaces `Error::Unsupported(n)`
+///   if a block flagged `delete_bundle_on_failure` is unknown/unsupported;
+/// * §B — `decrypt_and_validate_covered_bibs` with the supplied keys
+///   (`NoKey` is a soft skip; `DecryptionFailed` is rejected here — tools
+///   are not Verifiers and do not apply §5.1.1 failure-drop);
+/// * §C7 — `verify_all_bibs` with the supplied keys (`NoKey` is soft).
 ///
 /// Returns a [`parse::Parsed`] with the bundle's block-coverage stamps
-/// already updated by Section B.
+/// already updated by §B.
 pub(crate) fn parse_with_keys(
     data: Bytes,
     keys: &KeySet,
 ) -> Result<parse::Parsed, hardy_bpv7::Error> {
     let mut parsed = parse::parse(data)?;
 
-    // Section A — classification. `?` propagates Unsupported on
-    // delete_bundle_on_failure blocks; the report-flag side effects are
+    // §A — classification. `?` propagates Unsupported on
+    // delete_bundle_on_failure blocks; report-flag side effects are
     // ignored at this layer (tools don't emit status reports).
     checks::classify_unsupported(&parsed.bundle.blocks, &parsed.bcbs, &parsed.bibs, &[])?;
 
-    // Section B — decrypt + validate BCB-covered BIBs (NoKey is soft).
+    // §B — decrypt + validate BCB-covered BIBs. NoKey is a soft skip;
+    // DecryptionFailed surfaces in `failed_bibs` and is rejected here.
     let mut decrypted_data = HashMap::new();
     let no_updates = HashMap::new();
-    let all_decrypted = checks::decrypt_and_validate_covered_bibs(
+    let failed_bibs = checks::decrypt_and_validate_covered_bibs(
         &parsed.data,
         keys,
         &mut parsed.bundle.blocks,
@@ -46,11 +45,11 @@ pub(crate) fn parse_with_keys(
         &mut decrypted_data,
         &no_updates,
     )?;
-    if all_decrypted {
-        checks::resolve_bib_coverage_maybes(&mut parsed.bundle.blocks);
+    if !failed_bibs.is_empty() {
+        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
-    // Section C7 — verify every BIB with the supplied keys.
+    // §C7 — verify every BIB with the supplied keys.
     checks::verify_all_bibs(
         &parsed.data,
         keys,
@@ -180,8 +179,16 @@ pub(crate) fn full_rewrite(
         &mut decrypted,
         &to_update,
     )?;
-    if !facts.failed.is_empty() {
-        return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
+    // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
+    // non-payload → remove the target and its security block.
+    for &target in &facts.failed {
+        if target == 1 {
+            return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
+        }
+        to_remove.insert(target);
+        if let Some(bcb) = bundle.blocks.get(&target).and_then(|b| b.bcb) {
+            to_remove.insert(bcb);
+        }
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
