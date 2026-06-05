@@ -267,7 +267,7 @@ trait Sink {
     // BPA pulls `Segment::Next(bytes)` chunks until `Segment::Final`
     // (commit, dispatch the bundle) or `Err(Disconnected)` (abort,
     // discard any staged ingress state).
-    async fn write(
+    async fn dispatch_streamed(
         &self,
         stream: &dyn Receiver<Segment>,
         ...
@@ -279,13 +279,13 @@ Streaming CLAs (e.g., TCPCLv4) construct a bounded channel, spawn a task that pu
 
 If the BPA rejects mid-stream (e.g., early filter rejection), `write()` returns early; the CLA's pushing task sees `SendError` on its next push and tears down the wire transfer (e.g., emitting XFER_REFUSE on TCPCLv4).
 
-The BPA's `Sink` impl wraps `dispatch()` internally — it constructs a single-`Final(bytes)` `Receiver<Segment>` from the `Bytes`, then calls `write()`. The BPA core only implements the streaming ingress path.
+The BPA's `Sink` impl wraps `dispatch()` internally — it constructs a single-`Final(bytes)` `Receiver<Segment>` from the `Bytes`, then calls `dispatch_streamed()`. The BPA core only implements the streaming ingress path. (Implemented as `Sink::dispatch_streamed`; the §4 `write`/`read` naming convention was not adopted for this ingress method — it kept the `dispatch` family. Egress/filter surface naming is still open.)
 
 **Transitional convenience.** Retaining both `dispatch()` / `write()` (and likewise `Cla::forward()` / `Cla::write()` in §6.2) is transitional. Every existing CLA reads from a network stream and artificially materialises the full bundle before calling the non-streaming variant; all would benefit from migrating. Once migration is complete, the non-streaming methods can be removed.
 
 ### 5.2. Streamed Parser
 
-The parser lives in `bpv7::bundle::raw_parse` as `BundleParser` and exposes a two-phase API:
+The parser lives in `bpv7::parse` as `BundleParser` and exposes a two-phase API:
 
 ```rust
 pub enum ParserProgress {
@@ -303,14 +303,24 @@ impl BundleParser {
     /// relayed into the spool in one piece.
     pub fn push(&mut self, data: Bytes) -> Result<ParserProgress, Error>;
 
-    /// Phase 2: run the BPSec cross-block structural validation
-    /// against the final byte buffer, returning the parsed `Bundle`
-    /// index plus the pre-parsed BIB and BCB OperationSets.
-    pub fn finish(self, data: &[u8])
-        -> Result<(Bundle,
-                   HashMap<u64, bcb::OperationSet>,
-                   HashMap<u64, bib::OperationSet>), Error>;
+    /// Phase 2: run the BPSec cross-block structural validation against
+    /// the final byte buffer, returning the parsed `Bundle` index, the
+    /// authoritative `Bytes`, and the pre-parsed BIB and BCB
+    /// OperationSets, bundled as `Parsed`.
+    pub fn finish(self, data: Bytes) -> Result<Parsed, Error>;
 }
+
+/// Output of `finish` / `parse`: the authoritative byte buffer alongside
+/// the structural bundle and decoded BPSec OperationSets.
+pub struct Parsed {
+    pub data: Bytes,
+    pub bundle: Bundle,
+    pub bcbs: HashMap<u64, bcb::OperationSet>,
+    pub bibs: HashMap<u64, bib::OperationSet>,
+}
+
+/// One-shot sugar over the streaming primitives (tools, tests, round-trips).
+pub fn parse(data: Bytes) -> Result<Parsed, Error>;
 ```
 
 Internally a small state machine (`Start → PrimaryBlock → Blocks → Done`) drives the walk. Inner CBOR parsing functions operate on `&[u8]` slices of the accumulation buffer. Header blocks are retained in the buffer until `finish()` returns; the buffer is the random-access substrate for CRC validation and early-filter inspection without storage I/O.
@@ -328,7 +338,7 @@ The parser handles BIBs and BCBs asymmetrically during the walk (zero cost for b
 - **BCBs** are decoded inline during the block walk. The ASB (which describes what the BCB encrypts) is itself plaintext, so the parser parses each BCB's `OperationSet` as it sees it.
 - **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to a BPSec filter pass that has key access).
 
-`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the BPA aborts the spool write that ran in parallel. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `pub fn check_bib` and `pub fn check_bcb` in `raw_parse` so offline tooling can run the same checks without standing up a filter pipeline.
+`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the BPA aborts the spool write that ran in parallel. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `pub fn check_bib` and `pub fn check_bcb` in `bpv7::checks` so offline tooling can run the same checks without standing up a filter pipeline.
 
 The early BPSec filter (running after the parser, with key access) has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — these are either deferred to a late filter or verified inline as a stream processor during payload spooling (§5.5).
 
@@ -405,7 +415,7 @@ The early/late distinction controls what bytes filters receive, not which trait 
   - *Late ReadFilter*: inspects payload content, accepts/rejects. Late read filters at the same level run in parallel via `Bytes::clone()` fan-out (§5.3.3).
   - *Late WriteFilter*: rewrites the bundle via generational save (§5.6); can also update metadata via `FilterOut::Metadata`.
 
-**Canonicalisation** is a late write filter — runs after commit as a generational rewrite. If it fails, the original non-canonical bundle is safely stored.
+**Canonicalisation** is *not* a pipeline stage. Non-canonical CBOR is a hard parse error at ingress (§5.2.2), so there is no canonicalisation filter and no generational rewrite for it. (Earlier drafts modelled it as a late write filter; that was dropped — see §5.2.2. The shipped parser rejects non-canonical encodings outright.)
 
 BPSec integrity and confidentiality are implemented as built-in filters, not as separate Signer/Encryptor/Verifier types. The filter implementations use the Editor and BPSec crypto primitives (§6.1.6) internally.
 
@@ -909,10 +919,11 @@ Every backend handles the trait natively without adaptation layers.
 
 ### 9.1. Crate Responsibilities
 
-**`hardy-async`** — channel and stream trait primitives:
+**`hardy-async`** — channel primitives:
 
 - `channel::Sender` / `channel::Receiver` (bounded channels)
-- `Sender<T>` / `Receiver<T>` traits and channel adapters (`ChannelSender<T>`, `ChannelReceiver<T>`)
+
+The `Sender<T>` / `Receiver<T>` stream *traits* and their channel adapters (`ChannelSender<T>`, `ChannelReceiver<T>`) currently live in **`bpa::stream`**, wrapping `hardy_async::channel`. Promoting the traits into `hardy-async` is a later option if a non-`bpa` consumer needs them; not done today.
 
 **`bpv7`** — wire format, structural indexing, type definitions:
 
@@ -979,9 +990,9 @@ This is more restrictive than the current architecture, which embeds dispatcher-
 
 - **Reason-code mapping is BPA policy.** The translation from a filter or policy outcome to a `status_report::ReasonCode` (`BlockUnsupported`, `BlockUnintelligible`, etc.) is a policy decision about how to interpret a rejection for reporting purposes. It lives at the BPA call site, not in `bpv7`. The `status_report::ReasonCode` enum stays in `bpv7` (it's part of the wire format for status report payloads), but the *mapping logic* is the dispatcher's.
 
-- **Decoded extension-block fields leave `Bundle`.** Today's `Bundle` carries `previous_node`, `age`, `hop_count` decoded from their respective extension blocks at parse time. After the refactor, `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1); extension-block content moves out of `Bundle`. Where the BPA needs decoded extension values, the choice is either decode-on-demand by the filter that needs them, or pre-parse selected fields into `BundleMetadata` at ingress (the design is open on this — `BundleAge` and `PreviousNode` are likely candidates for `BundleMetadata` caching given how often they're referenced, with `HopCount` more borderline). Either way, adding a new extension block type stops being a `bpv7` change.
+- **Decoded extension-block fields leave `Bundle`.** Today's `Bundle` carries `previous_node`, `age`, `hop_count` decoded from their respective extension blocks at parse time. After the refactor, `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1); extension-block content moves out of `Bundle`. Where the BPA needs decoded extension values, the choice is either decode-on-demand by the filter that needs them, or pre-parse selected fields into `BundleMetadata` at ingress (the design is open on this — `BundleAge` and `PreviousNode` are likely candidates for `BundleMetadata` caching given how often they're referenced, with `HopCount` more borderline). Either way, adding a new extension block type stops being a `bpv7` change. (Status: the fields have left `bpv7::Bundle`; they currently live on `bpa::Bpv7Bundle`, with the move to `BundleMetadata` / decode-on-demand still open.)
 
-- **The `Checked`/`Rewritten`/`Parsed` taxonomy collapses.** The three parse modes exist today to express dispatcher decisions (canonicalise? drop unsupported blocks? validate BPSec?) as parser variants. Once those decisions move to filter chain configuration, the taxonomy is redundant. `bpv7`'s in-memory parse surface collapses to a single sugar function over the streaming primitives, returning a fully-decoded bundle for tools, tests, and builder round-trips. Production callers (the BPA) use the streaming parser directly.
+- **The `Checked`/`Rewritten`/`Parsed` taxonomy collapses.** The three parse modes exist today to express dispatcher decisions (canonicalise? drop unsupported blocks? validate BPSec?) as parser variants. Once those decisions move to filter chain configuration, the taxonomy is redundant. `bpv7`'s in-memory parse surface collapses to a single sugar function over the streaming primitives, returning the structural `Parsed` for tools, tests, and builder round-trips. Production callers (the BPA) use the streaming parser directly. (Status: the `bpv7` collapse is done — `RewrittenBundle` and the taxonomy are gone. `bpa` still carries the three mode pipelines `parse_{preserve,canonicalize,full}_with_provider` pending the move to filter-chain configuration.)
 
 - **Reusable filter logic lives in `bpa`, not `bpv7`.** Common policy filters (hop count, bundle age, previous-node mutation) are filter implementations against `bpv7`'s lean `Bundle` index. They depend on `bpv7` for wire-format primitives but are not themselves `bpv7` types. Bundling them with the BPA (or in a shared `bpa::filters::common` module) keeps `bpv7` consumable by non-Hardy callers (CLA debug tools, external utilities) without dragging dispatcher policy along.
 
@@ -991,13 +1002,13 @@ This is more restrictive than the current architecture, which embeds dispatcher-
 
 ```rust
 // Streaming primitives (hot path; BPA + tests)
-pub use bundle::raw_parse::{BundleParser, ParserProgress};
+pub use parse::{BundleParser, ParserProgress, Parsed};
 
-// In-memory sugar (tools, tests, builder round-trips)
-pub fn parse_bundle(data: &[u8]) -> Result<FullBundle, Error>;
+// One-shot sugar over the streaming primitives (tools, tests, round-trips)
+pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parse::parse
 ```
 
-Two entry points, each with a one-sentence purpose. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.
+Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets); the rich decoded view — extension-block field values — is assembled at the call site (today: `bpa::Bpv7Bundle`), not returned by `bpv7`. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.
 
 ## 10. Implementation Phasing
 

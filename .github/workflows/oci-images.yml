@@ -36,6 +36,9 @@ jobs:
           - image: hardy-tools
             dockerfile: ./tools/Dockerfile
             build-args: ""
+          - image: hardy-file-service
+            dockerfile: ./file-service/Dockerfile
+            build-args: ""
 
     steps:
       - uses: actions/checkout@v6

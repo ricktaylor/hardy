@@ -1,0 +1,44 @@
+[package]
+name = "hardy-file-service"
+description = "A file-based service for sending and receiving bundle payloads"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["dtn", "bpv7", "service", "file", "bundle-protocol"]
+categories = ["network-programming"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hardy-file-service"
+path = "src/main.rs"
+
+[features]
+default = []
+instrument = ["tracing/attributes"]
+
+[dependencies]
+hardy-async = { version = "0.1", path = "../async" }
+hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-bpv7 = { version = "0.5", path = "../bpv7", features = ["serde"] }
+hardy-proto = { version = "0.1", path = "../proto" }
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["macros", "fs", "time", "rt-multi-thread"] }
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+config = { version = "0.15", features = ["yaml", "toml", "json"] }
+humantime-serde = "1"
+notify = "8"
+flume = "0.12"
+futures = "0.3"
+time = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+serial_test = "3"
+tempfile = "3"
