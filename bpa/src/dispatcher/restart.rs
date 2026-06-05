@@ -15,24 +15,26 @@ impl Dispatcher {
         };
 
         // Validate the stored bundle data is not corrupt. We use the
-        // Preserve-mode parse (rather than `parse_full_with_provider`)
-        // because the bundle was already fully processed at ingress —
-        // restart should verify integrity and resume, not re-apply block
-        // removal or canonicalization.
-        let bundle =
-            match crate::bp7_parse::parse_preserve_with_provider(data.clone(), self.key_provider())
-            {
-                Ok((bundle, ..)) => bundle,
-                Err(e) => {
-                    // Can't extract a bundle ID, so we can't check or clean up
-                    // metadata here. Any orphaned metadata referencing this
-                    // storage_name will be caught by metadata_storage_recovery.
-                    warn!("Corrupt bundle data found: {storage_name}, {e}");
-                    self.store.delete_data(&storage_name).await;
-                    metrics::counter!("bpa.restart.junk").increment(1);
-                    return;
-                }
-            };
+        // Preserve-mode parse (rather than the full ingress pipeline) because the
+        // bundle was already fully processed at ingress — restart should verify
+        // integrity and resume, not re-apply block removal or canonicalization.
+        // Soft NoKey: re-checking already-accepted data, so a key that has since
+        // rotated away mustn't drop the bundle — the `nokey_ext` facts are ignored.
+        let bundle = match crate::bundle::parse::parse_validate_with_provider(
+            data.clone(),
+            self.key_provider(),
+        ) {
+            Ok((bundle, _nokey)) => bundle,
+            Err(e) => {
+                // Can't extract a bundle ID, so we can't check or clean up
+                // metadata here. Any orphaned metadata referencing this
+                // storage_name will be caught by metadata_storage_recovery.
+                warn!("Corrupt bundle data found: {storage_name}, {e}");
+                self.store.delete_data(&storage_name).await;
+                metrics::counter!("bpa.restart.junk").increment(1);
+                return;
+            }
+        };
 
         // Reconcile with metadata store
         if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
@@ -85,7 +87,7 @@ impl Dispatcher {
             // canonicalization, storage, reporting, and Ingress filter).
             let metadata = bundle::BundleMetadata {
                 status: bundle::BundleStatus::New,
-                storage_name: Some(storage_name),
+                storage_name: Some(storage_name.clone()),
                 read_only: bundle::ReadOnlyMetadata {
                     received_at: file_time,
                     ..Default::default()
@@ -99,8 +101,12 @@ impl Dispatcher {
                 .await
                 .trace_expect("New stream push failed?!?");
 
-            if let Some((bundle, data)) = self.process_received_bundle(&rx, metadata).await {
-                self.ingress_bundle(bundle, data).await;
+            match self.process_received_bundle(&rx, metadata).await {
+                Some((bundle, data)) => self.ingress_bundle(bundle, data).await,
+                // Re-validation rejected the orphan — delete its stranded data.
+                None => {
+                    self.store.delete_data(&storage_name).await;
+                }
             }
             metrics::counter!("bpa.restart.orphan").increment(1);
         }

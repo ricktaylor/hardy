@@ -28,7 +28,7 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.reassembled").increment(1);
 
         let metadata = BundleMetadata {
-            storage_name: Some(storage_name),
+            storage_name: Some(storage_name.clone()),
             status: BundleStatus::New,
             read_only: ReadOnlyMetadata {
                 received_at: bundle.metadata.read_only.received_at,
@@ -43,11 +43,15 @@ impl Dispatcher {
             .await
             .trace_expect("New stream push failed?!?");
 
-        if let Some((bundle, data)) = self.process_received_bundle(&rx, metadata).await {
+        match self.process_received_bundle(&rx, metadata).await {
             // Box::pin breaks the recursive async type cycle:
             //   ingress_bundle → process_bundle → reassemble →
             //   process_received_bundle → ingress_bundle
-            Box::pin(self.ingress_bundle(bundle, data)).await;
+            Some((bundle, data)) => Box::pin(self.ingress_bundle(bundle, data)).await,
+            // The reassembled data we pre-stored is now orphaned — delete it.
+            None => {
+                self.store.delete_data(&storage_name).await;
+            }
         }
     }
 }

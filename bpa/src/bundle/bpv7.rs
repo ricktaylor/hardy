@@ -1,10 +1,8 @@
-//! The rich BPv7 bundle representation the BPA stores: the structural
-//! bundle with the well-known extension blocks interpreted into typed
-//! fields. Interpreting those blocks is a BPA concern, so this type and
-//! its companion extractor ([`crate::bp7_parse::extract_extension_block_fields`])
-//! live here rather than in `hardy-bpv7`. This is a pure data struct —
-//! payload access / BPSec decryption is done by the free helpers in
-//! [`crate::bp7_parse`].
+//! The rich BPv7 bundle representation the BPA stores: the structural bundle
+//! with the well-known extension blocks interpreted into typed fields.
+//! Interpreting those blocks is a BPA concern, so this type and its companion
+//! extractor live in [`crate::bundle::parse`] rather than in `hardy-bpv7`. This
+//! is a pure data struct — the raw wire bytes are stored separately by the BPA.
 
 use crate::HashMap;
 use hardy_bpv7::{block, bundle, crc, eid, hop_info};
@@ -14,8 +12,7 @@ use hardy_bpv7::{block, bundle, crc, eid, hop_info};
 /// Holds the primary-block fields, the values unpacked from known
 /// extension blocks (`previous_node` / `age` / `hop_count`), and a map
 /// of all blocks present in the bundle. The raw wire bytes are stored
-/// separately by the BPA; payload access goes through
-/// [`crate::bp7_parse::block_data`].
+/// separately by the BPA.
 #[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bpv7Bundle {

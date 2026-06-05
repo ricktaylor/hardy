@@ -60,7 +60,9 @@ impl Dispatcher {
             Ok(data) => data,
         };
 
-        match hardy_cbor::decode::parse(data.as_ref()) {
+        // The administrative record is the whole payload — reject any trailing
+        // bytes after it (a smuggling vector) with `parse_exact`, not `parse`.
+        match hardy_cbor::decode::parse_exact(data.as_ref()) {
             Err(e) => {
                 debug!("Failed to parse administrative record: {e}");
                 metrics::counter!("bpa.admin_record.unknown").increment(1);

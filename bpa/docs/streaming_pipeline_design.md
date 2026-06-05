@@ -4,8 +4,30 @@
 | --- | --- |
 | **Component** | BPA — Bundle data I/O, spool-based streaming |
 | **Scope** | Transformer-based streaming, spool commit model, sequential-only storage |
-| **Status** | Design notes — pre-implementation |
+| **Status** | Living doc — partially implemented (streaming parser + CLA segment delivery landed; storage / egress / spool-ingress pending) |
 | **Related** | `queue_architecture.md`, `storage_subsystem_design.md`, Editor (`bpv7/src/editor.rs`) |
+
+## Implementation status (2026-06-01)
+
+This is a living document: the sections below mix shipped behaviour with design targets. Current state on `refactor/parse` (now stacked on the streaming-CLA work).
+
+**Landed**
+
+- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`).
+- CLA segment delivery — `cla::Segment::{Next, Final}` and `Sink::dispatch_streamed(&dyn Receiver<Segment>)` alongside the retained `Sink::dispatch(Bytes)`. Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
+- `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`; the rich decoded view now lives in `bpa::Bpv7Bundle`.
+
+**Interim (works, not yet the target shape)**
+
+- Ingress still concatenates the segment stream into one `Bytes` (`dispatcher::ingress::concat_stream`) and whole-buffer parses — the early-filter gate (§5.4), tee'd spool (§5.7), and payload-never-in-RAM property (§2.5) are not yet realised.
+- Decoded extension fields (`previous_node` / `age` / `hop_count`) have left `bpv7::Bundle` (§7.1 achieved) but currently live on `bpa::Bpv7Bundle` rather than `BundleMetadata`.
+- `bpa` still carries three parse-mode pipelines (`parse_{preserve,canonicalize,full}_with_provider`); the collapse to streaming-primitives-plus-filter-config (§9.3) is pending.
+
+**Pending**
+
+- Streaming storage (§3 — `BundleStorage::load` is still `-> Result<Option<Bytes>>`), egress `Cla::write` + Transformer chain (§6), early-filter gate and spool ingress (§5.4–5.7), Phases 0/3+ of §10.
+
+Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
 ## 1. Background
 

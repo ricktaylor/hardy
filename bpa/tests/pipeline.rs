@@ -133,28 +133,22 @@ impl services::Service for EchoService {
             return Ok(());
         };
 
-        // Parse + edit in a scoped block so the parse OperationSets
-        // (which contain `Rc<…>` and are therefore `!Send`) are dropped
-        // before any `.await` — otherwise the resulting future is !Send.
-        let (data, chunks) = {
-            let Ok(hardy_bpv7::parse::Parsed {
-                data, bundle: raw, ..
-            }) = hardy_bpv7::parse::parse(data)
-            else {
-                return Ok(());
-            };
-            let Ok(editor) = hardy_bpv7::editor::Editor::new(&raw, &data)
-                .with_source(raw.primary.destination.clone())
-            else {
-                return Ok(());
-            };
-            let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
-                return Ok(());
-            };
-            let Ok(chunks) = editor.rebuild() else {
-                return Ok(());
-            };
-            (data, chunks)
+        let Ok(hardy_bpv7::parse::Parsed {
+            data, bundle: raw, ..
+        }) = hardy_bpv7::parse::parse(data)
+        else {
+            return Ok(());
+        };
+        let Ok(editor) = hardy_bpv7::editor::Editor::new(&raw, &data)
+            .with_source(raw.primary.destination.clone())
+        else {
+            return Ok(());
+        };
+        let Ok(editor) = editor.with_destination(raw.primary.id.source.clone()) else {
+            return Ok(());
+        };
+        let Ok(chunks) = editor.rebuild() else {
+            return Ok(());
         };
 
         let reply = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
@@ -501,6 +495,216 @@ async fn local_delivery() {
         payload.as_ref(),
         b"Hello local",
         "Delivered payload should match"
+    );
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Streamed oversized-payload ingress: a CLA delivers a bundle whose payload
+// exceeds the parser chunk size, split across many segments — exercising the
+// `Partial` / `drain_tail` (dumb-spool) path end-to-end.
+// ---------------------------------------------------------------------------
+
+/// A `Receiver` that yields a fixed sequence of segments then reports the
+/// producer is gone — mimics a CLA reassembling a transfer into segments.
+struct SegmentReceiver {
+    segments: std::sync::Mutex<std::collections::VecDeque<cla::Segment>>,
+}
+
+impl SegmentReceiver {
+    /// Split `data` into `chunk`-byte segments: `Next` for all but the last,
+    /// which is `Final`.
+    fn new(data: &[u8], chunk: usize) -> Self {
+        let mut segments = std::collections::VecDeque::new();
+        let mut off = 0;
+        while off < data.len() {
+            let end = (off + chunk).min(data.len());
+            let piece = Bytes::copy_from_slice(&data[off..end]);
+            segments.push_back(if end == data.len() {
+                cla::Segment::Final(piece)
+            } else {
+                cla::Segment::Next(piece)
+            });
+            off = end;
+        }
+        Self {
+            segments: std::sync::Mutex::new(segments),
+        }
+    }
+
+    /// Segments not yet pulled by the parser. Non-zero after dispatch means the
+    /// payload tail was never drained.
+    fn remaining(&self) -> usize {
+        self.segments.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl hardy_bpa::stream::Receiver<cla::Segment> for SegmentReceiver {
+    async fn recv(&self) -> Result<cla::Segment, hardy_bpa::stream::RecvError> {
+        self.segments
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or(hardy_bpa::stream::RecvError)
+    }
+}
+
+/// An inbound bundle with a payload far larger than the 4096-byte parser chunk
+/// size, delivered in 1000-byte segments, is reassembled and delivered intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_oversized_payload_local_delivery() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+    let inbound = build_bundle(&remote_source, &local_dest, &payload);
+    assert!(
+        inbound.len() > 4096,
+        "payload must exceed the parser chunk size"
+    );
+
+    // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
+    let stream = SegmentReceiver::new(&inbound, 1000);
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch_streamed(&stream, None, None)
+        .await
+        .unwrap();
+
+    let (source, delivered) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for streamed local delivery")
+            .expect("Channel closed");
+    assert_eq!(source, remote_source, "Delivered source should match");
+    assert_eq!(
+        delivered.as_ref(),
+        payload.as_slice(),
+        "Full streamed payload should be delivered intact"
+    );
+
+    bpa.shutdown().await;
+}
+
+// A bundle whose creation time + lifetime is already in the past — expired on
+// arrival. Oversized payload so it streams as `Partial`.
+fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
+    let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
+        Some(hardy_bpv7::dtn_time::DtnTime::saturating_from(past)),
+        1,
+    );
+    let (_, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
+        .with_lifetime(core::time::Duration::from_secs(60))
+        .with_payload(std::borrow::Cow::Borrowed(payload))
+        .build(timestamp)
+        .expect("Failed to build expired bundle");
+    Bytes::from(data)
+}
+
+// A bundle carrying a Hop Count block whose count already exceeds its limit.
+// Oversized payload so it streams as `Partial`.
+fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
+    let hop = hardy_bpv7::hop_info::HopInfo { limit: 1, count: 2 };
+    let (_, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
+        .with_hop_count(&hop)
+        .with_payload(std::borrow::Cow::Borrowed(payload))
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .expect("Failed to build hop-exhausted bundle");
+    Bytes::from(data)
+}
+
+/// The §5.4 early-reject gate: a streamed bundle that fails a header-only check
+/// (lifetime, hop count) is dropped *before* its payload tail is drained, so the
+/// CLA never has to spool a gigantic invalid payload. Asserted by counting the
+/// segments left un-pulled in the `SegmentReceiver`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_oversized_gate_drops_before_draining_payload() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    let sink = || cla.sink.get().unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+
+    // Expired — gated on lifetime; the payload tail must stay un-pulled.
+    let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
+    assert!(expired.len() > 4096, "payload must exceed the parser chunk");
+    let stream = SegmentReceiver::new(&expired, 1000);
+    sink().dispatch_streamed(&stream, None, None).await.unwrap();
+    assert!(
+        stream.remaining() > 0,
+        "expired bundle must be dropped before the payload tail is drained"
+    );
+
+    // Hop-exhausted — gated on hop count; same expectation.
+    let hopped = build_hop_exhausted_bundle(&remote_source, &local_dest, &payload);
+    let stream = SegmentReceiver::new(&hopped, 1000);
+    sink().dispatch_streamed(&stream, None, None).await.unwrap();
+    assert!(
+        stream.remaining() > 0,
+        "hop-exhausted bundle must be dropped before the payload tail is drained"
+    );
+
+    // Control: a valid bundle of the same size passes the gate, drains fully,
+    // and delivers — proving the un-pulled segments above are the gate at work,
+    // not a stalled stream.
+    let valid = build_bundle(&remote_source, &local_dest, &payload);
+    let stream = SegmentReceiver::new(&valid, 1000);
+    sink().dispatch_streamed(&stream, None, None).await.unwrap();
+    assert_eq!(
+        stream.remaining(),
+        0,
+        "a valid bundle drains its whole payload"
+    );
+
+    let (_src, delivered) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for the valid control bundle")
+            .expect("Channel closed");
+    assert_eq!(delivered.as_ref(), payload.as_slice());
+    assert!(
+        app_rx.is_empty(),
+        "neither gated bundle should have been delivered"
     );
 
     bpa.shutdown().await;

@@ -151,7 +151,7 @@ impl Dispatcher {
             .trace_expect("Failed to create new bundle");
 
             let data = Bytes::from(data);
-            let bundle = crate::bp7_parse::rich_from_built(raw, &data)
+            let bundle = crate::bundle::parse::rich_from_built(raw, &data)
                 .trace_expect("Failed to reshape built bundle");
 
             // Wrap in bundle::Bundle with Dispatching status — status reports
