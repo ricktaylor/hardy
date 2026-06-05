@@ -25,20 +25,23 @@ impl hardy_cbor::encode::ToCbor for AesVariant {
 }
 
 impl hardy_cbor::decode::FromCbor for AesVariant {
-    type Error = hardy_cbor::decode::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
-            (
-                match value {
-                    1 => Self::A128GCM,
-                    3 => Self::A256GCM,
-                    v => Self::Unrecognised(v),
-                },
-                shortest,
-                len,
-            )
-        })
+        let (value, shortest, len) =
+            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        Ok((
+            match value {
+                1 => Self::A128GCM,
+                3 => Self::A256GCM,
+                v => Self::Unrecognised(v),
+            },
+            true,
+            len,
+        ))
     }
 }
 
@@ -59,9 +62,9 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => iv = Some(parse::decode_box(range, data)?),
-                2 => variant = Some(parse::require_canonical_value(&data[range])?),
+                2 => variant = Some(hardy_cbor::decode::parse(&data[range])?),
                 3 => key = Some(parse::decode_box(range, data)?),
-                4 => flags = Some(parse::require_canonical_value(&data[range])?),
+                4 => flags = Some(hardy_cbor::decode::parse(&data[range])?),
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }

@@ -6,7 +6,7 @@ loops and to control the bundle's lifetime in the network.
 */
 
 use super::*;
-use error::HasInvalidField;
+use error::require_canonical;
 
 /// Contains hop limit and hop count information for a bundle.
 ///
@@ -26,18 +26,6 @@ impl hardy_cbor::encode::ToCbor for HopInfo {
 
     fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
         encoder.emit(&(&self.limit, &self.count))
-    }
-}
-
-fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    match a.parse::<(T, bool)>() {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
-        Ok((t, true)) => Ok(t),
     }
 }
 
@@ -74,7 +62,7 @@ impl hardy_cbor::decode::FromCbor for HopInfo {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use hardy_cbor::decode::FromCbor;
     use hex_literal::hex;

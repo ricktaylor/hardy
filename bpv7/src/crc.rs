@@ -82,12 +82,15 @@ impl hardy_cbor::encode::ToCbor for CrcType {
 }
 
 impl hardy_cbor::decode::FromCbor for CrcType {
-    type Error = self::Error;
+    type Error = crate::Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
-            .map(|(v, shortest, len)| (v.into(), shortest, len))
-            .map_err(Into::into)
+        let (value, shortest, len) = hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
+            .map_err(crate::Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(crate::Error::NotCanonical);
+        }
+        Ok((value.into(), true, len))
     }
 }
 

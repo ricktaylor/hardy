@@ -1183,7 +1183,7 @@ impl Id {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use hex_literal::hex;
 

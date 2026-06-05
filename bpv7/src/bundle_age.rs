@@ -20,7 +20,7 @@ use super::*;
 /// `core::time::Duration::from(age)`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BundleAge(pub u64);
+pub struct BundleAge(u64);
 
 impl From<u64> for BundleAge {
     fn from(millis: u64) -> Self {
@@ -75,7 +75,7 @@ impl hardy_cbor::decode::FromCbor for BundleAge {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use hardy_cbor::decode::FromCbor;
     use hex_literal::hex;
@@ -129,7 +129,10 @@ mod test {
     #[test]
     fn rejects_tagged() {
         let body = hex!("C0 00"); // tag(0) on a uint
-        assert!(BundleAge::from_cbor(&body).is_err());
+        assert!(matches!(
+            BundleAge::from_cbor(&body),
+            Err(Error::NotCanonical)
+        ));
     }
 
     /// Round-trip: encode a value, decode it back, verify equality and

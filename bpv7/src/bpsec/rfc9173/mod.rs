@@ -17,7 +17,7 @@ fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
 }
 
 #[cfg(all(test, feature = "serde"))]
-mod test;
+mod tests;
 
 /// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
@@ -53,36 +53,39 @@ impl Default for ScopeFlags {
 }
 
 impl hardy_cbor::decode::FromCbor for ScopeFlags {
-    type Error = hardy_cbor::decode::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
-            let mut flags = Self {
-                include_primary_block: false,
-                include_target_header: false,
-                include_security_header: false,
-                unrecognised: None,
-            };
-            let mut unrecognised = value;
+        let (value, shortest, len) =
+            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        let mut flags = Self {
+            include_primary_block: false,
+            include_target_header: false,
+            include_security_header: false,
+            unrecognised: None,
+        };
+        let mut unrecognised = value;
 
-            if (value & (1 << 0)) != 0 {
-                flags.include_primary_block = true;
-                unrecognised &= !(1 << 0);
-            }
-            if (value & (1 << 1)) != 0 {
-                flags.include_target_header = true;
-                unrecognised &= !(1 << 1);
-            }
-            if (value & (1 << 2)) != 0 {
-                flags.include_security_header = true;
-                unrecognised &= !(1 << 2);
-            }
+        if (value & (1 << 0)) != 0 {
+            flags.include_primary_block = true;
+            unrecognised &= !(1 << 0);
+        }
+        if (value & (1 << 1)) != 0 {
+            flags.include_target_header = true;
+            unrecognised &= !(1 << 1);
+        }
+        if (value & (1 << 2)) != 0 {
+            flags.include_security_header = true;
+            unrecognised &= !(1 << 2);
+        }
 
-            if unrecognised != 0 {
-                flags.unrecognised = Some(unrecognised);
-            }
-            (flags, shortest, len)
-        })
+        if unrecognised != 0 {
+            flags.unrecognised = Some(unrecognised);
+        }
+        Ok((flags, true, len))
     }
 }
 

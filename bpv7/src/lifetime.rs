@@ -21,7 +21,7 @@ use super::*;
 /// `core::time::Duration::from(lifetime)`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Lifetime(pub u64);
+pub struct Lifetime(u64);
 
 impl From<u64> for Lifetime {
     fn from(millis: u64) -> Self {
@@ -76,7 +76,7 @@ impl hardy_cbor::decode::FromCbor for Lifetime {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use hardy_cbor::decode::FromCbor;
     use hex_literal::hex;
@@ -130,7 +130,10 @@ mod test {
     #[test]
     fn rejects_tagged() {
         let body = hex!("C0 00"); // tag(0) on a uint
-        assert!(Lifetime::from_cbor(&body).is_err());
+        assert!(matches!(
+            Lifetime::from_cbor(&body),
+            Err(Error::NotCanonical)
+        ));
     }
 
     /// Round-trip: encode a value, decode it back, verify equality and

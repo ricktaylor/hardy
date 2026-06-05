@@ -254,16 +254,3 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
     })
     .map(|v| v.0)
 }
-
-/// Decodes a value of type `T` from `data`, rejecting any non-shortest
-/// encoding with `NotCanonical`. Used for rfc9173 parameter/result
-/// values whose leaf parser is `hardy_cbor`-error-typed (e.g. `ShaVariant`,
-/// `ScopeFlags`, `AesVariant`).
-#[cfg(feature = "rfc9173")]
-pub fn require_canonical_value<T>(data: &[u8]) -> Result<T, Error>
-where
-    T: hardy_cbor::decode::FromCbor<Error = hardy_cbor::decode::Error>,
-{
-    let (v, s) = hardy_cbor::decode::parse::<(T, bool)>(data)?;
-    if !s { Err(Error::NotCanonical) } else { Ok(v) }
-}
