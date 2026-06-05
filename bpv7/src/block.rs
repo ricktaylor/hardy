@@ -345,6 +345,29 @@ impl Block {
         source.get(r.start as usize..r.end as usize)
     }
 
+    /// Decode this block's payload (from `source`) as a single CBOR `T`, with a
+    /// smuggling check — no trailing bytes after the item (see
+    /// [`hardy_cbor::decode::parse_exact`]). `Ok(None)` if the payload's bytes
+    /// aren't resident in `source` (an over-claiming extent in a headers-only
+    /// buffer).
+    ///
+    /// The payload is assumed **plaintext**: it's the caller's contract to decrypt
+    /// a BCB-protected block first and decode the plaintext with
+    /// [`hardy_cbor::decode::parse_exact`] — calling this on ciphertext mis-decodes
+    /// or errors. A decode failure surfaces as `T`'s own error via [`Error`]'s
+    /// `From` conversions; the decode is canonical iff `T`'s `FromCbor` is.
+    pub fn extract<T>(&self, source: &[u8]) -> Result<Option<T>, Error>
+    where
+        T: hardy_cbor::decode::FromCbor,
+        T::Error: From<hardy_cbor::decode::Error>,
+        Error: From<T::Error>,
+    {
+        self.payload(source)
+            .map(hardy_cbor::decode::parse_exact)
+            .transpose()
+            .map_err(Error::from)
+    }
+
     /// Emits the block as a CBOR-encoded byte array.
     /// This is an internal function used during bundle creation.
     pub(crate) fn emit(

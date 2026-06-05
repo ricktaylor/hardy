@@ -49,7 +49,9 @@ pub(crate) fn parse_with_keys(
         return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
-    // §C7 — verify every BIB with the supplied keys.
+    // §C7 — verify every BIB with the supplied keys. `verify_all_bibs` borrows
+    // the op-map (the buffer is complete, so it defers nothing), leaving
+    // `parsed.bibs` intact for the later per-block `verify_block`.
     checks::verify_all_bibs(
         &parsed.data,
         keys,
