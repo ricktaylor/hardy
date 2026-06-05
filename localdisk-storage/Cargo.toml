@@ -29,11 +29,12 @@ directories = "6"
 tracing = { version = "0.1", default-features = false }
 time = "0.3"
 trace-err = "1"
+flume = "0.12"
+futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 memmap2 = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
-flume = "0.12"
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
 

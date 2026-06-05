@@ -16,18 +16,18 @@
 //! for architectural context.
 
 use core::cmp::Ordering;
-
 use futures::{FutureExt, join, select_biased};
-use hardy_async::sync::Mutex;
-use hardy_async::{Notify, TaskPool};
-use hardy_bpv7::bundle::Id;
-use hardy_bpv7::eid::Eid;
+use hardy_async::{Notify, TaskPool, sync::Mutex};
+use hardy_bpv7::{bundle::Id, eid::Eid};
 use time::OffsetDateTime;
 use tracing::{debug, error};
 
-use crate::bundle::{Bundle, BundleStatus};
-use crate::dispatcher::Dispatcher;
-use crate::{Arc, BTreeSet};
+use crate::{
+    Arc, BTreeSet,
+    bundle::{Bundle, BundleStatus},
+    dispatcher::Dispatcher,
+    stream::ChannelSender,
+};
 
 /// Cache entry for the reaper's expiry monitoring.
 ///
@@ -198,20 +198,21 @@ impl Reaper {
 
     async fn refill_cache(&self) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (tx, rx) = flume::bounded::<Bundle>(self.cache_size);
+        let (stream, rx) = ChannelSender::<Bundle>::bounded(self.cache_size);
 
         join!(
             async {
                 let _ = self
                     .metadata_storage
-                    .poll_expiry(tx, self.cache_size)
+                    .poll_expiry(&stream, self.cache_size)
                     .await
                     .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
+                drop(stream);
             },
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };

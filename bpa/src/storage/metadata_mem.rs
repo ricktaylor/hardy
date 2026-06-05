@@ -5,8 +5,12 @@ use hardy_bpv7::eid::Eid;
 use lru::LruCache;
 use tracing::info;
 
-use super::{MetadataStorage, Result, Sender};
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus};
+use crate::{
+    bundle::{Bundle, BundleMetadata, BundleStatus},
+    stream::Sender,
+};
+
+use super::{MetadataStorage, Result};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -118,7 +122,7 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(None)
     }
 
-    async fn remove_unconfirmed(&self, _tx: Sender<Bundle>) -> Result<()> {
+    async fn remove_unconfirmed(&self, _stream: &dyn Sender<Bundle>) -> Result<()> {
         Ok(())
     }
 
@@ -136,7 +140,7 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
-    async fn poll_expiry(&self, tx: Sender<Bundle>, limit: usize) -> Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .entries
             .lock()
@@ -149,14 +153,14 @@ impl MetadataStorage for MetadataMemStorage {
         entries.sort_unstable_by_key(|b| b.expiry());
 
         for e in entries.into_iter().take(limit) {
-            if tx.send_async(e).await.is_err() {
+            if stream.send(e).await.is_err() {
                 break;
             }
         }
         Ok(())
     }
 
-    async fn poll_waiting(&self, tx: Sender<Bundle>) -> Result<()> {
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .entries
             .lock()
@@ -169,14 +173,14 @@ impl MetadataStorage for MetadataMemStorage {
         entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
 
         for bundle in entries {
-            if tx.send_async(bundle).await.is_err() {
+            if stream.send(bundle).await.is_err() {
                 break;
             }
         }
         Ok(())
     }
 
-    async fn poll_service_waiting(&self, source: Eid, tx: Sender<Bundle>) -> Result<()> {
+    async fn poll_service_waiting(&self, source: Eid, stream: &dyn Sender<Bundle>) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .entries
             .lock()
@@ -191,14 +195,18 @@ impl MetadataStorage for MetadataMemStorage {
         entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
 
         for bundle in entries {
-            if tx.send_async(bundle).await.is_err() {
+            if stream.send(bundle).await.is_err() {
                 break;
             }
         }
         Ok(())
     }
 
-    async fn poll_adu_fragments(&self, tx: Sender<Bundle>, status: &BundleStatus) -> Result<()> {
+    async fn poll_adu_fragments(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+    ) -> Result<()> {
         let mut entries: Vec<(u64, Bundle)> = self
             .entries
             .lock()
@@ -217,7 +225,7 @@ impl MetadataStorage for MetadataMemStorage {
         entries.sort_unstable_by_key(|(offset, _)| *offset);
 
         for (_, e) in entries {
-            if tx.send_async(e).await.is_err() {
+            if stream.send(e).await.is_err() {
                 break;
             }
         }
@@ -226,7 +234,7 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn poll_pending(
         &self,
-        tx: Sender<Bundle>,
+        stream: &dyn Sender<Bundle>,
         state: &BundleStatus,
         limit: usize,
     ) -> Result<()> {
@@ -242,7 +250,7 @@ impl MetadataStorage for MetadataMemStorage {
         entries.sort_unstable_by_key(|b| b.metadata.read_only.received_at);
 
         for e in entries.into_iter().take(limit) {
-            if tx.send_async(e).await.is_err() {
+            if stream.send(e).await.is_err() {
                 break;
             }
         }

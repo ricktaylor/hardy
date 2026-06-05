@@ -24,7 +24,7 @@ type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; /
 
 struct RibInner {
     routes: RouteTable,
-    address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
+    address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::ClaEntry>>,
 }
 
 pub struct Rib {
@@ -38,7 +38,7 @@ pub struct Rib {
     ecmp_hash_state: foldhash::quality::RandomState,
     tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::Store>,
+    store: Arc<storage::store::Store>,
 
     // The priority for services - default 1
     service_priority: u32,
@@ -70,7 +70,7 @@ impl RibBuilder {
     pub async fn build(
         self,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
     ) -> routes::Result<Arc<Rib>> {
         let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
         for (name, agent) in self.agents {
@@ -87,7 +87,7 @@ impl Rib {
 
     fn new(
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         service_priority: u32,
     ) -> Self {
         let entry = route::Entry {
@@ -160,7 +160,7 @@ impl Rib {
     pub fn add_address_type(
         &self,
         address_type: cla::ClaAddressType,
-        cla: Arc<cla::registry::Cla>,
+        cla: Arc<cla::registry::ClaEntry>,
     ) {
         self.inner.write().address_types.insert(address_type, cla);
     }

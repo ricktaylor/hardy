@@ -14,7 +14,7 @@ mod restart;
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
-    store: Arc<storage::Store>,
+    store: Arc<storage::store::Store>,
     rib: Arc<rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_engine: Arc<filter::FilterEngine>,
@@ -36,7 +36,7 @@ impl Dispatcher {
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_engine: Arc<filter::FilterEngine>,
@@ -61,7 +61,7 @@ impl Dispatcher {
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         rib: Arc<rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_engine: Arc<filter::FilterEngine>,
@@ -109,7 +109,7 @@ impl Dispatcher {
     }
 
     pub async fn shutdown(&self) {
-        self.dispatch_tx.close().await;
+        self.dispatch_tx.close();
         self.processing_pool.shutdown().await;
         self.tasks.shutdown().await;
     }
@@ -157,19 +157,28 @@ impl Dispatcher {
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+        let (stream, rx) =
+            crate::stream::ChannelSender::<bundle::Bundle>::bounded(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 
-        join!(self.store.poll_service_waiting(source.clone(), tx), async {
-            while let Ok(mut bundle) = rx.recv_async().await {
-                dispatcher
-                    .store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+        join!(
+            async {
+                self.store
+                    .poll_service_waiting(source.clone(), &stream)
                     .await;
-                dispatcher.dispatch_bundle(bundle).await;
+                drop(stream);
+            },
+            async {
+                while let Ok(mut bundle) = rx.recv().await {
+                    dispatcher
+                        .store
+                        .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                        .await;
+                    dispatcher.dispatch_bundle(bundle).await;
+                }
             }
-        });
+        );
     }
 
     fn key_provider(
