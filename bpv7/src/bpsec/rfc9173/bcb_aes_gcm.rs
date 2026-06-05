@@ -1,4 +1,4 @@
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use aes_gcm::{
     KeyInit,
@@ -30,23 +30,20 @@ impl hardy_cbor::encode::ToCbor for AesVariant {
 }
 
 impl hardy_cbor::decode::FromCbor for AesVariant {
-    type Error = Error;
+    type Error = hardy_cbor::decode::Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, shortest, len) =
-            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
-        if !shortest {
-            return Err(Error::NotCanonical);
-        }
-        Ok((
-            match value {
-                1 => Self::A128GCM,
-                3 => Self::A256GCM,
-                v => Self::Unrecognised(v),
-            },
-            true,
-            len,
-        ))
+        hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map(|(value, shortest, len)| {
+            (
+                match value {
+                    1 => Self::A128GCM,
+                    3 => Self::A256GCM,
+                    v => Self::Unrecognised(v),
+                },
+                shortest,
+                len,
+            )
+        })
     }
 }
 
@@ -59,24 +56,43 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    fn from_cbor(parameters: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(
+        parameters: HashMap<u64, Range<usize>>,
+        data: &[u8],
+    ) -> Result<(Self, bool), Error> {
+        let mut shortest = true;
         let mut iv = None;
         let mut variant = None;
         let mut key = None;
         let mut flags = None;
         for (id, range) in parameters {
             match id {
-                1 => iv = Some(parse::decode_box(range, data)?),
+                1 => {
+                    iv = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
+                }
                 2 => {
                     let bytes = parse::bounded_slice(data, range)?;
-                    variant = Some(hardy_cbor::decode::parse(bytes)?);
+                    variant = Some(hardy_cbor::decode::parse(bytes).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
-                3 => key = Some(parse::decode_box(range, data)?),
+                3 => {
+                    key = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
+                }
                 4 => {
                     let bytes = parse::bounded_slice(data, range)?;
-                    flags = Some(hardy_cbor::decode::parse(bytes)?);
+                    flags = Some(hardy_cbor::decode::parse(bytes).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
                 }
-
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
@@ -87,12 +103,15 @@ impl Parameters {
             return Err(Error::InvalidIvLength(iv.len()));
         }
 
-        Ok(Self {
-            iv,
-            variant: variant.unwrap_or_default(),
-            key,
-            flags: flags.unwrap_or_default(),
-        })
+        Ok((
+            Self {
+                iv,
+                variant: variant.unwrap_or_default(),
+                key,
+                flags: flags.unwrap_or_default(),
+            },
+            shortest,
+        ))
     }
 }
 
@@ -130,16 +149,22 @@ impl hardy_cbor::encode::ToCbor for Parameters {
 pub struct Results(pub Option<Box<[u8]>>);
 
 impl Results {
-    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
+    fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<(Self, bool), Error> {
+        let mut shortest = true;
         let mut r = None;
         for (id, range) in results {
             match id {
-                1 => r = Some(parse::decode_box(range, data)?),
+                1 => {
+                    r = Some(parse::decode_box(range, data).map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })?);
+                }
                 _ => return Err(Error::InvalidContextResult(id)),
             }
         }
 
-        Ok(Self(r))
+        Ok((Self(r), shortest))
     }
 }
 
@@ -216,7 +241,7 @@ fn encrypt_inner<C: aes_gcm::aead::Aead>(
 
 #[derive(Debug)]
 pub struct Operation {
-    pub parameters: Rc<Parameters>,
+    pub parameters: Arc<Parameters>,
     pub results: Results,
 }
 
@@ -328,7 +353,7 @@ impl Operation {
 
         Ok((
             Self {
-                parameters: Rc::new(Parameters {
+                parameters: Arc::new(Parameters {
                     iv,
                     variant,
                     key,
@@ -503,9 +528,14 @@ impl Operation {
 pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
-) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>), Error> {
-    let parameters = Rc::from(
+) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>, bool), Error> {
+    let mut shortest = false;
+    let parameters = Arc::from(
         Parameters::from_cbor(asb.parameters, data)
+            .map(|(p, s)| {
+                shortest = s;
+                p
+            })
             .map_field_err::<Error>("RFC9173 AES-GCM parameters")?,
     );
 
@@ -517,17 +547,21 @@ pub fn parse(
             bcb::Operation::AES_GCM(Operation {
                 parameters: parameters.clone(),
                 results: Results::from_cbor(results, data)
+                    .map(|(v, s)| {
+                        shortest = shortest && s;
+                        v
+                    })
                     .map_field_err::<Error>("RFC9173 AES-GCM results")?,
             }),
         );
     }
-    Ok((asb.source, operations))
+    Ok((asb.source, operations, shortest))
 }
 
 #[cfg(test)]
 mod tests {
     use aes_gcm::KeyInit;
-    use alloc::rc::Rc;
+    use alloc::sync::Arc;
     use core::ops::Range;
 
     use super::*;
@@ -552,7 +586,7 @@ mod tests {
                 let (ct, _) = encrypt_inner(cipher, iv.clone(), aad, plaintext).unwrap();
                 let (ciphertext, tag) = ct.split_at(ct.len() - 16);
                 let op = Operation {
-                    parameters: Rc::new(Parameters {
+                    parameters: Arc::new(Parameters {
                         iv,
                         variant: AesVariant::A256GCM,
                         key: None,
