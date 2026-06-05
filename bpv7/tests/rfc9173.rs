@@ -75,7 +75,9 @@ fn validate_with_keys(
         return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
-    // §C7 — verify every BIB with the supplied keys (NoKey is soft)
+    // §C7 — verify every BIB with the supplied keys (NoKey is soft).
+    // `verify_all_bibs` borrows the op-map (the buffer is complete, so it defers
+    // nothing), leaving `bib_ops` intact for the tests that inspect it.
     checks::verify_all_bibs(
         &data,
         keys,

@@ -884,3 +884,188 @@ mod cascade_reencryption_tests {
             .expect("encryptor output must pass structural check");
     }
 }
+
+// Deferred block-1 (payload) BIB verification — the streaming ingress gate path.
+// On a headers-only buffer (oversized payload not yet drained), `verify` can't
+// check a BIB that targets the payload, so it reports it via `deferred_bibs`
+// without draining `bib_ops`; the gate retains exactly those and re-checks them
+// with `verify_payload` once the full bundle is resident.
+#[cfg(all(feature = "rfc9173", feature = "serde"))]
+mod deferred_payload_bib_tests {
+    use super::*;
+    use hardy_bpv7::parse::{BundleParser, ParserProgress};
+
+    fn sign_key() -> bpsec::key::Key {
+        serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS256",
+            "key_ops": ["sign", "verify"],
+            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+        }))
+        .unwrap()
+    }
+
+    fn keys() -> bpsec::key::KeySet {
+        bpsec::key::KeySet::new(vec![sign_key()])
+    }
+
+    // A bundle whose payload (block 1) is signed under a BIB and is far larger
+    // than any sane parser chunk, so the streaming parser must report `Partial`
+    // before the payload body is resident.
+    fn signed_large_payload() -> Box<[u8]> {
+        let (_, base) =
+            builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).expect("parse");
+        bpsec::signer::Signer::new(&raw, &bytes)
+            .sign_block(
+                1,
+                bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign_key(),
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap()
+    }
+
+    // Drive the streaming parser until the payload body overflows the buffer,
+    // returning the parsed headers — block 1's extent over-claims, its body
+    // isn't resident in `parsed.data`.
+    fn parse_headers_only(full: &[u8]) -> Parsed {
+        let mut parser = BundleParser::new(256);
+        for c in full.chunks(64) {
+            match parser.push(Bytes::copy_from_slice(c)).unwrap() {
+                ParserProgress::NeedMore(_) => {}
+                ParserProgress::Partial { consumed, .. } => {
+                    return parser.finish(consumed).unwrap();
+                }
+                ParserProgress::Ready(_) => panic!("oversized payload must Partial, not Ready"),
+            }
+        }
+        panic!("parser never reached Partial");
+    }
+
+    // Header pass defers the block-1 BIB (payload not resident) without draining
+    // `bib_ops`; the retained op-set then verifies against the full bundle.
+    #[test]
+    fn payload_bib_deferred_then_verified() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: mut raw,
+            bcbs: bcb_ops,
+            bibs: mut bib_ops,
+        } = parse_headers_only(&full);
+        let bib_block = *bib_ops.keys().next().expect("a BIB op-set");
+        assert!(
+            raw.blocks.get(&1).unwrap().payload(&consumed).is_none(),
+            "payload body must not be resident in the headers-only buffer"
+        );
+
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &consumed,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+        assert_eq!(
+            facts.deferred_bibs.as_slice(),
+            &[bib_block],
+            "the block-1 BIB is deferred, not checked inline"
+        );
+        assert!(
+            bib_ops.contains_key(&bib_block),
+            "verify borrows bib_ops — it must not drain it"
+        );
+
+        // The gate retains exactly the deferred set, then verifies it against the
+        // full (now-resident) bundle.
+        bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
+        checks::verify_payload(&full, &keys, &raw.blocks, &bib_ops, &decrypted, &no_updates)
+            .expect("deferred payload BIB verifies against the full bundle");
+    }
+
+    // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
+    #[test]
+    fn payload_bib_tamper_fails() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: mut raw,
+            bcbs: bcb_ops,
+            bibs: mut bib_ops,
+        } = parse_headers_only(&full);
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &consumed,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+        bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
+
+        // Flip a byte in the middle of the 50 KB payload body.
+        let mut tampered = full.to_vec();
+        tampered[full.len() / 2] ^= 0xFF;
+        let err = checks::verify_payload(
+            &tampered,
+            &keys,
+            &raw.blocks,
+            &bib_ops,
+            &decrypted,
+            &no_updates,
+        )
+        .expect_err("tampered payload must fail the deferred BIB");
+        assert!(
+            matches!(err, Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)),
+            "expected IntegrityCheckFailed, got {err:?}"
+        );
+    }
+
+    // With the whole bundle resident, `verify` checks the payload BIB inline and
+    // defers nothing — the non-streaming path is unchanged.
+    #[test]
+    fn all_resident_verifies_inline_without_deferring() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let (data, mut raw, bcb_ops, mut bib_ops) =
+            raw_parse_tuple(Bytes::copy_from_slice(&full)).unwrap();
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &data,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+        assert!(
+            facts.deferred_bibs.is_empty(),
+            "nothing is deferred when the payload is resident"
+        );
+    }
+}

@@ -14,6 +14,7 @@ use bytes::{Bytes, BytesMut};
 use error::CaptureFieldErr;
 use hardy_cbor::decode::{Error as CborError, Head, Marker};
 use primary_block::PrimaryBlock;
+use smallvec::SmallVec;
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -405,7 +406,7 @@ pub struct BundleParser {
     /// BIBs are skipped and trigger a `BibCoverage::Maybe` sweep on
     /// the remaining blocks. Empty (no allocation) for bundles with
     /// no BIBs.
-    pending_bibs: Vec<u64>,
+    pending_bibs: SmallVec<[u64; 4]>,
 
     /// Parsed BCB OperationSets for every BCB encountered, keyed by
     /// BCB block number. BCB bodies are always plaintext (the ASB
@@ -435,7 +436,7 @@ impl BundleParser {
             state: State::Start,
             bundle: None,
             unique_blocks: HashSet::with_capacity(3),
-            pending_bibs: Vec::new(),
+            pending_bibs: SmallVec::new(),
             bcbs: HashMap::new(),
             deferred: None,
         }
