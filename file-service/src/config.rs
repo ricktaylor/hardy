@@ -112,9 +112,7 @@ impl Config {
 
         let config = builder.build()?.try_deserialize()?;
 
-        if required {
-            eprintln!("Loaded configuration from '{}'", config_file.display());
-        }
+        eprintln!("Configuration source: '{}'", config_file.display());
         Ok(config)
     }
 }
