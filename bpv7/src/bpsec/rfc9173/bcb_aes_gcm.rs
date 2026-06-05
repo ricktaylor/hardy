@@ -67,9 +67,17 @@ impl Parameters {
         for (id, range) in parameters {
             match id {
                 1 => iv = Some(parse::decode_box(range, data)?),
-                2 => variant = Some(hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?),
+                2 => {
+                    variant = Some(hardy_cbor::decode::parse(parse::bounded_slice(
+                        data, range,
+                    )?)?)
+                }
                 3 => key = Some(parse::decode_box(range, data)?),
-                4 => flags = Some(hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?),
+                4 => {
+                    flags = Some(hardy_cbor::decode::parse(parse::bounded_slice(
+                        data, range,
+                    )?)?)
+                }
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
