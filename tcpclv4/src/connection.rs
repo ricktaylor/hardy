@@ -123,7 +123,12 @@ impl ConnectionPool {
         &self,
         bundle: hardy_bpa::Bytes,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
-        // We repeatedly search as this function is async, so changes can happen while running
+        // We repeatedly search as this function is async, so changes can happen
+        // while running. Cap the retries so a peer whose sessions repeatedly
+        // accept-then-fail (while the pool stays above max_idle) can't wedge the
+        // forward indefinitely.
+        const MAX_RETRIES: usize = 3;
+        let mut retries = 0;
         loop {
             // Try to use an idle session
             while let Some(conn) = {
@@ -192,6 +197,14 @@ impl ConnectionPool {
                 // We can support more active connections
                 return Err(bundle);
             }
+
+            // Pool is above max_idle but nothing could send. Retry — bounded, and
+            // yielding so the tasks that manage the pool get a chance to run.
+            retries += 1;
+            if retries >= MAX_RETRIES {
+                return Err(bundle);
+            }
+            tokio::task::yield_now().await;
         }
     }
 }
