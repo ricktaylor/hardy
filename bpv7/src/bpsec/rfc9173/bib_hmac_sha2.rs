@@ -60,7 +60,9 @@ impl Parameters {
         let mut result = Self::default();
         for (id, range) in parameters {
             match id {
-                1 => result.variant = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?,
+                1 => {
+                    result.variant = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?
+                }
                 2 => result.key = Some(parse::decode_box(range, data)?),
                 3 => result.flags = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?,
                 _ => return Err(Error::InvalidContextParameter(id)),
