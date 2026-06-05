@@ -251,7 +251,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
 /// indefinite-length byte strings are rejected with `NotCanonical`.
 #[cfg(feature = "rfc9173")]
 pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> {
-    let data = &data[range.start..range.end];
+    let data = bounded_slice(data, range)?;
     hardy_cbor::decode::parse_value(data, |v, s, tags| match v {
         hardy_cbor::decode::Value::Bytes(r) if s && tags.is_empty() => Ok(data[r].into()),
         hardy_cbor::decode::Value::Bytes(_) | hardy_cbor::decode::Value::ByteStream(_) => {
