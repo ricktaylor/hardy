@@ -164,7 +164,7 @@ impl TryFrom<Cow<'_, str>> for Eid {
 ///
 /// Non-shortest individual uints are rejected as `NotCanonical` (RFC 9171
 /// §4.1: scalars MUST be deterministic; uints have no indefinite variant).
-/// `array_canonical` is the canonical-shortest signal for the wrapping
+/// `canonical` is the canonical-shortest signal for the wrapping
 /// array passed by the caller (false if the outer EID array or this SSP
 /// array used indefinite-length encoding); the returned bool combines
 /// that with the per-encoding canonical signal (3-element form with
@@ -172,7 +172,7 @@ impl TryFrom<Cow<'_, str>> for Eid {
 /// RFC 9758 §6.1.2, so returns `false` to trigger a rewrite).
 fn ipn_from_cbor(
     value: &mut hardy_cbor::decode::Array,
-    array_canonical: bool,
+    canonical: bool,
 ) -> Result<(Eid, bool), Error> {
     let (a, s1): (u64, bool) = value.parse()?;
     if !s1 {
@@ -194,14 +194,12 @@ fn ipn_from_cbor(
     const U32_MAX: u64 = u32::MAX as u64;
 
     match (a, b, c) {
-        (0, 0, Some(0)) | (0, 0, None) => Ok((Eid::Null, array_canonical)),
+        (0, 0, Some(0)) | (0, 0, None) => Ok((Eid::Null, canonical)),
         (0, 0, Some(_)) | (0, _, None) => Ok((Eid::Null, false)),
         (a, _, Some(_)) if a > U32_MAX => Err(Error::IpnInvalidAllocatorId(a)),
         (_, n, Some(_)) if n > U32_MAX => Err(Error::IpnInvalidNodeNumber(n)),
         (_, _, Some(s)) | (_, s, None) if s > U32_MAX => Err(Error::IpnInvalidServiceNumber(s)),
-        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => {
-            Ok((Eid::LocalNode(s as u32), array_canonical))
-        }
+        (0, U32_MAX, Some(s)) | (U32_MAX, s, None) => Ok((Eid::LocalNode(s as u32), canonical)),
         // 3-element form with allocator=0: RFC 9758 §6.1.2 RECOMMENDS
         // the 2-element form here, so flag for rewrite.
         (0, n, Some(s)) => Ok((
@@ -222,7 +220,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            array_canonical,
+            canonical,
         )),
         (n, s, None) if n <= U32_MAX => Ok((
             Eid::Ipn {
@@ -232,7 +230,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            array_canonical,
+            canonical,
         )),
         (fqnn, s, None) => Ok((
             Eid::LegacyIpn {
@@ -242,7 +240,7 @@ fn ipn_from_cbor(
                 },
                 service_number: s as u32,
             },
-            array_canonical,
+            canonical,
         )),
     }
 }
@@ -277,7 +275,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
             // Indefinite-length outer EID array: RFC-permitted but not
             // canonical-shortest. The carry-through bool below picks
             // this up so the returned `shortest` flag reflects it.
-            let outer_canonical = a.is_definite();
+            let canonical = a.is_definite();
 
             let (scheme, s): (u64, bool) = a.parse().map_field_err::<Error>("EID scheme")?;
             if !s {
@@ -299,7 +297,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                                 if !s {
                                     return Err(Error::NotCanonical);
                                 }
-                                Ok((Eid::Null, outer_canonical))
+                                Ok((Eid::Null, canonical))
                             }
                             hardy_cbor::decode::Value::Text("none") => {
                                 if !s {
@@ -314,7 +312,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                                 }
                                 parse_dtn
                                     .parse(text)
-                                    .map(|e| (e, outer_canonical))
+                                    .map(|e| (e, canonical))
                                     .map_err(|e| Error::ParseError(e.to_string()))
                             }
                             hardy_cbor::decode::Value::TextStream(parts) => {
@@ -342,7 +340,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                         if !s || !tags.is_empty() {
                             return Err(Error::NotCanonical);
                         }
-                        ipn_from_cbor(arr, outer_canonical && arr.is_definite())
+                        ipn_from_cbor(arr, canonical && arr.is_definite())
                     }
                     value => Err(hardy_cbor::decode::Error::IncorrectType(
                         "Untagged Array".to_string(),
@@ -366,7 +364,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                             scheme,
                             data: data[start..a.offset()].into(),
                         },
-                        outer_canonical,
+                        canonical,
                     ))
                 }
             }

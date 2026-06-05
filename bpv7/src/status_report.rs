@@ -157,7 +157,10 @@ impl hardy_cbor::decode::FromCbor for ReasonCode {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let (v, shortest, len) = hardy_cbor::decode::parse::<(u64, bool, usize)>(data)?;
-        Ok((v.try_into()?, shortest, len))
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        Ok((v.try_into()?, true, len))
     }
 }
 
@@ -205,17 +208,10 @@ fn parse_status_assertion(
 
         let status = a.parse().map_field_err::<Error>("status")?;
         if status {
-            if let Some((timestamp, s)) = a
-                .try_parse::<(dtn_time::DtnTime, bool)>()
+            if let Some(timestamp) = a
+                .try_parse::<dtn_time::DtnTime>()
                 .map_field_err::<Error>("timestamp")?
             {
-                if !s {
-                    return Err(Error::invalid_field(
-                        "timestamp",
-                        Error::NotCanonical.into(),
-                    ));
-                }
-
                 if timestamp.millisecs() == 0 {
                     Ok::<_, Error>(Some(StatusAssertion(None)))
                 } else {
@@ -402,7 +398,7 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use hardy_cbor::decode::FromCbor;
 

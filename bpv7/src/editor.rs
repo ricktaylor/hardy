@@ -1412,7 +1412,7 @@ impl<'a> bpsec::BlockSet<'a> for EditorBlockSet<'a> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     // Build a bundle, parse it, return (bundle, data) ready for editing.

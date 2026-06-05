@@ -5,7 +5,7 @@ given source node can be uniquely identified, even if created at the same time.
 */
 
 use super::*;
-use error::HasInvalidField;
+use error::{CaptureFieldErr, require_canonical};
 
 static GLOBAL_COUNTER: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
 
@@ -133,18 +133,6 @@ impl hardy_cbor::encode::ToCbor for CreationTimestamp {
     }
 }
 
-fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    match a.parse::<(T, bool)>() {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
-        Ok((t, true)) => Ok(t),
-    }
-}
-
 impl hardy_cbor::decode::FromCbor for CreationTimestamp {
     type Error = Error;
 
@@ -158,14 +146,18 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
-            let timestamp = require_canonical(a, "bundle creation time")?;
+            // `DtnTime` self-enforces canonical form, so delegate to it
+            // rather than re-checking via `require_canonical`.
+            let creation_time: dtn_time::DtnTime =
+                a.parse().map_field_err::<Error>("bundle creation time")?;
             let sequence_number = require_canonical(a, "sequence number")?;
             Ok((
                 CreationTimestamp {
-                    creation_time: if timestamp == 0 {
+                    // A zero DTN time signals the source had no usable clock.
+                    creation_time: if creation_time.millisecs() == 0 {
                         None
                     } else {
-                        Some(dtn_time::DtnTime::new(timestamp))
+                        Some(creation_time)
                     },
                     sequence_number,
                 },

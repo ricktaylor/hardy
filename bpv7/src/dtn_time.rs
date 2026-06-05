@@ -3,6 +3,8 @@ This module provides a representation of DTN time, which is defined as the
 number of milliseconds since the DTN epoch (2000-01-01 00:00:00 UTC).
 */
 
+use super::*;
+
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
 /// Represents a DTN timestamp.
@@ -53,11 +55,20 @@ impl hardy_cbor::encode::ToCbor for DtnTime {
 }
 
 impl hardy_cbor::decode::FromCbor for DtnTime {
-    type Error = hardy_cbor::decode::Error;
+    type Error = Error;
 
+    /// Strict-canonical decode per RFC 9171 §4.1: DTN time is a bare unsigned
+    /// integer (milliseconds since the DTN epoch). Bare uints have no
+    /// indefinite-length form, so the §4.1 carveout does not apply — any
+    /// non-shortest encoding is rejected with `NotCanonical`, as are unexpected
+    /// tags. Returns `shortest = true` on success.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse(data)
-            .map(|(millisecs, shortest, len)| (Self(millisecs), shortest, len))
+        let (millisecs, shortest, len) =
+            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        Ok((Self(millisecs), true, len))
     }
 }
 

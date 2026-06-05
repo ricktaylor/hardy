@@ -64,13 +64,10 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 .map_field_err::<Error>("bundle processing control flags")?;
 
             // Parse CRC Type
-            let crc_type = block
-                .parse()
-                .map(|(v, s)| {
-                    shortest = shortest && s;
-                    v
-                })
-                .map_err(Into::into);
+            let crc_type = block.parse().map(|(v, s)| {
+                shortest = shortest && s;
+                v
+            });
 
             // Parse EIDs
             let destination = block
@@ -293,7 +290,7 @@ impl PrimaryBlock {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
     fn empty_keys() -> bpsec::key::KeySet {

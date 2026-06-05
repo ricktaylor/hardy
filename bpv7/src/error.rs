@@ -142,3 +142,22 @@ where
         self.map_err(|e| E::invalid_field(field, e.into()))
     }
 }
+
+/// Decode the next element of a CBOR array as `T`, rejecting any non-shortest
+/// encoding with [`Error::NotCanonical`]. The shared helper for fixed bpv7
+/// array fields (e.g. `HopInfo`, `CreationTimestamp`); BPSec has its own
+/// `Series`-based variant in `bpsec::parse`.
+pub(crate) fn require_canonical<T>(
+    a: &mut hardy_cbor::decode::Array,
+    field: &'static str,
+) -> Result<T, Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    match a.parse::<(T, bool)>() {
+        Err(e) => Err(Error::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
+        Ok((t, true)) => Ok(t),
+    }
+}

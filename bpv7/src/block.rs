@@ -105,11 +105,15 @@ impl hardy_cbor::encode::ToCbor for Flags {
 }
 
 impl hardy_cbor::decode::FromCbor for Flags {
-    type Error = hardy_cbor::decode::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
-            .map(|(value, shortest, len)| (value.into(), shortest, len))
+        let (value, shortest, len) =
+            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        Ok((value.into(), true, len))
     }
 }
 
@@ -174,11 +178,15 @@ impl hardy_cbor::encode::ToCbor for Type {
 }
 
 impl hardy_cbor::decode::FromCbor for Type {
-    type Error = hardy_cbor::decode::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse::<(u64, bool, usize)>(data)
-            .map(|(value, shortest, len)| (value.into(), shortest, len))
+        let (value, shortest, len) =
+            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
+        if !shortest {
+            return Err(Error::NotCanonical);
+        }
+        Ok((value.into(), true, len))
     }
 }
 
