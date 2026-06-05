@@ -1,6 +1,7 @@
 mod bpv7;
 mod core;
 mod metadata;
+pub(crate) mod parse;
 mod status;
 
 pub use bpv7::*;

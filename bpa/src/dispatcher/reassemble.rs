@@ -1,4 +1,5 @@
-use tracing::debug;
+use trace_err::TraceErrResult;
+use tracing::{debug, warn};
 
 use super::Dispatcher;
 use crate::{
@@ -31,7 +32,7 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.reassembled").increment(1);
 
         let metadata = BundleMetadata {
-            storage_name: Some(storage_name),
+            storage_name: Some(storage_name.clone()),
             status: BundleStatus::New,
             read_only: ReadOnlyMetadata {
                 received_at,
@@ -40,11 +41,27 @@ impl Dispatcher {
             ..Default::default()
         };
 
-        if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
+        // TODO: Just push the entire bundle into the stream
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(crate::stream::Segment::Final(data))
+            .await
+            .trace_expect("New stream push failed?!?");
+
+        match self.process_received_bundle(&mut rx, metadata).await {
             // Box::pin breaks the recursive async type cycle:
             //   ingress_bundle → process_bundle → reassemble →
             //   process_received_bundle → ingress_bundle
-            Box::pin(self.ingress_bundle(bundle, data)).await;
+            Ok(Some((bundle, data))) => Box::pin(self.ingress_bundle(bundle, data)).await,
+            // The reassembled data we pre-stored is now orphaned — delete it.
+            Ok(None) => {
+                self.store.delete_data(&storage_name).await;
+            }
+            // A reassembled ADU that trips the gate has no live transfer to
+            // refuse — log, and delete the orphaned pre-stored data.
+            Err(e) => {
+                warn!("Reassembled bundle rejected: {e}");
+                self.store.delete_data(&storage_name).await;
+            }
         }
     }
 }

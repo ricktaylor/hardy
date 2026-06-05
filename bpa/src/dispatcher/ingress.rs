@@ -1,7 +1,66 @@
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{parse::PayloadTail, status_report::ReasonCode};
 
 use super::*;
-use crate::stream::{Receiver, Segment};
+use crate::{bundle::parse, cla::Segment, stream::Receiver};
+
+// Why the payload drain failed. `Cancelled` and `TooLarge` are the CLA's to
+// hear about (the transfer ack must be withheld / the transfer refused);
+// `Rejected` is an internal drop of an invalid-but-complete stream.
+enum DrainFailure {
+    Cancelled,
+    TooLarge { size: usize, max: usize },
+    Rejected,
+}
+
+/// Dumb-spool an oversized payload's tail in memory after the gate has accepted
+/// the bundle: feed each remaining segment through [`PayloadTail`] (carrying the
+/// payload CRC, the block/outer-break checks, and trailing-data rejection) while
+/// accumulating the bytes — bounded by `max_size`, continuing the count the
+/// header pass started — then return the assembled bundle. The `BytesMut`
+/// accumulator is the single seam streaming storage will later replace.
+async fn drain_payload(
+    stream: &mut dyn Receiver<Segment>,
+    consumed: Bytes,
+    mut tail: PayloadTail,
+    max_size: usize,
+) -> core::result::Result<Bytes, DrainFailure> {
+    let mut whole = crate::BytesMut::from(consumed.as_ref());
+    loop {
+        let (bytes, last) = match stream.recv().await {
+            Ok(Segment::Next(b)) => (b, false),
+            Ok(Segment::Final(b)) => (b, true),
+            Err(_) => {
+                debug!("Truncated payload (stream cancelled mid-tail)");
+                return Err(DrainFailure::Cancelled);
+            }
+        };
+
+        let size = whole.len().saturating_add(bytes.len());
+        if size > max_size {
+            return Err(DrainFailure::TooLarge {
+                size,
+                max: max_size,
+            });
+        }
+
+        let complete = match tail.push(&bytes) {
+            Ok(complete) => complete,
+            Err(e) => {
+                debug!("Streamed payload rejected: {e}");
+                return Err(DrainFailure::Rejected);
+            }
+        };
+        whole.extend_from_slice(&bytes);
+        if complete {
+            break;
+        }
+        if last {
+            debug!("Truncated payload");
+            return Err(DrainFailure::Rejected);
+        }
+    }
+    Ok(whole.freeze())
+}
 
 impl Dispatcher {
     // Entry point for bundles received from CLAs.
@@ -36,35 +95,25 @@ impl Dispatcher {
             ..Default::default()
         };
 
-        // A truncated or oversized stream is the CLA's error to hear about:
-        // the transfer must not be acknowledged to the peer, so it can
-        // retransmit. Only a completely assembled bundle counts as received.
-        let data = match crate::stream::concat_stream(stream, self.max_bundle_size).await {
-            Ok(data) => data,
-            Err(crate::stream::ConcatError::Cancelled) => {
-                debug!("Stream cancelled");
-                return Err(cla::Error::StreamCancelled);
-            }
-            Err(crate::stream::ConcatError::TooLarge { size, max }) => {
-                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                return Err(cla::Error::PayloadTooLarge { size, max });
-            }
-        };
-        metrics::counter!("bpa.bundle.received").increment(1);
-        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
-
-        if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
-            self.ingress_bundle(bundle, data).await;
+        // Truncation and the size bound surface as errors to the CLA — the
+        // transfer must not be acknowledged, so the peer retransmits — while
+        // invalid-but-complete bundles are handled internally: the CLA cannot
+        // fix invalid content, and the transfer itself succeeded.
+        match self.process_received_bundle(stream, metadata).await? {
+            Some((bundle, data)) => self.ingress_bundle(bundle, data).await,
+            // Nothing was stored on the CLA path before a drop, so there's no
+            // data to clean up here — just count it.
+            None => metrics::counter!("bpa.bundle.received.dropped").increment(1),
         }
         Ok(())
     }
 
     // Shared bundle processing: parse, validate, store, and report.
     //
-    // Called with a fully assembled buffer from the CLA ingress path
-    // (`receive_bundle`), the ADU reassembly path (`reassemble`), and restart
-    // recovery. Handles all bundle validation internally — invalid bundles
-    // are logged, counted, and dropped with status reports where possible.
+    // Called from both the CLA ingress path (`receive_bundle`) and the ADU
+    // reassembly path (`reassemble`). Handles all bundle validation internally
+    // — invalid bundles are logged, counted, and dropped with status reports
+    // where possible.
     //
     // Returns `Some((bundle, data))` for valid bundles ready for ingress,
     // or `None` if the bundle was dropped (invalid, duplicate, etc.).
@@ -74,95 +123,110 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub(super) async fn process_received_bundle(
         &self,
-        mut data: Bytes,
+        stream: &mut dyn Receiver<Segment>,
         mut metadata: bundle::BundleMetadata,
-    ) -> Option<(bundle::Bundle, Bytes)> {
-        // Fast pre-check: reject empty, BPv6, and non-CBOR-array data
-        if let Err(e) = crate::cbor::precheck(&data) {
-            debug!("Bundle rejected by CBOR precheck: {e}");
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-            if let Some(storage_name) = &metadata.storage_name {
-                self.store.delete_data(storage_name).await;
-            }
-            return None;
+    ) -> cla::Result<Option<(bundle::Bundle, Bytes)>> {
+        // Pre-drain header pass: parse the header chain off the stream and run
+        // keyed header verification — both in `bundle::parse`, before an oversized
+        // payload is spooled. `Err` carries an optional reception report to emit
+        // before dropping (reporting stays here — we own the machinery); a
+        // structural / truncation drop carries no recoverable bundle.
+        let (hv, headers, tail) =
+            match parse::parse_headers(stream, self.max_bundle_size, self.key_provider()).await {
+                Ok(parts) => parts,
+                Err(parse::HeaderFailure::Cancelled) => {
+                    debug!("Bundle stream cancelled mid-header");
+                    return Err(cla::Error::StreamCancelled);
+                }
+                Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                    return Err(cla::Error::PayloadTooLarge { size, max });
+                }
+                Err(parse::HeaderFailure::Invalid(report)) => {
+                    if let Some((rich, reason)) = report {
+                        let bundle = bundle::Bundle {
+                            metadata,
+                            bundle: rich,
+                        };
+                        self.report_bundle_reception(&bundle, reason).await;
+                    }
+                    return Ok(None);
+                }
+            };
+
+        // Early-reject gate (lifetime / hop) before the payload is drained, so an
+        // expired / hop-exhausted bundle is reported and dropped having spooled
+        // nothing. (The rich `Bundle::has_expired` re-checks lifetime post-store
+        // in the ingress filter — a cheap, harmless overlap.)
+        if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
+            let bundle = bundle::Bundle {
+                metadata,
+                bundle: parse::reshape_to_rich(hv.raw, hv.extracted),
+            };
+            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
+                .await;
+            self.report_bundle_deletion(&bundle, reason).await;
+            return Ok(None);
         }
+        // Duplicates aren't checked here: the only correct existence query would
+        // add a metadata read to every bundle to catch a comparatively rare
+        // replay. `insert_metadata` below is the authoritative atomic dup check.
 
-        // Parse the bundle with full processing (block removal, canonicalization, BPSec).
-        // See `parse_full_with_provider` doc for the four arms below.
-        let (bundle, reason, report_unsupported) = match crate::bp7_parse::parse_full_with_provider(
-            data.clone(),
-            self.key_provider(),
-        ) {
-            // Hard parse failure — no partial bundle to emit a status report against.
-            Err((None, e)) => {
-                debug!("Bundle parse failed: {e}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                if let Some(storage_name) = &metadata.storage_name {
-                    self.store.delete_data(storage_name).await;
+        // Gate passed — drain the payload (oversized case), then finalize.
+        let whole = match tail {
+            None => headers,
+            Some(tail) => match drain_payload(stream, headers, tail, self.max_bundle_size).await {
+                Ok(whole) => whole,
+                Err(DrainFailure::Cancelled) => return Err(cla::Error::StreamCancelled),
+                Err(DrainFailure::TooLarge { size, max }) => {
+                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                    return Err(cla::Error::PayloadTooLarge { size, max });
                 }
-                return None;
-            }
-            // Clean parse, no rewrite.
-            Ok((bundle, None, _, report_unsupported)) => {
-                if metadata.storage_name.is_none() {
-                    metadata.storage_name = Some(self.store.save_data(data.clone()).await);
-                }
-                (
-                    bundle::Bundle { metadata, bundle },
-                    None,
-                    report_unsupported,
-                )
-            }
-            // Bundle was rewritten — flatten the chunks back into a single buffer
-            // and persist the rewritten form.
-            Ok((bundle, Some(new_data), _non_canonical, report_unsupported)) => {
-                debug!("Received bundle has been rewritten");
-
-                data = hardy_bpv7::editor::Chunk::flatten_bytes(new_data, data);
-
-                if let Some(storage_name) = &metadata.storage_name {
-                    self.store.replace_data(storage_name, data.clone()).await;
-                } else {
-                    metadata.storage_name = Some(self.store.save_data(data.clone()).await);
-                }
-
-                (
-                    bundle::Bundle { metadata, bundle },
-                    None,
-                    report_unsupported,
-                )
-            }
-            // Partial parse — bundle ID is recoverable, so we can emit a status report.
-            Err((Some(bundle), error)) => {
-                debug!("Invalid bundle received: {error}");
-                let reason = crate::bp7_parse::status_report_reason_for(&error);
-
-                // Delete any pre-saved data (reassembly case)
-                if let Some(storage_name) = metadata.storage_name.take() {
-                    self.store.delete_data(&storage_name).await;
-                }
-
-                (bundle::Bundle { metadata, bundle }, Some(reason), false)
-            }
+                Err(DrainFailure::Rejected) => return Ok(None),
+            },
         };
 
-        // Expired bundles are dropped here, as close to the successful parse
-        // as possible and before the metadata write: an expired bundle must
-        // not consume a metadata entry, and no tombstone is needed to refuse
-        // a later duplicate, because a duplicate shares the bundle's
-        // lifetime and is dropped by this same check. No status reports are
-        // generated — deliberately forgoing the RFC 9171 §5.6/§5.10 reports:
-        // a bundle that arrives already expired is treated as if it never
-        // arrived, rather than amplified into report traffic for something
-        // already dead. Bundles that expire in custody still produce §5.10
-        // deletion reports via the validity filter and reaper paths.
-        if reason.is_none() && bundle.has_expired() {
-            if let Some(storage_name) = &bundle.metadata.storage_name {
-                self.store.delete_data(storage_name).await;
-            }
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::LifetimeExpired)).increment(1);
-            return None;
+        // Post-drain finalize: verify the deferred block-1 BIB targets, apply
+        // §E rewrites, reshape into the rich bundle.
+        let (rich, chunks, report_unsupported) =
+            match parse::finalize_with_provider(&whole, hv, self.key_provider()) {
+                Ok(x) => x,
+                Err((rich, error)) => {
+                    debug!("Invalid bundle received: {error}");
+                    let reason = parse::status_report_reason_for(&error);
+                    let bundle = bundle::Bundle {
+                        metadata,
+                        bundle: rich,
+                    };
+                    self.report_bundle_reception(&bundle, reason).await;
+                    return Ok(None);
+                }
+            };
+
+        // Persist (flatten any rewrite chunks first).
+        let data = match chunks {
+            None => whole,
+            Some(chunks) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, whole),
+        };
+        // `Some` here = the caller pre-stored the data (reassembly / restart) and
+        // owns its cleanup; on any drop we just return `None` and the caller
+        // deletes it. We only delete storage *we* create (the CLA `save_data`
+        // path below), and only on the post-store duplicate path.
+        let mut caller_stored = false;
+        if let Some(storage_name) = &metadata.storage_name {
+            self.store.replace_data(storage_name, data.clone()).await;
+            caller_stored = true;
+        } else {
+            metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
+        let bundle = bundle::Bundle {
+            metadata,
+            bundle: rich,
+        };
+
+        // Only a completely assembled bundle counts as received.
+        metrics::counter!("bpa.bundle.received").increment(1);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
         // Reception happened, so report it (when requested) before the
         // duplicate check: RFC 9171 §5.6 reports on reception, and dedup
@@ -171,9 +235,7 @@ impl Dispatcher {
         // deliberately, probing for status-report replies).
         self.report_bundle_reception(
             &bundle,
-            if let Some(reason) = &reason {
-                *reason
-            } else if report_unsupported {
+            if report_unsupported {
                 ReasonCode::BlockUnsupported
             } else {
                 ReasonCode::NoAdditionalInformation
@@ -182,26 +244,17 @@ impl Dispatcher {
         .await;
 
         if !self.store.insert_metadata(&bundle).await {
-            // Bundle with matching id already exists in the metadata store
+            // Bundle with matching id already exists in the metadata store.
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
-
-            // TODO: There may be custody transfer signalling that needs to happen here
-
-            // Drop the stored data and do not process further
-            if let Some(storage_name) = &bundle.metadata.storage_name {
+            // Delete the data only if we saved it here (CLA path); a caller that
+            // pre-stored deletes its own on the `None` return.
+            if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
                 self.store.delete_data(storage_name).await;
             }
-            return None;
+            return Ok(None);
         }
 
-        if let Some(reason) = &reason {
-            // Invalid bundle — never entered the pipeline, just clean up
-            self.store.tombstone_metadata(&bundle.bundle.id).await;
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(reason)).increment(1);
-            None
-        } else {
-            Some((bundle, data))
-        }
+        Ok(Some((bundle, data)))
     }
 
     // Run the Ingress filter, checkpoint to `Dispatching`, and route the bundle.
