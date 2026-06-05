@@ -39,14 +39,12 @@ See the [hardy-bpv7 documentation](https://docs.rs/hardy-bpv7) for detailed inst
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
-mod bp7_parse;
 mod dispatcher;
 mod otel_metrics;
 
 pub mod bpa;
 pub mod builder;
 pub mod bundle;
-pub(crate) mod cbor;
 pub mod cla;
 pub mod filter;
 pub mod keys;

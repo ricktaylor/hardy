@@ -69,7 +69,7 @@ impl Dispatcher {
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
             let data = Bytes::from(data);
-            let bundle = crate::bp7_parse::rich_from_built(raw, &data)
+            let bundle = crate::bundle::parse::rich_from_built(raw, &data)
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
             let r = self.originate_bundle(bundle, data).await;
@@ -89,18 +89,17 @@ impl Dispatcher {
         expected_source: &Eid,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        // Parse the bundle (security boundary - can't trust service-provided bytes).
-        // Canonicalize but preserve all blocks (including unknown extensions).
-        let (parsed_bundle, chunks) =
-            crate::bp7_parse::parse_canonicalize_with_provider(data.clone(), self.key_provider())?;
-
-        // Use rewritten data if canonicalization was needed
-        let data = if let Some(chunks) = chunks {
-            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data)
-        } else {
-            data
-        };
-        let bundle = parsed_bundle;
+        // Parse + validate the bundle (security boundary — can't trust
+        // service-provided bytes). Non-canonical input is rejected, not rewritten;
+        // the bytes are stored and forwarded as received. As the origin we must be
+        // able to process HopCount / unclocked BundleAge, so an undecryptable one
+        // is fatal.
+        let (bundle, nokey) =
+            crate::bundle::parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
+        crate::bundle::parse::reject_undecryptable_liveness(
+            &nokey,
+            bundle.id.timestamp.is_clocked(),
+        )?;
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
