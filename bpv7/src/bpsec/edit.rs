@@ -375,7 +375,7 @@ fn decode_bcb_opset(
     let Some((_, Some(bcb_payload))) = editor.block(bcb_num) else {
         return Ok(None);
     };
-    match hardy_cbor::decode::parse::<bcb::OperationSet>(bcb_payload) {
+    match hardy_cbor::decode::parse_exact::<bcb::OperationSet>(bcb_payload) {
         Ok(opset) => Ok(Some(opset)),
         Err(e) => Err(crate::error::Error::InvalidField {
             field: "BCB Abstract Syntax Block",
@@ -431,7 +431,7 @@ where
         Ok(p) => p,
         Err(_) => return (editor, CoveredBib::DecryptFailed),
     };
-    match hardy_cbor::decode::parse::<bib::OperationSet>(&plaintext) {
+    match hardy_cbor::decode::parse_exact::<bib::OperationSet>(&plaintext) {
         Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),
         Err(e) => (
             editor,

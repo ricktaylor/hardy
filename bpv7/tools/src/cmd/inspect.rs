@@ -551,7 +551,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    let ops = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)?;
+    let ops = hardy_cbor::decode::parse_exact::<bpsec::bcb::OperationSet>(data)?;
     output.append_str(format!(
         "### BCB Data\n\nSecurity Source: {}\n\n",
         ops.source()
@@ -627,7 +627,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    let ops = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(data)?;
+    let ops = hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(data)?;
     output.append_str(format!(
         "### BIB Data\n\nSecurity Source: {}\n\n",
         ops.source()

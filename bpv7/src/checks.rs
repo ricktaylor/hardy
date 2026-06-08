@@ -58,13 +58,7 @@ where
     T: hardy_cbor::decode::FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match hardy_cbor::decode::parse::<(T, usize)>(data) {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, len)) if len != data.len() => {
-            Err(Error::invalid_field(field, Error::AdditionalData.into()))
-        }
-        Ok((t, _)) => Ok(t),
-    }
+    hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| Error::invalid_field(field, e.into()))
 }
 
 /// Output of [`classify_unsupported`]: the blocks this node can't process,

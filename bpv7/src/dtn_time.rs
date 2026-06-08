@@ -63,11 +63,7 @@ impl hardy_cbor::decode::FromCbor for DtnTime {
     /// non-shortest encoding is rejected with `NotCanonical`, as are unexpected
     /// tags. Returns `shortest = true` on success.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (millisecs, shortest, len) =
-            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
-        if !shortest {
-            return Err(Error::NotCanonical);
-        }
+        let (millisecs, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((Self(millisecs), true, len))
     }
 }
