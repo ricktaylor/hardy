@@ -227,20 +227,20 @@ fn compare_known_extension(
     }
 }
 
-/// Decode `T` from both bodies and compare the values. Uses the
-/// `(T, bool)` decode — which tolerates a non-shortest encoding and
-/// reports it via the (here discarded) flag — rather than the strict
-/// `parse::<T>`, so a non-canonically encoded value still compares by
-/// content. A decode failure or value mismatch is recorded as a diff.
+/// Decode `T` from both bodies and compare the values. A non-canonical
+/// encoding still compares by content — that tolerance lives in
+/// `T::from_cbor`, which accepts it — but trailing bytes after the item are
+/// rejected via [`decode::parse_exact`]. A decode failure or value mismatch
+/// is recorded as a diff.
 fn compare_decoded<T>(a_body: &[u8], b_body: &[u8], tag: &str, diffs: &mut Vec<String>)
 where
     T: FromCbor<Error: Display + From<decode::Error>> + PartialEq,
 {
     match (
-        decode::parse::<(T, bool)>(a_body),
-        decode::parse::<(T, bool)>(b_body),
+        decode::parse_exact::<T>(a_body),
+        decode::parse_exact::<T>(b_body),
     ) {
-        (Ok((a, _)), Ok((b, _))) => {
+        (Ok(a), Ok(b)) => {
             if a != b {
                 diffs.push(format!("{tag}: content differs"));
             }
