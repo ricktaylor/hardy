@@ -162,13 +162,13 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     });
 
     if flags.include_primary_block {
-        encoder.emit(&hardy_cbor::encode::Raw(
-            args.blocks
-                .block(0)
-                .and_then(|v| v.1)
-                .expect("Missing primary block!")
-                .as_ref(),
-        ));
+        let raw = args.blocks
+            .block(0)
+            .and_then(|v| v.1)
+            .expect("Missing primary block!");
+        let raw = raw.as_ref();
+        // RFC 9172 §4: AAD requires the canonical (deterministic) form.
+        encoder.emit(&hardy_cbor::encode::Raw(&canonical_primary(raw)?));
     }
 
     if flags.include_target_header {
