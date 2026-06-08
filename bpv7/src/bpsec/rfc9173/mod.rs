@@ -1,4 +1,5 @@
 use super::*;
+use alloc::borrow::Cow;
 use alloc::vec;
 use core::ops::Range;
 use rand::TryRng;
@@ -7,6 +8,24 @@ pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
 mod key_wrap;
+
+/// Return the bytes to feed into BPSec IPPT/AAD for the primary block.
+///
+/// - Already canonical (`bool = true`): borrows `raw` — zero copy.
+/// - Non-canonical (`bool = false`): re-emits to canonical form (owned).
+///   Errors if re-encoding fails — once non-canonical is confirmed we
+///   cannot silently fall back to raw bytes and produce a wrong IPPT/AAD.
+/// - Parse fails: errors — we cannot verify or produce a canonical form.
+pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
+    match hardy_cbor::decode::parse_exact::<(primary_block::PrimaryBlock, bool)>(raw) {
+        Ok((_, true)) => Ok(Cow::Borrowed(raw)),
+        Ok((pb, false)) => pb
+            .emit()
+            .map(|v| Cow::Owned(v))
+            .map_err(|_| Error::NotCanonical),
+        Err(_) => Err(Error::NotCanonical),
+    }
+}
 
 fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
     let mut buf = vec![0u8; N].into_boxed_slice();

@@ -152,13 +152,13 @@ where
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
-            mac.update(
-                args.blocks
-                    .block(0)
-                    .and_then(|v| v.1)
-                    .expect("Missing primary block!")
-                    .as_ref(),
-            );
+            let raw = args.blocks
+                .block(0)
+                .and_then(|v| v.1)
+                .expect("Missing primary block!");
+            let raw = raw.as_ref();
+            // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
+            mac.update(&canonical_primary(raw)?);
         }
 
         if flags.include_target_header {
@@ -183,9 +183,19 @@ where
         mac.update(&encoder.build());
     }
 
-    // Reduce copying here
-    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
-    mac.update(payload.as_ref());
+    // Step 5: CBOR byte-string encoding of the security target's canonical form
+    // (confirmed by RFC 9173 Appendix A.3 test vector: primary block is also
+    // byte-string-wrapped). For primary block targets, canonicalize before wrapping.
+    if matches!(target_block.block_type, block::Type::Primary) {
+        // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
+        let bytes = canonical_primary(payload.as_ref())?;
+        mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);
+        mac.update(&bytes);
+    } else {
+        // Reduce copying by emitting the byte-string header separately.
+        mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
+        mac.update(payload.as_ref());
+    }
 
     Ok(mac.finalize().into_bytes())
 }

@@ -742,14 +742,14 @@ impl BundleParser {
         }
 
         // Primary blocks have no inner byte-string wrapper — the CBOR
-        // array IS the block — and must be definite-length
-        // (`PrimaryBlock::from_cbor` rejects indefinite via
-        // `block.is_definite()`, which `parse_canonical` above turns
-        // into `NotCanonical`). §4.1's indefinite-length carveout
-        // applies only to the outer bundle array, not to individual
-        // blocks. So `data` always spans the full canonical extent —
-        // what BPSec hashes for primary AAD (RFC 9173 §3.7 / §4.5) and
-        // what Builder/Editor emit via `as_block`.
+        // array IS the block — and must be definite-length. §4.1's
+        // indefinite-length carveout applies only to the outer bundle
+        // array, not to individual blocks. `parse_canonical` above
+        // enforces this via its `!s` check: an indefinite-length primary
+        // array returns `s = false` from `from_cbor`, which `parse_canonical`
+        // turns into `NotCanonical`. So `data` always spans the full
+        // canonical extent — what BPSec hashes for primary AAD
+        // (RFC 9173 §3.7 / §4.5) and what Builder/Editor emit via `as_block`.
         self.bundle = Some(Bundle {
             blocks: [(
                 0,
@@ -1118,6 +1118,23 @@ where
         });
     }
     Ok(v)
+}
+
+/// Like [`parse_canonical_item`] but accepts non-canonical encodings —
+/// for CBOR array fields (EIDs, timestamps) where RFC 9171 §4.1 permits
+/// indefinite-length encoding. Returns the value and its canonical flag;
+/// the caller accumulates the flag to decide whether re-encoding is needed.
+pub(super) fn parse_item<T>(
+    block: &mut hardy_cbor::decode::Array<'_>,
+    field: &'static str,
+) -> Result<(T, bool), Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    <T as hardy_cbor::decode::FromCbor>::Error:
+        From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    let (v, s): (T, bool) = block.parse().map_field_err::<Error>(field)?;
+    Ok((v, s))
 }
 
 /// Cold path: the outer-array first byte wasn't `0x9F`. Re-parse via
