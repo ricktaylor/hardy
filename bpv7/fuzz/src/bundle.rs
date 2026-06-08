@@ -81,17 +81,10 @@ where
     T: hardy_cbor::decode::FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match hardy_cbor::decode::parse::<(T, usize)>(data) {
-        Err(e) => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: e.into(),
-        }),
-        Ok((_, len)) if len != data.len() => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: hardy_bpv7::Error::AdditionalData.into(),
-        }),
-        Ok((t, _)) => Ok(t),
-    }
+    hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| hardy_bpv7::Error::InvalidField {
+        field,
+        source: e.into(),
+    })
 }
 
 /// §D decode step: decode every known extension block

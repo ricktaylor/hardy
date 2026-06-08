@@ -163,19 +163,20 @@ fn known_extension_eq(
     }
 }
 
-/// Decode `T` from both bodies and compare the values. Uses the
-/// `(T, bool)` decode, which tolerates a non-shortest encoding (the flag
-/// is discarded), so a non-canonically encoded value still compares by
-/// content. A decode failure on either side is treated as not equal.
+/// Decode `T` from both bodies and compare the values. A non-canonical
+/// encoding still compares by content — that tolerance lives in
+/// `T::from_cbor`, which accepts it — but trailing bytes after the item are
+/// rejected via [`decode::parse_exact`]. A decode failure on either side is
+/// treated as not equal.
 fn decoded_eq<T>(a_body: &[u8], b_body: &[u8]) -> bool
 where
     T: FromCbor<Error: From<decode::Error>> + PartialEq,
 {
     match (
-        decode::parse::<(T, bool)>(a_body),
-        decode::parse::<(T, bool)>(b_body),
+        decode::parse_exact::<T>(a_body),
+        decode::parse_exact::<T>(b_body),
     ) {
-        (Ok((a, _)), Ok((b, _))) => a == b,
+        (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
 }
