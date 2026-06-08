@@ -154,9 +154,6 @@ impl Dispatcher {
             self.report_bundle_deletion(&bundle, reason).await;
             return None;
         }
-        // Duplicates aren't checked here: the only correct existence query would
-        // add a metadata read to every bundle to catch a comparatively rare
-        // replay. `insert_metadata` below is the authoritative atomic dup check.
 
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
@@ -202,6 +199,33 @@ impl Dispatcher {
             bundle: rich,
         };
 
+        // Reception happened, so report it (when requested) before the duplicate
+        // check: RFC 9171 §5.6 reports on reception, and dedup belongs to the
+        // later dispatch step — so a replayed/duplicate bundle is still reported
+        // as received.
+        self.report_bundle_reception(
+            &bundle,
+            if report_unsupported {
+                ReasonCode::BlockUnsupported
+            } else {
+                ReasonCode::NoAdditionalInformation
+            },
+        )
+        .await;
+
+        // `insert_metadata` is the authoritative atomic dup check — the one place
+        // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
+        // never double-dispatched. We don't pre-check existence earlier: that would
+        // add a metadata read to every received bundle to catch a comparatively
+        // rare replay.
+        //
+        // A duplicate *invalid* bundle (rejected before reaching here) isn't
+        // deduplicated — a replay re-parses and may re-report. Accepted, not fixed:
+        // RFC 9171 status reports are off-by-default debugging aids, not acks, so a
+        // duplicate is harmless. Tombstone-on-reject suppression is deferred — the
+        // future compressed-status-report / custody work inverts the requirement (a
+        // resend then means "report lost, please re-report"), so that design must
+        // own the semantics. See review_refactor_parse.md item 4.
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store.
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
@@ -212,16 +236,6 @@ impl Dispatcher {
             }
             return None;
         }
-
-        self.report_bundle_reception(
-            &bundle,
-            if report_unsupported {
-                ReasonCode::BlockUnsupported
-            } else {
-                ReasonCode::NoAdditionalInformation
-            },
-        )
-        .await;
 
         Some((bundle, data))
     }
