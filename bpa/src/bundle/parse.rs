@@ -137,22 +137,35 @@ where
     Ok((reshape_to_rich(raw, extracted), facts.nokey_ext.into_vec()))
 }
 
+/// A liveness-critical extension block a forwarding node can't process without
+/// its plaintext: `HopCount` (RFC 9171 §4.4.3 — the anti-"ping-pong" loop
+/// defense, so it must stay processable) and, on a node with no clock,
+/// `BundleAge` (its only expiry signal). Such a block is fatal whether it's
+/// undecipherable (no key) or corrupt (failed authentication): either way we
+/// can't enforce it, and forwarding without it risks a routing loop or an
+/// immortal bundle. Contrast a non-liveness block, where the two failure modes
+/// diverge — a corrupt one is stripped (RFC 9172 §5.1.1), an undecipherable one
+/// is forwarded intact for a downstream security acceptor.
+fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
+    matches!(block_type, block::Type::HopCount)
+        || (!is_clocked && matches!(block_type, block::Type::BundleAge))
+}
+
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
-/// block that couldn't be decrypted (no key) — `HopCount` (RFC 9171 requires
-/// processing it) or unclocked `BundleAge` (the only liveness signal). `nokey` is
-/// the second element of [`parse_validate_with_provider`]'s result (equivalently
-/// `VerifyFacts::nokey_ext`). A node that accepts/forwards applies this; a restart
-/// re-check tolerates a key that has since rotated away and skips it.
+/// block that couldn't be decrypted (no key) — see [`is_liveness_critical`].
+/// `nokey` is the second element of [`parse_validate_with_provider`]'s result
+/// (equivalently `VerifyFacts::nokey_ext`). A node that accepts/forwards applies
+/// this; a restart re-check tolerates a key that has since rotated away and skips
+/// it.
 pub(crate) fn reject_undecryptable_liveness(
     nokey: &[(u64, block::Type)],
     is_clocked: bool,
 ) -> Result<(), hardy_bpv7::Error> {
-    for (_, block_type) in nokey {
-        match block_type {
-            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-            block::Type::BundleAge if !is_clocked => return Err(bpsec::Error::NoKey.into()),
-            _ => {}
-        }
+    if nokey
+        .iter()
+        .any(|(_, block_type)| is_liveness_critical(*block_type, is_clocked))
+    {
+        return Err(bpsec::Error::NoKey.into());
     }
     Ok(())
 }
@@ -338,11 +351,35 @@ fn verify_headers(
         &mut decrypted,
         &to_update_seed,
     )?;
-    if !facts.failed.is_empty() {
-        return Err(bpsec::Error::DecryptionFailed.into());
+
+    // RFC 9172 §5.1.1 failure-drop. `facts.failed` carries only blocks whose
+    // ciphertext failed authentication (corrupt) — undecipherable (NoKey) blocks
+    // go to `facts.nokey_ext` and are handled below. A corrupt *payload* (block 1)
+    // discards the whole bundle; a corrupt *non-payload* target is discarded with
+    // its protecting BCB and the bundle forwarded (applied in the §E rewrite via
+    // `to_remove`). §C8 never decrypts the payload and a payload BCB is decrypted
+    // at delivery, so the block-1 branch is defensive. A corrupt liveness-critical
+    // target can't be stripped-and-forwarded — see `is_liveness_critical` — so
+    // it's fatal, exactly as its undecipherable counterpart is below.
+    let is_clocked = raw.primary.id.timestamp.is_clocked();
+    for &target in &facts.failed {
+        if target == 1
+            || raw
+                .blocks
+                .get(&target)
+                .is_some_and(|b| is_liveness_critical(b.block_type, is_clocked))
+        {
+            return Err(bpsec::Error::DecryptionFailed.into());
+        }
+        to_remove.insert(target);
+        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
+            to_remove.insert(bcb);
+        }
     }
-    // Ingress accepts/forwards, so an undecryptable liveness block is fatal.
-    reject_undecryptable_liveness(&facts.nokey_ext, raw.primary.id.timestamp.is_clocked())?;
+
+    // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
+    // other undecipherable block is forwarded intact for a downstream acceptor.
+    reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
 
     // Drain `bib_ops` to exactly the op-sets `verify` left with a deferred
     // block-1 (payload) target — the leftover map IS the deferred set
