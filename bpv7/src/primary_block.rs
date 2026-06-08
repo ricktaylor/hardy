@@ -31,7 +31,7 @@ impl PrimaryBlock {
             self.crc_type,
             hardy_cbor::encode::emit_array(
                 Some({
-                    let mut count = if let crc::CrcType::None = self.crc_type {
+                    let mut count = if matches!(self.crc_type, crc::CrcType::None) {
                         8
                     } else {
                         9
@@ -58,8 +58,7 @@ impl PrimaryBlock {
                     }
 
                     // CRC
-                    if let crc::CrcType::None = self.crc_type {
-                    } else {
+                    if !matches!(self.crc_type, crc::CrcType::None) {
                         a.skip_value();
                     }
                 },
@@ -149,7 +148,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                         digest.push(&data[0..crc.start]);
                         digest.push_zeros();
                         digest.push(&data[crc.end..crc_end]);
-                        if digest.finalize() != data[crc.start..crc.end] {
+                        if !digest.verify(&data[crc.start..crc.end]) {
                             return Err(crc::Error::IncorrectCrc.into());
                         }
                         Ok(())

@@ -252,7 +252,7 @@ impl<'a> BlockTemplate<'a> {
         let bytes = crc::append_crc_value(
             self.block.crc_type,
             hardy_cbor::encode::emit_array(
-                Some(if let crc::CrcType::None = self.block.crc_type {
+                Some(if matches!(self.block.crc_type, crc::CrcType::None) {
                     5
                 } else {
                     6
