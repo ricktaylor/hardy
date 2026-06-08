@@ -371,7 +371,7 @@ impl Block {
         let extent = array.emit(&hardy_cbor::encode::Raw(&crc::append_crc_value(
             self.crc_type,
             hardy_cbor::encode::emit_array(
-                Some(if let crc::CrcType::None = self.crc_type {
+                Some(if matches!(self.crc_type, crc::CrcType::None) {
                     5
                 } else {
                     6
@@ -386,8 +386,7 @@ impl Block {
                     self.data = data_range.start as u64..data_range.end as u64;
 
                     // CRC
-                    if let crc::CrcType::None = self.crc_type {
-                    } else {
+                    if !matches!(self.crc_type, crc::CrcType::None) {
                         a.skip_value();
                     }
                 },

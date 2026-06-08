@@ -377,8 +377,7 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
     /// returned `shortest` flag without erroring.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, s, tags| {
-            // Original code had `!tags.is_empty()` here (inverted);
-            // canonical semantics is `tags.is_empty()`. Fixed.
+            // Canonical: reject non-shortest encodings and any tags.
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }

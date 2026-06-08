@@ -21,7 +21,8 @@ fn make_bundle() -> (Bundle, Box<[u8]>) {
     (bundle, data)
 }
 
-// Build a bundle with a hop count block, then re-parse so block keys match wire numbers.
+// Build a bundle with a hop count block, then re-parse to get a fully-parsed
+// Bundle with real wire extents.
 fn make_bundle_with_hop_count() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_hop_count(&hop_info::HopInfo {

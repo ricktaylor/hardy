@@ -228,8 +228,9 @@ impl Chunk {
         // Sort unchanged by source position
         unchanged.sort_by_key(|(_, range)| range.start);
 
-        // Sort new chunks by size descending for best-fit gap filling
-        new_chunks.sort_by_key(|(_, b)| core::cmp::Reverse(b.len()));
+        // Sort new chunks by size descending for best-fit gap filling, then
+        // block number ascending as a tiebreak for deterministic output.
+        new_chunks.sort_by_key(|(bn, b)| (core::cmp::Reverse(b.len()), *bn));
 
         // Build ordered extension list: try to fill gaps with matching-size New chunks
         let mut ordered: Vec<(u64, Chunk)> = Vec::with_capacity(unchanged.len() + new_chunks.len());

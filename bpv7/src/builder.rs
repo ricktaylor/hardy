@@ -159,12 +159,11 @@ impl<'a> Builder<'a> {
                 primary_block::PrimaryBlock::as_block(primary.crc_type, extent),
             );
 
-            // Emit extension blocks
-            for (block_number, block) in self.extensions.into_iter().enumerate() {
-                blocks.insert(
-                    block_number as u64,
-                    block.build(block_number as u64 + 2, a)?,
-                );
+            // Emit extension blocks, numbered from 2 (primary is 0, payload
+            // is 1).
+            for (index, block) in self.extensions.into_iter().enumerate() {
+                let block_number = index as u64 + 2;
+                blocks.insert(block_number, block.build(block_number, a)?);
             }
 
             // Emit payload
@@ -253,7 +252,7 @@ impl<'a> BlockTemplate<'a> {
         let bytes = crc::append_crc_value(
             self.block.crc_type,
             hardy_cbor::encode::emit_array(
-                Some(if let crc::CrcType::None = self.block.crc_type {
+                Some(if matches!(self.block.crc_type, crc::CrcType::None) {
                     5
                 } else {
                     6
