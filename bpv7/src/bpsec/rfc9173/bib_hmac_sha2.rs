@@ -269,32 +269,16 @@ impl Operation {
         let key_wrap = as_key_wrap(jwk.key_algorithm);
 
         let cek = if let Some(key_wrap) = &key_wrap {
-            match key_wrap {
-                KeyWrap::Aes128 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<32>()?))
-                }
-                KeyWrap::Aes192 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<48>()?))
-                }
-                KeyWrap::Aes256 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<64>()?))
-                }
+            if let Some(ops) = &jwk.operations
+                && !ops.contains(&key::Operation::WrapKey)
+            {
+                return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
             }
+            Some(zeroize::Zeroizing::from(match key_wrap {
+                KeyWrap::Aes128 => rand_bytes::<32>()?,
+                KeyWrap::Aes192 => rand_bytes::<48>()?,
+                KeyWrap::Aes256 => rand_bytes::<64>()?,
+            }))
         } else {
             None
         };

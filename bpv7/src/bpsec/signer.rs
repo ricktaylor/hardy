@@ -87,9 +87,8 @@ impl<'a> Signer<'a> {
             return Err((self, Error::FragmentedBundle));
         }
 
-        let block = match self.original.blocks.get(&block_number) {
-            Some(b) => b,
-            None => return Err((self, editor::Error::NoSuchBlock(block_number).into())),
+        let Some(block) = self.original.blocks.get(&block_number) else {
+            return Err((self, editor::Error::NoSuchBlock(block_number).into()));
         };
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
@@ -260,8 +259,9 @@ fn build_bib_data(
 
     // Reachable when no security context feature is enabled (e.g.
     // `--no-default-features` with no `rfc9173`), or when a caller
-    // somehow constructs `Context::__Reserved`. Type-safe by signature
-    // now rather than by an unreachable!() panic.
+    // constructs `Context::__Reserved`. Returns a typed error rather
+    // than panicking, so an unsupported context is a signature-level
+    // failure.
     let _ = (context, args, key);
     Err(bpsec::Error::UnsupportedOperation)
 }

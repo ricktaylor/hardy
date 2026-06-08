@@ -91,9 +91,8 @@ impl<'a> Encryptor<'a> {
             return Err((self, Error::InvalidTarget(block_number)));
         }
 
-        let block = match self.original.blocks.get(&block_number) {
-            Some(b) => b,
-            None => return Err((self, editor::Error::NoSuchBlock(block_number).into())),
+        let Some(block) = self.original.blocks.get(&block_number) else {
+            return Err((self, editor::Error::NoSuchBlock(block_number).into()));
         };
 
         if block.bcb.is_some() {
@@ -112,24 +111,16 @@ impl<'a> Encryptor<'a> {
                 return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
             }
             block::BibCoverage::Some(bib_block) => {
-                let bib = match self.original.blocks.get(&bib_block) {
-                    Some(b) => b,
-                    None => {
-                        return Err((self, crate::Error::Altered.into()));
-                    }
+                let Some(bib) = self.original.blocks.get(&bib_block) else {
+                    return Err((self, crate::Error::Altered.into()));
                 };
 
                 // `source_data` is the full in-memory bundle being edited.
-                let bib_payload = match bib.payload(self.source_data) {
-                    Some(p) => p,
-                    None => {
+                let opset = match bib.extract::<bpsec::bib::OperationSet>(self.source_data) {
+                    Ok(Some(opset)) => opset,
+                    Ok(None) => {
                         return Err((self, crate::Error::Altered.into()));
                     }
-                };
-
-                let opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
-                {
-                    Ok(opset) => opset,
                     Err(e) => {
                         return Err((
                             self,
@@ -345,8 +336,9 @@ fn build_bcb_data(
 
     // Reachable when no security context feature is enabled (e.g.
     // `--no-default-features` with no `rfc9173`), or when a caller
-    // somehow constructs `Context::__Reserved`. Type-safe by signature
-    // now rather than by an unreachable!() panic.
+    // constructs `Context::__Reserved`. Returns a typed error rather
+    // than panicking, so an unsupported context is a signature-level
+    // failure.
     let _ = (context, args, key);
     Err(bpsec::Error::UnsupportedOperation)
 }
