@@ -49,20 +49,17 @@ impl hardy_bpa::cla::Cla for Cla {
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
             && self.inboxes.values().any(|p| p == addr_str)
         {
-            // Write bundle to peer's inbox directory
-            let (bundle, path) = match hardy_bpv7::parse::parse(bundle) {
-                Ok(hardy_bpv7::parse::Parsed {
-                    data: bundle,
-                    bundle: b,
-                    ..
-                }) => {
-                    let id = b.primary.id;
+            // Derive the inbox filename from the bundle id. A transport CLA
+            // forwards bytes opaquely, so parse only the primary block for the
+            // id and write the bundle through verbatim.
+            let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
+                Ok(id) => {
                     let mut filename = format!("{}_{}", id.source, id.timestamp)
                         .replace(['\\', '/', ':', ' '], "_");
                     if let Some(fragment_info) = id.fragment_info {
                         filename.push_str(format!("_fragment_{}", fragment_info.offset).as_str());
                     }
-                    (bundle, PathBuf::from(addr_str).join(filename))
+                    PathBuf::from(addr_str).join(filename)
                 }
                 Err(e) => {
                     warn!("Ignoring invalid bundle: {e}");

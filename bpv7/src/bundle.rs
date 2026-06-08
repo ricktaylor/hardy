@@ -362,6 +362,32 @@ pub struct Id {
 }
 
 impl Id {
+    /// Extracts a bundle's [`Id`] from its wire-format CBOR, parsing only the
+    /// outer array head and the primary block.
+    ///
+    /// Extension blocks are not parsed, so the strict per-block validation of a
+    /// full [`parse`](crate::parse::parse) is skipped — enough to identify a
+    /// bundle for routing or storage without rejecting it over an extension
+    /// block. Both definite- and indefinite-length outer arrays are accepted.
+    pub fn parse(data: &[u8]) -> Result<Self, crate::Error> {
+        let (head, _, offset) = decode::parse::<(decode::Head, bool, usize)>(data)?;
+        match head.marker {
+            // A bundle is at least a primary block and a payload block; a
+            // definite-length array claiming fewer can't be one. Indefinite
+            // arrays carry no count, so leave them to the primary-block parse.
+            decode::Marker::Array(Some(count)) if count < 2 => {
+                return Err(crate::Error::MissingPayload);
+            }
+            decode::Marker::Array(_) => {}
+            _ => {
+                return Err(
+                    decode::Error::IncorrectType("array".to_string(), head.to_string()).into(),
+                );
+            }
+        }
+        decode::parse::<PrimaryBlock>(&data[offset..]).map(|primary| primary.id)
+    }
+
     /// Deserializes a bundle ID from a compact, base64-encoded string representation.
     ///
     /// This is useful for using the bundle ID as a key in databases or other systems.
