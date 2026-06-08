@@ -21,7 +21,7 @@ pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
         Ok((_, true)) => Ok(Cow::Borrowed(raw)),
         Ok((pb, false)) => pb
             .emit()
-            .map(|v| Cow::Owned(v))
+            .map(Cow::Owned)
             .map_err(|_| Error::NotCanonical),
         Err(_) => Err(Error::NotCanonical),
     }
