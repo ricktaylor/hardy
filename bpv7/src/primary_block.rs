@@ -73,32 +73,45 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |block, s, tags| {
-            // Accept both definite (0x88..=0x8B for primary's 8/9/10/11
-            // items) and indefinite (0x9F) array encodings: RFC 9171 §4.1
-            // carve-out plus §4.3.1's CRC-clause "including CBOR 'break'
-            // characters" both contemplate indefinite primary blocks.
-            // The non-shortest-form check (`!s`) and the no-tags check
-            // remain: those are RFC 8949 deterministic-encoding rules
-            // that the §4.1 carve-out does not relax.
+            // RFC 9171 §4.1: indefinite-length items are not prohibited for
+            // any field. Tags are still rejected (no RFC carve-out for those).
+            // The canonical flag accumulates across all fields so BPSec callers
+            // can detect and re-emit a canonical form when needed (RFC 9172 §4).
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
+            // `s` tracks non-shortest-length definite encodings (rejected above),
+            // not definiteness. Use is_definite() to seed canonical so indefinite
+            // outer arrays are flagged; AND'd with array-type fields below.
+            let mut canonical = block.is_definite();
 
-            // Check version
-            let version: u64 = parse::parse_canonical_item(block, "version")?;
+            // Version: always 7; enforce canonical encoding of the integer.
+            let (version, v_s): (u64, bool) =
+                block.parse().map_field_err::<Error>("version")?;
+            if !v_s {
+                return Err(Error::NotCanonical);
+            }
             if version != 7 {
                 return Err(Error::InvalidVersion(version));
             }
 
+            // Newtypes (Flags, CrcType) self-enforce canonical in their own from_cbor.
             let flags: bundle::Flags =
                 parse::parse_canonical_item(block, "bundle processing control flags")?;
             let crc_type: crc::CrcType = parse::parse_canonical_item(block, "crc type")?;
-            let destination: eid::Eid =
-                parse::parse_canonical_item(block, "destination endpoint id")?;
-            let source: eid::Eid = parse::parse_canonical_item(block, "source endpoint id")?;
-            let report_to: eid::Eid = parse::parse_canonical_item(block, "report-to endpoint id")?;
-            let timestamp: creation_timestamp::CreationTimestamp =
-                parse::parse_canonical_item(block, "timestamp")?;
+
+            // EIDs and timestamp are CBOR arrays; RFC 9171 §4.1 permits
+            // indefinite-length encoding. Use parse_item and accumulate the flag.
+            let (destination, dest_s) =
+                parse::parse_item::<eid::Eid>(block, "destination endpoint id")?;
+            let (source, src_s) =
+                parse::parse_item::<eid::Eid>(block, "source endpoint id")?;
+            let (report_to, rpt_s) =
+                parse::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
+            let (timestamp, ts_s) =
+                parse::parse_item::<creation_timestamp::CreationTimestamp>(block, "timestamp")?;
+            canonical &= dest_s & src_s & rpt_s & ts_s;
+
             let lifetime = core::time::Duration::from_millis(parse::parse_canonical_item::<u64>(
                 block, "lifetime",
             )?);
@@ -170,7 +183,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                     report_to,
                     lifetime,
                 },
-                true,
+                canonical,
             ))
         })
         .map(|((v, s), len)| (v, s, len))
