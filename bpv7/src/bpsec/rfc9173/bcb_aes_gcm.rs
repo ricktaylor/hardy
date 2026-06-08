@@ -162,7 +162,8 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     });
 
     if flags.include_primary_block {
-        let raw = args.blocks
+        let raw = args
+            .blocks
             .block(0)
             .and_then(|v| v.1)
             .expect("Missing primary block!");

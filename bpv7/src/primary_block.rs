@@ -86,8 +86,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             let mut canonical = block.is_definite();
 
             // Version: always 7; enforce canonical encoding of the integer.
-            let (version, v_s): (u64, bool) =
-                block.parse().map_field_err::<Error>("version")?;
+            let (version, v_s): (u64, bool) = block.parse().map_field_err::<Error>("version")?;
             if !v_s {
                 return Err(Error::NotCanonical);
             }
@@ -104,10 +103,8 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             // indefinite-length encoding. Use parse_item and accumulate the flag.
             let (destination, dest_s) =
                 parse::parse_item::<eid::Eid>(block, "destination endpoint id")?;
-            let (source, src_s) =
-                parse::parse_item::<eid::Eid>(block, "source endpoint id")?;
-            let (report_to, rpt_s) =
-                parse::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
+            let (source, src_s) = parse::parse_item::<eid::Eid>(block, "source endpoint id")?;
+            let (report_to, rpt_s) = parse::parse_item::<eid::Eid>(block, "report-to endpoint id")?;
             let (timestamp, ts_s) =
                 parse::parse_item::<creation_timestamp::CreationTimestamp>(block, "timestamp")?;
             canonical &= dest_s & src_s & rpt_s & ts_s;
