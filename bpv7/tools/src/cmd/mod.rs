@@ -2,8 +2,8 @@ use crate::{flags, io, keys};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use hardy_bpv7::bpsec::{bib, key::KeySet};
-use hardy_bpv7::{Bundle, checks, parse};
-use std::collections::HashMap;
+use hardy_bpv7::{Bundle, CaptureFieldErr, checks, parse};
+use std::collections::{HashMap, HashSet};
 
 /// Structural parse + keyed BPSec validation in one pass: each tool runs
 /// the stages it needs and gets back a `parse::Parsed` (already
@@ -72,10 +72,30 @@ where
     T: hardy_cbor::decode::FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| hardy_bpv7::Error::InvalidField {
-        field,
-        source: e.into(),
-    })
+    hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
+}
+
+/// Decode a known plaintext extension block's body into `T`, tagging a parse
+/// failure with `field`. Returns `None` for a BCB-encrypted block or one whose
+/// payload isn't resident — the shared `bcb`-skip + `payload()` + field-tagged
+/// `parse_exact` behind the `inspect` / `validate` / `full_rewrite` extraction
+/// loops.
+pub(crate) fn extract_known<T>(
+    block: &hardy_bpv7::block::Block,
+    data: &[u8],
+    field: &'static str,
+) -> Result<Option<T>, hardy_bpv7::Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    if block.bcb.is_some() {
+        return Ok(None);
+    }
+    block
+        .payload(data)
+        .map(|body| parse_exact::<T>(body, field))
+        .transpose()
 }
 
 /// Verify the BIB signature over `block_number` using the BIB
@@ -143,8 +163,6 @@ pub(crate) fn full_rewrite(
     data: Bytes,
     keys: &KeySet,
 ) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
-    use std::collections::HashSet;
-
     let parse::Parsed {
         data,
         mut bundle,
@@ -203,28 +221,25 @@ pub(crate) fn full_rewrite(
     // it (`b.bcb.is_some()`). BundleAge is always canonical — decoded
     // here only to reject a malformed body.
     for (&n, b) in &bundle.blocks {
-        if b.bcb.is_some() {
-            continue;
-        }
-        // `data` is the full in-memory bundle from `parse::parse`.
-        let Some(body) = b.payload(&data) else {
-            continue;
-        };
         match b.block_type {
             hardy_bpv7::block::Type::PreviousNode => {
-                let (v, shortest) =
-                    parse_exact::<(hardy_bpv7::eid::Eid, bool)>(body, "Previous Node Block")?;
-                if !shortest {
+                if let Some((v, shortest)) =
+                    extract_known::<(hardy_bpv7::eid::Eid, bool)>(b, &data, "Previous Node Block")?
+                    && !shortest
+                {
                     to_update.insert(n, hardy_cbor::encode::emit(&v).0);
                 }
             }
             hardy_bpv7::block::Type::BundleAge => {
-                parse_exact::<hardy_bpv7::bundle_age::BundleAge>(body, "Bundle Age Block")?;
+                extract_known::<hardy_bpv7::bundle_age::BundleAge>(b, &data, "Bundle Age Block")?;
             }
             hardy_bpv7::block::Type::HopCount => {
-                let (v, shortest) =
-                    parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(body, "Hop Count Block")?;
-                if !shortest {
+                if let Some((v, shortest)) = extract_known::<(hardy_bpv7::hop_info::HopInfo, bool)>(
+                    b,
+                    &data,
+                    "Hop Count Block",
+                )? && !shortest
+                {
                     to_update.insert(n, hardy_cbor::encode::emit(&v).0);
                 }
             }

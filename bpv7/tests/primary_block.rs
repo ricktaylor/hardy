@@ -60,12 +60,14 @@ fn primary_block_validation() {
     // The version 7 is encoded as CBOR unsigned int 7 = 0x07
     // It appears after the primary block array header
     // Primary block: 0x89 (array of 9) then 0x07 (version 7)
-    if let Some(pos) = bad_version.windows(2).position(|w| w == [0x89, 0x07]) {
-        bad_version[pos + 1] = 0x06; // change version to 6
-        let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
-        assert!(
-            result.is_err(),
-            "Bundle with version 6 should fail to parse"
-        );
-    }
+    let pos = bad_version
+        .windows(2)
+        .position(|w| w == [0x89, 0x07])
+        .expect("version byte pattern [0x89, 0x07] not found — test fixture needs updating");
+    bad_version[pos + 1] = 0x06; // change version to 6
+    let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
+    assert!(
+        result.is_err(),
+        "Bundle with version 6 should fail to parse"
+    );
 }

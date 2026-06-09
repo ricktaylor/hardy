@@ -102,7 +102,7 @@ impl Bundle {
 
 /// Group block numbers by type code, each list sorted ascending. The
 /// primary block (number 0) is handled separately and excluded.
-fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
+pub fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
     let mut map: BTreeMap<u64, (block::Type, Vec<u64>)> = BTreeMap::new();
     for (&bn, blk) in &bundle.blocks {
         if bn == 0 {

@@ -125,28 +125,29 @@ fn extension_fields(
 ) -> Result<ExtFields, hardy_bpv7::Error> {
     let mut out = ExtFields::default();
     for b in blocks.values() {
-        if b.bcb.is_some() {
-            continue;
-        }
-        // `data` is the full in-memory bundle from `parse_with_keys`.
-        let Some(body) = b.payload(data) else {
-            continue;
-        };
         match b.block_type {
             block::Type::PreviousNode => {
-                let (v, shortest) = parse_exact::<(eid::Eid, bool)>(body, "Previous Node Block")?;
-                out.non_canonical |= !shortest;
-                out.previous_node = Some(v);
+                if let Some((v, shortest)) =
+                    extract_known::<(eid::Eid, bool)>(b, data, "Previous Node Block")?
+                {
+                    out.non_canonical |= !shortest;
+                    out.previous_node = Some(v);
+                }
             }
             block::Type::BundleAge => {
-                let v = parse_exact::<bundle_age::BundleAge>(body, "Bundle Age Block")?;
-                out.age = Some(v.into());
+                if let Some(v) =
+                    extract_known::<bundle_age::BundleAge>(b, data, "Bundle Age Block")?
+                {
+                    out.age = Some(v.into());
+                }
             }
             block::Type::HopCount => {
-                let (v, shortest) =
-                    parse_exact::<(hop_info::HopInfo, bool)>(body, "Hop Count Block")?;
-                out.non_canonical |= !shortest;
-                out.hop_count = Some(v);
+                if let Some((v, shortest)) =
+                    extract_known::<(hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
+                {
+                    out.non_canonical |= !shortest;
+                    out.hop_count = Some(v);
+                }
             }
             _ => {}
         }

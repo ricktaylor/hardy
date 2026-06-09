@@ -125,7 +125,7 @@ pub mod rewrite;
 pub mod status_report;
 
 mod error;
-pub use error::Error;
+pub use error::{CaptureFieldErr, Error};
 
 /// The structural bpv7 bundle type (primary block + blocks map),
 /// re-exported so consumers can use the short path `hardy_bpv7::Bundle`.

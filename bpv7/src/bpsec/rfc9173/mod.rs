@@ -19,10 +19,7 @@ mod key_wrap;
 pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
     match hardy_cbor::decode::parse_exact::<(primary_block::PrimaryBlock, bool)>(raw) {
         Ok((_, true)) => Ok(Cow::Borrowed(raw)),
-        Ok((pb, false)) => pb
-            .emit()
-            .map(Cow::Owned)
-            .map_err(|_| Error::NotCanonical),
+        Ok((pb, false)) => pb.emit().map(Cow::Owned).map_err(|_| Error::NotCanonical),
         Err(_) => Err(Error::NotCanonical),
     }
 }
