@@ -10,6 +10,7 @@ BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 */
 
 use super::*;
+use bpsec::edit::BPSecEditor;
 use editor::{Chunk, Editor};
 
 /// Apply queued rewrites. Bulk-removes via
@@ -42,8 +43,6 @@ pub fn apply_rewrites<'a>(
     to_update: HashMap<u64, Vec<u8>>,
     to_remove: HashSet<u64>,
 ) -> Result<Option<(Bundle, Vec<Chunk>)>, Error> {
-    use bpsec::edit::BPSecEditor;
-
     let mut editor = Editor::new(bundle, data);
 
     // Bulk-remove with full BPSec cascade. Lenient: any covered BIB that

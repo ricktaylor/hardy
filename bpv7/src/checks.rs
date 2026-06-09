@@ -14,7 +14,7 @@ in `bpv7/docs/parser_design.md`.
 */
 
 use super::*;
-use error::HasInvalidField;
+use error::CaptureFieldErr;
 use smallvec::SmallVec;
 
 /// View into a partially-processed bundle for BPSec operations.
@@ -58,7 +58,7 @@ where
     T: hardy_cbor::decode::FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| Error::invalid_field(field, e.into()))
+    hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
 }
 
 /// Output of [`classify_unsupported`]: the blocks this node can't process,
