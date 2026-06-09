@@ -68,23 +68,18 @@ fn known_blocks_canonical(
     blocks: &std::collections::HashMap<u64, hardy_bpv7::block::Block>,
 ) -> Result<bool, hardy_bpv7::Error> {
     for b in blocks.values() {
-        if b.bcb.is_some() {
-            continue;
-        }
-        // `data` is the full in-memory bundle from `parse_with_keys`.
-        let Some(body) = b.payload(data) else {
-            continue;
-        };
         let shortest = match b.block_type {
             hardy_bpv7::block::Type::PreviousNode => {
-                parse_exact::<(hardy_bpv7::eid::Eid, bool)>(body, "Previous Node Block")?.1
+                extract_known::<(hardy_bpv7::eid::Eid, bool)>(b, data, "Previous Node Block")?
+                    .is_none_or(|(_, s)| s)
             }
             hardy_bpv7::block::Type::HopCount => {
-                parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(body, "Hop Count Block")?.1
+                extract_known::<(hardy_bpv7::hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
+                    .is_none_or(|(_, s)| s)
             }
             hardy_bpv7::block::Type::BundleAge => {
                 // Always canonical; decoded only to reject a malformed body.
-                parse_exact::<hardy_bpv7::bundle_age::BundleAge>(body, "Bundle Age Block")?;
+                extract_known::<hardy_bpv7::bundle_age::BundleAge>(b, data, "Bundle Age Block")?;
                 true
             }
             _ => true,

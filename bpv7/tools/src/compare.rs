@@ -15,6 +15,7 @@ use hardy_bpv7::{
     Bundle, Error,
     block::{Block, Type},
     bpsec::{bcb, bib},
+    bundle::blocks_by_type,
     bundle_age::BundleAge,
     crc::CrcType,
     eid::Eid,
@@ -248,25 +249,6 @@ where
         (Err(e), _) => diffs.push(format!("{tag}: failed to decode in A: {e}")),
         (_, Err(e)) => diffs.push(format!("{tag}: failed to decode in B: {e}")),
     }
-}
-
-/// Group block numbers by type code. Returns (Type, sorted block numbers).
-fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (Type, Vec<u64>)> {
-    let mut map: BTreeMap<u64, (Type, Vec<u64>)> = BTreeMap::new();
-    for (&bn, blk) in &bundle.blocks {
-        if bn == 0 {
-            continue;
-        }
-        let type_code: u64 = blk.block_type.into();
-        map.entry(type_code)
-            .or_insert_with(|| (blk.block_type, Vec::new()))
-            .1
-            .push(bn);
-    }
-    for v in map.values_mut() {
-        v.1.sort();
-    }
-    map
 }
 
 /// Resolve target block numbers to (block_type, index) tuples.
