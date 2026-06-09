@@ -324,11 +324,9 @@ impl ClaRegistry {
             }
         };
 
-        // If entry already existed, clean up the orphaned peer_id
-        // TODO: This deadlocks — PeerTable::remove() calls Peer::close() which calls
-        // self.inner.wait() on an OnceLock that was never initialised (start() was never
-        // called on the orphan). Fix: either check inner.is_initialized() in close(), or
-        // remove directly from the PeerTable HashMap without calling close().
+        // If entry already existed, clean up the orphaned peer_id. The orphan
+        // was never started, so Peer::close() (via PeerTable::remove) is a no-op
+        // — close()/forward() skip an uninitialised cell rather than blocking.
         if !inserted {
             self.peers.remove(peer_id).await;
             return false;
