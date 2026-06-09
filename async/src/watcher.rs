@@ -4,6 +4,7 @@
 //! a callback. Supports native OS events and periodic polling (for Docker).
 
 use core::{future::Future, time::Duration};
+use futures::FutureExt;
 use notify::{
     EventKind, PollWatcher, RecursiveMode,
     event::{CreateKind, RemoveKind},
@@ -106,8 +107,10 @@ async fn watch_loop<F, Fut>(
     Fut: Future<Output = ()>,
 {
     loop {
-        tokio::select! {
-            res = rx.recv_async() => match res {
+        let recv = rx.recv_async();
+        futures::pin_mut!(recv);
+        futures::select_biased! {
+            res = recv.fuse() => match res {
                 Err(_) => break,
                 Ok(DebouncedEvent { event, .. }) => {
                     let relevant = matches!(
@@ -122,7 +125,7 @@ async fn watch_loop<F, Fut>(
                     }
                 }
             },
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled().fuse() => break,
         }
     }
 }
