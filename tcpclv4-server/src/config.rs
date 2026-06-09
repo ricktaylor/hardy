@@ -84,6 +84,11 @@ pub struct Config {
     #[serde(default = "default_cla_name")]
     pub cla_name: String,
 
+    // Peer addresses to connect to on startup (e.g. ["bpa2:4556"]).
+    // Each entry is resolved via DNS and a TCPCLv4 session is established.
+    #[serde(default)]
+    pub peers: Vec<String>,
+
     // TCPCLv4 transport-layer configuration (flattened into the top level).
     #[serde(flatten)]
     pub tcpcl: hardy_tcpclv4::config::Config,
