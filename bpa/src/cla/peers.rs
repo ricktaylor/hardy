@@ -116,10 +116,16 @@ impl Peer {
             None
         };
 
-        let queues = &self.inner.wait().queues;
-        let queue = queues
+        // The peer is published into the PeerTable before start() initialises
+        // the queues, so a forward may race ahead of initialisation. Return the
+        // bundle for re-routing rather than blocking on an uninitialised cell.
+        let Some(inner) = self.inner.get() else {
+            return Err(bundle);
+        };
+        let queue = inner
+            .queues
             .get(&queue)
-            .unwrap_or_else(|| queues.get(&None).trace_expect("No None queue?!?"));
+            .unwrap_or_else(|| inner.queues.get(&None).trace_expect("No None queue?!?"));
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
@@ -128,7 +134,12 @@ impl Peer {
     }
 
     fn close(&self) {
-        for tx in self.inner.wait().queues.values() {
+        // An orphaned peer (added to the PeerTable but never started, e.g. a
+        // duplicate address) has no queues, so closing is a no-op.
+        let Some(inner) = self.inner.get() else {
+            return;
+        };
+        for tx in inner.queues.values() {
             tx.close();
         }
     }
