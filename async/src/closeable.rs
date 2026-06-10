@@ -67,12 +67,10 @@ pub struct Sender<T> {
 impl<T> Sender<T> {
     /// Attempt to send a value into the channel without blocking.
     ///
-    /// Returns [`TrySendError::Full`] if the channel is bounded and the
-    /// buffer is full, or [`TrySendError::Disconnected`] if the channel
-    /// has been closed — either because every receiver has been dropped
-    /// or because any [`close`](Self::close) call has been made on this
-    /// channel. For unbounded channels, [`TrySendError::Full`] is never
-    /// returned.
+    /// Returns [`TrySendError::Full`] if the buffer is full, or
+    /// [`TrySendError::Disconnected`] if the channel has been closed —
+    /// either because every receiver has been dropped or because any
+    /// [`close`](Self::close) call has been made on this channel.
     #[inline]
     pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         if self.cancel_token.is_cancelled() {
@@ -81,8 +79,8 @@ impl<T> Sender<T> {
         self.inner.try_send(msg)
     }
 
-    /// Send a value into the channel, awaiting buffer space if the
-    /// channel is bounded and full.
+    /// Send a value into the channel, awaiting buffer space if the buffer
+    /// is full.
     ///
     /// Returns [`SendError`] if the channel has been closed before this
     /// `send` began — either because every receiver has been dropped or
