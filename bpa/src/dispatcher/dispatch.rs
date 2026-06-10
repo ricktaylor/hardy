@@ -106,9 +106,16 @@ impl Dispatcher {
 
         // Run producer and consumer concurrently
         join!(
-            // Producer: feed bundles into channel
+            // Producer: feed bundles into the channel until exhausted or
+            // cancelled. Racing the poll against cancel (then dropping the
+            // stream) stops the producer blocking forever on a full channel
+            // after the consumer breaks on cancel — join! keeps the receiver
+            // alive, so without this the two sides deadlock.
             async {
-                self.store.poll_waiting(&stream).await;
+                select_biased! {
+                    _ = self.store.poll_waiting(&stream).fuse() => {}
+                    _ = cancel_token.cancelled().fuse() => {}
+                }
                 drop(stream);
             },
             // Consumer: drain channel into shared processing pool
