@@ -46,10 +46,14 @@ impl Store {
         join!(
             // Producer: recover bundles from storage
             async {
-                self.bundle_storage
-                    .recover(&stream)
-                    .await
-                    .trace_expect("Bundle storage recover failed");
+                // Race against cancel so the producer can't block on a full
+                // channel after the consumer breaks (join! keeps rx alive).
+                select_biased! {
+                    r = self.bundle_storage.recover(&stream).fuse() => {
+                        r.trace_expect("Bundle storage recover failed");
+                    }
+                    _ = cancel_token.cancelled().fuse() => {}
+                }
                 drop(stream);
             },
             // Consumer: process recovered bundles
@@ -81,10 +85,14 @@ impl Store {
         join!(
             // Producer: find unconfirmed bundles
             async {
-                self.metadata_storage
-                    .remove_unconfirmed(&stream)
-                    .await
-                    .trace_expect("Remove unconfirmed bundles failed");
+                // Race against cancel so the producer can't block on a full
+                // channel after the consumer breaks (join! keeps rx alive).
+                select_biased! {
+                    r = self.metadata_storage.remove_unconfirmed(&stream).fuse() => {
+                        r.trace_expect("Remove unconfirmed bundles failed");
+                    }
+                    _ = cancel_token.cancelled().fuse() => {}
+                }
                 drop(stream);
             },
             // Consumer: report orphaned bundles

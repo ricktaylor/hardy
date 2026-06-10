@@ -202,11 +202,14 @@ impl Reaper {
 
         join!(
             async {
-                let _ = self
-                    .metadata_storage
-                    .poll_expiry(&stream, self.cache_size)
-                    .await
-                    .inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
+                // Race against cancel so the producer can't block on a full
+                // channel after the consumer breaks (join! keeps rx alive).
+                select_biased! {
+                    r = self.metadata_storage.poll_expiry(&stream, self.cache_size).fuse() => {
+                        let _ = r.inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
+                    }
+                    _ = cancel_token.cancelled().fuse() => {}
+                }
                 drop(stream);
             },
             async {
