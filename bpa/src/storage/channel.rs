@@ -51,6 +51,7 @@ use core::{
     result::Result,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use futures::{FutureExt, pin_mut, select_biased};
 use hardy_async::{Notify, closeable::TrySendError};
 use trace_err::*;
 use tracing::debug;
@@ -284,7 +285,16 @@ impl Store {
 
     /// Background poller: drains storage into memory channel when congested.
     async fn poll_queue(self: Arc<Self>, shared: Arc<Shared>, cap: usize) {
-        shared.notify.notified().await;
+        let cancel = self.tasks.cancel_token().clone();
+
+        // Wait for the initial signal, or bail if the store is shutting down.
+        // The poller is spawned on the store task pool, so it must honour that
+        // pool's cancellation — otherwise store.shutdown() (which awaits every
+        // task) would hang on an idle poller waiting on `notify`.
+        select_biased! {
+            _ = shared.notify.notified().fuse() => {}
+            _ = cancel.cancelled().fuse() => return,
+        }
 
         loop {
             // Transition to Draining from any state except Closing.
@@ -334,22 +344,35 @@ impl Store {
                 continue; // Congested — loop again without waiting
             }
 
-            // Wait for new work
-            shared.notify.notified().await;
+            // Wait for new work, or bail if the store is shutting down.
+            select_biased! {
+                _ = shared.notify.notified().fuse() => {}
+                _ = cancel.cancelled().fuse() => return,
+            }
         }
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
         let (stream, inner_rx) = ChannelSender::<Bundle>::bounded(cap);
         let shared_cloned = shared.clone();
+        let cancel = self.tasks.cancel_token().clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
                 // Just do some checks
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
-                    // Send into queue
-                    shared_cloned.tx.send(bundle).await.map_err(|_| ())?;
+                    // Send into queue. A closeable send already parked on a full
+                    // buffer is not woken by the channel's own close(), so race it
+                    // against pool shutdown — otherwise store.shutdown() (which
+                    // awaits this task) would hang. The dropped bundle stays
+                    // persisted and is recovered on restart.
+                    let send = shared_cloned.tx.send(bundle);
+                    pin_mut!(send);
+                    select_biased! {
+                        r = send.fuse() => r.map_err(|_| ())?,
+                        _ = cancel.cancelled().fuse() => return Ok(pushed_one),
+                    }
 
                     pushed_one = true;
                 }
