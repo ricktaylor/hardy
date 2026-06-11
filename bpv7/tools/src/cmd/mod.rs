@@ -13,7 +13,9 @@ use std::collections::{HashMap, HashSet};
 /// Stages run:
 /// * structural parse (`parse::parse`);
 /// * §A — `classify_unsupported`, which surfaces `Error::Unsupported(n)`
-///   if a block flagged `delete_bundle_on_failure` is unknown/unsupported;
+///   (unknown block) or the security block's `unsupported_error`
+///   (unsupported security operation) if a block flagged
+///   `delete_bundle_on_failure` can't be processed;
 /// * §B — `decrypt_and_validate_covered_bibs` with the supplied keys
 ///   (`NoKey` is a soft skip; `DecryptionFailed` is rejected here — tools
 ///   are not Verifiers and do not apply §5.1.1 failure-drop);

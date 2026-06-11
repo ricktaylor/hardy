@@ -28,10 +28,20 @@ pub struct OperationArgs<'a> {
 impl Operation {
     /// Returns `true` if this operation uses an unrecognised security context.
     pub fn is_unsupported(&self) -> bool {
+        self.unsupported_error().is_some()
+    }
+
+    /// The error describing why this operation is unsupported:
+    /// [`Error::UnrecognisedContext`] for an unrecognised security context
+    /// id, [`Error::UnsupportedOperation`] for a recognised context with
+    /// unrecognised parameters. `None` when the operation is supported.
+    pub fn unsupported_error(&self) -> Option<Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(operation) => operation.is_unsupported(),
-            Self::Unrecognised(..) => true,
+            Self::AES_GCM(operation) => operation
+                .is_unsupported()
+                .then_some(Error::UnsupportedOperation),
+            Self::Unrecognised(id, ..) => Some(Error::UnrecognisedContext(*id)),
         }
     }
 
@@ -170,6 +180,15 @@ impl OperationSet {
     /// Returns `true` if any operation in this set uses an unrecognised context.
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
+    }
+
+    /// The error describing why this set is unsupported (the first
+    /// unsupported operation's [`Operation::unsupported_error`]), or `None`
+    /// when every operation is supported.
+    pub fn unsupported_error(&self) -> Option<Error> {
+        self.operations
+            .values()
+            .find_map(|op| op.unsupported_error())
     }
 
     /// Returns true if this BCB's context allows multiple targets to share

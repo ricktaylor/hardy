@@ -163,7 +163,7 @@ impl Dispatcher {
 
         // Post-drain finalize: verify the deferred block-1 BIB targets, apply
         // §E rewrites, reshape into the rich bundle.
-        let (rich, chunks, report_unsupported) =
+        let (rich, chunks, report_reason) =
             match parse::finalize_with_provider(&whole, hv, self.key_provider()) {
                 Ok(x) => x,
                 Err((rich, error)) => {
@@ -203,15 +203,7 @@ impl Dispatcher {
         // check: RFC 9171 §5.6 reports on reception, and dedup belongs to the
         // later dispatch step — so a replayed/duplicate bundle is still reported
         // as received.
-        self.report_bundle_reception(
-            &bundle,
-            if report_unsupported {
-                ReasonCode::BlockUnsupported
-            } else {
-                ReasonCode::NoAdditionalInformation
-            },
-        )
-        .await;
+        self.report_bundle_reception(&bundle, report_reason).await;
 
         // `insert_metadata` is the authoritative atomic dup check — the one place
         // a duplicate is caught, so a duplicate *valid* bundle is dropped here and

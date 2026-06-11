@@ -332,7 +332,7 @@ fn build_parse_roundtrip() {
         "Builder has no unsupported BIBs"
     );
     assert!(
-        !classification.report_unsupported,
+        !classification.report_unsupported_block && !classification.report_unsupported_security,
         "Builder has no unsupported blocks"
     );
 }
@@ -424,6 +424,97 @@ fn unknown_block_discard() {
         bundle.blocks.contains_key(&1),
         "Payload block should still be present"
     );
+}
+
+/// Splice an extension block (already encoded as a 5-element block array)
+/// into `data` immediately after the primary block.
+fn splice_after_primary(data: &[u8], block: &[u8]) -> Vec<u8> {
+    assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
+    let (_, primary_len) =
+        hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
+    let insert_pos = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + block.len());
+    modified.extend_from_slice(&data[..insert_pos]);
+    modified.extend_from_slice(block);
+    modified.extend_from_slice(&data[insert_pos..]);
+    modified
+}
+
+/// Splice a BCB carrying an unrecognised security context (id 99) targeting
+/// the payload (block 1) into `data` as block number 2, with the given block
+/// processing `flags`. `flags` must include must-replicate (0x01) — required
+/// for a payload-targeting BCB.
+fn splice_unrecognised_bcb(data: &[u8], flags: u64) -> Vec<u8> {
+    // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
+    // parameters), source EID, then one result list per target.
+    let result_val = [0x41u8, 0xAA]; // result value: bytes(0xAA)
+    let mut asb = hardy_cbor::encode::emit(&[1u64]).0;
+    asb.extend(hardy_cbor::encode::emit(&99u64).0);
+    asb.extend(hardy_cbor::encode::emit(&0u64).0);
+    asb.extend(hardy_cbor::encode::emit(&"ipn:3.0".parse::<eid::Eid>().unwrap()).0);
+    asb.extend(hardy_cbor::encode::emit_array(Some(1), |results| {
+        results.emit_array(Some(1), |target_results| {
+            target_results.emit(&(1u64, hardy_cbor::encode::Raw(&result_val)));
+        });
+    }));
+
+    let bcb_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        a.emit(&12u64); // block type: BCB
+        a.emit(&2u64); // block number
+        a.emit(&flags);
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&asb));
+    });
+    splice_after_primary(data, &bcb_block)
+}
+
+// Requirement: RFC 9172 §7.1 — the §A facts distinguish an unsupported
+// security operation from an unrecognised plain block, so the caller can
+// select between the RFC 9172 and RFC 9171 report reasons.
+#[test]
+fn classify_distinguishes_security_kind() {
+    // Unrecognised-context BCB: must_replicate (payload target) +
+    // report_on_failure (0x03) → only the security fact fires.
+    let modified = splice_unrecognised_bcb(&build_minimal_bundle(), 0x03);
+    let (_, raw_bundle, bcb_ops, bib_ops) = raw_parse_tuple(Bytes::copy_from_slice(&modified))
+        .expect("parse accepts an unrecognised-context BCB");
+    let classification =
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]).unwrap();
+    assert!(classification.report_unsupported_security);
+    assert!(!classification.report_unsupported_block);
+
+    // Control: an unknown (non-security) block with report_on_failure (0x02)
+    // → only the block fact fires.
+    let unknown_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        a.emit(&999u64); // block type
+        a.emit(&2u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    let modified = splice_after_primary(&build_minimal_bundle(), &unknown_block);
+    let (_, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+    let classification =
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]).unwrap();
+    assert!(classification.report_unsupported_block);
+    assert!(!classification.report_unsupported_security);
+}
+
+// Requirement: RFC 9172 §7.1 — a delete-bundle-on-failure block carrying an
+// unsupported security operation surfaces the security block's own error
+// (here `UnrecognisedContext`), not the plain-block `Unsupported`, so the
+// caller can report `UnknownSecurityOperation` instead of `BlockUnsupported`.
+#[test]
+fn unsupported_security_delete_bundle_errors() {
+    // must_replicate + delete_bundle_on_failure (0x05).
+    let modified = splice_unrecognised_bcb(&build_minimal_bundle(), 0x05);
+    let (_, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+    assert!(matches!(
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]),
+        Err(Error::InvalidBPSec(bpsec::Error::UnrecognisedContext(99)))
+    ));
 }
 
 // Requirement: LLR 1.1.22

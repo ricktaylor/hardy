@@ -58,11 +58,11 @@ impl Command {
         } = parse_with_keys(bundle_data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        // Section A diagnostics — `report_unsupported` is the OR of the
-        // three classify_* outputs. (Errors propagate from parse_with_keys;
-        // here we re-run the classify pass to read the flag.)
+        // Section A diagnostics — OR of the block-kind and security-kind
+        // report facts. (Errors propagate from parse_with_keys; here we
+        // re-run the classify pass to read the flags.)
         let report_unsupported = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])
-            .map(|c| c.report_unsupported)
+            .map(|c| c.report_unsupported_block || c.report_unsupported_security)
             .unwrap_or(false);
 
         // Decode the known extension blocks (PreviousNode / BundleAge /

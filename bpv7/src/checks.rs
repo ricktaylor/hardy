@@ -73,18 +73,24 @@ pub struct Classification {
     /// removing each from its own `bib_ops` map and scheduling the block
     /// for removal.
     pub bib_deletable: SmallVec<[u64; 4]>,
-    /// At least one unrecognised block or unsupported-context BCB/BIB had
+    /// At least one unrecognised (non-security) block had
     /// `report_on_failure` set.
-    pub report_unsupported: bool,
+    pub report_unsupported_block: bool,
+    /// At least one BCB/BIB carrying an unsupported security operation had
+    /// `report_on_failure` set.
+    pub report_unsupported_security: bool,
 }
 
 // ===== Section A — unrecognised / unsupported classification =====
 
 /// §A: Classify the blocks this node can't process — `Type::Unrecognised`
-/// blocks (A1), BCBs with an unrecognised security context (A2), and
-/// plaintext BIBs with an unrecognised security context (A3) — into the
-/// per-flag [`Classification`] facts. Returns `Err(Error::Unsupported(n))`
-/// if any such block sets `delete_bundle_on_failure`.
+/// blocks (A1), BCBs with an unsupported security operation (A2), and
+/// plaintext BIBs with an unsupported security operation (A3) — into the
+/// per-flag [`Classification`] facts. If any such block sets
+/// `delete_bundle_on_failure`, returns `Err(Error::Unsupported(n))` for an
+/// A1 block, or the security block's
+/// [`unsupported_error`](bpsec::bib::OperationSet::unsupported_error) for
+/// an A2/A3 block — so the caller can tell the two kinds apart.
 ///
 /// `supported` lists block-type codes the caller actually understands
 /// (e.g. extension types it has registered handlers for); a
@@ -115,44 +121,44 @@ pub fn classify_unsupported(
             return Err(Error::Unsupported(block_number));
         }
         if block.flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_block = true;
         }
         if block.flags.delete_block_on_failure {
             out.unrecognised_deletable.push(block_number);
         }
     }
 
-    // A2 — BCBs with an unrecognised security context.
+    // A2 — BCBs with an unsupported security operation.
     for (&bcb_block_number, ops) in bcb_ops {
-        if !ops.is_unsupported() {
+        let Some(error) = ops.unsupported_error() else {
             continue;
-        }
+        };
         let flags = &blocks
             .get(&bcb_block_number)
             .expect("BCB number from bcb_ops must exist in blocks")
             .flags;
         if flags.delete_bundle_on_failure {
-            return Err(Error::Unsupported(bcb_block_number));
+            return Err(error.into());
         }
         if flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_security = true;
         }
     }
 
-    // A3 — plaintext BIBs with an unrecognised security context.
+    // A3 — plaintext BIBs with an unsupported security operation.
     for (&bib_block_number, ops) in bib_ops {
-        if !ops.is_unsupported() {
+        let Some(error) = ops.unsupported_error() else {
             continue;
-        }
+        };
         let flags = &blocks
             .get(&bib_block_number)
             .expect("BIB number from bib_ops must exist in blocks")
             .flags;
         if flags.delete_bundle_on_failure {
-            return Err(Error::Unsupported(bib_block_number));
+            return Err(error.into());
         }
         if flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_security = true;
         }
         if flags.delete_block_on_failure {
             out.bib_deletable.push(bib_block_number);
