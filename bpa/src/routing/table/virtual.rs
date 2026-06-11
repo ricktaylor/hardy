@@ -5,7 +5,7 @@ use hardy_eid_patterns::EidPattern;
 
 use crate::node_ids::NodeIds;
 
-use super::{Action, AtomicRouteTable, Entries, Error, RouteAction};
+use super::{Action, Entries, Error, RouteAction};
 
 pub(crate) struct VirtualRouteTable<'a> {
     entries: Entries,
@@ -89,11 +89,9 @@ impl<'a> VirtualRouteTable<'a> {
         false
     }
 
-    pub(crate) fn commit(self) -> Result<AtomicRouteTable, Error> {
+    pub(crate) fn commit(self) -> Result<Entries, Error> {
         self.validate_table()?;
-        Ok(AtomicRouteTable {
-            entries: self.entries,
-        })
+        Ok(self.entries)
     }
 
     fn validate(&self, pattern: &EidPattern, action: &RouteAction) -> Result<(), Error> {
@@ -187,8 +185,8 @@ mod tests {
         }
     }
 
-    fn make_table() -> AtomicRouteTable {
-        AtomicRouteTable::new(&node_ids())
+    fn make_virtual(ids: &NodeIds) -> VirtualRouteTable<'_> {
+        VirtualRouteTable::new(Default::default(), "test", ids)
     }
 
     fn p(s: &str) -> EidPattern {
@@ -198,8 +196,7 @@ mod tests {
     #[test]
     fn insert_validates_null_hop() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let result = vt.insert(p("ipn:0.2.*"), RouteAction::Via(Eid::Null), 10);
         assert!(matches!(result, Err(Error::NullNextHop { .. })));
@@ -208,8 +205,7 @@ mod tests {
     #[test]
     fn insert_validates_self_referential() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let result = vt.insert(
             p("ipn:0.2.*"),
@@ -222,8 +218,7 @@ mod tests {
     #[test]
     fn insert_validates_via_own_node() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let result = vt.insert(
             p("ipn:0.99.*"),
@@ -236,8 +231,7 @@ mod tests {
     #[test]
     fn insert_validates_reflect_self() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let result = vt.insert(p("ipn:0.1.*"), RouteAction::Reflect, 10);
         assert!(matches!(result, Err(Error::ReflectMatchesSelf { .. })));
@@ -246,8 +240,7 @@ mod tests {
     #[test]
     fn valid_insert_and_commit() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let inserted = vt
             .insert(
@@ -258,15 +251,14 @@ mod tests {
             .unwrap();
         assert!(inserted);
 
-        let new_table = vt.commit().unwrap();
-        assert!(new_table.entries.contains_key(&10));
+        let entries = vt.commit().unwrap();
+        assert!(entries.contains_key(&10));
     }
 
     #[test]
     fn duplicate_returns_false() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         let via = RouteAction::Via("ipn:0.2.0".parse().unwrap());
         vt.insert(p("ipn:0.50.*"), via.clone(), 10).unwrap();
@@ -278,8 +270,7 @@ mod tests {
     #[test]
     fn commit_detects_transitive_loop() {
         let ids = node_ids();
-        let table = make_table();
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = make_virtual(&ids);
 
         vt.insert(
             p("ipn:0.2.*"),
@@ -301,15 +292,14 @@ mod tests {
     #[test]
     fn commit_allows_non_looping_chain() {
         let ids = node_ids();
-        let mut table = make_table();
-        table.insert(
+        let mut entries: Entries = Default::default();
+        entries.entry(0).or_default().push((
             "ipn:0.3.*".parse().unwrap(),
-            InternalAction::Forward(77),
-            0,
-            "neighbours",
-        );
+            Action::Internal(InternalAction::Forward(77)),
+            "neighbours".to_string(),
+        ));
 
-        let mut vt = table.virtual_table("test", &ids);
+        let mut vt = VirtualRouteTable::new(entries, "test", &ids);
         vt.insert(
             p("ipn:0.2.*"),
             RouteAction::Via("ipn:0.3.0".parse().unwrap()),
@@ -317,34 +307,29 @@ mod tests {
         )
         .unwrap();
 
-        let new_table = vt.commit().unwrap();
-        assert!(new_table.entries.contains_key(&10));
+        let entries = vt.commit().unwrap();
+        assert!(entries.contains_key(&10));
     }
 
     #[test]
     fn scoped_to_source() {
         let ids = node_ids();
-        let mut table = make_table();
 
-        {
-            let mut vt = table.virtual_table("agent_a", &ids);
-            vt.insert(
-                p("ipn:0.50.*"),
-                RouteAction::Via("ipn:0.2.0".parse().unwrap()),
-                10,
-            )
-            .unwrap();
-            table = vt.commit().unwrap();
-        }
+        let mut vt = VirtualRouteTable::new(Default::default(), "agent_a", &ids);
+        vt.insert(
+            p("ipn:0.50.*"),
+            RouteAction::Via("ipn:0.2.0".parse().unwrap()),
+            10,
+        )
+        .unwrap();
+        let entries = vt.commit().unwrap();
 
-        {
-            let mut vt = table.virtual_table("agent_b", &ids);
-            let removed = vt.remove(
-                &p("ipn:0.50.*"),
-                &RouteAction::Via("ipn:0.2.0".parse().unwrap()),
-                10,
-            );
-            assert!(!removed);
-        }
+        let mut vt = VirtualRouteTable::new(entries, "agent_b", &ids);
+        let removed = vt.remove(
+            &p("ipn:0.50.*"),
+            &RouteAction::Via("ipn:0.2.0".parse().unwrap()),
+            10,
+        );
+        assert!(!removed);
     }
 }

@@ -32,10 +32,10 @@ pub enum Error {
 }
 
 #[derive(Debug)]
-pub(crate) enum FindResult<'a> {
+pub(crate) enum FindResult {
     AdminEndpoint,
     Deliver(Arc<services::registry::Service>),
-    Forward(Vec<(u32, &'a Eid)>),
+    Forward(Vec<(u32, Eid)>),
     Drop(Option<ReasonCode>),
     Reflect,
 }
@@ -44,7 +44,7 @@ pub(crate) use atomic::AtomicRouteTable;
 pub(crate) use r#virtual::VirtualRouteTable;
 
 /// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
-pub(super) fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
+pub(super) fn sorted_insert(peers: &mut Vec<(u32, Eid)>, peer: u32, next_hop: Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
     }

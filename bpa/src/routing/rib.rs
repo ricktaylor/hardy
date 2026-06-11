@@ -2,12 +2,10 @@ use core::hash::BuildHasher;
 
 use foldhash::quality::RandomState;
 use futures::{FutureExt, select_biased};
-use hardy_async::sync::RwLock;
 use hardy_async::{Notify, TaskPool};
 use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
 use hardy_bpv7::eid::{Eid, NodeId};
 use hardy_bpv7::status_report::ReasonCode;
-use hardy_eid_patterns::EidPattern;
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -23,7 +21,7 @@ use crate::dispatcher::Dispatcher;
 use crate::node_ids::NodeIds;
 use crate::services::registry::Service;
 use crate::storage::Store;
-use crate::{Arc, HashMap, HashSet};
+use crate::{Arc, HashMap};
 
 #[derive(Debug)]
 pub enum FindResult {
@@ -31,22 +29,6 @@ pub enum FindResult {
     Deliver(Arc<Service>),    // Deliver to local service
     Forward(u32),             // Forward to peer
     Drop(Option<ReasonCode>), // Drop with reason code
-}
-
-struct RibInner {
-    table: AtomicRouteTable,
-    address_types: HashMap<ClaAddressType, Arc<ClaEntry>>,
-}
-
-pub struct Rib {
-    inner: RwLock<RibInner>,
-    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Agent>>>,
-    node_ids: Arc<NodeIds>,
-    ecmp_hash_state: RandomState,
-    pub(super) tasks: TaskPool,
-    poll_waiting_notify: Arc<Notify>,
-    store: Arc<Store>,
-    service_priority: u32,
 }
 
 pub(crate) struct RibBuilder {
@@ -81,18 +63,27 @@ impl RibBuilder {
     }
 }
 
+pub struct Rib {
+    table: AtomicRouteTable,
+    address_types: hardy_async::sync::spin::Mutex<HashMap<ClaAddressType, Arc<ClaEntry>>>,
+    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Agent>>>,
+    node_ids: Arc<NodeIds>,
+    ecmp_hash_state: RandomState,
+    pub(super) tasks: TaskPool,
+    poll_waiting_notify: Arc<Notify>,
+    store: Arc<Store>,
+    service_priority: u32,
+}
+
 impl Rib {
     pub(super) const FORWARDS_NAME: &str = "neighbours";
     pub(super) const SERVICES_NAME: &str = "services";
 
     pub(super) fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
-        let table = AtomicRouteTable::new(&node_ids);
-
+        let table = AtomicRouteTable::new(node_ids.clone());
         Self {
-            inner: RwLock::new(RibInner {
-                table,
-                address_types: HashMap::new(),
-            }),
+            table,
+            address_types: Default::default(),
             agents: Default::default(),
             node_ids,
             ecmp_hash_state: RandomState::default(),
@@ -134,21 +125,16 @@ impl Rib {
     }
 
     pub fn add_address_type(&self, address_type: ClaAddressType, cla: Arc<ClaEntry>) {
-        self.inner.write().address_types.insert(address_type, cla);
+        self.address_types.lock().insert(address_type, cla);
     }
 
     pub fn remove_address_type(&self, address_type: &ClaAddressType) {
-        self.inner.write().address_types.remove(address_type);
+        self.address_types.lock().remove(address_type);
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
-        let inner = self.inner.read();
-
-        let result =
-            inner
-                .table
-                .find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        let result = self.table.find_recurse(&bundle.bundle.destination, true)?;
         if !matches!(result, TableFindResult::Reflect) {
             return map_result(
                 result,
@@ -158,16 +144,12 @@ impl Rib {
             );
         }
 
-        // Reflect: return the bundle via the previous forwarding node,
-        // falling back to the bundle source as last resort.
         let previous = bundle
             .previous_node()
             .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
         map_result(
-            inner
-                .table
-                .find_recurse(&previous, false, &mut HashSet::new())?,
+            self.table.find_recurse(&previous, false)?,
             &self.ecmp_hash_state,
             &bundle.bundle,
             &mut bundle.metadata,
@@ -183,8 +165,7 @@ impl Rib {
     /// the BPA from notifying a registered service about its own bundles.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
-        let inner = self.inner.read();
-        inner.table.find_service(to)
+        self.table.find_service(to)
     }
 }
 
@@ -305,28 +286,13 @@ impl Rib {
         add: &[super::route::Route],
         remove: &[super::route::Route],
     ) -> Result<(), TableError> {
-        {
-            let mut inner = self.inner.write();
-            let mut vt = inner.table.virtual_table(source, &self.node_ids);
-            for r in remove {
-                vt.remove(&r.pattern, &r.action, r.priority);
-            }
-            for r in add {
-                vt.insert(r.pattern.clone(), r.action.clone(), r.priority)?;
-            }
-            inner.table = vt.commit()?;
-        }
-
+        self.table.update_routes(source, add, remove)?;
         self.notify_updated().await;
         Ok(())
     }
 
     pub async fn remove_by_source(&self, source: &str) {
-        let removed_count = {
-            let mut inner = self.inner.write();
-            inner.table.remove_by_source(source)
-        };
-
+        let removed_count = self.table.remove_by_source(source);
         if removed_count == 0 {
             return;
         }
@@ -339,31 +305,23 @@ impl Rib {
     }
 
     pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
-        let pattern: EidPattern = node_id.into();
-        {
-            let mut inner = self.inner.write();
-            inner.table.insert(
-                pattern,
-                InternalAction::Forward(peer),
-                0,
-                Self::FORWARDS_NAME,
-            );
-        }
+        self.table.insert(
+            node_id.into(),
+            InternalAction::Forward(peer),
+            0,
+            Self::FORWARDS_NAME,
+        );
         self.notify_updated().await;
         true
     }
 
     pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
-        let pattern: EidPattern = node_id.into();
-        let removed = {
-            let mut inner = self.inner.write();
-            inner.table.remove(
-                &pattern,
-                &InternalAction::Forward(peer),
-                0,
-                Self::FORWARDS_NAME,
-            )
-        };
+        let removed = self.table.remove(
+            &node_id.into(),
+            &InternalAction::Forward(peer),
+            0,
+            Self::FORWARDS_NAME,
+        );
         if removed && self.store.reset_peer_queue(peer).await {
             self.notify_updated().await;
         }
@@ -371,30 +329,23 @@ impl Rib {
     }
 
     pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> bool {
-        {
-            let mut inner = self.inner.write();
-            inner.table.insert(
-                eid.into(),
-                InternalAction::Local(service),
-                self.service_priority,
-                Self::SERVICES_NAME,
-            );
-        }
+        self.table.insert(
+            eid.into(),
+            InternalAction::Local(service),
+            self.service_priority,
+            Self::SERVICES_NAME,
+        );
         self.notify_updated().await;
         true
     }
 
     pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
-        let pattern: EidPattern = eid.clone().into();
-        let removed = {
-            let mut inner = self.inner.write();
-            inner.table.remove(
-                &pattern,
-                &InternalAction::Local(service),
-                self.service_priority,
-                Self::SERVICES_NAME,
-            )
-        };
+        let removed = self.table.remove(
+            &eid.clone().into(),
+            &InternalAction::Local(service),
+            self.service_priority,
+            Self::SERVICES_NAME,
+        );
         if removed {
             self.notify_updated().await;
         }
@@ -408,6 +359,7 @@ mod tests {
     use crate::routing::table::action::{Action, InternalAction, RouteAction};
     use crate::services::registry::ServiceImpl;
     use crate::{BTreeSet, bundle, storage};
+    use hardy_eid_patterns::EidPattern;
 
     pub(super) fn make_rib() -> Arc<Rib> {
         use hardy_bpv7::eid::IpnNodeId;
@@ -431,17 +383,17 @@ mod tests {
 
     pub(super) fn add_route(rib: &Rib, pattern: &str, source: &str, action: Action, priority: u32) {
         let pattern: EidPattern = pattern.parse().unwrap();
-        let mut inner = rib.inner.write();
         match action {
             Action::Internal(internal) => {
-                inner.table.insert(pattern, internal, priority, source);
+                rib.table.insert(pattern, internal, priority, source);
             }
             Action::Route(route_action) => {
-                let mut vt = inner.table.virtual_table(source, &rib.node_ids);
-                let _ = vt.insert(pattern, route_action, priority);
-                if let Ok(new_table) = vt.commit() {
-                    inner.table = new_table;
-                }
+                let route = crate::routing::route::Route {
+                    pattern,
+                    action: route_action,
+                    priority,
+                };
+                let _ = rib.table.update_routes(source, &[route], &[]);
             }
         }
     }
