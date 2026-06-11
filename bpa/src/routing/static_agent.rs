@@ -1,4 +1,5 @@
 use hardy_bpv7::eid::NodeId;
+use tracing::error;
 
 use crate::async_trait;
 
@@ -38,7 +39,9 @@ impl StaticRoutingAgent {
 #[async_trait]
 impl RoutingAgent for StaticRoutingAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        sink.update_routes(&self.routes, &[]).await.ok();
+        if let Err(e) = sink.update_routes(&self.routes, &[]).await {
+            error!("Failed to install static routes: {e}");
+        }
         self.sink.call_once(|| sink);
     }
 

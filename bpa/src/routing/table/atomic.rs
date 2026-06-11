@@ -12,7 +12,7 @@ use super::{
 };
 use crate::node_ids::NodeIds;
 use crate::routing::route::Route;
-use crate::services;
+use crate::services::registry::Service;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -199,7 +199,7 @@ impl AtomicRouteTable {
         None
     }
 
-    pub(crate) fn find_service(&self, to: &Eid) -> Option<Arc<services::registry::Service>> {
+    pub(crate) fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
         let entries = self.entries.load();
         for at_priority in entries.values() {
             for (pattern, action, _) in at_priority {
