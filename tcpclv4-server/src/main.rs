@@ -3,7 +3,8 @@ use hardy_async::TaskPool;
 use hardy_bpa::bpa::BpaRegistration;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info};
+use tokio::net::lookup_host;
+use tracing::{error, info, warn};
 
 mod config;
 
@@ -44,6 +45,37 @@ async fn main() -> anyhow::Result<()> {
     inner_main(config).await.inspect_err(|e| error!("{e}"))
 }
 
+async fn connect_peer(
+    cla: &hardy_tcpclv4::Cla,
+    peer: &str,
+    cancel: hardy_async::CancellationToken,
+) {
+    loop {
+        match lookup_host(peer).await {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.next() {
+                    info!("Connecting to peer {peer} ({addr})");
+                    match cla.connect(&addr).await {
+                        Ok(()) => {
+                            info!("Connected to peer {peer}");
+                            return;
+                        }
+                        Err(e) => warn!("Failed to connect to peer {peer}: {e}"),
+                    }
+                } else {
+                    warn!("No addresses resolved for peer {peer}");
+                }
+            }
+            Err(e) => warn!("Failed to resolve peer {peer}: {e}"),
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+            _ = cancel.cancelled() => return,
+        }
+    }
+}
+
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let cla = Arc::new(hardy_tcpclv4::Cla::new(&config.tcpcl)?);
 
@@ -64,6 +96,14 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
+
+    for peer in config.peers {
+        let cla = cla.clone();
+        let cancel = tasks.cancel_token().clone();
+        hardy_async::spawn!(tasks, "peer_connect", async move {
+            connect_peer(&cla, &peer, cancel).await;
+        });
+    }
 
     info!("Started successfully");
 
