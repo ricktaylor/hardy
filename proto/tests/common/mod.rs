@@ -8,7 +8,7 @@ pub mod sinks;
 
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routes, services};
+use hardy_bpa::{cla, routing as routes, services};
 use hardy_bpv7::eid::NodeId;
 use sinks::*;
 use std::sync::Arc;
@@ -141,21 +141,12 @@ impl routes::RoutingSink for RoutingSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
-    async fn add_route(
+    async fn update_routes(
         &self,
-        p: hardy_eid_patterns::EidPattern,
-        a: routes::Action,
-        pri: u32,
-    ) -> routes::Result<bool> {
-        self.0.add_route(p, a, pri).await
-    }
-    async fn remove_route(
-        &self,
-        p: &hardy_eid_patterns::EidPattern,
-        a: &routes::Action,
-        pri: u32,
-    ) -> routes::Result<bool> {
-        self.0.remove_route(p, a, pri).await
+        add: &[routes::Route],
+        remove: &[routes::Route],
+    ) -> routes::Result<()> {
+        self.0.update_routes(add, remove).await
     }
 }
 

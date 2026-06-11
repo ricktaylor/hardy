@@ -270,7 +270,7 @@ pub mod routing {
         }
     }
 
-    impl TryFrom<RouteAction> for hardy_bpa::routes::Action {
+    impl TryFrom<RouteAction> for hardy_bpa::routing::RouteAction {
         type Error = tonic::Status;
 
         fn try_from(value: RouteAction) -> Result<Self, Self::Error> {
@@ -284,32 +284,34 @@ pub mod routing {
                     } else {
                         None
                     };
-                    Ok(hardy_bpa::routes::Action::Drop(reason))
+                    Ok(hardy_bpa::routing::RouteAction::Drop(reason))
                 }
-                Some(route_action::Action::Reflect(_)) => Ok(hardy_bpa::routes::Action::Reflect),
+                Some(route_action::Action::Reflect(_)) => {
+                    Ok(hardy_bpa::routing::RouteAction::Reflect)
+                }
                 Some(route_action::Action::Via(eid)) => {
                     let eid = eid.parse().map_err(|e| {
                         tonic::Status::invalid_argument(format!("Invalid EID: {e}"))
                     })?;
-                    Ok(hardy_bpa::routes::Action::Via(eid))
+                    Ok(hardy_bpa::routing::RouteAction::Via(eid))
                 }
             }
         }
     }
 
-    impl From<&hardy_bpa::routes::Action> for RouteAction {
-        fn from(value: &hardy_bpa::routes::Action) -> Self {
+    impl From<&hardy_bpa::routing::RouteAction> for RouteAction {
+        fn from(value: &hardy_bpa::routing::RouteAction) -> Self {
             match value {
-                hardy_bpa::routes::Action::Drop(reason) => RouteAction {
+                hardy_bpa::routing::RouteAction::Drop(reason) => RouteAction {
                     action: Some(route_action::Action::Drop(DropAction {
                         has_reason: reason.is_some(),
                         reason_code: reason.map(|r| r.into()).unwrap_or(0),
                     })),
                 },
-                hardy_bpa::routes::Action::Reflect => RouteAction {
+                hardy_bpa::routing::RouteAction::Reflect => RouteAction {
                     action: Some(route_action::Action::Reflect(ReflectAction {})),
                 },
-                hardy_bpa::routes::Action::Via(eid) => RouteAction {
+                hardy_bpa::routing::RouteAction::Via(eid) => RouteAction {
                     action: Some(route_action::Action::Via(eid.to_string())),
                 },
             }

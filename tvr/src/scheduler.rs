@@ -1,5 +1,5 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routes::{Action, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingSink};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -164,7 +164,7 @@ pub fn channel() -> (SchedulerHandle, SchedulerReceiver) {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RouteKey {
     pattern: EidPattern,
-    action: Action,
+    action: RouteAction,
     priority: u32,
 }
 
@@ -221,12 +221,12 @@ impl PartialOrd for Event {
 enum PendingRouteOp {
     Add {
         pattern: EidPattern,
-        action: Action,
+        action: RouteAction,
         priority: u32,
     },
     Remove {
         pattern: EidPattern,
-        action: Action,
+        action: RouteAction,
         priority: u32,
     },
 }
@@ -636,28 +636,53 @@ fn contacts_match(a: &Contact, b: &Contact) -> bool {
 
 // ── Core loop ───────────────────────────────────────────────────────
 
-async fn apply_route_op(sink: &dyn RoutingSink, op: PendingRouteOp) {
-    match op {
-        PendingRouteOp::Add {
-            pattern,
-            action,
-            priority,
-        } => {
-            if let Err(e) = sink.add_route(pattern, action, priority).await {
-                warn!("Failed to add route: {e}");
+async fn apply_route_ops(sink: &dyn RoutingSink, ops: Vec<PendingRouteOp>) {
+    if ops.is_empty() {
+        return;
+    }
+
+    let mut add = Vec::new();
+    let mut remove = Vec::new();
+    for op in &ops {
+        match op {
+            PendingRouteOp::Add {
+                pattern,
+                action,
+                priority,
+            } => {
+                add.push(hardy_bpa::routing::Route {
+                    pattern: pattern.clone(),
+                    action: action.clone(),
+                    priority: *priority,
+                });
             }
-            metrics::counter!("tvr_route_installs").increment(1);
-        }
-        PendingRouteOp::Remove {
-            pattern,
-            action,
-            priority,
-        } => {
-            if let Err(e) = sink.remove_route(&pattern, &action, priority).await {
-                warn!("Failed to remove route: {e}");
+            PendingRouteOp::Remove {
+                pattern,
+                action,
+                priority,
+            } => {
+                remove.push(hardy_bpa::routing::Route {
+                    pattern: pattern.clone(),
+                    action: action.clone(),
+                    priority: *priority,
+                });
             }
-            metrics::counter!("tvr_route_withdrawals").increment(1);
         }
+    }
+
+    let installs = add.len();
+    let withdrawals = remove.len();
+
+    if let Err(e) = sink.update_routes(&add, &remove).await {
+        warn!("Failed to update routes: {e}");
+        return;
+    }
+
+    if installs > 0 {
+        metrics::counter!("tvr_route_installs").increment(installs as u64);
+    }
+    if withdrawals > 0 {
+        metrics::counter!("tvr_route_withdrawals").increment(withdrawals as u64);
     }
 }
 
@@ -695,9 +720,7 @@ pub fn start(
             tokio::select! {
                 _ = tokio::time::sleep_until(wake_at) => {
                     let now = OffsetDateTime::now_utc();
-                    for op in sched.process_due_events(now) {
-                        apply_route_op(&*sink, op).await;
-                    }
+                    apply_route_ops(&*sink, sched.process_due_events(now)).await;
                 }
                 cmd = rx.recv_async() => {
                     match cmd {
@@ -708,6 +731,7 @@ pub fn start(
                                     let mut added = 0u32;
                                     let mut active = 0u32;
                                     let mut skipped = 0u32;
+                                    let mut ops = Vec::new();
                                     for contact in contacts {
                                         let (was_added, was_active, op) = sched.ingest(&source, contact, default_priority, now);
                                         if was_added {
@@ -716,31 +740,24 @@ pub fn start(
                                         } else {
                                             skipped += 1;
                                         }
-                                        if let Some(op) = op {
-                                            apply_route_op(&*sink, op).await;
-                                        }
+                                        ops.extend(op);
                                     }
+                                    apply_route_ops(&*sink, ops).await;
                                     debug!("Add for '{source}': added={added}, active={active}, skipped={skipped}");
                                     let _ = reply.send(AddResult { added, active, skipped });
                                 }
                                 Command::Remove { source, contacts, reply } => {
                                     let (result, ops) = sched.handle_remove(&source, &contacts);
-                                    for op in ops {
-                                        apply_route_op(&*sink, op).await;
-                                    }
+                                    apply_route_ops(&*sink, ops).await;
                                     let _ = reply.send(result);
                                 }
                                 Command::Replace { source, contacts, default_priority, reply } => {
                                     let (result, ops) = sched.handle_replace(&source, contacts, default_priority, now);
-                                    for op in ops {
-                                        apply_route_op(&*sink, op).await;
-                                    }
+                                    apply_route_ops(&*sink, ops).await;
                                     let _ = reply.send(result);
                                 }
                                 Command::WithdrawAll { source } => {
-                                    for op in sched.withdraw_source(&source) {
-                                        apply_route_op(&*sink, op).await;
-                                    }
+                                    apply_route_ops(&*sink, sched.withdraw_source(&source)).await;
                                 }
                             }
                         }
@@ -805,8 +822,8 @@ mod test {
         }
     }
 
-    fn via(next_hop: &str) -> Action {
-        Action::Via(next_hop.parse().unwrap())
+    fn via(next_hop: &str) -> RouteAction {
+        RouteAction::Via(next_hop.parse().unwrap())
     }
 
     fn pat(s: &str) -> EidPattern {

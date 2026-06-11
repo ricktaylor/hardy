@@ -6,57 +6,57 @@ struct Sink {
 }
 
 impl Sink {
-    async fn call(&self, msg: agent_to_bpa::Msg) -> hardy_bpa::routes::Result<bpa_to_agent::Msg> {
+    async fn call(&self, msg: agent_to_bpa::Msg) -> hardy_bpa::routing::Result<bpa_to_agent::Msg> {
         match self.proxy.call(msg).await {
-            Err(e) => Err(hardy_bpa::routes::Error::Internal(e.into())),
-            Ok(None) => Err(hardy_bpa::routes::Error::Disconnected),
+            Err(e) => Err(hardy_bpa::routing::Error::Internal(e.into())),
+            Ok(None) => Err(hardy_bpa::routing::Error::Disconnected),
             Ok(Some(msg)) => Ok(msg),
         }
     }
 }
 
 #[async_trait]
-impl hardy_bpa::routes::RoutingSink for Sink {
-    async fn add_route(
+impl hardy_bpa::routing::RoutingSink for Sink {
+    async fn update_routes(
         &self,
-        pattern: hardy_eid_patterns::EidPattern,
-        action: hardy_bpa::routes::Action,
-        priority: u32,
-    ) -> hardy_bpa::routes::Result<bool> {
-        match self
-            .call(agent_to_bpa::Msg::AddRoute(AddRouteRequest {
-                pattern: pattern.to_string(),
-                action: Some((&action).into()),
-                priority,
-            }))
-            .await?
-        {
-            bpa_to_agent::Msg::AddRoute(response) => Ok(response.added),
-            msg => Err(hardy_bpa::routes::Error::Internal(
-                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-            )),
+        add: &[hardy_bpa::routing::Route],
+        remove: &[hardy_bpa::routing::Route],
+    ) -> hardy_bpa::routing::Result<()> {
+        for route in add {
+            match self
+                .call(agent_to_bpa::Msg::AddRoute(AddRouteRequest {
+                    pattern: route.pattern.to_string(),
+                    action: Some((&route.action).into()),
+                    priority: route.priority,
+                }))
+                .await?
+            {
+                bpa_to_agent::Msg::AddRoute(_) => {}
+                msg => {
+                    return Err(hardy_bpa::routing::Error::Internal(
+                        tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+                    ));
+                }
+            }
         }
-    }
-
-    async fn remove_route(
-        &self,
-        pattern: &hardy_eid_patterns::EidPattern,
-        action: &hardy_bpa::routes::Action,
-        priority: u32,
-    ) -> hardy_bpa::routes::Result<bool> {
-        match self
-            .call(agent_to_bpa::Msg::RemoveRoute(RemoveRouteRequest {
-                pattern: pattern.to_string(),
-                action: Some(action.into()),
-                priority,
-            }))
-            .await?
-        {
-            bpa_to_agent::Msg::RemoveRoute(response) => Ok(response.removed),
-            msg => Err(hardy_bpa::routes::Error::Internal(
-                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-            )),
+        for route in remove {
+            match self
+                .call(agent_to_bpa::Msg::RemoveRoute(RemoveRouteRequest {
+                    pattern: route.pattern.to_string(),
+                    action: Some((&route.action).into()),
+                    priority: route.priority,
+                }))
+                .await?
+            {
+                bpa_to_agent::Msg::RemoveRoute(_) => {}
+                msg => {
+                    return Err(hardy_bpa::routing::Error::Internal(
+                        tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+                    ));
+                }
+            }
         }
+        Ok(())
     }
 
     async fn unregister(&self) {
@@ -65,7 +65,7 @@ impl hardy_bpa::routes::RoutingSink for Sink {
 }
 
 struct Handler {
-    agent: Weak<dyn hardy_bpa::routes::RoutingAgent>,
+    agent: Weak<dyn hardy_bpa::routing::RoutingAgent>,
 }
 
 #[async_trait]
@@ -90,13 +90,13 @@ impl ProxyHandler for Handler {
 pub async fn register_routing_agent(
     grpc_addr: String,
     name: String,
-    agent: Arc<dyn hardy_bpa::routes::RoutingAgent>,
-) -> hardy_bpa::routes::Result<Vec<hardy_bpv7::eid::NodeId>> {
+    agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
     let mut client = routing_agent_client::RoutingAgentClient::connect(grpc_addr.clone())
         .await
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            hardy_bpa::routing::Error::Internal(e.into())
         })?;
 
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
@@ -106,7 +106,7 @@ pub async fn register_routing_agent(
         .await
         .map_err(|e| {
             error!("Routing agent registration failed: {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            hardy_bpa::routing::Error::Internal(e.into())
         })?
         .into_inner();
 
@@ -119,13 +119,13 @@ pub async fn register_routing_agent(
     .await
     .map_err(|e| {
         error!("Failed to send registration: {e}");
-        hardy_bpa::routes::Error::Internal(e.into())
+        hardy_bpa::routing::Error::Internal(e.into())
     })? {
-        None => return Err(hardy_bpa::routes::Error::Disconnected),
+        None => return Err(hardy_bpa::routing::Error::Disconnected),
         Some(bpa_to_agent::Msg::Register(response)) => response,
         Some(msg) => {
             error!("Routing agent registration failed: Unexpected response: {msg:?}");
-            return Err(hardy_bpa::routes::Error::Internal(
+            return Err(hardy_bpa::routing::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             ));
         }
@@ -140,7 +140,7 @@ pub async fn register_routing_agent(
         })
         .map_err(|e| {
             error!("Failed to parse node IDs in response: {e}");
-            hardy_bpa::routes::Error::Internal(e.into())
+            hardy_bpa::routing::Error::Internal(e.into())
         })?;
 
     let handler = Box::new(Handler {
@@ -162,7 +162,7 @@ pub async fn register_routing_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routes::{RoutingAgent, RoutingSink};
+    use hardy_bpa::routing::{RoutingAgent, RoutingSink};
     use hardy_bpv7::eid::NodeId;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::mpsc;
