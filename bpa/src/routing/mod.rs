@@ -1,28 +1,24 @@
-use super::*;
 use hardy_bpv7::eid::NodeId;
-use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
 
-/// The action to take when a route matches a bundle's destination.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Action {
-    /// Drop the bundle, optionally reporting a reason code.
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
-    /// Return the bundle to the previous hop (last-hop reflection).
-    Reflect,
-    /// Forward the bundle via the specified next-hop EID (recursive lookup).
-    Via(hardy_bpv7::eid::Eid),
-}
+use crate::async_trait;
 
-impl core::fmt::Display for Action {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
-            Action::Drop(None) => write!(f, "Drop"),
-            Action::Reflect => write!(f, "Reflect"),
-            Action::Via(eid) => write!(f, "Via {eid}"),
-        }
-    }
+pub(crate) mod rib;
+pub(crate) mod route;
+pub(super) mod sink;
+mod static_agent;
+pub(crate) mod table;
+
+pub use rib::FindResult;
+pub use route::Route;
+pub use static_agent::StaticRoutingAgent;
+pub use table::RouteAction;
+
+use alloc::sync::Arc;
+
+pub(crate) struct Agent {
+    pub(super) agent: Arc<dyn RoutingAgent>,
+    pub(crate) name: String,
 }
 
 /// A specialized `Result` type for routing agent operations.
@@ -65,8 +61,8 @@ pub enum Error {
 /// [`on_unregister`](Self::on_unregister). All routes from this agent are automatically removed.
 ///
 /// Two disconnection paths exist:
-/// - **Agent-initiated**: Agent drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
-/// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
+/// - **Agent-initiated**: Agent drops its Sink or calls `sink.unregister()` -> BPA calls `on_unregister()`
+/// - **BPA-initiated**: BPA shuts down -> calls `on_unregister()` -> Sink becomes non-functional
 #[async_trait]
 pub trait RoutingAgent: Send + Sync {
     /// Called when the routing agent is registered with the BPA.
@@ -110,73 +106,10 @@ pub trait RoutingSink: Send + Sync {
     /// [`RoutingAgent::on_unregister`] and all routes from this agent are removed.
     async fn unregister(&self);
 
-    /// Adds a route to the RIB.
+    /// Atomically update routes in the RIB.
     ///
-    /// Returns `true` if the route was newly inserted, `false` if it already existed.
-    async fn add_route(&self, pattern: EidPattern, action: Action, priority: u32) -> Result<bool>;
-
-    /// Removes a specific route from the RIB.
-    ///
-    /// Only removes routes that match all three fields (pattern, action, priority)
-    /// and this agent's source name.
-    ///
-    /// Returns `true` if the route was found and removed.
-    async fn remove_route(
-        &self,
-        pattern: &EidPattern,
-        action: &Action,
-        priority: u32,
-    ) -> Result<bool>;
-}
-
-/// A simple routing agent that installs a fixed set of routes on registration.
-///
-/// Routes are automatically removed when the agent is unregistered (via the BPA's
-/// bulk cleanup). This is useful for tools and tests that need a quick set of
-/// static routes without implementing the full [`RoutingAgent`] trait manually.
-///
-/// # Example
-///
-/// ```ignore
-/// use hardy_bpa::routes::StaticRoutingAgent;
-/// use hardy_bpa::routes::Action;
-///
-/// let agent = Arc::new(StaticRoutingAgent::new(&[
-///     ("ipn:*.*".parse().unwrap(), Action::Via("ipn:0.2.0".parse().unwrap()), 30),
-///     ("dtn://drop/**".parse().unwrap(), Action::Drop(None), 50),
-/// ]));
-/// bpa.register_routing_agent("my_routes".to_string(), agent).await?;
-/// ```
-pub struct StaticRoutingAgent {
-    routes: Vec<(EidPattern, Action, u32)>,
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
-}
-
-impl StaticRoutingAgent {
-    /// Creates a new static routing agent with the given set of routes.
-    ///
-    /// Each route is a tuple of (pattern, action, priority). All routes are
-    /// installed atomically on registration via [`RoutingAgent::on_register`].
-    pub fn new(routes: &[(EidPattern, Action, u32)]) -> Self {
-        Self {
-            routes: routes.to_vec(),
-            sink: hardy_async::sync::spin::Once::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl RoutingAgent for StaticRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        for (pattern, action, priority) in &self.routes {
-            sink.add_route(pattern.clone(), action.clone(), *priority)
-                .await
-                .ok();
-        }
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        // Routes are automatically removed by the BPA's remove_by_source cleanup.
-    }
+    /// All routes in `add` are inserted and all routes in `remove` are deleted
+    /// as a single transaction. If any route in `add` fails validation, the
+    /// entire update is rejected and the RIB is unchanged.
+    async fn update_routes(&self, add: &[Route], remove: &[Route]) -> Result<()>;
 }
