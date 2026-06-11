@@ -97,12 +97,19 @@ impl Dispatcher {
             ..
         } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
 
+        // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
+        // of an admin-record or anonymous bundle — the receiver has nowhere
+        // meaningful to report to, and a conformant parser (ours included)
+        // rejects the combination.
+        let report_on_failure =
+            !bundle.bundle.flags.is_admin_record && !bundle.bundle.id.source.is_null();
+
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
             .map_err(|(_, e)| e)?
             .with_flags(hardy_bpv7::block::Flags {
-                report_on_failure: true,
+                report_on_failure,
                 ..Default::default()
             })
             .with_data(
@@ -120,7 +127,7 @@ impl Dispatcher {
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
                 .with_flags(hardy_bpv7::block::Flags {
-                    report_on_failure: true,
+                    report_on_failure,
                     must_replicate: true,
                     ..Default::default()
                 })
@@ -147,7 +154,7 @@ impl Dispatcher {
                 .insert_block(hardy_bpv7::block::Type::BundleAge)
                 .map_err(|(_, e)| e)?
                 .with_flags(hardy_bpv7::block::Flags {
-                    report_on_failure: true,
+                    report_on_failure,
                     must_replicate: true,
                     ..Default::default()
                 })
