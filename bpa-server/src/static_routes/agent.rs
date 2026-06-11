@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use hardy_async::TaskPool;
 use hardy_async::sync::spin::Once;
 use hardy_async::watcher::{self, WatchMode};
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info};
@@ -15,7 +15,7 @@ use super::loader;
 pub(super) struct StaticRoute {
     pub(super) pattern: EidPattern,
     pub(super) priority: Option<u32>,
-    pub(super) action: Action,
+    pub(super) action: RouteAction,
 }
 
 pub struct StaticRoutesAgent {
@@ -91,27 +91,33 @@ async fn reload_routes(
         (to_remove, to_add)
     };
 
-    for r in &to_remove {
-        sink.remove_route(&r.pattern, &r.action, r.priority.unwrap_or(priority))
-            .await
-            .ok();
-    }
+    let add: Vec<_> = to_add
+        .iter()
+        .map(|r| hardy_bpa::routing::Route {
+            pattern: r.pattern.clone(),
+            action: r.action.clone(),
+            priority: r.priority.unwrap_or(priority),
+        })
+        .collect();
+    let remove: Vec<_> = to_remove
+        .iter()
+        .map(|r| hardy_bpa::routing::Route {
+            pattern: r.pattern.clone(),
+            action: r.action.clone(),
+            priority: r.priority.unwrap_or(priority),
+        })
+        .collect();
 
-    for r in &to_add {
-        sink.add_route(
-            r.pattern.clone(),
-            r.action.clone(),
-            r.priority.unwrap_or(priority),
-        )
-        .await
-        .ok();
-    }
-
-    {
-        let mut routes = routes.lock().unwrap();
-        routes.retain(|r| !to_remove.contains(r));
-        for r in to_add {
-            routes.push(r);
+    match sink.update_routes(&add, &remove).await {
+        Ok(()) => {
+            let mut routes = routes.lock().unwrap();
+            routes.retain(|r| !to_remove.contains(r));
+            for r in to_add {
+                routes.push(r);
+            }
+        }
+        Err(e) => {
+            error!("Routes rejected, keeping current config: {e}");
         }
     }
 }
