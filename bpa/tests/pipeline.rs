@@ -501,6 +501,164 @@ async fn local_delivery() {
 }
 
 // ---------------------------------------------------------------------------
+// Reception report reason codes (RFC 9172 §7.1)
+// ---------------------------------------------------------------------------
+
+/// Splice a BCB with an unrecognised security context (id 99) targeting the
+/// payload into `data` as block number 2, flagged must-replicate (required
+/// for a payload target) + report-on-failure.
+fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
+    // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
+    // parameters), source EID, then one result list per target.
+    let result_val = [0x41u8, 0xAA]; // result value: bytes(0xAA)
+    let source: Eid = "ipn:0.2.1".parse().unwrap();
+    let mut asb = hardy_cbor::encode::emit(&[1u64]).0;
+    asb.extend(hardy_cbor::encode::emit(&99u64).0);
+    asb.extend(hardy_cbor::encode::emit(&0u64).0);
+    asb.extend(hardy_cbor::encode::emit(&source).0);
+    asb.extend(hardy_cbor::encode::emit_array(Some(1), |results| {
+        results.emit_array(Some(1), |target_results| {
+            target_results.emit(&(1u64, hardy_cbor::encode::Raw(&result_val)));
+        });
+    }));
+
+    let bcb_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        a.emit(&12u64); // block type: BCB
+        a.emit(&2u64); // block number
+        a.emit(&0x03u64); // flags: must_replicate | report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&asb));
+    });
+
+    assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
+    let (_, primary_len) =
+        hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
+    let insert_pos = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + bcb_block.len());
+    modified.extend_from_slice(&data[..insert_pos]);
+    modified.extend_from_slice(&bcb_block);
+    modified.extend_from_slice(&data[insert_pos..]);
+    modified.into()
+}
+
+/// A transit bundle carrying a BCB this node cannot understand (unrecognised
+/// security context, `report_on_failure` set) is still forwarded, and the
+/// requested reception report carries the RFC 9172 `UnknownSecurityOperation`
+/// reason rather than the generic `BlockUnsupported`. The bundle is addressed
+/// to a remote node so it forwards — a payload-targeting BCB is only ever
+/// decrypted at delivery.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reception_report_carries_unknown_security_operation() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    // Register CLA with a peer for the remote node (ipn:0.2) — the route for
+    // both the forwarded bundle and the reception report (report-to defaults
+    // to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    // Inbound transit bundle requesting a reception report.
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+    let (_, data) = hardy_bpv7::builder::Builder::new(remote_source.clone(), dest.clone())
+        .with_flags(hardy_bpv7::bundle::Flags {
+            receipt_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(std::borrow::Cow::Borrowed(b"opaque"))
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+    let inbound = splice_unrecognised_bcb(&data);
+
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(inbound, Some(&remote_node), None)
+        .await
+        .unwrap();
+
+    // Two bundles come back out of the CLA in either order: the reception
+    // report (to ipn:0.2.1) and the forwarded original (to ipn:0.2.99).
+    let mut report = None;
+    let mut original = None;
+    for _ in 0..2 {
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for forwarded bundle")
+        .expect("Channel closed");
+        let parsed = hardy_bpv7::parse::parse(forwarded).expect("Failed to parse forwarded");
+        if parsed.bundle.primary.flags.is_admin_record {
+            report = Some(parsed);
+        } else {
+            original = Some(parsed);
+        }
+    }
+
+    // The original is forwarded intact, BCB and all (an operation we cannot
+    // understand is left for a downstream security acceptor).
+    let original = original.expect("Original bundle should be forwarded");
+    assert_eq!(original.bundle.primary.destination, dest);
+    assert!(
+        original
+            .bundle
+            .blocks
+            .values()
+            .any(|b| matches!(b.block_type, hardy_bpv7::block::Type::BlockSecurity)),
+        "Forwarded bundle should still carry the BCB"
+    );
+
+    // The reception report goes to the source and carries the RFC 9172 code.
+    let report = report.expect("Reception report should be emitted");
+    assert_eq!(report.bundle.primary.destination, remote_source);
+    let body = report
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("Report has a payload block")
+        .payload(&report.data)
+        .expect("Report payload in bundle");
+    let record = hardy_cbor::decode::parse::<AdministrativeRecord>(body)
+        .expect("Report payload is an administrative record");
+    let AdministrativeRecord::BundleStatusReport(status) = record;
+    assert_eq!(status.reason, ReasonCode::UnknownSecurityOperation);
+    assert!(status.received.is_some(), "Reception assertion present");
+    assert_eq!(status.bundle_id.source, remote_source);
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // Streamed oversized-payload ingress: a CLA delivers a bundle whose payload
 // exceeds the parser chunk size, split across many segments — exercising the
 // `Partial` / `drain_tail` (dumb-spool) path end-to-end.

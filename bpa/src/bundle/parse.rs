@@ -71,11 +71,46 @@ pub(crate) fn rich_from_built(raw: Bundle, data: &[u8]) -> Result<Bpv7Bundle, ha
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
 /// deletion notice. Used by [`parse_headers`] and the ingress finalize path.
+///
+/// The RFC 9172 codes selectable here are the ones detectable without security
+/// policy: `UnknownSecurityOperation` (an operation this node cannot understand
+/// — unknown context id or parameter) and `FailedSecurityOperation` (an
+/// operation that failed to verify/decrypt). `Missing`/`Unexpected` need
+/// verifier/acceptor role policy that does not exist yet, and `Conflicting`
+/// (BPSec protocol violations between operations) is rejected by the
+/// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
+/// policy SHOULD gate when security reason codes are sent at all; the global
+/// `status_reports` switch is that gate for now.
 pub(crate) fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
-    if matches!(error, hardy_bpv7::Error::Unsupported(_)) {
+    match error {
+        hardy_bpv7::Error::Unsupported(_) => ReasonCode::BlockUnsupported,
+        hardy_bpv7::Error::InvalidBPSec(
+            bpsec::Error::UnrecognisedContext(_) | bpsec::Error::UnsupportedOperation,
+        ) => ReasonCode::UnknownSecurityOperation,
+        hardy_bpv7::Error::InvalidBPSec(
+            bpsec::Error::DecryptionFailed | bpsec::Error::IntegrityCheckFailed,
+        ) => ReasonCode::FailedSecurityOperation,
+        _ => ReasonCode::BlockUnintelligible,
+    }
+}
+
+/// Reception-report reason from the §A `report_on_failure` facts plus the
+/// §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank the
+/// generic RFC 9171 block code when several fire: a dropped corrupt operation
+/// is the most material event, then an operation this node cannot understand,
+/// then an unrecognised plain block.
+pub(crate) fn reception_reason_for(
+    classification: &checks::Classification,
+    failure_dropped: bool,
+) -> ReasonCode {
+    if failure_dropped {
+        ReasonCode::FailedSecurityOperation
+    } else if classification.report_unsupported_security {
+        ReasonCode::UnknownSecurityOperation
+    } else if classification.report_unsupported_block {
         ReasonCode::BlockUnsupported
     } else {
-        ReasonCode::BlockUnintelligible
+        ReasonCode::NoAdditionalInformation
     }
 }
 
@@ -185,7 +220,10 @@ pub(crate) struct HeaderVerify {
     pub extracted: ExtractedExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
     pub to_remove: HashSet<u64>,
-    pub report_unsupported: bool,
+    /// Reception-report reason chosen from the §A `report_on_failure` facts
+    /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
+    /// `NoAdditionalInformation` when none fired.
+    pub report_reason: ReasonCode,
     /// BIB op-sets `checks::verify` left targeting the not-yet-resident payload
     /// (block 1) — re-verified against the full bundle by
     /// [`finalize_with_provider`]. Empty when the payload was resident. A block-1
@@ -290,12 +328,12 @@ where
     } = parsed;
     let key_source = key_provider(&raw, &headers);
     match verify_headers(&headers, &*key_source, &mut raw, &bcb_ops, &mut bib_ops) {
-        Ok((extracted, to_remove, report_unsupported)) => Ok((
+        Ok((extracted, to_remove, report_reason)) => Ok((
             HeaderVerify {
                 raw,
                 extracted,
                 to_remove,
-                report_unsupported,
+                report_reason,
                 // After `verify`, the leftover `bib_ops` is exactly the block-1 set.
                 deferred_bibs: bib_ops,
             },
@@ -318,20 +356,20 @@ where
 /// stamps) and drains `bib_ops` to the block-1 (payload) leftovers that
 /// [`finalize_with_provider`] re-verifies once the payload is resident; the §E
 /// removals are deferred there too. Returns the extracted extension fields, the
-/// blocks to remove, and `report_unsupported`.
+/// blocks to remove, and the reception-report reason.
 fn verify_headers(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     raw: &mut Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<(ExtractedExtensionFields, HashSet<u64>, bool), hardy_bpv7::Error> {
-    // §A — classify; collect deletables; observe report_unsupported.
+) -> Result<(ExtractedExtensionFields, HashSet<u64>, ReasonCode), hardy_bpv7::Error> {
+    // §A — classify; collect deletables; the report_* facts feed the
+    // reception-report reason below.
     let classification = checks::classify_unsupported(&raw.blocks, bcb_ops, bib_ops, &[])?;
-    let report_unsupported = classification.report_unsupported;
 
     let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(classification.unrecognised_deletable);
+    to_remove.extend(classification.unrecognised_deletable.iter().copied());
     for n in &classification.bib_deletable {
         to_remove.insert(*n);
         bib_ops.remove(n);
@@ -376,6 +414,9 @@ fn verify_headers(
             to_remove.insert(bcb);
         }
     }
+    // Anything still in `facts.failed` here was queued for failure-drop (the
+    // fatal cases returned above) — surface that in the reception report.
+    let report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
 
     // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
     // other undecipherable block is forwarded intact for a downstream acceptor.
@@ -392,7 +433,7 @@ fn verify_headers(
     // the drain. Extension blocks only — never the payload, so header-resident.
     let extracted = extract_extension_block_fields(headers, &raw.blocks, &decrypted)?;
 
-    Ok((extracted, to_remove, report_unsupported))
+    Ok((extracted, to_remove, report_reason))
 }
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
@@ -405,7 +446,7 @@ pub(crate) fn finalize_with_provider<F>(
     whole: &[u8],
     mut hv: HeaderVerify,
     key_provider: F,
-) -> Result<(Bpv7Bundle, Option<Vec<Chunk>>, bool), (Bpv7Bundle, hardy_bpv7::Error)>
+) -> Result<(Bpv7Bundle, Option<Vec<Chunk>>, ReasonCode), (Bpv7Bundle, hardy_bpv7::Error)>
 where
     F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -455,7 +496,7 @@ where
     Ok((
         reshape_to_rich(hv.raw, hv.extracted),
         chunks,
-        hv.report_unsupported,
+        hv.report_reason,
     ))
 }
 
@@ -531,4 +572,60 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reception_reason_precedence() {
+        let mut c = checks::Classification::default();
+        assert_eq!(
+            reception_reason_for(&c, false),
+            ReasonCode::NoAdditionalInformation
+        );
+        c.report_unsupported_block = true;
+        assert_eq!(
+            reception_reason_for(&c, false),
+            ReasonCode::BlockUnsupported
+        );
+        c.report_unsupported_security = true;
+        assert_eq!(
+            reception_reason_for(&c, false),
+            ReasonCode::UnknownSecurityOperation
+        );
+        assert_eq!(
+            reception_reason_for(&c, true),
+            ReasonCode::FailedSecurityOperation
+        );
+    }
+
+    #[test]
+    fn security_errors_map_to_rfc9172_reasons() {
+        assert_eq!(
+            status_report_reason_for(&hardy_bpv7::Error::Unsupported(2)),
+            ReasonCode::BlockUnsupported
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::UnrecognisedContext(99).into()),
+            ReasonCode::UnknownSecurityOperation
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::UnsupportedOperation.into()),
+            ReasonCode::UnknownSecurityOperation
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::DecryptionFailed.into()),
+            ReasonCode::FailedSecurityOperation
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::IntegrityCheckFailed.into()),
+            ReasonCode::FailedSecurityOperation
+        );
+        assert_eq!(
+            status_report_reason_for(&bpsec::Error::NoKey.into()),
+            ReasonCode::BlockUnintelligible
+        );
+    }
 }
