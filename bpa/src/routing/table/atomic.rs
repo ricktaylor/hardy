@@ -83,12 +83,17 @@ impl AtomicRouteTable {
         action: InternalAction,
         priority: u32,
         source: &str,
-    ) {
+    ) -> bool {
         let _guard = self.write_lock.lock();
         let mut entries = (**self.entries.load()).clone();
         let entry = (pattern, Action::Internal(action), source.to_string());
-        entries.entry(priority).or_default().push(entry);
+        let at_priority = entries.entry(priority).or_default();
+        if at_priority.contains(&entry) {
+            return false;
+        }
+        at_priority.push(entry);
         self.entries.store(Arc::new(entries));
+        true
     }
 
     pub(crate) fn remove(

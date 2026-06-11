@@ -305,14 +305,16 @@ impl Rib {
     }
 
     pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
-        self.table.insert(
+        let inserted = self.table.insert(
             node_id.into(),
             InternalAction::Forward(peer),
             0,
             Self::FORWARDS_NAME,
         );
-        self.notify_updated().await;
-        true
+        if inserted {
+            self.notify_updated().await;
+        }
+        inserted
     }
 
     pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
@@ -329,14 +331,16 @@ impl Rib {
     }
 
     pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> bool {
-        self.table.insert(
+        let inserted = self.table.insert(
             eid.into(),
             InternalAction::Local(service),
             self.service_priority,
             Self::SERVICES_NAME,
         );
-        self.notify_updated().await;
-        true
+        if inserted {
+            self.notify_updated().await;
+        }
+        inserted
     }
 
     pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
