@@ -277,7 +277,7 @@ pub fn decrypt_and_validate_covered_bibs(
                 .keys()
                 .any(|t| bcb_op_set.operations.contains_key(t))
         {
-            return Err(bpsec::Error::InvalidBCBTarget.into());
+            return Err(bpsec::Error::BCBMustShareTarget.into());
         }
 
         // Stamp coverage. The parser stamped these targets as Maybe
