@@ -1,23 +1,21 @@
-use core::num::NonZeroUsize;
-
-use crate::Arc;
-use crate::bpa::Bpa;
-use crate::cla::Cla;
-use crate::cla::registry::ClaRegistryBuilder;
-use crate::dispatcher::Dispatcher;
-use crate::filter::validity::BundleValidityFilter;
-use crate::filter::{Filter, FilterEngine, Hook};
-use crate::keys::registry::Registry as KeyRegistry;
-use crate::node_ids::NodeIds;
-use crate::policy::EgressPolicy;
-use crate::rib::RibBuilder;
-use crate::routes::RoutingAgent;
-use crate::services::registry::ServiceRegistryBuilder;
-use crate::services::{self, Service};
-use crate::storage::{
-    BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-    MetadataMemStorage, MetadataStorage, Store,
+use crate::{
+    Arc,
+    bpa::Bpa,
+    cla::{Cla, registry::ClaRegistryBuilder},
+    dispatcher::Dispatcher,
+    filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
+    keys::KeyProvider,
+    node_ids::NodeIds,
+    policy::EgressPolicy,
+    rib::RibBuilder,
+    routes::RoutingAgent,
+    services::{self, Service, registry::ServiceRegistryBuilder},
+    storage::{
+        BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
+        MetadataMemStorage, MetadataStorage, Store,
+    },
 };
+use core::num::NonZeroUsize;
 
 /// Builder for constructing a [`Bpa`] with custom configuration.
 ///
@@ -38,7 +36,7 @@ pub struct BpaBuilder {
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
     bundle_storage: Option<Arc<dyn BundleStorage>>,
     filter_engine: Arc<FilterEngine>,
-    keys_registry: Arc<KeyRegistry>,
+    key_provider: Arc<dyn KeyProvider>,
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
     rib_builder: RibBuilder,
@@ -140,6 +138,12 @@ impl BpaBuilder {
         self
     }
 
+    /// Set the key provider for BPSec operations.
+    pub fn key_provider(mut self, provider: Arc<dyn KeyProvider>) -> Self {
+        self.key_provider = provider;
+        self
+    }
+
     /// Register a filter immediately.
     pub fn filter(
         self,
@@ -186,7 +190,6 @@ impl BpaBuilder {
             .build(node_ids.clone(), store.clone())
             .await?;
         let filter_engine = self.filter_engine;
-        let keys_registry = self.keys_registry;
 
         let dispatcher = Dispatcher::new(
             self.status_reports,
@@ -195,7 +198,7 @@ impl BpaBuilder {
             node_ids.clone(),
             store.clone(),
             rib.clone(),
-            keys_registry,
+            self.key_provider,
             filter_engine.clone(),
         );
 
@@ -269,13 +272,12 @@ impl Default for BpaBuilder {
         let poll_channel_depth = NonZeroUsize::new(16).unwrap();
         let processing_pool_size =
             NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
-        let keys_registry = Arc::new(KeyRegistry::new());
 
         Self {
             poll_channel_depth,
             processing_pool_size,
             filter_engine,
-            keys_registry,
+            key_provider: Arc::new(crate::keys::NullKeyProvider),
             status_reports: false,
             lru_capacity: None,
             max_cached_bundle_size: DEFAULT_MAX_CACHED_BUNDLE_SIZE,

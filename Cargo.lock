@@ -1892,6 +1892,7 @@ name = "hardy-bpa-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "chumsky",
  "config",
  "directories",
@@ -1910,6 +1911,7 @@ dependencies = [
  "hardy-s3-storage",
  "hardy-sqlite-storage",
  "hardy-tcpclv4",
+ "hex-literal",
  "serde",
  "serde_json",
  "serial_test",
