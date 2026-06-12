@@ -1,24 +1,24 @@
-mod cli;
-mod config;
-mod error;
-mod static_routes;
-
-use std::collections::HashMap;
-use std::io::ErrorKind;
-use std::sync::Arc;
-
 use anyhow::Context;
+use bpsec::PatternKeyProvider;
 use hardy_async::TaskPool;
-use hardy_bpa::bpa::Bpa;
-use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
-use hardy_bpa::filter::{Filter, Hook};
+use hardy_bpa::{
+    bpa::Bpa,
+    filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
+};
+use static_routes::StaticRoutesAgent;
+use std::{collections::HashMap, io::ErrorKind, sync::Arc};
+use tracing::{error, info, warn};
+
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "grpc")]
 use hardy_proto::server::GrpcServer;
-use tracing::{error, info, warn};
 
-use crate::static_routes::StaticRoutesAgent;
+mod bpsec;
+mod cli;
+mod config;
+mod error;
+mod static_routes;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -55,12 +55,28 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "grpc")]
     let grpc_config = config.grpc.take();
 
-    let bpa = build(config, args.upgrade_storage).await?;
+    let bpsec_config = config.bpsec.take();
+    let key_provider = bpsec_config
+        .as_ref()
+        .map(|c| {
+            c.build()
+                .context("Failed to load BPSec configuration")
+                .map(|source| Arc::new(PatternKeyProvider::new(source)))
+        })
+        .transpose()?;
+
+    let bpa = build(config, key_provider.clone(), args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
+
+    if let Some(bpsec_config) = bpsec_config
+        && let Some(provider) = key_provider
+    {
+        bpsec::watch_keys(&tasks, bpsec_config, provider);
+    }
 
     #[cfg(feature = "grpc")]
     if let Some(grpc_config) = grpc_config {
@@ -86,7 +102,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build a BPA from the given configuration.
-async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<Arc<Bpa>> {
+async fn build(
+    config: config::Config,
+    key_provider: Option<Arc<PatternKeyProvider>>,
+    upgrade_storage: bool,
+) -> anyhow::Result<Arc<Bpa>> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
 
     let mut builder = Bpa::builder()
@@ -107,6 +127,10 @@ async fn build(config: config::Config, upgrade_storage: bool) -> anyhow::Result<
 
     if let Some(service_priority) = config.service_priority {
         builder = builder.service_priority(service_priority);
+    }
+
+    if let Some(provider) = key_provider {
+        builder = builder.key_provider(provider);
     }
 
     if config.storage.uses_cache() {

@@ -1,6 +1,4 @@
-use super::*;
-
-pub(crate) mod registry;
+use alloc::boxed::Box;
 
 /// A provider of cryptographic keys that can be queried based on bundle context.
 pub trait KeyProvider: Send + Sync {
@@ -11,4 +9,17 @@ pub trait KeyProvider: Send + Sync {
         bundle: &hardy_bpv7::bundle::Bundle,
         data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>;
+}
+
+/// The default [`KeyProvider`]: no keys, every BPSec lookup is NoKey.
+pub(crate) struct NullKeyProvider;
+
+impl KeyProvider for NullKeyProvider {
+    fn key_source(
+        &self,
+        _bundle: &hardy_bpv7::bundle::Bundle,
+        _data: &[u8],
+    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
+        Box::new(hardy_bpv7::bpsec::key::KeySet::EMPTY)
+    }
 }

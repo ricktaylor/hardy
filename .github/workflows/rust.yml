@@ -133,6 +133,7 @@ jobs:
         env:
           BP_BIN: ./target/debug/bp
           HARDY_BPA_SERVER_CONFIG_FILE: ./bpa-server/config.yaml
+          HARDY_BPA_SERVER_BPSEC__KEYS_FILE: ./bpa-server/examples/keys.jwks
           HARDY_BPA_SERVER_STORAGE__METADATA__TYPE: memory
           HARDY_BPA_SERVER_STORAGE__BUNDLE__TYPE: memory
         run: |
