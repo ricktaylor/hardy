@@ -187,6 +187,11 @@ impl Cla {
     ///
     /// Retries up to 5 times on timeout before returning an error.
     pub async fn connect(&self, remote_addr: &SocketAddr) -> hardy_bpa::cla::Result<()> {
+        if self.registry.has_pool(remote_addr) {
+            debug!("Already connected to {remote_addr}, skipping");
+            return Ok(());
+        }
+
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
             hardy_bpa::cla::Error::Disconnected

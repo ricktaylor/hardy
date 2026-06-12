@@ -1,11 +1,8 @@
 use super::*;
 use rand::seq::IteratorRandom;
-use std::{
-    collections::{HashMap, HashSet},
-    net::SocketAddr,
-    slice,
-    sync::{Arc, Mutex},
-};
+use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 pub type ConnectionTx = tokio::sync::mpsc::Sender<(
     hardy_bpa::Bytes,
@@ -17,14 +14,14 @@ pub struct Connection {
     pub local_addr: SocketAddr,
 }
 
-struct ConnectionPoolInner {
+struct PoolInner {
     active: HashMap<SocketAddr, ConnectionTx>,
     idle: Vec<Connection>,
     peers: HashSet<NodeId>,
 }
 
 struct ConnectionPool {
-    inner: Mutex<ConnectionPoolInner>,
+    inner: Mutex<PoolInner>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     max_idle: usize,
     remote_addr: hardy_bpa::cla::ClaAddress,
@@ -39,7 +36,7 @@ impl ConnectionPool {
     ) -> Self {
         metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
         Self {
-            inner: Mutex::new(ConnectionPoolInner {
+            inner: Mutex::new(PoolInner {
                 active: HashMap::new(),
                 idle: vec![conn],
                 peers: HashSet::new(),
@@ -69,21 +66,27 @@ impl ConnectionPool {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn add_peer(&self, node_id: NodeId) {
-        if self
+        let inserted = self
             .inner
             .lock()
             .trace_expect("Failed to lock mutex")
             .peers
-            .insert(node_id.clone())
-            && !self
-                .sink
-                .add_peer(self.remote_addr.clone(), slice::from_ref(&node_id))
-                .await
-                .unwrap_or_else(|e| {
-                    warn!("add_peer failed: {e:?}");
-                    false
-                })
-        {
+            .insert(node_id.clone());
+
+        if !inserted {
+            return;
+        }
+
+        let accepted = self
+            .sink
+            .add_peer(self.remote_addr.clone(), core::slice::from_ref(&node_id))
+            .await
+            .unwrap_or_else(|e| {
+                warn!("add_peer failed: {e:?}");
+                false
+            });
+
+        if !accepted {
             self.inner
                 .lock()
                 .trace_expect("Failed to lock mutex")
@@ -93,11 +96,12 @@ impl ConnectionPool {
     }
 
     async fn remove(&self, local_addr: &SocketAddr) -> bool {
-        let remove_addr = {
+        let empty = {
             let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
             inner.active.remove(local_addr);
+
             let before = inner.idle.len();
-            inner.idle.retain(|c| &c.local_addr != local_addr);
+            inner.idle.retain(|c| c.local_addr != *local_addr);
             let removed = before - inner.idle.len();
             if removed > 0 {
                 metrics::gauge!("tcpclv4.pool.idle").decrement(removed as f64);
@@ -110,12 +114,10 @@ impl ConnectionPool {
             empty
         };
 
-        if remove_addr {
+        if empty {
             _ = self.sink.remove_peer(&self.remote_addr).await;
-            true
-        } else {
-            false
         }
+        empty
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
@@ -123,9 +125,8 @@ impl ConnectionPool {
         &self,
         bundle: hardy_bpa::Bytes,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
-        // We repeatedly search as this function is async, so changes can happen while running
         loop {
-            // Try to use an idle session
+            // Try idle connections first
             while let Some(conn) = {
                 let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
                 let conn = inner.idle.pop();
@@ -150,7 +151,6 @@ impl ConnectionPool {
                     debug!("Connection failed to transfer bundle");
                 }
 
-                // By the time we got here, conn is in a bad state
                 self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
@@ -158,7 +158,7 @@ impl ConnectionPool {
                     .remove(&conn.local_addr);
             }
 
-            // Pick a random active connection and enqueue
+            // Try a random active connection
             while let Some((local_addr, conn_tx)) = {
                 self.inner
                     .lock()
@@ -176,7 +176,6 @@ impl ConnectionPool {
                     debug!("Connection failed to transfer bundle");
                 }
 
-                // By the time we got here, conn is in a bad state
                 self.inner
                     .lock()
                     .trace_expect("Failed to lock mutex")
@@ -184,43 +183,58 @@ impl ConnectionPool {
                     .remove(&local_addr);
             }
 
-            if self.max_idle == 0 || {
+            // No connections worked; allow caller to create a new one if under limit
+            let total = {
                 let inner = self.inner.lock().trace_expect("Failed to lock mutex");
                 inner.active.len() + inner.idle.len()
-            } <= self.max_idle
-            {
-                // We can support more active connections
+            };
+            if self.max_idle == 0 || total <= self.max_idle {
                 return Err(bundle);
             }
         }
     }
 }
 
+struct RegistryInner {
+    pools: HashMap<SocketAddr, Arc<ConnectionPool>>,
+    known_peers: HashMap<NodeId, SocketAddr>,
+}
+
 pub struct ConnectionRegistry {
-    pools: Mutex<HashMap<SocketAddr, Arc<connection::ConnectionPool>>>,
+    inner: Mutex<RegistryInner>,
     max_idle: usize,
 }
 
 impl ConnectionRegistry {
     pub fn new(max_idle: usize) -> Self {
         Self {
-            pools: Mutex::new(HashMap::new()),
+            inner: Mutex::new(RegistryInner {
+                pools: HashMap::new(),
+                known_peers: HashMap::new(),
+            }),
             max_idle,
         }
     }
 
+    pub fn has_pool(&self, addr: &SocketAddr) -> bool {
+        self.inner
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .pools
+            .contains_key(addr)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn shutdown(&self) {
-        let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
 
-        // Count remaining idle connections before clearing
-        let idle: usize = pools.values().map(|pool| pool.idle_count()).sum();
+        let idle: usize = inner.pools.values().map(|pool| pool.idle_count()).sum();
         if idle > 0 {
             metrics::gauge!("tcpclv4.pool.idle").decrement(idle as f64);
         }
 
-        // Closing tx channels causes session::run tasks to exit
-        pools.clear();
+        inner.pools.clear();
+        inner.known_peers.clear();
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
@@ -231,49 +245,64 @@ impl ConnectionRegistry {
         remote_addr: SocketAddr,
         node_id: Option<NodeId>,
     ) {
-        let pool = match self
-            .pools
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .entry(remote_addr)
-        {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                let pool = e.get_mut();
-                pool.add(conn);
-                pool.clone()
-            }
-            std::collections::hash_map::Entry::Vacant(e) => e
-                .insert(Arc::new(connection::ConnectionPool::new(
-                    conn,
-                    sink,
-                    remote_addr,
-                    self.max_idle,
-                )))
-                .clone(),
+        let (pool, new_peer) = {
+            let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+
+            let pool = match inner.pools.entry(remote_addr) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    let pool = e.into_mut();
+                    pool.add(conn);
+                    pool.clone()
+                }
+                std::collections::hash_map::Entry::Vacant(e) => e
+                    .insert(Arc::new(ConnectionPool::new(
+                        conn,
+                        sink,
+                        remote_addr,
+                        self.max_idle,
+                    )))
+                    .clone(),
+            };
+
+            let new_peer = node_id.filter(|id| {
+                if inner.known_peers.contains_key(id) {
+                    debug!("Peer {id} already connected, skipping duplicate registration");
+                    false
+                } else {
+                    inner.known_peers.insert(id.clone(), remote_addr);
+                    true
+                }
+            });
+
+            (pool, new_peer)
         };
 
-        if let Some(node_id) = node_id {
-            pool.add_peer(node_id).await
+        if let Some(node_id) = new_peer {
+            pool.add_peer(node_id).await;
         }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn unregister_session(&self, local_addr: &SocketAddr, remote_addr: &SocketAddr) {
         let pool = self
-            .pools
+            .inner
             .lock()
             .trace_expect("Failed to lock mutex")
+            .pools
             .get(remote_addr)
             .cloned();
 
-        if let Some(pool) = pool
-            && pool.remove(local_addr).await
-        {
-            let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
-            if let Some(current) = pools.get(remote_addr) {
-                if Arc::ptr_eq(current, &pool) {
-                    pools.remove(remote_addr);
-                }
+        let Some(pool) = pool else { return };
+
+        if !pool.remove(local_addr).await {
+            return;
+        }
+
+        let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
+        if let Some(current) = inner.pools.get(remote_addr) {
+            if Arc::ptr_eq(current, &pool) {
+                inner.pools.remove(remote_addr);
+                inner.known_peers.retain(|_, addr| addr != remote_addr);
             }
         }
     }
@@ -282,23 +311,19 @@ impl ConnectionRegistry {
     pub async fn forward(
         &self,
         remote_addr: &SocketAddr,
-        mut bundle: hardy_bpa::Bytes,
+        bundle: hardy_bpa::Bytes,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         let pool = self
-            .pools
+            .inner
             .lock()
             .trace_expect("Failed to lock mutex")
+            .pools
             .get(remote_addr)
             .cloned();
 
-        if let Some(pool) = pool {
-            match pool.try_send(bundle).await {
-                Ok(r) => return Ok(r),
-                Err(b) => {
-                    bundle = b;
-                }
-            }
+        match pool {
+            Some(pool) => pool.try_send(bundle).await,
+            None => Err(bundle),
         }
-        Err(bundle)
     }
 }
