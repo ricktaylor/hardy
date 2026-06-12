@@ -1,6 +1,6 @@
 use crate::contacts::{Contact, Schedule, TvrAgent};
 use crate::cron::CronExpr;
-use hardy_bpa::routes::Action;
+use hardy_bpa::routing::RouteAction;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -55,7 +55,7 @@ fn convert_contact(proto: proto::tvr::Contact) -> Result<Contact, tonic::Status>
             let eid = eid.parse().map_err(|e| {
                 tonic::Status::invalid_argument(format!("invalid next-hop EID: {e}"))
             })?;
-            Action::Via(eid)
+            RouteAction::Via(eid)
         }
         Some(contact::Action::Drop(drop_action)) => {
             let reason = if drop_action.reason_code == 0 {
@@ -65,7 +65,7 @@ fn convert_contact(proto: proto::tvr::Contact) -> Result<Contact, tonic::Status>
                     tonic::Status::invalid_argument(format!("invalid reason code: {e}"))
                 })?)
             };
-            Action::Drop(reason)
+            RouteAction::Drop(reason)
         }
         None => {
             return Err(tonic::Status::invalid_argument(
@@ -504,20 +504,20 @@ mod test {
     #[test]
     fn contact_valid_via() {
         let c = convert_contact(proto_contact_via("ipn:2.*.*", "ipn:2.1.0")).unwrap();
-        assert!(matches!(c.action, Action::Via(_)));
+        assert!(matches!(c.action, RouteAction::Via(_)));
         assert!(matches!(c.schedule, Schedule::Permanent));
     }
 
     #[test]
     fn contact_valid_drop_with_reason() {
         let c = convert_contact(proto_contact_drop("ipn:2.*.*", 6)).unwrap();
-        assert!(matches!(c.action, Action::Drop(Some(_))));
+        assert!(matches!(c.action, RouteAction::Drop(Some(_))));
     }
 
     #[test]
     fn contact_drop_zero_reason() {
         let c = convert_contact(proto_contact_drop("ipn:2.*.*", 0)).unwrap();
-        assert!(matches!(c.action, Action::Drop(None)));
+        assert!(matches!(c.action, RouteAction::Drop(None)));
     }
 
     #[test]

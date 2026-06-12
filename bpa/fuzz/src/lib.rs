@@ -155,29 +155,29 @@ impl Msg {
                 // Load static routes
                 bpa.register_routing_agent(
                     "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[
-                        (
-                            "ipn:*.*".parse().unwrap(),
-                            hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
-                            30,
-                        ),
-                        (
-                            "dtn://drop/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Drop(Some(
+                    Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[
+                        hardy_bpa::routing::Route {
+                            pattern: "ipn:*.*".parse().unwrap(),
+                            action: hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),
+                            priority: 30,
+                        },
+                        hardy_bpa::routing::Route {
+                            pattern: "dtn://drop/**".parse().unwrap(),
+                            action: hardy_bpa::routing::RouteAction::Drop(Some(
                                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
                             )),
-                            50,
-                        ),
-                        (
-                            "dtn://drop2/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Drop(None),
-                            50,
-                        ),
-                        (
-                            "dtn://**/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Reflect,
-                            100,
-                        ),
+                            priority: 50,
+                        },
+                        hardy_bpa::routing::Route {
+                            pattern: "dtn://drop2/**".parse().unwrap(),
+                            action: hardy_bpa::routing::RouteAction::Drop(None),
+                            priority: 50,
+                        },
+                        hardy_bpa::routing::Route {
+                            pattern: "dtn://**/**".parse().unwrap(),
+                            action: hardy_bpa::routing::RouteAction::Reflect,
+                            priority: 100,
+                        },
                     ])),
                 )
                 .await
