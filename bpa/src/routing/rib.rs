@@ -11,10 +11,10 @@ use tracing::{debug, info, trace};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+use super::RoutingAgent;
 use super::table::{
     AtomicRouteTable, Error as TableError, FindResult as TableFindResult, InternalAction,
 };
-use super::{Agent, RoutingAgent};
 use crate::bundle::{self, BundleMetadata};
 use crate::cla::{ClaAddressType, registry::Cla as ClaEntry};
 use crate::dispatcher::Dispatcher;
@@ -66,7 +66,7 @@ impl RibBuilder {
 pub struct Rib {
     table: AtomicRouteTable,
     address_types: hardy_async::sync::spin::Mutex<HashMap<ClaAddressType, Arc<ClaEntry>>>,
-    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<Agent>>>,
+    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<NodeIds>,
     ecmp_hash_state: RandomState,
     pub(super) tasks: TaskPool,
@@ -224,25 +224,22 @@ impl Rib {
         name: String,
         agent: Arc<dyn RoutingAgent>,
     ) -> super::Result<Vec<NodeId>> {
-        let agent = {
+        {
             let mut agents = self.agents.lock();
             let crate::hash_map::Entry::Vacant(e) = agents.entry(name.clone()) else {
                 return Err(super::Error::AlreadyExists(name));
             };
+            e.insert(agent.clone());
+        }
 
-            info!("Registered new routing agent: {name}");
-
-            e.insert(Arc::new(Agent { agent, name })).clone()
-        };
-
+        info!("Registered new routing agent: {name}");
         metrics::gauge!("bpa.rib.agents").increment(1.0);
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .agent
             .on_register(
-                Box::new(super::sink::Sink::new(Arc::downgrade(&agent), self.clone())),
+                Box::new(super::agent::sink::Sink::new(name, self.clone())),
                 &node_ids,
             )
             .await;
@@ -250,33 +247,28 @@ impl Rib {
         Ok(node_ids)
     }
 
-    pub(crate) async fn unregister_agent(&self, agent: Arc<Agent>) {
-        let agent = self.agents.lock().remove(&agent.name);
+    pub(crate) async fn unregister_agent(&self, name: &str) {
+        let agent = self.agents.lock().remove(name);
 
         if let Some(agent) = agent {
             metrics::gauge!("bpa.rib.agents").decrement(1.0);
-            agent.agent.on_unregister().await;
-            self.remove_by_source(&agent.name).await;
-            info!("Unregistered routing agent: {}", agent.name);
+            agent.on_unregister().await;
+            self.remove_by_source(name).await;
+            info!("Unregistered routing agent: {name}");
         }
     }
 
     pub(crate) async fn shutdown_agents(&self) {
-        let agents = self
-            .agents
-            .lock()
-            .drain()
-            .map(|(_, v)| v)
-            .collect::<Vec<_>>();
+        let agents: Vec<(String, Arc<dyn RoutingAgent>)> = self.agents.lock().drain().collect();
 
         if !agents.is_empty() {
             metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
         }
 
-        for agent in agents {
-            agent.agent.on_unregister().await;
-            self.remove_by_source(&agent.name).await;
-            info!("Unregistered routing agent: {}", agent.name);
+        for (name, agent) in agents {
+            agent.on_unregister().await;
+            self.remove_by_source(&name).await;
+            info!("Unregistered routing agent: {name}");
         }
     }
 
