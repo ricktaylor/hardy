@@ -17,7 +17,9 @@ rfc9173 = ["hardy-bpv7/rfc9173"]
 no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
+critical-section = ["hardy-bpv7/critical-section"]
 std = [
+    "hardy-async/std",
     "time/std",
     "hardy-bpv7/std",
     "hardy-eid-patterns/std",
@@ -52,13 +54,13 @@ foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.18", default-features = false }
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
-flume = "0.12"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 serde = { version = "1", default-features = false, features = ["derive","rc","alloc"], optional = true }
 base64 = { version = "0.22", default-features = false, features = ["alloc"], optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
+flume = "0.12"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 hardy-bpa-fuzz = { path = "./fuzz" }
 

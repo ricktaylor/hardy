@@ -1,5 +1,10 @@
 use super::*;
-use hardy_bpa::{Bytes, async_trait, storage, storage::BundleStorage};
+use futures::join;
+use hardy_bpa::{
+    Bytes, async_trait,
+    storage::{self, BundleStorage, RecoveryResponse},
+    stream::Sender,
+};
 use rand::prelude::*;
 use std::{
     io::Write,
@@ -67,7 +72,7 @@ fn walk_dirs(
     before: &SystemTime,
     root: &PathBuf,
     dir: PathBuf,
-    tx: &storage::Sender<storage::RecoveryResponse>,
+    tx: &flume::Sender<RecoveryResponse>,
 ) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(dir) = std::fs::read_dir(dir.clone()) {
@@ -153,53 +158,80 @@ fn walk_dirs(
 #[async_trait]
 impl BundleStorage for Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
-    async fn recover(&self, tx: storage::Sender<storage::RecoveryResponse>) -> storage::Result<()> {
-        let before = SystemTime::now();
-        let mut dirs = vec![self.store_root.clone()];
-
-        let parallelism = std::thread::available_parallelism()
+    async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
+        // Internal flume channel: walk_dirs uses blocking send + is_disconnected
+        // (called from spawn_blocking), so we keep flume internally and bridge
+        // to the external Sender via a sibling pump task.
+        let parallelism: usize = std::thread::available_parallelism()
             .map(Into::into)
             .unwrap_or(1);
-        let mut task_set = tokio::task::JoinSet::new();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
+        let (flume_tx, flume_rx) = flume::bounded(parallelism * 16);
 
-        // Loop through the directories
-        while !dirs.is_empty() && !tx.is_disconnected() {
-            // Take a chunk off the back, to ensure depth first walk
-            let subdirs = dirs.split_off(dirs.len() - dirs.len().min(32));
+        // Walk: existing logic unchanged, operating on the internal flume.
+        let walk = async {
+            let before = SystemTime::now();
+            let mut dirs = vec![self.store_root.clone()];
+            let mut task_set = tokio::task::JoinSet::new();
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
-            loop {
-                tokio::select! {
-                    // Throttle the number of threads
-                    permit = semaphore.clone().acquire_owned() => {
-                        let permit = permit.trace_expect("Failed to acquire permit");
-                        let root = self.store_root.clone();
-                        let tx = tx.clone();
-                        task_set.spawn_blocking(move || {
-                            let mut dirs = Vec::new();
-                            for dir in subdirs {
-                                dirs.extend(walk_dirs(&before,&root, dir, &tx));
-                            }
-                            drop(permit);
-                            dirs
-                        });
-                        break;
-                    },
-                    // Collect results
-                    Some(r) = task_set.join_next(), if !task_set.is_empty() => {
-                        dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+            // Loop through the directories
+            while !dirs.is_empty() && !flume_tx.is_disconnected() {
+                // Take a chunk off the back, to ensure depth first walk
+                let subdirs = dirs.split_off(dirs.len() - dirs.len().min(32));
+
+                loop {
+                    tokio::select! {
+                        // Throttle the number of threads
+                        permit = semaphore.clone().acquire_owned() => {
+                            let permit = permit.trace_expect("Failed to acquire permit");
+                            let root = self.store_root.clone();
+                            let tx = flume_tx.clone();
+                            task_set.spawn_blocking(move || {
+                                let mut dirs = Vec::new();
+                                for dir in subdirs {
+                                    dirs.extend(walk_dirs(&before,&root, dir, &tx));
+                                }
+                                drop(permit);
+                                dirs
+                            });
+                            break;
+                        },
+                        // Collect results
+                        Some(r) = task_set.join_next(), if !task_set.is_empty() => {
+                            dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+                        }
                     }
                 }
-            }
 
-            while dirs.is_empty() || tx.is_disconnected() {
-                // Accumulate results
-                let Some(r) = task_set.join_next().await else {
-                    break;
-                };
-                dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+                while dirs.is_empty() || flume_tx.is_disconnected() {
+                    // Accumulate results
+                    let Some(r) = task_set.join_next().await else {
+                        break;
+                    };
+                    dirs.extend(r.trace_expect("Task terminated unexpectedly"));
+                }
             }
-        }
+            // Drop our handle so the pump sees disconnect once the buffer drains.
+            drop(flume_tx);
+        };
+
+        // Pump: forward items from the internal flume to the external Sender.
+        let pump = async {
+            loop {
+                match flume_rx.recv_async().await {
+                    Ok(item) => {
+                        if stream.send(item).await.is_err() {
+                            // External consumer gone — return so flume_rx drops
+                            // and walk's is_disconnected check fires.
+                            return;
+                        }
+                    }
+                    Err(_) => return, // Walk done and buffer drained.
+                }
+            }
+        };
+
+        join!(walk, pump);
         Ok(())
     }
 
@@ -387,7 +419,31 @@ impl BundleStorage for Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::storage::BundleStorage;
+    use hardy_bpa::{
+        storage::BundleStorage,
+        stream::{SendError, Sender},
+    };
+
+    /// Test sink that collects items into a `Vec` for assertions.
+    struct VecSink<T>(std::sync::Mutex<Vec<T>>);
+
+    impl<T> VecSink<T> {
+        fn new() -> Self {
+            Self(std::sync::Mutex::new(Vec::new()))
+        }
+
+        fn into_inner(self) -> Vec<T> {
+            self.0.into_inner().unwrap()
+        }
+    }
+
+    #[hardy_bpa::async_trait]
+    impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
+        async fn send(&self, item: T) -> Result<(), SendError<T>> {
+            self.0.lock().unwrap().push(item);
+            Ok(())
+        }
+    }
 
     fn make_config(dir: &std::path::Path, fsync: bool) -> crate::Config {
         crate::Config {
@@ -434,11 +490,11 @@ mod tests {
         std::fs::create_dir_all(&empty_dir).unwrap();
 
         // Run recovery
-        let (tx, rx) = flume::unbounded();
-        store.recover(tx).await.unwrap();
+        let sink = VecSink::new();
+        store.recover(&sink).await.unwrap();
 
         // Collect recovered entries
-        let recovered: Vec<_> = rx.drain().collect();
+        let recovered = sink.into_inner();
 
         // Only the valid bundle should be recovered
         assert_eq!(recovered.len(), 1, "should recover exactly 1 valid bundle");

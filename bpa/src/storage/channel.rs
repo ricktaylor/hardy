@@ -1,8 +1,34 @@
 //! Hybrid memory/storage channel with backpressure.
 //!
-//! Provides a fast path (in-memory flume channel) and slow path (storage-backed)
-//! for bundle queuing. When the memory channel fills, bundles are persisted and
-//! a background poller drains them back into memory.
+//! Provides a fast path (in-memory [`hardy_async::closeable`] channel) and a
+//! slow path (storage lookup) for bundle queuing. When the in-memory buffer
+//! fills, sends spill to storage and a background poller drains them back
+//! into the buffer.
+//!
+//! # Delivery contract
+//!
+//! This channel does **not** persist bundles. The caller is responsible for
+//! having already inserted the bundle (blob + metadata) into the storage
+//! subsystem before invoking [`Sender::send`]; the channel only updates the
+//! metadata `status` column to match its configured target status, via
+//! [`Store::update_status`](super::store::Store::update_status). That update
+//! is fail-stop: on storage error the process aborts via `trace_expect`, so
+//! by the time a bundle is offered to the in-memory channel its status is
+//! durably persisted.
+//!
+//! Given that precondition, the channel guarantees **at-least-once**
+//! delivery from `Sender::send` to `Receiver::recv`:
+//!
+//! - On the fast path (in-memory buffer has space), the bundle is enqueued
+//!   directly. A subsequent poller cycle may *also* pull it from storage
+//!   and re-deliver it; consumers must tombstone delivered bundles to
+//!   suppress duplicates.
+//! - On the slow path (buffer full), the in-memory copy is dropped on the
+//!   floor and the poller recovers it via `MetadataStorage::poll_pending`
+//!   filtered by the channel's target status. The drop is safe because the
+//!   bundle's status is already persisted (see above).
+//!
+//! Consumers that need exactly-once must tombstone each delivered bundle.
 //!
 //! # State Machine
 //!
@@ -21,17 +47,27 @@
 //!
 //! Uses lock-free CAS operations for state transitions on the hot path.
 
-use core::result::Result;
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use flume::TrySendError;
-use hardy_async::Notify;
+use core::{
+    result::Result,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use futures::{FutureExt, pin_mut, select_biased};
+use hardy_async::{Notify, closeable::TrySendError};
 use trace_err::*;
 use tracing::debug;
 
-use super::{Receiver, Store};
-use crate::Arc;
-use crate::bundle::{Bundle, BundleStatus};
+use crate::{
+    Arc,
+    bundle::{Bundle, BundleStatus},
+    stream::ChannelSender,
+};
+
+use super::store::Store;
+
+/// Receiver handle for bundles drained from a hybrid storage channel.
+/// `recv()` returns `Err(RecvError::Disconnected)` after the buffer
+/// drains once the channel has been closed.
+pub(crate) type Receiver = hardy_async::closeable::Receiver<Bundle>;
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
@@ -80,7 +116,7 @@ impl ChannelState {
 /// Shared state between Sender and the background poller task.
 struct Shared {
     state: AtomicUsize,
-    tx: flume::Sender<Option<Bundle>>,
+    tx: hardy_async::closeable::Sender<Bundle>,
     status: BundleStatus,
     notify: Arc<Notify>,
 }
@@ -137,7 +173,21 @@ impl Sender {
 pub struct SendError(pub Bundle);
 
 impl Sender {
-    /// Send a bundle, updating its status to match the channel's target status.
+    /// Offer a bundle to the channel, updating its persistent status to
+    /// match the channel's target status.
+    ///
+    /// The bundle's blob and metadata must already be persisted in the
+    /// storage subsystem; see the module-level [delivery
+    /// contract](self#delivery-contract). This method updates the metadata
+    /// status (fail-stop on storage error) and then either enqueues the
+    /// bundle into the in-memory buffer (fast path) or relies on the
+    /// background poller to recover it from storage (slow path).
+    ///
+    /// Returns `Err(SendError(bundle))` only when the channel is closing or
+    /// the receiver has been dropped; in both cases the caller may recover
+    /// ownership of the bundle. A `Full` buffer is **not** an error from
+    /// the caller's perspective — the bundle is in storage and will be
+    /// drained by the poller.
     pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
         self.store
             .update_status(&mut bundle, &self.shared.status)
@@ -149,22 +199,21 @@ impl Sender {
         match state {
             // Fast path is open, try to send directly to the in-memory channel.
             ChannelState::Open => {
-                match self.shared.tx.try_send(Some(bundle)) {
+                match self.shared.tx.try_send(bundle) {
                     // Success! The bundle is sent, and we can return immediately.
                     Ok(()) => return Ok(()),
 
-                    Err(TrySendError::Disconnected(Some(b))) => {
+                    Err(TrySendError::Disconnected(b)) => {
                         // Wake up the poller task so it can exit
                         self.shared.notify.notify_one();
                         return Err(SendError(b));
                     }
 
-                    Err(TrySendError::Disconnected(None)) => {
-                        unreachable!("sent Some but got None back");
-                    }
-
-                    Err(TrySendError::Full(_)) => {
-                        // Channel full - trigger slow path
+                    Err(TrySendError::Full(_dropped)) => {
+                        // Intentional drop: the bundle's status was just
+                        // durably updated by `update_status` above, so the
+                        // poller can recover it via `poll_pending`. See the
+                        // module-level delivery contract.
                         let _ = self.shared.compare_exchange_state(
                             ChannelState::Open,
                             ChannelState::Draining,
@@ -193,12 +242,13 @@ impl Sender {
     }
 
     /// Close the channel, preventing further sends.
-    /// Sends `None` to signal receivers that the channel is closing.
-    pub async fn close(&self) {
+    /// Cancels the underlying `closeable` channel so the receiver wakes
+    /// up and returns `Disconnected` once any buffered bundles have drained.
+    pub fn close(&self) {
         self.shared
             .store_state(ChannelState::Closing, Ordering::Release);
-        // Send None to signal close to the receiver
-        let _ = self.shared.tx.send_async(None).await;
+        // Cancel the closeable channel — receiver will drain then disconnect.
+        self.shared.tx.close();
         self.shared.notify.notify_one();
     }
 }
@@ -206,7 +256,7 @@ impl Sender {
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
     pub fn channel(self: &Arc<Self>, status: BundleStatus, cap: usize) -> (Sender, Receiver) {
-        let (tx, rx) = flume::bounded::<Option<Bundle>>(cap);
+        let (tx, rx) = hardy_async::closeable::bounded::<Bundle>(cap);
 
         let shared = Arc::new(Shared {
             state: AtomicUsize::new(ChannelState::Open.as_usize()),
@@ -235,7 +285,16 @@ impl Store {
 
     /// Background poller: drains storage into memory channel when congested.
     async fn poll_queue(self: Arc<Self>, shared: Arc<Shared>, cap: usize) {
-        shared.notify.notified().await;
+        let cancel = self.tasks.cancel_token().clone();
+
+        // Wait for the initial signal, or bail if the store is shutting down.
+        // The poller is spawned on the store task pool, so it must honour that
+        // pool's cancellation — otherwise store.shutdown() (which awaits every
+        // task) would hang on an idle poller waiting on `notify`.
+        select_biased! {
+            _ = shared.notify.notified().fuse() => {}
+            _ = cancel.cancelled().fuse() => return,
+        }
 
         loop {
             // Transition to Draining from any state except Closing.
@@ -285,26 +344,35 @@ impl Store {
                 continue; // Congested — loop again without waiting
             }
 
-            // Wait for new work
-            shared.notify.notified().await;
+            // Wait for new work, or bail if the store is shutting down.
+            select_biased! {
+                _ = shared.notify.notified().fuse() => {}
+                _ = cancel.cancelled().fuse() => return,
+            }
         }
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (inner_tx, inner_rx) = flume::bounded::<Bundle>(cap);
+        let (stream, inner_rx) = ChannelSender::<Bundle>::bounded(cap);
         let shared_cloned = shared.clone();
+        let cancel = self.tasks.cancel_token().clone();
 
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
-            while let Ok(bundle) = inner_rx.recv_async().await {
+            while let Ok(bundle) = inner_rx.recv().await {
                 // Just do some checks
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
-                    // Send into queue
-                    shared_cloned
-                        .tx
-                        .send_async(Some(bundle))
-                        .await
-                        .map_err(|_| ())?;
+                    // Send into queue. A closeable send already parked on a full
+                    // buffer is not woken by the channel's own close(), so race it
+                    // against pool shutdown — otherwise store.shutdown() (which
+                    // awaits this task) would hang. The dropped bundle stays
+                    // persisted and is recovered on restart.
+                    let send = shared_cloned.tx.send(bundle);
+                    pin_mut!(send);
+                    select_biased! {
+                        r = send.fuse() => r.map_err(|_| ())?,
+                        _ = cancel.cancelled().fuse() => return Ok(pushed_one),
+                    }
 
                     pushed_one = true;
                 }
@@ -313,9 +381,11 @@ impl Store {
         });
 
         self.metadata_storage
-            .poll_pending(inner_tx, &shared.status, cap)
+            .poll_pending(&stream, &shared.status, cap)
             .await
             .trace_expect("Failed to poll store for pending bundles");
+        // Drop the stream so the consumer task sees disconnect and exits.
+        drop(stream);
 
         h.await.trace_expect("Failed to join task")
     }
@@ -323,7 +393,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use hashbrown::HashSet;
 
     use super::*;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
@@ -377,7 +447,7 @@ mod tests {
     async fn test_fast_path_saturation() {
         let store = make_store();
         let cap = 2;
-        let (tx, _rx) = store.channel(STATUS, cap);
+        let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for the poller's initial cycle to complete
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -395,11 +465,13 @@ mod tests {
             "Should be Draining or Congested after overflow, got {state:?}"
         );
 
-        // Drop receiver first — channel may be full, so close()'s send_async(None)
-        // would block. Dropping rx disconnects the flume, making send_async fail
-        // immediately (ignored by close), then notify_one wakes the poller to exit.
-        drop(_rx);
-        tx.close().await;
+        // Drop receiver before close. After the closeable migration, close()
+        // is sync and non-blocking (it just cancels the cancel_token), so the
+        // ordering no longer matters for correctness — but keeping the
+        // receiver-then-sender shutdown order here mirrors how producers and
+        // consumers actually wind down in production.
+        drop(rx);
+        tx.close();
         store.shutdown().await;
     }
 
@@ -408,7 +480,7 @@ mod tests {
     async fn test_congestion_signal() {
         let store = make_store();
         let cap = 2;
-        let (tx, _rx) = store.channel(STATUS, cap);
+        let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for poller's initial cycle
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -427,8 +499,8 @@ mod tests {
             "Should be Draining or Congested, got {state:?}"
         );
 
-        drop(_rx);
-        tx.close().await;
+        drop(rx);
+        tx.close();
         store.shutdown().await;
     }
 
@@ -465,10 +537,8 @@ mod tests {
         let mut seen = HashSet::new();
         let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         loop {
-            match tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv_async())
-                .await
-            {
-                Ok(Ok(Some(b))) => {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(b)) => {
                     store.tombstone_metadata(&b.bundle.id).await;
                     seen.insert(b.bundle.id);
                 }
@@ -505,7 +575,7 @@ mod tests {
         assert!(recovered, "Should recover to Open, got {:?}", tx.state());
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
@@ -521,11 +591,8 @@ mod tests {
         tx.send(make_expired_bundle(2)).await.unwrap();
 
         // The valid bundle should arrive on the fast path
-        let received = rx.recv_async().await;
-        assert!(
-            matches!(received, Ok(Some(_))),
-            "Valid bundle should be received"
-        );
+        let received = rx.recv().await;
+        assert!(received.is_ok(), "Valid bundle should be received");
 
         // The expired bundle was also sent on the fast path (expiry filtering
         // only happens in poll_once for the slow path). On the fast path,
@@ -533,7 +600,7 @@ mod tests {
         // This test verifies the bundle at least doesn't crash the channel.
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
@@ -547,7 +614,7 @@ mod tests {
         // Let poller complete its initial cycle
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        tx.close().await;
+        tx.close();
 
         // Wait for poller to see Closing and restore it
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -575,8 +642,8 @@ mod tests {
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < 3 {
-            match tokio::time::timeout_at(deadline, rx.recv_async()).await {
-                Ok(Ok(Some(b))) => {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(b)) => {
                     store.tombstone_metadata(&b.bundle.id).await;
                     seen.insert(b.bundle.id);
                 }
@@ -591,7 +658,7 @@ mod tests {
         );
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
@@ -613,8 +680,8 @@ mod tests {
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < total as usize {
-            match tokio::time::timeout_at(deadline, rx.recv_async()).await {
-                Ok(Ok(Some(b))) => {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(b)) => {
                     store.tombstone_metadata(&b.bundle.id).await;
                     seen.insert(b.bundle.id);
                 }
@@ -629,7 +696,7 @@ mod tests {
         );
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
@@ -653,8 +720,8 @@ mod tests {
         let mut seen = HashSet::new();
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         while seen.len() < 2 {
-            match tokio::time::timeout_at(deadline, rx.recv_async()).await {
-                Ok(Ok(Some(b))) => {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(b)) => {
                     store.tombstone_metadata(&b.bundle.id).await;
                     seen.insert(b.bundle.id.source.clone());
                 }
@@ -666,7 +733,7 @@ mod tests {
         assert!(seen.contains(&src2), "Bundle 2 should arrive");
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
@@ -680,20 +747,16 @@ mod tests {
         // Send a bundle — this updates its status to ForwardPending{peer:1}
         tx.send(make_bundle(1)).await.unwrap();
 
-        // The bundle should arrive normally
-        let received = rx.recv_async().await.unwrap();
-        assert!(received.is_some());
-
-        // Verify the received bundle has the correct status
-        let b = received.unwrap();
+        // The bundle should arrive normally; verify it has the correct status
+        let b = rx.recv().await.unwrap();
         assert_eq!(b.metadata.status, STATUS);
 
         drop(rx);
-        tx.close().await;
+        tx.close();
         store.shutdown().await;
     }
 
-    // After closing, the receiver should eventually get None.
+    // After closing, the receiver should eventually see Disconnected.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_zombie_task_leak() {
         let store = make_store();
@@ -701,24 +764,23 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         tx.send(make_bundle(1)).await.unwrap();
-        tx.close().await;
+        tx.close();
 
-        // Drain until we see None (close sentinel) or timeout
+        // Drain until we see Disconnected or timeout
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        let mut got_none = false;
+        let mut got_disconnected = false;
         loop {
-            match tokio::time::timeout_at(deadline, rx.recv_async()).await {
-                Ok(Ok(None)) => {
-                    got_none = true;
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(_)) => continue, // data bundle, keep draining
+                Ok(Err(_)) => {
+                    got_disconnected = true;
                     break;
                 }
-                Ok(Ok(Some(_))) => continue, // data bundle, keep draining
-                Ok(Err(_)) => break,         // channel disconnected
-                Err(_) => break,             // timeout
+                Err(_) => break, // timeout
             }
         }
 
-        assert!(got_none, "Should receive None after close");
+        assert!(got_disconnected, "Should receive Disconnected after close");
 
         drop(rx);
         store.shutdown().await;

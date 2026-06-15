@@ -159,7 +159,7 @@ impl ClaRegistryBuilder {
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: &Arc<rib::Rib>,
-        store: &Arc<storage::Store>,
+        store: &Arc<storage::store::Store>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<Arc<ClaRegistry>> {
         let peers = Arc::new(cla::peers::PeerTable::new());
@@ -193,7 +193,7 @@ pub(crate) struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
     rib: Arc<rib::Rib>,
-    store: Arc<storage::Store>,
+    store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
     poll_channel_depth: usize,
     tasks: hardy_async::TaskPool,
@@ -324,11 +324,9 @@ impl ClaRegistry {
             }
         };
 
-        // If entry already existed, clean up the orphaned peer_id
-        // TODO: This deadlocks — PeerTable::remove() calls Peer::close() which calls
-        // self.inner.wait() on an OnceLock that was never initialised (start() was never
-        // called on the orphan). Fix: either check inner.is_initialized() in close(), or
-        // remove directly from the PeerTable HashMap without calling close().
+        // If entry already existed, clean up the orphaned peer_id. The orphan
+        // was never started, so Peer::close() (via PeerTable::remove) is a no-op
+        // — close()/forward() skip an uninitialised cell rather than blocking.
         if !inserted {
             self.peers.remove(peer_id).await;
             return false;
@@ -453,7 +451,7 @@ mod tests {
 
         // Add peer
         let added = sink
-            .add_peer(peer_addr.clone(), std::slice::from_ref(&peer_node))
+            .add_peer(peer_addr.clone(), core::slice::from_ref(&peer_node))
             .await
             .unwrap();
         assert!(added, "First add_peer should succeed");

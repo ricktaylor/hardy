@@ -371,7 +371,7 @@ pub(super) mod tests {
             dtn: None,
         });
 
-        let store = Arc::new(storage::Store::new(
+        let store = Arc::new(storage::store::Store::new(
             core::num::NonZeroUsize::new(16).unwrap(),
             Arc::new(storage::MetadataMemStorage::new(&Default::default())),
             Arc::new(storage::BundleMemStorage::new(&Default::default())),

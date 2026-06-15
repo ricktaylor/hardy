@@ -12,14 +12,14 @@ struct PeerInner {
 
 pub struct Peer {
     cla: Weak<registry::Cla>,
-    inner: std::sync::OnceLock<PeerInner>,
+    inner: hardy_async::sync::spin::Once<PeerInner>,
 }
 
 impl Peer {
     pub fn new(cla: Weak<registry::Cla>) -> Self {
         Self {
             cla,
-            inner: std::sync::OnceLock::new(),
+            inner: hardy_async::sync::spin::Once::new(),
         }
     }
 
@@ -30,7 +30,7 @@ impl Peer {
         cla: Arc<registry::Cla>,
         peer: u32,
         cla_addr: ClaAddress,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
     ) {
@@ -73,13 +73,13 @@ impl Peer {
             );
         }
 
-        self.inner.get_or_init(|| PeerInner { queues });
+        self.inner.call_once(|| PeerInner { queues });
     }
 
     fn start_queue_poller(
         poll_channel_depth: usize,
         controller: Arc<dyn policy::EgressController>,
-        store: Arc<storage::Store>,
+        store: Arc<storage::store::Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,
         queue: Option<u32>,
@@ -94,7 +94,7 @@ impl Peer {
             "egress_queue_poller",
             (peer = peer, queue = queue),
             async move {
-                while let Ok(Some(bundle)) = rx.recv_async().await {
+                while let Ok(bundle) = rx.recv().await {
                     controller.forward(queue, bundle).await;
                 }
             }
@@ -116,10 +116,16 @@ impl Peer {
             None
         };
 
-        let queues = &self.inner.wait().queues;
-        let queue = queues
+        // The peer is published into the PeerTable before start() initialises
+        // the queues, so a forward may race ahead of initialisation. Return the
+        // bundle for re-routing rather than blocking on an uninitialised cell.
+        let Some(inner) = self.inner.get() else {
+            return Err(bundle);
+        };
+        let queue = inner
+            .queues
             .get(&queue)
-            .unwrap_or_else(|| queues.get(&None).trace_expect("No None queue?!?"));
+            .unwrap_or_else(|| inner.queues.get(&None).trace_expect("No None queue?!?"));
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
@@ -127,9 +133,14 @@ impl Peer {
         }
     }
 
-    async fn close(&self) {
-        for tx in self.inner.wait().queues.values() {
-            tx.close().await;
+    fn close(&self) {
+        // An orphaned peer (added to the PeerTable but never started, e.g. a
+        // duplicate address) has no queues, so closing is a no-op.
+        let Some(inner) = self.inner.get() else {
+            return;
+        };
+        for tx in inner.queues.values() {
+            tx.close();
         }
     }
 }
@@ -169,7 +180,7 @@ impl PeerTable {
         let peer = self.inner.write().peers.remove(&peer_id);
 
         if let Some(peer) = peer {
-            peer.close().await;
+            peer.close();
         }
     }
 
