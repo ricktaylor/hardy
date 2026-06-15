@@ -1,9 +1,20 @@
 use alloc::boxed::Box;
 
-/// A provider of cryptographic keys that can be queried based on bundle context.
+/// Selects the key material to use for a given bundle.
+///
+/// The flow/context-level selector: it may inspect the bundle — its source, or
+/// an extension block carrying a security context — to choose which set of keys
+/// applies to this bundle's flow, and returns a [`KeySource`] scoped to that
+/// choice. Distinct from [`KeySource`], which resolves an individual key from
+/// the security *source* EID — the node that applied the protection, which under
+/// RFC 9172 need not be the bundle source. The split lets key material be chosen
+/// per flow while keys are still matched per security block.
+///
+/// [`KeySource`]: hardy_bpv7::bpsec::key::KeySource
 pub trait KeyProvider: Send + Sync {
-    /// Returns a KeySource that can provide keys for this bundle context.
-    /// The source EID and operations are passed later when keys() is called.
+    /// Returns the [`KeySource`] to use for this bundle.
+    ///
+    /// [`KeySource`]: hardy_bpv7::bpsec::key::KeySource
     fn key_source(
         &self,
         bundle: &hardy_bpv7::bundle::Bundle,

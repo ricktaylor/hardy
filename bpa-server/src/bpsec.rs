@@ -7,13 +7,13 @@
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
 use hardy_bpv7::{
-    bpsec::key::{Key, KeySource, Operation},
+    bpsec::key::{Key, KeySet, KeySource, Operation, Type},
     eid::Eid,
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::Arc};
-use tracing::{debug, error, info};
+use std::{collections::HashMap, path::Path, sync::Arc};
+use tracing::{debug, error, info, warn};
 
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
 ///
@@ -116,7 +116,92 @@ impl PatternKeySource {
             bindings: Vec::new(),
         }
     }
+
+    /// Loads keys from the JWKS file named in `config` and builds a
+    /// `PatternKeySource`.
+    ///
+    /// Every key must be a non-empty symmetric key (`kty: oct`) carrying a
+    /// `key_ops` field, and every binding must reference a known key id.
+    pub fn from_config(config: &crate::config::bpsec::Config) -> anyhow::Result<Self> {
+        check_permissions(&config.keys_file);
+
+        let file = std::fs::File::open(&config.keys_file).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to open key file '{}': {e}",
+                config.keys_file.display()
+            )
+        })?;
+
+        let key_set: KeySet = serde_json::from_reader(file).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse key file '{}': {e}",
+                config.keys_file.display()
+            )
+        })?;
+
+        // Index keys by kid with validation
+        let mut keys = HashMap::new();
+        for key in key_set.keys {
+            let Some(kid) = key.id.clone() else {
+                warn!("Key file contains a key without a 'kid' field, skipping");
+                continue;
+            };
+
+            if !matches!(key.key_type, Type::OctetSequence { ref key } if !key.is_empty()) {
+                anyhow::bail!("Key '{kid}' must be a non-empty symmetric key (kty: oct)");
+            }
+
+            if key.operations.is_none() {
+                anyhow::bail!("Key '{kid}' has no 'key_ops' field, cannot match any operation");
+            }
+
+            if keys.insert(kid.clone(), key).is_some() {
+                anyhow::bail!("Key file contains duplicate kid '{kid}'");
+            }
+        }
+
+        // Validate bindings
+        for binding in &config.bindings {
+            if binding.keys.is_empty() {
+                anyhow::bail!("Security binding for '{}' has no keys", binding.pattern);
+            }
+
+            for kid in &binding.keys {
+                if !keys.contains_key(kid) {
+                    anyhow::bail!("Security binding references unknown key id '{kid}'");
+                }
+            }
+        }
+
+        let bindings = config
+            .bindings
+            .iter()
+            .map(|b| (b.pattern.clone(), b.role, b.keys.clone()))
+            .collect();
+
+        Ok(PatternKeySource::new(keys, bindings))
+    }
 }
+
+#[cfg(unix)]
+fn check_permissions(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            warn!(
+                "Key file '{}' has group/other permissions (mode {:04o}). \
+                 Restrict to owner-only (chmod 0600).",
+                path.display(),
+                mode
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn check_permissions(_path: &Path) {}
 
 impl KeySource for PatternKeySource {
     fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
@@ -183,6 +268,12 @@ impl hardy_bpa::keys::KeyProvider for PatternKeyProvider {
 }
 
 /// A point-in-time snapshot of a [`PatternKeyProvider`]'s source.
+///
+/// This provider keys off a single global table, so its snapshot shares the
+/// current table via `Arc` rather than building a per-flow subset: that keeps
+/// `key_source` O(1) on the per-bundle parse path and gives each bundle a view
+/// stable across a hot-reload. The newtype only exists to impl [`KeySource`]
+/// for the `Arc` (orphan rule).
 struct CurrentKeys(Arc<PatternKeySource>);
 
 impl KeySource for CurrentKeys {
@@ -211,7 +302,7 @@ pub fn watch_keys(
             let provider = provider.clone();
             async move {
                 info!("Key file changed, reloading");
-                match config.build() {
+                match PatternKeySource::from_config(&config) {
                     Ok(source) => {
                         provider.set(source);
                         info!("Keys reloaded successfully");
@@ -229,12 +320,17 @@ pub fn watch_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{
+        WatchConfig,
+        bpsec::{Config, KeyBindingConfig},
+    };
     use hardy_bpa::keys::KeyProvider;
     use hardy_bpv7::{
         block,
         bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
         bundle::RewrittenBundle,
     };
+    use std::path::{Path, PathBuf};
 
     fn hmac_key(kid: &str) -> Key {
         Key {
@@ -660,5 +756,176 @@ mod tests {
         let new_snapshot = provider.key_source(&Default::default(), &[]);
         let key = new_snapshot.key(&eid, &[Operation::Verify]).unwrap();
         assert_eq!(key.id.as_deref(), Some("key-2"));
+    }
+
+    fn write_keys(dir: &tempfile::TempDir, json: &str) -> PathBuf {
+        let path = dir.path().join("keys.jwks");
+        std::fs::write(&path, json).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        path
+    }
+
+    fn config_with(keys_path: &Path, bindings: Vec<KeyBindingConfig>) -> Config {
+        Config {
+            keys_file: keys_path.to_path_buf(),
+            watch: WatchConfig::None,
+            bindings,
+        }
+    }
+
+    fn binding(pattern: &str, role: SecurityRole, keys: &[&str]) -> KeyBindingConfig {
+        KeyBindingConfig {
+            pattern: pattern.parse().unwrap(),
+            role,
+            keys: keys.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    const VALID_KEYS: &str = r#"{
+        "keys": [
+            {
+                "kid": "hmac-key",
+                "kty": "oct",
+                "k": "hJtXIZ2uSN5kbQfbtTNWbpdmhkV8FJG-Onbc6mxCcYg",
+                "alg": "HS256",
+                "key_ops": ["sign", "verify"]
+            },
+            {
+                "kid": "aes-key",
+                "kty": "oct",
+                "k": "hJtXIZ2uSN5kbQfbtTNWbpdmhkV8FJG-Onbc6mxCcYg",
+                "alg": "A256KW",
+                "enc": "A256GCM",
+                "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"]
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn build_succeeds_with_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(
+            &keys_path,
+            vec![binding(
+                "ipn:*.*",
+                SecurityRole::Acceptor,
+                &["hmac-key", "aes-key"],
+            )],
+        );
+
+        let source = PatternKeySource::from_config(&config).unwrap();
+
+        let eid = parse_eid("ipn:0.42.0");
+        assert_eq!(
+            source
+                .key(&eid, &[Operation::Verify])
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("hmac-key")
+        );
+        assert_eq!(
+            source
+                .key(&eid, &[Operation::Decrypt])
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("aes-key")
+        );
+    }
+
+    #[test]
+    fn missing_key_file() {
+        let config = Config {
+            keys_file: PathBuf::from("/nonexistent/keys.jwks"),
+            watch: WatchConfig::None,
+            bindings: vec![],
+        };
+        assert!(PatternKeySource::from_config(&config).is_err());
+    }
+
+    #[test]
+    fn unknown_kid_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRole::Verifier, &["nonexistent"])],
+        );
+        let err = PatternKeySource::from_config(&config).unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn duplicate_kid() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(
+            &dir,
+            r#"{ "keys": [
+                { "kid": "dup", "kty": "oct", "k": "AAAA", "key_ops": ["verify"] },
+                { "kid": "dup", "kty": "oct", "k": "BBBB", "key_ops": ["verify"] }
+            ] }"#,
+        );
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRole::Verifier, &["dup"])],
+        );
+        let err = PatternKeySource::from_config(&config).unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn empty_binding_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRole::Acceptor, &[])],
+        );
+        let err = PatternKeySource::from_config(&config).unwrap_err();
+        assert!(err.to_string().contains("no keys"));
+    }
+
+    #[test]
+    fn key_without_ops_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(
+            &dir,
+            r#"{ "keys": [{ "kid": "no-ops", "kty": "oct", "k": "AAAA" }] }"#,
+        );
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRole::Verifier, &["no-ops"])],
+        );
+        let err = PatternKeySource::from_config(&config).unwrap_err();
+        assert!(err.to_string().contains("key_ops"));
+    }
+
+    #[test]
+    fn non_symmetric_key_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(
+            &dir,
+            r#"{ "keys": [{ "kid": "ec", "kty": "EC", "key_ops": ["verify"] }] }"#,
+        );
+        let config = config_with(
+            &keys_path,
+            vec![binding("ipn:*.*", SecurityRole::Verifier, &["ec"])],
+        );
+        let err = PatternKeySource::from_config(&config).unwrap_err();
+        assert!(err.to_string().contains("symmetric"));
+    }
+
+    #[test]
+    fn no_bindings_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys_path = write_keys(&dir, VALID_KEYS);
+        let config = config_with(&keys_path, vec![]);
+        assert!(PatternKeySource::from_config(&config).is_ok());
     }
 }
