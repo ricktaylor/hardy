@@ -1,0 +1,19 @@
+{
+  "keys": [
+    {
+      "kid": "test-hmac",
+      "kty": "oct",
+      "k": "hJtXIZ2uSN5kbQfbtTNWbpdmhkV8FJG-Onbc6mxCcYg",
+      "alg": "HS256",
+      "key_ops": ["sign", "verify"]
+    },
+    {
+      "kid": "test-aes",
+      "kty": "oct",
+      "k": "hJtXIZ2uSN5kbQfbtTNWbpdmhkV8FJG-Onbc6mxCcYg",
+      "alg": "A256KW",
+      "enc": "A256GCM",
+      "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"]
+    }
+  ]
+}
