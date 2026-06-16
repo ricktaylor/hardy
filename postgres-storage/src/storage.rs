@@ -49,9 +49,9 @@ impl Storage {
             // ahead of the schema (missing applied row).
             let migrator = sqlx::migrate!("./migrations");
             let mut conn = pool.acquire().await?;
-            conn.ensure_migrations_table().await?;
+            conn.ensure_migrations_table(&migrator.table_name).await?;
             let applied: std::collections::HashMap<i64, _> = conn
-                .list_applied_migrations()
+                .list_applied_migrations(&migrator.table_name)
                 .await?
                 .into_iter()
                 .map(|m| (m.version, m.checksum))

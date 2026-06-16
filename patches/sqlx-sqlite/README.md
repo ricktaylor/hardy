@@ -2,8 +2,8 @@
 
 ## Problem
 
-`rusqlite 0.38` requires `libsqlite3-sys ^0.36`.
-`sqlx 0.8.6` has `sqlx-sqlite` as an optional dependency, and `sqlx-sqlite 0.8.6` requires `libsqlite3-sys ^0.30`.
+`rusqlite 0.40` requires `libsqlite3-sys ^0.38`.
+`sqlx 0.9.0` has `sqlx-sqlite` as an optional dependency, and `sqlx-sqlite 0.9.0` requires `libsqlite3-sys >=0.30.1, <0.38.0`.
 
 Both `libsqlite3-sys` versions declare `links = "sqlite3"`, which tells Cargo that they
 own the `sqlite3` native symbol namespace. Cargo enforces that only **one** package with a
@@ -16,7 +16,7 @@ collide at resolution time, before any feature filtering or compilation takes pl
 
 ## Solution
 
-This directory contains a **stub** crate that replaces the real `sqlx-sqlite 0.8.6` from
+This directory contains a **stub** crate that replaces the real `sqlx-sqlite 0.9.0` from
 crates.io via the workspace `[patch.crates-io]` table:
 
 ```toml
@@ -26,15 +26,15 @@ sqlx-sqlite = { path = "patches/sqlx-sqlite" }
 ```
 
 The stub:
-- Has the same name (`sqlx-sqlite`) and version (`0.8.6`) as the real crate, so it
-  satisfies sqlx's exact `= "0.8.6"` requirement.
+- Has the same name (`sqlx-sqlite`) and version (`0.9.0`) as the real crate, so it
+  satisfies sqlx's exact `= "0.9.0"` requirement.
 - Declares the feature flags that sqlx forwards to `sqlx-sqlite` (e.g. `json`, `time`,
   `migrate`) as empty no-ops, so the resolver does not complain about missing features.
 - Has **no dependencies** — in particular no `libsqlite3-sys` — which removes the
   `links` conflict entirely.
 
 With the stub in place the resolved graph contains only one `links = "sqlite3"` package
-(`libsqlite3-sys 0.36` via rusqlite), and resolution succeeds.
+(`libsqlite3-sys 0.38` via rusqlite), and resolution succeeds.
 
 ## Why the stub is never compiled
 
@@ -45,9 +45,13 @@ any compilation unit.
 
 ## Maintenance
 
-**If sqlx is upgraded**, check whether the new version forwards additional features to
-`sqlx-sqlite`.  If it does, add matching empty feature declarations to this stub's
-`Cargo.toml`, otherwise the resolver will report a missing-feature error.
+**If sqlx is upgraded**, bump this stub's `version` to match sqlx's new exact
+`sqlx-sqlite = "=<x.y.z>"` requirement.  A `[patch]` only applies when its version
+satisfies the dependency requirement, so a stale stub version is silently ignored and the
+real `sqlx-sqlite` (with `libsqlite3-sys`) returns, re-introducing the `links` conflict.
+Then check whether the new version forwards additional features to `sqlx-sqlite`; if it
+does, add matching empty feature declarations to this stub's `Cargo.toml`, otherwise the
+resolver will report a missing-feature error.
 
 **If the `sqlite` feature on sqlx is ever intentionally enabled** in this workspace, this
 stub must be removed and the `libsqlite3-sys` conflict resolved by another means (e.g.
