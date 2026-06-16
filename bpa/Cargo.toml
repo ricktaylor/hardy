@@ -25,7 +25,6 @@ std = [
     "hardy-eid-patterns/std",
     "tracing/std",
     "rand/std",
-    "rand/thread_rng",
     "thiserror/std",
     "futures/std",
     "serde?/std",
@@ -48,7 +47,7 @@ bytes = "1"
 tracing = { version = "0.1", default-features = false }
 metrics = "0.24"
 trace-err = "1"
-rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng", "thread_rng"] }
+rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
 hashbrown = "0.17"
 foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.18", default-features = false }

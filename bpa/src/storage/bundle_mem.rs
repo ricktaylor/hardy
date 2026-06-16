@@ -1,13 +1,16 @@
-use core::num::{NonZero, NonZeroUsize};
-
-use hardy_async::{async_trait, sync::Mutex};
-use rand::distr::{Alphanumeric, SampleString};
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-use tracing::info;
-
 use super::{BundleStorage, RecoveryResponse, Result};
 use crate::{Arc, Bytes, stream::Sender};
+use core::num::{NonZero, NonZeroUsize};
+use hardy_async::{async_trait, sync::Mutex};
+use rand::{
+    SeedableRng,
+    distr::{Alphanumeric, SampleString},
+    rngs::{SmallRng, SysRng},
+};
+use tracing::info;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -29,6 +32,7 @@ impl Default for Config {
 struct Inner {
     cache: lru::LruCache<String, (time::OffsetDateTime, Bytes)>,
     capacity: usize,
+    rng: SmallRng,
 }
 
 pub struct BundleMemStorage {
@@ -47,6 +51,7 @@ impl BundleMemStorage {
         let inner = Mutex::new(Inner {
             cache: lru::LruCache::unbounded(),
             capacity: 0,
+            rng: SmallRng::try_from_rng(&mut SysRng).expect("OS RNG unavailable"),
         });
         let max_capacity = config.capacity;
         let min_bundles = config.min_bundles;
@@ -96,13 +101,12 @@ impl BundleStorage for BundleMemStorage {
     }
 
     async fn save(&self, data: Bytes) -> Result<Arc<str>> {
-        let mut rng = rand::rng();
         let new_len = data.len();
 
         loop {
-            let storage_name = Alphanumeric.sample_string(&mut rng, 64);
-
             let mut inner = self.inner.lock();
+            // Storage names only need to be unique, not unpredictable.
+            let storage_name = Alphanumeric.sample_string(&mut inner.rng, 64);
             if inner.cache.contains(&storage_name) {
                 continue;
             }

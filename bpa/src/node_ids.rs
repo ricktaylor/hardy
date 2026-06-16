@@ -1,5 +1,8 @@
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
-use rand::RngExt;
+use rand::{
+    RngExt, SeedableRng,
+    rngs::{SmallRng, SysRng},
+};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -87,7 +90,8 @@ impl NodeIds {
 
 impl Default for NodeIds {
     fn default() -> Self {
-        let mut rng = rand::rng();
+        // Node IDs are public identifiers, so a non-cryptographic PRNG suffices.
+        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG unavailable");
         Self {
             ipn: Some(IpnNodeId {
                 allocator_id: rng.random_range(0x40000000..0x80000000),
