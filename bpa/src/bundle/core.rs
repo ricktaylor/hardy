@@ -1,10 +1,9 @@
-use super::Bpv7Bundle;
+use super::metadata::BundleMetadata;
 use hardy_bpv7::eid::Eid;
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-use super::metadata::BundleMetadata;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// A bundle together with its BPA-local processing metadata.
 ///
@@ -13,26 +12,43 @@ use super::metadata::BundleMetadata;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Bundle {
-    /// The parsed BPv7 bundle (primary block, extension blocks, payload).
-    pub bundle: Bpv7Bundle,
-    /// BPA-local metadata: ingress info, processing status, annotations.
+    /// The parsed BPv7 bundle (primary block + blocks map).
+    pub bundle: hardy_bpv7::bundle::Bundle,
+    /// BPA-local metadata: ingress info, decoded extension fields, status, annotations.
     pub metadata: BundleMetadata,
 }
 
 impl Bundle {
     pub fn creation_time(&self) -> OffsetDateTime {
-        self.bundle.id.timestamp.as_datetime().unwrap_or_else(|| {
-            self.metadata
-                .read_only
-                .received_at
-                // The following unwrap() is safe, as bundle.age is u64::MAX millisecs
-                .saturating_sub(self.bundle.age.unwrap_or_default().try_into().unwrap())
-        })
+        self.bundle
+            .primary
+            .id
+            .timestamp
+            .as_datetime()
+            .unwrap_or_else(|| {
+                self.metadata
+                    .read_only
+                    .received_at
+                    // The following unwrap() is safe, as age is u64::MAX millisecs
+                    .saturating_sub(
+                        self.metadata
+                            .read_only
+                            .age
+                            .unwrap_or_default()
+                            .try_into()
+                            .unwrap(),
+                    )
+            })
     }
 
     pub fn expiry(&self) -> OffsetDateTime {
-        self.creation_time()
-            .saturating_add(self.bundle.lifetime.try_into().unwrap_or(Duration::MAX))
+        self.creation_time().saturating_add(
+            self.bundle
+                .primary
+                .lifetime
+                .try_into()
+                .unwrap_or(Duration::MAX),
+        )
     }
 
     #[inline]
@@ -46,7 +62,7 @@ impl Bundle {
     /// the CLA peer node ID (out-of-band). Per RFC 9171 Section 4.4.1, both
     /// identify the immediate 1-hop forwarding node when present.
     pub fn previous_node(&self) -> Option<Eid> {
-        self.bundle.previous_node.clone().or_else(|| {
+        self.metadata.read_only.previous_node.clone().or_else(|| {
             self.metadata
                 .read_only
                 .ingress_peer_node
@@ -66,24 +82,25 @@ mod tests {
         age: Option<core::time::Duration>,
         lifetime: core::time::Duration,
     ) -> Bundle {
+        let mut metadata = BundleMetadata::default();
+        metadata.read_only.age = age;
         Bundle {
-            bundle: Bpv7Bundle {
-                id: hardy_bpv7::bundle::Id {
-                    source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp,
-                    fragment_info: None,
+            bundle: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: hardy_bpv7::bundle::Id {
+                        source: "ipn:0.99.1".parse().unwrap(),
+                        timestamp,
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: "ipn:0.1.99".parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime,
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: "ipn:0.1.99".parse().unwrap(),
-                report_to: Default::default(),
-                lifetime,
-                previous_node: None,
-                age,
-                hop_count: None,
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata,
         }
     }
 

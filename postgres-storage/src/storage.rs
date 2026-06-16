@@ -241,9 +241,9 @@ impl storage::MetadataStorage for Storage {
         Ok(row.and_then(MetadataRow::decode))
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
-        let bundle_key = bundle.bundle.id.to_key();
+        let bundle_key = bundle.bundle.primary.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let received_at = bundle.metadata.read_only.received_at;
         let expiry = bundle.expiry();
@@ -286,9 +286,9 @@ impl storage::MetadataStorage for Storage {
         Ok(inserted.is_some())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        let bundle_key = bundle.bundle.id.to_key();
+        let bundle_key = bundle.bundle.primary.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
@@ -327,9 +327,9 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
-        let bundle_key = bundle.bundle.id.to_key();
+        let bundle_key = bundle.bundle.primary.id.to_key();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
         let rows = sqlx::query(

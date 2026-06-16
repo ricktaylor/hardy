@@ -1,7 +1,7 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn forward_bundle(
         &self,
         cla: &dyn cla::Cla,
@@ -83,12 +83,18 @@ impl Dispatcher {
         self.store.reset_peer_queue(peer).await;
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+        // We read the cached extension fields (`hop_count` / `age` from
+        // `metadata.read_only`) to rebuild the wire blocks, but never write the
+        // bumped values back: `forward_bundle` deletes the bundle on a successful
+        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
+        // in-memory cache is never observed again after this rewrite.
+        //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
         let hardy_bpv7::parse::Parsed {
@@ -101,8 +107,8 @@ impl Dispatcher {
         // of an admin-record or anonymous bundle — the receiver has nowhere
         // meaningful to report to, and a conformant parser (ours included)
         // rejects the combination.
-        let report_on_failure =
-            !bundle.bundle.flags.is_admin_record && !bundle.bundle.id.source.is_null();
+        let report_on_failure = !bundle.bundle.primary.flags.is_admin_record
+            && !bundle.bundle.primary.id.source.is_null();
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
@@ -114,7 +120,9 @@ impl Dispatcher {
             })
             .with_data(
                 hardy_cbor::encode::emit(
-                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+                    &self
+                        .node_ids
+                        .get_admin_endpoint(&bundle.bundle.primary.destination),
                 )
                 .0
                 .into(),
@@ -122,7 +130,7 @@ impl Dispatcher {
             .rebuild();
 
         // Increment Hop Count
-        if let Some(hop_count) = &bundle.bundle.hop_count {
+        if let Some(hop_count) = &bundle.metadata.read_only.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
@@ -143,7 +151,9 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || !bundle.bundle.id.timestamp.is_clocked() {
+        if bundle.metadata.read_only.age.is_some()
+            || !bundle.bundle.primary.id.timestamp.is_clocked()
+        {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())

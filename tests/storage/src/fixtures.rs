@@ -11,14 +11,17 @@ fn next_seq() -> u64 {
 pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
-            source: format!("ipn:{seq}.0").parse().unwrap(),
-            timestamp: CreationTimestamp::now(),
-            fragment_info: None,
+    let bpv7 = hardy_bpv7::bundle::Bundle {
+        primary: hardy_bpv7::primary_block::PrimaryBlock {
+            id: hardy_bpv7::bundle::Id {
+                source: format!("ipn:{seq}.0").parse().unwrap(),
+                timestamp: CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            destination: "ipn:99.0".parse().unwrap(),
+            lifetime: core::time::Duration::from_secs(3600),
+            ..Default::default()
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
         ..Default::default()
     };
 
@@ -38,14 +41,17 @@ pub fn bundle_with_status(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
-            source: format!("ipn:{seq}.0").parse().unwrap(),
-            timestamp: CreationTimestamp::now(),
-            fragment_info: None,
+    let bpv7 = hardy_bpv7::bundle::Bundle {
+        primary: hardy_bpv7::primary_block::PrimaryBlock {
+            id: hardy_bpv7::bundle::Id {
+                source: format!("ipn:{seq}.0").parse().unwrap(),
+                timestamp: CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            destination: "ipn:99.0".parse().unwrap(),
+            lifetime: core::time::Duration::from_secs(3600),
+            ..Default::default()
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
         ..Default::default()
     };
 
@@ -73,14 +79,17 @@ pub fn bundle_with_expiry(
     let ts = CreationTimestamp::try_from(creation_time)
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
-            source: format!("ipn:{seq}.0").parse().unwrap(),
-            timestamp: ts,
-            fragment_info: None,
+    let bpv7 = hardy_bpv7::bundle::Bundle {
+        primary: hardy_bpv7::primary_block::PrimaryBlock {
+            id: hardy_bpv7::bundle::Id {
+                source: format!("ipn:{seq}.0").parse().unwrap(),
+                timestamp: ts,
+                fragment_info: None,
+            },
+            destination: "ipn:99.0".parse().unwrap(),
+            lifetime,
+            ..Default::default()
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime,
         ..Default::default()
     };
 
@@ -101,17 +110,20 @@ pub fn bundle_with_fragment(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
-            source: format!("ipn:{seq}.0").parse().unwrap(),
-            timestamp: CreationTimestamp::now(),
-            fragment_info: Some(hardy_bpv7::bundle::FragmentInfo {
-                offset,
-                total_adu_length,
-            }),
+    let bpv7 = hardy_bpv7::bundle::Bundle {
+        primary: hardy_bpv7::primary_block::PrimaryBlock {
+            id: hardy_bpv7::bundle::Id {
+                source: format!("ipn:{seq}.0").parse().unwrap(),
+                timestamp: CreationTimestamp::now(),
+                fragment_info: Some(hardy_bpv7::bundle::FragmentInfo {
+                    offset,
+                    total_adu_length,
+                }),
+            },
+            destination: "ipn:99.0".parse().unwrap(),
+            lifetime: core::time::Duration::from_secs(3600),
+            ..Default::default()
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
         ..Default::default()
     };
 
