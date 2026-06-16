@@ -141,7 +141,7 @@ impl Dispatcher {
         // payload is spooled. `Err` carries an optional reception report to emit
         // before dropping (reporting stays here — we own the machinery); a
         // structural / truncation drop carries no recoverable bundle.
-        let (hv, headers, tail) =
+        let (mut hv, headers, tail) =
             match parse::parse_headers(stream, self.max_bundle_size, self.key_provider()).await {
                 Ok(parts) => parts,
                 Err(parse::HeaderFailure::Cancelled) => {
@@ -153,11 +153,8 @@ impl Dispatcher {
                     return Err(cla::Error::PayloadTooLarge { size, max });
                 }
                 Err(parse::HeaderFailure::Invalid(report)) => {
-                    if let Some((rich, reason)) = report {
-                        let bundle = bundle::Bundle {
-                            metadata,
-                            bundle: rich,
-                        };
+                    if let Some((bundle, reason)) = report {
+                        let bundle = bundle::Bundle { metadata, bundle };
                         self.report_bundle_reception(&bundle, reason).await;
                     }
                     return Ok(None);
@@ -165,9 +162,9 @@ impl Dispatcher {
             };
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
-        // dead bundle is dropped having spooled nothing. (The rich
-        // `Bundle::has_expired` re-checks lifetime post-store in the ingress
-        // filter — a cheap, harmless overlap.)
+        // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
+        // re-checks lifetime post-store in the ingress filter — a cheap,
+        // harmless overlap.)
         if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
@@ -179,9 +176,12 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return Ok(None);
             }
+            metadata.read_only.previous_node = hv.extracted.previous_node;
+            metadata.read_only.age = hv.extracted.age;
+            metadata.read_only.hop_count = hv.extracted.hop_count;
             let bundle = bundle::Bundle {
                 metadata,
-                bundle: parse::reshape_to_rich(hv.raw, hv.extracted),
+                bundle: hv.bundle,
             };
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
@@ -203,18 +203,20 @@ impl Dispatcher {
             },
         };
 
-        // Post-drain finalize: verify the deferred block-1 BIB targets, apply
-        // §E rewrites, reshape into the rich bundle.
-        let (rich, chunks, report_reason) =
+        // Post-drain finalize: verify the deferred block-1 BIB targets and apply
+        // §E rewrites. The decoded extension fields were captured at header time
+        // and the §E rewrite only removes blocks, so move `hv.extracted` into the
+        // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
+        metadata.read_only.previous_node = hv.extracted.previous_node.take();
+        metadata.read_only.age = hv.extracted.age.take();
+        metadata.read_only.hop_count = hv.extracted.hop_count.take();
+        let (bundle, chunks, report_reason) =
             match parse::finalize_with_provider(&whole, hv, self.key_provider()) {
                 Ok(x) => x,
-                Err((rich, error)) => {
+                Err((bundle, error)) => {
                     debug!("Invalid bundle received: {error}");
                     let reason = parse::status_report_reason_for(&error);
-                    let bundle = bundle::Bundle {
-                        metadata,
-                        bundle: rich,
-                    };
+                    let bundle = bundle::Bundle { metadata, bundle };
                     self.report_bundle_reception(&bundle, reason).await;
                     return Ok(None);
                 }
@@ -236,10 +238,7 @@ impl Dispatcher {
         } else {
             metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
-        let bundle = bundle::Bundle {
-            metadata,
-            bundle: rich,
-        };
+        let bundle = bundle::Bundle { metadata, bundle };
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
@@ -296,7 +295,7 @@ impl Dispatcher {
     //
     // See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     // filter execution details.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
 

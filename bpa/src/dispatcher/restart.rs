@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok((bundle, _nokey)) => bundle,
+            Ok((bundle, _extracted, _nokey)) => bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -37,7 +37,7 @@ impl Dispatcher {
         };
 
         // Reconcile with metadata store
-        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
+        if let Some(metadata) = self.store.confirm_exists(&bundle.primary.id).await {
             if metadata.storage_name.as_ref() != Some(&storage_name) {
                 // Metadata references a different copy — this one is a duplicate
                 if metadata.storage_name.is_none() {
@@ -298,7 +298,7 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let (parsed, _) = crate::bundle::parse::parse_validate_with_provider(
+        let (parsed, _, _) = crate::bundle::parse::parse_validate_with_provider(
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
@@ -311,7 +311,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let id = bundle.bundle.id.clone();
+        let id = bundle.bundle.primary.id.clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
 
         let node_ids = crate::node_ids::NodeIds::try_from(

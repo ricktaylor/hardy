@@ -53,7 +53,7 @@ impl Dispatcher {
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub(super) async fn process_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -75,7 +75,7 @@ impl Dispatcher {
             }
             Some(routing::DispatchAction::Deliver(service)) => {
                 // Check for reassembly
-                if bundle.bundle.id.fragment_info.is_some() {
+                if bundle.bundle.primary.id.fragment_info.is_some() {
                     // Reassemble the bundle before delivery
                     self.reassemble(bundle).await
                 } else {
