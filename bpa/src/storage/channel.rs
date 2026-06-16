@@ -253,6 +253,17 @@ impl Sender {
     }
 }
 
+/// Whether the poller should re-open the fast path, given the number of
+/// bundles currently buffered in memory and the channel capacity.
+///
+/// The fast path re-opens once the buffer has drained to half capacity or
+/// less. The bound is inclusive so a `cap == 1` channel — whose half
+/// capacity rounds down to 0 — can still re-open when its buffer is empty.
+#[inline]
+fn should_reopen(buffered: usize, cap: usize) -> bool {
+    buffered <= cap / 2
+}
+
 impl Store {
     /// Create a hybrid channel with the given target status and memory capacity.
     pub fn channel(self: &Arc<Self>, status: BundleStatus, cap: usize) -> (Sender, Receiver) {
@@ -330,8 +341,9 @@ impl Store {
                 }
             }
 
-            // Re-open fast path if channel <50% full and no new work arrived
-            if shared.tx.len() < (cap / 2)
+            // Re-open the fast path if the buffer has drained to half
+            // capacity or less and no new work arrived.
+            if should_reopen(shared.tx.len(), cap)
                 && shared
                     .compare_exchange_state(
                         ChannelState::Draining,
@@ -441,6 +453,21 @@ mod tests {
         peer: 1,
         queue: None,
     };
+
+    // The fast path must re-open after draining even for tiny capacities.
+    #[test]
+    fn reopen_threshold_handles_small_caps() {
+        // cap=1: half capacity rounds down to 0, so the fast path re-opens
+        // only when the buffer is empty.
+        assert!(should_reopen(0, 1));
+        assert!(!should_reopen(1, 1));
+        // cap=2: re-open at or below one buffered bundle.
+        assert!(should_reopen(1, 2));
+        assert!(!should_reopen(2, 2));
+        // Larger caps re-open at half capacity.
+        assert!(should_reopen(8, 16));
+        assert!(!should_reopen(9, 16));
+    }
 
     // Fill the memory channel beyond capacity to trigger Draining state.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
