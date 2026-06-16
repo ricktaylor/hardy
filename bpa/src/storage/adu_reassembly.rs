@@ -34,8 +34,8 @@ struct FragmentSet {
 impl Store {
     pub async fn adu_reassemble(&self, bundle: &Bundle) -> ReassemblyResult {
         let status = BundleStatus::AduFragment {
-            source: bundle.bundle.id.source.clone(),
-            timestamp: bundle.bundle.id.timestamp.clone(),
+            source: bundle.bundle.primary.id.source.clone(),
+            timestamp: bundle.bundle.primary.id.timestamp.clone(),
         };
 
         let Some(fragments) = self.poll_fragments(bundle, &status).await else {
@@ -63,10 +63,11 @@ impl Store {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
 
-        let source = bundle.bundle.id.source.clone();
-        let timestamp = bundle.bundle.id.timestamp.clone();
+        let source = bundle.bundle.primary.id.source.clone();
+        let timestamp = bundle.bundle.primary.id.timestamp.clone();
         let fragment_info = bundle
             .bundle
+            .primary
             .id
             .fragment_info
             .as_ref()
@@ -90,7 +91,7 @@ impl Store {
             adus: [(
                 fragment_info.offset,
                 (
-                    bundle.bundle.id.clone(),
+                    bundle.bundle.primary.id.clone(),
                     bundle
                         .metadata
                         .storage_name
@@ -125,9 +126,9 @@ impl Store {
                                 break (adu_totals >= total_adu_len).then_some(results);
                             };
 
-                            if source == bundle.bundle.id.source &&
-                                timestamp == bundle.bundle.id.timestamp &&
-                                let Some(fragment_info) = &bundle.bundle.id.fragment_info
+                            if source == bundle.bundle.primary.id.source &&
+                                timestamp == bundle.bundle.primary.id.timestamp &&
+                                let Some(fragment_info) = &bundle.bundle.primary.id.fragment_info
                             {
                                 let r = bundle
                                     .bundle
@@ -147,7 +148,7 @@ impl Store {
                                 results.received_at = results.received_at.min(bundle.metadata.read_only.received_at);
                                 results.adus.insert(fragment_info.offset,
                                     (
-                                        bundle.bundle.id,
+                                        bundle.bundle.primary.id,
                                         bundle.metadata
                                             .storage_name
                                             .trace_expect("Invalid bundle in reassembly?!"),
@@ -363,33 +364,26 @@ mod tests {
         store.save_data(Bytes::from(data.to_vec())).await
     }
 
-    /// Structural parse + reshape to the rich `crate::bundle::Bpv7Bundle`
-    /// the BPA wrapper expects. Used by tests that build bundles via
-    /// `Editor::flatten` and need to feed them back through the BPA's
-    /// `Bundle { bundle, metadata }` container; the keyed parse_preserve
-    /// pipeline would just do this same reshape after redundant BPSec
-    /// validation.
-    fn rich_from_bytes(data: &[u8]) -> crate::bundle::Bpv7Bundle {
-        let hardy_bpv7::parse::Parsed { bundle: raw, .. } =
+    /// Structural parse into the `hardy_bpv7::bundle::Bundle` the BPA wrapper
+    /// expects. Used by tests that build bundles via `Editor::flatten` and need
+    /// to feed them back through the BPA's `Bundle { bundle, metadata }`
+    /// container; the keyed parse_preserve pipeline would just do this same
+    /// parse after redundant BPSec validation.
+    fn bundle_from_bytes(data: &[u8]) -> hardy_bpv7::bundle::Bundle {
+        let hardy_bpv7::parse::Parsed { bundle, .. } =
             hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
-        crate::bundle::Bpv7Bundle {
-            id: raw.primary.id,
-            flags: raw.primary.flags,
-            crc_type: raw.primary.crc_type,
-            destination: raw.primary.destination,
-            report_to: raw.primary.report_to,
-            lifetime: raw.primary.lifetime,
-            blocks: raw.blocks,
-            ..Default::default()
-        }
+        bundle
     }
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
         let bundle = Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: id.clone(),
-                destination: "ipn:0.2.1".parse().unwrap(),
-                lifetime: core::time::Duration::from_secs(3600),
+            bundle: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: id.clone(),
+                    destination: "ipn:0.2.1".parse().unwrap(),
+                    lifetime: core::time::Duration::from_secs(3600),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             metadata: BundleMetadata {
@@ -613,11 +607,9 @@ mod tests {
 
         // We control these bytes (they came from `Editor::flatten` of the
         // complete bundle), so a structural parse is enough — no need to
-        // run keyed BPSec validation. The BPA `Bundle { bundle, metadata }`
-        // container below still holds the rich `crate::bundle::Bpv7Bundle`,
-        // so reshape inline.
-        let bundle0 = rich_from_bytes(&frag0_data);
-        let bundle1 = rich_from_bytes(&frag1_data);
+        // run keyed BPSec validation.
+        let bundle0 = bundle_from_bytes(&frag0_data);
+        let bundle1 = bundle_from_bytes(&frag1_data);
 
         // Store fragment data
         let name0 = store_bytes(&store, &frag0_data).await;
@@ -643,8 +635,8 @@ mod tests {
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
             adus: [
-                (0, (bundle0.id.clone(), name0, payload0_range)),
-                (5, (bundle1.id.clone(), name1, payload1_range)),
+                (0, (bundle0.primary.id.clone(), name0, payload0_range)),
+                (5, (bundle1.primary.id.clone(), name1, payload1_range)),
             ]
             .into(),
         };

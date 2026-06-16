@@ -288,13 +288,13 @@ impl storage::MetadataStorage for Storage {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         self.write(move |conn| {
             // Insert bundle
@@ -308,13 +308,13 @@ impl storage::MetadataStorage for Storage {
         .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         if self
             .write(move |conn| {
@@ -333,11 +333,11 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         if self
             .write(move |conn| {
                 conn.prepare_cached(
@@ -810,21 +810,12 @@ mod tests {
             .build(CreationTimestamp::now())
             .unwrap();
 
-        // The storage tests below only read `bundle.bundle.id`, so we
-        // skip the parse round-trip and reshape Builder's raw output into
-        // the rich `Bpv7Bundle` directly. (Editor-touching tests still
-        // need to re-parse for wire-aligned block numbers.)
+        // The storage tests below only read `bundle.bundle.primary.id`, so we
+        // skip the parse round-trip and use Builder's structural output
+        // directly. (Editor-touching tests still need to re-parse for
+        // wire-aligned block numbers.)
         hardy_bpa::bundle::Bundle {
-            bundle: hardy_bpa::bundle::Bpv7Bundle {
-                id: raw.primary.id,
-                flags: raw.primary.flags,
-                crc_type: raw.primary.crc_type,
-                destination: raw.primary.destination,
-                report_to: raw.primary.report_to,
-                lifetime: raw.primary.lifetime,
-                blocks: raw.blocks,
-                ..Default::default()
-            },
+            bundle: raw,
             metadata: hardy_bpa::bundle::BundleMetadata::default(),
         }
     }
@@ -867,7 +858,10 @@ mod tests {
 
         // Create all bundles upfront so we can capture their IDs for verification
         let bundles: Vec<_> = (0..10).map(make_bundle).collect();
-        let ids: Vec<_> = bundles.iter().map(|b| b.bundle.id.clone()).collect();
+        let ids: Vec<_> = bundles
+            .iter()
+            .map(|b| b.bundle.primary.id.clone())
+            .collect();
 
         let mut handles = Vec::new();
         for bundle in bundles {
@@ -900,7 +894,7 @@ mod tests {
 
         // Insert a valid bundle
         let bundle = make_bundle(0);
-        let id_bytes = serde_json::to_vec(&bundle.bundle.id).unwrap();
+        let id_bytes = serde_json::to_vec(&bundle.bundle.primary.id).unwrap();
         assert!(store.insert(&bundle).await.unwrap());
 
         // Corrupt the bundle blob directly in the DB
@@ -915,19 +909,22 @@ mod tests {
         }
 
         // get() returns Err (deserialization failure), not panic
-        let result = store.get(&bundle.bundle.id).await;
+        let result = store.get(&bundle.bundle.primary.id).await;
         assert!(result.is_err(), "get() should return Err for corrupt data");
 
         // confirm_exists() handles it gracefully — tombstones the entry
         store.start_recovery().await;
-        let result = store.confirm_exists(&bundle.bundle.id).await.unwrap();
+        let result = store
+            .confirm_exists(&bundle.bundle.primary.id)
+            .await
+            .unwrap();
         assert!(
             result.is_none(),
             "confirm_exists should return None for corrupt data"
         );
 
         // Entry should now be tombstoned
-        let result = store.get(&bundle.bundle.id).await.unwrap();
+        let result = store.get(&bundle.bundle.primary.id).await.unwrap();
         assert!(result.is_none(), "tombstoned entry should return None");
     }
 

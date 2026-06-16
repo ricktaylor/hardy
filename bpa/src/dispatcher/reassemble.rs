@@ -12,14 +12,17 @@ impl Dispatcher {
         let (storage_name, data) = match self.store.adu_reassemble(&bundle).await {
             ReassemblyResult::NotReady => {
                 let status = BundleStatus::AduFragment {
-                    source: bundle.bundle.id.source.clone(),
-                    timestamp: bundle.bundle.id.timestamp.clone(),
+                    source: bundle.bundle.primary.id.source.clone(),
+                    timestamp: bundle.bundle.primary.id.timestamp.clone(),
                 };
                 self.store.update_status(&mut bundle, &status).await;
                 return self.store.watch_bundle(bundle).await;
             }
             ReassemblyResult::Failed => {
-                debug!("Fragment reassembly failed for bundle {}", bundle.bundle.id);
+                debug!(
+                    "Fragment reassembly failed for bundle {}",
+                    bundle.bundle.primary.id
+                );
                 return;
             }
             ReassemblyResult::Done(storage_name, data) => (storage_name, data),

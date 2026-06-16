@@ -75,7 +75,7 @@ impl Store {
     /// Takes a bundle with pre-populated metadata (e.g., from filter processing).
     /// Updates the storage_name field after saving data.
     /// Returns false if duplicate bundle already exists.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data.clone()).await;
@@ -140,7 +140,7 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
@@ -156,10 +156,10 @@ impl Store {
             .await
             .trace_expect("Failed to get metadata")?;
 
-        if &m.bundle.id != bundle_id {
+        if &m.bundle.primary.id != bundle_id {
             error!(
                 "Metadata store failed to return correct bundle: {} != {bundle_id}",
-                m.bundle.id
+                m.bundle.primary.id
             );
             None
         } else {
@@ -183,7 +183,7 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn update_metadata(&self, bundle: &Bundle) {
         self.metadata_storage
             .replace(bundle)
@@ -191,7 +191,7 @@ impl Store {
             .trace_expect("Failed to replace metadata")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
         if bundle.metadata.status != *status {
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
@@ -255,20 +255,19 @@ mod tests {
 
     fn make_bundle(dest: &str) -> Bundle {
         Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: Id {
-                    source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                    fragment_info: None,
+            bundle: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: Id {
+                        source: "ipn:0.99.1".parse().unwrap(),
+                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: dest.parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: core::time::Duration::from_secs(3600),
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: dest.parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
                 blocks: Default::default(),
             },
             metadata: Default::default(),

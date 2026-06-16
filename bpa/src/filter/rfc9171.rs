@@ -111,12 +111,12 @@ impl ReadFilter for Rfc9171ValidityFilter {
         if self.config.primary_block_integrity
             && let Some(primary_block) = bundle.bundle.blocks.get(&0)
         {
-            let has_crc = !matches!(bundle.bundle.crc_type, CrcType::None);
+            let has_crc = !matches!(bundle.bundle.primary.crc_type, CrcType::None);
             let has_bib = !matches!(primary_block.bib, BibCoverage::None);
 
             if !has_crc && !has_bib {
                 debug!(
-                    bundle_id = %bundle.bundle.id,
+                    bundle_id = %bundle.bundle.primary.id,
                     "Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)"
                 );
                 return Ok(ReadResult::Drop(Some(ReasonCode::BlockUnintelligible)));
@@ -125,11 +125,11 @@ impl ReadFilter for Rfc9171ValidityFilter {
 
         // RFC9171 §4.4.2: Bundle Age required when no clock
         if self.config.bundle_age_required
-            && !bundle.bundle.id.timestamp.is_clocked()
-            && bundle.bundle.age.is_none()
+            && !bundle.bundle.primary.id.timestamp.is_clocked()
+            && bundle.metadata.read_only.age.is_none()
         {
             debug!(
-                bundle_id = %bundle.bundle.id,
+                bundle_id = %bundle.bundle.primary.id,
                 "Rejecting bundle: no clock in creation timestamp and no Bundle Age block"
             );
             return Ok(ReadResult::Drop(Some(ReasonCode::LifetimeExpired)));

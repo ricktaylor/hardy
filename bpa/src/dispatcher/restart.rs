@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok((bundle, _nokey)) => bundle,
+            Ok((bundle, _extracted, _nokey)) => bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -37,7 +37,7 @@ impl Dispatcher {
         };
 
         // Reconcile with metadata store
-        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
+        if let Some(metadata) = self.store.confirm_exists(&bundle.primary.id).await {
             if metadata.storage_name.as_ref() != Some(&storage_name) {
                 // Metadata references a different copy — this one is a duplicate
                 if metadata.storage_name.is_none() {

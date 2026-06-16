@@ -420,20 +420,19 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: hardy_bpv7::bundle::Id {
-                    source: format!("ipn:0.{n}.1").parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                    fragment_info: None,
+            bundle: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: hardy_bpv7::bundle::Id {
+                        source: format!("ipn:0.{n}.1").parse().unwrap(),
+                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: "ipn:0.99.1".parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: core::time::Duration::from_secs(3600),
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: "ipn:0.99.1".parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
                 blocks: Default::default(),
             },
             metadata: Default::default(),
@@ -442,7 +441,7 @@ mod tests {
 
     fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
-        b.bundle.lifetime = core::time::Duration::from_secs(0);
+        b.bundle.primary.lifetime = core::time::Duration::from_secs(0);
         // Set received_at in the past so expiry is already passed
         b.metadata.read_only.received_at =
             time::OffsetDateTime::now_utc() - time::Duration::seconds(10);
@@ -571,8 +570,8 @@ mod tests {
         loop {
             match tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(&b.bundle.primary.id).await;
+                    seen.insert(b.bundle.primary.id);
                 }
                 Ok(Err(_)) => {
                     // Channel closed
@@ -671,8 +670,8 @@ mod tests {
         while seen.len() < 3 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(&b.bundle.primary.id).await;
+                    seen.insert(b.bundle.primary.id);
                 }
                 _ => break,
             }
@@ -709,8 +708,8 @@ mod tests {
         while seen.len() < total as usize {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(&b.bundle.primary.id).await;
+                    seen.insert(b.bundle.primary.id);
                 }
                 _ => break,
             }
@@ -749,8 +748,8 @@ mod tests {
         while seen.len() < 2 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id.source.clone());
+                    store.tombstone_metadata(&b.bundle.primary.id).await;
+                    seen.insert(b.bundle.primary.id.source.clone());
                 }
                 _ => break,
             }
