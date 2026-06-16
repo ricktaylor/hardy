@@ -81,10 +81,11 @@ impl Drop for PostgresTestGuard {
                 .block_on(async move {
                     use sqlx::Connection as _;
                     if let Ok(mut conn) = sqlx::postgres::PgConnection::connect(&url).await {
-                        let _ =
-                            sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\" (FORCE)"))
-                                .execute(&mut conn)
-                                .await;
+                        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                            "DROP DATABASE IF EXISTS \"{db_name}\" (FORCE)"
+                        )))
+                        .execute(&mut conn)
+                        .await;
                         let _ = conn.close().await;
                     }
                 });
@@ -117,10 +118,12 @@ pub async fn postgres_meta_setup() -> (PostgresTestGuard, Arc<dyn MetadataStorag
             sqlx::postgres::PgConnection::connect_with(&base_opts.clone().database("postgres"))
                 .await
                 .unwrap_or_else(|e| panic!("connect to postgres ({base_url}/postgres): {e}"));
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&mut conn)
-            .await
-            .expect("create test database");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{db_name}\""
+        )))
+        .execute(&mut conn)
+        .await
+        .expect("create test database");
         conn.close().await.expect("close maintenance connection");
     }
 
