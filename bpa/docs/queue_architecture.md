@@ -98,6 +98,8 @@ trait MetadataStorage {
 
 Bundle CRUD owns the data, keyed by `Bundle::Id`. Queue operations own the ordering and assignment, keyed by a `u32` queue ID. The queue ID is opaque to the storage implementation — all semantics (which queue is Dispatch, which are ephemeral, the durability threshold) live in the BPA layer above. `dequeue` returns the full `Bundle` (which contains its own ID) to avoid a separate round-trip. This replaces the current per-status query methods with generic queue primitives.
 
+The pull-based `dequeue` also subsumes the interim poller in `storage::channel`. Today the hybrid channel bridges the push-based `poll_pending(&dyn Sender)` to its in-memory buffer with an intermediate channel and a forwarding task spawned per drain cycle, plus a cancel-token race so a send parked on a full buffer cannot stall shutdown. Under `dequeue` the poller becomes a plain pull loop — `while let Some(bundle) = dequeue(queue).await { ... }` — where each await is a clean cancellation point, eliminating the per-cycle channel allocation, the spawned task, and the cancel race together. This scaffolding is intentionally left in place until the redesign lands rather than optimised in the interim.
+
 ### ACID semantics
 
 The `MetadataStorage` implementation is exclusive to a single BPA instance — there is no concurrent access from other processes. This simplifies the consistency model:
