@@ -250,13 +250,13 @@ impl MetadataStorage for SqliteStorage {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         self.write(move |conn| {
             // Insert bundle
@@ -270,13 +270,13 @@ impl MetadataStorage for SqliteStorage {
         .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.read_only.received_at;
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         if self
             .write(move |conn| {
@@ -295,11 +295,11 @@ impl MetadataStorage for SqliteStorage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.id)?;
+        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         if self
             .write(move |conn| {
                 conn.prepare_cached(
@@ -855,21 +855,12 @@ mod tests {
             .build(CreationTimestamp::now())
             .unwrap();
 
-        // The storage tests below only read `bundle.bundle.id`, so we
-        // skip the parse round-trip and reshape Builder's raw output into
-        // the rich `Bpv7Bundle` directly. (Editor-touching tests still
-        // need to re-parse for wire-aligned block numbers.)
+        // The storage tests below only read `bundle.bundle.primary.id`, so we
+        // skip the parse round-trip and use Builder's structural output
+        // directly. (Editor-touching tests still need to re-parse for
+        // wire-aligned block numbers.)
         hardy_bpa::bundle::Bundle {
-            bundle: hardy_bpa::bundle::Bpv7Bundle {
-                id: raw.primary.id,
-                flags: raw.primary.flags,
-                crc_type: raw.primary.crc_type,
-                destination: raw.primary.destination,
-                report_to: raw.primary.report_to,
-                lifetime: raw.primary.lifetime,
-                blocks: raw.blocks,
-                ..Default::default()
-            },
+            bundle: raw,
             metadata: hardy_bpa::bundle::BundleMetadata::default(),
         }
     }
@@ -902,7 +893,11 @@ mod tests {
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
-        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        let got = storage
+            .get(&bundle.bundle.primary.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             got.metadata.status,
             BundleStatus::ForwardAckPending { peer: 7 }
@@ -915,9 +910,17 @@ mod tests {
 
         assert_eq!(storage.reset_peer_ack_pending(7).await.unwrap(), 1);
 
-        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        let got = storage
+            .get(&bundle.bundle.primary.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got.metadata.status, BundleStatus::Waiting);
-        let got = storage.get(&other.bundle.id).await.unwrap().unwrap();
+        let got = storage
+            .get(&other.bundle.primary.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             got.metadata.status,
             BundleStatus::ForwardAckPending { peer: 8 }
@@ -940,7 +943,7 @@ mod tests {
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 8 },
                     &BundleStatus::Dispatching,
                 )
@@ -952,7 +955,7 @@ mod tests {
         assert!(
             storage
                 .swap_status(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 7 },
                     &BundleStatus::Dispatching,
                 )
@@ -961,7 +964,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .get(&bundle.bundle.id)
+                .get(&bundle.bundle.primary.id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -974,7 +977,7 @@ mod tests {
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 7 },
                     &BundleStatus::Dispatching,
                 )
@@ -983,11 +986,11 @@ mod tests {
         );
 
         // A deleted bundle swaps nothing
-        storage.tombstone(&bundle.bundle.id).await.unwrap();
+        storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::Dispatching,
                     &BundleStatus::Waiting,
                 )
@@ -1012,31 +1015,43 @@ mod tests {
         assert!(
             !storage
                 .tombstone_if(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 8 }
                 )
                 .await
                 .unwrap()
         );
-        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_some());
+        assert!(
+            storage
+                .get(&bundle.bundle.primary.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         // Matching expectation: tombstoned
         assert!(
             storage
                 .tombstone_if(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 7 }
                 )
                 .await
                 .unwrap()
         );
-        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+        assert!(
+            storage
+                .get(&bundle.bundle.primary.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // A duplicate resolution loses
         assert!(
             !storage
                 .tombstone_if(
-                    &bundle.bundle.id,
+                    &bundle.bundle.primary.id,
                     &BundleStatus::ForwardAckPending { peer: 7 }
                 )
                 .await
@@ -1057,18 +1072,24 @@ mod tests {
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
-        storage.tombstone(&bundle.bundle.id).await.unwrap();
+        storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
 
         bundle.metadata.status = BundleStatus::Waiting;
         storage.update_status(&bundle).await.unwrap();
 
-        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+        assert!(
+            storage
+                .get(&bundle.bundle.primary.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
         let (bundle_col, status_code): (Option<Vec<u8>>, Option<i64>) = conn
             .query_row(
                 "SELECT bundle, status_code FROM bundles WHERE bundle_id = ?1",
-                [serde_json::to_vec(&bundle.bundle.id).unwrap()],
+                [serde_json::to_vec(&bundle.bundle.primary.id).unwrap()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -1102,7 +1123,10 @@ mod tests {
 
         // Create all bundles upfront so we can capture their IDs for verification
         let bundles: Vec<_> = (0..10).map(make_bundle).collect();
-        let ids: Vec<_> = bundles.iter().map(|b| b.bundle.id.clone()).collect();
+        let ids: Vec<_> = bundles
+            .iter()
+            .map(|b| b.bundle.primary.id.clone())
+            .collect();
 
         let mut handles = Vec::new();
         for bundle in bundles {
@@ -1135,7 +1159,7 @@ mod tests {
 
         // Insert a valid bundle
         let bundle = make_bundle(0);
-        let id_bytes = serde_json::to_vec(&bundle.bundle.id).unwrap();
+        let id_bytes = serde_json::to_vec(&bundle.bundle.primary.id).unwrap();
         assert!(store.insert(&bundle).await.unwrap());
 
         // Corrupt the bundle blob directly in the DB
@@ -1150,19 +1174,22 @@ mod tests {
         }
 
         // get() returns Err (deserialization failure), not panic
-        let result = store.get(&bundle.bundle.id).await;
+        let result = store.get(&bundle.bundle.primary.id).await;
         assert!(result.is_err(), "get() should return Err for corrupt data");
 
         // confirm_exists() handles it gracefully — tombstones the entry
         store.start_recovery().await;
-        let result = store.confirm_exists(&bundle.bundle.id).await.unwrap();
+        let result = store
+            .confirm_exists(&bundle.bundle.primary.id)
+            .await
+            .unwrap();
         assert!(
             result.is_none(),
             "confirm_exists should return None for corrupt data"
         );
 
         // Entry should now be tombstoned
-        let result = store.get(&bundle.bundle.id).await.unwrap();
+        let result = store.get(&bundle.bundle.primary.id).await.unwrap();
         assert!(result.is_none(), "tombstoned entry should return None");
     }
 

@@ -1,18 +1,23 @@
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::eid::NodeId;
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use super::status::BundleStatus;
+use crate::{Arc, cla::ClaAddress};
+use hardy_bpv7::{
+    eid::{Eid, NodeId},
+    hop_info::HopInfo,
+};
 use time::OffsetDateTime;
 
-use super::status::BundleStatus;
-use crate::Arc;
-use crate::cla::ClaAddress;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-/// Immutable ingress context captured when a bundle is first received.
+/// Ingress context and decoded extension-block fields captured when a
+/// bundle's content is parsed.
 ///
-/// These fields are set once at ingress and never modified during
-/// processing. Transient fields (`ingress_cla`, `next_hop`) are not
-/// persisted to storage.
+/// The ingress fields are set once at reception. The extension-block fields
+/// (`previous_node` / `age` / `hop_count`) are decoded from the bundle once
+/// when its content is parsed — at ingress, on local build, or when a write
+/// filter re-parses a rewritten bundle (see [`crate::bundle::parse`]). They
+/// are read-only to the rest of the pipeline. Transient fields (`ingress_cla`,
+/// `next_hop`) are not persisted to storage.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ReadOnlyMetadata {
@@ -22,6 +27,24 @@ pub struct ReadOnlyMetadata {
     pub ingress_peer_node: Option<NodeId>,
     /// Convergence-layer address of the ingress peer.
     pub ingress_peer_addr: Option<ClaAddress>,
+    /// EID of the node that last forwarded the bundle (Previous Node block).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub previous_node: Option<Eid>,
+    /// Age of the bundle, used when the source node has no clock (Bundle Age block).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub age: Option<core::time::Duration>,
+    /// Hop limit and current hop count for the bundle (Hop Count block).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub hop_count: Option<HopInfo>,
     /// Name of the CLA instance that received this bundle (transient, not persisted).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub ingress_cla: Option<Arc<str>>,
@@ -36,6 +59,9 @@ impl Default for ReadOnlyMetadata {
             received_at: OffsetDateTime::now_utc(),
             ingress_peer_node: None,
             ingress_peer_addr: None,
+            previous_node: None,
+            age: None,
+            hop_count: None,
             ingress_cla: None,
             next_hop: None,
         }
