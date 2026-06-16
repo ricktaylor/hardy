@@ -11,9 +11,11 @@ use super::*;
 use error::CaptureFieldErr;
 use hardy_cbor::decode::Error as CborError;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PrimaryBlock {
     pub flags: bundle::Flags,
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub id: bundle::Id,
     pub crc_type: crc::CrcType,
     pub destination: eid::Eid,

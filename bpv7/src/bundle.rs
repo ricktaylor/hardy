@@ -17,7 +17,8 @@ use primary_block::PrimaryBlock;
 /// blocks keyed by block number. This is the crate's structural bundle
 /// representation, produced by [`parse`](crate::parse::parse) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
     pub primary: PrimaryBlock,
     pub blocks: HashMap<u64, block::Block>,
