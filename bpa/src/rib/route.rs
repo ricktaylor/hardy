@@ -107,6 +107,19 @@ impl Rib {
             other => other,
         };
 
+        if let Action::Via(ref next_hop) = action {
+            if next_hop.is_null() {
+                warn!(
+                    "Rejecting route with null next-hop: {pattern} via {next_hop} (source '{source}')"
+                );
+                return false;
+            }
+            if self.node_ids.is_local(next_hop) {
+                warn!("Rejecting route via own node: {pattern} via {next_hop} (source '{source}')");
+                return false;
+            }
+        }
+
         let vias = {
             let new_entry = Entry {
                 action: action.clone(),
@@ -566,5 +579,47 @@ pub(super) mod tests {
         let e2 = entry(Action::Reflect, "src");
         assert!(set.insert(e1));
         assert!(!set.insert(e2)); // duplicate
+    }
+
+    #[tokio::test]
+    async fn test_reject_null_next_hop() {
+        let rib = make_rib();
+        let result = rib
+            .add(
+                "ipn:0.2.*".parse().unwrap(),
+                "test".into(),
+                Action::Via(hardy_bpv7::eid::Eid::Null),
+                10,
+            )
+            .await;
+        assert!(!result, "Via null endpoint should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_reject_via_own_node() {
+        let rib = make_rib();
+        let result = rib
+            .add(
+                "ipn:0.99.*".parse().unwrap(),
+                "test".into(),
+                Action::Via("ipn:0.1.0".parse().unwrap()),
+                10,
+            )
+            .await;
+        assert!(!result, "Via own node should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_allow_default_route() {
+        let rib = make_rib();
+        let result = rib
+            .add(
+                "*:**".parse().unwrap(),
+                "test".into(),
+                Action::Via("ipn:0.2.0".parse().unwrap()),
+                10,
+            )
+            .await;
+        assert!(result, "Default route should be accepted");
     }
 }

@@ -61,6 +61,20 @@ impl NodeIds {
         }
     }
 
+    /// Returns `true` if the EID identifies this node (matches any of our
+    /// node IDs, ignoring the service component).
+    pub(crate) fn is_local(&self, eid: &Eid) -> bool {
+        match eid {
+            Eid::Null => false,
+            Eid::LocalNode(_) => true,
+            Eid::Ipn { fqnn, .. } | Eid::LegacyIpn { fqnn, .. } => {
+                self.ipn.is_some_and(|id| id == *fqnn)
+            }
+            Eid::Dtn { node_name, .. } => self.dtn.as_ref().is_some_and(|id| id == node_name),
+            _ => false,
+        }
+    }
+
     /// If `eid` is a `LocalNode`, return the concrete IPN form using this node's identity.
     /// Returns `None` if no conversion is needed (non-LocalNode EIDs).
     pub(crate) fn expand_local_node(&self, eid: &Eid) -> Option<Eid> {

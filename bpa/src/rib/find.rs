@@ -177,12 +177,9 @@ fn find_recurse<'a>(
                             }
                         }
                         Action::Via(via) => {
-                            // Recursive lookup
                             if !trail.insert(to) {
-                                warn!("Recursive route {to} found!");
-                                return Some(InternalFindResult::Drop(Some(
-                                    ReasonCode::NoKnownRouteToDestinationFromHere,
-                                )));
+                                trace!("Skipping recursive route for {to}");
+                                continue;
                             }
 
                             let sub_result = find_recurse(table, via, reflect, trail);
@@ -342,12 +339,10 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.2.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(
-            result,
-            Some(FindResult::Drop(Some(
-                ReasonCode::NoKnownRouteToDestinationFromHere
-            )))
-        ));
+        assert!(
+            result.is_none(),
+            "Recursive route should return None (wait), not Drop"
+        );
     }
 
     #[test]
