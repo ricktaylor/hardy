@@ -15,8 +15,8 @@ mod restart;
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
-    store: Arc<storage::store::Store>,
-    rib: Arc<rib::Rib>,
+    store: Arc<storage::Store>,
+    rib: Arc<routing::Rib>,
     key_provider: Arc<dyn keys::KeyProvider>,
     filter_engine: Arc<filter::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
@@ -37,8 +37,8 @@ impl Dispatcher {
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::store::Store>,
-        rib: Arc<rib::Rib>,
+        store: Arc<storage::Store>,
+        rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> Arc<Self> {
@@ -62,8 +62,8 @@ impl Dispatcher {
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::store::Store>,
-        rib: Arc<rib::Rib>,
+        store: Arc<storage::Store>,
+        rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {

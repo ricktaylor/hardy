@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routes::{RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;

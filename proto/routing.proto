@@ -59,7 +59,7 @@ message BpaToAgent {
   }
 }
 
-// Represents a routing action. Corresponds to hardy_bpa::routes::Action.
+// Represents a routing action. Corresponds to hardy_bpa::routing::Action.
 message RouteAction {
   oneof action {
     // Drop the bundle. The reason code is from RFC 9171 Section 6.1.1.

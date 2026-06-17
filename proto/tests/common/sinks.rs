@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use hardy_async::async_trait;
-use hardy_bpa::{cla, routes, services};
+use hardy_bpa::{cla, routing, services};
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -28,7 +28,7 @@ impl MockRoutingSink {
 }
 
 #[async_trait]
-impl routes::RoutingSink for MockRoutingSink {
+impl routing::RoutingSink for MockRoutingSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }
@@ -36,18 +36,18 @@ impl routes::RoutingSink for MockRoutingSink {
     async fn add_route(
         &self,
         _pattern: hardy_eid_patterns::EidPattern,
-        _action: routes::Action,
+        _action: routing::Action,
         _priority: u32,
-    ) -> routes::Result<bool> {
+    ) -> routing::Result<bool> {
         Ok(true)
     }
 
     async fn remove_route(
         &self,
         _pattern: &hardy_eid_patterns::EidPattern,
-        _action: &routes::Action,
+        _action: &routing::Action,
         _priority: u32,
-    ) -> routes::Result<bool> {
+    ) -> routing::Result<bool> {
         Ok(true)
     }
 }

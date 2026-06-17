@@ -8,7 +8,7 @@ pub mod sinks;
 
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{cla, routes, services};
+use hardy_bpa::{cla, routing, services};
 use hardy_bpv7::eid::NodeId;
 use sinks::*;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct MockBpa {
     node_ids: Vec<NodeId>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
-    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routes::RoutingAgent>>>,
+    pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
     pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
@@ -115,8 +115,8 @@ impl BpaRegistration for MockBpa {
     async fn register_routing_agent(
         &self,
         _name: String,
-        agent: Arc<dyn routes::RoutingAgent>,
-    ) -> routes::Result<Vec<NodeId>> {
+        agent: Arc<dyn routing::RoutingAgent>,
+    ) -> routing::Result<Vec<NodeId>> {
         let sink = Arc::new(MockRoutingSink::new());
         *self.last_routing_sink.lock() = Some(sink.clone());
         *self.last_routing_agent.lock() = Some(agent.clone());
@@ -137,24 +137,24 @@ struct ServiceSinkWrapper(Arc<MockServiceSink>);
 struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
 
 #[async_trait]
-impl routes::RoutingSink for RoutingSinkWrapper {
+impl routing::RoutingSink for RoutingSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
     async fn add_route(
         &self,
         p: hardy_eid_patterns::EidPattern,
-        a: routes::Action,
+        a: routing::Action,
         pri: u32,
-    ) -> routes::Result<bool> {
+    ) -> routing::Result<bool> {
         self.0.add_route(p, a, pri).await
     }
     async fn remove_route(
         &self,
         p: &hardy_eid_patterns::EidPattern,
-        a: &routes::Action,
+        a: &routing::Action,
         pri: u32,
-    ) -> routes::Result<bool> {
+    ) -> routing::Result<bool> {
         self.0.remove_route(p, a, pri).await
     }
 }

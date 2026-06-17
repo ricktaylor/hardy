@@ -14,7 +14,7 @@ use crate::{
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-        MetadataMemStorage, MetadataStorage, store::Store,
+        MetadataMemStorage, MetadataStorage, Store,
     },
 };
 

@@ -83,7 +83,7 @@ struct Sink {
     eid: Eid,
     registry: Arc<ServiceRegistry>,
     node_ids: Arc<node_ids::NodeIds>,
-    rib: Arc<rib::Rib>,
+    rib: Arc<routing::Rib>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
@@ -202,7 +202,7 @@ impl ServiceRegistryBuilder {
     pub async fn build(
         self,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Arc<ServiceRegistry>> {
         let registry = Arc::new(ServiceRegistry {
@@ -231,7 +231,7 @@ pub(crate) struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    pub async fn shutdown(&self, node_ids: &node_ids::NodeIds, rib: &Arc<rib::Rib>) {
+    pub async fn shutdown(&self, node_ids: &node_ids::NodeIds, rib: &Arc<routing::Rib>) {
         let services = self
             .services
             .lock()
@@ -257,7 +257,7 @@ impl ServiceRegistry {
         service_id: hardy_bpv7::eid::Service,
         service: Arc<dyn services::Service>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
@@ -269,7 +269,7 @@ impl ServiceRegistry {
         service_id: hardy_bpv7::eid::Service,
         application: Arc<dyn services::Application>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
@@ -281,7 +281,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         service: Arc<dyn services::Service>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
@@ -294,7 +294,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         application: Arc<dyn services::Application>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         let service_id = self.allocate_dynamic_id();
@@ -330,7 +330,7 @@ impl ServiceRegistry {
         self: &Arc<Self>,
         service_id: &hardy_bpv7::eid::Service,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
         let service = self.services.lock().get(service_id).cloned().unwrap();
@@ -359,7 +359,7 @@ impl ServiceRegistry {
         &self,
         service: Arc<Service>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
         let service = self.services.lock().remove(&service.service_id);
 
@@ -374,7 +374,7 @@ impl ServiceRegistry {
         &self,
         service: Arc<Service>,
         node_ids: &node_ids::NodeIds,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
         let eid = node_ids.resolve_eid(&service.service_id)?;
         rib.remove_service(&eid, service.clone()).await;

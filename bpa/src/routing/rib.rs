@@ -2,13 +2,13 @@ use futures::{FutureExt, select_biased};
 use hardy_async::sync::RwLock;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
+use tracing::{debug, info};
 
-use super::*;
-
-pub(crate) mod agent;
-
-mod find;
-mod route;
+use super::agent;
+use super::route;
+use super::{Error, Result, RoutingAgent};
+use crate::{Arc, BTreeMap, BTreeSet, HashMap, hash_map};
+use crate::{cla, dispatcher, node_ids, services, storage};
 
 #[derive(Debug)]
 pub enum FindResult {
@@ -18,32 +18,32 @@ pub enum FindResult {
     Drop(Option<ReasonCode>),                  // Drop with reason code
 }
 
-type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
+pub(super) type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
 
-struct RibInner {
-    routes: RouteTable,
-    address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
+pub(super) struct RibInner {
+    pub(super) routes: RouteTable,
+    pub(super) address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
 }
 
 pub struct Rib {
-    inner: RwLock<RibInner>,
+    pub(super) inner: RwLock<RibInner>,
     // Routing agent tracking: spin::Mutex for O(1) HashMap operations
-    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
-    node_ids: Arc<node_ids::NodeIds>,
+    pub(super) agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
+    pub(super) node_ids: Arc<node_ids::NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
     // an instance so the same bundle always selects the same peer.
-    ecmp_hash_state: foldhash::quality::RandomState,
-    tasks: hardy_async::TaskPool,
+    pub(super) ecmp_hash_state: foldhash::quality::RandomState,
+    pub(crate) tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::store::Store>,
+    pub(super) store: Arc<storage::Store>,
 
     // The priority for services - default 1
-    service_priority: u32,
+    pub(super) service_priority: u32,
 }
 
 pub(crate) struct RibBuilder {
-    agents: Vec<(String, Arc<dyn routes::RoutingAgent>)>,
+    agents: Vec<(String, Arc<dyn RoutingAgent>)>,
 
     // The priority for services - default 1
     service_priority: u32,
@@ -57,7 +57,7 @@ impl RibBuilder {
         }
     }
 
-    pub fn insert(&mut self, name: String, agent: Arc<dyn routes::RoutingAgent>) {
+    pub fn insert(&mut self, name: String, agent: Arc<dyn RoutingAgent>) {
         self.agents.push((name, agent));
     }
 
@@ -68,8 +68,8 @@ impl RibBuilder {
     pub async fn build(
         self,
         node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::store::Store>,
-    ) -> routes::Result<Arc<Rib>> {
+        store: Arc<storage::Store>,
+    ) -> Result<Arc<Rib>> {
         let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
         for (name, agent) in self.agents {
             rib.register_agent(name, agent).await?;
@@ -80,10 +80,10 @@ impl RibBuilder {
 
 impl Rib {
     const ADMIN_NAME: &str = "administrative endpoint";
-    const FORWARDS_NAME: &str = "neighbours";
-    const SERVICES_NAME: &str = "services";
+    pub(super) const FORWARDS_NAME: &str = "neighbours";
+    pub(super) const SERVICES_NAME: &str = "services";
 
-    fn new(
+    pub(super) fn new(
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::store::Store>,
         service_priority: u32,
@@ -151,7 +151,7 @@ impl Rib {
         self.tasks.shutdown().await;
     }
 
-    async fn notify_updated(&self) {
+    pub(super) async fn notify_updated(&self) {
         self.poll_waiting_notify.notify_waiters();
     }
 
@@ -165,5 +165,66 @@ impl Rib {
 
     pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
         self.inner.write().address_types.remove(address_type);
+    }
+
+    pub(crate) async fn register_agent(
+        self: &Arc<Self>,
+        name: String,
+        agent: Arc<dyn RoutingAgent>,
+    ) -> Result<Vec<NodeId>> {
+        let agent = {
+            let mut agents = self.agents.lock();
+            let hash_map::Entry::Vacant(e) = agents.entry(name.clone()) else {
+                return Err(Error::AlreadyExists(name));
+            };
+
+            info!("Registered new routing agent: {name}");
+
+            e.insert(Arc::new(agent::Agent { agent, name })).clone()
+        };
+
+        metrics::gauge!("bpa.rib.agents").increment(1.0);
+
+        let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
+        agent
+            .agent
+            .on_register(
+                Box::new(agent::sink::Sink::new(Arc::downgrade(&agent), self.clone())),
+                &node_ids,
+            )
+            .await;
+
+        Ok(node_ids)
+    }
+
+    pub(crate) async fn unregister_agent(&self, agent: Arc<agent::Agent>) {
+        let agent = self.agents.lock().remove(&agent.name);
+
+        if let Some(agent) = agent {
+            metrics::gauge!("bpa.rib.agents").decrement(1.0);
+            agent.agent.on_unregister().await;
+            self.remove_by_source(&agent.name).await;
+            info!("Unregistered routing agent: {}", agent.name);
+        }
+    }
+
+    pub(crate) async fn shutdown_agents(&self) {
+        let agents = self
+            .agents
+            .lock()
+            .drain()
+            .map(|(_, v)| v)
+            .collect::<Vec<_>>();
+
+        if !agents.is_empty() {
+            metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
+        }
+
+        for agent in agents {
+            agent.agent.on_unregister().await;
+            self.remove_by_source(&agent.name).await;
+            info!("Unregistered routing agent: {}", agent.name);
+        }
     }
 }
