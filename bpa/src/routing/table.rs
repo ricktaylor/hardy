@@ -219,13 +219,16 @@ impl RouteTable {
                                 let sub_result = self.find_recurse(via, reflect, trail);
                                 trail.remove(&to);
 
+                                // Carry each peer's resolved next-hop up unchanged: it is the
+                                // adjacent neighbour EID recorded at the Forward base case, which
+                                // is what egress filters need, not this intermediate via.
                                 match sub_result {
-                                    Some(LookupResult::Forward(sub_peer, _)) => {
-                                        sorted_insert(&mut peers, sub_peer, via);
+                                    Some(LookupResult::Forward(sub_peer, sub_next)) => {
+                                        sorted_insert(&mut peers, sub_peer, sub_next);
                                     }
                                     Some(LookupResult::ForwardEcmp(sub_peers)) => {
-                                        for (sub_peer, _) in sub_peers {
-                                            sorted_insert(&mut peers, sub_peer, via);
+                                        for (sub_peer, sub_next) in sub_peers {
+                                            sorted_insert(&mut peers, sub_peer, sub_next);
                                         }
                                     }
                                     Some(other) => return Some(other),
