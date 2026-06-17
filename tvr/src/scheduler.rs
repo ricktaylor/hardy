@@ -1,5 +1,5 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routing::{Action, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingSink};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -164,7 +164,7 @@ pub fn channel() -> (SchedulerHandle, SchedulerReceiver) {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RouteKey {
     pattern: EidPattern,
-    action: Action,
+    action: RouteAction,
     priority: u32,
 }
 
@@ -221,12 +221,12 @@ impl PartialOrd for Event {
 enum PendingRouteOp {
     Add {
         pattern: EidPattern,
-        action: Action,
+        action: RouteAction,
         priority: u32,
     },
     Remove {
         pattern: EidPattern,
-        action: Action,
+        action: RouteAction,
         priority: u32,
     },
 }
@@ -805,8 +805,8 @@ mod test {
         }
     }
 
-    fn via(next_hop: &str) -> Action {
-        Action::Via(next_hop.parse().unwrap())
+    fn via(next_hop: &str) -> RouteAction {
+        RouteAction::Via(next_hop.parse().unwrap())
     }
 
     fn pat(s: &str) -> EidPattern {

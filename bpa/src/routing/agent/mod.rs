@@ -10,6 +10,7 @@ use tracing::warn;
 
 use crate::async_trait;
 
+use super::action::RouteAction;
 use crate::{Arc, async_trait};
 
 /// A specialized `Result` type for routing agent operations.
@@ -42,28 +43,6 @@ pub enum Error {
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
-}
-
-/// The action to take when a route matches a bundle's destination.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Action {
-    /// Drop the bundle, optionally reporting a reason code.
-    Drop(Option<ReasonCode>),
-    /// Return the bundle to the previous hop (last-hop reflection).
-    Reflect,
-    /// Forward the bundle via the specified next-hop EID (recursive lookup).
-    Via(Eid),
-}
-
-impl fmt::Display for Action {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
-            Action::Drop(None) => write!(f, "Drop"),
-            Action::Reflect => write!(f, "Reflect"),
-            Action::Via(eid) => write!(f, "Via {eid}"),
-        }
-    }
 }
 
 /// The primary trait for a Routing Agent.
@@ -135,7 +114,12 @@ pub trait RoutingSink: Send + Sync {
     /// Adds a route to the RIB.
     ///
     /// Returns `true` if the route was newly inserted, `false` if it already existed.
-    async fn add_route(&self, pattern: EidPattern, action: Action, priority: u32) -> Result<bool>;
+    async fn add_route(
+        &self,
+        pattern: EidPattern,
+        action: RouteAction,
+        priority: u32,
+    ) -> Result<bool>;
 
     /// Removes a specific route from the RIB.
     ///
@@ -146,7 +130,7 @@ pub trait RoutingSink: Send + Sync {
     async fn remove_route(
         &self,
         pattern: &EidPattern,
-        action: &Action,
+        action: &RouteAction,
         priority: u32,
     ) -> Result<bool>;
 }

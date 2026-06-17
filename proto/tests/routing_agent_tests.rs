@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -98,7 +98,7 @@ async fn rte_cli_02_add_route() {
     let sink = agent.take_sink().expect("agent should have a sink");
 
     let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = Action::Via("ipn:2.1.0".parse().expect("valid EID"));
+    let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
     let added = sink
         .add_route(pattern, action, 100)
         .await
@@ -132,7 +132,7 @@ async fn rte_cli_03_remove_route() {
     let sink = agent.take_sink().expect("agent should have a sink");
 
     let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = Action::Via("ipn:2.1.0".parse().expect("valid EID"));
+    let action = RouteAction::Via("ipn:2.1.0".parse().expect("valid EID"));
     let removed = sink
         .remove_route(&pattern, &action, 100)
         .await

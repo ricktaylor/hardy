@@ -20,7 +20,7 @@ impl hardy_bpa::routing::RoutingSink for Sink {
     async fn add_route(
         &self,
         pattern: hardy_eid_patterns::EidPattern,
-        action: hardy_bpa::routing::Action,
+        action: hardy_bpa::routing::RouteAction,
         priority: u32,
     ) -> hardy_bpa::routing::Result<bool> {
         match self
@@ -41,7 +41,7 @@ impl hardy_bpa::routing::RoutingSink for Sink {
     async fn remove_route(
         &self,
         pattern: &hardy_eid_patterns::EidPattern,
-        action: &hardy_bpa::routing::Action,
+        action: &hardy_bpa::routing::RouteAction,
         priority: u32,
     ) -> hardy_bpa::routing::Result<bool> {
         match self
