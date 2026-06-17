@@ -163,8 +163,8 @@ Route table: NodeId pattern → Forward(peer_id) at priority 0
 
 2. **Handle Via(eid) recursively**
    - Recursive lookup on the via EID
-   - Detects loops via trail set
    - Collects all reachable peers
+   - An unresolvable next-hop — no matching route, or a loop detected by the trail set — is skipped, and the lookup falls through to less-specific patterns and lower priorities (see "Unresolvable next-hops" below)
 
 3. **ECMP selection** (if multiple peers)
    - Hash of: bundle source + destination + flow_label
@@ -205,6 +205,16 @@ Route: ipn:200.* via dtn://tunnel1
 ```
 
 The `next_hop` is stored in bundle metadata for egress filters.
+
+### Unresolvable Next-Hops
+
+A `Via(eid)` is only usable if its next-hop resolves, recursively, to a concrete `Forward(peer)`. When it does not — because no route currently matches the next-hop, or because resolving it would revisit an EID already on the current resolution path (a loop, caught by the trail set) — that `Via` yields no usable next-hop and is skipped. The lookup then continues in the normal precedence order: less-specific patterns at the same priority, then lower priorities. If no route yields a peer, the lookup returns `None` and the bundle waits (status `Waiting`) until the topology changes and the lookup is retried — it is not dropped. Only an explicit operator `Drop` rule drops.
+
+This makes next-hop availability a **runtime** property. A route is neither validated nor invalidated by the static shape of the table; it is usable only when its next-hop can be resolved against the table's *current* contents, which change as CLA peers connect and disconnect and as agents add or withdraw routes. A self-matching catch-all such as `ipn:*.* via <gateway>` (or `*:** via <gateway>`) is therefore legitimate: it resolves whenever `<gateway>` has a more-specific route or a connected peer, and when it does not, the trail breaks the self-recursion and the bundle waits. Such routes are accepted at commit time precisely because their usability cannot be decided from a static snapshot.
+
+This mirrors IP routing, where a route whose next-hop fails recursive resolution is treated as inactive and traffic falls back to the next-best route — typically a less-specific one such as the default. The difference is mechanism, not behaviour: rather than precomputing next-hop validity into a FIB in a control plane, the RIB resolves each lookup on demand. Network-wide forwarding loops are bounded separately by the Bundle Hop Count block — the DTN analogue of IP TTL — incremented on each forward; the trail set bounds only the *local* recursive resolution.
+
+A `Via` whose next-hop resolves to a **terminal** action (`Drop`, `Deliver`, `AdminEndpoint`, `Reflect`) is distinct from an unresolvable one: the terminal result propagates up and short-circuits the lookup rather than falling through.
 
 ## Forwarding Path
 
