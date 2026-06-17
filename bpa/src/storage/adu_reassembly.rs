@@ -9,7 +9,6 @@ use tracing::{debug, error};
 use crate::{
     Arc, Bytes, HashMap,
     bundle::{Bundle, BundleStatus},
-    stream::ChannelSender,
 };
 
 use super::store::Store;
@@ -97,7 +96,7 @@ impl Store {
             .into(),
         };
 
-        let (stream, rx) = ChannelSender::<Bundle>::bounded(16);
+        let (stream, rx) = hardy_async::channel::bounded::<Bundle>(16);
 
         join!(
             // Producer: poll for fragment bundles

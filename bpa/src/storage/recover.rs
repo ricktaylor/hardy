@@ -6,7 +6,7 @@ use tracing::info;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher, stream::ChannelSender};
+use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
 
 use super::{RecoveryResponse, store::Store};
 
@@ -41,7 +41,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn bundle_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (stream, rx) = ChannelSender::<RecoveryResponse>::bounded(16);
+        let (stream, rx) = hardy_async::channel::bounded::<RecoveryResponse>(16);
 
         join!(
             // Producer: recover bundles from storage
@@ -80,7 +80,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn metadata_storage_recovery(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (stream, rx) = ChannelSender::<Bundle>::bounded(16);
+        let (stream, rx) = hardy_async::channel::bounded::<Bundle>(16);
 
         join!(
             // Producer: find unconfirmed bundles

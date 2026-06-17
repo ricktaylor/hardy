@@ -26,7 +26,6 @@ use crate::{
     Arc, BTreeSet,
     bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
-    stream::ChannelSender,
 };
 
 /// Cache entry for the reaper's expiry monitoring.
@@ -198,7 +197,7 @@ impl Reaper {
 
     async fn refill_cache(&self) {
         let cancel_token = self.tasks.cancel_token().clone();
-        let (stream, rx) = ChannelSender::<Bundle>::bounded(self.cache_size);
+        let (stream, rx) = hardy_async::channel::bounded::<Bundle>(self.cache_size);
 
         join!(
             async {
