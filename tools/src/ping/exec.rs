@@ -40,9 +40,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
         "ping".to_string(),
-        std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
+        std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
             "*:**".parse().unwrap(),
-            hardy_bpa::routes::Action::Drop(Some(
+            hardy_bpa::routing::Action::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
             )),
             1000,
@@ -141,9 +141,9 @@ async fn exec_builtin_cla(
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
+            std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
-                hardy_bpa::routes::Action::Via(peer.into()),
+                hardy_bpa::routing::Action::Via(peer.into()),
                 1,
             )])),
         )
@@ -230,9 +230,9 @@ async fn exec_external_cla(
 
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            std::sync::Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[(
+            std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
-                hardy_bpa::routes::Action::Via(peer.into()),
+                hardy_bpa::routing::Action::Via(peer.into()),
                 1,
             )])),
         )

@@ -1,40 +1,24 @@
-use core::fmt;
+pub(crate) mod sink;
+mod static_agent;
 
-use hardy_async::sync::spin;
-use hardy_bpv7::{
-    eid::{Eid, NodeId},
-    status_report::ReasonCode,
-};
+pub use static_agent::StaticRoutingAgent;
+
+use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
 use tracing::warn;
 
 use crate::async_trait;
 
-/// The action to take when a route matches a bundle's destination.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Action {
-    /// Drop the bundle, optionally reporting a reason code.
-    Drop(Option<ReasonCode>),
-    /// Return the bundle to the previous hop (last-hop reflection).
-    Reflect,
-    /// Forward the bundle via the specified next-hop EID (recursive lookup).
-    Via(Eid),
-}
-
-impl fmt::Display for Action {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
-            Action::Drop(None) => write!(f, "Drop"),
-            Action::Reflect => write!(f, "Reflect"),
-            Action::Via(eid) => write!(f, "Via {eid}"),
-        }
-    }
-}
+use crate::{Arc, async_trait};
 
 /// A specialized `Result` type for routing agent operations.
-pub type Result<T> = core::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, self::Error>;
+
+pub(crate) struct Agent {
+    pub(super) agent: Arc<dyn RoutingAgent>,
+    pub(crate) name: String,
+}
 
 /// Errors that can occur during routing agent operations.
 #[derive(Debug, Error)]
@@ -60,6 +44,28 @@ pub enum Error {
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
+/// The action to take when a route matches a bundle's destination.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Action {
+    /// Drop the bundle, optionally reporting a reason code.
+    Drop(Option<ReasonCode>),
+    /// Return the bundle to the previous hop (last-hop reflection).
+    Reflect,
+    /// Forward the bundle via the specified next-hop EID (recursive lookup).
+    Via(Eid),
+}
+
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
+            Action::Drop(None) => write!(f, "Drop"),
+            Action::Reflect => write!(f, "Reflect"),
+            Action::Via(eid) => write!(f, "Via {eid}"),
+        }
+    }
+}
+
 /// The primary trait for a Routing Agent.
 ///
 /// A routing agent discovers or computes routes and pushes them to the BPA's
@@ -81,8 +87,8 @@ pub enum Error {
 /// [`on_unregister`](Self::on_unregister). All routes from this agent are automatically removed.
 ///
 /// Two disconnection paths exist:
-/// - **Agent-initiated**: Agent drops its Sink or calls `sink.unregister()` → BPA calls `on_unregister()`
-/// - **BPA-initiated**: BPA shuts down → calls `on_unregister()` → Sink becomes non-functional
+/// - **Agent-initiated**: Agent drops its Sink or calls `sink.unregister()` -> BPA calls `on_unregister()`
+/// - **BPA-initiated**: BPA shuts down -> calls `on_unregister()` -> Sink becomes non-functional
 #[async_trait]
 pub trait RoutingAgent: Send + Sync {
     /// Called when the routing agent is registered with the BPA.
@@ -143,59 +149,4 @@ pub trait RoutingSink: Send + Sync {
         action: &Action,
         priority: u32,
     ) -> Result<bool>;
-}
-
-/// A simple routing agent that installs a fixed set of routes on registration.
-///
-/// Routes are automatically removed when the agent is unregistered (via the BPA's
-/// bulk cleanup). This is useful for tools and tests that need a quick set of
-/// static routes without implementing the full [`RoutingAgent`] trait manually.
-///
-/// # Example
-///
-/// ```ignore
-/// use hardy_bpa::routes::StaticRoutingAgent;
-/// use hardy_bpa::routes::Action;
-///
-/// let agent = Arc::new(StaticRoutingAgent::new(&[
-///     ("ipn:*.*".parse().unwrap(), Action::Via("ipn:0.2.0".parse().unwrap()), 30),
-///     ("dtn://drop/**".parse().unwrap(), Action::Drop(None), 50),
-/// ]));
-/// bpa.register_routing_agent("my_routes".to_string(), agent).await?;
-/// ```
-pub struct StaticRoutingAgent {
-    routes: Vec<(EidPattern, Action, u32)>,
-    sink: spin::Once<Box<dyn RoutingSink>>,
-}
-
-impl StaticRoutingAgent {
-    /// Creates a new static routing agent with the given set of routes.
-    ///
-    /// Each route is a tuple of (pattern, action, priority). All routes are
-    /// installed atomically on registration via [`RoutingAgent::on_register`].
-    pub fn new(routes: &[(EidPattern, Action, u32)]) -> Self {
-        Self {
-            routes: routes.to_vec(),
-            sink: spin::Once::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl RoutingAgent for StaticRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        for (pattern, action, priority) in &self.routes {
-            if let Err(e) = sink
-                .add_route(pattern.clone(), action.clone(), *priority)
-                .await
-            {
-                warn!("Rejected route {pattern} => {action}: {e}");
-            }
-        }
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        // Routes are automatically removed by the BPA's remove_by_source cleanup.
-    }
 }

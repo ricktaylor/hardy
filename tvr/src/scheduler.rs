@@ -1,5 +1,5 @@
 use crate::contacts::{Contact, Schedule};
-use hardy_bpa::routes::{Action, RoutingSink};
+use hardy_bpa::routing::{Action, RoutingSink};
 use hardy_eid_patterns::EidPattern;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;

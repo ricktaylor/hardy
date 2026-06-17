@@ -8,7 +8,7 @@ use hardy_eid_patterns::EidPattern;
 use tracing::debug;
 
 use super::Rib;
-use crate::{Arc, HashSet, btree_map, routes, services};
+use crate::{Arc, HashSet, btree_map, services};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -54,12 +54,12 @@ impl Ord for Action {
     }
 }
 
-impl From<routes::Action> for Action {
-    fn from(value: routes::Action) -> Self {
+impl From<super::Action> for Action {
+    fn from(value: super::Action) -> Self {
         match value {
-            routes::Action::Drop(reason_code) => Self::Drop(reason_code),
-            routes::Action::Reflect => Self::Reflect,
-            routes::Action::Via(eid) => Self::Via(eid),
+            super::Action::Drop(reason_code) => Self::Drop(reason_code),
+            super::Action::Reflect => Self::Reflect,
+            super::Action::Via(eid) => Self::Via(eid),
         }
     }
 }

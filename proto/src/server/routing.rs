@@ -1,7 +1,7 @@
 use super::*;
 use proto::routing::*;
 
-type RoutingSink = Arc<dyn hardy_bpa::routes::RoutingSink>;
+type RoutingSink = Arc<dyn hardy_bpa::routing::RoutingSink>;
 
 struct RemoteRoutingAgent {
     sink: Mutex<Option<RoutingSink>>,
@@ -25,7 +25,7 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routes::Action = request
+        let action: hardy_bpa::routing::Action = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
@@ -48,7 +48,7 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routes::Action = request
+        let action: hardy_bpa::routing::Action = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
@@ -74,10 +74,10 @@ impl RemoteRoutingAgent {
 }
 
 #[async_trait]
-impl hardy_bpa::routes::RoutingAgent for RemoteRoutingAgent {
+impl hardy_bpa::routing::RoutingAgent for RemoteRoutingAgent {
     async fn on_register(
         &self,
-        sink: Box<dyn hardy_bpa::routes::RoutingSink>,
+        sink: Box<dyn hardy_bpa::routing::RoutingSink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
         *self.sink.lock() = Some(Arc::from(sink));
@@ -222,7 +222,7 @@ pub fn new_routing_agent_service(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hardy_bpa::routes::RoutingAgent;
+    use hardy_bpa::routing::RoutingAgent;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // ── Mock BPA routing sink ────────────────────────────────────────
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl hardy_bpa::routes::RoutingSink for MockSink {
+    impl hardy_bpa::routing::RoutingSink for MockSink {
         async fn unregister(&self) {
             self.unregistered.store(true, Ordering::Relaxed);
         }
@@ -248,18 +248,18 @@ mod tests {
         async fn add_route(
             &self,
             _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routes::Action,
+            _action: hardy_bpa::routing::Action,
             _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
+        ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
         }
 
         async fn remove_route(
             &self,
             _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routes::Action,
+            _action: &hardy_bpa::routing::Action,
             _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
+        ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
         }
     }
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl hardy_bpa::routes::RoutingSink for ReentrantSink {
+    impl hardy_bpa::routing::RoutingSink for ReentrantSink {
         async fn unregister(&self) {
             self.agent.on_unregister().await;
         }
@@ -279,18 +279,18 @@ mod tests {
         async fn add_route(
             &self,
             _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routes::Action,
+            _action: hardy_bpa::routing::Action,
             _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
+        ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
         }
 
         async fn remove_route(
             &self,
             _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routes::Action,
+            _action: &hardy_bpa::routing::Action,
             _priority: u32,
-        ) -> hardy_bpa::routes::Result<bool> {
+        ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
         }
     }

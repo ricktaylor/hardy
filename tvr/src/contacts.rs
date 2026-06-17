@@ -1,5 +1,5 @@
 use crate::scheduler::SchedulerHandle;
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
 use tracing::{debug, info};

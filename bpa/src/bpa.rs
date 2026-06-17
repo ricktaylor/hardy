@@ -111,13 +111,13 @@ use crate::{
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routes::RoutingSink`] in
-/// [`routes::RoutingAgent::on_register`]. Key Sink methods:
+/// Routing agents receive [`routing::RoutingSink`] in
+/// [`routing::RoutingAgent::on_register`]. Key Sink methods:
 ///
 /// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
 /// - `unregister()` - Disconnect from the BPA
 ///
-/// For simple static route sets, use [`routes::StaticRoutingAgent`] instead
+/// For simple static route sets, use [`routing::StaticRoutingAgent`] instead
 /// of implementing the trait manually.
 ///
 /// # For Service Implementors
@@ -176,8 +176,8 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Register a Routing Agent with the BPA.
     ///
-    /// The routing agent will receive a [`routes::RoutingSink`] via
-    /// [`routes::RoutingAgent::on_register`] for managing routes in the RIB.
+    /// The routing agent will receive a [`routing::RoutingSink`] via
+    /// [`routing::RoutingAgent::on_register`] for managing routes in the RIB.
     ///
     /// # Arguments
     ///
@@ -191,7 +191,7 @@ pub trait BpaRegistration: Send + Sync {
         &self,
         name: String,
         agent: Arc<dyn RoutingAgent>,
-    ) -> routes::Result<Vec<hardy_bpv7::eid::NodeId>>;
+    ) -> routing::Result<Vec<hardy_bpv7::eid::NodeId>>;
 }
 
 /// The core Bundle Processing Agent (RFC 9171).
@@ -370,7 +370,7 @@ impl BpaRegistration for Bpa {
         &self,
         name: String,
         agent: Arc<dyn RoutingAgent>,
-    ) -> routes::Result<Vec<NodeId>> {
+    ) -> routing::Result<Vec<NodeId>> {
         self.rib.register_agent(name, agent).await
     }
 }

@@ -41,7 +41,6 @@ extern crate alloc;
 
 mod dispatcher;
 mod otel_metrics;
-mod rib;
 
 pub mod bpa;
 pub mod builder;
@@ -52,7 +51,7 @@ pub mod filter;
 pub mod keys;
 pub mod node_ids;
 pub mod policy;
-pub mod routes;
+pub mod routing;
 pub mod services;
 pub mod storage;
 pub mod stream;
