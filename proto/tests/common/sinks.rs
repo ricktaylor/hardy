@@ -36,7 +36,7 @@ impl routing::RoutingSink for MockRoutingSink {
     async fn add_route(
         &self,
         _pattern: hardy_eid_patterns::EidPattern,
-        _action: routing::Action,
+        _action: routing::RouteAction,
         _priority: u32,
     ) -> routing::Result<bool> {
         Ok(true)
@@ -45,7 +45,7 @@ impl routing::RoutingSink for MockRoutingSink {
     async fn remove_route(
         &self,
         _pattern: &hardy_eid_patterns::EidPattern,
-        _action: &routing::Action,
+        _action: &routing::RouteAction,
         _priority: u32,
     ) -> routing::Result<bool> {
         Ok(true)

@@ -1,7 +1,7 @@
 use crate::contacts::{Contact, Schedule};
 use crate::cron::CronExpr;
 use chumsky::prelude::*;
-use hardy_bpa::routing::Action;
+use hardy_bpa::routing::RouteAction;
 use hardy_eid_patterns as eid_patterns;
 use std::path::PathBuf;
 use tracing::{debug, error, warn};
@@ -48,7 +48,7 @@ fn pattern<'a>() -> impl Parser<'a, &'a str, eid_patterns::EidPattern, Extra<'a>
 
 // ── Actions (via / drop — no reflect) ───────────────────────────────
 
-fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn drop_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     keyword("drop")
         .then(
             text::inline_whitespace()
@@ -63,11 +63,11 @@ fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
                 })
                 .or_not(),
         )
-        .map(|(_, reason)| Action::Drop(reason))
+        .map(|(_, reason)| RouteAction::Drop(reason))
         .labelled("drop action")
 }
 
-fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn via_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     keyword("via")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(
@@ -78,11 +78,11 @@ fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
                 })
                 .labelled("next-hop EID"),
         )
-        .map(Action::Via)
+        .map(RouteAction::Via)
         .labelled("via action")
 }
 
-fn action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     choice((drop_action(), via_action())).labelled("action")
 }
 
@@ -557,7 +557,7 @@ mod test {
     fn simple_via() {
         let c = parse_ok("ipn:*.*.* via ipn:0.1.0");
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Via(_)));
+        assert!(matches!(c[0].action, RouteAction::Via(_)));
         assert_eq!(c[0].priority, None);
         assert_eq!(c[0].schedule, Schedule::Permanent);
     }
@@ -566,7 +566,7 @@ mod test {
     fn simple_drop() {
         let c = parse_ok("ipn:99.*.* drop");
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Drop(None)));
+        assert!(matches!(c[0].action, RouteAction::Drop(None)));
         assert_eq!(c[0].schedule, Schedule::Permanent);
     }
 
@@ -574,14 +574,14 @@ mod test {
     fn drop_with_reason() {
         let c = parse_ok("ipn:99.*.* drop 3");
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Drop(Some(_))));
+        assert!(matches!(c[0].action, RouteAction::Drop(Some(_))));
     }
 
     #[test]
     fn via_with_priority() {
         let c = parse_ok("ipn:2.*.* via ipn:2.1.0 priority 10");
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Via(_)));
+        assert!(matches!(c[0].action, RouteAction::Via(_)));
         assert_eq!(c[0].priority, Some(10));
         assert_eq!(c[0].schedule, Schedule::Permanent);
     }
@@ -925,7 +925,7 @@ ipn:3.*.* via ipn:3.1.0 priority 10
     fn scheduled_drop() {
         let c = parse_ok("ipn:6.*.* drop cron \"0 2 * * 0\" duration 4h priority 0");
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Drop(None)));
+        assert!(matches!(c[0].action, RouteAction::Drop(None)));
         assert_eq!(c[0].priority, Some(0));
         assert!(matches!(c[0].schedule, Schedule::Recurring { .. }));
     }
@@ -936,7 +936,7 @@ ipn:3.*.* via ipn:3.1.0 priority 10
             "ipn:7.*.* drop 3 start 2026-04-01T00:00:00Z end 2026-04-02T00:00:00Z priority 0",
         );
         assert_eq!(c.len(), 1);
-        assert!(matches!(c[0].action, Action::Drop(Some(_))));
+        assert!(matches!(c[0].action, RouteAction::Drop(Some(_))));
         assert!(matches!(c[0].schedule, Schedule::OneShot { .. }));
     }
 

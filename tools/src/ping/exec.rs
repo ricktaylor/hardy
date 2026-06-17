@@ -42,7 +42,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
         "ping".to_string(),
         std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
             "*:**".parse().unwrap(),
-            hardy_bpa::routing::Action::Drop(Some(
+            hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
             )),
             1000,
@@ -143,7 +143,7 @@ async fn exec_builtin_cla(
             "ping-target".to_string(),
             std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
-                hardy_bpa::routing::Action::Via(peer.into()),
+                hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
             )])),
         )
@@ -232,7 +232,7 @@ async fn exec_external_cla(
             "ping-target".to_string(),
             std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
-                hardy_bpa::routing::Action::Via(peer.into()),
+                hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
             )])),
         )

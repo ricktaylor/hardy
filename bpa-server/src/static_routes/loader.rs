@@ -2,7 +2,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 use chumsky::prelude::*;
-use hardy_bpa::routing::Action;
+use hardy_bpa::routing::RouteAction;
 use hardy_eid_patterns::EidPattern;
 use tracing::{debug, error};
 
@@ -39,7 +39,7 @@ fn keyword<'a>(word: &'a str) -> impl Parser<'a, &'a str, (), Extra<'a>> {
         })
 }
 
-fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn drop_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     keyword("drop")
         .then(
             text::inline_whitespace()
@@ -54,11 +54,11 @@ fn drop_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
                 })
                 .or_not(),
         )
-        .map(|(_, reason)| Action::Drop(reason))
+        .map(|(_, reason)| RouteAction::Drop(reason))
         .labelled("drop action")
 }
 
-fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn via_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     keyword("via")
         .then(text::inline_whitespace().at_least(1))
         .ignore_then(
@@ -73,17 +73,17 @@ fn via_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
                 })
                 .labelled("next-hop EID"),
         )
-        .map(Action::Via)
+        .map(RouteAction::Via)
         .labelled("via action")
 }
 
-fn reflect_action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn reflect_action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     keyword("reflect")
-        .to(Action::Reflect)
+        .to(RouteAction::Reflect)
         .labelled("reflect action")
 }
 
-fn action<'a>() -> impl Parser<'a, &'a str, Action, Extra<'a>> {
+fn action<'a>() -> impl Parser<'a, &'a str, RouteAction, Extra<'a>> {
     choice((drop_action(), via_action(), reflect_action())).labelled("action")
 }
 
@@ -257,7 +257,7 @@ mod test {
     fn simple_route() {
         let routes = parse_ok("ipn:*.*.* via ipn:0.1.0");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert!(matches!(routes[0].action, RouteAction::Via(_)));
         assert_eq!(routes[0].priority, None);
     }
 
@@ -265,7 +265,7 @@ mod test {
     fn route_with_priority() {
         let routes = parse_ok("dtn://**/** reflect priority 1200");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Reflect));
+        assert!(matches!(routes[0].action, RouteAction::Reflect));
         assert_eq!(routes[0].priority, Some(1200));
     }
 
@@ -273,21 +273,21 @@ mod test {
     fn drop_action() {
         let routes = parse_ok("ipn:99.*.* drop");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Drop(None)));
+        assert!(matches!(routes[0].action, RouteAction::Drop(None)));
     }
 
     #[test]
     fn drop_with_reason() {
         let routes = parse_ok("ipn:99.*.* drop 3");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+        assert!(matches!(routes[0].action, RouteAction::Drop(Some(_))));
     }
 
     #[test]
     fn drop_with_priority() {
         let routes = parse_ok("ipn:99.*.* drop priority 5");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Drop(None)));
+        assert!(matches!(routes[0].action, RouteAction::Drop(None)));
         assert_eq!(routes[0].priority, Some(5));
     }
 
@@ -295,7 +295,7 @@ mod test {
     fn drop_with_reason_and_priority() {
         let routes = parse_ok("ipn:99.*.* drop 3 priority 5");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+        assert!(matches!(routes[0].action, RouteAction::Drop(Some(_))));
         assert_eq!(routes[0].priority, Some(5));
     }
 
@@ -303,7 +303,7 @@ mod test {
     fn via_with_priority() {
         let routes = parse_ok("ipn:*.*.* via ipn:0.1.0 priority 42");
         assert_eq!(routes.len(), 1);
-        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert!(matches!(routes[0].action, RouteAction::Via(_)));
         assert_eq!(routes[0].priority, Some(42));
     }
 
@@ -311,23 +311,23 @@ mod test {
     fn case_insensitive_keywords() {
         // All-caps
         let routes = parse_ok("ipn:*.*.* VIA ipn:0.1.0");
-        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert!(matches!(routes[0].action, RouteAction::Via(_)));
 
         let routes = parse_ok("ipn:99.*.* DROP");
-        assert!(matches!(routes[0].action, Action::Drop(None)));
+        assert!(matches!(routes[0].action, RouteAction::Drop(None)));
 
         let routes = parse_ok("dtn://**/** REFLECT");
-        assert!(matches!(routes[0].action, Action::Reflect));
+        assert!(matches!(routes[0].action, RouteAction::Reflect));
 
         let routes = parse_ok("ipn:*.*.* via ipn:0.1.0 PRIORITY 42");
         assert_eq!(routes[0].priority, Some(42));
 
         // Mixed case
         let routes = parse_ok("ipn:*.*.* Via ipn:0.1.0");
-        assert!(matches!(routes[0].action, Action::Via(_)));
+        assert!(matches!(routes[0].action, RouteAction::Via(_)));
 
         let routes = parse_ok("ipn:99.*.* Drop 3 Priority 5");
-        assert!(matches!(routes[0].action, Action::Drop(Some(_))));
+        assert!(matches!(routes[0].action, RouteAction::Drop(Some(_))));
         assert_eq!(routes[0].priority, Some(5));
     }
 

@@ -144,7 +144,7 @@ impl routing::RoutingSink for RoutingSinkWrapper {
     async fn add_route(
         &self,
         p: hardy_eid_patterns::EidPattern,
-        a: routing::Action,
+        a: routing::RouteAction,
         pri: u32,
     ) -> routing::Result<bool> {
         self.0.add_route(p, a, pri).await
@@ -152,7 +152,7 @@ impl routing::RoutingSink for RoutingSinkWrapper {
     async fn remove_route(
         &self,
         p: &hardy_eid_patterns::EidPattern,
-        a: &routing::Action,
+        a: &routing::RouteAction,
         pri: u32,
     ) -> routing::Result<bool> {
         self.0.remove_route(p, a, pri).await

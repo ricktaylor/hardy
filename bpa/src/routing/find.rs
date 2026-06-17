@@ -10,32 +10,16 @@ use tracing::instrument;
 use super::{FindResult, Rib, RouteTable, route::Action};
 use crate::{Arc, HashSet, bundle, services};
 
-#[derive(Debug)]
-enum InternalFindResult<'a> {
-    AdminEndpoint,
-    Deliver(Arc<services::registry::Service>), // Deliver to local service
-    Forward(Vec<(u32, &'a Eid)>),              // sorted peer -> next_hop pairs
-    Drop(Option<ReasonCode>),                  // Drop with reason code
-    Reflect,                                   // Reflect
-}
-
-/// Insert into a sorted vec, maintaining sort order by peer id. Skips duplicates.
-fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
-    if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
-        peers.insert(idx, (peer, next_hop));
-    }
-}
-
 impl Rib {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
         let inner = self.inner.read();
 
-        // TODO: this is where route table switching can occur
-        let table = &inner.routes;
-
-        let result = find_recurse(table, &bundle.bundle.destination, true, &mut HashSet::new())?;
-        if !matches!(result, InternalFindResult::Reflect) {
+        let result =
+            inner
+                .table
+                .find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        if !matches!(result, table::FindResult::Reflect) {
             return map_result(
                 result,
                 &self.ecmp_hash_state,
@@ -44,14 +28,14 @@ impl Rib {
             );
         }
 
-        // Reflect: return the bundle via the previous forwarding node,
-        // falling back to the bundle source as last resort.
         let previous = bundle
             .previous_node()
             .unwrap_or_else(|| bundle.bundle.id.source.clone());
 
         map_result(
-            find_recurse(table, &previous, false, &mut HashSet::new())?,
+            inner
+                .table
+                .find_recurse(&previous, false, &mut HashSet::new())?,
             &self.ecmp_hash_state,
             &bundle.bundle,
             &mut bundle.metadata,
@@ -62,17 +46,7 @@ impl Rib {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
         let inner = self.inner.read();
-
-        // TODO: this should be for *all* tables
-        let table = &inner.routes;
-
-        if let Some(InternalFindResult::Forward(peers)) =
-            find_recurse(table, to, false, &mut HashSet::new())
-        {
-            Some(peers.into_iter().map(|(peer, _)| peer).collect())
-        } else {
-            None
-        }
+        inner.table.find_peers(to)
     }
 
     /// Find a registered local service matching the given EID.
@@ -85,24 +59,7 @@ impl Rib {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
     pub fn find_service(&self, to: &Eid) -> Option<Arc<services::registry::Service>> {
         let inner = self.inner.read();
-
-        // TODO: this should be for *all* tables
-        let table = &inner.routes;
-
-        // Scan the table for a Local(service) action matching the given EID.
-        // Ignores priority ordering and Drop rules.
-        for entries in table.values() {
-            for (pattern, actions) in entries {
-                if pattern.matches(to) {
-                    for entry in actions {
-                        if let Action::Local(service) = &entry.action {
-                            return Some(service.clone());
-                        }
-                    }
-                }
-            }
-        }
-        None
+        inner.table.find_service(to)
     }
 }
 
@@ -113,14 +70,14 @@ fn map_result(
     metadata: &mut bundle::BundleMetadata,
 ) -> Option<FindResult> {
     match result {
-        InternalFindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
-        InternalFindResult::Deliver(service) => Some(FindResult::Deliver(service)),
-        InternalFindResult::Drop(reason) => Some(FindResult::Drop(reason)),
-        InternalFindResult::Forward(peers) if peers.is_empty() => {
+        table::FindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
+        table::FindResult::Deliver(service) => Some(FindResult::Deliver(service)),
+        table::FindResult::Drop(reason) => Some(FindResult::Drop(reason)),
+        table::FindResult::Forward(peers) if peers.is_empty() => {
             debug_assert!(false, "Empty Forward result from find_recurse");
             None
         }
-        InternalFindResult::Forward(mut peers) => {
+        table::FindResult::Forward(mut peers) => {
             if tracing::enabled!(tracing::Level::TRACE) {
                 trace!(
                     "Forward to CLA peer{} {}",
@@ -146,89 +103,12 @@ fn map_result(
             };
             let (peer, next_hop) = peers.swap_remove(idx);
 
-            // Set the next-hop for Egress filters
             metadata.read_only.next_hop = Some(next_hop.clone());
 
             Some(FindResult::Forward(peer))
         }
-        InternalFindResult::Reflect => None,
+        table::FindResult::Reflect => None,
     }
-}
-
-#[cfg_attr(feature = "instrument", instrument(skip(table, to, trail),fields(to = %to)))]
-fn find_recurse<'a>(
-    table: &'a RouteTable,
-    to: &'a Eid,
-    reflect: bool,
-    trail: &mut HashSet<&'a Eid>,
-) -> Option<InternalFindResult<'a>> {
-    trace!("Looking for route for {to}");
-
-    let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
-    for entries in table.values() {
-        for (pattern, actions) in entries {
-            if pattern.matches(to) {
-                for entry in actions {
-                    match &entry.action {
-                        Action::Drop(reason) => {
-                            // Drop trumps everything else
-                            trace!("Drop {reason:?}");
-                            return Some(InternalFindResult::Drop(*reason));
-                        }
-                        Action::Reflect => {
-                            if reflect {
-                                trace!("Reflect");
-                                return Some(InternalFindResult::Reflect);
-                            }
-                        }
-                        Action::Via(via) => {
-                            if !trail.insert(to) {
-                                trace!("Skipping recursive route for {to}");
-                                continue;
-                            }
-
-                            let sub_result = find_recurse(table, via, reflect, trail);
-
-                            trail.remove(&to);
-
-                            if let Some(sub_result) = sub_result {
-                                let InternalFindResult::Forward(sub_peers) = sub_result else {
-                                    // If we find a non-forward, then get out
-                                    return Some(sub_result);
-                                };
-
-                                // The 'via' Eid is the next-hop for all peers found through this path
-                                // Append peers to the running vec, maintaining sort order
-                                for (sub_peer, _) in sub_peers {
-                                    sorted_insert(&mut peers, sub_peer, via);
-                                }
-                            } else {
-                                // TODO: Kick off a resolver lookup for `via`
-                            }
-                        }
-                        Action::AdminEndpoint => {
-                            trace!("Deliver to Admin Endpoint");
-                            return Some(InternalFindResult::AdminEndpoint);
-                        }
-                        Action::Local(service) => {
-                            trace!("Deliver to Service {}", service.service_id);
-                            return Some(InternalFindResult::Deliver(service.clone()));
-                        }
-                        Action::Forward(peer) => {
-                            // The 'to' Eid is the next-hop for all peers found here
-                            sorted_insert(&mut peers, *peer, to);
-                        }
-                    }
-                }
-
-                // Only accumulate ECMP peers within the same pattern (equal specificity)
-                if !peers.is_empty() {
-                    return Some(InternalFindResult::Forward(peers));
-                }
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -258,7 +138,7 @@ mod tests {
             rib,
             &pattern.to_string(),
             "forward",
-            Action::Forward(peer),
+            Action::Internal(InternalAction::Forward(peer)),
             0,
         )
     }
@@ -295,11 +175,8 @@ mod tests {
     #[test]
     fn test_exact_match() {
         let rib = make_rib();
-
-        // Add a local forward peer for ipn:0.2.*
         add_local_forward(&rib, ipn_node(2), 42);
 
-        // Lookup for an EID under that node
         let mut bundle = make_bundle("ipn:0.2.1");
         let result = rib.find(&mut bundle);
         assert!(matches!(result, Some(FindResult::Forward(42))));
@@ -309,19 +186,16 @@ mod tests {
     fn test_default_route() {
         let rib = make_rib();
 
-        // Add a catch-all Via route
         add_route(
             &rib,
-            "*:**",
+            "ipn:0.50.*",
             "default",
-            Action::Via("ipn:0.10.0".parse().unwrap()),
+            Action::Route(RouteAction::Via("ipn:0.10.0".parse().unwrap())),
             1000,
         );
 
-        // Add a local forward for the gateway node
         add_local_forward(&rib, ipn_node(10), 99);
 
-        // An unknown destination should resolve via the default route
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
         assert!(matches!(result, Some(FindResult::Forward(99))));
@@ -331,7 +205,6 @@ mod tests {
     fn test_no_route() {
         let rib = make_rib();
 
-        // No matching route — unknown destination returns None (wait for route)
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
         assert!(result.is_none());
@@ -341,19 +214,18 @@ mod tests {
     fn test_recursion_loop() {
         let rib = make_rib();
 
-        // Create a routing loop: ipn:0.2.* → Via ipn:0.3.0, ipn:0.3.* → Via ipn:0.2.0
         add_route(
             &rib,
             "ipn:0.2.*",
             "loop",
-            Action::Via("ipn:0.3.0".parse().unwrap()),
+            Action::Route(RouteAction::Via("ipn:0.3.0".parse().unwrap())),
             10,
         );
         add_route(
             &rib,
             "ipn:0.3.*",
             "loop",
-            Action::Via("ipn:0.2.0".parse().unwrap()),
+            Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
             10,
         );
 
@@ -369,18 +241,20 @@ mod tests {
     fn test_reflection() {
         let rib = make_rib();
 
-        // Add a Reflect route for ipn:0.5.*
-        add_route(&rib, "ipn:0.5.*", "reflect", route::Action::Reflect, 10);
+        add_route(
+            &rib,
+            "ipn:0.5.*",
+            "reflect",
+            Action::Route(RouteAction::Reflect),
+            10,
+        );
 
-        // Add a forward peer for node 4 (the previous hop)
         add_local_forward(&rib, ipn_node(4), 77);
 
-        // Bundle with a previous node set
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
 
         let result = rib.find(&mut bundle);
-        // Should route back to the previous node's peer
         assert!(matches!(result, Some(FindResult::Forward(77))));
     }
 
@@ -388,10 +262,20 @@ mod tests {
     fn test_reflection_no_double() {
         let rib = make_rib();
 
-        // Reflect routes for both destination and previous-hop — should not
-        // double-reflect (return None instead)
-        add_route(&rib, "ipn:0.5.*", "r", route::Action::Reflect, 10);
-        add_route(&rib, "ipn:0.4.*", "r", route::Action::Reflect, 10);
+        add_route(
+            &rib,
+            "ipn:0.5.*",
+            "r",
+            Action::Route(RouteAction::Reflect),
+            10,
+        );
+        add_route(
+            &rib,
+            "ipn:0.4.*",
+            "r",
+            Action::Route(RouteAction::Reflect),
+            10,
+        );
 
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
@@ -404,27 +288,24 @@ mod tests {
     fn test_ecmp_hashing() {
         let rib = make_rib();
 
-        // Two Via routes at the same priority, each resolving to a different peer
         add_route(
             &rib,
             "ipn:0.50.*",
             "ecmp_a",
-            Action::Via("ipn:0.10.0".parse().unwrap()),
+            Action::Route(RouteAction::Via("ipn:0.10.0".parse().unwrap())),
             10,
         );
         add_route(
             &rib,
             "ipn:0.50.*",
             "ecmp_b",
-            Action::Via("ipn:0.11.0".parse().unwrap()),
+            Action::Route(RouteAction::Via("ipn:0.11.0".parse().unwrap())),
             10,
         );
 
-        // Add forward peers for both gateways
         add_local_forward(&rib, ipn_node(10), 10);
         add_local_forward(&rib, ipn_node(11), 11);
 
-        // Same bundle should always hash to the same peer (deterministic)
         let mut bundle = make_bundle("ipn:0.50.1");
         let result1 = rib.find(&mut bundle);
         let peer1 = match result1 {
@@ -451,8 +332,6 @@ mod tests {
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
 
-        // Rib::new() adds admin endpoint routes at priority 0.
-        // The IPN admin EID (ipn:0.1.0) should resolve to AdminEndpoint.
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
@@ -465,9 +344,6 @@ mod tests {
     fn test_unregistered_local_waits() {
         let rib = make_rib();
 
-        // A bundle for a local service number with no registered service
-        // should return None (wait for route) — not Drop.
-        // This is the correct DTN behaviour: default to wait.
         let mut bundle = make_bundle("ipn:0.1.99");
         let result = rib.find(&mut bundle);
         assert!(
@@ -478,18 +354,18 @@ mod tests {
 
     #[test]
     fn test_concrete_service_matches() {
-        // A service route stored with a concrete local EID pattern
-        // should match bundles destined for that EID.
         let rib = make_rib();
 
         add_route(
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Local(Arc::new(services::registry::Service {
-                service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-            })),
+            Action::Internal(InternalAction::Local(Arc::new(
+                services::registry::Service {
+                    service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
+                    service_id: EidService::Ipn(42),
+                },
+            ))),
             1,
         );
 
@@ -503,22 +379,21 @@ mod tests {
 
     #[test]
     fn test_concrete_service_ignores_remote_eid() {
-        // A concrete service route should NOT match a remote node's EID,
-        // even if the service number matches.
         let rib = make_rib();
 
         add_route(
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Local(Arc::new(services::registry::Service {
-                service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-            })),
+            Action::Internal(InternalAction::Local(Arc::new(
+                services::registry::Service {
+                    service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
+                    service_id: EidService::Ipn(42),
+                },
+            ))),
             1,
         );
 
-        // Bundle for a different node should NOT match
         let mut bundle = make_bundle("ipn:0.2.42");
         let result = rib.find(&mut bundle);
         assert!(
@@ -529,8 +404,6 @@ mod tests {
 
     #[test]
     fn test_admin_endpoint_matches_concrete() {
-        // The admin endpoint is registered with a concrete IPN EID (ipn:0.1.0).
-        // A bundle for that EID should match directly.
         let rib = make_rib();
 
         let mut bundle = make_bundle("ipn:0.1.0");
@@ -545,13 +418,13 @@ mod tests {
     fn test_explicit_drop_overrides_wait() {
         let rib = make_rib();
 
-        // Operator configures an explicit Drop rule for a service range.
-        // This overrides the default wait behaviour for unregistered services.
         add_route(
             &rib,
             "ipn:0.1.*",
             "policy",
-            Action::Drop(Some(ReasonCode::DestinationEndpointIDUnavailable)),
+            Action::Route(RouteAction::Drop(Some(
+                ReasonCode::DestinationEndpointIDUnavailable,
+            ))),
             10,
         );
 

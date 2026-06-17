@@ -1,9 +1,9 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Action, Agent, Error, Result, RoutingSink};
-use crate::async_trait;
+use super::{Agent, Error, Result, RoutingSink};
+use crate::routing::action::RouteAction;
 use crate::routing::rib::Rib;
-use crate::{Arc, Weak};
+use crate::{Arc, Weak, async_trait};
 
 pub struct Sink {
     agent: Weak<Agent>,
@@ -24,7 +24,12 @@ impl RoutingSink for Sink {
         }
     }
 
-    async fn add_route(&self, pattern: EidPattern, action: Action, priority: u32) -> Result<bool> {
+    async fn add_route(
+        &self,
+        pattern: EidPattern,
+        action: RouteAction,
+        priority: u32,
+    ) -> Result<bool> {
         let agent = self.agent.upgrade().ok_or(Error::Disconnected)?;
         Ok(self
             .rib
@@ -35,7 +40,7 @@ impl RoutingSink for Sink {
     async fn remove_route(
         &self,
         pattern: &EidPattern,
-        action: &Action,
+        action: &RouteAction,
         priority: u32,
     ) -> Result<bool> {
         let agent = self.agent.upgrade().ok_or(Error::Disconnected)?;

@@ -25,7 +25,7 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routing::Action = request
+        let action: hardy_bpa::routing::RouteAction = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
@@ -48,7 +48,7 @@ impl RemoteRoutingAgent {
             .parse()
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid EID pattern: {e}")))?;
 
-        let action: hardy_bpa::routing::Action = request
+        let action: hardy_bpa::routing::RouteAction = request
             .action
             .ok_or(tonic::Status::invalid_argument("Missing action"))?
             .try_into()?;
@@ -248,7 +248,7 @@ mod tests {
         async fn add_route(
             &self,
             _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routing::Action,
+            _action: hardy_bpa::routing::RouteAction,
             _priority: u32,
         ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
@@ -257,7 +257,7 @@ mod tests {
         async fn remove_route(
             &self,
             _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routing::Action,
+            _action: &hardy_bpa::routing::RouteAction,
             _priority: u32,
         ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
@@ -279,7 +279,7 @@ mod tests {
         async fn add_route(
             &self,
             _pattern: hardy_eid_patterns::EidPattern,
-            _action: hardy_bpa::routing::Action,
+            _action: hardy_bpa::routing::RouteAction,
             _priority: u32,
         ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)
@@ -288,7 +288,7 @@ mod tests {
         async fn remove_route(
             &self,
             _pattern: &hardy_eid_patterns::EidPattern,
-            _action: &hardy_bpa::routing::Action,
+            _action: &hardy_bpa::routing::RouteAction,
             _priority: u32,
         ) -> hardy_bpa::routing::Result<bool> {
             Ok(true)

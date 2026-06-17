@@ -19,7 +19,7 @@ use super::loader;
 pub(super) struct StaticRoute {
     pub(super) pattern: EidPattern,
     pub(super) priority: Option<u32>,
-    pub(super) action: Action,
+    pub(super) action: RouteAction,
 }
 
 pub struct StaticRoutesAgent {

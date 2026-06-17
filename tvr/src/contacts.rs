@@ -1,5 +1,5 @@
 use crate::scheduler::SchedulerHandle;
-use hardy_bpa::routing::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -11,7 +11,7 @@ pub struct Contact {
     // EID pattern that this contact matches against (e.g. `ipn:2.*.*`).
     pub pattern: hardy_eid_patterns::EidPattern,
     // Routing action to take for matching bundles (`via` or `drop`).
-    pub action: Action,
+    pub action: RouteAction,
     // Optional priority override; if `None`, the agent's default priority is used.
     pub priority: Option<u32>,
     // When this contact is active.

@@ -1,9 +1,9 @@
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 
+use super::{RoutingAgent, RoutingSink};
 use crate::async_trait;
-
-use super::{Action, RoutingAgent, RoutingSink};
+use crate::routing::action::RouteAction;
 
 /// A simple routing agent that installs a fixed set of routes on registration.
 ///
@@ -14,21 +14,21 @@ use super::{Action, RoutingAgent, RoutingSink};
 /// # Example
 ///
 /// ```ignore
-/// use hardy_bpa::routing::{StaticRoutingAgent, Action};
+/// use hardy_bpa::routing::{StaticRoutingAgent, RouteAction};
 ///
 /// let agent = Arc::new(StaticRoutingAgent::new(&[
-///     ("ipn:*.*".parse().unwrap(), Action::Via("ipn:0.2.0".parse().unwrap()), 30),
-///     ("dtn://drop/**".parse().unwrap(), Action::Drop(None), 50),
+///     ("ipn:*.*".parse().unwrap(), RouteAction::Via("ipn:0.2.0".parse().unwrap()), 30),
+///     ("dtn://drop/**".parse().unwrap(), RouteAction::Drop(None), 50),
 /// ]));
 /// bpa.register_routing_agent("my_routes".to_string(), agent).await?;
 /// ```
 pub struct StaticRoutingAgent {
-    routes: Vec<(EidPattern, Action, u32)>,
+    routes: Vec<(EidPattern, RouteAction, u32)>,
     sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
 }
 
 impl StaticRoutingAgent {
-    pub fn new(routes: &[(EidPattern, Action, u32)]) -> Self {
+    pub fn new(routes: &[(EidPattern, RouteAction, u32)]) -> Self {
         Self {
             routes: routes.to_vec(),
             sink: hardy_async::sync::spin::Once::new(),

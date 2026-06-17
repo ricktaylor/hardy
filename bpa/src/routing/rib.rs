@@ -5,9 +5,9 @@ use hardy_eid_patterns::EidPattern;
 use tracing::{debug, info};
 
 use super::agent;
-use super::route;
+use super::table::RouteTable;
 use super::{Error, Result, RoutingAgent};
-use crate::{Arc, BTreeMap, BTreeSet, HashMap, hash_map};
+use crate::{Arc, HashMap, hash_map};
 use crate::{cla, dispatcher, node_ids, services, storage};
 
 #[derive(Debug)]
@@ -18,10 +18,8 @@ pub enum FindResult {
     Drop(Option<ReasonCode>),                  // Drop with reason code
 }
 
-pub(super) type RouteTable = BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<route::Entry>>>; // priority -> pattern -> set of entries
-
 pub(super) struct RibInner {
-    pub(super) routes: RouteTable,
+    pub(super) table: RouteTable,
     pub(super) address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
 }
 
@@ -79,7 +77,6 @@ impl RibBuilder {
 }
 
 impl Rib {
-    const ADMIN_NAME: &str = "administrative endpoint";
     pub(super) const FORWARDS_NAME: &str = "neighbours";
     pub(super) const SERVICES_NAME: &str = "services";
 
@@ -88,31 +85,9 @@ impl Rib {
         store: Arc<storage::store::Store>,
         service_priority: u32,
     ) -> Self {
-        let entry = route::Entry {
-            source: Self::ADMIN_NAME.into(),
-            action: route::Action::AdminEndpoint,
-        };
-
-        // Add admin endpoints
-        let mut admin_endpoints = BTreeMap::new();
-        if let Some(node_name) = &node_ids.dtn {
-            // Add the Admin Endpoint dtn EID itself (exact match, not wildcard)
-            let admin_eid: Eid = node_name.clone().into();
-            admin_endpoints.insert(admin_eid.into(), [entry.clone()].into());
-        }
-
-        if let Some(node_number) = &node_ids.ipn {
-            // Add the Admin Endpoint ipn EID itself (exact match, not wildcard)
-            let admin_eid: Eid = (*node_number).into();
-            admin_endpoints.insert(admin_eid.into(), [entry].into());
-        }
-
-        let mut routes = BTreeMap::new();
-        routes.insert(0, admin_endpoints);
-
         Self {
             inner: RwLock::new(RibInner {
-                routes,
+                table: RouteTable::new(node_ids.clone()),
                 address_types: HashMap::new(),
             }),
             agents: Default::default(),
