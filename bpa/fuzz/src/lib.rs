@@ -155,27 +155,27 @@ impl Msg {
                 // Load static routes
                 bpa.register_routing_agent(
                     "fuzz".to_string(),
-                    Arc::new(hardy_bpa::routes::StaticRoutingAgent::new(&[
+                    Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[
                         (
                             "ipn:*.*".parse().unwrap(),
-                            hardy_bpa::routes::Action::Via("ipn:0.2.0".parse().unwrap()),
+                            hardy_bpa::routing::RouteAction::Via("ipn:0.2.0".parse().unwrap()),
                             30,
                         ),
                         (
                             "dtn://drop/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Drop(Some(
+                            hardy_bpa::routing::RouteAction::Drop(Some(
                                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
                             )),
                             50,
                         ),
                         (
                             "dtn://drop2/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Drop(None),
+                            hardy_bpa::routing::RouteAction::Drop(None),
                             50,
                         ),
                         (
                             "dtn://**/**".parse().unwrap(),
-                            hardy_bpa::routes::Action::Reflect,
+                            hardy_bpa::routing::RouteAction::Reflect,
                             100,
                         ),
                     ])),
