@@ -64,11 +64,6 @@ use crate::{
 
 use super::store::Store;
 
-/// Receiver handle for bundles drained from a hybrid storage channel.
-/// `recv()` returns `Err(RecvError::Disconnected)` after the buffer
-/// drains once the channel has been closed.
-pub(crate) type Receiver = hardy_async::closeable::Receiver<Bundle>;
-
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -265,8 +260,14 @@ fn should_reopen(buffered: usize, cap: usize) -> bool {
 }
 
 impl Store {
-    /// Create a hybrid channel with the given target status and memory capacity.
-    pub fn channel(self: &Arc<Self>, status: BundleStatus, cap: usize) -> (Sender, Receiver) {
+    /// Create a hybrid channel with the given target status and memory
+    /// capacity. The returned receiver's `recv()` reports `Disconnected`
+    /// once the buffer has drained after [`Sender::close`].
+    pub fn channel(
+        self: &Arc<Self>,
+        status: BundleStatus,
+        cap: usize,
+    ) -> (Sender, hardy_async::closeable::Receiver<Bundle>) {
         let (tx, rx) = hardy_async::closeable::bounded::<Bundle>(cap);
 
         let shared = Arc::new(Shared {
@@ -454,6 +455,23 @@ mod tests {
         queue: None,
     };
 
+    // Poll until the channel reaches `target`, or panic after a generous
+    // deadline. Replaces fixed sleeps so the tests stay robust on slow CI.
+    async fn wait_for_state(tx: &Sender, target: ChannelState) {
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        loop {
+            let state = tx.state();
+            if state == target {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Timed out waiting for state {target:?}, got {state:?}"
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    }
+
     // The fast path must re-open after draining even for tiny capacities.
     #[test]
     fn reopen_threshold_handles_small_caps() {
@@ -477,7 +495,7 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for the poller's initial cycle to complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        wait_for_state(&tx, ChannelState::Open).await;
 
         // Fill channel to capacity
         tx.send(make_bundle(1)).await.unwrap();
@@ -510,7 +528,7 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for poller's initial cycle
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        wait_for_state(&tx, ChannelState::Open).await;
 
         // Fill + overflow to enter Draining
         tx.send(make_bundle(1)).await.unwrap();
@@ -540,19 +558,8 @@ mod tests {
         let cap = 16;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Fill to trigger draining (5 bundles into cap=16 triggers via overflow)
-        // First, wait for poller's initial cycle
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if tx.state() == ChannelState::Open {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Poller didn't return to Open for initial cycle"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
+        // Wait for the poller's initial cycle before overflowing the buffer.
+        wait_for_state(&tx, ChannelState::Open).await;
 
         // Now send enough to overflow: cap=16, send 17
         for i in 1..=17u32 {
@@ -585,21 +592,8 @@ mod tests {
             seen.len()
         );
 
-        // Wait for the poller to see empty metadata and re-open
-        let mut recovered = false;
-        let recovery_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if tx.state() == ChannelState::Open {
-                recovered = true;
-                break;
-            }
-            if tokio::time::Instant::now() > recovery_deadline {
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
-
-        assert!(recovered, "Should recover to Open, got {:?}", tx.state());
+        // Wait for the poller to see empty metadata and re-open the fast path.
+        wait_for_state(&tx, ChannelState::Open).await;
 
         drop(rx);
         tx.close();
@@ -639,12 +633,12 @@ mod tests {
         let (tx, _rx) = store.channel(STATUS, cap);
 
         // Let poller complete its initial cycle
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        wait_for_state(&tx, ChannelState::Open).await;
 
         tx.close();
 
-        // Wait for poller to see Closing and restore it
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // `close()` sets Closing synchronously, and the poller never moves the
+        // state out of Closing, so the assertion needs no wait.
         assert_eq!(tx.state(), ChannelState::Closing);
 
         let result = tx.send(make_bundle(1)).await;
