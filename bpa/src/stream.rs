@@ -1,22 +1,17 @@
 //! Streaming primitives shared across the BPA's trait surfaces.
 //!
-//! The BPA's exported traits use two complementary streaming patterns:
+//! Storage backends stream their poll and recovery results back to the BPA
+//! through the *push-side* [`Sender<T>`] trait: the BPA hands the backend a
+//! sink, and the backend delivers items one at a time by calling
+//! [`Sender::send`]. Keeping the trait independent of any concrete channel
+//! lets a backend emit into whatever the caller chose — the hybrid storage
+//! channel in production, or a `Vec`-collecting sink in the conformance
+//! tests — without depending on a channel type.
 //!
-//! - **Push side** ([`Sender<T>`]): the caller passes a sink to a callee; the
-//!   callee delivers items by calling `send`. Used by storage backends to
-//!   stream poll results back to the BPA.
-//! - **Pull side** ([`Receiver<T>`]): the callee passes a source to a caller;
-//!   the caller pulls items by calling `recv`. Used by CLAs to stream bundle
-//!   segments to the BPA's ingress path.
-//!
-//! Both sides backpressure naturally over an `async` channel, provided the
-//! underlying channel is bounded.
+//! The pull side (a caller draining items with `recv`) has no trait of its
+//! own; consumers use a concrete channel receiver directly.
 
 use hardy_async::async_trait;
-
-// ---------------------------------------------------------------------------
-// Push side
-// ---------------------------------------------------------------------------
 
 /// Returned by [`Sender::send`] when the consumer has gone away and the
 /// producer should stop. Wraps the rejected item so the producer can
@@ -49,30 +44,12 @@ pub trait Sender<T>: Send + Sync {
     async fn send(&self, item: T) -> core::result::Result<(), SendError<T>>;
 }
 
-// ---------------------------------------------------------------------------
-// Default channel adapters
-// ---------------------------------------------------------------------------
-
-/// Adapter that exposes a [`hardy_async::channel::Sender<T>`] as a
-/// [`Sender<T>`]. Use at call sites that create a channel and hand the
-/// sender into a streaming trait method.
-pub(crate) struct ChannelSender<T>(pub hardy_async::channel::Sender<T>);
-
-impl<T> ChannelSender<T> {
-    /// Convenience constructor that creates a bounded
-    /// [`hardy_async::channel`] and wraps the sender in a `ChannelSender`,
-    /// returning it alongside the receiver.
-    pub fn bounded(capacity: usize) -> (Self, hardy_async::channel::Receiver<T>) {
-        let (tx, rx) = hardy_async::channel::bounded(capacity);
-        (Self(tx), rx)
-    }
-}
-
+/// A channel sender is itself a stream [`Sender`], so a call site can create
+/// a channel and pass the sender straight into a streaming trait method.
 #[async_trait]
-impl<T: Send + 'static> Sender<T> for ChannelSender<T> {
+impl<T: Send + 'static> Sender<T> for hardy_async::channel::Sender<T> {
     async fn send(&self, item: T) -> core::result::Result<(), SendError<T>> {
-        self.0
-            .send(item)
+        hardy_async::channel::Sender::send(self, item)
             .await
             .map_err(|hardy_async::channel::SendError(item)| SendError(item))
     }

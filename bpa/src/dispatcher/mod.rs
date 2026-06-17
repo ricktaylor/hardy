@@ -157,8 +157,7 @@ impl Dispatcher {
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
-        let (stream, rx) =
-            crate::stream::ChannelSender::<bundle::Bundle>::bounded(self.poll_channel_depth);
+        let (stream, rx) = hardy_async::channel::bounded::<bundle::Bundle>(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 

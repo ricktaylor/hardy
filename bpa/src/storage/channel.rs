@@ -59,7 +59,6 @@ use tracing::debug;
 use crate::{
     Arc,
     bundle::{Bundle, BundleStatus},
-    stream::ChannelSender,
 };
 
 use super::store::Store;
@@ -366,7 +365,7 @@ impl Store {
     }
 
     async fn poll_once(self: &Arc<Self>, shared: &Arc<Shared>, cap: usize) -> Result<bool, ()> {
-        let (stream, inner_rx) = ChannelSender::<Bundle>::bounded(cap);
+        let (stream, inner_rx) = hardy_async::channel::bounded::<Bundle>(cap);
         let shared_cloned = shared.clone();
         let cancel = self.tasks.cancel_token().clone();
 
