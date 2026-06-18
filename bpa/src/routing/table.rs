@@ -60,23 +60,6 @@ impl RouteTable {
         Self { routes, node_ids }
     }
 
-    fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {
-        if let Some(ipn) = &self.node_ids.ipn {
-            pattern.expand_local_node(ipn).unwrap_or(pattern)
-        } else {
-            pattern
-        }
-    }
-
-    fn expand_action(&self, action: Action) -> Action {
-        match action {
-            Action::Route(RouteAction::Via(eid)) => Action::Route(RouteAction::Via(
-                self.node_ids.expand_local_node(&eid).unwrap_or(eid),
-            )),
-            other => other,
-        }
-    }
-
     fn validate(&self, pattern: &EidPattern, action: &Action, source: &str) -> bool {
         if let Action::Route(RouteAction::Via(next_hop)) = action {
             if next_hop.is_null() {
@@ -94,12 +77,6 @@ impl RouteTable {
     }
 
     pub(super) fn insert(&mut self, pattern: EidPattern, entry: Entry, priority: u32) -> bool {
-        let pattern = self.expand_pattern(pattern);
-        let entry = Entry {
-            action: self.expand_action(entry.action),
-            source: entry.source,
-        };
-
         if !self.validate(&pattern, &entry.action, &entry.source) {
             return false;
         }
@@ -123,18 +100,12 @@ impl RouteTable {
     }
 
     pub(super) fn remove(&mut self, pattern: &EidPattern, entry: &Entry, priority: u32) -> bool {
-        let pattern = self.expand_pattern(pattern.clone());
-        let entry = Entry {
-            action: self.expand_action(entry.action.clone()),
-            source: entry.source.clone(),
-        };
-
         if let Some(patterns) = self.routes.get_mut(&priority)
-            && let Some(actions) = patterns.get_mut(&pattern)
-            && actions.remove(&entry)
+            && let Some(actions) = patterns.get_mut(pattern)
+            && actions.remove(entry)
         {
             if actions.is_empty() {
-                patterns.remove(&pattern);
+                patterns.remove(pattern);
                 if patterns.is_empty() {
                     self.routes.remove(&priority);
                 }

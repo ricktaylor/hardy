@@ -203,6 +203,9 @@ impl Rib {
         action: Action,
         priority: u32,
     ) -> bool {
+        let pattern = self.expand_pattern(pattern);
+        let action = self.expand_action(action);
+
         let vias = {
             let entry = Entry {
                 action: action.clone(),
@@ -249,13 +252,16 @@ impl Rib {
         action: Action,
         priority: u32,
     ) -> bool {
+        let pattern = self.expand_pattern(pattern.clone());
+        let action = self.expand_action(action);
+
         {
             let entry = Entry {
                 action: action.clone(),
                 source: source.to_string(),
             };
             let mut inner = self.inner.write();
-            if !inner.table.remove(pattern, &entry, priority) {
+            if !inner.table.remove(&pattern, &entry, priority) {
                 return false;
             }
         }
@@ -436,7 +442,22 @@ impl Rib {
         self.inner.write().address_types.remove(address_type);
     }
 
-    // -- Internal helpers ----------------------------------------------------
+    fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {
+        if let Some(ipn) = &self.node_ids.ipn {
+            pattern.expand_local_node(ipn).unwrap_or(pattern)
+        } else {
+            pattern
+        }
+    }
+
+    fn expand_action(&self, action: Action) -> Action {
+        match action {
+            Action::Route(RouteAction::Via(eid)) => Action::Route(RouteAction::Via(
+                self.node_ids.expand_local_node(&eid).unwrap_or(eid),
+            )),
+            other => other,
+        }
+    }
 
     async fn notify_updated(&self) {
         self.poll_waiting_notify.notify_waiters();
