@@ -65,8 +65,8 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     async fn register_routing_agent(
         &self,
         _name: String,
-        _agent: Arc<dyn hardy_bpa::routes::RoutingAgent>,
-    ) -> hardy_bpa::routes::Result<Vec<NodeId>> {
+        _agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
+    ) -> hardy_bpa::routing::Result<Vec<NodeId>> {
         unimplemented!("not needed for CLA fuzzing")
     }
 

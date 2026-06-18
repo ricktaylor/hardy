@@ -56,7 +56,7 @@ impl Dispatcher {
     ) {
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
-            Some(rib::FindResult::Drop(reason)) => {
+            Some(routing::FindResult::Drop(reason)) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
                     self.drop_bundle(bundle, reason).await
@@ -65,8 +65,8 @@ impl Dispatcher {
                     self.delete_bundle(bundle).await
                 }
             }
-            Some(rib::FindResult::AdminEndpoint) => self.administrative_bundle(bundle).await,
-            Some(rib::FindResult::Deliver(service)) => {
+            Some(routing::FindResult::AdminEndpoint) => self.administrative_bundle(bundle).await,
+            Some(routing::FindResult::Deliver(service)) => {
                 // Check for reassembly
                 if bundle.bundle.id.fragment_info.is_some() {
                     // Reassemble the bundle before delivery
@@ -76,7 +76,7 @@ impl Dispatcher {
                     self.deliver_bundle(service, bundle).await
                 }
             }
-            Some(rib::FindResult::Forward(peer)) => {
+            Some(routing::FindResult::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
                 if let Err(bundle) = cla_registry.forward(peer, bundle).await {
                     debug!("CLA forward failed, returning bundle to watch queue");

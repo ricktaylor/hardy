@@ -15,7 +15,7 @@ pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
     store: Arc<storage::Store>,
-    rib: Arc<rib::Rib>,
+    rib: Arc<routing::rib::Rib>,
     keys_registry: Arc<keys::registry::Registry>,
     filter_engine: Arc<filter::FilterEngine>,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
@@ -37,7 +37,7 @@ impl Dispatcher {
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
-        rib: Arc<rib::Rib>,
+        rib: Arc<routing::rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> Arc<Self> {
@@ -62,7 +62,7 @@ impl Dispatcher {
         processing_pool_size: core::num::NonZeroUsize,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::Store>,
-        rib: Arc<rib::Rib>,
+        rib: Arc<routing::rib::Rib>,
         keys_registry: Arc<keys::registry::Registry>,
         filter_engine: Arc<filter::FilterEngine>,
     ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {

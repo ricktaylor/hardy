@@ -158,7 +158,7 @@ impl ClaRegistryBuilder {
         self,
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
-        rib: &Arc<rib::Rib>,
+        rib: &Arc<routing::rib::Rib>,
         store: &Arc<storage::Store>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> cla::Result<Arc<ClaRegistry>> {
@@ -192,7 +192,7 @@ impl ClaRegistryBuilder {
 pub(crate) struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
-    rib: Arc<rib::Rib>,
+    rib: Arc<routing::rib::Rib>,
     store: Arc<storage::Store>,
     peers: Arc<peers::PeerTable>,
     poll_channel_depth: usize,

@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{Route, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -97,14 +97,14 @@ async fn rte_cli_02_add_route() {
 
     let sink = agent.take_sink().expect("agent should have a sink");
 
-    let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = Action::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let added = sink
-        .add_route(pattern, action, 100)
+    let route = Route::via(
+        "ipn:2.*.*".parse().expect("valid pattern"),
+        "ipn:2.1.0".parse().expect("valid EID"),
+        100,
+    );
+    sink.update_routes(&[route], &[])
         .await
-        .expect("add_route should succeed");
-
-    assert!(added, "route should be newly added");
+        .expect("update_routes should succeed");
 
     // Clean up
     sink.unregister().await;
@@ -131,14 +131,14 @@ async fn rte_cli_03_remove_route() {
 
     let sink = agent.take_sink().expect("agent should have a sink");
 
-    let pattern = "ipn:2.*.*".parse().expect("valid pattern");
-    let action = Action::Via("ipn:2.1.0".parse().expect("valid EID"));
-    let removed = sink
-        .remove_route(&pattern, &action, 100)
+    let route = Route::via(
+        "ipn:2.*.*".parse().expect("valid pattern"),
+        "ipn:2.1.0".parse().expect("valid EID"),
+        100,
+    );
+    sink.update_routes(&[], &[route])
         .await
-        .expect("remove_route should succeed");
-
-    assert!(removed, "route should be removed");
+        .expect("update_routes should succeed");
 
     // Clean up
     sink.unregister().await;

@@ -10,8 +10,8 @@ use crate::filter::{Filter, FilterEngine, Hook};
 use crate::keys::registry::Registry as KeyRegistry;
 use crate::node_ids::NodeIds;
 use crate::policy::EgressPolicy;
-use crate::rib::RibBuilder;
-use crate::routes::RoutingAgent;
+use crate::routing::RoutingAgent;
+use crate::routing::rib::RibBuilder;
 use crate::services::registry::ServiceRegistryBuilder;
 use crate::services::{self, Service};
 use crate::storage::{
