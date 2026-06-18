@@ -336,7 +336,7 @@ impl ServiceRegistry {
         let service = self.services.lock().get(service_id).cloned().unwrap();
         let eid = node_ids.resolve_eid(service_id)?;
 
-        rib.add_service(eid.clone(), service.clone()).await;
+        let _ = rib.add_service(eid.clone(), service.clone()).await;
 
         let sink = Sink {
             service: Arc::downgrade(&service),

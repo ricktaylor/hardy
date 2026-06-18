@@ -26,10 +26,9 @@ impl routes::RoutingSink for Sink {
         priority: u32,
     ) -> routes::Result<bool> {
         let agent = self.agent.upgrade().ok_or(routes::Error::Disconnected)?;
-        Ok(self
-            .rib
+        self.rib
             .add(pattern, agent.name.clone(), action.into(), priority)
-            .await)
+            .await
     }
 
     async fn remove_route(

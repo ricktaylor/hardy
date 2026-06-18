@@ -39,6 +39,14 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// A route was rejected because the next-hop is the null endpoint.
+    #[error("Route via null next-hop rejected")]
+    NullNextHop,
+
+    /// A route was rejected because the next-hop resolves to the local node.
+    #[error("Route via own node {0} rejected")]
+    ViaOwnNode(hardy_bpv7::eid::Eid),
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
@@ -169,9 +177,12 @@ impl StaticRoutingAgent {
 impl RoutingAgent for StaticRoutingAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
         for (pattern, action, priority) in &self.routes {
-            sink.add_route(pattern.clone(), action.clone(), *priority)
+            if let Err(e) = sink
+                .add_route(pattern.clone(), action.clone(), *priority)
                 .await
-                .ok();
+            {
+                warn!("Rejected route {pattern} => {action}: {e}");
+            }
         }
         self.sink.call_once(|| sink);
     }
