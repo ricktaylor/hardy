@@ -11,15 +11,10 @@ use tracing::warn;
 use crate::async_trait;
 
 use super::action::RouteAction;
-use crate::{Arc, async_trait};
+use crate::async_trait;
 
 /// A specialized `Result` type for routing agent operations.
 pub type Result<T> = core::result::Result<T, self::Error>;
-
-pub(crate) struct Agent {
-    pub(super) agent: Arc<dyn RoutingAgent>,
-    pub(crate) name: String,
-}
 
 /// Errors that can occur during routing agent operations.
 #[derive(Debug, Error)]

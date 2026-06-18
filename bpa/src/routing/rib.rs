@@ -30,7 +30,7 @@ pub struct Rib {
     write_lock: Mutex<()>,
     address_types:
         hardy_async::sync::spin::Mutex<HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>>,
-    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
+    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<node_ids::NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
@@ -374,25 +374,22 @@ impl Rib {
         name: String,
         agent: Arc<dyn RoutingAgent>,
     ) -> Result<Vec<NodeId>> {
-        let agent = {
+        {
             let mut agents = self.agents.lock();
             let hash_map::Entry::Vacant(e) = agents.entry(name.clone()) else {
                 return Err(Error::AlreadyExists(name));
             };
+            e.insert(agent.clone());
+        }
 
-            info!("Registered new routing agent: {name}");
-
-            e.insert(Arc::new(agent::Agent { agent, name })).clone()
-        };
-
+        info!("Registered new routing agent: {name}");
         metrics::gauge!("bpa.rib.agents").increment(1.0);
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .agent
             .on_register(
-                Box::new(agent::sink::Sink::new(Arc::downgrade(&agent), self.clone())),
+                Box::new(agent::sink::Sink::new(name, self.clone())),
                 &node_ids,
             )
             .await;
@@ -400,33 +397,28 @@ impl Rib {
         Ok(node_ids)
     }
 
-    pub(crate) async fn unregister_agent(&self, agent: Arc<agent::Agent>) {
-        let agent = self.agents.lock().remove(&agent.name);
+    pub(crate) async fn unregister_agent(&self, name: &str) {
+        let agent = self.agents.lock().remove(name);
 
         if let Some(agent) = agent {
             metrics::gauge!("bpa.rib.agents").decrement(1.0);
-            agent.agent.on_unregister().await;
-            self.remove_by_source(&agent.name).await;
-            info!("Unregistered routing agent: {}", agent.name);
+            agent.on_unregister().await;
+            self.remove_by_source(name).await;
+            info!("Unregistered routing agent: {name}");
         }
     }
 
     pub(crate) async fn shutdown_agents(&self) {
-        let agents = self
-            .agents
-            .lock()
-            .drain()
-            .map(|(_, v)| v)
-            .collect::<Vec<_>>();
+        let agents = self.agents.lock().drain().collect::<Vec<_>>();
 
         if !agents.is_empty() {
             metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);
         }
 
-        for agent in agents {
-            agent.agent.on_unregister().await;
-            self.remove_by_source(&agent.name).await;
-            info!("Unregistered routing agent: {}", agent.name);
+        for (name, agent) in agents {
+            agent.on_unregister().await;
+            self.remove_by_source(&name).await;
+            info!("Unregistered routing agent: {name}");
         }
     }
 
