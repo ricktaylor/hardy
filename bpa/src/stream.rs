@@ -41,6 +41,9 @@ impl<T: core::fmt::Debug> core::error::Error for SendError<T> {}
 /// in the error so the producer can recover ownership.
 #[async_trait]
 pub trait Sender<T>: Send + Sync {
+    /// Pushes one `item` to the consumer. Returns `Err(SendError(item))`,
+    /// handing the item back, once the consumer has gone away — the producer
+    /// should then stop.
     async fn send(&self, item: T) -> core::result::Result<(), SendError<T>>;
 }
 

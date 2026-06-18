@@ -9,8 +9,7 @@
 //! `use hardy_bpa::storage::backend::*`.
 
 use hardy_async::async_trait;
-use hardy_bpv7::bundle::Id;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{bundle::Id, eid::Eid};
 use time::OffsetDateTime;
 
 use crate::{
@@ -38,45 +37,22 @@ pub type Result<T> = core::result::Result<T, Error>;
 ///
 /// Polling methods (`poll_*`, `remove_unconfirmed`) deliver results to the caller via a
 /// [`Sender<Bundle>`] sink rather than returning them as a collection. This decouples the
-/// trait from any specific channel implementation: the BPA wraps its own channel sender in
-/// an internal adapter, localdisk-storage builds an adapter over its internal flume channel,
-/// and tests use a `Vec`-collecting mock — all implementing the same `Sender` trait.
-/// Implementors should stop iterating when `stream.send` returns `Err(SendError(_))` —
-/// the consumer has gone away.
+/// trait from any specific channel implementation: the BPA passes a `hardy_async::channel::Sender`
+/// directly (it implements [`Sender`] via a blanket impl), localdisk-storage builds an adapter
+/// over its internal flume channel, and tests use a `Vec`-collecting mock — all implementing the
+/// same [`Sender`] trait. Implementors should stop iterating when `stream.send` returns
+/// `Err(SendError(_))` — the consumer has gone away.
 #[async_trait]
 pub trait MetadataStorage: Send + Sync {
-    /// Retrieves the metadata for a bundle with the given `bundle_id`.
-    ///
-    /// # Arguments
-    ///
-    /// * `bundle_id` - The ID of the bundle to retrieve.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing an `Option<Bundle>`. `Some(bundle)` if the bundle is found,
-    /// `None` if it is not.
+    /// Retrieves the metadata for the bundle with the given `bundle_id`, or
+    /// `None` if no entry exists.
     async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>>;
 
-    /// Inserts a new bundle's metadata into the storage.
-    ///
-    /// # Arguments
-    ///
-    /// * `bundle` - The bundle to insert.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a boolean indicating whether the insertion was successful.
+    /// Inserts a new bundle's metadata, returning whether it was newly
+    /// inserted (`false` if an entry already exists).
     async fn insert(&self, bundle: &Bundle) -> Result<bool>;
 
-    /// Replaces an existing bundle's metadata in the storage.
-    ///
-    /// # Arguments
-    ///
-    /// * `bundle` - The bundle to replace.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the replacement was successful.
+    /// Replaces an existing bundle's metadata.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
     /// Updates only the typed status columns for an existing bundle's metadata.
@@ -86,16 +62,10 @@ pub trait MetadataStorage: Send + Sync {
     async fn update_status(&self, bundle: &Bundle) -> Result<()>;
 
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
-    /// A tombstone marks the bundle as deleted, preventing it from being re-inserted
-    /// or processed further. This method does not error if the bundle does not exist.
     ///
-    /// # Arguments
-    ///
-    /// * `bundle_id` - The ID of the bundle to tombstone.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// A tombstone marks the bundle as deleted, preventing it from being
+    /// re-inserted or processed further. Does not error if the bundle does
+    /// not exist.
     async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
 
     /// Begins the startup recovery protocol by marking all existing metadata
@@ -117,121 +87,50 @@ pub trait MetadataStorage: Send + Sync {
     /// whose corresponding bundle data was lost.
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
-    /// this should return `Ok(None)`.
-    ///
-    /// # Arguments
-    ///
-    /// * `bundle_id` - The ID of the bundle to confirm.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing an `Option<metadata::BundleMetadata>`. `Some(metadata)` if the
-    /// bundle exists, `None` if it does not.
+    /// this returns `Ok(None)`.
     async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last
-    /// `start_recovery()` call, and pushes the removed bundles to `stream`
-    /// so the BPA can perform any necessary cleanup (e.g. deleting bundle
-    /// data).
+    /// `start_recovery()` call, and pushes the removed bundles to `stream` so
+    /// the BPA can perform any necessary cleanup (e.g. deleting bundle data).
+    /// Stops early if `stream.send` returns `Err(SendError(_))`.
     ///
     /// Non-persistent backends should treat this as a no-op.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the unconfirmed bundles are pushed.
-    ///   The implementor should stop iterating if `stream.send` returns
-    ///   `Err(SendError(_))` — the consumer has gone away.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
     async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
-    /// Resets all bundles with the status `BundleStatus::ForwardPending { peer, _ }` to `Waiting`.
-    /// This allows the dispatcher to re-evaluate the forwarding decision for these bundles.
-    ///
-    /// # Arguments
-    ///
-    /// * `peer` - The peer for which the queue should be reset.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the number of bundles that were reset.
+    /// Resets all bundles with status `BundleStatus::ForwardPending { peer, .. }`
+    /// to `Waiting`, so the dispatcher re-evaluates their forwarding decision.
+    /// Returns the number of bundles reset.
     async fn reset_peer_queue(&self, peer: u32) -> Result<u64>;
 
-    /// Returns the next `limit` bundles, not of status `BundleStatus::New`, ordered by expiry.
-    /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the bundles are pushed.
-    /// * `limit` - The maximum number of bundles to return.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
+    /// and ordered by expiry, to `stream`. Stops early if `stream.send`
+    /// returns `Err(SendError(_))`.
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()>;
 
-    /// Returns all bundles with `BundleStatus::Waiting` status, snapshotted at the time of the call,
-    /// ordered by received time. The implementor should stop iterating
-    /// when `stream.send` returns `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the bundles are pushed.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Pushes all `BundleStatus::Waiting` bundles, snapshotted at the time of
+    /// the call and ordered by received time, to `stream`. Stops early if
+    /// `stream.send` returns `Err(SendError(_))`.
     async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
-    /// Returns bundles currently in `BundleStatus::WaitingForService` for the specified service source,
-    /// ordered by received time. The implementor should stop iterating
-    /// when `stream.send` returns `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The service endpoint for which waiting bundles should be retrieved.
-    /// * `stream` - The sink to which the bundles are pushed.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Pushes all `BundleStatus::WaitingForService` bundles for the given
+    /// `source`, ordered by received time, to `stream`. Stops early if
+    /// `stream.send` returns `Err(SendError(_))`.
     async fn poll_service_waiting(&self, source: Eid, stream: &dyn Sender<Bundle>) -> Result<()>;
 
-    /// Returns all bundles matching the `BundleStatus::AduFragment` status, preferably ordered by fragment offset.
-    /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the bundles are pushed.
-    /// * `status` - The `BundleStatus::AduFragment` status to filter by.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Pushes all bundles matching the given `BundleStatus::AduFragment`
+    /// `status`, preferably ordered by fragment offset, to `stream`. Stops
+    /// early if `stream.send` returns `Err(SendError(_))`.
     async fn poll_adu_fragments(
         &self,
         stream: &dyn Sender<Bundle>,
         status: &BundleStatus,
     ) -> Result<()>;
 
-    /// Returns the next `limit` bundles waiting in a particular status, ordered by received time.
-    /// The implementor should stop iterating when `stream.send` returns
+    /// Pushes the next `limit` bundles in the given `status`, ordered by
+    /// received time, to `stream`. Stops early if `stream.send` returns
     /// `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the bundles are pushed.
-    /// * `status` - The status to filter by.
-    /// * `limit` - The maximum number of bundles to return.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
     async fn poll_pending(
         &self,
         stream: &dyn Sender<Bundle>,
@@ -258,40 +157,14 @@ pub type RecoveryResponse = (Arc<str>, OffsetDateTime);
 /// than returning a collection. See the [`MetadataStorage`] trait docs for the rationale.
 #[async_trait]
 pub trait BundleStorage: Send + Sync {
-    /// Recovers bundles from the bundle storage and pushes them to `stream`.
-    /// The implementor should stop iterating when `stream.send` returns
-    /// `Err(SendError(_))`.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The sink to which the recovered bundles are pushed.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Recovers bundles from the bundle storage, pushing each to `stream`.
+    /// Stops early if `stream.send` returns `Err(SendError(_))`.
     async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> Result<()>;
 
-    /// Loads a bundle from the bundle storage.
-    ///
-    /// # Arguments
-    ///
-    /// * `storage_name` - The name of the bundle to load.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing an `Option<Bytes>`. `Some(bytes)` if the bundle is found,
-    /// `None` if it is not.
+    /// Loads the bundle stored under `storage_name`, or `None` if absent.
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 
-    /// Saves a bundle to the bundle storage.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - The binary data of the bundle to save.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the name of the saved bundle.
+    /// Saves bundle `data`, returning the generated storage name.
     async fn save(&self, data: Bytes) -> Result<Arc<str>>;
 
     /// Overwrites existing bundle data at the given storage name.
@@ -300,14 +173,6 @@ pub trait BundleStorage: Send + Sync {
     /// old data or the new data, never a partial write.
     async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()>;
 
-    /// Deletes a bundle from the bundle storage.
-    ///
-    /// # Arguments
-    ///
-    /// * `storage_name` - The name of the bundle to delete.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating whether the operation was successful.
+    /// Deletes the bundle stored under `storage_name`.
     async fn delete(&self, storage_name: &str) -> Result<()>;
 }
