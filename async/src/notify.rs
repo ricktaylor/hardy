@@ -60,6 +60,7 @@ impl Notify {
     ///
     /// let notify = Notify::new();
     /// ```
+    #[inline]
     pub fn new() -> Self {
         Self(tokio::sync::Notify::new())
     }
@@ -78,6 +79,7 @@ impl Notify {
     /// let notify = Notify::new();
     /// notify.notify_one();
     /// ```
+    #[inline]
     pub fn notify_one(&self) {
         self.0.notify_one();
     }
@@ -96,6 +98,7 @@ impl Notify {
     /// let notify = Notify::new();
     /// notify.notify_waiters();
     /// ```
+    #[inline]
     pub fn notify_waiters(&self) {
         self.0.notify_waiters();
     }
@@ -120,6 +123,7 @@ impl Notify {
     /// println!("Received notification!");
     /// # });
     /// ```
+    #[inline]
     pub fn notified(&self) -> impl Future<Output = ()> + '_ {
         self.0.notified()
     }

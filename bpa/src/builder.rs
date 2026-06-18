@@ -2,8 +2,7 @@ use core::num::NonZeroUsize;
 
 use crate::Arc;
 use crate::bpa::Bpa;
-use crate::cla::Cla;
-use crate::cla::registry::ClaRegistryBuilder;
+use crate::cla::{Cla, ClaRegistryBuilder};
 use crate::dispatcher::Dispatcher;
 use crate::filter::validity::BundleValidityFilter;
 use crate::filter::{Filter, FilterEngine, Hook};
@@ -155,7 +154,7 @@ impl BpaBuilder {
     }
 
     /// Consume the builder and construct the BPA with all registered components.
-    pub async fn build(self) -> Result<Bpa, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         let metadata_storage = self
             .metadata_storage
             .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));

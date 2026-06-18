@@ -4,7 +4,12 @@ use thiserror::Error;
 pub(crate) mod peers;
 pub(crate) mod registry;
 
+mod builder;
 mod egress_queue;
+mod sink;
+
+pub(crate) use builder::ClaRegistryBuilder;
+pub use sink::ClaSink;
 
 /// A specialized `Result` type for CLA operations.
 pub type Result<T> = core::result::Result<T, Error>;

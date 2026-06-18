@@ -16,8 +16,11 @@ impl Dispatcher {
     }
 
     /// Consumer task for the dispatch queue
-    pub(super) async fn run_dispatch_queue(self: Arc<Self>, dispatch_rx: storage::Receiver) {
-        while let Ok(Some(bundle)) = dispatch_rx.recv_async().await {
+    pub(super) async fn run_dispatch_queue(
+        self: Arc<Self>,
+        dispatch_rx: storage::channel::Receiver,
+    ) {
+        while let Ok(bundle) = dispatch_rx.recv().await {
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 dispatcher
@@ -96,19 +99,23 @@ impl Dispatcher {
     }
 
     pub async fn poll_waiting(self: &Arc<Self>, cancel_token: hardy_async::CancellationToken) {
-        let (tx, rx) = flume::bounded::<bundle::Bundle>(self.poll_channel_depth);
+        let (stream, rx) =
+            crate::stream::ChannelSender::<bundle::Bundle>::bounded(self.poll_channel_depth);
 
         let dispatcher = self.clone();
 
         // Run producer and consumer concurrently
         join!(
             // Producer: feed bundles into channel
-            self.store.poll_waiting(tx),
+            async {
+                self.store.poll_waiting(&stream).await;
+                drop(stream);
+            },
             // Consumer: drain channel into shared processing pool
             async {
                 loop {
                     select_biased! {
-                        bundle = rx.recv_async().fuse() => {
+                        bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };

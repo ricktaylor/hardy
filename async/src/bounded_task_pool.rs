@@ -136,6 +136,7 @@ impl BoundedTaskPool {
     ///
     /// Use this to check cancellation status or pass to tasks that need
     /// to listen for shutdown signals.
+    #[inline]
     pub fn cancel_token(&self) -> &crate::CancellationToken {
         self.inner.cancel_token()
     }
@@ -145,6 +146,7 @@ impl BoundedTaskPool {
     /// Child tokens can be cancelled independently without affecting the parent
     /// pool. However, when the parent pool is cancelled, all child tokens are
     /// also cancelled.
+    #[inline]
     pub fn child_token(&self) -> crate::CancellationToken {
         self.inner.cancel_token().child_token()
     }
@@ -165,6 +167,7 @@ impl BoundedTaskPool {
     ///
     /// Returns `true` if [`shutdown()`](BoundedTaskPool::shutdown) has been
     /// called or if the cancellation token has been cancelled manually.
+    #[inline]
     pub fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
     }

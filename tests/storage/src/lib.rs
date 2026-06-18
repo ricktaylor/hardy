@@ -1,14 +1,47 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
-use hardy_bpa::bundle;
-use hardy_bpa::bundle::{BundleMetadata, BundleStatus};
-use hardy_bpa::storage::{BundleStorage, MetadataStorage};
+use hardy_bpa::{
+    bundle::{self, BundleMetadata, BundleStatus},
+    storage::{BundleStorage, MetadataStorage},
+    stream::{SendError, Sender},
+};
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
+use std::sync::Arc;
 
 pub mod bundle_suite;
 pub mod fixtures;
 pub mod metadata_suite;
+
+// ---------------------------------------------------------------------------
+// Test sink: collects items into a Vec for assertions.
+// ---------------------------------------------------------------------------
+
+/// A `Sender<T>` implementation that collects items into a `Vec` for
+/// the test suites to assert against.
+pub struct VecSink<T>(std::sync::Mutex<Vec<T>>);
+
+impl<T> VecSink<T> {
+    pub fn new() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.0.into_inner().unwrap()
+    }
+}
+
+impl<T> Default for VecSink<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[hardy_bpa::async_trait]
+impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
+    async fn send(&self, item: T) -> Result<(), SendError<T>> {
+        self.0.lock().unwrap().push(item);
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Backend setup functions

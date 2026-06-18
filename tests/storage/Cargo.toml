@@ -21,6 +21,5 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 uuid = { version = "1", features = ["v4"], optional = true }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
-flume = "0.12"
 time = { version = "0.3", features = ["std"] }
 bytes = "1"
