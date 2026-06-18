@@ -1,27 +1,25 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Agent, Error, Result, RoutingSink};
+use super::{Result, RoutingSink};
 use crate::routing::action::RouteAction;
 use crate::routing::rib::Rib;
-use crate::{Arc, Weak, async_trait};
+use crate::{Arc, async_trait};
 
 pub struct Sink {
-    agent: Weak<Agent>,
+    name: String,
     rib: Arc<Rib>,
 }
 
 impl Sink {
-    pub fn new(agent: Weak<Agent>, rib: Arc<Rib>) -> Self {
-        Self { agent, rib }
+    pub fn new(name: String, rib: Arc<Rib>) -> Self {
+        Self { name, rib }
     }
 }
 
 #[async_trait]
 impl RoutingSink for Sink {
     async fn unregister(&self) {
-        if let Some(agent) = self.agent.upgrade() {
-            self.rib.unregister_agent(agent).await;
-        }
+        self.rib.unregister_agent(&self.name).await;
     }
 
     async fn add_route(
@@ -30,10 +28,9 @@ impl RoutingSink for Sink {
         action: RouteAction,
         priority: u32,
     ) -> Result<bool> {
-        let agent = self.agent.upgrade().ok_or(Error::Disconnected)?;
         Ok(self
             .rib
-            .add(pattern, agent.name.clone(), action.into(), priority)
+            .add(pattern, self.name.clone(), action.into(), priority)
             .await)
     }
 
@@ -43,21 +40,19 @@ impl RoutingSink for Sink {
         action: &RouteAction,
         priority: u32,
     ) -> Result<bool> {
-        let agent = self.agent.upgrade().ok_or(Error::Disconnected)?;
         Ok(self
             .rib
-            .remove(pattern, &agent.name, action.clone().into(), priority)
+            .remove(pattern, &self.name, action.clone().into(), priority)
             .await)
     }
 }
 
 impl Drop for Sink {
     fn drop(&mut self) {
-        if let Some(agent) = self.agent.upgrade() {
-            let rib = self.rib.clone();
-            hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
-                rib.unregister_agent(agent).await;
-            });
-        }
+        let name = self.name.clone();
+        let rib = self.rib.clone();
+        hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
+            rib.unregister_agent(&name).await;
+        });
     }
 }
