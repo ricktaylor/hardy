@@ -1,9 +1,13 @@
-use arc_swap::ArcSwap;
 use core::hash::BuildHasher;
 
+use arc_swap::ArcSwap;
+use foldhash::quality::RandomState;
 use futures::{FutureExt, select_biased};
-use hardy_async::sync::RwLock;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_async::{
+    Notify, TaskPool,
+    sync::{Mutex, spin},
+};
+use hardy_bpv7::{bundle::Bundle as Bpv7Bundle, eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 use tracing::{debug, info};
 
@@ -11,16 +15,23 @@ use tracing::{debug, info};
 use tracing::instrument;
 
 use super::action::{Action, InternalAction, RouteAction};
-use super::agent;
+use super::agent::sink::Sink;
 use super::table::{self, Entry, RouteTable};
 use super::{Error, Result, RoutingAgent};
-use crate::{Arc, HashMap, HashSet, hash_map};
-use crate::{bundle, cla, dispatcher, node_ids, services, storage};
+use crate::bundle::{Bundle, BundleMetadata};
+use crate::cla::ClaAddressType;
+use crate::cla::registry::Cla;
+use crate::dispatcher::Dispatcher;
+use crate::hash_map::Entry as HashMapEntry;
+use crate::node_ids::NodeIds;
+use crate::services::registry::Service;
+use crate::storage::Store;
+use crate::{Arc, HashMap, HashSet};
 
 #[derive(Debug)]
 pub enum FindResult {
     AdminEndpoint,
-    Deliver(Arc<services::registry::Service>),
+    Deliver(Arc<Service>),
     Forward(u32),
     Drop(Option<ReasonCode>),
 }
@@ -28,17 +39,16 @@ pub enum FindResult {
 pub struct Rib {
     table: ArcSwap<RouteTable>,
     write_lock: Mutex<()>,
-    address_types:
-        hardy_async::sync::spin::Mutex<HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>>,
-    agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
-    node_ids: Arc<node_ids::NodeIds>,
+    address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
+    agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
+    node_ids: Arc<NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
     // Random across BPA instances (unpredictable), but consistent within
     // an instance so the same bundle always selects the same peer.
-    ecmp_hash_state: foldhash::quality::RandomState,
-    pub(crate) tasks: hardy_async::TaskPool,
-    poll_waiting_notify: Arc<hardy_async::Notify>,
-    store: Arc<storage::Store>,
+    ecmp_hash_state: RandomState,
+    pub(crate) tasks: TaskPool,
+    poll_waiting_notify: Arc<Notify>,
+    store: Arc<Store>,
     service_priority: u32,
 }
 
@@ -63,11 +73,7 @@ impl RibBuilder {
         self.service_priority = priority;
     }
 
-    pub async fn build(
-        self,
-        node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::Store>,
-    ) -> Result<Arc<Rib>> {
+    pub async fn build(self, node_ids: Arc<NodeIds>, store: Arc<Store>) -> Result<Arc<Rib>> {
         let rib = Arc::new(Rib::new(node_ids, store, self.service_priority));
         for (name, agent) in self.agents {
             rib.register_agent(name, agent).await?;
@@ -80,26 +86,22 @@ impl Rib {
     const FORWARDS_NAME: &str = "neighbours";
     const SERVICES_NAME: &str = "services";
 
-    fn new(
-        node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::store::Store>,
-        service_priority: u32,
-    ) -> Self {
+    fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
         Self {
             table: ArcSwap::from_pointee(RouteTable::new(node_ids.clone())),
             write_lock: Mutex::new(()),
             address_types: Default::default(),
             agents: Default::default(),
             node_ids,
-            ecmp_hash_state: foldhash::quality::RandomState::default(),
-            tasks: hardy_async::TaskPool::new(),
-            poll_waiting_notify: Arc::new(hardy_async::Notify::new()),
+            ecmp_hash_state: RandomState::default(),
+            tasks: TaskPool::new(),
+            poll_waiting_notify: Arc::new(Notify::new()),
             store,
             service_priority,
         }
     }
 
-    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<dispatcher::Dispatcher>) {
+    pub(crate) fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>) {
         let cancel_token = self.tasks.cancel_token().clone();
         let rib = self.clone();
         hardy_async::spawn!(self.tasks, "poll_waiting_task", async move {
@@ -124,7 +126,7 @@ impl Rib {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
+    pub fn find(&self, bundle: &mut Bundle) -> Option<FindResult> {
         let table = self.table.load();
 
         let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
@@ -150,7 +152,7 @@ impl Rib {
         }
     }
 
-    pub fn find_service(&self, to: &Eid) -> Option<Arc<services::registry::Service>> {
+    pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
         self.table.load().find_service(to)
     }
 
@@ -161,8 +163,8 @@ impl Rib {
     fn select_peer(
         &self,
         mut peers: Vec<(u32, &Eid)>,
-        bundle: &hardy_bpv7::bundle::Bundle,
-        metadata: &mut bundle::BundleMetadata,
+        bundle: &Bpv7Bundle,
+        metadata: &mut BundleMetadata,
     ) -> Option<FindResult> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
@@ -344,7 +346,7 @@ impl Rib {
         .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
+    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> bool {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -354,11 +356,7 @@ impl Rib {
         .await
     }
 
-    pub async fn remove_service(
-        &self,
-        eid: &Eid,
-        service: Arc<services::registry::Service>,
-    ) -> bool {
+    pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove(
             &pattern,
@@ -376,7 +374,7 @@ impl Rib {
     ) -> Result<Vec<NodeId>> {
         {
             let mut agents = self.agents.lock();
-            let hash_map::Entry::Vacant(e) = agents.entry(name.clone()) else {
+            let HashMapEntry::Vacant(e) = agents.entry(name.clone()) else {
                 return Err(Error::AlreadyExists(name));
             };
             e.insert(agent.clone());
@@ -388,10 +386,7 @@ impl Rib {
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
 
         agent
-            .on_register(
-                Box::new(agent::sink::Sink::new(name, self.clone())),
-                &node_ids,
-            )
+            .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
             .await;
 
         Ok(node_ids)
@@ -422,15 +417,11 @@ impl Rib {
         }
     }
 
-    pub fn add_address_type(
-        &self,
-        address_type: cla::ClaAddressType,
-        cla: Arc<cla::registry::Cla>,
-    ) {
+    pub fn add_address_type(&self, address_type: ClaAddressType, cla: Arc<Cla>) {
         self.address_types.lock().insert(address_type, cla);
     }
 
-    pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
+    pub fn remove_address_type(&self, address_type: &ClaAddressType) {
         self.address_types.lock().remove(address_type);
     }
 
@@ -468,11 +459,20 @@ impl Rib {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroUsize;
+    use core::time::Duration;
+
+    use hardy_bpv7::bundle::Id as BundleId;
+    use hardy_bpv7::creation_timestamp::CreationTimestamp;
+    use hardy_bpv7::eid::{IpnNodeId, Service as EidService};
+
     use super::*;
-    use hardy_bpv7::eid::IpnNodeId;
+    use crate::services::registry::ServiceImpl;
+    use crate::services::tests::NullService;
+    use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_rib() -> Arc<Rib> {
-        let node_ids = Arc::new(node_ids::NodeIds {
+        let node_ids = Arc::new(NodeIds {
             ipn: Some(IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
@@ -480,10 +480,10 @@ mod tests {
             dtn: None,
         });
 
-        let store = Arc::new(storage::Store::new(
-            core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(storage::MetadataMemStorage::new(&Default::default())),
-            Arc::new(storage::BundleMemStorage::new(&Default::default())),
+        let store = Arc::new(Store::new(
+            NonZeroUsize::new(16).unwrap(),
+            Arc::new(MetadataMemStorage::new(&Default::default())),
+            Arc::new(BundleMemStorage::new(&Default::default())),
         ));
 
         Arc::new(Rib::new(node_ids, store, 1))
@@ -512,19 +512,19 @@ mod tests {
         )
     }
 
-    fn make_bundle(destination: &str) -> bundle::Bundle {
-        bundle::Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
-                id: hardy_bpv7::bundle::Id {
+    fn make_bundle(destination: &str) -> Bundle {
+        Bundle {
+            bundle: Bpv7Bundle {
+                id: BundleId {
                     source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    timestamp: CreationTimestamp::now(),
                     fragment_info: None,
                 },
                 flags: Default::default(),
                 crc_type: Default::default(),
                 destination: destination.parse().unwrap(),
                 report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
+                lifetime: Duration::from_secs(3600),
                 previous_node: None,
                 age: None,
                 hop_count: None,
@@ -715,14 +715,10 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(
-                services::registry::Service {
-                    service: services::registry::ServiceImpl::LowLevel(Arc::new(
-                        crate::services::tests::NullService,
-                    )),
-                    service_id: hardy_bpv7::eid::Service::Ipn(42),
-                },
-            ))),
+            Action::Internal(InternalAction::Local(Arc::new(Service {
+                service: ServiceImpl::LowLevel(Arc::new(NullService)),
+                service_id: EidService::Ipn(42),
+            }))),
             1,
         );
 
@@ -741,14 +737,10 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(
-                services::registry::Service {
-                    service: services::registry::ServiceImpl::LowLevel(Arc::new(
-                        crate::services::tests::NullService,
-                    )),
-                    service_id: hardy_bpv7::eid::Service::Ipn(42),
-                },
-            ))),
+            Action::Internal(InternalAction::Local(Arc::new(Service {
+                service: ServiceImpl::LowLevel(Arc::new(NullService)),
+                service_id: EidService::Ipn(42),
+            }))),
             1,
         );
 

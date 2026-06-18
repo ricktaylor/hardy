@@ -1,3 +1,4 @@
+use hardy_async::sync::spin;
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 
@@ -24,14 +25,14 @@ use crate::routing::action::RouteAction;
 /// ```
 pub struct StaticRoutingAgent {
     routes: Vec<(EidPattern, RouteAction, u32)>,
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    sink: spin::Once<Box<dyn RoutingSink>>,
 }
 
 impl StaticRoutingAgent {
     pub fn new(routes: &[(EidPattern, RouteAction, u32)]) -> Self {
         Self {
             routes: routes.to_vec(),
-            sink: hardy_async::sync::spin::Once::new(),
+            sink: spin::Once::new(),
         }
     }
 }

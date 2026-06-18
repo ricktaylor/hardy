@@ -1,3 +1,5 @@
+use core::cmp::Ordering;
+
 use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::ReasonCode;
 use hardy_eid_patterns::EidPattern;
@@ -18,13 +20,13 @@ pub struct Entry {
 }
 
 impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Entry {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.action
             .cmp(&other.action)
             .then_with(|| self.source.cmp(&other.source))

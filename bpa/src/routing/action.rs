@@ -1,8 +1,10 @@
-use std::sync::Arc;
+use core::cmp::Ordering;
+use core::fmt;
 
 use hardy_bpv7::eid::Eid;
 use hardy_bpv7::status_report::ReasonCode;
 
+use crate::Arc;
 use crate::services::registry::Service;
 
 /// What routing agents configure. Validated on insert into VirtualRouteTable.
@@ -13,8 +15,8 @@ pub enum RouteAction {
     Drop(Option<ReasonCode>),
 }
 
-impl core::fmt::Display for RouteAction {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for RouteAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RouteAction::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
             RouteAction::Drop(None) => write!(f, "Drop"),
@@ -25,13 +27,13 @@ impl core::fmt::Display for RouteAction {
 }
 
 impl PartialOrd for RouteAction {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for RouteAction {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         let rank = |a: &RouteAction| -> u8 {
             match a {
                 RouteAction::Drop(_) => 0,
@@ -40,13 +42,13 @@ impl Ord for RouteAction {
             }
         };
         match rank(self).cmp(&rank(other)) {
-            core::cmp::Ordering::Equal => {}
+            Ordering::Equal => {}
             ord => return ord,
         }
         match (self, other) {
             (RouteAction::Drop(a), RouteAction::Drop(b)) => a.cmp(b),
             (RouteAction::Via(a), RouteAction::Via(b)) => a.cmp(b),
-            _ => core::cmp::Ordering::Equal,
+            _ => Ordering::Equal,
         }
     }
 }
@@ -59,8 +61,8 @@ pub(crate) enum InternalAction {
     AdminEndpoint,
 }
 
-impl core::fmt::Display for InternalAction {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for InternalAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InternalAction::Forward(peer) => write!(f, "CLA peer {peer}"),
             InternalAction::Local(service) => write!(f, "local service {}", service.service_id),
@@ -70,13 +72,13 @@ impl core::fmt::Display for InternalAction {
 }
 
 impl PartialOrd for InternalAction {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for InternalAction {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         let rank = |a: &InternalAction| -> u8 {
             match a {
                 InternalAction::AdminEndpoint => 0,
@@ -85,13 +87,13 @@ impl Ord for InternalAction {
             }
         };
         match rank(self).cmp(&rank(other)) {
-            core::cmp::Ordering::Equal => {}
+            Ordering::Equal => {}
             ord => return ord,
         }
         match (self, other) {
             (InternalAction::Local(a), InternalAction::Local(b)) => a.cmp(b),
             (InternalAction::Forward(a), InternalAction::Forward(b)) => a.cmp(b),
-            _ => core::cmp::Ordering::Equal,
+            _ => Ordering::Equal,
         }
     }
 }
@@ -109,8 +111,8 @@ impl From<RouteAction> for Action {
     }
 }
 
-impl core::fmt::Display for Action {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Action::Route(a) => a.fmt(f),
             Action::Internal(a) => a.fmt(f),
@@ -119,13 +121,13 @@ impl core::fmt::Display for Action {
 }
 
 impl PartialOrd for Action {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Action {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         // Drop < AdminEndpoint < Local < Forward < Reflect < Via
         let rank = |a: &Action| -> u8 {
             match a {
@@ -138,13 +140,13 @@ impl Ord for Action {
             }
         };
         match rank(self).cmp(&rank(other)) {
-            core::cmp::Ordering::Equal => {}
+            Ordering::Equal => {}
             ord => return ord,
         }
         match (self, other) {
             (Action::Route(a), Action::Route(b)) => a.cmp(b),
             (Action::Internal(a), Action::Internal(b)) => a.cmp(b),
-            _ => core::cmp::Ordering::Equal,
+            _ => Ordering::Equal,
         }
     }
 }

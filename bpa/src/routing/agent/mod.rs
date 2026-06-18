@@ -1,7 +1,7 @@
 pub(crate) mod sink;
 mod static_agent;
 
-pub use static_agent::StaticRoutingAgent;
+pub use self::static_agent::StaticRoutingAgent;
 
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
