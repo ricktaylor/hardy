@@ -60,28 +60,52 @@ Follow standard Rust naming (Clippy enforces most of it):
 
 ## Imports and `use` Blocks
 
-Organise `use` statements into up to four blocks, each separated by a single blank line, in this order:
+Organise `use` statements into up to three blocks, each separated by a single blank line, in this order:
 
-1. `super::` (and `self::`) imports — e.g. `use super::*;`
-2. The standard library — `std::…`, `core::…`, and `alloc::…` all share this one block (`no_std` crates use `core`/`alloc` in place of `std`)
-3. Crate-internal — `crate::…`
-4. External crates — `<external_crate>::…`
+1. The standard library — `std::…`, `core::…`, and `alloc::…` all share this one block (`no_std` crates use `core`/`alloc` in place of `std`).
+2. Third-party crates — `<external_crate>::…`.
+3. Local imports — `crate::…`, `super::…`, and `self::…` share this one block.
 
-Omit any block that has no imports (hence "up to four") — never leave an empty block. `rustfmt` sorts within each block and preserves the blank-line separation, but it does not reorder or merge the blocks themselves, so the order above is a manual discipline.
-
-Group several imports from the same path with brace syntax rather than repeating the prefix (`use crate::foo::{Bar, Baz}`, not two `use crate::foo::…` lines):
+This is the order of the (currently unstable) rustfmt option `group_imports = "StdExternalCrate"`: writing it by hand now means that if the option stabilises and we enable it, `cargo fmt` reproduces the layout with no churn. Omit any block that has no imports (hence "up to three") — never leave an empty block. `rustfmt` sorts within each block and preserves the blank-line separation, but under its default settings it does not reorder or merge the blocks themselves, so the order above is a manual discipline.
 
 ```rust
-use super::*;
-
 use core::num::NonZeroUsize;
 
-use crate::{bundle::Bundle, eid::Eid};
-
 use thiserror::Error;
+
+use crate::{bundle::Bundle, eid::Eid};
 ```
 
-`use super::*;` is the exception, not the default. Reach for it only in a **leaf module** — where one logical module has been split across several deeply-interrelated files that legitimately share the parent's imports — to avoid re-listing those shared dependencies in every file. In ordinary submodules, list imports explicitly rather than glob-importing the parent.
+**Collapse imports that share a leading path** into a single nested statement rather than repeating that prefix across lines: factor out the shared part and group the divergent tails in braces.
+
+```rust
+// preferred
+use crate::{bundle::Bundle, eid::Eid};
+
+// avoid — repeats the `crate` prefix
+use crate::bundle::Bundle;
+use crate::eid::Eid;
+```
+
+This is the rustfmt `imports_granularity = "Crate"` layout; like the block order above, writing it by hand keeps `cargo fmt` a no-op if the option is ever enabled (it defaults to `Preserve`, so the merging is manual for now). Avoid the opposite, Java-style extreme of giving every item its own fully-qualified line.
+
+**Avoid glob imports** (`use some_crate::*;`). Pulling every item from a crate into scope hides where each name comes from: when a dependency is later updated and removes or renames an item, the compiler reports an undefined symbol with no hint which glob it came from, and a newly-added upstream item can silently clash with a name from another glob. Explicit imports keep that traceable for the next maintainer.
+
+`use super::*;` is the one sanctioned glob, and even then it is the exception, not the default. Reach for it only in a **leaf module** — where one logical module has been split across several deeply-interrelated files that legitimately share the parent's imports — or in a **unit-test module**, where `#[cfg(test)] mod tests { use super::*; … }` is the well-defined idiom (see [Tests](#tests)). In ordinary submodules, list imports explicitly rather than glob-importing the parent.
+
+**Don't glob enum variants into scope** (`use SomeEnum::*;`) — it hides the variants' type and can obscure that an enum is being handled at all. Spell out `SomeEnum::Variant` in full, including in `match` arms. The visible type is the point, not noise; no local rename is worth losing it.
+
+**Keep `use` at module scope.** Imports belong at the top of the file (or `mod` block), never inside a function body. A reader should find every path a function depends on in one place, and a function-local `use` — an alias especially — hides where a name really comes from.
+
+**Name child modules through `self::`** when importing or re-exporting from them (`use self::foo::Foo;`, `pub use self::foo::Foo;`). The explicit `self::` distinguishes the child module from a same-named dependency, so introducing a crate called `foo` later cannot silently change what the path resolves to.
+
+```rust
+mod config;
+mod error;
+
+pub use self::config::Config;
+pub use self::error::Error;
+```
 
 ## Visibility
 
