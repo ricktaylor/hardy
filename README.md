@@ -224,11 +224,11 @@ See [tests/interop/README.md](./tests/interop/README.md) for details.
 We welcome contributions to the Hardy project! If you would like to contribute, please follow these guidelines:
 
 1. Fork the repository and create a new branch for your contribution.
-2. Make your changes and ensure that the code follows the project's coding style and conventions.
+2. Make your changes and ensure the code follows the [coding style guide](./docs/style_guides/code_style_guide.md) and passes the CI checks (`cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings`).
 3. Write tests to cover your changes and ensure that all existing tests pass.
 4. Submit a pull request with a clear description of your changes and the problem they solve.
 
-Before contributing, please familiarize yourself with the project's [Test Strategy](./docs/test_strategy.md) to understand our approach to quality and verification.
+Before contributing, please familiarize yourself with the [coding style guide](./docs/style_guides/code_style_guide.md) and the project's [Test Strategy](./docs/test_strategy.md) to understand our conventions and approach to quality. [`AGENTS.md`](./AGENTS.md) summarises the build, test, and style essentials in one place — it is also the file that AI coding assistants load.
 
 By contributing to Hardy, you agree to license your contributions under the project's license.
 
