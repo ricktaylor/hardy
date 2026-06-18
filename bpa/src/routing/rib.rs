@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use core::hash::BuildHasher;
 
 use futures::{FutureExt, select_biased};
@@ -24,14 +25,11 @@ pub enum FindResult {
     Drop(Option<ReasonCode>),
 }
 
-struct RibInner {
-    table: RouteTable,
-    address_types: HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>,
-}
-
 pub struct Rib {
-    inner: RwLock<RibInner>,
-    // Routing agent tracking: spin::Mutex for O(1) HashMap operations
+    table: ArcSwap<RouteTable>,
+    write_lock: Mutex<()>,
+    address_types:
+        hardy_async::sync::spin::Mutex<HashMap<cla::ClaAddressType, Arc<cla::registry::Cla>>>,
     agents: hardy_async::sync::spin::Mutex<HashMap<String, Arc<agent::Agent>>>,
     node_ids: Arc<node_ids::NodeIds>,
     // Fixed per-instance seed for deterministic ECMP peer selection.
@@ -41,7 +39,6 @@ pub struct Rib {
     pub(crate) tasks: hardy_async::TaskPool,
     poll_waiting_notify: Arc<hardy_async::Notify>,
     store: Arc<storage::Store>,
-    // The priority for services - default 1
     service_priority: u32,
 }
 
@@ -89,10 +86,9 @@ impl Rib {
         service_priority: u32,
     ) -> Self {
         Self {
-            inner: RwLock::new(RibInner {
-                table: RouteTable::new(node_ids.clone()),
-                address_types: HashMap::new(),
-            }),
+            table: ArcSwap::from_pointee(RouteTable::new(node_ids.clone())),
+            write_lock: Mutex::new(()),
+            address_types: Default::default(),
             agents: Default::default(),
             node_ids,
             ecmp_hash_state: foldhash::quality::RandomState::default(),
@@ -129,21 +125,16 @@ impl Rib {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub fn find(&self, bundle: &mut bundle::Bundle) -> Option<FindResult> {
-        let inner = self.inner.read();
+        let table = self.table.load();
 
-        let result =
-            inner
-                .table
-                .find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
 
         let previous;
         let result = if matches!(result, table::FindResult::Reflect) {
             previous = bundle
                 .previous_node()
                 .unwrap_or_else(|| bundle.bundle.id.source.clone());
-            inner
-                .table
-                .find_recurse(&previous, false, &mut HashSet::new())?
+            table.find_recurse(&previous, false, &mut HashSet::new())?
         } else {
             result
         };
@@ -160,13 +151,11 @@ impl Rib {
     }
 
     pub fn find_service(&self, to: &Eid) -> Option<Arc<services::registry::Service>> {
-        let inner = self.inner.read();
-        inner.table.find_service(to)
+        self.table.load().find_service(to)
     }
 
     fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
-        let inner = self.inner.read();
-        inner.table.find_peers(to)
+        self.table.load().find_peers(to)
     }
 
     fn select_peer(
@@ -207,20 +196,24 @@ impl Rib {
         let action = self.expand_action(action);
 
         let vias = {
+            let _guard = self.write_lock.lock();
+            let mut table = self.table.load_full();
+
             let entry = Entry {
                 action: action.clone(),
                 source: source.clone(),
             };
-
-            let mut inner = self.inner.write();
-            if !inner.table.insert(pattern.clone(), entry, priority) {
+            if !Arc::make_mut(&mut table).insert(pattern.clone(), entry, priority) {
                 return false;
             }
+
+            let vias = table.impacted_vias(&pattern, priority);
+            self.table.store(table);
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
             metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
 
-            inner.table.impacted_vias(&pattern, priority)
+            vias
         };
 
         let changed = match action {
@@ -256,14 +249,18 @@ impl Rib {
         let action = self.expand_action(action);
 
         {
+            let _guard = self.write_lock.lock();
+            let mut table = self.table.load_full();
+
             let entry = Entry {
                 action: action.clone(),
                 source: source.to_string(),
             };
-            let mut inner = self.inner.write();
-            if !inner.table.remove(&pattern, &entry, priority) {
+            if !Arc::make_mut(&mut table).remove(&pattern, &entry, priority) {
                 return false;
             }
+
+            self.table.store(table);
         }
 
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
@@ -292,8 +289,11 @@ impl Rib {
 
     pub async fn remove_by_source(&self, source: &str) {
         let (vias, forward_peers, has_local, removed_count) = {
-            let mut inner = self.inner.write();
-            inner.table.remove_by_source(source)
+            let _guard = self.write_lock.lock();
+            let mut table = self.table.load_full();
+            let result = Arc::make_mut(&mut table).remove_by_source(source);
+            self.table.store(table);
+            result
         };
 
         if removed_count == 0 {
@@ -435,11 +435,11 @@ impl Rib {
         address_type: cla::ClaAddressType,
         cla: Arc<cla::registry::Cla>,
     ) {
-        self.inner.write().address_types.insert(address_type, cla);
+        self.address_types.lock().insert(address_type, cla);
     }
 
     pub fn remove_address_type(&self, address_type: &cla::ClaAddressType) {
-        self.inner.write().address_types.remove(address_type);
+        self.address_types.lock().remove(address_type);
     }
 
     fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {
@@ -503,8 +503,10 @@ mod tests {
             action,
             source: source.to_string(),
         };
-        let mut inner = rib.inner.write();
-        inner.table.insert(pattern, entry, priority);
+        let _guard = rib.write_lock.lock();
+        let mut table = rib.table.load_full();
+        Arc::make_mut(&mut table).insert(pattern, entry, priority);
+        rib.table.store(table);
     }
 
     fn add_local_forward(rib: &Rib, node_id: NodeId, peer: u32) {

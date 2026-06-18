@@ -31,6 +31,7 @@ impl Ord for Entry {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct RouteTable {
     routes: BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<Entry>>>,
     node_ids: Arc<NodeIds>,
