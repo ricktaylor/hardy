@@ -96,7 +96,7 @@ impl Rib {
         source: String,
         action: Action,
         priority: u32,
-    ) -> bool {
+    ) -> routes::Result<bool> {
         let pattern = if let Some(ipn) = &self.node_ids.ipn {
             pattern.expand_local_node(ipn).unwrap_or(pattern)
         } else {
@@ -109,14 +109,10 @@ impl Rib {
 
         if let Action::Via(ref next_hop) = action {
             if next_hop.is_null() {
-                warn!(
-                    "Rejecting route with null next-hop: {pattern} via {next_hop} (source '{source}')"
-                );
-                return false;
+                return Err(routes::Error::NullNextHop);
             }
             if self.node_ids.is_local(next_hop) {
-                warn!("Rejecting route via own node: {pattern} via {next_hop} (source '{source}')");
-                return false;
+                return Err(routes::Error::ViaOwnNode(next_hop.clone()));
             }
         }
 
@@ -138,7 +134,7 @@ impl Rib {
                     }
                     btree_map::Entry::Occupied(mut pe) => {
                         if !pe.get_mut().insert(new_entry) {
-                            return false;
+                            return Ok(false);
                         }
                     }
                 },
@@ -182,7 +178,7 @@ impl Rib {
         if changed {
             self.notify_updated().await;
         }
-        true
+        Ok(true)
     }
 
     pub async fn remove(
@@ -323,7 +319,7 @@ impl Rib {
 
     /// Add a forward route for a CLA peer.
     /// The NodeId is converted to a wildcard pattern (e.g., ipn:1.* for all services).
-    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> routes::Result<bool> {
         let pattern: EidPattern = node_id.into();
         self.add(
             pattern,
@@ -342,7 +338,11 @@ impl Rib {
     }
 
     /// Add a service route for a local service.
-    pub async fn add_service(&self, eid: Eid, service: Arc<services::registry::Service>) -> bool {
+    pub async fn add_service(
+        &self,
+        eid: Eid,
+        service: Arc<services::registry::Service>,
+    ) -> routes::Result<bool> {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -592,7 +592,10 @@ pub(super) mod tests {
                 10,
             )
             .await;
-        assert!(!result, "Via null endpoint should be rejected");
+        assert!(
+            matches!(result, Err(routes::Error::NullNextHop)),
+            "Via null endpoint should be rejected, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -606,7 +609,10 @@ pub(super) mod tests {
                 10,
             )
             .await;
-        assert!(!result, "Via own node should be rejected");
+        assert!(
+            matches!(result, Err(routes::Error::ViaOwnNode(_))),
+            "Via own node should be rejected, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -620,6 +626,9 @@ pub(super) mod tests {
                 10,
             )
             .await;
-        assert!(result, "Default route should be accepted");
+        assert!(
+            matches!(result, Ok(true)),
+            "Default route should be accepted, got {result:?}"
+        );
     }
 }

@@ -7,7 +7,7 @@ use hardy_async::watcher::{self, WatchMode};
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::loader;
 
@@ -97,22 +97,25 @@ async fn reload_routes(
             .ok();
     }
 
-    for r in &to_add {
-        sink.add_route(
-            r.pattern.clone(),
-            r.action.clone(),
-            r.priority.unwrap_or(priority),
-        )
-        .await
-        .ok();
+    let mut accepted = Vec::new();
+    for r in to_add {
+        match sink
+            .add_route(
+                r.pattern.clone(),
+                r.action.clone(),
+                r.priority.unwrap_or(priority),
+            )
+            .await
+        {
+            Ok(_) => accepted.push(r),
+            Err(e) => warn!("Rejected static route {} => {}: {e}", r.pattern, r.action),
+        }
     }
 
     {
         let mut routes = routes.lock().unwrap();
         routes.retain(|r| !to_remove.contains(r));
-        for r in to_add {
-            routes.push(r);
-        }
+        routes.extend(accepted);
     }
 }
 
