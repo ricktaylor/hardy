@@ -509,11 +509,10 @@ mod tests {
             "Should be Draining or Congested after overflow, got {state:?}"
         );
 
-        // Drop receiver before close. After the closeable migration, close()
-        // is sync and non-blocking (it just cancels the cancel_token), so the
-        // ordering no longer matters for correctness — but keeping the
-        // receiver-then-sender shutdown order here mirrors how producers and
-        // consumers actually wind down in production.
+        // close() is sync and non-blocking (it only cancels the cancel_token),
+        // so the receiver-then-sender ordering no longer matters for
+        // correctness — but it mirrors how producers and consumers actually
+        // wind down in production.
         drop(rx);
         tx.close();
         store.shutdown().await;
