@@ -432,6 +432,10 @@ impl Rib {
         self.address_types.lock().remove(address_type);
     }
 
+    pub(super) fn has_agent(&self, name: &str) -> bool {
+        self.agents.lock().contains_key(name)
+    }
+
     fn expand_pattern(&self, pattern: EidPattern) -> EidPattern {
         if let Some(ipn) = &self.node_ids.ipn {
             pattern.expand_local_node(ipn).unwrap_or(pattern)

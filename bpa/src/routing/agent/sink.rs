@@ -1,6 +1,6 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Result, RoutingSink};
+use super::{Error, Result, RoutingSink};
 use crate::{
     Arc, async_trait,
     routing::{action::RouteAction, rib::Rib},
@@ -14,6 +14,14 @@ pub struct Sink {
 impl Sink {
     pub fn new(name: String, rib: Arc<Rib>) -> Self {
         Self { name, rib }
+    }
+
+    fn check_connected(&self) -> Result<()> {
+        if self.rib.has_agent(&self.name) {
+            Ok(())
+        } else {
+            Err(Error::Disconnected)
+        }
     }
 }
 
@@ -29,6 +37,7 @@ impl RoutingSink for Sink {
         action: RouteAction,
         priority: u32,
     ) -> Result<bool> {
+        self.check_connected()?;
         self.rib
             .add(pattern, self.name.clone(), action.into(), priority)
             .await
@@ -40,6 +49,7 @@ impl RoutingSink for Sink {
         action: &RouteAction,
         priority: u32,
     ) -> Result<bool> {
+        self.check_connected()?;
         Ok(self
             .rib
             .remove(pattern, &self.name, action.clone().into(), priority)
@@ -49,6 +59,9 @@ impl RoutingSink for Sink {
 
 impl Drop for Sink {
     fn drop(&mut self) {
+        if self.rib.tasks.is_cancelled() || !self.rib.has_agent(&self.name) {
+            return;
+        }
         let name = self.name.clone();
         let rib = self.rib.clone();
         hardy_async::spawn!(self.rib.tasks, "routing_agent_drop_cleanup", async move {
