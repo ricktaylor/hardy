@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::ErrorKind, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
@@ -13,7 +13,6 @@ use hardy_proto::server::GrpcServer;
 use tracing::{error, info, warn};
 
 use self::bpsec::PatternKeyProvider;
-use self::static_routes::StaticRoutesAgent;
 
 mod bpsec;
 mod cli;
@@ -154,29 +153,7 @@ async fn build(
     }
 
     if let Some(sr_config) = config.static_routes {
-        let routes_file = std::env::current_dir()
-            .context("Failed to get current directory")?
-            .join(&sr_config.routes_file);
-
-        let routes_file = match routes_file.canonicalize() {
-            Ok(path) => path,
-            Err(e) => {
-                if e.kind() != ErrorKind::NotFound {
-                    return Err(anyhow::anyhow!(
-                        "Failed to canonicalise routes_file '{}': {e}'",
-                        routes_file.display()
-                    ));
-                }
-                routes_file
-            }
-        };
-
-        let agent = Arc::new(StaticRoutesAgent::new(
-            routes_file,
-            sr_config.priority,
-            sr_config.watch.into(),
-        ));
-
+        let agent = sr_config.build()?;
         builder = builder.routing_agent(sr_config.protocol_id, agent);
     }
 
