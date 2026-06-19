@@ -1,0 +1,76 @@
+name: ClusterFuzzLite Cron
+on:
+  schedule:
+    # Nightly, deliberately off the :00 mark.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions: read-all
+
+env:
+  STORAGE_REPO: https://${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
+
+jobs:
+  Batch:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build Fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run Fuzzers (${{ matrix.sanitizer }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 900
+          mode: "batch"
+          sanitizer: ${{ matrix.sanitizer }}
+          storage-repo: ${{ env.STORAGE_REPO }}
+          storage-repo-branch: main
+
+  # Minimises the corpus stored in the corpus repo (removes inputs that add no
+  # coverage). Required whenever batch fuzzing runs.
+  Prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+
+      - name: Run Fuzzers (prune)
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: "prune"
+          storage-repo: ${{ env.STORAGE_REPO }}
+          storage-repo-branch: main
+
+  # Publishes per-fuzzer line-coverage reports to the corpus repo's gh-pages
+  # branch: https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/linux/report.html
+  Coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build Fuzzers (coverage)
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          sanitizer: coverage
+
+      - name: Run Fuzzers (coverage)
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+          mode: "coverage"
+          sanitizer: coverage
+          storage-repo: ${{ env.STORAGE_REPO }}
+          storage-repo-branch: main
+          storage-repo-branch-coverage: gh-pages

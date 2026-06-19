@@ -1,0 +1,48 @@
+name: ClusterFuzzLite PR
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "**/fuzz/**"
+      - ".clusterfuzzlite/**"
+      - ".github/workflows/cflite-pr.yml"
+
+permissions: read-all
+
+concurrency:
+  group: cflite-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  PR:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - name: Build Fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          sanitizer: ${{ matrix.sanitizer }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Build only the targets affected by the PR diff.
+          bad-build-check: false
+
+      - name: Run Fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 300
+          mode: "code-change"
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: false
+          # PR runs start from the corpus accumulated by batch fuzzing.
+          storage-repo: https://${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
+          storage-repo-branch: main
