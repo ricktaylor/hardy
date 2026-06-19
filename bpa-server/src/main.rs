@@ -56,16 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let grpc_config = config.grpc.take();
 
     let bpsec_config = config.bpsec.take();
-    let key_provider = bpsec_config
-        .as_ref()
-        .map(|c| {
-            c.build()
-                .context("Failed to load BPSec configuration")
-                .map(|source| Arc::new(PatternKeyProvider::new(source)))
-        })
-        .transpose()?;
-
-    let bpa = build(config, key_provider.clone(), args.upgrade_storage).await?;
+    let (bpa, key_provider) = build(config, bpsec_config.as_ref(), args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
@@ -104,9 +95,9 @@ async fn main() -> anyhow::Result<()> {
 /// Build a BPA from the given configuration.
 async fn build(
     config: config::Config,
-    key_provider: Option<Arc<PatternKeyProvider>>,
+    bpsec_config: Option<&config::bpsec::Config>,
     upgrade_storage: bool,
-) -> anyhow::Result<Arc<Bpa>> {
+) -> anyhow::Result<(Arc<Bpa>, Option<Arc<PatternKeyProvider>>)> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
 
     let mut builder = Bpa::builder()
@@ -129,8 +120,16 @@ async fn build(
         builder = builder.service_priority(service_priority);
     }
 
-    if let Some(provider) = key_provider {
-        builder = builder.key_provider(provider);
+    let key_provider = bpsec_config
+        .map(|c| {
+            c.build()
+                .context("Failed to load BPSec configuration")
+                .map(|source| Arc::new(PatternKeyProvider::new(source)))
+        })
+        .transpose()?;
+
+    if let Some(provider) = &key_provider {
+        builder = builder.key_provider(provider.clone());
     }
 
     if config.storage.uses_cache() {
@@ -202,5 +201,5 @@ async fn build(
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
-    Ok(bpa)
+    Ok((bpa, key_provider))
 }
