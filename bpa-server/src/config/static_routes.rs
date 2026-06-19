@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use hardy_bpa::routes::RoutingAgent;
+use hardy_bpa::routing::RoutingAgent;
 use serde::{Deserialize, Serialize};
 
 use super::{WatchConfig, default_config_dir};

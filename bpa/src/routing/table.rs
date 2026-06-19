@@ -1,7 +1,6 @@
 use core::cmp::Ordering;
 
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 use tracing::{trace, warn};
 
@@ -9,9 +8,9 @@ use tracing::{trace, warn};
 use tracing::instrument;
 
 use super::action::{Action, InternalAction, RouteAction};
-use crate::node_ids::NodeIds;
-use crate::services::registry::Service;
-use crate::{Arc, BTreeMap, BTreeSet, HashSet, btree_map};
+use crate::{
+    Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Service,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Entry {

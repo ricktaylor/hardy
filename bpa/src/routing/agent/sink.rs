@@ -1,9 +1,10 @@
 use hardy_eid_patterns::EidPattern;
 
 use super::{Result, RoutingSink};
-use crate::routing::action::RouteAction;
-use crate::routing::rib::Rib;
-use crate::{Arc, async_trait};
+use crate::{
+    Arc, async_trait,
+    routing::{action::RouteAction, rib::Rib},
+};
 
 pub struct Sink {
     name: String,

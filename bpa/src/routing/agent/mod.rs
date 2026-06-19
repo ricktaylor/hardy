@@ -3,12 +3,9 @@ mod static_agent;
 
 pub use self::static_agent::StaticRoutingAgent;
 
-use hardy_bpv7::eid::NodeId;
+use hardy_bpv7::eid::{Eid, NodeId};
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
-use tracing::warn;
-
-use crate::async_trait;
 
 use super::action::RouteAction;
 use crate::async_trait;

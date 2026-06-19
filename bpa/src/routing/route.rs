@@ -1,24 +1,13 @@
 use core::{cmp::Ordering, fmt};
 
-use hardy_bpv7::{
-    eid::{Eid, NodeId},
-    status_report::ReasonCode,
-};
-use hardy_eid_patterns::EidPattern;
-use tracing::debug;
-
-use super::Rib;
-use crate::{Arc, HashSet, btree_map, services};
-
-use hardy_bpv7::eid::{Eid, NodeId};
+use hardy_bpv7::{eid::{Eid, NodeId}, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
 use tracing::debug;
 
 use super::action::{Action, InternalAction, RouteAction};
 use super::rib::Rib;
 use super::table::Entry;
-use crate::services;
-use crate::{Arc, HashSet};
+use crate::{Arc, HashSet, btree_map, services};
 
 impl Rib {
     pub(crate) async fn add(
