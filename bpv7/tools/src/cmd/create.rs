@@ -66,8 +66,8 @@ impl Command {
             ));
         }
 
-        // Get payload data. `Input::read_all` now hands back a `Bytes`,
-        // so collapse both branches to `Vec<u8>` for the Builder.
+        // Collect the payload into a Vec<u8> for the Builder, from whichever
+        // source was given.
         let payload_data: Vec<u8> = if let Some(payload_str) = &self.payload {
             payload_str.as_bytes().to_vec()
         } else if let Some(input) = &self.payload_file {

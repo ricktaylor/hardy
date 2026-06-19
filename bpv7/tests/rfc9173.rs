@@ -1279,11 +1279,12 @@ fn test_sign_primary_block_with_crc() {
         "Should have 1 BIB after signing primary block"
     );
 
-    // 5. Verify the primary block still has its CRC (RFC 9171 allows this)
+    // 5. RFC 9173 §3.8.1: signing removes the target's CRC — including the
+    // primary (RFC 9171 permits a primary with no CRC when a BIB targets it).
     let signed_primary = parsed.blocks.get(&0).expect("Primary block missing");
     assert!(
-        !matches!(signed_primary.crc_type, hardy_bpv7::crc::CrcType::None),
-        "Primary block should still have CRC after signing"
+        matches!(signed_primary.crc_type, hardy_bpv7::crc::CrcType::None),
+        "Primary block CRC must be removed by signing (RFC 9173 §3.8.1)"
     );
 
     // 6. Verify the signature

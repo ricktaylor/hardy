@@ -5,7 +5,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 
 # Key Modules
 
-- [`bundle`]: Contains the structural [`Bundle`](bundle::Bundle) (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
+- [`bundle`]: Contains the structural [`Bundle`] (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
 - [`parse`]: The streaming wire parser ([`parse`](parse::parse) / [`BundleParser`](parse::BundleParser)).
 - [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
@@ -45,7 +45,6 @@ The following example demonstrates how to parse a BPv7 bundle from its CBOR repr
 ```rust,cfg(feature = "std")
 use hardy_bpv7::builder::Builder;
 use hardy_bpv7::parse;
-use hardy_bpv7::block;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 

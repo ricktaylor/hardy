@@ -262,6 +262,5 @@ fn build_bib_data(
     // constructs `Context::__Reserved`. Returns a typed error rather
     // than panicking, so an unsupported context is a signature-level
     // failure.
-    let _ = (context, args, key);
     Err(bpsec::Error::UnsupportedOperation)
 }

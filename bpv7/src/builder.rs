@@ -125,7 +125,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Builds the bundle with the given timestamp, returning the parsed
-    /// [`Bundle`](crate::bundle::Bundle) view (primary block + blocks map) alongside
+    /// [`Bundle`] view (primary block + blocks map) alongside
     /// the encoded wire bytes.
     pub fn build(
         self,

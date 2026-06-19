@@ -1,9 +1,14 @@
-use crate::{flags, io, keys};
+use std::collections::{HashMap, HashSet};
+
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
-use hardy_bpv7::bpsec::{bib, key::KeySet};
-use hardy_bpv7::{Bundle, CaptureFieldErr, checks, parse};
-use std::collections::{HashMap, HashSet};
+use hardy_bpv7::{
+    Bundle, CaptureFieldErr,
+    bpsec::{bib, key::KeySet},
+    checks, parse,
+};
+
+use crate::{flags, io, keys};
 
 /// Structural parse + keyed BPSec validation in one pass: each tool runs
 /// the stages it needs and gets back a `parse::Parsed` (already

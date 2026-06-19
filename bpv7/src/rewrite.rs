@@ -1,6 +1,6 @@
 /*!
 Applies queued rewrites (block removals and non-canonical re-emits) to a
-structurally-parsed bundle, returning a fresh [`Bundle`](crate::bundle::Bundle)
+structurally-parsed bundle, returning a fresh [`Bundle`]
 and the chunk plan describing the new wire bytes.
 
 This is the apply step that consumers reach for after composing the
@@ -14,7 +14,7 @@ use bpsec::edit::BPSecEditor;
 use editor::{Chunk, Editor};
 
 /// Apply queued rewrites. Bulk-removes via
-/// [`bpsec::edit::BPSecEditor::remove_blocks`] (which handles cascading
+/// [`BPSecEditor::remove_blocks`] (which handles cascading
 /// through BCB-encrypted BIBs internally), then applies non-canonical
 /// re-emits.
 ///

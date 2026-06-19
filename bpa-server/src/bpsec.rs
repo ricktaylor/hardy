@@ -609,8 +609,15 @@ mod tests {
             &no_updates,
         )
         .expect("covered-BIB decrypt failed");
-        checks::verify_all_bibs(&data, source, &bundle.blocks, &bibs, &decrypted, &no_updates)
-            .expect("BIB verify failed");
+        checks::verify_all_bibs(
+            &data,
+            source,
+            &bundle.blocks,
+            &bibs,
+            &decrypted,
+            &no_updates,
+        )
+        .expect("BIB verify failed");
 
         (data, bundle, bcbs)
     }

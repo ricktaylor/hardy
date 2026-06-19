@@ -13,13 +13,20 @@ use hardy_cbor::decode::Error as CborError;
 
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+/// The BPv7 primary block (RFC 9171 §4.2): the bundle's identifying header.
 pub struct PrimaryBlock {
+    /// Bundle processing control flags.
     pub flags: bundle::Flags,
+    /// Bundle identity: source EID, creation timestamp, and fragment info.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub id: bundle::Id,
+    /// CRC type protecting the primary block.
     pub crc_type: crc::CrcType,
+    /// Destination EID.
     pub destination: eid::Eid,
+    /// Report-to EID for status reports.
     pub report_to: eid::Eid,
+    /// Bundle lifetime from creation, after which it may be deleted.
     pub lifetime: core::time::Duration,
 }
 

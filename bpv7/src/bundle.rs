@@ -20,7 +20,12 @@ use primary_block::PrimaryBlock;
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
+    /// The bundle's primary block, decoded into typed fields.
     pub primary: PrimaryBlock,
+    /// All blocks keyed by wire block number (primary = 0, payload = 1,
+    /// extensions = 2+). `blocks[0]` is the primary block in raw form, kept for
+    /// byte-exact access (e.g. BPSec primary-block AAD); [`primary`](Self::primary)
+    /// above is the same block decoded.
     pub blocks: HashMap<u64, block::Block>,
 }
 

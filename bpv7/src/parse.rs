@@ -1,8 +1,8 @@
 /*!
 The streaming wire parser for BPv7 bundles ([RFC 9171]). [`BundleParser`]
-drives the structural decode incrementally; [`parse`] is the one-shot
+drives the structural decode incrementally; [`parse()`] is the one-shot
 convenience over it. Both yield a [`Parsed`] — the authoritative byte
-buffer, the structural [`Bundle`](crate::bundle::Bundle), and the decoded
+buffer, the structural [`Bundle`], and the decoded
 BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 [`crate::checks`] and [`crate::rewrite`].
 
@@ -115,11 +115,11 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
 /// `Bytes` buffer the parser owns (the source of truth that the
 /// returned `Bundle::blocks` extent/data offsets index into) and its
 /// decoded BPSec OperationSet maps (BCBs and BIBs, keyed by block
-/// number). Returned by [`BundleParser::finish`] and [`parse`].
+/// number). Returned by [`BundleParser::finish`] and [`parse()`].
 ///
 /// Slice with `&parsed.data[block.payload_range()]` (or `block.extent`)
 /// using [`data`](Self::data) rather than a separate copy of the input —
-/// for the single-`push()` / one-shot [`parse`] path this is the input
+/// for the single-`push()` / one-shot [`parse()`] path this is the input
 /// verbatim, but the multi-`push()` streaming path freezes the
 /// concatenated staging buffer, so the offsets are only meaningful
 /// against *that* buffer.
@@ -145,7 +145,11 @@ enum State {
     Partial,
 }
 
+/// The outcome of a [`BundleParser::push`] call: either more input is needed,
+/// or parsing reached one of its terminal states.
 pub enum ParserProgress {
+    /// More input is required before parsing can continue; carries a
+    /// lower-bound hint for the number of additional bytes to feed next.
     NeedMore(usize),
     /// Parsing is complete. Carries the concatenation of all bytes received
     /// via `push()` as a single contiguous `Bytes`. Yielded exactly once.
@@ -163,10 +167,7 @@ pub enum ParserProgress {
     /// [`PayloadTail::push`] to carry the payload CRC and the block/outer-break
     /// checks to completion. Yielded at most once; do not `push` the parser
     /// after it.
-    Partial {
-        consumed: Bytes,
-        tail: PayloadTail,
-    },
+    Partial { consumed: Bytes, tail: PayloadTail },
 }
 
 /// Synchronous continuation that carries an oversized payload block's CRC and
@@ -384,6 +385,7 @@ impl PayloadTail {
     }
 }
 
+/// Incremental, push-based parser for a BPv7 bundle arriving in chunks.
 pub struct BundleParser {
     chunk_size: usize,
     data: Option<BytesMut>,
@@ -429,6 +431,8 @@ impl Default for BundleParser {
 }
 
 impl BundleParser {
+    /// Creates a parser that grows its internal buffer in `chunk_size`-byte
+    /// increments. [`Default`] uses 4096.
     pub fn new(chunk_size: usize) -> Self {
         Self {
             chunk_size,
@@ -442,6 +446,13 @@ impl BundleParser {
         }
     }
 
+    /// Feeds the next run of bytes and advances parsing, returning a
+    /// [`ParserProgress`]: `NeedMore` if more input is required, or a terminal
+    /// `Ready` / `Partial` result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called again after a terminal `Ready`/`Partial` result.
     pub fn push(&mut self, data_in: Bytes) -> Result<ParserProgress, Error> {
         // If we have a cached buffer, extend with data_in and take it out for parsing.
         // Otherwise leave cached = None and parse against data_in directly.
@@ -554,13 +565,11 @@ impl BundleParser {
     }
 
     /// Cross-block structural validation of every BIB / BCB against
-    /// the keyless rules from RFC 9172 §3.7 and §3.9. Mirrors the
-    /// older parser's BCB→BIB ordering: BCBs first so each block's
-    /// BCB-coverage is known, then BIBs (skipping any that are
-    /// BCB-encrypted — their bodies are ciphertext and we can't
-    /// decode the OperationSet without keys). BCB-protected BIBs
-    /// trigger a `BibCoverage::Maybe` sweep on the remaining blocks,
-    /// matching the older parser's `mark_bib_coverage_unknown`.
+    /// the keyless rules from RFC 9172 §3.7 and §3.9. BCBs are processed
+    /// first so each block's BCB-coverage is known, then BIBs (skipping any
+    /// that are BCB-encrypted — their bodies are ciphertext and we can't
+    /// decode the OperationSet without keys). BCB-protected BIBs trigger a
+    /// `BibCoverage::Maybe` sweep on the remaining blocks.
     ///
     /// All errors map to existing `bpsec::Error` variants — no new
     /// error surface. As a side effect, populates `Block::bib` and
@@ -665,7 +674,7 @@ impl BundleParser {
 
         // Encrypted BIBs whose targets we couldn't read: every non-
         // security block whose BIB coverage is still `None` becomes
-        // `Maybe`. Mirrors the older parser's `mark_bib_coverage_unknown`.
+        // `Maybe`.
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
                 if !matches!(
@@ -1073,9 +1082,8 @@ fn consume_crc(
 /// by the bytes consumed (TooBig on overflow). Fails with `NotCanonical`
 /// if the encoding isn't shortest-form; labels both that failure and any
 /// underlying parse error with `field` (so the diagnostic carries the
-/// field name in either case). Strict-canonical counterpart of the old
-/// `parse_checked` — the shortest indicator from FromCbor becomes a
-/// yes/no gate rather than something to AND into a running flag.
+/// field name in either case). A non-shortest encoding is rejected
+/// outright as `NotCanonical`.
 fn parse_canonical<T>(data: &[u8], offset: &mut usize, field: &'static str) -> Result<T, Error>
 where
     T: hardy_cbor::decode::FromCbor,

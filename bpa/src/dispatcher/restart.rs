@@ -83,7 +83,7 @@ impl Dispatcher {
             }
         } else {
             // Orphan — data exists but no metadata. Run the full receive
-            // pipeline (parse_full_with_provider, block removal,
+            // pipeline (process_received_bundle: parse, block removal,
             // canonicalization, storage, reporting, and Ingress filter).
             let metadata = bundle::BundleMetadata {
                 status: bundle::BundleStatus::New,

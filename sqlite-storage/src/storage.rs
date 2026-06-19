@@ -813,7 +813,7 @@ mod tests {
         // The storage tests below only read `bundle.bundle.id`, so we
         // skip the parse round-trip and reshape Builder's raw output into
         // the rich `Bpv7Bundle` directly. (Editor-touching tests still
-        // need to re-parse for wire-aligned block numbers — see memory.)
+        // need to re-parse for wire-aligned block numbers.)
         hardy_bpa::bundle::Bundle {
             bundle: hardy_bpa::bundle::Bpv7Bundle {
                 id: raw.primary.id,

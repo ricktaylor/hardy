@@ -5,16 +5,16 @@ Layer 2 of bpv7's editing stack — adds key-aware operations to the
 BPSec-agnostic [`crate::editor::Editor`]. The [`BPSecEditor`] extension
 trait provides:
 
-- [`BPSecEditor::remove_blocks`] — bulk
+- [`BPSecEditor::remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks) — bulk
   cascade-through-encrypted-BIB block removal. Lenient: silently
   retains the covered targets of any BIB that would be partially shrunk
   without an available Encrypt key, and returns the actually-removed
   set. For naive single-block removal that errors on any BPSec
-  involvement, use [`Editor::remove_block`] instead.
-- [`BPSecEditor::remove_integrity`] — strip a target block's BIB
+  involvement, use [`Editor::remove_block`](crate::editor::Editor::remove_block) instead.
+- [`BPSecEditor::remove_integrity`](crate::bpsec::edit::BPSecEditor::remove_integrity) — strip a target block's BIB
   signature, restoring CRC if necessary. Keyless.
 
-and the free function [`remove_encryption`] decrypts a target block and
+and the free function [`remove_encryption`](crate::bpsec::edit::remove_encryption) decrypts a target block and
 rewrites it in plaintext, including the §3.8 share-target handshake with
 any BIB that covers the decrypted block.
 
@@ -44,7 +44,7 @@ pub trait BPSecEditor: Sized {
     /// editor and the set of block numbers actually removed.
     ///
     /// For naive single-block removal that errors on any BPSec
-    /// involvement, use [`Editor::remove_block`] (the inherent method).
+    /// involvement, use [`Editor::remove_block`](crate::editor::Editor::remove_block) (the inherent method).
     /// For cascade-aware single-block removal, call this with a
     /// 1-element set and inspect the returned set.
     ///
@@ -78,7 +78,7 @@ pub trait BPSecEditor: Sized {
     /// OpSet parse on ciphertext fails) — use [`remove_blocks`] for
     /// that case.
     ///
-    /// [`remove_blocks`]: BPSecEditor::remove_blocks
+    /// [`remove_blocks`]: crate::bpsec::edit::BPSecEditor::remove_blocks
     #[allow(clippy::result_large_err)]
     fn remove_integrity(self, block_number: u64) -> Result<Self, (Self, EditorError)>;
 }
@@ -448,7 +448,7 @@ where
 
 /// Re-encrypt a BCB-covered BIB whose plaintext OperationSet has changed
 /// during the cascading block-delete in
-/// [`BPSecEditor::remove_blocks`].
+/// [`BPSecEditor::remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks).
 ///
 /// When the cascade drops a non-security block, any BIB referencing it
 /// has its OperationSet shrunk. A shrunk BIB that (a) survives the empty

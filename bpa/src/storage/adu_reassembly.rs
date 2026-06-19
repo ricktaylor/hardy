@@ -79,7 +79,10 @@ impl Store {
             .get(&1)
             .trace_expect("Bundle without payload?!")
             .payload_range();
-        let payload: Range<usize> = r.start as usize..r.end as usize;
+        let (Ok(start), Ok(end)) = (usize::try_from(r.start), usize::try_from(r.end)) else {
+            return None;
+        };
+        let payload: Range<usize> = start..end;
 
         let mut adu_totals = payload.len() as u64;
         let mut results = FragmentSet {
@@ -132,8 +135,12 @@ impl Store {
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
                                     .payload_range();
-                                let payload: Range<usize> =
-                                    r.start as usize..r.end as usize;
+                                let (Ok(start), Ok(end)) =
+                                    (usize::try_from(r.start), usize::try_from(r.end))
+                                else {
+                                    continue;
+                                };
+                                let payload: Range<usize> = start..end;
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
