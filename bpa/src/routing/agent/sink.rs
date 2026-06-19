@@ -29,10 +29,9 @@ impl RoutingSink for Sink {
         action: RouteAction,
         priority: u32,
     ) -> Result<bool> {
-        Ok(self
-            .rib
+        self.rib
             .add(pattern, self.name.clone(), action.into(), priority)
-            .await)
+            .await
     }
 
     async fn remove_route(

@@ -200,7 +200,7 @@ impl Rib {
         source: String,
         action: Action,
         priority: u32,
-    ) -> bool {
+    ) -> Result<bool> {
         let pattern = self.expand_pattern(pattern);
         let action = self.expand_action(action);
 
@@ -212,8 +212,8 @@ impl Rib {
                 action: action.clone(),
                 source: source.clone(),
             };
-            if !Arc::make_mut(&mut table).insert(pattern.clone(), entry, priority) {
-                return false;
+            if !Arc::make_mut(&mut table).insert(pattern.clone(), entry, priority)? {
+                return Ok(false);
             }
 
             let vias = table.impacted_vias(&pattern, priority);
@@ -244,7 +244,7 @@ impl Rib {
         if changed {
             self.notify_updated().await;
         }
-        true
+        Ok(true)
     }
 
     pub(crate) async fn remove(
@@ -331,7 +331,7 @@ impl Rib {
         }
     }
 
-    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> bool {
+    pub async fn add_forward(&self, node_id: NodeId, peer: u32) -> Result<bool> {
         let pattern: EidPattern = node_id.into();
         self.add(
             pattern,
@@ -353,7 +353,7 @@ impl Rib {
         .await
     }
 
-    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> bool {
+    pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> Result<bool> {
         self.add(
             eid.into(),
             Self::SERVICES_NAME.into(),
@@ -504,7 +504,9 @@ mod tests {
         };
         let _guard = rib.write_lock.lock();
         let mut table = rib.table.load_full();
-        Arc::make_mut(&mut table).insert(pattern, entry, priority);
+        Arc::make_mut(&mut table)
+            .insert(pattern, entry, priority)
+            .unwrap();
         rib.table.store(table);
     }
 
@@ -807,7 +809,10 @@ mod tests {
                 10,
             )
             .await;
-        assert!(!result, "Via null endpoint should be rejected");
+        assert!(
+            matches!(result, Err(Error::NullNextHop)),
+            "Via null endpoint should be rejected, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -821,7 +826,10 @@ mod tests {
                 10,
             )
             .await;
-        assert!(!result, "Via own node should be rejected");
+        assert!(
+            matches!(result, Err(Error::ViaOwnNode(_))),
+            "Via own node should be rejected, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -835,6 +843,9 @@ mod tests {
                 10,
             )
             .await;
-        assert!(result, "Default route should be accepted");
+        assert!(
+            matches!(result, Ok(true)),
+            "Default route should be accepted, got {result:?}"
+        );
     }
 }
