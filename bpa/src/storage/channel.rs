@@ -51,17 +51,17 @@ use core::{
     result::Result,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
 use futures::{FutureExt, pin_mut, select_biased};
 use hardy_async::{Notify, closeable::TrySendError};
 use trace_err::*;
 use tracing::debug;
 
+use super::store::Store;
 use crate::{
     Arc,
     bundle::{Bundle, BundleStatus},
 };
-
-use super::store::Store;
 
 /// Channel state machine states (`#[repr(usize)]` for lock-free atomics).
 #[repr(usize)]

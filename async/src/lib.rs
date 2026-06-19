@@ -54,11 +54,12 @@ pub mod watcher;
 
 // Re-export commonly used types at crate root
 pub use async_trait::async_trait;
-pub use bounded_task_pool::BoundedTaskPool;
-pub use cancellation_token::CancellationToken;
-pub use join_handle::JoinHandle;
-pub use notify::Notify;
-pub use task_pool::TaskPool;
+
+pub use self::bounded_task_pool::BoundedTaskPool;
+pub use self::cancellation_token::CancellationToken;
+pub use self::join_handle::JoinHandle;
+pub use self::notify::Notify;
+pub use self::task_pool::TaskPool;
 
 /// Returns the number of available hardware threads.
 ///

@@ -1,14 +1,16 @@
-use super::*;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+
 use hardy_bpa::{
     async_trait,
     bundle::{Bundle, BundleMetadata, BundleStatus},
     storage,
     stream::Sender,
 };
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+
+use super::*;
 
 struct ConnectionPool {
     path: PathBuf,

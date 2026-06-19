@@ -1,4 +1,3 @@
-use super::*;
 use hardy_bpa::{
     async_trait,
     bundle::{Bundle, BundleStatus},
@@ -6,10 +5,11 @@ use hardy_bpa::{
     stream::Sender,
 };
 use sqlx::{FromRow, PgPool, migrate::Migrate};
-use tracing::{error, warn};
-
 #[cfg(feature = "instrument")]
 use tracing::instrument;
+use tracing::{error, warn};
+
+use super::*;
 
 pub struct Storage {
     pool: PgPool,

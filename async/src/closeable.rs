@@ -43,6 +43,8 @@
 //! # });
 //! ```
 
+use futures::FutureExt;
+
 use crate::{CancellationToken, channel};
 
 // Single source of truth: error types are re-exported from `channel`.
@@ -156,7 +158,6 @@ impl<T> Receiver<T> {
     /// [`Sender::close`] for the in-flight window.
     #[inline]
     pub async fn recv(&self) -> Result<T, RecvError> {
-        use futures::FutureExt;
         // `channel::Receiver::recv` is an `async fn`, so its future is
         // not `Unpin`. Pin it on the stack so `select_biased!` accepts
         // it without an allocation.

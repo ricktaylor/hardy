@@ -1,5 +1,6 @@
-use super::*;
 use hardy_bpv7::eid::NodeId;
+
+use super::*;
 
 // CLA registry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts

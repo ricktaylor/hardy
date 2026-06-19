@@ -1,11 +1,7 @@
-use super::*;
-use futures::join;
-use hardy_bpa::{
-    Bytes, async_trait,
-    storage::{self, BundleStorage, RecoveryResponse},
-    stream::Sender,
-};
-use rand::prelude::*;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -14,11 +10,15 @@ use std::{
     time::SystemTime,
 };
 
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use futures::join;
+use hardy_bpa::{
+    Bytes, async_trait,
+    storage::{self, BundleStorage, RecoveryResponse},
+    stream::Sender,
+};
+use rand::prelude::*;
 
-#[cfg(windows)]
-use std::os::windows::fs::OpenOptionsExt;
+use super::*;
 
 pub struct Storage {
     store_root: PathBuf,

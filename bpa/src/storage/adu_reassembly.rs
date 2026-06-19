@@ -1,17 +1,19 @@
 use core::ops::Range;
+
 use futures::{FutureExt, join, select_biased};
-use hardy_bpv7::bundle::Id as Bpv7Id;
-use hardy_bpv7::editor::{Chunk, Editor};
+use hardy_bpv7::{
+    bundle::Id as Bpv7Id,
+    editor::{Chunk, Editor},
+};
 use time::OffsetDateTime;
 use trace_err::*;
 use tracing::{debug, error};
 
+use super::store::Store;
 use crate::{
     Arc, Bytes, HashMap,
     bundle::{Bundle, BundleStatus},
 };
-
-use super::store::Store;
 
 pub enum ReassemblyResult {
     /// Not all sibling fragments have arrived; fragment data is still in storage.

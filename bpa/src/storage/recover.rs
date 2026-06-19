@@ -2,13 +2,11 @@ use futures::{FutureExt, join, select_biased};
 use hardy_bpv7::status_report::ReasonCode;
 use trace_err::*;
 use tracing::info;
-
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
-
 use super::{RecoveryResponse, store::Store};
+use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
 
 impl Store {
     pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {

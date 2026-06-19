@@ -16,6 +16,7 @@
 //! for architectural context.
 
 use core::cmp::Ordering;
+
 use futures::{FutureExt, join, select_biased};
 use hardy_async::{Notify, TaskPool, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
