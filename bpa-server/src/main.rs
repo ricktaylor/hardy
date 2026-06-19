@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let key_provider = bpsec_config
         .as_ref()
         .map(|c| {
-            bpsec::PatternKeySource::from_config(c)
+            c.build()
                 .context("Failed to load BPSec configuration")
                 .map(|source| Arc::new(PatternKeyProvider::new(source)))
         })
