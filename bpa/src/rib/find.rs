@@ -1,16 +1,13 @@
 use core::hash::BuildHasher;
 
 use foldhash::quality::RandomState;
-use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{bundle::Bundle as Bpv7Bundle, eid::Eid, status_report::ReasonCode};
 use tracing::trace;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::route::Action;
-use super::{FindResult, Rib, RouteTable};
+use super::{FindResult, Rib, RouteTable, route::Action};
 use crate::{Arc, HashSet, bundle, services};
 
 #[derive(Debug)]
@@ -244,11 +241,13 @@ mod tests {
     use hardy_eid_patterns::EidPattern;
 
     use super::*;
-    use crate::rib::{
-        route,
-        route::tests::{add_route, make_rib},
+    use crate::{
+        rib::route::{
+            self,
+            tests::{add_route, make_rib},
+        },
+        services::tests::NullService,
     };
-    use crate::services::tests::NullService;
 
     // Add a local forward entry directly (sync, no store interaction).
     fn add_local_forward(rib: &Rib, node_id: NodeId, peer: u32) {

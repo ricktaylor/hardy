@@ -1,8 +1,9 @@
-use core::cmp::Ordering;
-use core::fmt;
+use core::{cmp::Ordering, fmt};
 
-use hardy_bpv7::eid::{Eid, NodeId};
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{
+    eid::{Eid, NodeId},
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 use tracing::debug;
 

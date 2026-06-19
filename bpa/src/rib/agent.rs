@@ -7,7 +7,7 @@ use crate::{Arc, Weak, async_trait, hash_map, routes};
 
 pub struct Agent {
     pub(super) agent: Arc<dyn routes::RoutingAgent>,
-    pub name: String,
+    pub(super) name: String,
 }
 
 struct Sink {
