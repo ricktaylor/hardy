@@ -1,9 +1,13 @@
-use super::*;
+use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
+use tracing::info;
 
-pub(crate) struct Agent {
-    agent: Arc<dyn routes::RoutingAgent>,
-    pub(crate) name: String,
+use super::Rib;
+use crate::{Arc, Weak, async_trait, hash_map, routes};
+
+pub struct Agent {
+    pub(super) agent: Arc<dyn routes::RoutingAgent>,
+    pub name: String,
 }
 
 struct Sink {

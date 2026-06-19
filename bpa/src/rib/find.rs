@@ -1,6 +1,17 @@
-use super::*;
 use core::hash::BuildHasher;
-use route::Action;
+
+use foldhash::quality::RandomState;
+use hardy_bpv7::bundle::Bundle as Bpv7Bundle;
+use hardy_bpv7::eid::Eid;
+use hardy_bpv7::status_report::ReasonCode;
+use tracing::trace;
+
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::route::Action;
+use super::{FindResult, Rib, RouteTable};
+use crate::{Arc, HashSet, bundle, services};
 
 #[derive(Debug)]
 enum InternalFindResult<'a> {
@@ -52,7 +63,7 @@ impl Rib {
 
     /// Find all peers reachable via a given EID (for queue management, next_hop not needed)
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
-    pub(super) fn find_peers(&self, to: &hardy_bpv7::eid::Eid) -> Option<HashSet<u32>> {
+    pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
         let inner = self.inner.read();
 
         // TODO: this should be for *all* tables
@@ -75,10 +86,7 @@ impl Rib {
     /// rule prevents *routing* bundles to a service, but should not prevent
     /// the BPA from notifying a registered service about its own bundles.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(to = %to)))]
-    pub fn find_service(
-        &self,
-        to: &hardy_bpv7::eid::Eid,
-    ) -> Option<Arc<services::registry::Service>> {
+    pub fn find_service(&self, to: &Eid) -> Option<Arc<services::registry::Service>> {
         let inner = self.inner.read();
 
         // TODO: this should be for *all* tables
@@ -103,8 +111,8 @@ impl Rib {
 
 fn map_result(
     result: InternalFindResult,
-    ecmp_hash_state: &foldhash::quality::RandomState,
-    bundle: &hardy_bpv7::bundle::Bundle,
+    ecmp_hash_state: &RandomState,
+    bundle: &Bpv7Bundle,
     metadata: &mut bundle::BundleMetadata,
 ) -> Option<FindResult> {
     match result {
@@ -228,11 +236,22 @@ fn find_recurse<'a>(
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
+    use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, Id as BundleId};
+    use hardy_bpv7::creation_timestamp::CreationTimestamp;
+    use hardy_bpv7::eid::{IpnNodeId, NodeId, Service as EidService};
+    use hardy_eid_patterns::EidPattern;
+
     use super::*;
-    use rib::route::tests::{add_route, make_rib};
+    use crate::rib::{
+        route,
+        route::tests::{add_route, make_rib},
+    };
+    use crate::services::tests::NullService;
 
     // Add a local forward entry directly (sync, no store interaction).
-    fn add_local_forward(rib: &Rib, node_id: hardy_bpv7::eid::NodeId, peer: u32) {
+    fn add_local_forward(rib: &Rib, node_id: NodeId, peer: u32) {
         let pattern: EidPattern = node_id.into();
         add_route(
             rib,
@@ -245,17 +264,17 @@ mod tests {
 
     fn make_bundle(destination: &str) -> bundle::Bundle {
         bundle::Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
-                id: hardy_bpv7::bundle::Id {
+            bundle: Bpv7Bundle {
+                id: BundleId {
                     source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    timestamp: CreationTimestamp::now(),
                     fragment_info: None,
                 },
                 flags: Default::default(),
                 crc_type: Default::default(),
                 destination: destination.parse().unwrap(),
                 report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
+                lifetime: Duration::from_secs(3600),
                 previous_node: None,
                 age: None,
                 hop_count: None,
@@ -265,8 +284,8 @@ mod tests {
         }
     }
 
-    fn ipn_node(n: u32) -> hardy_bpv7::eid::NodeId {
-        hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
+    fn ipn_node(n: u32) -> NodeId {
+        NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: n,
         })
@@ -467,10 +486,8 @@ mod tests {
             "ipn:0.1.42",
             "services",
             Action::Local(Arc::new(services::registry::Service {
-                service: services::registry::ServiceImpl::LowLevel(Arc::new(
-                    crate::services::tests::NullService,
-                )),
-                service_id: hardy_bpv7::eid::Service::Ipn(42),
+                service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
+                service_id: EidService::Ipn(42),
             })),
             1,
         );
@@ -494,10 +511,8 @@ mod tests {
             "ipn:0.1.42",
             "services",
             Action::Local(Arc::new(services::registry::Service {
-                service: services::registry::ServiceImpl::LowLevel(Arc::new(
-                    crate::services::tests::NullService,
-                )),
-                service_id: hardy_bpv7::eid::Service::Ipn(42),
+                service: services::registry::ServiceImpl::LowLevel(Arc::new(NullService)),
+                service_id: EidService::Ipn(42),
             })),
             1,
         );

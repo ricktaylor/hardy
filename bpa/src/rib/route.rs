@@ -1,24 +1,33 @@
-use super::*;
+use core::cmp::Ordering;
+use core::fmt;
+
+use hardy_bpv7::eid::{Eid, NodeId};
+use hardy_bpv7::status_report::ReasonCode;
+use hardy_eid_patterns::EidPattern;
+use tracing::debug;
+
+use super::Rib;
+use crate::{Arc, HashSet, btree_map, routes, services};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Drop(Option<ReasonCode>),
     AdminEndpoint,                           // Deliver to the admin endpoint
     Local(Arc<services::registry::Service>), // Deliver to local service
     Forward(u32),                            // Forward to a cla peer
     Reflect,
-    Via(hardy_bpv7::eid::Eid),
+    Via(Eid),
 }
 
 impl PartialOrd for Action {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 // The order is critical, do not re-order
 impl Ord for Action {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         // Precedence: Drop < AdminEndpoint < Local < Forward < Reflect < Via
         let rank = |a: &Action| -> u8 {
             match a {
@@ -31,7 +40,7 @@ impl Ord for Action {
             }
         };
         match rank(self).cmp(&rank(other)) {
-            core::cmp::Ordering::Equal => {}
+            Ordering::Equal => {}
             ord => return ord,
         }
         match (self, other) {
@@ -39,7 +48,7 @@ impl Ord for Action {
             (Action::Local(a), Action::Local(b)) => a.cmp(b),
             (Action::Forward(a), Action::Forward(b)) => a.cmp(b),
             (Action::Via(a), Action::Via(b)) => a.cmp(b),
-            _ => core::cmp::Ordering::Equal,
+            _ => Ordering::Equal,
         }
     }
 }
@@ -54,8 +63,8 @@ impl From<routes::Action> for Action {
     }
 }
 
-impl core::fmt::Display for Action {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
             Action::Drop(None) => write!(f, "Drop"),
@@ -75,13 +84,13 @@ pub struct Entry {
 }
 
 impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Entry {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         // The order is critical, hence done long-hand
         self.action
             .cmp(&other.action)
@@ -371,11 +380,17 @@ impl Rib {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use core::num::NonZeroUsize;
+    use core::time::Duration;
+
+    use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, Id as BundleId};
+    use hardy_bpv7::creation_timestamp::CreationTimestamp;
+    use hardy_bpv7::eid::IpnNodeId;
+
     use super::*;
+    use crate::{BTreeSet, bundle, node_ids, storage};
 
     pub fn make_rib() -> Arc<Rib> {
-        use hardy_bpv7::eid::IpnNodeId;
-
         let node_ids = Arc::new(node_ids::NodeIds {
             ipn: Some(IpnNodeId {
                 allocator_id: 0,
@@ -385,7 +400,7 @@ pub(super) mod tests {
         });
 
         let store = Arc::new(storage::store::Store::new(
-            core::num::NonZeroUsize::new(16).unwrap(),
+            NonZeroUsize::new(16).unwrap(),
             Arc::new(storage::MetadataMemStorage::new(&Default::default())),
             Arc::new(storage::BundleMemStorage::new(&Default::default())),
         ));
@@ -394,9 +409,9 @@ pub(super) mod tests {
     }
 
     // Add a route directly to the RIB's route table (sync, no store interaction).
-    pub fn add_route(rib: &Rib, pattern: &str, source: &str, action: route::Action, priority: u32) {
+    pub fn add_route(rib: &Rib, pattern: &str, source: &str, action: Action, priority: u32) {
         let pattern: EidPattern = pattern.parse().unwrap();
-        let entry = route::Entry {
+        let entry = Entry {
             action,
             source: source.to_string(),
         };
@@ -426,12 +441,12 @@ pub(super) mod tests {
             &rib,
             "ipn:*.*",
             "src",
-            route::Action::Via("ipn:0.2.0".parse().unwrap()),
+            Action::Via("ipn:0.2.0".parse().unwrap()),
             10,
         );
 
         // Add a more specific Drop route at priority 20 (lower priority)
-        add_route(&rib, "ipn:0.3.*", "src", route::Action::Drop(None), 20);
+        add_route(&rib, "ipn:0.3.*", "src", Action::Drop(None), 20);
 
         // Verify both routes were inserted
         let inner = rib.inner.read();
@@ -471,8 +486,8 @@ pub(super) mod tests {
         let entries = inner.routes.get(&0).unwrap();
 
         // Should have admin endpoint for concrete ipn:0.1.0
-        let admin_pattern: EidPattern = hardy_bpv7::eid::Eid::Ipn {
-            fqnn: hardy_bpv7::eid::IpnNodeId {
+        let admin_pattern: EidPattern = Eid::Ipn {
+            fqnn: IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
             },
@@ -498,17 +513,17 @@ pub(super) mod tests {
 
         // ipn:0.1.99 is under our node but no service is registered
         let mut bundle = bundle::Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
-                id: hardy_bpv7::bundle::Id {
+            bundle: Bpv7Bundle {
+                id: BundleId {
                     source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    timestamp: CreationTimestamp::now(),
                     fragment_info: None,
                 },
                 flags: Default::default(),
                 crc_type: Default::default(),
                 destination: "ipn:0.1.99".parse().unwrap(),
                 report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
+                lifetime: Duration::from_secs(3600),
                 previous_node: None,
                 age: None,
                 hop_count: None,
@@ -588,7 +603,7 @@ pub(super) mod tests {
             .add(
                 "ipn:0.2.*".parse().unwrap(),
                 "test".into(),
-                Action::Via(hardy_bpv7::eid::Eid::Null),
+                Action::Via(Eid::Null),
                 10,
             )
             .await;

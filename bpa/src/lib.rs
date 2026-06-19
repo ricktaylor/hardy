@@ -63,7 +63,7 @@ pub type Error = Box<dyn core::error::Error + Send + Sync>;
 use alloc::sync::{Arc, Weak};
 
 use trace_err::*;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
