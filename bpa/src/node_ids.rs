@@ -91,7 +91,8 @@ impl NodeIds {
 impl Default for NodeIds {
     fn default() -> Self {
         // Node IDs are public identifiers, so a non-cryptographic PRNG suffices.
-        let mut rng = SmallRng::try_from_rng(&mut SysRng).expect("OS RNG unavailable");
+        let mut rng = SmallRng::try_from_rng(&mut SysRng)
+            .expect("OS RNG must be available to seed the node-id PRNG");
         Self {
             ipn: Some(IpnNodeId {
                 allocator_id: rng.random_range(0x40000000..0x80000000),

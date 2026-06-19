@@ -1,16 +1,17 @@
-use super::{BundleStorage, RecoveryResponse, Result};
-use crate::{Arc, Bytes, stream::Sender};
 use core::num::{NonZero, NonZeroUsize};
+
 use hardy_async::{async_trait, sync::Mutex};
 use rand::{
     SeedableRng,
     distr::{Alphanumeric, SampleString},
     rngs::{SmallRng, SysRng},
 };
-use tracing::info;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use tracing::info;
+
+use super::{BundleStorage, RecoveryResponse, Result};
+use crate::{Arc, Bytes, stream::Sender};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -51,7 +52,8 @@ impl BundleMemStorage {
         let inner = Mutex::new(Inner {
             cache: lru::LruCache::unbounded(),
             capacity: 0,
-            rng: SmallRng::try_from_rng(&mut SysRng).expect("OS RNG unavailable"),
+            rng: SmallRng::try_from_rng(&mut SysRng)
+                .expect("OS RNG must be available to seed the storage-name PRNG"),
         });
         let max_capacity = config.capacity;
         let min_bundles = config.min_bundles;
