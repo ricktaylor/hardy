@@ -52,22 +52,17 @@ async fn main() -> anyhow::Result<()> {
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
+    // Created before build() so it can spawn the BPSec key-file watcher.
+    let tasks = TaskPool::new();
+
     #[cfg(feature = "grpc")]
     let grpc_config = config.grpc.take();
 
-    let bpsec_config = config.bpsec.take();
-    let (bpa, key_provider) = build(config, bpsec_config.as_ref(), args.upgrade_storage).await?;
+    let bpa = build(config, &tasks, args.upgrade_storage).await?;
 
     bpa.start(args.recover_storage);
 
-    let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
-
-    if let Some(bpsec_config) = bpsec_config
-        && let Some(provider) = key_provider
-    {
-        bpsec::watch_keys(&tasks, bpsec_config, provider);
-    }
 
     #[cfg(feature = "grpc")]
     if let Some(grpc_config) = grpc_config {
@@ -92,12 +87,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a BPA from the given configuration.
+/// Build a BPA from the given configuration, spawning its background tasks
+/// (such as the BPSec key-file watcher) on `tasks`.
 async fn build(
-    config: config::Config,
-    bpsec_config: Option<&config::bpsec::Config>,
+    mut config: config::Config,
+    tasks: &TaskPool,
     upgrade_storage: bool,
-) -> anyhow::Result<(Arc<Bpa>, Option<Arc<PatternKeyProvider>>)> {
+) -> anyhow::Result<Arc<Bpa>> {
     let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
 
     let mut builder = Bpa::builder()
@@ -120,14 +116,13 @@ async fn build(
         builder = builder.service_priority(service_priority);
     }
 
-    let mut key_provider = None;
-    if let Some(bpsec_config) = bpsec_config {
+    if let Some(bpsec_config) = config.bpsec.take() {
         let source = bpsec_config
             .build()
             .context("Failed to load BPSec configuration")?;
         let provider = Arc::new(PatternKeyProvider::new(source));
         builder = builder.key_provider(provider.clone());
-        key_provider = Some(provider);
+        bpsec::watch_keys(tasks, bpsec_config, provider);
     }
 
     if config.storage.uses_cache() {
@@ -199,5 +194,5 @@ async fn build(
     }
 
     let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
-    Ok((bpa, key_provider))
+    Ok(bpa)
 }
