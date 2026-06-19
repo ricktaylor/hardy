@@ -44,8 +44,8 @@ pub enum FindResult {
 }
 
 pub struct Rib {
-    table: ArcSwap<RouteTable>,
-    write_lock: Mutex<()>,
+    snapshot: ArcSwap<RouteTable>,
+    table: Mutex<Arc<RouteTable>>,
     address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
     agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<NodeIds>,
@@ -94,9 +94,10 @@ impl Rib {
     const SERVICES_NAME: &str = "services";
 
     fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
+        let table = Arc::new(RouteTable::new(node_ids.clone()));
         Self {
-            table: ArcSwap::from_pointee(RouteTable::new(node_ids.clone())),
-            write_lock: Mutex::new(()),
+            snapshot: ArcSwap::from(table.clone()),
+            table: Mutex::new(table),
             address_types: Default::default(),
             agents: Default::default(),
             node_ids,
@@ -134,7 +135,7 @@ impl Rib {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub fn find(&self, bundle: &mut Bundle) -> Option<FindResult> {
-        let table = self.table.load();
+        let table = self.snapshot.load();
 
         let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
 
@@ -160,11 +161,11 @@ impl Rib {
     }
 
     pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
-        self.table.load().find_service(to)
+        self.snapshot.load().find_service(to)
     }
 
     fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
-        self.table.load().find_peers(to)
+        self.snapshot.load().find_peers(to)
     }
 
     fn select_peer(
@@ -205,8 +206,7 @@ impl Rib {
         let action = self.expand_action(action);
 
         let vias = {
-            let _guard = self.write_lock.lock();
-            let mut table = self.table.load_full();
+            let mut table = self.table.lock();
 
             let entry = Entry {
                 action: action.clone(),
@@ -217,7 +217,7 @@ impl Rib {
             }
 
             let vias = table.impacted_vias(&pattern, priority);
-            self.table.store(table);
+            self.snapshot.store(table.clone());
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
             metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
@@ -258,8 +258,7 @@ impl Rib {
         let action = self.expand_action(action);
 
         {
-            let _guard = self.write_lock.lock();
-            let mut table = self.table.load_full();
+            let mut table = self.table.lock();
 
             let entry = Entry {
                 action: action.clone(),
@@ -269,7 +268,7 @@ impl Rib {
                 return false;
             }
 
-            self.table.store(table);
+            self.snapshot.store(table.clone());
         }
 
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
@@ -298,10 +297,9 @@ impl Rib {
 
     pub async fn remove_by_source(&self, source: &str) {
         let (vias, forward_peers, has_local, removed_count) = {
-            let _guard = self.write_lock.lock();
-            let mut table = self.table.load_full();
+            let mut table = self.table.lock();
             let result = Arc::make_mut(&mut table).remove_by_source(source);
-            self.table.store(table);
+            self.snapshot.store(table.clone());
             result
         };
 
@@ -506,12 +504,11 @@ mod tests {
             action,
             source: source.to_string(),
         };
-        let _guard = rib.write_lock.lock();
-        let mut table = rib.table.load_full();
+        let mut table = rib.table.lock();
         Arc::make_mut(&mut table)
             .insert(pattern, entry, priority)
             .unwrap();
-        rib.table.store(table);
+        rib.snapshot.store(table.clone());
     }
 
     fn add_local_forward(rib: &Rib, node_id: NodeId, peer: u32) {
