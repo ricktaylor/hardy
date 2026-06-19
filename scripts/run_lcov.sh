@@ -69,22 +69,25 @@ if [ "$UNIT_ONLY" = true ]; then
 fi
 
 # --- Fuzz coverage ---
-# Requires: cargo +nightly, corpus already populated
+# Requires: cargo +nightly, and a real corpus already present in fuzz/corpus/<target>
+# (from a local `cargo +nightly fuzz run`, or fetched from the CFLite corpus
+# branch). Targets without a corpus are reported as unavailable, not faked.
 # Each target needs: fuzz coverage (generates profdata) + cov export (converts to lcov)
 
 echo "=== FUZZ COVERAGE ===" | tee -a "$RESULTS_FILE"
 echo "" | tee -a "$RESULTS_FILE"
 
-FUZZ_TARGETS=(
-    "cbor:decode"
-    "bpv7:random_bundles"
-    "bpv7:eid_cbor"
-    "bpv7:eid_str"
-    "eid-patterns:eid_pattern_str"
-    "bpa:bpa"
-    "tcpclv4:passive"
-    "tcpclv4:active"
-)
+# Derive fuzz targets from the fuzz crates themselves: the [[bin]] entries in
+# each */fuzz/Cargo.toml are the single source of truth, so there is no
+# hand-maintained list to drift (.clusterfuzzlite/build.sh derives the same way).
+FUZZ_TARGETS=()
+for fuzz_dir in */fuzz; do
+    [ -d "$fuzz_dir/fuzz_targets" ] || continue
+    crate_dir="${fuzz_dir%/fuzz}"
+    while IFS= read -r target; do
+        [ -n "$target" ] && FUZZ_TARGETS+=("${crate_dir}:${target}")
+    done < <(awk -F'"' '/^\[\[bin\]\]/{b=1;next} b&&/name *=/{print $2; b=0}' "$fuzz_dir/Cargo.toml")
+done
 
 for entry in "${FUZZ_TARGETS[@]}"; do
     crate_dir="${entry%%:*}"
@@ -94,7 +97,7 @@ for entry in "${FUZZ_TARGETS[@]}"; do
     pushd "$crate_dir" > /dev/null
 
     if [ ! -d "fuzz/corpus/${target}" ] || [ -z "$(ls -A fuzz/corpus/${target} 2>/dev/null)" ]; then
-        echo "  SKIPPED — no corpus (run fuzzer first)" | tee -a "../$RESULTS_FILE"
+        echo "  SKIPPED — no corpus available; fuzz coverage unavailable for this target" | tee -a "../$RESULTS_FILE"
         popd > /dev/null
         echo "" | tee -a "$RESULTS_FILE"
         continue

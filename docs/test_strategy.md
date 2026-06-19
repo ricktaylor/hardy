@@ -4,7 +4,7 @@
 | ----- | ----- |
 | **Project** | Hardy DTN Router |
 | **Repository** | `github.com/ricktaylor/hardy` |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 
 ## 1. Introduction
 
@@ -78,8 +78,8 @@ This Strategy is the parent document. Verification is executed according to the 
 
 * **Scope:** Parsers (CBOR, Bundle, EID string/CBOR, EID patterns), protocol streams (TCPCLv4 passive/active), and the BPA async pipeline.
 * **Goal:** Identify panics, memory safety issues, and deadlocks from adversarial input.
-* **Methodology:** Dedicated fuzz plans per target using `cargo fuzz` (libFuzzer). Corpus-based regression via CI. Coverage measured separately from unit tests.
-* **Targets:** 11 fuzz binaries across 5 crates (cbor, bpv7, eid-patterns, bpa, tcpclv4).
+* **Methodology:** Dedicated fuzz plans per target using `cargo fuzz` (libFuzzer). Executed continuously in CI via **ClusterFuzzLite** (the OSS-Fuzz engine hosted in GitHub Actions): per-PR fuzzing of changed code and a nightly batch run, both reporting minimised, replayable crash reproducers. Coverage measured separately from unit tests.
+* **Targets:** 8 fuzz binaries across 5 crates (cbor, bpv7, eid-patterns, bpa, tcpclv4).
 
 ### 3.4 System & Interoperability Testing
 
@@ -93,8 +93,8 @@ This Strategy is the parent document. Verification is executed according to the 
 ### 4.1 Unit / CI Environment
 
 * **Runner:** Standard Linux x64 (GitHub Actions).
-* **Dependencies:** Rust Stable, Rust Nightly (fuzz only), OpenSSL, Protobuf compiler.
-* **Scope:** Unit tests, component tests, `cargo llvm-cov` coverage, `cargo fuzz` (corpus replay).
+* **Dependencies:** Rust Stable, Rust Nightly (fuzz only), OpenSSL, Protobuf compiler, Docker (ClusterFuzzLite build image).
+* **Scope:** Unit tests, component tests, `cargo llvm-cov` coverage, and ClusterFuzzLite fuzzing (per-PR code-change and nightly batch).
 
 ### 4.2 Local Docker Environment
 
@@ -117,6 +117,7 @@ Each peer implementation runs in its own Docker container alongside a Hardy node
 | ----- | ----- | ----- |
 | **cargo test** | Unit and integration test runner | Rust toolchain |
 | **cargo fuzz** | Fuzz testing (libFuzzer) | [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) |
+| **ClusterFuzzLite** | Continuous CI fuzzing (per-PR + nightly), corpus management, crash reproduction | [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) |
 | **cargo llvm-cov** | Line coverage measurement (lcov) | [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) |
 | **criterion** | Performance benchmarking | [criterion.rs](https://github.com/bheisler/criterion.rs) |
 | **hardy-bpv7-tools** | Component test driver (`bundle` CLI) | Internal |
@@ -131,7 +132,7 @@ Each peer implementation runs in its own Docker container alongside a Hardy node
 | Risk | Impact | Mitigation |
 | ----- | ----- | ----- |
 | **Protocol Non-Compliance** | Interop failure with other BPv7 implementations. | Interoperability verified against 7 implementations ([`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md)). |
-| **Parser Panics** | DoS vulnerability in production. | Fuzz testing on all public-facing parsers (11 targets across 5 crates). |
+| **Parser Panics** | DoS vulnerability in production. | Continuous CI fuzz testing on all public-facing parsers (8 targets across 5 crates) via ClusterFuzzLite. |
 | **Key Wrapping Failures** | Data loss or security breach. | Unit tests for RFC 9173 Key Wrapping (AES-KW, HMAC-SHA2). |
 | **Async Deadlocks** | Router hangs under load. | BPA pipeline fuzz target exercises concurrent message processing. |
 | **Storage Corruption** | Data loss after crash or restart. | Storage harness tests recovery and restart across all backends. |
