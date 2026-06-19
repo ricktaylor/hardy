@@ -120,16 +120,14 @@ async fn build(
         builder = builder.service_priority(service_priority);
     }
 
-    let key_provider = bpsec_config
-        .map(|c| {
-            c.build()
-                .context("Failed to load BPSec configuration")
-                .map(|source| Arc::new(PatternKeyProvider::new(source)))
-        })
-        .transpose()?;
-
-    if let Some(provider) = &key_provider {
+    let mut key_provider = None;
+    if let Some(bpsec_config) = bpsec_config {
+        let source = bpsec_config
+            .build()
+            .context("Failed to load BPSec configuration")?;
+        let provider = Arc::new(PatternKeyProvider::new(source));
         builder = builder.key_provider(provider.clone());
+        key_provider = Some(provider);
     }
 
     if config.storage.uses_cache() {
