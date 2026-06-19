@@ -136,7 +136,11 @@ impl Rib {
     pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
-        let result = table.find_recurse(&bundle.bundle.primary.destination, true, &mut HashSet::new())?;
+        let result = table.find_recurse(
+            &bundle.bundle.primary.destination,
+            true,
+            &mut HashSet::new(),
+        )?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
