@@ -4,6 +4,8 @@
 //! [`PatternKeySource`], so the key configuration can be hot-reloaded while
 //! bundles are being processed.
 
+use std::{collections::HashMap, path::Path, sync::Arc};
+
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
 use hardy_bpv7::{
@@ -12,7 +14,6 @@ use hardy_bpv7::{
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path, sync::Arc};
 use tracing::{debug, error, info, warn};
 
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
@@ -319,18 +320,20 @@ pub fn watch_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::{
-        WatchConfig,
-        bpsec::{Config, KeyBindingConfig},
-    };
+    use std::path::{Path, PathBuf};
+
     use hardy_bpa::keys::KeyProvider;
     use hardy_bpv7::{
         block,
         bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
         bundle::RewrittenBundle,
     };
-    use std::path::{Path, PathBuf};
+
+    use super::*;
+    use crate::config::{
+        WatchConfig,
+        bpsec::{Config, KeyBindingConfig},
+    };
 
     fn hmac_key(kid: &str) -> Key {
         Key {

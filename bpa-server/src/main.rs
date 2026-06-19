@@ -1,18 +1,19 @@
+use std::{collections::HashMap, io::ErrorKind, sync::Arc};
+
 use anyhow::Context;
-use bpsec::PatternKeyProvider;
 use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
     filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
 };
-use static_routes::StaticRoutesAgent;
-use std::{collections::HashMap, io::ErrorKind, sync::Arc};
-use tracing::{error, info, warn};
-
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "grpc")]
 use hardy_proto::server::GrpcServer;
+use tracing::{error, info, warn};
+
+use self::bpsec::PatternKeyProvider;
+use self::static_routes::StaticRoutesAgent;
 
 mod bpsec;
 mod cli;
