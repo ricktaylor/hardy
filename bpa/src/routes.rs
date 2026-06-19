@@ -1,21 +1,27 @@
-use super::*;
-use hardy_bpv7::eid::NodeId;
+use core::fmt;
+
+use hardy_async::sync::spin;
+use hardy_bpv7::eid::{Eid, NodeId};
+use hardy_bpv7::status_report::ReasonCode;
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
+use tracing::warn;
+
+use crate::async_trait;
 
 /// The action to take when a route matches a bundle's destination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     /// Drop the bundle, optionally reporting a reason code.
-    Drop(Option<hardy_bpv7::status_report::ReasonCode>),
+    Drop(Option<ReasonCode>),
     /// Return the bundle to the previous hop (last-hop reflection).
     Reflect,
     /// Forward the bundle via the specified next-hop EID (recursive lookup).
-    Via(hardy_bpv7::eid::Eid),
+    Via(Eid),
 }
 
-impl core::fmt::Display for Action {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Action::Drop(Some(reason)) => write!(f, "Drop({reason:?})"),
             Action::Drop(None) => write!(f, "Drop"),
@@ -45,7 +51,7 @@ pub enum Error {
 
     /// A route was rejected because the next-hop resolves to the local node.
     #[error("Route via own node {0} rejected")]
-    ViaOwnNode(hardy_bpv7::eid::Eid),
+    ViaOwnNode(Eid),
 
     /// An internal error occurred.
     #[error(transparent)]
@@ -157,7 +163,7 @@ pub trait RoutingSink: Send + Sync {
 /// ```
 pub struct StaticRoutingAgent {
     routes: Vec<(EidPattern, Action, u32)>,
-    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+    sink: spin::Once<Box<dyn RoutingSink>>,
 }
 
 impl StaticRoutingAgent {
@@ -168,7 +174,7 @@ impl StaticRoutingAgent {
     pub fn new(routes: &[(EidPattern, Action, u32)]) -> Self {
         Self {
             routes: routes.to_vec(),
-            sink: hardy_async::sync::spin::Once::new(),
+            sink: spin::Once::new(),
         }
     }
 }
