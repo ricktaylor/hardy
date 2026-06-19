@@ -22,7 +22,7 @@ use super::{
     Error, Result, RoutingAgent,
     action::{Action, InternalAction, RouteAction},
     agent::sink::Sink,
-    table::{self, Entry, RouteTable},
+    table::{Entry, LookupResult, RouteTable},
 };
 use crate::{
     Arc, HashMap, HashSet,
@@ -36,7 +36,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub enum FindResult {
+pub enum DispatchAction {
     AdminEndpoint,
     Deliver(Arc<Service>),
     Forward(u32),
@@ -134,13 +134,13 @@ impl Rib {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub fn find(&self, bundle: &mut Bundle) -> Option<FindResult> {
+    pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
         let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
 
         let previous;
-        let result = if matches!(result, table::FindResult::Reflect) {
+        let result = if matches!(result, LookupResult::Reflect) {
             previous = bundle
                 .previous_node()
                 .unwrap_or_else(|| bundle.bundle.id.source.clone());
@@ -150,13 +150,17 @@ impl Rib {
         };
 
         match result {
-            table::FindResult::AdminEndpoint => Some(FindResult::AdminEndpoint),
-            table::FindResult::Deliver(service) => Some(FindResult::Deliver(service)),
-            table::FindResult::Drop(reason) => Some(FindResult::Drop(reason)),
-            table::FindResult::Forward(peers) => {
+            LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
+            LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
+            LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
+            LookupResult::Forward(peer, next_hop) => {
+                bundle.metadata.read_only.next_hop = Some(next_hop.clone());
+                Some(DispatchAction::Forward(peer))
+            }
+            LookupResult::ForwardEcmp(peers) => {
                 self.select_peer(peers, &bundle.bundle, &mut bundle.metadata)
             }
-            table::FindResult::Reflect => None,
+            LookupResult::Reflect => None,
         }
     }
 
@@ -173,7 +177,7 @@ impl Rib {
         mut peers: Vec<(u32, &Eid)>,
         bundle: &Bpv7Bundle,
         metadata: &mut BundleMetadata,
-    ) -> Option<FindResult> {
+    ) -> Option<DispatchAction> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
             return None;
@@ -192,7 +196,7 @@ impl Rib {
         };
         let (peer, next_hop) = peers.swap_remove(idx);
         metadata.read_only.next_hop = Some(next_hop.clone());
-        Some(FindResult::Forward(peer))
+        Some(DispatchAction::Forward(peer))
     }
 
     pub(crate) async fn add(
@@ -558,7 +562,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.2.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(42))));
+        assert!(matches!(result, Some(DispatchAction::Forward(42))));
     }
 
     #[test]
@@ -575,7 +579,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.50.1");
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(99))));
+        assert!(matches!(result, Some(DispatchAction::Forward(99))));
     }
 
     #[test]
@@ -627,7 +631,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(FindResult::Forward(77))));
+        assert!(matches!(result, Some(DispatchAction::Forward(77))));
     }
 
     #[test]
@@ -677,7 +681,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.50.1");
         let result1 = rib.find(&mut bundle);
         let peer1 = match result1 {
-            Some(FindResult::Forward(p)) => p,
+            Some(DispatchAction::Forward(p)) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -685,7 +689,7 @@ mod tests {
         bundle2.bundle.id = bundle.bundle.id.clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
-            Some(FindResult::Forward(p)) => p,
+            Some(DispatchAction::Forward(p)) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -702,7 +706,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::AdminEndpoint)),
+            matches!(result, Some(DispatchAction::AdminEndpoint)),
             "Admin EID should resolve to AdminEndpoint, got {result:?}"
         );
     }
@@ -735,7 +739,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.42");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::Deliver(_))),
+            matches!(result, Some(DispatchAction::Deliver(_))),
             "got {result:?}"
         );
     }
@@ -768,7 +772,7 @@ mod tests {
         let mut bundle = make_bundle("ipn:0.1.0");
         let result = rib.find(&mut bundle);
         assert!(
-            matches!(result, Some(FindResult::AdminEndpoint)),
+            matches!(result, Some(DispatchAction::AdminEndpoint)),
             "got {result:?}"
         );
     }
@@ -791,7 +795,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Some(FindResult::Drop(Some(
+                Some(DispatchAction::Drop(Some(
                     ReasonCode::DestinationEndpointIDUnavailable
                 )))
             ),
