@@ -1,12 +1,11 @@
 use trace_err::TraceErrResult;
 use tracing::debug;
 
+use super::Dispatcher;
 use crate::{
     bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata},
     storage::adu_reassembly::ReassemblyResult,
 };
-
-use super::Dispatcher;
 
 impl Dispatcher {
     pub async fn reassemble(&self, mut bundle: Bundle) {

@@ -1,6 +1,6 @@
-use super::*;
 use hardy_bpv7::status_report::ReasonCode;
 
+use super::*;
 use crate::{cla::Segment, stream::Receiver};
 
 async fn concat_stream(stream: &dyn Receiver<Segment>) -> Option<crate::Bytes> {
@@ -108,7 +108,7 @@ impl Dispatcher {
         stream: &dyn Receiver<Segment>,
         mut metadata: bundle::BundleMetadata,
     ) -> Option<(bundle::Bundle, Bytes)> {
-        // TODO:  For now, we just concantenate in a dumb way
+        // TODO:  For now, we just concatenate in a dumb way
         let Some(mut data) = concat_stream(stream).await else {
             debug!("Stream cancelled");
             return None;
