@@ -87,6 +87,8 @@ impl core::error::Error for RecvError {}
 /// backpressures the producer, provided the underlying channel is bounded.
 #[async_trait]
 pub trait Receiver<T>: Send + Sync {
+    /// Pulls the next item. Returns `Err(RecvError)` once the producer has
+    /// gone away and no more items will arrive — the consumer should then stop.
     async fn recv(&self) -> core::result::Result<T, RecvError>;
 }
 
