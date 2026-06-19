@@ -2,12 +2,13 @@ use core::cmp::Ordering;
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
-use tracing::{trace, warn};
+use tracing::trace;
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
 use super::action::{Action, InternalAction, RouteAction};
+use super::{Error, Result};
 use crate::{
     Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Service,
 };
@@ -62,25 +63,19 @@ impl RouteTable {
         Self { routes, node_ids }
     }
 
-    fn validate(&self, pattern: &EidPattern, action: &Action, source: &str) -> bool {
-        if let Action::Route(RouteAction::Via(next_hop)) = action {
+    pub(super) fn insert(
+        &mut self,
+        pattern: EidPattern,
+        entry: Entry,
+        priority: u32,
+    ) -> Result<bool> {
+        if let Action::Route(RouteAction::Via(next_hop)) = &entry.action {
             if next_hop.is_null() {
-                warn!(
-                    "Rejecting route with null next-hop: {pattern} via {next_hop} (source '{source}')"
-                );
-                return false;
+                return Err(Error::NullNextHop);
             }
             if self.node_ids.is_local(next_hop) {
-                warn!("Rejecting route via own node: {pattern} via {next_hop} (source '{source}')");
-                return false;
+                return Err(Error::ViaOwnNode(next_hop.clone()));
             }
-        }
-        true
-    }
-
-    pub(super) fn insert(&mut self, pattern: EidPattern, entry: Entry, priority: u32) -> bool {
-        if !self.validate(&pattern, &entry.action, &entry.source) {
-            return false;
         }
 
         match self.routes.entry(priority) {
@@ -93,12 +88,12 @@ impl RouteTable {
                 }
                 btree_map::Entry::Occupied(mut pe) => {
                     if !pe.get_mut().insert(entry) {
-                        return false;
+                        return Ok(false);
                     }
                 }
             },
         }
-        true
+        Ok(true)
     }
 
     pub(super) fn remove(&mut self, pattern: &EidPattern, entry: &Entry, priority: u32) -> bool {
@@ -327,7 +322,11 @@ mod tests {
     fn test_insert_and_remove() {
         let mut table = make_table();
         let e = entry(Action::Internal(InternalAction::Forward(42)), "neighbours");
-        assert!(table.insert("ipn:0.2.*".parse().unwrap(), e.clone(), 0));
+        assert!(
+            table
+                .insert("ipn:0.2.*".parse().unwrap(), e.clone(), 0)
+                .unwrap()
+        );
 
         assert!(table.remove(&"ipn:0.2.*".parse().unwrap(), &e, 0));
     }
@@ -336,19 +335,23 @@ mod tests {
     fn test_impacted_subsets() {
         let mut table = make_table();
 
-        table.insert(
-            "ipn:*.*".parse().unwrap(),
-            entry(
-                Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
-                "src",
-            ),
-            10,
-        );
-        table.insert(
-            "ipn:0.3.*".parse().unwrap(),
-            entry(Action::Route(RouteAction::Drop(None)), "src"),
-            20,
-        );
+        table
+            .insert(
+                "ipn:*.*".parse().unwrap(),
+                entry(
+                    Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+                    "src",
+                ),
+                10,
+            )
+            .unwrap();
+        table
+            .insert(
+                "ipn:0.3.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Drop(None)), "src"),
+                20,
+            )
+            .unwrap();
 
         assert!(table.routes.contains_key(&10));
         assert!(table.routes.contains_key(&20));
@@ -446,7 +449,10 @@ mod tests {
             entry(Action::Route(RouteAction::Via(Eid::Null)), "test"),
             10,
         );
-        assert!(!result, "Via null endpoint should be rejected");
+        assert!(
+            matches!(result, Err(Error::NullNextHop)),
+            "Via null endpoint should be rejected, got {result:?}"
+        );
     }
 
     #[test]
@@ -460,7 +466,10 @@ mod tests {
             ),
             10,
         );
-        assert!(!result, "Via own node should be rejected");
+        assert!(
+            matches!(result, Err(Error::ViaOwnNode(_))),
+            "Via own node should be rejected, got {result:?}"
+        );
     }
 
     #[test]
@@ -474,6 +483,9 @@ mod tests {
             ),
             10,
         );
-        assert!(result, "Default route should be accepted");
+        assert!(
+            matches!(result, Ok(true)),
+            "Default route should be accepted, got {result:?}"
+        );
     }
 }
