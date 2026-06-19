@@ -1,9 +1,13 @@
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
-use hardy_async::TaskPool;
-use hardy_async::sync::spin::Once;
-use hardy_async::watcher::{self, WatchMode};
+use hardy_async::{
+    TaskPool,
+    sync::spin::Once,
+    watcher::{self, WatchMode},
+};
 use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;

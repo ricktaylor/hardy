@@ -235,9 +235,11 @@ fn find_recurse<'a>(
 mod tests {
     use core::time::Duration;
 
-    use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, Id as BundleId};
-    use hardy_bpv7::creation_timestamp::CreationTimestamp;
-    use hardy_bpv7::eid::{IpnNodeId, NodeId, Service as EidService};
+    use hardy_bpv7::{
+        bundle::{Bundle as Bpv7Bundle, Id as BundleId},
+        creation_timestamp::CreationTimestamp,
+        eid::{IpnNodeId, NodeId, Service as EidService},
+    };
     use hardy_eid_patterns::EidPattern;
 
     use super::*;
