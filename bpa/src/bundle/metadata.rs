@@ -1,13 +1,13 @@
-use super::status::BundleStatus;
-use crate::{Arc, cla::ClaAddress};
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     hop_info::HopInfo,
 };
-use time::OffsetDateTime;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+
+use super::status::BundleStatus;
+use crate::{Arc, cla::ClaAddress};
 
 /// Ingress context and decoded extension-block fields captured when a
 /// bundle's content is parsed.
