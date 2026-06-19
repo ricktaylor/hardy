@@ -381,12 +381,13 @@ impl Rib {
 
 #[cfg(test)]
 pub(super) mod tests {
-    use core::num::NonZeroUsize;
-    use core::time::Duration;
+    use core::{num::NonZeroUsize, time::Duration};
 
-    use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, Id as BundleId};
-    use hardy_bpv7::creation_timestamp::CreationTimestamp;
-    use hardy_bpv7::eid::IpnNodeId;
+    use hardy_bpv7::{
+        bundle::{Bundle as Bpv7Bundle, Id as BundleId},
+        creation_timestamp::CreationTimestamp,
+        eid::IpnNodeId,
+    };
 
     use super::*;
     use crate::{BTreeSet, bundle, node_ids, storage};
