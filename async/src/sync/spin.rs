@@ -37,9 +37,7 @@
 //! ```
 
 // Re-export guard types from spin crate
-pub use spin::MutexGuard;
-pub use spin::RwLockReadGuard;
-pub use spin::RwLockWriteGuard;
+pub use spin::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 
 /// A spinlock-based one-time initialization cell for O(1) operations.
 ///

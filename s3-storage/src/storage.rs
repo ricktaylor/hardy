@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use aws_sdk_s3::{
     primitives::ByteStream,
     types::{CompletedMultipartUpload, CompletedPart},
@@ -7,8 +9,6 @@ use hardy_bpa::{
     storage::{self, RecoveryResponse},
     stream::Sender,
 };
-use std::sync::Arc;
-
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 

@@ -4,13 +4,14 @@
 //! a callback. Supports native OS events and periodic polling (for Docker).
 
 use core::{future::Future, time::Duration};
+use std::path::Path;
+
 use futures::FutureExt;
 use notify::{
     EventKind, PollWatcher, RecursiveMode,
     event::{CreateKind, RemoveKind},
 };
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
-use std::path::Path;
 use trace_err::*;
 use tracing::error;
 

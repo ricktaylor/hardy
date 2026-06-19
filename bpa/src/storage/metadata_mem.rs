@@ -1,16 +1,13 @@
-use hardy_async::async_trait;
-use hardy_async::sync::Mutex;
-use hardy_bpv7::bundle::Id;
-use hardy_bpv7::eid::Eid;
+use hardy_async::{async_trait, sync::Mutex};
+use hardy_bpv7::{bundle::Id, eid::Eid};
 use lru::LruCache;
 use tracing::info;
 
+use super::{MetadataStorage, Result};
 use crate::{
     bundle::{Bundle, BundleMetadata, BundleStatus},
     stream::Sender,
 };
-
-use super::{MetadataStorage, Result};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

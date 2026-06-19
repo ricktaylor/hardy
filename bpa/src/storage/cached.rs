@@ -1,13 +1,12 @@
 //! LRU cache decorator for BundleStorage.
 
 use core::num::NonZeroUsize;
-use hardy_async::async_trait;
-use hardy_async::sync::spin::Mutex;
+
+use hardy_async::{async_trait, sync::spin::Mutex};
 use lru::LruCache;
 
-use crate::{Arc, Bytes, stream::Sender};
-
 use super::{BundleStorage, RecoveryResponse, Result};
+use crate::{Arc, Bytes, stream::Sender};
 
 /// Default LRU cache capacity (number of entries).
 pub const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();

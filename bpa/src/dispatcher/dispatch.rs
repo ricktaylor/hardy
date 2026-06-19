@@ -1,5 +1,6 @@
-use super::*;
 use futures::{FutureExt, join, select_biased};
+
+use super::*;
 
 impl Dispatcher {
     /// Queue a bundle for dispatch processing.

@@ -22,10 +22,10 @@ pub(crate) mod store;
 // Re-exports
 
 /// In-memory [`BundleStorage`] backend, suitable for testing and ephemeral deployments.
-pub use bundle_mem::{BundleMemStorage, Config as BundleMemStorageConfig};
+pub use self::bundle_mem::{BundleMemStorage, Config as BundleMemStorageConfig};
 /// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
-pub use metadata_mem::{Config as MetadataMemStorageConfig, MetadataMemStorage};
+pub use self::metadata_mem::{Config as MetadataMemStorageConfig, MetadataMemStorage};
 
-pub use cached::{CachedBundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_BUNDLE_SIZE};
+pub use self::cached::{CachedBundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_BUNDLE_SIZE};
 
-pub use backend::*;
+pub use self::backend::*;

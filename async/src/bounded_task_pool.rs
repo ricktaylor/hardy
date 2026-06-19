@@ -36,8 +36,7 @@
 use alloc::sync::Arc;
 use core::future::Future;
 
-use crate::join_handle::JoinHandle;
-use crate::task_pool::TaskPool;
+use crate::{join_handle::JoinHandle, task_pool::TaskPool};
 
 /// A task pool with bounded concurrency.
 ///

@@ -200,4 +200,4 @@ mod flume {
 }
 
 #[cfg(feature = "std")]
-pub use flume::*;
+pub use self::flume::*;

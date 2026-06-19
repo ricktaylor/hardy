@@ -1,14 +1,13 @@
 use core::num::{NonZero, NonZeroUsize};
-use hardy_async::async_trait;
-use hardy_async::sync::Mutex;
+
+use hardy_async::{async_trait, sync::Mutex};
 use rand::distr::{Alphanumeric, SampleString};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::{Arc, Bytes, stream::Sender};
-
 use super::{BundleStorage, RecoveryResponse, Result};
+use crate::{Arc, Bytes, stream::Sender};
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

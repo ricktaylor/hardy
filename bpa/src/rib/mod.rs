@@ -1,4 +1,3 @@
-use super::*;
 use futures::{FutureExt, select_biased};
 use hardy_async::sync::RwLock;
 use hardy_bpv7::{
@@ -6,6 +5,8 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+
+use super::*;
 
 pub(crate) mod agent;
 
