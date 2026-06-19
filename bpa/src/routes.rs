@@ -1,8 +1,10 @@
 use core::fmt;
 
 use hardy_async::sync::spin;
-use hardy_bpv7::eid::{Eid, NodeId};
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{
+    eid::{Eid, NodeId},
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
 use thiserror::Error;
 use tracing::warn;

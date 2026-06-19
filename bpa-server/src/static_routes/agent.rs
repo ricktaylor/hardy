@@ -97,6 +97,9 @@ async fn reload_routes(
             .ok();
     }
 
+    // Rejected routes are deliberately kept out of the tracked set so each
+    // reload re-attempts and re-warns, instead of silently treating a route
+    // the RIB refused as installed.
     let mut accepted = Vec::new();
     for r in to_add {
         match sink
