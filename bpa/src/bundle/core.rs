@@ -1,9 +1,9 @@
-use super::metadata::BundleMetadata;
 use hardy_bpv7::eid::Eid;
-use time::{Duration, OffsetDateTime};
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
+
+use super::metadata::BundleMetadata;
 
 /// A bundle together with its BPA-local processing metadata.
 ///
@@ -29,14 +29,14 @@ impl Bundle {
                 self.metadata
                     .read_only
                     .received_at
-                    // The following unwrap() is safe, as age is u64::MAX millisecs
+                    // No clock: creation = received time − Bundle Age.
                     .saturating_sub(
                         self.metadata
                             .read_only
                             .age
                             .unwrap_or_default()
                             .try_into()
-                            .unwrap(),
+                            .expect("bundle age in ms is within time::Duration's range"),
                     )
             })
     }
