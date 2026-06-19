@@ -3,8 +3,7 @@ use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 
 use super::{RoutingAgent, RoutingSink};
-use crate::async_trait;
-use crate::routing::action::RouteAction;
+use crate::{async_trait, routing::action::RouteAction};
 
 /// A simple routing agent that installs a fixed set of routes on registration.
 ///

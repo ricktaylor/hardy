@@ -7,26 +7,33 @@ use hardy_async::{
     Notify, TaskPool,
     sync::{Mutex, spin},
 };
-use hardy_bpv7::{bundle::Bundle as Bpv7Bundle, eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
+    eid::{Eid, NodeId},
+    status_report::ReasonCode,
+};
 use hardy_eid_patterns::EidPattern;
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::action::{Action, InternalAction, RouteAction};
-use super::agent::sink::Sink;
-use super::table::{self, Entry, RouteTable};
-use super::{Error, Result, RoutingAgent};
-use crate::bundle::{Bundle, BundleMetadata};
-use crate::cla::ClaAddressType;
-use crate::cla::registry::Cla;
-use crate::dispatcher::Dispatcher;
-use crate::hash_map::Entry as HashMapEntry;
-use crate::node_ids::NodeIds;
-use crate::services::registry::Service;
-use crate::storage::Store;
-use crate::{Arc, HashMap, HashSet};
+use super::{
+    Error, Result, RoutingAgent,
+    action::{Action, InternalAction, RouteAction},
+    agent::sink::Sink,
+    table::{self, Entry, RouteTable},
+};
+use crate::{
+    Arc, HashMap, HashSet,
+    bundle::{Bundle, BundleMetadata},
+    cla::{ClaAddressType, registry::Cla},
+    dispatcher::Dispatcher,
+    hash_map::Entry as HashMapEntry,
+    node_ids::NodeIds,
+    services::registry::Service,
+    storage::store::Store,
+};
 
 #[derive(Debug)]
 pub enum FindResult {

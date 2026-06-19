@@ -11,8 +11,7 @@ use crate::{
     filter::{self, Filter, FilterEngine, Hook},
     otel_metrics,
     policy::EgressPolicy,
-    rib::Rib,
-    routes::{self, RoutingAgent},
+    routing::{self, Rib, RoutingAgent},
     services::{self, Service, registry::ServiceRegistry},
     storage::store::Store,
 };

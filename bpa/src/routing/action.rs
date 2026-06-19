@@ -1,11 +1,8 @@
-use core::cmp::Ordering;
-use core::fmt;
+use core::{cmp::Ordering, fmt};
 
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 
-use crate::Arc;
-use crate::services::registry::Service;
+use crate::{Arc, services::registry::Service};
 
 /// What routing agents configure. Validated on insert into VirtualRouteTable.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

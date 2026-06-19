@@ -9,12 +9,11 @@ use crate::{
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::EgressPolicy,
-    rib::RibBuilder,
-    routes::RoutingAgent,
+    routing::{RibBuilder, RoutingAgent},
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
         BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-        MetadataMemStorage, MetadataStorage, Store,
+        MetadataMemStorage, MetadataStorage, store::Store,
     },
 };
 

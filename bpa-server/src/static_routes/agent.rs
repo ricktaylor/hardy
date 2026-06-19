@@ -8,7 +8,7 @@ use hardy_async::{
     sync::spin::Once,
     watcher::{self, WatchMode},
 };
-use hardy_bpa::routes::{Action, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info, warn};
