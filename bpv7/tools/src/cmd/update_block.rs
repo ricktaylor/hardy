@@ -65,8 +65,8 @@ impl Command {
         if let Some(payload_str) = &self.payload {
             block_builder = block_builder.with_data(payload_str.as_bytes().to_vec().into());
         } else if let Some(input) = &self.payload_file {
-            // BlockBuilder::with_data wants Cow<[u8]>; read_all now hands
-            // back a `Bytes`, so move out into a Vec for the Cow::Owned.
+            // BlockBuilder::with_data wants Cow<[u8]>; read_all returns Bytes,
+            // so copy into an owned Vec for Cow::Owned.
             block_builder = block_builder.with_data(input.read_all()?.to_vec().into());
         }
 
