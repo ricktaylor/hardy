@@ -33,6 +33,16 @@ impl Ord for Entry {
     }
 }
 
+#[derive(Debug)]
+pub(super) enum LookupResult<'a> {
+    AdminEndpoint,
+    Deliver(Arc<Service>),
+    Forward(u32, &'a Eid),
+    ForwardEcmp(Vec<(u32, &'a Eid)>),
+    Drop(Option<ReasonCode>),
+    Reflect,
+}
+
 #[derive(Clone)]
 pub(crate) struct RouteTable {
     routes: BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<Entry>>>,
@@ -174,7 +184,7 @@ impl RouteTable {
         to: &'a Eid,
         reflect: bool,
         trail: &mut HashSet<&'a Eid>,
-    ) -> Option<FindResult<'a>> {
+    ) -> Option<LookupResult<'a>> {
         trace!("Looking for route for {to}");
 
         let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
@@ -185,12 +195,12 @@ impl RouteTable {
                         match &entry.action {
                             Action::Route(RouteAction::Drop(reason)) => {
                                 trace!("Drop {reason:?}");
-                                return Some(FindResult::Drop(*reason));
+                                return Some(LookupResult::Drop(*reason));
                             }
                             Action::Route(RouteAction::Reflect) => {
                                 if reflect {
                                     trace!("Reflect");
-                                    return Some(FindResult::Reflect);
+                                    return Some(LookupResult::Reflect);
                                 }
                             }
                             Action::Route(RouteAction::Via(via)) => {
@@ -202,22 +212,26 @@ impl RouteTable {
                                 let sub_result = self.find_recurse(via, reflect, trail);
                                 trail.remove(&to);
 
-                                if let Some(sub_result) = sub_result {
-                                    let FindResult::Forward(sub_peers) = sub_result else {
-                                        return Some(sub_result);
-                                    };
-                                    for (sub_peer, _) in sub_peers {
+                                match sub_result {
+                                    Some(LookupResult::Forward(sub_peer, _)) => {
                                         sorted_insert(&mut peers, sub_peer, via);
                                     }
+                                    Some(LookupResult::ForwardEcmp(sub_peers)) => {
+                                        for (sub_peer, _) in sub_peers {
+                                            sorted_insert(&mut peers, sub_peer, via);
+                                        }
+                                    }
+                                    Some(other) => return Some(other),
+                                    None => {}
                                 }
                             }
                             Action::Internal(InternalAction::AdminEndpoint) => {
                                 trace!("Deliver to Admin Endpoint");
-                                return Some(FindResult::AdminEndpoint);
+                                return Some(LookupResult::AdminEndpoint);
                             }
                             Action::Internal(InternalAction::Local(service)) => {
                                 trace!("Deliver to Service {}", service.service_id);
-                                return Some(FindResult::Deliver(service.clone()));
+                                return Some(LookupResult::Deliver(service.clone()));
                             }
                             Action::Internal(InternalAction::Forward(peer)) => {
                                 sorted_insert(&mut peers, *peer, to);
@@ -225,8 +239,13 @@ impl RouteTable {
                         }
                     }
 
-                    if !peers.is_empty() {
-                        return Some(FindResult::Forward(peers));
+                    match peers.len() {
+                        0 => {}
+                        1 => {
+                            let (peer, next_hop) = peers.remove(0);
+                            return Some(LookupResult::Forward(peer, next_hop));
+                        }
+                        _ => return Some(LookupResult::ForwardEcmp(peers)),
                     }
                 }
             }
@@ -235,11 +254,12 @@ impl RouteTable {
     }
 
     pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
-        if let Some(FindResult::Forward(peers)) = self.find_recurse(to, false, &mut HashSet::new())
-        {
-            Some(peers.into_iter().map(|(peer, _)| peer).collect())
-        } else {
-            None
+        match self.find_recurse(to, false, &mut HashSet::new()) {
+            Some(LookupResult::Forward(peer, _)) => Some([peer].into()),
+            Some(LookupResult::ForwardEcmp(peers)) => {
+                Some(peers.into_iter().map(|(peer, _)| peer).collect())
+            }
+            _ => None,
         }
     }
 
@@ -257,15 +277,6 @@ impl RouteTable {
         }
         None
     }
-}
-
-#[derive(Debug)]
-pub(super) enum FindResult<'a> {
-    AdminEndpoint,
-    Deliver(Arc<Service>),
-    Forward(Vec<(u32, &'a Eid)>),
-    Drop(Option<ReasonCode>),
-    Reflect,
 }
 
 fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
