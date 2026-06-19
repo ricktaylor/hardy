@@ -1,9 +1,12 @@
-use super::WatchConfig;
-use crate::bpsec::SecurityRole;
-use hardy_eid_patterns::EidPattern;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use hardy_eid_patterns::EidPattern;
+use serde::{Deserialize, Serialize};
+
+use super::WatchConfig;
+use crate::bpsec::SecurityRole;
+
+/// BPSec configuration: the JWKS key file and its EID-pattern key bindings.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -22,6 +25,7 @@ pub struct Config {
     pub bindings: Vec<KeyBindingConfig>,
 }
 
+/// A single key binding: an EID pattern, a security role, and the bound key ids.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct KeyBindingConfig {
