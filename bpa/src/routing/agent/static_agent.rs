@@ -1,6 +1,7 @@
 use hardy_async::sync::spin;
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
+use tracing::warn;
 
 use super::{RoutingAgent, RoutingSink};
 use crate::{async_trait, routing::action::RouteAction};
@@ -40,9 +41,12 @@ impl StaticRoutingAgent {
 impl RoutingAgent for StaticRoutingAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
         for (pattern, action, priority) in &self.routes {
-            sink.add_route(pattern.clone(), action.clone(), *priority)
+            if let Err(e) = sink
+                .add_route(pattern.clone(), action.clone(), *priority)
                 .await
-                .ok();
+            {
+                warn!("Rejected route {pattern} => {action}: {e}");
+            }
         }
         self.sink.call_once(|| sink);
     }
