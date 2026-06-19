@@ -996,12 +996,12 @@ impl<'a> Editor<'a> {
                 .get(&0)
                 .ok_or(Error::from(error::Error::Altered))?;
             blocks_out.insert(0, block.clone());
+            let extent = usize::try_from(block.extent.start)
+                .and_then(|s| usize::try_from(block.extent.end).map(|e| s..e))
+                .map_err(|_| Error::from(error::Error::Altered))?;
             (
                 self.original.primary.clone(),
-                (
-                    0u64,
-                    Chunk::Unchanged(block.extent.start as usize..block.extent.end as usize),
-                ),
+                (0u64, Chunk::Unchanged(extent)),
             )
         };
 
@@ -1073,10 +1073,10 @@ impl<'a> Editor<'a> {
                 .blocks
                 .get(&0)
                 .ok_or(Error::from(error::Error::Altered))?;
-            (
-                0u64,
-                Chunk::Unchanged(block.extent.start as usize..block.extent.end as usize),
-            )
+            let extent = usize::try_from(block.extent.start)
+                .and_then(|s| usize::try_from(block.extent.end).map(|e| s..e))
+                .map_err(|_| Error::from(error::Error::Altered))?;
+            (0u64, Chunk::Unchanged(extent))
         };
 
         let payload_block = self.blocks.remove(&1).expect("No payload block!");
@@ -1115,7 +1115,9 @@ impl<'a> Editor<'a> {
                 .get(&block_number)
                 .ok_or(Error::from(error::Error::Altered))?
                 .clone();
-            let extent = block.extent.start as usize..block.extent.end as usize;
+            let extent = usize::try_from(block.extent.start)
+                .and_then(|s| usize::try_from(block.extent.end).map(|e| s..e))
+                .map_err(|_| Error::from(error::Error::Altered))?;
             Ok((block, Chunk::Unchanged(extent)))
         }
     }

@@ -23,10 +23,6 @@
 //!   Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
 //!   bundle so the caller can emit a status report.
 
-use super::Bpv7Bundle;
-use crate::cla::Segment;
-use crate::stream::Receiver;
-use crate::{HashMap, HashSet};
 use bytes::Bytes;
 use hardy_bpv7::{
     Bundle, block, bpsec, bundle_age, checks, editor::Chunk, eid, hop_info, parse, rewrite,
@@ -34,13 +30,16 @@ use hardy_bpv7::{
 };
 use tracing::debug;
 
+use super::Bpv7Bundle;
+use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
 /// Reshape the parser-internal `Bundle` + the §D-extracted
 /// extension fields into the rich [`Bpv7Bundle`] BPA stores.
-pub(crate) fn reshape_to_rich(raw: Bundle, extracted: ExtractedExtensionFields) -> Bpv7Bundle {
+pub fn reshape_to_rich(raw: Bundle, extracted: ExtractedExtensionFields) -> Bpv7Bundle {
     Bpv7Bundle {
         id: raw.primary.id,
         flags: raw.primary.flags,
@@ -63,7 +62,7 @@ pub(crate) fn reshape_to_rich(raw: Bundle, extracted: ExtractedExtensionFields) 
 /// that build a bundle and immediately wrap it; the keyed parse
 /// pipelines above would do this same reshape after redundant BPSec
 /// validation a freshly-built bundle doesn't need.
-pub(crate) fn rich_from_built(raw: Bundle, data: &[u8]) -> Result<Bpv7Bundle, hardy_bpv7::Error> {
+pub fn rich_from_built(raw: Bundle, data: &[u8]) -> Result<Bpv7Bundle, hardy_bpv7::Error> {
     let extracted =
         extract_extension_block_fields(data, &raw.blocks, &HashMap::<u64, &[u8]>::new())?;
     Ok(reshape_to_rich(raw, extracted))
@@ -81,7 +80,7 @@ pub(crate) fn rich_from_built(raw: Bundle, data: &[u8]) -> Result<Bpv7Bundle, ha
 /// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
 /// policy SHOULD gate when security reason codes are sent at all; the global
 /// `status_reports` switch is that gate for now.
-pub(crate) fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
+pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     match error {
         hardy_bpv7::Error::Unsupported(_) => ReasonCode::BlockUnsupported,
         hardy_bpv7::Error::InvalidBPSec(
@@ -99,7 +98,7 @@ pub(crate) fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode 
 /// generic RFC 9171 block code when several fire: a dropped corrupt operation
 /// is the most material event, then an operation this node cannot understand,
 /// then an unrecognised plain block.
-pub(crate) fn reception_reason_for(
+pub fn reception_reason_for(
     classification: &checks::Classification,
     failure_dropped: bool,
 ) -> ReasonCode {
@@ -130,7 +129,7 @@ pub(crate) fn reception_reason_for(
 /// (RFC 9171 §4.1), and re-emitting it is a configurable mutating-filter concern
 /// (see `docs/streaming_pipeline_design.md` §5.2.2), not standard-parser work.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
-pub(crate) fn parse_validate_with_provider<F>(
+pub fn parse_validate_with_provider<F>(
     data: Bytes,
     key_provider: F,
 ) -> Result<(Bpv7Bundle, Vec<(u64, block::Type)>), hardy_bpv7::Error>
@@ -192,7 +191,7 @@ fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
 /// (equivalently `VerifyFacts::nokey_ext`). A node that accepts/forwards applies
 /// this; a restart re-check tolerates a key that has since rotated away and skips
 /// it.
-pub(crate) fn reject_undecryptable_liveness(
+pub fn reject_undecryptable_liveness(
     nokey: &[(u64, block::Type)],
     is_clocked: bool,
 ) -> Result<(), hardy_bpv7::Error> {
@@ -215,7 +214,7 @@ pub(crate) fn reject_undecryptable_liveness(
 /// finish once the payload is resident. `raw` is kept **un-reshaped** so a key
 /// source can still be built (`key_provider` takes a structural `Bundle`) for
 /// the post-drain payload verify and rewrite.
-pub(crate) struct HeaderVerify {
+pub struct HeaderVerify {
     pub raw: Bundle,
     pub extracted: ExtractedExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
@@ -237,12 +236,17 @@ impl HeaderVerify {
     /// or a Hop Count block has reached its limit. Computed straight off the
     /// parsed primary + extracted extension fields, so the streaming gate can
     /// run it before the payload is drained (no reshape into the rich form).
-    pub(crate) fn gate_reason(&self, received_at: time::OffsetDateTime) -> Option<ReasonCode> {
+    pub fn gate_reason(&self, received_at: time::OffsetDateTime) -> Option<ReasonCode> {
         let primary = &self.raw.primary;
         let creation = primary.id.timestamp.as_datetime().unwrap_or_else(|| {
-            // No clock: creation = ingress time − Bundle Age. The unwrap is safe;
-            // bundle age is at most u64::MAX milliseconds.
-            received_at.saturating_sub(self.extracted.age.unwrap_or_default().try_into().unwrap())
+            // No clock: creation = ingress time − Bundle Age.
+            received_at.saturating_sub(
+                self.extracted
+                    .age
+                    .unwrap_or_default()
+                    .try_into()
+                    .expect("bundle age in ms is within time::Duration's i64-second range"),
+            )
         });
         let expiry =
             creation.saturating_add(primary.lifetime.try_into().unwrap_or(time::Duration::MAX));
@@ -274,7 +278,7 @@ impl HeaderVerify {
 /// failure whose bundle id *is* recoverable — reshaped here so the caller only
 /// has to emit a reception report with `reason`, then drop.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
-pub(crate) async fn parse_headers<F>(
+pub async fn parse_headers<F>(
     stream: &dyn Receiver<Segment>,
     key_provider: F,
 ) -> Result<(HeaderVerify, Bytes, Option<parse::PayloadTail>), Option<(Bpv7Bundle, ReasonCode)>>
@@ -442,7 +446,7 @@ fn verify_headers(
 /// (synchronously, never held across the drain's `await`) from the structural
 /// `raw`. On a keyed failure returns the reshaped bundle for a status report.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
-pub(crate) fn finalize_with_provider<F>(
+pub fn finalize_with_provider<F>(
     whole: &[u8],
     mut hv: HeaderVerify,
     key_provider: F,
@@ -510,7 +514,7 @@ where
 
 /// Output of [`extract_extension_block_fields`].
 #[derive(Debug, Default)]
-pub(crate) struct ExtractedExtensionFields {
+pub struct ExtractedExtensionFields {
     pub previous_node: Option<eid::Eid>,
     pub age: Option<core::time::Duration>,
     pub hop_count: Option<hop_info::HopInfo>,

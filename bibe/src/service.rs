@@ -41,11 +41,14 @@ impl DecapService {
             .blocks
             .get(&1)
             .ok_or(hardy_bpv7::Error::MissingBlock(1))?;
-        let payload_range = payload_block.payload_range();
-
         // Payload is BIBE-PDU: [transmission-id, total-length, segmented-offset, bundle-segment]
-        // For complete bundles: all three ints are 0
-        let payload = outer_bytes.slice(payload_range.start as usize..payload_range.end as usize);
+        // For complete bundles: all three ints are 0. `payload` bounds-checks the
+        // wire-derived range (returns None on a 32-bit-unrepresentable or
+        // over-claiming extent) instead of slicing with a truncating `as usize`.
+        let payload = payload_block
+            .payload(&outer_bytes)
+            .map(|p| outer_bytes.slice_ref(p))
+            .ok_or(hardy_bpv7::Error::MissingBlock(1))?;
         let (inner_range, len) = hardy_cbor::decode::parse_array(
             &payload,
             |a, _shortest, _tags| -> Result<_, hardy_cbor::decode::Error> {

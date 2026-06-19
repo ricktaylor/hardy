@@ -20,7 +20,13 @@ use hardy_bpv7::{
 
 // Signer works on a parse-shaped `Bundle`; re-parse the builder output to
 // get one with real wire extents.
-fn reparse(bytes: &[u8]) -> (::bytes::Bytes, Bundle, HashMap<u64, bpsec::bib::OperationSet>) {
+fn reparse(
+    bytes: &[u8],
+) -> (
+    ::bytes::Bytes,
+    Bundle,
+    HashMap<u64, bpsec::bib::OperationSet>,
+) {
     let parse::Parsed {
         data, bundle, bibs, ..
     } = parse::parse(::bytes::Bytes::copy_from_slice(bytes)).expect("Failed to parse");
@@ -85,10 +91,7 @@ fn sign_primary_removes_crc_and_verifies() {
         crc::CrcType::None,
         "signing the primary must remove its CRC (RFC 9173 §3.8.1)"
     );
-    assert!(matches!(
-        signed.blocks[&0].bib,
-        block::BibCoverage::Some(_)
-    ));
+    assert!(matches!(signed.blocks[&0].bib, block::BibCoverage::Some(_)));
 }
 
 // remove_integrity must clear the target's BIB coverage in the rebuilt Bundle,

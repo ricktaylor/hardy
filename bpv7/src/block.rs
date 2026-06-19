@@ -113,6 +113,8 @@ impl hardy_cbor::decode::FromCbor for Flags {
 }
 
 impl Flags {
+    /// The processing-control flags for a primary block (RFC 9171 §4.2.3):
+    /// must-replicate, report-on-failure, and delete-bundle-on-failure set.
     pub fn primary() -> Self {
         Self {
             must_replicate: true,
@@ -324,7 +326,7 @@ impl Block {
     ///
     /// `source` MUST be the complete, contiguous bundle byte stream the
     /// block's offsets were parsed against (the `Bytes` returned by
-    /// [`parse::parse`](crate::parse::parse), or the
+    /// [`parse::parse`], or the
     /// buffer a `Builder`/`Editor` produced) — the offsets are
     /// bundle-absolute. Returns `None` if they fall outside `source`.
     ///
@@ -334,7 +336,10 @@ impl Block {
     /// use [`Self::payload_range`] and fetch the range directly instead.
     pub fn payload<'a>(&self, source: &'a [u8]) -> Option<&'a [u8]> {
         let r = self.payload_range();
-        source.get(r.start as usize..r.end as usize)
+        let (Ok(start), Ok(end)) = (usize::try_from(r.start), usize::try_from(r.end)) else {
+            return None;
+        };
+        source.get(start..end)
     }
 
     /// Decode this block's payload (from `source`) as a single CBOR `T`, with a

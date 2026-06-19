@@ -1,11 +1,12 @@
 //! The rich BPv7 bundle representation the BPA stores: the structural bundle
 //! with the well-known extension blocks interpreted into typed fields.
-//! Interpreting those blocks is a BPA concern, so this type and its companion
-//! extractor live in [`crate::bundle::parse`] rather than in `hardy-bpv7`. This
-//! is a pure data struct — the raw wire bytes are stored separately by the BPA.
+//! Interpreting those blocks is a BPA concern, so its companion extractor lives
+//! in [`crate::bundle::parse`] rather than in `hardy-bpv7`. This is a pure data
+//! struct — the raw wire bytes are stored separately by the BPA.
+
+use hardy_bpv7::{block, bundle, crc, eid, hop_info};
 
 use crate::HashMap;
-use hardy_bpv7::{block, bundle, crc, eid, hop_info};
 
 /// Represents a complete BPv7 bundle.
 ///

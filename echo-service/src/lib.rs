@@ -88,13 +88,12 @@ impl EchoService {
         // (the request's destination), destination = the request's source, with
         // a new creation timestamp. Adopt the request's lifetime (the BPA bounds
         // it by local policy as for any bundle).
-        let mut builder =
-            hardy_bpv7::builder::Builder::new(
+        let mut builder = hardy_bpv7::builder::Builder::new(
             bundle.primary.destination.clone(),
             bundle.primary.id.source.clone(),
         )
-                .with_lifetime(bundle.primary.lifetime)
-                .with_flags(response_flags(&bundle.primary.flags));
+        .with_lifetime(bundle.primary.lifetime)
+        .with_flags(response_flags(&bundle.primary.flags));
 
         // If the request asked for status reports, direct the response's reports
         // to the same report-to so an observer can follow both legs of the
