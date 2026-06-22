@@ -32,6 +32,25 @@ jobs:
           sanitizer: ${{ matrix.sanitizer }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # TEMPORARY (cache discovery): find the host-side path that build_fuzzers
+      # mounts as the container's $WORK, and confirm cargo's registry/target
+      # persisted out of the container, so the next iteration can point
+      # actions/cache at the right path. Remove once caching is wired.
+      - name: Inspect build dirs (cache discovery)
+        if: always()
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE  HOME=$HOME"
+          echo "--- candidate host dirs ---"
+          for base in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.." "$HOME" /tmp; do
+            find "$base" -maxdepth 4 -type d \
+              \( -name work -o -name out -o -name cargo -o -name registry -o -name 'build-*' \) \
+              2>/dev/null
+          done | sort -u
+          echo "--- sizes of any cargo/registry/target found ---"
+          for base in "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/.." "$HOME"; do
+            find "$base" -maxdepth 5 -type d \( -name cargo -o -name registry -o -name target \) 2>/dev/null
+          done | sort -u | while read -r d; do du -sh "$d" 2>/dev/null; done
+
       - name: Run Fuzzers (${{ matrix.sanitizer }})
         id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
