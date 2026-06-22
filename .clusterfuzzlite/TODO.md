@@ -12,7 +12,7 @@ Status as of 2026-06-19. Corpus is already pushed + verified; everything below i
 
 ## To do (Rick)
 - [ ] Commit + push this `feat/fuzz-ci` branch (signed)
-- [ ] Add `PERSONAL_ACCESS_TOKEN` secret to `ricktaylor/hardy` — token with `contents: write` on `hardy-fuzz-corpus` (without it, storage-repo push can't authenticate)
+- [ ] Add `FUZZ_CORPUS_ACCESS_TOKEN` secret to `ricktaylor/hardy` — token with `contents: write` on `hardy-fuzz-corpus` (without it, storage-repo push can't authenticate)
 - [ ] Enable GitHub Pages (`gh-pages` branch) on `hardy-fuzz-corpus` for coverage reports (free — repo is public)
 - [ ] Trigger **ClusterFuzzLite Cron** → *Run workflow* to validate the first run
 
