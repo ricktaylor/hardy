@@ -44,7 +44,7 @@ pub(super) enum LookupResult<'a> {
 }
 
 #[derive(Clone)]
-pub(crate) struct RouteTable {
+pub struct RouteTable {
     routes: BTreeMap<u32, BTreeMap<EidPattern, BTreeSet<Entry>>>,
     node_ids: Arc<NodeIds>,
 }
