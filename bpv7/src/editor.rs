@@ -630,6 +630,7 @@ impl<'a> Editor<'a> {
     ///
     /// Used by `Signer` to set `bib` metadata on target blocks so that
     /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
+    #[cfg(feature = "bpsec")]
     pub(crate) fn set_bib_target(&mut self, target_block: u64, bib_block: u64) {
         self.bib_overrides
             .insert(target_block, block::BibCoverage::Some(bib_block));
@@ -639,6 +640,7 @@ impl<'a> Editor<'a> {
     ///
     /// Used by `Encryptor` to set `bcb` metadata on target blocks so that
     /// `rebuild_bundle()` returns a correct `Bundle` without reparsing.
+    #[cfg(feature = "bpsec")]
     pub(crate) fn set_bcb_target(&mut self, target_block: u64, bcb_block: u64) {
         self.bcb_overrides.insert(target_block, Some(bcb_block));
     }
