@@ -702,6 +702,41 @@ mod tests {
     }
 
     #[test]
+    fn test_ecmp_direct_forwards() {
+        let rib = make_rib();
+
+        // Two direct forward peers for the same node (redundant CLA links)
+        add_local_forward(&rib, ipn_node(2), 42);
+        add_local_forward(&rib, ipn_node(2), 43);
+
+        // find_peers returns both
+        let peers = rib.find_peers(&"ipn:0.2.1".parse().unwrap());
+        assert_eq!(peers, Some([42, 43].into()));
+
+        // find resolves deterministically to one of them
+        let mut bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&mut bundle);
+        let peer = match result {
+            Some(DispatchAction::Forward(p)) => p,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert!(
+            peer == 42 || peer == 43,
+            "Peer must be one of the direct forwards, got {peer}"
+        );
+
+        // Same bundle deterministically picks the same peer
+        let mut bundle2 = make_bundle("ipn:0.2.1");
+        bundle2.bundle.id = bundle.bundle.id.clone();
+        let result2 = rib.find(&mut bundle2);
+        let peer2 = match result2 {
+            Some(DispatchAction::Forward(p)) => p,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert_eq!(peer, peer2, "ECMP selection must be deterministic");
+    }
+
+    #[test]
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
         let mut bundle = make_bundle("ipn:0.1.0");

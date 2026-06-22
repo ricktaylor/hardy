@@ -6,4 +6,4 @@ pub(crate) mod table;
 pub use self::action::RouteAction;
 pub use self::agent::{Error, Result, RoutingAgent, RoutingSink, StaticRoutingAgent};
 pub(crate) use self::rib::RibBuilder;
-pub use self::rib::{DispatchAction, Rib};
+pub(crate) use self::rib::{DispatchAction, Rib};
