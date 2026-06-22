@@ -52,7 +52,7 @@ impl Ord for RouteAction {
 
 /// BPA-internal actions. Always correct by construction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum InternalAction {
+pub enum InternalAction {
     Forward(u32),
     Local(Arc<Service>),
     AdminEndpoint,

@@ -59,7 +59,7 @@ pub struct Rib {
     service_priority: u32,
 }
 
-pub(crate) struct RibBuilder {
+pub struct RibBuilder {
     agents: Vec<(String, Arc<dyn RoutingAgent>)>,
     service_priority: u32,
 }
