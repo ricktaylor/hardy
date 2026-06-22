@@ -9,16 +9,6 @@
 # stable pin every other contributor relies on) is left untouched.
 export RUSTUP_TOOLCHAIN=nightly
 
-# Persist cargo's registry and build artifacts under $WORK, which OSS-Fuzz
-# bind-mounts from the host, so a CI cache can preserve them across runs. The
-# default in-container target dir lives in the ephemeral image layer and is
-# discarded every build, forcing a full from-scratch compile that dominates CI
-# wall-time. A per-sanitizer target dir keeps the address and coverage builds
-# from invalidating each other's incremental state.
-export CARGO_HOME="${WORK:-/work}/cargo"
-export CARGO_TARGET_DIR="${WORK:-/work}/target/${SANITIZER:-address}"
-mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
-
 cd "$SRC/hardy"
 
 # cargo-fuzz defaults to AddressSanitizer. For OSS-Fuzz coverage runs the
@@ -39,14 +29,13 @@ for fuzz_dir in */fuzz; do
     cargo fuzz build -O -s "$sanitizer_flag" --fuzz-dir "$fuzz_dir"
 
     # Place each target binary into $OUT. cargo-fuzz emits under the host triple
-    # in the target dir; search $CARGO_TARGET_DIR first, but fall back to the
-    # tree in case cargo-fuzz ignores CARGO_TARGET_DIR, so relocating the cache
-    # can never break the binary copy.
+    # in the workspace target dir; locate it rather than hard-coding the path
+    # (verify this resolves on the first CI run — most likely thing to tweak).
     while IFS= read -r target; do
         [ -n "$target" ] || continue
 
-        bin="$(find "$CARGO_TARGET_DIR" "$SRC/hardy" -type f \
-            -path "*x86_64-unknown-linux-gnu/release/$target" ! -name '*.d' 2>/dev/null | head -n1)"
+        bin="$(find "$SRC/hardy" -type f \
+            -path "*x86_64-unknown-linux-gnu/release/$target" ! -name '*.d' | head -n1)"
         if [ -z "$bin" ]; then
             echo "ERROR: built binary for '$target' not found" >&2
             exit 1
@@ -62,9 +51,3 @@ for fuzz_dir in */fuzz; do
         fi
     done < <(awk -F'"' '/^\[\[bin\]\]/{b=1;next} b&&/name *=/{print $2; b=0}' "$fuzz_dir/Cargo.toml")
 done
-
-# TEMPORARY (cache wiring): report where cargo wrote and how large the caches
-# are, so the workflow can target the right host path. Remove once the
-# actions/cache step is confirmed working.
-echo "=== cargo cache footprint (in-container WORK=$WORK) ==="
-du -sh "$CARGO_HOME" "$CARGO_TARGET_DIR" 2>/dev/null || true
