@@ -3,6 +3,16 @@ use proto::routing::*;
 
 type RoutingSink = Arc<dyn hardy_bpa::routing::RoutingSink>;
 
+fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
+    match e {
+        hardy_bpa::routing::Error::NullNextHop | hardy_bpa::routing::Error::ViaOwnNode(_) => {
+            tonic::Status::invalid_argument(e.to_string())
+        }
+        hardy_bpa::routing::Error::Disconnected => tonic::Status::unavailable(e.to_string()),
+        other => tonic::Status::internal(other.to_string()),
+    }
+}
+
 struct RemoteRoutingAgent {
     sink: Mutex<Option<RoutingSink>>,
     proxy: Once<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
@@ -34,7 +44,7 @@ impl RemoteRoutingAgent {
             .sink()?
             .add_route(pattern, action, request.priority)
             .await
-            .map_err(|e| tonic::Status::from_error(e.into()))?;
+            .map_err(routing_error_to_status)?;
 
         Ok(bpa_to_agent::Msg::AddRoute(AddRouteResponse { added }))
     }
@@ -57,7 +67,7 @@ impl RemoteRoutingAgent {
             .sink()?
             .remove_route(&pattern, &action, request.priority)
             .await
-            .map_err(|e| tonic::Status::from_error(e.into()))?;
+            .map_err(routing_error_to_status)?;
 
         Ok(bpa_to_agent::Msg::RemoveRoute(RemoveRouteResponse {
             removed,
@@ -174,7 +184,7 @@ async fn run_routing_session(
                 let node_ids = bpa
                     .register_routing_agent(request.name, agent.clone())
                     .await
-                    .map_err(|e| tonic::Status::from_error(e.into()))?
+                    .map_err(routing_error_to_status)?
                     .into_iter()
                     .map(|node_id| node_id.to_string())
                     .collect();

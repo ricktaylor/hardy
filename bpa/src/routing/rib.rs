@@ -209,6 +209,11 @@ impl Rib {
         let pattern = self.expand_pattern(pattern);
         let action = self.expand_action(action);
 
+        // Arc::make_mut clones the RouteTable into a private copy (the
+        // snapshot ArcSwap co-owns the Arc, so strong_count >= 2). The
+        // mutation is invisible to readers until store() publishes it.
+        // Full-table clone is acceptable here: route mutations are
+        // management-plane, not per-bundle.
         let vias = {
             let mut table = self.table.lock();
 
