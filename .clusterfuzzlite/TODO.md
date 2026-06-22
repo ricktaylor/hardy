@@ -8,6 +8,7 @@ Status as of 2026-06-19. Corpus is already pushed + verified; everything below i
 - [x] `run_fuzz.sh` retired; `run_lcov.sh` derives targets + honest "no corpus" skip
 - [x] Corpus seeded to `hardy-fuzz-corpus` `main` in `corpus/<target>/` (public repo, commit 8af4aa14, verified)
 - [x] Docs: `test_strategy.md` + `test_coverage_report.md` (11→8), `.clusterfuzzlite/README.md`
+- [x] Confirmed no fuzz target needs `protoc` (only `proto`/`tvr` invoke it, neither reachable from a fuzz crate; `opentelemetry-proto` uses runtime `prost`/`tonic` only) — dropped `protobuf-compiler` from the Dockerfile
 
 ## To do (Rick)
 - [ ] Commit + push this `feat/fuzz-ci` branch (signed)
@@ -19,7 +20,6 @@ Status as of 2026-06-19. Corpus is already pushed + verified; everything below i
 - [ ] `build.sh` binary copy: `find … x86_64-unknown-linux-gnu/release/<target>` — if cargo-fuzz emits elsewhere, narrow the glob
 - [ ] `cargo fuzz build --fuzz-dir` behaviour (awk parse of `[[bin]]` is the fallback)
 - [ ] Coverage build (`sanitizer: coverage` / `-s none`)
-- [ ] `protoc` in Dockerfile — drop if no fuzz target's deps need it
 
 ## Follow-on (later)
 - [ ] `cargo llvm-cov` CI job for unit coverage → then retire `run_lcov.sh`

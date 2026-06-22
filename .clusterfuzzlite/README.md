@@ -4,7 +4,7 @@ Continuous CI fuzzing for Hardy's `cargo-fuzz` targets, via [ClusterFuzzLite](ht
 
 ## Files
 
-- `Dockerfile` — OSS-Fuzz `base-builder-rust` + `protobuf-compiler`; copies the tree (including `patches/`) to `$SRC/hardy`.
+- `Dockerfile` — OSS-Fuzz `base-builder-rust`; copies the tree (including `patches/`) to `$SRC/hardy`.
 - `build.sh` — builds all five fuzz crates and copies the eight target binaries into `$OUT`. Sets `RUSTUP_TOOLCHAIN=nightly` so the container's nightly is used despite the repo's `stable` pin in `rust-toolchain.toml` (which is left untouched).
 
 Workflows: `.github/workflows/cflite-pr.yml` (per-PR `code-change`, 5 min) and `.github/workflows/cflite-cron.yml` (nightly `batch`, 15 min/target).
