@@ -45,7 +45,7 @@ pub enum DispatchAction {
 
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
-    table: Mutex<Arc<RouteTable>>,
+    table: Mutex<RouteTable>,
     address_types: spin::Mutex<HashMap<ClaAddressType, Arc<Cla>>>,
     agents: spin::Mutex<HashMap<String, Arc<dyn RoutingAgent>>>,
     node_ids: Arc<NodeIds>,
@@ -94,9 +94,9 @@ impl Rib {
     const SERVICES_NAME: &str = "services";
 
     fn new(node_ids: Arc<NodeIds>, store: Arc<Store>, service_priority: u32) -> Self {
-        let table = Arc::new(RouteTable::new(node_ids.clone()));
+        let table = RouteTable::new(node_ids.clone());
         Self {
-            snapshot: ArcSwap::from(table.clone()),
+            snapshot: ArcSwap::from_pointee(table.clone()),
             table: Mutex::new(table),
             address_types: Default::default(),
             agents: Default::default(),
@@ -209,11 +209,9 @@ impl Rib {
         let pattern = self.expand_pattern(pattern);
         let action = self.expand_action(action);
 
-        // Arc::make_mut clones the RouteTable into a private copy (the
-        // snapshot ArcSwap co-owns the Arc, so strong_count >= 2). The
-        // mutation is invisible to readers until store() publishes it.
-        // Full-table clone is acceptable here: route mutations are
-        // management-plane, not per-bundle.
+        // Mutate the authoritative table in place, then publish a clone
+        // to the snapshot for readers. The deep copy is acceptable here:
+        // route mutations are management-plane, not per-bundle.
         let vias = {
             let mut table = self.table.lock();
 
@@ -221,12 +219,12 @@ impl Rib {
                 action: action.clone(),
                 source: source.clone(),
             };
-            if !Arc::make_mut(&mut table).insert(pattern.clone(), entry, priority)? {
+            if !table.insert(pattern.clone(), entry, priority)? {
                 return Ok(false);
             }
 
             let vias = table.impacted_vias(&pattern, priority);
-            self.snapshot.store(table.clone());
+            self.snapshot.store(Arc::new(table.clone()));
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
             metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
@@ -273,11 +271,11 @@ impl Rib {
                 action: action.clone(),
                 source: source.to_string(),
             };
-            if !Arc::make_mut(&mut table).remove(&pattern, &entry, priority) {
+            if !table.remove(&pattern, &entry, priority) {
                 return false;
             }
 
-            self.snapshot.store(table.clone());
+            self.snapshot.store(Arc::new(table.clone()));
         }
 
         debug!("Removed route {pattern} => {action}, priority {priority}, source '{source}'");
@@ -307,8 +305,8 @@ impl Rib {
     pub async fn remove_by_source(&self, source: &str) {
         let (vias, forward_peers, has_local, removed_count) = {
             let mut table = self.table.lock();
-            let result = Arc::make_mut(&mut table).remove_by_source(source);
-            self.snapshot.store(table.clone());
+            let result = table.remove_by_source(source);
+            self.snapshot.store(Arc::new(table.clone()));
             result
         };
 
@@ -514,10 +512,8 @@ mod tests {
             source: source.to_string(),
         };
         let mut table = rib.table.lock();
-        Arc::make_mut(&mut table)
-            .insert(pattern, entry, priority)
-            .unwrap();
-        rib.snapshot.store(table.clone());
+        table.insert(pattern, entry, priority).unwrap();
+        rib.snapshot.store(Arc::new(table.clone()));
     }
 
     fn add_local_forward(rib: &Rib, node_id: NodeId, peer: u32) {
