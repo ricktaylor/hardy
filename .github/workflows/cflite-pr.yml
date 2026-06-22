@@ -42,5 +42,5 @@ jobs:
           sanitizer: ${{ matrix.sanitizer }}
           output-sarif: false
           # PR runs start from the corpus accumulated by batch fuzzing.
-          storage-repo: https://${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
+          storage-repo: https://${{ secrets.FUZZ_CORPUS_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
           storage-repo-branch: main

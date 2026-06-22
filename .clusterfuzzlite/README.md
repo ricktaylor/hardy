@@ -34,7 +34,7 @@ cargo +nightly fuzz run --fuzz-dir bpv7/fuzz random_bundles
 
 Corpus lives in a sibling repo, [`ricktaylor/hardy-fuzz-corpus`](https://github.com/ricktaylor/hardy-fuzz-corpus). CFLite's git filestore reads/writes each fuzzer's corpus under `corpus/<fuzz_target>/`, and publishes coverage reports to the `gh-pages` branch — both wired up in `cflite-pr.yml` (PR runs start from the accumulated corpus) and `cflite-cron.yml` (batch grows it, prune minimises it, coverage reports on it).
 
-**One secret is required:** add a `PERSONAL_ACCESS_TOKEN` repo secret to the hardy repo, holding a token with `contents: write` on `hardy-fuzz-corpus`. Without it the storage-repo URL won't authenticate and the runs can't push.
+**One secret is required:** add a `FUZZ_CORPUS_ACCESS_TOKEN` repo secret to the hardy repo, holding a token with `contents: write` on `hardy-fuzz-corpus`. Without it the storage-repo URL won't authenticate and the runs can't push.
 
 The repo was seeded once from local fuzzing (the `corpus/<target>/` directories); CFLite's `prune` mode minimises it from there. To re-seed or top up later, copy any `*/fuzz/corpus/<target>/` into `corpus/<target>/` of the corpus repo and push.
 
@@ -43,9 +43,8 @@ Coverage reports (once `gh-pages` is enabled on the corpus repo):
 
 ## Validating the setup
 
-This config has not yet had a CI run. After the `PERSONAL_ACCESS_TOKEN` secret is set, trigger `ClusterFuzzLite Cron` via *Run workflow* (`workflow_dispatch`), then check:
+This config has not yet had a CI run. After the `FUZZ_CORPUS_ACCESS_TOKEN` secret is set, trigger `ClusterFuzzLite Cron` via *Run workflow* (`workflow_dispatch`), then check:
 
 - **Binary discovery in `build.sh`** — the `find … release/<target>` copy step. If cargo-fuzz emits to a per-fuzz-dir target directory rather than the workspace target, the path glob needs narrowing. Most likely thing to need a tweak.
 - **`cargo fuzz --fuzz-dir`** enumeration in `build.sh` — the awk parse of `[[bin]]` names is the proven fallback if the flag misbehaves.
 - **The coverage build** — `sanitizer: coverage` (`-s none` in `build.sh`) plus the harness's coverage flags.
-- **`protoc`** — installed defensively; can be dropped from the `Dockerfile` if no fuzz target's dependency graph needs it.
