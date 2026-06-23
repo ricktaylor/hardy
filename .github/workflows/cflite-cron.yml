@@ -11,66 +11,36 @@ env:
   STORAGE_REPO: https://${{ secrets.FUZZ_CORPUS_ACCESS_TOKEN }}@github.com/ricktaylor/hardy-fuzz-corpus.git
 
 jobs:
-  Batch:
+  Fuzz:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # batch and prune both push the corpus `main` branch, so run the modes
+      # one at a time to avoid racing pushes to hardy-fuzz-corpus.
+      max-parallel: 1
       matrix:
-        sanitizer: [address]
+        include:
+          # Grow the corpus.
+          - { mode: batch, sanitizer: address, fuzz-seconds: 900 }
+          # Minimise it (required whenever batch fuzzing runs).
+          - { mode: prune, sanitizer: address, fuzz-seconds: 600 }
+          # Publish per-fuzzer line-coverage reports to the gh-pages branch:
+          # https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/linux/report.html
+          - { mode: coverage, sanitizer: coverage, fuzz-seconds: 600 }
     steps:
-      - name: Build Fuzzers (${{ matrix.sanitizer }})
+      - name: Build Fuzzers (${{ matrix.mode }})
         uses: google/clusterfuzzlite/actions/build_fuzzers@v1
         with:
           language: rust
           sanitizer: ${{ matrix.sanitizer }}
 
-      - name: Run Fuzzers (${{ matrix.sanitizer }})
+      - name: Run Fuzzers (${{ matrix.mode }})
         uses: google/clusterfuzzlite/actions/run_fuzzers@v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 900
-          mode: "batch"
+          fuzz-seconds: ${{ matrix.fuzz-seconds }}
+          mode: ${{ matrix.mode }}
           sanitizer: ${{ matrix.sanitizer }}
-          storage-repo: ${{ env.STORAGE_REPO }}
-          storage-repo-branch: main
-
-  # Minimises the corpus stored in the corpus repo (removes inputs that add no
-  # coverage). Required whenever batch fuzzing runs.
-  Prune:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build Fuzzers
-        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
-        with:
-          language: rust
-
-      - name: Run Fuzzers (prune)
-        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
-          mode: "prune"
-          storage-repo: ${{ env.STORAGE_REPO }}
-          storage-repo-branch: main
-
-  # Publishes per-fuzzer line-coverage reports to the corpus repo's gh-pages
-  # branch: https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/linux/report.html
-  Coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Build Fuzzers (coverage)
-        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
-        with:
-          language: rust
-          sanitizer: coverage
-
-      - name: Run Fuzzers (coverage)
-        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
-          mode: "coverage"
-          sanitizer: coverage
           storage-repo: ${{ env.STORAGE_REPO }}
           storage-repo-branch: main
           storage-repo-branch-coverage: gh-pages
