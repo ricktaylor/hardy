@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-postgres-storage` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-PG-01`](test_plan.md), [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 

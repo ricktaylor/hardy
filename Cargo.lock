@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-async"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "flume",
@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpa"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "base64",
@@ -1872,7 +1872,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpa-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpv7"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-bpv7-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-cbor"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "half",
  "hex-literal",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-echo-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hardy-async",
  "hardy-bpa",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-eid-patterns"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "glob",
  "hardy-bpv7",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-file-cla"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flume",
  "hardy-async",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-ipn-legacy-filter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-localdisk-storage"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "directories",
  "flume",
@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-otel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dashmap",
  "metrics",
@@ -2089,7 +2089,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-postgres-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hardy-async",
  "hardy-bpa",
@@ -2125,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-s3-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-sqlite-storage"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "directories",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-tcpclv4"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "hardy-async",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-tcpclv4-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "caps",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "hardy-tvr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chumsky",

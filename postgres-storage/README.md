@@ -10,7 +10,7 @@ PostgreSQL with connection pooling and automatic schema migration via sqlx.
 
 ```toml
 [dependencies]
-hardy-postgres-storage = "0.1"
+hardy-postgres-storage = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-postgres-storage).
@@ -19,6 +19,7 @@ Published on [crates.io](https://crates.io/crates/hardy-postgres-storage).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#postgresql)
 
 ## Licence

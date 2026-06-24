@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tcpclv4-server` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-TCPCL-SERVER-01`](test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -65,9 +65,18 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-tcpclv4-server --lcov --output-path lcov.info
 lcov --summary lcov.info
+```
+
+Results (2026-06-24):
+
+```
+  lines......: 70.9% (180 of 254 lines)
+  functions..: 61.1% (22 of 36 functions)
 ```
 
 Unit tests (16) exercise config loading, multi-format parsing, env override, validation, and error handling.

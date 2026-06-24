@@ -19,13 +19,13 @@ instrument = ["hardy-bpa/instrument","hardy-sqlite-storage?/instrument","hardy-l
 [dependencies]
 libfuzzer-sys = "0.4"
 hardy-otel = { version = "0.1", path = "../../otel" }
-hardy-async = { version = "0.1", path = "../../async" }
-hardy-bpv7 = { version = "0.5", path = "../../bpv7" }
+hardy-async = { version = "0.2", path = "../../async" }
+hardy-bpv7 = { version = "0.6", path = "../../bpv7" }
 hardy-bpa = { path = ".." }
-hardy-postgres-storage = { version = "0.1", path = "../../postgres-storage", optional = true }
-hardy-sqlite-storage = { version = "0.5", path = "../../sqlite-storage", optional = true }
-hardy-localdisk-storage = { version = "0.5", path = "../../localdisk-storage", optional = true }
-hardy-file-cla = { version = "0.1", path = "../../file-cla", optional = true }
+hardy-postgres-storage = { version = "0.2", path = "../../postgres-storage", optional = true }
+hardy-sqlite-storage = { version = "0.6", path = "../../sqlite-storage", optional = true }
+hardy-localdisk-storage = { version = "0.6", path = "../../localdisk-storage", optional = true }
+hardy-file-cla = { version = "0.2", path = "../../file-cla", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 time = { version = "0.3", features = ["parsing"] }
 tracing = { version = "0.1", default-features = false }

@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tcpclv4` |
+| **Crate version** | `0.4.0` |
 | **Standard** | RFC 9174 — Delay-Tolerant Networking TCP Convergence-Layer Protocol Version 4 |
 | **Test Plans** | [`PLAN-TCPCL-01`](component_test_plan.md), [`FUZZ-TCPCL-01`](fuzz_test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -107,14 +107,16 @@ Target B (structured service logic fuzzing) was deprecated in v1.1 of the fuzz p
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-tcpclv4 --lcov --output-path lcov.info --html
 lcov --summary lcov.info
 ```
 
 ```
-  lines......: 25.0% (593 of 2374 lines)
-  functions..: 24.3% (55 of 226 functions)
+  lines......: 24.7% (604 of 2443 lines)
+  functions..: 24.2% (55 of 227 functions)
 ```
 
 Unit tests cover the codec (encode/decode), negotiation logic, and segmentation calculations. The remaining 75% is session management, connection handling, TLS, and listener code which requires live TCP connections — this is exercised by interop tests (4 implementations) and fuzz targets (2 targets), both of which run out-of-process and are not captured by `llvm-cov`.
@@ -131,14 +133,14 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/active/lcov.info
 ```
 
-Results (2026-04-14):
+Results (2026-06-24):
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- |
-| `passive` | 48.5% (1003/2066) | 7.2% (21/293) |
-| `active` | 47.5% (981/2066) | 21.4% (92/429) |
+| `passive` | 49.1% (1048/2135) | 32.2% (94/292) |
+| `active` | 48.1% (1028/2135) | 21.3% (91/428) |
 
-Both targets achieve similar coverage (~48%) as they now exercise the full session paths. The `passive` target (listener acceptance) and `active` target (connector session) are complementary. Combined with unit tests (25.0%), the crate has broad coverage across codec, negotiation, and session management.
+Both targets achieve similar coverage (~48%) as they now exercise the full session paths. The `passive` target (listener acceptance) and `active` target (connector session) are complementary. Combined with unit tests (24.7%), the crate has broad coverage across codec, negotiation, and session management.
 
 ## 5. Test Infrastructure
 

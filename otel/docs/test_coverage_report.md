@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-otel` |
+| **Crate version** | `0.1.1` |
 | **Standard** | OpenTelemetry Specification v1.x |
 | **Test Plans** | [`UTP-OTEL-01`](unit_test_plan.md), [`COMP-OTEL-01`](component_test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -77,16 +77,18 @@ Uses a minimal OpenTelemetry Collector (contrib image) with file exporters. Test
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-otel --lcov --output-path lcov.info --html
 lcov --summary lcov.info
 ```
 
-Results (2026-04-14):
+Results (2026-06-24):
 
 ```
-  lines......: 81.4% (439 of 539 lines)
-  functions..: 54.2% (64 of 118 functions)
+  lines......: 78.7% (439 of 558 lines)
+  functions..: 53.3% (64 of 120 functions)
 ```
 
 Per-file breakdown (from HTML report):

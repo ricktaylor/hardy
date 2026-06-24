@@ -78,6 +78,7 @@ EOF
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Reference](docs/api_reference.md) (generated)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/tvr/)
 

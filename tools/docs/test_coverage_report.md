@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tools` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-TOOLS-01`](test_plan.md), [`COMP-BPV7-CLI-01`](../../bpv7/docs/component_test_plan.md), [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md) |
-| **Date** | 2026-04-13 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 

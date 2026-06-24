@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-file-cla = "0.1"
+hardy-file-cla = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-file-cla).
@@ -22,6 +22,7 @@ This is useful for testing, bridging air-gapped networks via removable media, or
 ## Documentation
 
 - [Design](docs/design.md)
+- [Changelog](CHANGELOG.md)
 
 ## Licence
 

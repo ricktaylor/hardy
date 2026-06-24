@@ -11,7 +11,7 @@ other S3-compatible stores via configurable endpoint URL and path-style addressi
 
 ```toml
 [dependencies]
-hardy-s3-storage = "0.1"
+hardy-s3-storage = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-s3-storage).
@@ -20,6 +20,7 @@ Published on [crates.io](https://crates.io/crates/hardy-s3-storage).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#amazon-s3)
 
 ## Licence

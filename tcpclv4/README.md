@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-tcpclv4 = "0.3"
+hardy-tcpclv4 = "0.4"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-tcpclv4).
@@ -53,6 +53,7 @@ cla.unregister().await;
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Documentation](https://docs.rs/hardy-tcpclv4)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/convergence-layers/)
 

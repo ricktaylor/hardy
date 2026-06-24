@@ -11,7 +11,7 @@ Peer selection is driven by configurable EID patterns.
 
 ```toml
 [dependencies]
-hardy-ipn-legacy-filter = "0.1"
+hardy-ipn-legacy-filter = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-ipn-legacy-filter).
@@ -20,6 +20,7 @@ Published on [crates.io](https://crates.io/crates/hardy-ipn-legacy-filter).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 
 ## Licence
 

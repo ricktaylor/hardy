@@ -1,6 +1,6 @@
 [package]
 name = "hardy-localdisk-storage"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -22,7 +22,7 @@ serde = ["dep:serde","hardy-bpa/serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-bpa = { version = "0.1", path = "../bpa" }
+hardy-bpa = { version = "0.2", path = "../bpa" }
 tokio = { version = "1", features = ["fs"] }
 rand = "0.10"
 directories = "6"

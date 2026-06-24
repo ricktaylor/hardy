@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-sqlite-storage` |
+| **Crate version** | `0.6.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-SQLITE-01`](test_plan.md), [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
-| **Date** | 2026-04-14 (updated) |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -57,14 +57,16 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-sqlite-storage --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
 ```
-  lines......: 70.9% (438 of 618 lines)
-  functions..: 68.3% (71 of 104 functions)
+  lines......: 71.2% (444 of 624 lines)
+  functions..: 69.2% (74 of 107 functions)
 ```
 
 Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The uncovered lines are in the `MetadataStorage` trait implementation (poll methods, recovery protocol) which are exercised by the generic storage harness in a separate crate.

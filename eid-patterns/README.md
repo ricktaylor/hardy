@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-eid-patterns = "0.3"
+hardy-eid-patterns = "0.4"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-eid-patterns).
@@ -62,6 +62,7 @@ assert!(narrow.is_subset(&broad));
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Documentation](https://docs.rs/hardy-eid-patterns)
 
 ## Licence

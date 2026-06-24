@@ -26,6 +26,7 @@ docker pull ghcr.io/ricktaylor/hardy/hardy-tcpclv4-server:latest
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/convergence-layers/)
 
 ## Licence

@@ -6,7 +6,9 @@ This guide defines the style and content expectations for per-crate `test_covera
 
 Coverage reports capture the **current state of test verification** against requirements. They answer: "what is tested, how, and what remains?" They are for reviewers assessing compliance and engineers planning test work.
 
-Coverage reports are **living documents** — updated when tests are added, not snapshots frozen in time. The date in the header reflects the last update.
+Coverage reports are **living documents** — updated when tests are added, not snapshots frozen in time; git history is the record of changes.
+
+Since the V-model review gates (TRR/VRR) concluded at v0.1.0, Hardy is in continuous-improvement mode: these reports are maintained alongside the code (git is the history — there is no freeze or "uprev, don't rewrite" ceremony), coverage figures are **generated** by `scripts/run_lcov.sh` rather than hand-embedded, and each report anchors to the crate version it reflects rather than to a review date.
 
 ## What Belongs in Coverage Reports
 
@@ -35,7 +37,6 @@ Every coverage report should follow this structure. Sections may be omitted if g
 | **Module** | `<crate-name>` |
 | **Standard** | <RFC or spec reference, if applicable> |
 | **Test Plans** | [links to unit, component, fuzz test plans] |
-| **Date** | <YYYY-MM-DD of last update> |
 ```
 
 ### Section 1: LLR Coverage Summary (Requirements Verification Matrix)
@@ -90,18 +91,14 @@ A table cross-referencing test plan sections against implementation status:
 
 ### Section 4: Line Coverage
 
-Output from `cargo llvm-cov` / `lcov --summary`:
+Coverage figures are **generated, not hand-embedded.** `scripts/run_lcov.sh` measures every crate and writes the unit and fuzz line/function figures to [`docs/coverage_summary.md`](../coverage_summary.md) (the single source of truth); CI/CFLite publish the live dashboards. Each report's §4 should therefore be a short pointer, not a number dump:
 
-```markdown
-cargo llvm-cov test --package <name> --lcov --output-path lcov.info
-lcov --summary lcov.info
-```
+- **Link to the generated summary** (`docs/coverage_summary.md`) and the live dashboards; don't paste figures that will drift.
+- **Don't hand-maintain per-file breakdown tables** — they go stale fastest. Link to the live HTML coverage if a per-file view is needed.
+- **Note what the numbers exclude**: "unit tests only" or "includes integration tests".
+- **Explain anomalies** in prose (this stays by hand): generic monomorphisation inflating function counts, Display impls at 0%, storage backends verified via the harness, etc.
 
-- **Quote the summary output** in a code block
-- **Provide per-file breakdown** as a table: `File | Covered | Total | Coverage | Notes`
-- **Sort by coverage descending** — readers see strengths first, gaps last
-- **Note what the numbers exclude**: "unit tests only" or "includes integration tests"
-- **Explain anomalies**: generic monomorphisation inflating function counts, Display impls at 0%, etc.
+The underlying measurement (for reference) is `cargo llvm-cov test --package <name> --lcov` + `lcov --summary`, which `run_lcov.sh` runs for you.
 
 If line coverage has not yet been measured, include the command block so the reader can run it:
 

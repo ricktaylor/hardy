@@ -1,7 +1,7 @@
 [package]
 name = "hardy-tcpclv4"
 description = "A TCPCLv4 DTN convergence layer"
-version = "0.3.0"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,9 +21,9 @@ serde = ["dep:serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
-hardy-async = { version = "0.1", path = "../async" }
-hardy-bpa = { version = "0.1", path = "../bpa" }
-hardy-bpv7 = { version = "0.5", path = "../bpv7" }
+hardy-async = { version = "0.2", path = "../async" }
+hardy-bpa = { version = "0.2", path = "../bpa" }
+hardy-bpv7 = { version = "0.6", path = "../bpv7" }
 tracing = { version = "0.1", default-features = false }
 tokio = { version = "1", features = ["macros", "time", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }

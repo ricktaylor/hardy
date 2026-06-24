@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-proto` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`COMP-GRPC-01`](component_test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -108,16 +108,18 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-proto --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-04-14):
+Results (2026-06-24):
 
 ```
-  lines......: 80.4% (1259 of 1566 lines)
-  functions..: 31.3% (377 of 1204 functions)
+  lines......: 80.2% (1267 of 1580 lines)
+  functions..: 47.2% (380 of 805 functions)
 ```
 
 | File | Lines | Coverage |
@@ -164,4 +166,4 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 ## 7. Conclusion
 
-The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1259/1566 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
+The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.2% (1267/1580 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
