@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-proto = "0.1"
+hardy-proto = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-proto).
@@ -92,6 +92,7 @@ For a full gRPC session example (bidirectional streaming), see the [TVR document
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Reference](docs/api_reference.md) (generated)
 
 ## Licence

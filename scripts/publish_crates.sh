@@ -4,9 +4,12 @@
 # Requires: `cargo login` already done.
 #
 # Usage:
-#   ./scripts/publish_crates.sh              # Publish all (skips hardy-cbor, assumed already published)
+#   ./scripts/publish_crates.sh              # Publish all crates in dependency order
 #   ./scripts/publish_crates.sh --dry-run    # Dry run only
 #   ./scripts/publish_crates.sh --from tier3 # Resume from a specific tier
+#
+# Crates already on crates.io at their current version are detected ("already
+# exists") and skipped automatically, so re-running is safe.
 
 set -e
 

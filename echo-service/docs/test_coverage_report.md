@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-echo-service` |
+| **Crate version** | `0.2.0` |
 | **Standard** | [draft-taylor-dtn-echo-service](https://datatracker.ietf.org/doc/draft-taylor-dtn-echo-service/) |
 | **Test Plans** | [`PLAN-ECHO-01`](test_plan.md), [`PLAN-INTEROP-01`](../../tests/interop/docs/test_plan.md) |
-| **Date** | 2026-04-13 |
 
 ## 1. Functional Coverage Summary
 

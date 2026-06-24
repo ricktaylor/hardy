@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-localdisk-storage` |
+| **Crate version** | `0.6.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-LD-01`](test_plan.md), [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) |
-| **Date** | 2026-04-14 (updated) |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -50,17 +50,19 @@ Coverage is measured against [`PLAN-LD-01`](test_plan.md) (backend-specific) and
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-localdisk-storage --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
 ```
-  lines......: 77.1% (216 of 280 lines)
-  functions..: 62.9% (22 of 35 functions)
+  lines......: 71.0% (250 of 352 lines)
+  functions..: 57.1% (28 of 49 functions)
 ```
 
-Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`.
+Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`. The crate has since grown (new `BundleStorage::replace` and `StreamIn`-based result adoption added lines that the unit tests do not yet exercise), so the headline percentage is lower than the previous report despite the larger covered-line count.
 
 ## 5. Conclusion
 

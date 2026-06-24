@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-bpv7` |
+| **Crate version** | `0.6.0` |
 | **Standard** | RFC 9171 — Bundle Protocol Version 7; RFC 9172/9173 — BPSec |
 | **Test Plans** | [`UTP-BPV7-01`](unit_test_plan.md), [`UTP-BPSEC-01`](unit_test_plan_bpsec.md), [`COMP-BPV7-CLI-01`](component_test_plan.md) |
-| **Date** | 2026-04-13 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -77,16 +77,18 @@ All unit test plan scenarios (UTP-BPV7-01, UTP-BPSEC-01) are implemented — no 
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-bpv7 --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-04-14):
+Results (2026-06-24):
 
 ```
-  lines......: 78.5% (4358 of 5549 lines)
-  functions..: 9.1% (468 of 5162 functions)
+  lines......: 77.3% (4425 of 5723 lines)
+  functions..: 18.8% (670 of 3567 functions)
 ```
 
 Per-file breakdown (from HTML report):
@@ -138,11 +140,11 @@ lcov --summary ./fuzz/coverage/eid_str/lcov.info
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- | :--- |
-| `random_bundles` | 25.3% (1078/4269) | 52.1% (294/564) |
-| `eid_cbor` | 3.7% (156/4269) | 4.8% (27/563) |
-| `eid_str` | 2.1% (89/4269) | 2.8% (16/563) |
+| `random_bundles` | 28.2% (1374/4874) | 29.5% (174/589) |
+| `eid_cbor` | 3.8% (185/4874) | 4.4% (26/588) |
+| `eid_str` | 1.8% (89/4874) | 2.7% (16/588) |
 
-The `random_bundles` target provides strong coverage of the parser pipeline, achieving 100% on `bpsec/parse.rs`, 99% on `primary_block.rs`, and 94% on `block.rs`. Combined with unit tests, the parser has comprehensive verification from both known-good (RFC vectors) and adversarial (fuzz) inputs.
+The `random_bundles` target provides strong coverage of the parser pipeline, achieving 100% on `bpsec/parse.rs`, 99% on `primary_block.rs`, and 94% on `block.rs` (per-file figures from a previous detailed run). Combined with unit tests, the parser has comprehensive verification from both known-good (RFC vectors) and adversarial (fuzz) inputs.
 
 ## 6. Key Gaps
 
@@ -159,8 +161,8 @@ All LLRs are verified. Remaining gaps are limited to line coverage in low-value 
 
 The bpv7 crate has **complete LLR coverage** (15/15 verified, 2 N/A) across three test layers:
 
-- **58 unit tests** — 78.5% line coverage, all planned scenarios implemented, no stubs remaining
+- **58 unit tests** — 77.3% line coverage, all planned scenarios implemented, no stubs remaining
 - **26 CLI integration tests** (`bundle_tools_test.sh`) — end-to-end verification of the Builder→Editor→Signer→Encryptor→Validator pipeline through the `bundle` and `cbor` CLI tools
-- **3 fuzz targets** — the `random_bundles` target alone achieves 25.3% line coverage with 100% on `bpsec/parse.rs`, 99% on `primary_block.rs`, and 94% on `block.rs`
+- **3 fuzz targets** — the `random_bundles` target alone achieves 28.2% line coverage with 100% on `bpsec/parse.rs`, 99% on `primary_block.rs`, and 94% on `block.rs`
 
 Unit tests and fuzz coverage are complementary: unit tests verify correctness against RFC vectors and known edge cases; fuzz verifies robustness against adversarial input. Combined, the parser pipeline (`parse.rs`, `primary_block.rs`, `block.rs`, `bpsec/parse.rs`) has near-complete coverage from both directions. Remaining line coverage gaps are in conversion/display impls and the editor (exercised by consuming crates and CLI tests). The 17 component test plan scenarios not yet in the CLI script are all already verified by unit tests.

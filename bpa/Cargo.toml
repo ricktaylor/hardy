@@ -1,6 +1,6 @@
 [package]
 name = "hardy-bpa"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -38,10 +38,10 @@ path = "src/lib.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-hardy-async = { version = "0.1", path = "../async", default-features = false }
-hardy-bpv7 = { version = "0.5", path = "../bpv7", default-features = false }
-hardy-cbor = { version = "1", path = "../cbor" }
-hardy-eid-patterns = { version = "0.3", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
+hardy-async = { version = "0.2", path = "../async", default-features = false }
+hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
+hardy-cbor = { version = "2", path = "../cbor" }
+hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
 time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }
 bytes = "1"
 tracing = { version = "0.1", default-features = false }

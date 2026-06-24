@@ -11,7 +11,7 @@ originator. Used by `bp ping` and interoperability testing.
 
 ```toml
 [dependencies]
-hardy-echo-service = "0.1"
+hardy-echo-service = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-echo-service).
@@ -20,6 +20,7 @@ Published on [crates.io](https://crates.io/crates/hardy-echo-service).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 
 ## Licence
 

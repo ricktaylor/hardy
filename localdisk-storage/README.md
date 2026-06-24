@@ -10,7 +10,7 @@ Configurable store directory (platform-aware defaults) and optional fsync for du
 
 ```toml
 [dependencies]
-hardy-localdisk-storage = "0.5"
+hardy-localdisk-storage = "0.6"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-localdisk-storage).
@@ -19,6 +19,7 @@ Published on [crates.io](https://crates.io/crates/hardy-localdisk-storage).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#local-disk)
 
 ## Licence

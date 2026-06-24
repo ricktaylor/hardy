@@ -1,6 +1,6 @@
 [package]
 name = "hardy-tcpclv4-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone TCPCLv4 Server executable"
 edition.workspace = true
 rust-version.workspace = true
@@ -19,10 +19,10 @@ instrument = [
 ]
 
 [dependencies]
-hardy-tcpclv4 = { version = "0.3", path = "../tcpclv4", features = ["serde"] }
-hardy-bpa = { version = "0.1", path = "../bpa" }
-hardy-proto = { version = "0.1", path = "../proto" }
-hardy-async = { version = "0.1", path = "../async" }
+hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", features = ["serde"] }
+hardy-bpa = { version = "0.2", path = "../bpa" }
+hardy-proto = { version = "0.2", path = "../proto" }
+hardy-async = { version = "0.2", path = "../async" }
 hardy-otel = { version = "0.1", path = "../otel", optional = true }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

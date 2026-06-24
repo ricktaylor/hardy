@@ -3,7 +3,6 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Project** | Hardy DTN Router |
-| **Date** | 2026-05-12 |
 
 ## 1. Introduction
 

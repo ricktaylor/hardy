@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-tvr` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`UTP-TVR-01`](unit_test_plan.md), [`COMP-TVR-01`](component_test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -201,15 +201,17 @@ Implemented in [`tests/test_tvr.sh`](../tests/test_tvr.sh). Requires built binar
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-tvr --lcov --output-path lcov.info --html
 ```
 
-Results (2026-04-14, 141 tests passed):
+Results (2026-06-24):
 
 ```
-  lines......: 77.2% (2206 of 2856 lines)
-  functions..: 78.4% (273 of 348 functions)
+  lines......: 78.1% (2203 of 2821 lines)
+  functions..: 78.8% (272 of 345 functions)
 ```
 
 | File | Lines | Coverage |
@@ -250,4 +252,4 @@ Six of twelve gRPC session scenarios are tested via `grpcurl` in `test_tvr.sh`. 
 
 ## 6. Conclusion
 
-The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 151/157 scenarios (96%), 77.2% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.
+The TVR crate has comprehensive test coverage: cron engine (43 tests), contact plan parser (42 tests), scheduler (18 tests), proto conversion (24 tests), and configuration loading (14 tests) are all fully covered at the unit level. The gRPC session protocol is verified by 6 `grpcurl`-based component tests covering open, add, close cleanup, duplicate name rejection, missing open, and name reuse. System integration is verified by 4 end-to-end tests using `bp ping`. Overall coverage is 151/157 scenarios (96%), 78.1% line coverage, with only 3 low-risk deferred gRPC scenarios remaining.

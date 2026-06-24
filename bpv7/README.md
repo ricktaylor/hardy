@@ -9,7 +9,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-bpv7 = "0.5"
+hardy-bpv7 = "0.6"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-bpv7).
@@ -97,6 +97,7 @@ for targets not supported out of the box.
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Documentation](https://docs.rs/hardy-bpv7)
 
 ## Licence

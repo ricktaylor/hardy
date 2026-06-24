@@ -10,7 +10,7 @@ forwarding state in a local SQLite database with automatic schema migration.
 
 ```toml
 [dependencies]
-hardy-sqlite-storage = "0.5"
+hardy-sqlite-storage = "0.6"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-sqlite-storage).
@@ -19,6 +19,7 @@ Published on [crates.io](https://crates.io/crates/hardy-sqlite-storage).
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/configuration/storage/#sqlite)
 
 ## Licence

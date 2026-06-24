@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-async = "0.1"
+hardy-async = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-async).
@@ -80,6 +80,7 @@ pool.shutdown().await;
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Documentation](https://docs.rs/hardy-async)
 
 ## Licence

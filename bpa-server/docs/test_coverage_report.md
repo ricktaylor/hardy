@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-bpa-server` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-SERVER-01`](test_plan.md) |
-| **Date** | 2026-04-14 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -89,9 +89,18 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-bpa-server --lcov --output-path lcov.info
 lcov --summary lcov.info
+```
+
+Results (2026-06-24):
+
+```
+  lines......: 72.5% (1011 of 1394 lines)
+  functions..: 72.0% (134 of 186 functions)
 ```
 
 Unit tests (36) exercise configuration loading, validation, and static routes parsing.

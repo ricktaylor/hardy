@@ -74,6 +74,7 @@ bp ping -v=debug ipn:2.0 192.168.1.10:4556
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [User Documentation](https://ricktaylor.github.io/hardy/operations/tools/)
 
 ## Licence

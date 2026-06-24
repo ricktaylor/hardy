@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-async` |
+| **Crate version** | `0.2.0` |
 | **Standard** | N/A -- internal infrastructure |
 | **Test Plans** | [`UTP-ASYNC-01`](unit_test_plan.md) |
-| **Date** | 2026-04-13 |
 
 ## 1. Functional Coverage Summary
 
@@ -107,16 +107,18 @@ Cross-reference against [`UTP-ASYNC-01`](unit_test_plan.md):
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-async --lcov --output-path lcov.info --html
 lcov --summary lcov.info
 ```
 
-Results (2026-04-13, from workspace-wide run):
+Results (2026-06-24, from workspace-wide run):
 
 ```
-  lines......: 85.6% (379 of 443 lines)
-  functions..: 11.5% (97 of 841 functions)
+  lines......: 84.6% (534 of 631 lines)
+  functions..: 14.7% (139 of 945 functions)
 ```
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation.
@@ -155,4 +157,4 @@ Tests use straightforward inline `#[test]` and `#[tokio::test]` modules within t
 
 ## 7. Conclusion
 
-The `hardy-async` crate has 24 unit tests with 85.6% line coverage (379/443 lines). Core modules are well-covered: `bounded_task_pool.rs` (97%), `sync/mod.rs` (97%), `sync/spin.rs` (90%), `task_pool.rs` (87%). The untested modules (`notify.rs`, `signal.rs`, `time.rs`) are thin wrappers over tokio primitives exercised at the system level by consuming crates. The primary strength is thorough verification of the shutdown and concurrency-limiting semantics that are critical to Hardy's graceful shutdown behaviour.
+The `hardy-async` crate has 24 unit tests with 84.6% line coverage (534/631 lines). Core modules are well-covered: `bounded_task_pool.rs` (97%), `sync/mod.rs` (97%), `sync/spin.rs` (90%), `task_pool.rs` (87%) (per-module figures from a previous detailed run). The untested modules (`notify.rs`, `signal.rs`, `time.rs`) are thin wrappers over tokio primitives exercised at the system level by consuming crates. The primary strength is thorough verification of the shutdown and concurrency-limiting semantics that are critical to Hardy's graceful shutdown behaviour.

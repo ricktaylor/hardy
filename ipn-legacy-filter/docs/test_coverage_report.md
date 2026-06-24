@@ -3,9 +3,9 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-ipn-legacy-filter` |
+| **Crate version** | `0.2.0` |
 | **Standard** | — |
 | **Test Plans** | [`PLAN-IPNF-01`](unit_test_plan.md) |
-| **Date** | 2026-04-13 |
 
 ## 1. LLR Coverage Summary (Requirements Verification Matrix)
 
@@ -51,14 +51,16 @@ Coverage is measured against [`PLAN-IPNF-01`](unit_test_plan.md).
 
 ## 4. Line Coverage
 
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+
 ```
 cargo llvm-cov test --package hardy-ipn-legacy-filter --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
 ```
-  lines......: 98.0% (98 of 100 lines)
-  functions..: 100.0% (20 of 20 functions)
+  lines......: 97.9% (93 of 95 lines)
+  functions..: 100.0% (21 of 21 functions)
 ```
 
 Unit tests (7) exercise pattern matching, EID rewriting, no-op paths, and configuration. The 2 uncovered lines are in the `WriteFilter` trait wiring (async trait boilerplate).

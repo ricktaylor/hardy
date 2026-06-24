@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-cbor = "1"
+hardy-cbor = "2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-cbor).
@@ -71,6 +71,7 @@ let ((), len) = decode::parse_value(bytes, |value, shortest, tags| {
 
 - [Design](docs/design.md)
 - [Test Coverage](docs/test_coverage_report.md)
+- [Changelog](CHANGELOG.md)
 - [API Documentation](https://docs.rs/hardy-cbor)
 
 ## Licence
