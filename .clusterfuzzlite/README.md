@@ -39,7 +39,7 @@ Corpus lives in a sibling repo, [`ricktaylor/hardy-fuzz-corpus`](https://github.
 The repo was seeded once from local fuzzing (the `corpus/<target>/` directories); CFLite's `prune` mode minimises it from there. To re-seed or top up later, copy any `*/fuzz/corpus/<target>/` into `corpus/<target>/` of the corpus repo and push.
 
 Coverage reports (once `gh-pages` is enabled on the corpus repo):
-`https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/linux/report.html`
+`https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/index.html`
 
 ## Validating the setup
 

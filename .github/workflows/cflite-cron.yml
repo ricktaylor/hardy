@@ -25,7 +25,7 @@ jobs:
           # Minimise it (required whenever batch fuzzing runs).
           - { mode: prune, sanitizer: address, fuzz-seconds: 600 }
           # Publish per-fuzzer line-coverage reports to the gh-pages branch:
-          # https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/linux/report.html
+          # https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest/report/index.html
           - { mode: coverage, sanitizer: coverage, fuzz-seconds: 600 }
     steps:
       - name: Build Fuzzers (${{ matrix.mode }})
