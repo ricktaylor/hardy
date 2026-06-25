@@ -292,7 +292,10 @@ status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
 
 [built-in-services]
-echo = [7, 8]
+# Hardy's echo just reflects, so it only needs the service number cFS actually
+# sends to: cFS Channel 0's DestEID is hardcoded to ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM
+# (see docker/Dockerfile). 7/8 were spurious — cFS never targets ipn:1.7 or ipn:1.8.
+echo = [$HARDY_SERVICE_NUM]
 
 [storage.metadata]
 type = "memory"
