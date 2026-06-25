@@ -17,10 +17,16 @@
 ##############################################
 FROM ubuntu:22.04 AS builder
 
-ARG CFS_REF=v7.0.1
+# Pinned to the versions the interop test was validated against (passing 20/20).
+# The cFS framework and cf are pinned to their main state from that window: the
+# later v7.0.1 tags (both May 2026) postdate it and are incompatible with BPNode/
+# bplib v7.0.5, which were validated against the earlier framework. cFS's working
+# main commit is untagged (a CI/doc commit past v7.0.0 that also bumps the cfe
+# submodule), so it is a SHA, checked out below; cf's working main is exactly v7.0.0.
+ARG CFS_REF=83c735e469e96537b289a50574781abe113c1230
 ARG BPNODE_REF=v7.0.5
 ARG BPLIB_REF=v7.0.5
-ARG CF_REF=v7.0.1
+ARG CF_REF=v7.0.0
 ARG TINYCBOR_REF=v0.6.0
 ARG CORES=4
 
@@ -42,9 +48,13 @@ WORKDIR /build
 # CFS_APP_PATH tells cFS CMake where to find app/lib sources
 ENV CFS_APP_PATH=/build/src
 
-# Clone cFS framework (with submodules: cFE, OSAL, PSP, sample_defs)
-RUN git clone --depth 1 --branch ${CFS_REF} --recurse-submodules \
-        https://github.com/nasa/cFS.git cfs-bundle
+# Clone cFS framework (with submodules: cFE, OSAL, PSP, sample_defs).
+# CFS_REF is an untagged main commit, so check it out explicitly — `--branch` only
+# accepts refs, not SHAs — then init submodules at exactly that commit.
+RUN git clone https://github.com/nasa/cFS.git cfs-bundle && \
+    cd cfs-bundle && \
+    git checkout ${CFS_REF} && \
+    git submodule update --init --recursive
 
 # Clone BPNode (directory name must match module name for cFS CMake discovery)
 RUN git clone --depth 1 --branch ${BPNODE_REF} \
