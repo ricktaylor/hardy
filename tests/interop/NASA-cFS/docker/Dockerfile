@@ -17,10 +17,10 @@
 ##############################################
 FROM ubuntu:22.04 AS builder
 
-ARG CFS_REF=main
-ARG BPNODE_REF=main
-ARG BPLIB_REF=main
-ARG CF_REF=main
+ARG CFS_REF=v7.0.1
+ARG BPNODE_REF=v7.0.5
+ARG BPLIB_REF=v7.0.5
+ARG CF_REF=v7.0.1
 ARG TINYCBOR_REF=v0.6.0
 ARG CORES=4
 
@@ -57,6 +57,13 @@ RUN git clone --depth 1 --branch ${BPLIB_REF} \
 # Clone CF (CFDP — required by build config)
 RUN git clone --depth 1 --branch ${CF_REF} \
         https://github.com/nasa/cf.git src/cf
+
+# Record the BP-relevant component versions (closest tag to HEAD; sha for shallow branch clones)
+RUN { printf 'cFS=%s bpnode=%s bplib=%s' \
+        "$(cd cfs-bundle && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })" \
+        "$(cd src/bpnode && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })" \
+        "$(cd src/bplib && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })"; \
+    } > /interop-version
 
 # Build and install TinyCBOR
 RUN git clone --depth 1 --branch ${TINYCBOR_REF} \
@@ -184,6 +191,7 @@ COPY --from=builder /build/exe /opt/cfs
 
 # Copy the host utilities (cmdUtil etc.)
 COPY --from=builder /build/exe/host /opt/cfs/host
+COPY --from=builder /interop-version /interop-version
 
 # Copy startup script to a known location
 COPY cfs-config/cfe_es_startup.scr /opt/cfs/cfe_es_startup.scr

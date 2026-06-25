@@ -43,11 +43,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -145,7 +150,10 @@ fi
 # Build or check for HDTN
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for hdtn-interop Docker image..."
-    if ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing hdtn-interop image (--no-cache)..."
+        docker build --no-cache -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
         log_info "Building hdtn-interop Docker image (this may take a while)..."
         docker build -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
     else

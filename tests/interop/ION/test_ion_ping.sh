@@ -48,11 +48,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -154,7 +159,10 @@ fi
 # Build or check for ION
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for ion-interop Docker image..."
-    if ! docker image inspect "$ION_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing ion-interop image (--no-cache)..."
+        docker build --no-cache -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$ION_IMAGE" &>/dev/null; then
         log_info "Building ion-interop Docker image (this may take a while)..."
         docker build -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
     else
