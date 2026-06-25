@@ -29,31 +29,37 @@ CFS_PID=$!
 
 sleep 5
 
-# BPNode commands via CI_LAB (UDP port 1234)
-CMDUTIL="/opt/cfs/host/cmdUtil --port 1234 --endian=LE --pktid=0x1838"
+# BPNode commands via CI_LAB (UDP port 1234).
+# cFS renamed the command sender cmdUtil -> cmd_send in v7.0.1; accept either,
+# and fail loudly if neither is present. A silent miss here means no setup
+# commands -> no contact -> no STCP listener, which is exactly how the v7.0.1
+# rename masqueraded as a "cFS did not start listening" failure.
+CMD_SEND="$(command -v cmd_send || command -v cmdUtil)" \
+    || { echo "ERROR: neither cmd_send nor cmdUtil found in PATH" >&2; exit 1; }
+CMDUTIL="$CMD_SEND --port 1234 --endian=LE --pktid=0x1838"
 
 # Channel 0 is auto-added and auto-started during init, but the auto-start
 # does not activate SB subscriptions.  Stop it, then restart so the ADU
 # proxy table (including the echo_app subscription) takes full effect.
 echo "Adding BPNode application for channel 1..."
-$CMDUTIL --cmdcode=14 --uint32=1 2>/dev/null || true
+$CMDUTIL --cmdcode=14 --uint32=1 || true
 sleep 1
 
 echo "Stopping auto-started Channel 0..."
-$CMDUTIL --cmdcode=18 --uint32=0 2>/dev/null || true
+$CMDUTIL --cmdcode=18 --uint32=0 || true
 sleep 1
 
 echo "Starting BPNode applications..."
-$CMDUTIL --cmdcode=17 --uint32=0 2>/dev/null || true
-$CMDUTIL --cmdcode=17 --uint32=1 2>/dev/null || true
+$CMDUTIL --cmdcode=17 --uint32=0 || true
+$CMDUTIL --cmdcode=17 --uint32=1 || true
 sleep 1
 
 echo "Setting up BPNode contact 0..."
-$CMDUTIL --cmdcode=29 --uint32=0 2>/dev/null || true
+$CMDUTIL --cmdcode=29 --uint32=0 || true
 sleep 1
 
 echo "Starting BPNode contact 0..."
-$CMDUTIL --cmdcode=30 --uint32=0 2>/dev/null || true
+$CMDUTIL --cmdcode=30 --uint32=0 || true
 sleep 2
 
 echo "BPNode startup commands sent."
