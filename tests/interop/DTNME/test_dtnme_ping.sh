@@ -43,11 +43,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -147,7 +152,10 @@ fi
 # Build or check for DTNME
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for dtnme-interop Docker image..."
-    if ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing dtnme-interop image (--no-cache)..."
+        docker build --no-cache -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
         log_info "Building dtnme-interop Docker image (this may take a while)..."
         docker build -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
     else

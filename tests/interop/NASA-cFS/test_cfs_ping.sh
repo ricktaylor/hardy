@@ -45,11 +45,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -147,7 +152,10 @@ done
 # Build or check for cFS Docker image
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for $CFS_IMAGE Docker image..."
-    if ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing cfs-interop image (--no-cache)..."
+        docker build --no-cache -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
+    elif ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
         log_info "Building $CFS_IMAGE Docker image (this may take a while)..."
         docker build -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
     else

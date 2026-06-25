@@ -20,7 +20,7 @@
 FROM debian:11-slim AS builder
 
 # Optional: specify a git ref (tag, branch, or commit hash)
-ARG HDTN_REF=master
+ARG HDTN_REF=v2.0.0
 ARG CORES=4
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -45,7 +45,13 @@ RUN apt-get update && \
 WORKDIR /opt
 RUN git clone https://github.com/nasa/HDTN.git hdtn-src && \
     cd hdtn-src && \
-    git checkout ${HDTN_REF}
+    git checkout ${HDTN_REF} && \
+    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD); \
+      m=$(grep -hm1 -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9]' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/'); \
+      [ -z "$m" ] && m=$(grep -rhim1 'project[[:space:]]*(' CMakeLists.txt 2>/dev/null | grep -oE 'VERSION[[:space:]]+[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*' | head -1); \
+      [ -z "$m" ] && m=$(sed -n 's/.*AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' configure.ac 2>/dev/null | head -1); \
+      [ -z "$m" ] && [ -f VERSION ] && m=$(head -1 VERSION); \
+      printf '%s%s\n' "$d" "${m:+ (declared: $m)}"; } > /interop-version
 
 # Build and install HDTN
 RUN cd /opt/hdtn-src && \
@@ -87,6 +93,7 @@ RUN apt-get update && \
 COPY --from=builder /opt/hdtn /opt/hdtn
 COPY --from=builder /opt/hdtn-src/config_files /opt/hdtn/config_files
 COPY --from=builder /opt/hdtn-src/tests/test_scripts_linux /opt/hdtn/test_scripts
+COPY --from=builder /interop-version /interop-version
 
 # Copy start_hdtn wrapper script
 COPY start_hdtn /usr/local/bin/start_hdtn

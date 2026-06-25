@@ -16,7 +16,7 @@
 
 FROM python:3.13-slim AS builder
 
-ARG UD3TN_REF=master
+ARG UD3TN_REF=v0.15.0
 ARG CORES=4
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -34,7 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 RUN git clone --recursive https://gitlab.com/d3tn/ud3tn.git . && \
     git checkout ${UD3TN_REF} && \
-    git submodule update --init --recursive
+    git submodule update --init --recursive && \
+    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD); \
+      m=$(grep -hm1 -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9]' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/'); \
+      [ -z "$m" ] && m=$(grep -rhim1 'project[[:space:]]*(' CMakeLists.txt 2>/dev/null | grep -oE 'VERSION[[:space:]]+[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*' | head -1); \
+      [ -z "$m" ] && m=$(sed -n 's/.*AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' configure.ac 2>/dev/null | head -1); \
+      [ -z "$m" ] && [ -f VERSION ] && m=$(head -1 VERSION); \
+      printf '%s%s\n' "$d" "${m:+ (declared: $m)}"; } > /interop-version
 
 # Build ud3tn
 RUN ARCH=x86-64 make posix -j${CORES}
@@ -56,6 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy ud3tn binary
 COPY --from=builder /build/build/posix/ud3tn /usr/local/bin/ud3tn
+COPY --from=builder /interop-version /interop-version
 
 # Copy Python packages
 COPY --from=builder /install/python/ /usr/local/

@@ -50,11 +50,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -155,7 +160,10 @@ fi
 # Build or check for ud3tn
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for ud3tn-interop Docker image..."
-    if ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing ud3tn-interop image (--no-cache)..."
+        docker build --no-cache -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
         log_info "Building ud3tn-interop Docker image..."
         docker build -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
     else

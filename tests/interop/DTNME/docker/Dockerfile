@@ -15,7 +15,7 @@
 FROM debian:buster AS builder
 
 # Optional: specify a git ref (tag, branch, or commit hash)
-ARG DTNME_REF=master
+ARG DTNME_REF=7d8311fb94b9
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -52,7 +52,13 @@ RUN ln -s /usr/bin/make /usr/bin/gmake
 # Clone DTNME from GitHub
 WORKDIR /build
 RUN git clone https://github.com/nasa/DTNME.git . && \
-    git checkout ${DTNME_REF}
+    git checkout ${DTNME_REF} && \
+    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD); \
+      m=$(grep -hm1 -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9]' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/'); \
+      [ -z "$m" ] && m=$(grep -rhim1 'project[[:space:]]*(' CMakeLists.txt 2>/dev/null | grep -oE 'VERSION[[:space:]]+[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*' | head -1); \
+      [ -z "$m" ] && m=$(sed -n 's/.*AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' configure.ac 2>/dev/null | head -1); \
+      [ -z "$m" ] && [ -f VERSION ] && m=$(head -1 VERSION); \
+      printf '%s%s\n' "$d" "${m:+ (declared: $m)}"; } > /interop-version
 
 # Build DTNME using the provided build script
 RUN sh step_1_make_gcc_dtnme.sh && \
@@ -91,6 +97,7 @@ RUN useradd -m -s /bin/bash dtn && \
 # Copy installed files from builder (step_2_install_dtnme.sh puts them in /dtn)
 COPY --from=builder /dtn/bin/ /dtn/bin/
 COPY --from=builder /dtn/dtnme_daemon.cfg /dtn/conf/dtnme_daemon.cfg
+COPY --from=builder /interop-version /interop-version
 
 # Copy our start script
 COPY start_dtnme /dtn/bin/start_dtnme

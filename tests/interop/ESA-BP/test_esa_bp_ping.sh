@@ -21,6 +21,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ESA_BP_SRC="$(cd "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}" 2>/dev/null && pwd || echo "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}")"
+# Known-good stable release for reproducible interop (override to test another ref).
+ESA_BP_REF="${ESA_BP_REF:-BP-2.0.2}"
 
 # Configuration
 HARDY_NODE_NUM=1
@@ -46,10 +48,15 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --count|-c)
@@ -140,27 +147,35 @@ done
 
 # Build ESA-BP Docker images if needed
 log_step "Checking for $ESA_BP_IMAGE Docker image..."
-if ! docker image inspect "$ESA_BP_IMAGE" &>/dev/null; then
+NOCACHE=""; if [ "$REFRESH" = true ]; then NOCACHE="--no-cache"; fi
+if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_IMAGE" &>/dev/null; then
     if [ ! -d "$ESA_BP_SRC/src" ]; then
         log_error "ESA-BP source not found at $ESA_BP_SRC"
         log_error "Set ESA_BP_SRC to the ESA-BP source directory"
         exit 1
     fi
 
+    # Pin the local checkout to a known-good release for reproducible interop.
+    if git -C "$ESA_BP_SRC" rev-parse --git-dir >/dev/null 2>&1; then
+        log_info "Checking out ESA-BP $ESA_BP_REF..."
+        git -C "$ESA_BP_SRC" checkout --quiet "$ESA_BP_REF" 2>/dev/null \
+            || log_warn "Could not checkout $ESA_BP_REF; using $(git -C "$ESA_BP_SRC" describe --tags --always 2>/dev/null)"
+    fi
+
     # Step 1: Build the base ESA-BP image using their native Dockerfile
-    if ! docker image inspect "$ESA_BP_BASE_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_BASE_IMAGE" &>/dev/null; then
         log_info "Building base ESA-BP image (this may take a while)..."
         # Fix trailing slash on COPY destination (their Dockerfile bug)
         sed 's|COPY --from=builder /src/\*/target/\*distribution.zip /opt/esa-bp$|COPY --from=builder /src/*/target/*distribution.zip /opt/esa-bp/|' \
             "$ESA_BP_SRC/docker/Dockerfile" | \
-            docker build -t "$ESA_BP_BASE_IMAGE" -f - "$ESA_BP_SRC"
+            docker build $NOCACHE -t "$ESA_BP_BASE_IMAGE" -f - "$ESA_BP_SRC"
     else
         log_info "Using existing base $ESA_BP_BASE_IMAGE image"
     fi
 
     # Step 2: Layer our STCP CLE and start script on top
     log_info "Building $ESA_BP_IMAGE interop image..."
-    docker build -t "$ESA_BP_IMAGE" \
+    docker build $NOCACHE -t "$ESA_BP_IMAGE" \
         --build-arg "BASE_IMAGE=$ESA_BP_BASE_IMAGE" \
         -f "$SCRIPT_DIR/docker/Dockerfile" \
         "$SCRIPT_DIR"
