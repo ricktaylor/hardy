@@ -1,21 +1,26 @@
 #!/bin/sh
 set -e
 
-# Configuration via environment variables
+# Configuration via environment variables (set by test_esa_bp_ping.sh)
 NODE_ID="${NODE_ID:-10}"
 STCP_LISTEN_PORT="${STCP_LISTEN_PORT:-4557}"
 STCP_DEST_IP="${STCP_DEST_IP:-127.0.0.1}"
 STCP_DEST_PORT="${STCP_DEST_PORT:-4558}"
 REMOTE_NODE_ID="${REMOTE_NODE_ID:-1}"
+GRPC_PORT="${GRPC_PORT:-5672}"
 
 CONFIG_DIR="/opt/esa-bp/interop-cfg"
-mkdir -p "$CONFIG_DIR/etc" "$CONFIG_DIR/etc/LTP" "$CONFIG_DIR/var/routing-mib" "$CONFIG_DIR/var/LTP" "$CONFIG_DIR/var/storage/model/requests" /dev/shm/esa-bp-bundles
-# Empty identity map (required by configFiles.bn.identity.file)
-echo '<?xml version="1.0" encoding="UTF-8"?><identities/>' > "$CONFIG_DIR/var/identity_map.xml"
-# Empty model template (required by bundleStore.requestFileTemplate)
-echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Requests />' > "$CONFIG_DIR/var/storage/model/requests/modelTemplate.xml"
+mkdir -p "$CONFIG_DIR/etc" "$CONFIG_DIR/etc/LTP" "$CONFIG_DIR/etc/logging" \
+         "$CONFIG_DIR/var/routing-mib" "$CONFIG_DIR/var/LTP" \
+         "$CONFIG_DIR/var/storage/model/requests" \
+         "$CONFIG_DIR/var/storage/model/store/property" \
+         /dev/shm/esa-bp-bundles
 
-# Generate NODE.yml — based on the reference config with interop values
+# Empty model template (required by bundleStore.requestFileTemplate)
+echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Requests />' \
+    > "$CONFIG_DIR/var/storage/model/requests/modelTemplate.xml"
+
+# NODE.yml — ESA-BP 3.0.0 schema (cf. src/bpa/etc/NODE.yml)
 cat > "$CONFIG_DIR/etc/NODE.yml" << EOF
 ---
 identity:
@@ -44,12 +49,11 @@ bpsec:
 
 handlers:
     queueBufferSize: 1024
-    dispatchMax: 20
     aaQueueRate: 200
     minForward: 20
 
 bundleStore:
-    implementation: "esa.egos.bp.bundle.store.implementation.BundleStoreImpl"
+    implementation: "esa.egos.dtn.bp.storage.implementation.BundleStoreImpl"
     appendFile: "_bundle"
     modelDir: "/dev/shm/esa-bp-bundles"
     softLimit: 30000000
@@ -62,8 +66,7 @@ configFiles:
     mib.folder: ${CONFIG_DIR}/etc/
     daemon.properties.file: ${CONFIG_DIR}/etc/DAEMON.yml
     routing.mib.folder: ${CONFIG_DIR}/var/routing-mib/
-    bn.identity.file: ${CONFIG_DIR}/var/identity_map.xml
-    logging.config.path: ${CONFIG_DIR}/etc/logging.properties
+    logging.config.path: ${CONFIG_DIR}/etc/logging/logging.properties
     ltp.static.config.folder: ${CONFIG_DIR}/etc/LTP/
     ltp.dynamic.config.folder: ${CONFIG_DIR}/var/LTP/
 
@@ -105,7 +108,7 @@ blocks:
         compressedCustodyLifetime: 10000
 EOF
 
-# Generate CL.yml with STCP element
+# CL.yml — the STCP convergence-layer element (our interop CLE; ported package)
 cat > "$CONFIG_DIR/etc/CL.yml" << EOF
 ---
 adapters-defaults:
@@ -134,7 +137,7 @@ adapters:
 elements:
   - id: STCP_E1
     status: B
-    implClassName: esa.egos.bp.convergence.layers.elements.ClElementStcp
+    implClassName: esa.egos.dtn.bp.convergence.layers.elements.ClElementStcp
     singleton: false
     element-specific:
       destinationIP: ${STCP_DEST_IP}
@@ -142,34 +145,48 @@ elements:
       listeningPort: ${STCP_LISTEN_PORT}
 EOF
 
-# Generate DAEMON.yml (disable gRPC TLS for simplicity)
+# DAEMON.yml — insecure gRPC (no TLS). The daemon installs no server-side auth
+# interceptor (only the client sends a Bearer token), so client-tokens is not
+# enforced; it's present only to satisfy the config parser.
 cat > "$CONFIG_DIR/etc/DAEMON.yml" << EOF
 grpc.address: localhost
-grpc.port: 5672
+grpc.port: ${GRPC_PORT}
 grpc.secure.channel: false
+
+client-tokens:
+    -
+        id: "interop"
+        services: [0-2047]
+        ReadConfig: true
+        WriteConfig: true
+        token: ""
 EOF
 
-# Generate routing table
+# Routing: send everything for the remote node over the STCP adapter
 cat > "$CONFIG_DIR/var/routing-mib/NHT.csv" << EOF
 # priority, destination, adapter, hopcount
 1 ipn:${REMOTE_NODE_ID}.0 HARDY_STCP 1
 EOF
 
-# Minimal logging config
-cat > "$CONFIG_DIR/etc/logging.properties" << EOF
+# Minimal console logging
+cat > "$CONFIG_DIR/etc/logging/logging.properties" << EOF
 handlers = java.util.logging.ConsoleHandler
 .level = INFO
 java.util.logging.ConsoleHandler.level = INFO
 java.util.logging.ConsoleHandler.formatter = java.util.logging.SimpleFormatter
 EOF
 
-echo "Starting ESA-BP node ipn:${NODE_ID}.0"
+echo "Starting ESA-BP 3.0.0 node ipn:${NODE_ID}.0"
 echo "  STCP listen: ${STCP_LISTEN_PORT}"
 echo "  STCP dest:   ${STCP_DEST_IP}:${STCP_DEST_PORT}"
+echo "  gRPC:        localhost:${GRPC_PORT} (insecure)"
 echo "  Route:       ipn:${REMOTE_NODE_ID}.0 -> HARDY_STCP"
 
 cd /opt/esa-bp
-exec java -Xmx512m \
+NODE_JAR="$(find /opt/esa-bp -name 'node.jar' | head -1)"
+[ -n "$NODE_JAR" ] || { echo "ERROR: node.jar not found under /opt/esa-bp" >&2; exit 1; }
+
+exec java -Xmx512m -Djava.library.path=/usr/local/lib \
     -Dnode.configuration="${CONFIG_DIR}/etc/NODE.yml" \
-    -cp "esa.egos.bp.node/jars/node.jar:/opt/esa-bp/interop-cle" \
-    esa.egos.bp.node.BundleNodeMain
+    -cp "${NODE_JAR}:/opt/esa-bp/interop-cle" \
+    esa.egos.dtn.bp.node.BundleNodeMain

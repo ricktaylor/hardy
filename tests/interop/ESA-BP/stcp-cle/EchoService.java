@@ -1,10 +1,8 @@
-import esa.egos.bp.client.core.BpClient;
-import esa.egos.bp.daemon.common.stubs.BundleMessage;
-import esa.egos.bp.daemon.common.stubs.BundleProcessingControlFlag;
-import esa.egos.bp.daemon.common.stubs.ListenRequest;
-import esa.egos.bp.daemon.common.stubs.ListenResponse;
-import esa.egos.bp.daemon.common.stubs.SendAduRequest;
-import esa.egos.bp.daemon.common.stubs.BpDaemonServiceDefinitionGrpc;
+import esa.egos.dtn.bp.grpc.application.specific.ApplicationSpecificServiceDefinitionGrpc;
+import esa.egos.dtn.bp.grpc.application.specific.BundleMessage;
+import esa.egos.dtn.bp.grpc.application.specific.ListenRequest;
+import esa.egos.dtn.bp.grpc.application.specific.ListenResponse;
+import esa.egos.dtn.bp.grpc.application.specific.SendAduRequest;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -33,8 +31,8 @@ public class EchoService {
             .usePlaintext()
             .build();
 
-        BpDaemonServiceDefinitionGrpc.BpDaemonServiceDefinitionBlockingStub stub =
-            BpDaemonServiceDefinitionGrpc.newBlockingStub(channel);
+        ApplicationSpecificServiceDefinitionGrpc.ApplicationSpecificServiceDefinitionBlockingStub stub =
+            ApplicationSpecificServiceDefinitionGrpc.newBlockingStub(channel);
 
         // Subscribe to bundles on this service number
         Iterator<ListenResponse> stream = stub.listen(
@@ -68,8 +66,6 @@ public class EchoService {
                 }
             } else if (response.hasAdminRecord()) {
                 System.out.println("Received admin record (ignored)");
-            } else if (response.hasError()) {
-                System.err.println("Received error: " + response.getError());
             }
         }
 

@@ -21,8 +21,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ESA_BP_SRC="$(cd "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}" 2>/dev/null && pwd || echo "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}")"
-# Known-good stable release for reproducible interop (override to test another ref).
-ESA_BP_REF="${ESA_BP_REF:-BP-2.0.2}"
+# Current master commit (3.0.0.v20260521) for a fair, up-to-date interop comparison.
+# The proprietary space-link CLs (SLE + generic-packetiser) are stripped after
+# checkout by strip-proprietary.sh so the node builds from open Maven only.
+ESA_BP_REF="${ESA_BP_REF:-f59410a90}"
 
 # Configuration
 HARDY_NODE_NUM=1
@@ -162,13 +164,27 @@ if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_IMAGE" &>/dev/null; 
             || log_warn "Could not checkout $ESA_BP_REF; using $(git -C "$ESA_BP_SRC" describe --tags --always 2>/dev/null)"
     fi
 
-    # Step 1: Build the base ESA-BP image using their native Dockerfile
+    # Step 1: Build the base ESA-BP image.
+    # 3.0.0's docker/Dockerfile unpacks a Maven-produced dist/bp-packager.zip (it
+    # no longer compiles in-container), so we: reset to a clean checkout, strip the
+    # proprietary space-link CLs, run the Maven build (Java 21) to produce the
+    # packager zip, stage it in dist/, then build the image.
     if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_BASE_IMAGE" &>/dev/null; then
-        log_info "Building base ESA-BP image (this may take a while)..."
-        # Fix trailing slash on COPY destination (their Dockerfile bug)
-        sed 's|COPY --from=builder /src/\*/target/\*distribution.zip /opt/esa-bp$|COPY --from=builder /src/*/target/*distribution.zip /opt/esa-bp/|' \
-            "$ESA_BP_SRC/docker/Dockerfile" | \
-            docker build $NOCACHE -t "$ESA_BP_BASE_IMAGE" -f - "$ESA_BP_SRC"
+        log_info "Stripping proprietary CLs (SLE + generic-packetiser)..."
+        git -C "$ESA_BP_SRC" checkout --quiet -- src 2>/dev/null || true   # clean base before strip
+        bash "$SCRIPT_DIR/strip-proprietary.sh" "$ESA_BP_SRC"
+
+        log_info "Building ESA-BP with Maven (Java 21; this may take a while)..."
+        docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e MAVEN_CONFIG=/tmp/.m2 \
+            -v "$ESA_BP_SRC":/ws -v "$HOME/.m2":/tmp/.m2 -w /ws/src \
+            maven:3.9-eclipse-temurin-21 \
+            mvn -Duser.home=/tmp -q -Dmaven.test.skip=true -T1C package
+
+        log_info "Staging bp-packager.zip + building base $ESA_BP_BASE_IMAGE image..."
+        mkdir -p "$ESA_BP_SRC/dist"
+        cp "$ESA_BP_SRC"/src/target/bp-packager*.zip "$ESA_BP_SRC/dist/bp-packager.zip"
+        docker build $NOCACHE -t "$ESA_BP_BASE_IMAGE" \
+            -f "$ESA_BP_SRC/docker/Dockerfile" "$ESA_BP_SRC"
     else
         log_info "Using existing base $ESA_BP_BASE_IMAGE image"
     fi
@@ -241,9 +257,11 @@ fi
 
 # Start echo service inside ESA-BP container
 log_step "Starting echo service on ipn:$ESA_BP_NODE_NUM.7..."
-CLI_JAR=$(docker exec esa-bp-interop-test find /opt/esa-bp -name 'cli.jar' | head -1)
+# Run the echo service against node.jar — the shaded uber jar that bundles the
+# gRPC runtime + stubs (the thin cli.jar does not include io.grpc).
+NODE_JAR=$(docker exec esa-bp-interop-test sh -c "find /opt/esa-bp -name 'node.jar' | head -1")
 docker exec -d esa-bp-interop-test sh -c \
-    "java -Xmx128m -cp '$CLI_JAR:/opt/esa-bp/echo-service' EchoService 7 localhost 5672 > /tmp/echo.log 2>&1"
+    "java -Xmx128m -cp '$NODE_JAR:/opt/esa-bp/echo-service' EchoService 7 localhost 5672 > /tmp/echo.log 2>&1"
 sleep 3
 
 # Create CLA config for bp ping (inline BPA mode)
