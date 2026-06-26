@@ -8,13 +8,13 @@ implementation over STCP (Simple TCP Convergence Layer).
 
 ```bash
 # Full build + test
-./tests/interop/ESA-BP/test_esabp_ping.sh
+./tests/interop/ESA-BP/test_esa_bp_ping.sh
 
 # Skip Hardy rebuild (binaries already built)
-./tests/interop/ESA-BP/test_esabp_ping.sh --skip-build
+./tests/interop/ESA-BP/test_esa_bp_ping.sh --skip-build
 
 # Custom ping count
-./tests/interop/ESA-BP/test_esabp_ping.sh --skip-build --count 10
+./tests/interop/ESA-BP/test_esa_bp_ping.sh --skip-build --count 10
 ```
 
 ## What the Test Does
@@ -67,9 +67,12 @@ flowchart LR
 
 ## ESA-BP Modifications
 
-ESA-BP's core Java binaries (`node.jar`, `cli.jar`) run **unmodified**.
-Two thin integration components are compiled against the ESA-BP API
-and loaded at runtime:
+ESA-BP's core bundle-protocol code runs **unmodified**; only the
+proprietary space-link convergence layers (SLE + generic-packetiser) are
+stripped from the source before the build (see `strip-proprietary.sh`),
+because they depend on gated ESA jars that aren't publicly resolvable and
+Hardy interop only needs the STCP CL.  Two thin integration components
+are then compiled against the ESA-BP API and loaded at runtime:
 
 | Component | Purpose |
 |-----------|---------|
@@ -88,30 +91,36 @@ rather than disk.  ESA-BP does not offer an in-memory store
 implementation, but its `BundleStoreImpl` accepts an arbitrary
 `modelDir` path.  Using tmpfs avoids filesystem I/O during testing.
 
-### Known workaround
+### Building without ESA credentials
 
-ESA-BP's upstream Dockerfile has a `COPY` instruction missing a
-trailing slash on the destination path.  The test script applies a
-one-line sed fix before building the base image.
+`strip-proprietary.sh` (run automatically by the test script after
+checkout) deletes the SLE and generic-packetiser CL sources and drops
+their Maven coordinates, so the node builds entirely from open Maven
+repositories — no GitHub PAT or ESA-GitLab access required.  It is
+idempotent and touches only those CLs; the STCP CL Hardy uses is
+unaffected.
 
 ## Prerequisites
 
-- Docker (builds the ESA-BP container images)
+- Docker (builds the ESA-BP images and runs the Maven build)
 - Hardy `bp`, `hardy-bpa-server`, and `mtcp-cla` binaries built
-- The `esa-bp` base Docker image, built from ESA's Bundle Protocol
-  source distribution (not publicly available — must be obtained from
-  ESA).  Build it first from the ESA source tree:
+- An ESA-BP source checkout at `$ESA_BP_SRC` (default `../esa-bp`).
+  ESA-BP is ESA-hosted (`gitlab.esa.int`), not on public registries.
+  There is no pre-built base image to obtain — the test script builds
+  everything itself from the pinned source (`ESA_BP_REF`, default
+  `f59410a90` = master `3.0.0.v20260521`):
 
-  ```bash
-  cd <esa-bp-source> && docker build -t esa-bp -f docker/Dockerfile .
-  ```
-
-  The interop image layers on top via `ARG BASE_IMAGE=esa-bp`
+  1. `strip-proprietary.sh` removes the proprietary space-link CLs;
+  2. a Maven build (Java 21, via `maven:3.9-eclipse-temurin-21`) produces
+     `dist/bp-packager.zip`;
+  3. the base `esa-bp` image unpacks that zip, and the interop image
+     layers the STCP CLE + echo service on top (`ARG BASE_IMAGE=esa-bp`).
 
 ## Configuration
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
+| ESA-BP version | 3.0.0 (master `f59410a90`) | Pinned via `ESA_BP_REF`; built from source |
 | ESA-BP node | `ipn:10.0` | Configurable via `NODE_ID` env var |
 | Hardy node | `ipn:1.0` | |
 | Echo service | 7 | Standard BPv7 echo service (both sides) |
@@ -125,8 +134,9 @@ one-line sed fix before building the base image.
 
 ```
 ESA-BP/
-  test_esabp_ping.sh        # Test runner
+  test_esa_bp_ping.sh        # Test runner (builds the base image from pinned source)
   start_esa_bp.sh            # Interactive launcher (build + run)
+  strip-proprietary.sh       # Removes proprietary SLE/packetiser CLs before the build
   docker/
     Dockerfile               # Multi-stage: compile STCP CLE + echo service against ESA-BP JARs
     start_esa_bp              # Container entrypoint (generates NODE/CL/DAEMON yml + routing table)
