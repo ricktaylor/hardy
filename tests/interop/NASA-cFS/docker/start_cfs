@@ -17,10 +17,13 @@ fi
 
 cd "$CFS_DIR"
 
+# Select the per-test startup script: TEST 1 (echo) loads echo_app, TEST 2
+# (ping) loads ping_app. Force-overwrite the installed default in cf/.
+TEST_MODE="${TEST_MODE:-echo}"
 mkdir -p cf
-cp -n /opt/cfs/cfe_es_startup.scr cf/ 2>/dev/null || true
+cp -f "/opt/cfs/cfe_es_startup_${TEST_MODE}.scr" cf/cfe_es_startup.scr
 
-echo "Starting cFS BPNode (STCP echo mode)..."
+echo "Starting cFS BPNode (STCP, TEST_MODE=${TEST_MODE})..."
 echo "  STCP listen port: 4501"
 echo "  STCP connect to:  127.0.0.1:4551"
 
@@ -40,7 +43,7 @@ CMDUTIL="$CMD_SEND --port 1234 --endian=LE --pktid=0x1838"
 
 # Channel 0 is auto-added and auto-started during init, but the auto-start
 # does not activate SB subscriptions.  Stop it, then restart so the ADU
-# proxy table (including the echo_app subscription) takes full effect.
+# proxy table (and the loaded app's subscription) takes full effect.
 echo "Adding BPNode application for channel 1..."
 $CMDUTIL --cmdcode=14 --uint32=1 || true
 sleep 1
