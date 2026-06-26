@@ -92,7 +92,8 @@ additions:
 | Component | Purpose |
 |-----------|---------|
 | `stcpsock_intf/` | STCP convergence layer (PSP IODriver module) |
-| `echo_app/` | SB relay for RFC 9171-compliant echo from a single service EID |
+| `echo_app/` | SB relay for RFC 9171-compliant echo from a single service EID (Test 1) |
+| `ping_app/` | SB originator that pings Hardy and counts the reflections (Test 2) |
 
 ### BPNode bug fixes (candidates for upstream)
 
