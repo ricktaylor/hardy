@@ -1,10 +1,10 @@
-package esa.egos.bp.convergence.layers.elements;
+package esa.egos.dtn.bp.convergence.layers.elements;
 
-import esa.egos.bp.convergence.layers.adapter.api.ClAdapterInterface;
-import esa.egos.bp.convergence.layers.adapter.api.DataFlowDirection;
-import esa.egos.bp.convergence.layers.enums.ActivationState;
-import esa.egos.bp.convergence.layers.enums.ConnectionState;
-import esa.egos.bp.mib.api.enums.CoreElementParams;
+import esa.egos.dtn.bp.convergence.layers.adapter.api.ClAdapterInterface;
+import esa.egos.dtn.bp.convergence.layers.adapter.api.DataFlowDirection;
+import esa.egos.dtn.bp.convergence.layers.enums.ActivationState;
+import esa.egos.dtn.bp.convergence.layers.enums.ConnectionState;
+import esa.egos.dtn.bp.mib.api.enums.CoreElementParams;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -119,7 +119,7 @@ public class ClElementStcp extends ClSendReceiveElement {
 
   @SuppressWarnings("unchecked")
   public static void validateElementConfig(HashMap<String, Object> configMap)
-      throws esa.egos.bp.convergence.layers.elements.exceptions.ConvergenceLayerElementException {
+      throws esa.egos.dtn.bp.convergence.layers.elements.exceptions.ConvergenceLayerElementException {
     ClElement.validateElementConfig(configMap);
   }
 
