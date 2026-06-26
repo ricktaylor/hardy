@@ -294,7 +294,7 @@ EOF
 log_step "Hardy pinging ud3tn echo service at ipn:$UD3TN_NODE_NUM.7 via MTCP..."
 echo ""
 
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
     --cla "$CLA_BIN" \
     --cla-args "--config $TEST_DIR/cla_ping.toml" \
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
