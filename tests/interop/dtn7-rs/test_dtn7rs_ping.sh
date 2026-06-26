@@ -276,7 +276,7 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --count "$PING_COUNT" \
     --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
