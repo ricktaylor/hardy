@@ -53,10 +53,11 @@ RUN ln -s /usr/bin/make /usr/bin/gmake
 WORKDIR /build
 RUN git clone https://github.com/nasa/DTNME.git . && \
     git checkout ${DTNME_REF} && \
-    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD); \
+    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD); \
       m=$(grep -hm1 -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9]' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/'); \
       [ -z "$m" ] && m=$(grep -rhim1 'project[[:space:]]*(' CMakeLists.txt 2>/dev/null | grep -oE 'VERSION[[:space:]]+[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*' | head -1); \
       [ -z "$m" ] && m=$(sed -n 's/.*AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' configure.ac 2>/dev/null | head -1); \
+      [ -z "$m" ] && [ -f dtn-version.dat ] && m=$(awk 'NF>=3{printf "%s.%s.%s%s", $1, $2, $3, ($4 ? "-"$4 : "")}' dtn-version.dat); \
       [ -z "$m" ] && [ -f VERSION ] && m=$(head -1 VERSION); \
       printf '%s%s\n' "$d" "${m:+ (declared: $m)}"; } > /interop-version
 
