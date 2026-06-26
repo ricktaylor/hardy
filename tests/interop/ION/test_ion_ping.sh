@@ -256,7 +256,7 @@ EOF
 log_step "Hardy pinging ION echo service at ipn:$ION_NODE_NUM.7 via STCP..."
 echo ""
 
-PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
     --cla "$CLA_BIN" \
     --cla-args "--config $TEST_DIR/cla_ping.toml" \
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
