@@ -97,7 +97,9 @@ pub async fn register_routing_agent(
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
             hardy_bpa::routing::Error::Internal(e.into())
-        })?;
+        })?
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);
 

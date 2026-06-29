@@ -90,6 +90,16 @@ impl hardy_bpa::services::ApplicationSink for Sink {
         lifetime: std::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+        // Pre-check size so an oversized payload returns a typed error
+        // instead of letting tonic break the stream during encoding,
+        // which would cascade into `on_close` and unregister this
+        // application.
+        if data.len() > crate::MAX_PAYLOAD_SIZE {
+            return Err(hardy_bpa::services::Error::PayloadTooLarge {
+                size: data.len(),
+                max: crate::MAX_PAYLOAD_SIZE,
+            });
+        }
         match self
             .call(app_to_bpa::Msg::Send(AppSendRequest {
                 destination: destination.to_string(),
@@ -229,7 +239,9 @@ pub async fn register_application_service(
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
             hardy_bpa::services::Error::Internal(e.into())
-        })?;
+        })?
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
     // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);

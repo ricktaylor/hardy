@@ -82,6 +82,15 @@ impl hardy_bpa::services::ServiceSink for Sink {
         &self,
         data: hardy_bpa::Bytes,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+        // See `client::application::Sink::send` for why this pre-check
+        // exists: oversized messages break the gRPC stream, which would
+        // cascade into `on_close` and unregister this service.
+        if data.len() > crate::MAX_PAYLOAD_SIZE {
+            return Err(hardy_bpa::services::Error::PayloadTooLarge {
+                size: data.len(),
+                max: crate::MAX_PAYLOAD_SIZE,
+            });
+        }
         match self
             .call(service_to_bpa::Msg::Send(ServiceSendRequest { data }))
             .await?
@@ -187,7 +196,9 @@ pub async fn register_endpoint_service(
         .map_err(|e| {
             error!("Failed to connect to gRPC server '{grpc_addr}': {e}");
             hardy_bpa::services::Error::Internal(e.into())
-        })?;
+        })?
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE);
 
     // Create a channel for sending messages to the service.
     let (mut channel_sender, rx) = tokio::sync::mpsc::channel(16);

@@ -288,4 +288,6 @@ pub fn new_cla_service(
         session_tasks: tasks.clone(),
         channel_size: 16,
     })
+    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
+    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
 }

@@ -30,6 +30,13 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// The payload exceeds the transport's maximum message size and was
+    /// rejected before being sent. Returned by transport-backed sinks
+    /// (e.g. gRPC) when a pre-flight size check fails, instead of
+    /// letting the oversized message break the underlying stream.
+    #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
+    PayloadTooLarge { size: usize, max: usize },
+
     /// The node ID configuration doesn't support the requested service scheme.
     #[error(transparent)]
     NodeId(#[from] crate::node_ids::Error),
