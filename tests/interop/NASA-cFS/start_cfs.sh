@@ -54,7 +54,7 @@ log_info ""
 log_info "To test manually (from hardy workspace):"
 log_info "  bp ping ipn:10.7 --cla tests/interop/mtcp/target/release/mtcp-cla \\"
 log_info "    --cla-args '--config stcp.toml' --grpc-listen '[::1]:50051' \\"
-log_info "    --source ipn:1.12345 --count 5 --no-sign"
+log_info "    --source ipn:1.12345 --count 5"
 
 # Follow logs until interrupted
 docker logs -f "$CONTAINER_NAME"

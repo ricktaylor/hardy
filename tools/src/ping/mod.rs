@@ -45,8 +45,9 @@ impl From<Verbosity> for tracing::Level {
 /// Send ping bundles to a destination endpoint and measure round-trip times.
 ///
 /// Embeds a minimal BPA and establishes a CLA connection (TCPCLv4 by default,
-/// or a gRPC CLA via --cla). Bundles are signed by default to detect
-/// corruption. Press Ctrl+C to stop and show statistics.
+/// or a gRPC CLA via --cla). Round-trip integrity is checked by comparing each
+/// reflected payload against what was sent. Press Ctrl+C to stop and show
+/// statistics.
 #[derive(Parser, Debug)]
 #[command(about, long_about = None)]
 pub struct Command {
@@ -85,10 +86,6 @@ pub struct Command {
     /// Bundle lifetime
     #[arg(long)]
     lifetime: Option<humantime::Duration>,
-
-    /// Disable BIB signing
-    #[arg(long)]
-    no_sign: bool,
 
     /// Disable CRC on payload block only (for DTNME compatibility)
     ///

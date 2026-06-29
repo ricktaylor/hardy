@@ -128,7 +128,6 @@ unaffected.
 | Hardy STCP port | 4557 | Via `mtcp-cla` config |
 | TLS | Disabled | |
 | BPSec | Disabled | |
-| Bundle signing | Disabled | `--no-sign` |
 
 ## File Layout
 

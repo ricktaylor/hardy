@@ -5,7 +5,7 @@
 #   ./tests/interop/HDTN/start_hdtn.sh
 #
 # Then in another terminal:
-#   bp ping ipn:10.2047 127.0.0.1:4556 --no-sign
+#   bp ping ipn:10.2047 127.0.0.1:4556
 
 set -e
 
@@ -57,7 +57,7 @@ echo "  Echo:     ipn:$HDTN_NODE_NUM.2047"
 echo "  TCPCLv4:  127.0.0.1:$HDTN_PORT"
 echo ""
 echo "Test with:"
-echo "  bp ping ipn:$HDTN_NODE_NUM.2047 127.0.0.1:$HDTN_PORT --no-sign"
+echo "  bp ping ipn:$HDTN_NODE_NUM.2047 127.0.0.1:$HDTN_PORT"
 echo ""
 echo "Press Ctrl+C to stop..."
 echo "============================================"

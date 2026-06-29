@@ -23,8 +23,8 @@ bp ping -S ipn:1.42 ipn:2.0 192.168.1.10:4556
 
 Send ping bundles to a destination endpoint and measure round-trip times.
 Embeds a minimal BPA and establishes a CLA connection (TCPCLv4 by default).
-Bundles are signed by default to detect corruption. Press Ctrl+C to stop
-and show statistics.
+Round-trip integrity is checked by comparing each reflected payload against
+what was sent. Press Ctrl+C to stop and show statistics.
 
 ```
 bp ping [OPTIONS] <DESTINATION> [PEER]
@@ -66,7 +66,6 @@ bp ping -v=debug ipn:2.0 192.168.1.10:4556
 | `--cla` | `tcpclv4` | CLA name or path to external CLA binary |
 | `--cla-args` | -- | Arguments for external CLA binary |
 | `--grpc-listen` | `[::1]:50051` | gRPC listen address for external CLAs |
-| `--no-sign` | -- | Disable BIB signing |
 | `--no-payload-crc` | -- | Disable CRC on payload block (DTNME compat) |
 | `--tls-insecure` | -- | Accept self-signed TLS certificates |
 | `--tls-ca` | -- | CA bundle directory for TLS |

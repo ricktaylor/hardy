@@ -224,7 +224,6 @@ EOF
         OUTPUT=$("$BP_BIN" ping "ipn:99.7" "127.0.0.1:4559" \
             --source "ipn:1.1" \
             --count "$PING_COUNT" \
-            --no-sign \
             2>&1) || true
 
         extract_rtt_stats "$OUTPUT" "Hardy"
