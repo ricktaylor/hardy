@@ -20,6 +20,13 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// The bundle exceeds the transport's maximum message size and was
+    /// rejected before being sent. Returned by transport-backed sinks
+    /// (e.g. gRPC) when a pre-flight size check fails, instead of
+    /// letting the oversized message break the underlying stream.
+    #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
+    PayloadTooLarge { size: usize, max: usize },
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),

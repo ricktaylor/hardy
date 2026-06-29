@@ -29,6 +29,22 @@ use tracing::{debug, error, info, warn};
 pub(crate) mod proto;
 pub(crate) mod proxy;
 
+/// Cap (in bytes) on a single encoded gRPC message in either direction.
+///
+/// Both client and server tonic stubs are configured with this value via
+/// `max_encoding_message_size` and `max_decoding_message_size`. Sinks
+/// pre-check payload size against [`MAX_PAYLOAD_SIZE`] before sending so
+/// an oversized message returns a typed error instead of breaking the
+/// stream (which would cascade into `on_close` and unregister the
+/// application).
+pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
+/// Cap (in bytes) on the payload byte slice a sink will accept. Slightly
+/// smaller than [`MAX_MESSAGE_SIZE`] to leave headroom for the protobuf
+/// message framing (destination string, options, etc.) so a payload that
+/// fits the check also fits the encoded message.
+pub const MAX_PAYLOAD_SIZE: usize = MAX_MESSAGE_SIZE - 64 * 1024;
+
 /// Client-side gRPC stubs that present a remote BPA as a local `BpaRegistration`.
 pub mod client;
 /// Server-side gRPC endpoints that expose a local BPA to remote components.
