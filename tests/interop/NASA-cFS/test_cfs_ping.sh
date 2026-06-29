@@ -241,7 +241,6 @@ PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$CFS_NODE_NU
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"

@@ -300,7 +300,6 @@ PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$UD3TN_NODE_
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"

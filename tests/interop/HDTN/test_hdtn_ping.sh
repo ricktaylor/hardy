@@ -253,7 +253,6 @@ echo ""
 PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
     --source "ipn:$HARDY_NODE_NUM.1" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"

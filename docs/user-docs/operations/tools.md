@@ -60,7 +60,6 @@ bp ping [OPTIONS] DESTINATION [PEER]
 |--------|-------------|---------|
 | `-t`, `--ttl` *N* | Hop count limit (like IP TTL). | No limit |
 | `--lifetime` *DUR* | Bundle lifetime (time-based expiry). | Auto-calculated |
-| `--no-sign` | Disable BIB-HMAC-SHA256 signing. Use for ION compatibility. | Signing enabled |
 | `--no-payload-crc` | Disable CRC on the payload block only. Use for DTNME compatibility. | CRC enabled |
 | `-S`, `--source` *EID* | Source endpoint identifier. | Random IPN EID |
 
@@ -159,7 +158,7 @@ bp ping -q -w 30s ipn:2.7 192.168.1.1:4556
 | HDTN echo | Yes | |
 | dtn7-rs dtnecho2 | Yes | |
 | uD3TN aap_echo | Yes | |
-| ION bpecho | Partial | Use `--no-sign` (ION returns a fixed response, breaking payload verification) |
+| ION bpecho | Partial | Returns a fixed response rather than reflecting the request payload, so responses do not pass the round-trip integrity check |
 
 ### Exit Status
 

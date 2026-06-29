@@ -146,7 +146,6 @@ do_ping() {
     output=$("$BP_BIN" ping "$dest" "$peer" \
         --source "ipn:$NODE1_NUM.$PING_SERVICE" \
         --count "$PING_COUNT" \
-        --no-sign \
         2>&1) && exit_code=0 || exit_code=$?
 
     if [ "$expect" = "pass" ]; then
