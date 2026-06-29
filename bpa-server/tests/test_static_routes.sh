@@ -152,7 +152,7 @@ kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 4: PASSED" || { log_error "TEST
 
 # TEST 5: Ping echo — BPA still functional
 log_step "TEST 5: Ping echo service"
-if "$BP_BIN" ping "ipn:1.7" "127.0.0.1:$NODE_PORT" --count "$PING_COUNT" --no-sign 2>&1; then
+if "$BP_BIN" ping "ipn:1.7" "127.0.0.1:$NODE_PORT" --count "$PING_COUNT" 2>&1; then
     log_info "TEST 5: PASSED"
 else
     log_error "TEST 5: FAILED"

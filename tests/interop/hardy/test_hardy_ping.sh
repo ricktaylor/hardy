@@ -224,7 +224,6 @@ echo ""
 PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_PORT" \
     --source "ipn:$NODE1_NUM.$PING_SERVICE" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"
@@ -267,7 +266,6 @@ echo ""
 PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$NODE1_NUM.7" "127.0.0.1:$NODE1_PORT" \
     --source "ipn:$NODE2_NUM.$PING_SERVICE" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"

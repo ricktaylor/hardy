@@ -17,7 +17,7 @@
 #       --cla /path/to/mtcp-cla \
 #       --cla-args "--config /tmp/cla.toml" \
 #       --grpc-listen "[::1]:50051" \
-#       --source ipn:1.12345 --no-sign
+#       --source ipn:1.12345
 
 set -e
 
@@ -125,7 +125,7 @@ echo "  bp ping ipn:$UD3TN_NODE_NUM.7 \\"
 echo "    --cla /path/to/mtcp-cla \\"
 echo "    --cla-args \"--config /tmp/cla.toml\" \\"
 echo "    --grpc-listen \"[::1]:$HARDY_GRPC_PORT\" \\"
-echo "    --source ipn:$HARDY_NODE_NUM.12345 --no-sign"
+echo "    --source ipn:$HARDY_NODE_NUM.12345"
 echo ""
 echo "Press Ctrl+C to stop..."
 echo "============================================"

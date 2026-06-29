@@ -5,7 +5,7 @@
 #   ./tests/interop/DTNME/start_dtnme.sh
 #
 # Then in another terminal:
-#   bp ping ipn:1.7 127.0.0.1:4556 --source ipn:2.12345 --wait 10s --no-sign --no-crc
+#   bp ping ipn:1.7 127.0.0.1:4556 --source ipn:2.12345 --wait 10s --no-payload-crc
 
 set -e
 
@@ -72,7 +72,7 @@ echo "Test with:"
 echo "  bp ping ipn:$DTNME_NODE_NUM.7 127.0.0.1:$DTNME_PORT \\"
 echo "    --source ipn:$HARDY_NODE_NUM.12345 \\"
 echo "    --wait 10s \\"
-echo "    --no-sign --no-crc"
+echo "    --no-payload-crc"
 echo ""
 echo "Press Ctrl+C to stop..."
 echo "============================================"

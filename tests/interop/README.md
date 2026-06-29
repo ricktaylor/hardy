@@ -49,7 +49,7 @@ Each implementation has a `start_*.sh` script for manual testing:
 ./tests/interop/HDTN/start_hdtn.sh
 
 # Terminal 2: Ping it
-bp ping ipn:10.2047 127.0.0.1:4556 --no-sign
+bp ping ipn:10.2047 127.0.0.1:4556
 ```
 
 ## MTCP/STCP CLA

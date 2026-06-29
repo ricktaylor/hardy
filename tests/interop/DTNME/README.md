@@ -78,7 +78,6 @@ rejects bundles with payload CRC validation failures.
 | Echo service | 7 | Standard BPv7 echo service |
 | TCPCLv4 port | 4556 | IANA standard; used by DTNME in Test 1, Hardy in Test 2 |
 | TLS | Disabled | |
-| Bundle signing | Disabled | `--no-sign` |
 | Payload CRC | Disabled | `--no-payload-crc` (DTNME compatibility) |
 | Storage | `/dev/shm` | tmpfs — avoids disk I/O in benchmarks |
 
