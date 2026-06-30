@@ -1,10 +1,13 @@
 use super::*;
-use hardy_bpv7::{
-    block, builder::Builder, crc::CrcType, creation_timestamp::CreationTimestamp, hop_info::HopInfo,
-};
+use hardy_bpv7::{block, builder::Builder, crc::CrcType, hop_info::HopInfo};
 use hardy_cbor::{decode, encode};
 
-// CBOR payload format per PING_SPEC.md Appendix C.
+// The echo-service draft defines no payload wire format — the echo reflects the
+// payload unchanged and never parses it (see draft-taylor-dtn-echo-service). This
+// is purely the `bp ping` client's own internal format: a sequence number so
+// responses can be matched to requests, plus optional padding for path-MTU
+// probing. RTT timing and response validation are held in local client state
+// (see service.rs), not carried on the wire.
 //
 // Structure: `[sequence, options_map]`
 //
@@ -114,7 +117,7 @@ fn build_bundle_with_padding(
     seq_no: u32,
     padding: usize,
     creation: time::OffsetDateTime,
-) -> anyhow::Result<Box<[u8]>> {
+) -> anyhow::Result<BuiltPing> {
     let payload = Payload::new(seq_no).with_padding(padding);
     let payload_bytes = encode::emit(&payload).0;
 
@@ -156,29 +159,29 @@ fn build_bundle_with_padding(
                 ..Default::default()
             })
             .with_crc_type(CrcType::None)
-            .build(payload_bytes.into());
+            .build(payload_bytes.as_slice().into());
     } else {
         // Normal mode: CRC on all blocks (default CRC32-C)
-        builder = builder.with_payload(payload_bytes.into());
+        builder = builder.with_payload(payload_bytes.as_slice().into());
     }
 
-    Ok(builder
+    let bundle = builder
         .build(
             creation
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("Failed to convert creation time"))?,
         )?
-        .1)
+        .1;
+
+    Ok((bundle, payload_bytes.into()))
 }
 
-pub fn build_payload(
-    args: &Command,
-    seq_no: u32,
-) -> anyhow::Result<(Box<[u8]>, CreationTimestamp)> {
+// (wire bundle bytes, payload bytes). The client retains the payload bytes to
+// compare against the reflected response for round-trip integrity.
+pub type BuiltPing = (Box<[u8]>, Box<[u8]>);
+
+pub fn build_payload(args: &Command, seq_no: u32) -> anyhow::Result<BuiltPing> {
     let creation = time::OffsetDateTime::now_utc();
-    let creation_timestamp: CreationTimestamp = creation
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Failed to convert creation time"))?;
 
     (args.lifetime().as_millis() <= u64::MAX as u128)
         .then_some(())
@@ -187,56 +190,50 @@ pub fn build_payload(
             humantime::format_duration(args.lifetime())
         ))?;
 
-    let bundle = if let Some(target_size) = args.size {
-        // Binary search for exact bundle size
-        // First check if minimum bundle size (no padding) already exceeds target
-        let min_bundle = build_bundle_with_padding(args, seq_no, 0, creation)?;
-        if min_bundle.len() > target_size {
-            return Err(anyhow::anyhow!(
-                "Minimum bundle size ({} bytes) exceeds target size ({} bytes)",
-                min_bundle.len(),
-                target_size
-            ));
-        }
-        if min_bundle.len() == target_size {
-            min_bundle
-        } else {
-            // Binary search: padding in [0, target_size]
-            // More padding = larger bundle (monotonic)
-            let mut low = 0usize;
-            let mut high = target_size;
-
-            loop {
-                let mid = (low + high) / 2;
-                let bundle = build_bundle_with_padding(args, seq_no, mid, creation)?;
-
-                match bundle.len().cmp(&target_size) {
-                    std::cmp::Ordering::Equal => break bundle,
-                    std::cmp::Ordering::Less => low = mid + 1,
-                    std::cmp::Ordering::Greater => high = mid.saturating_sub(1),
-                }
-
-                // Convergence check - if we can't make progress, take closest match
-                if low > high {
-                    // Try both bounds and pick the one that gets us closest
-                    let bundle_low = build_bundle_with_padding(args, seq_no, low, creation)?;
-                    if bundle_low.len() == target_size {
-                        break bundle_low;
-                    }
-                    // We couldn't hit exact target (shouldn't happen for reasonable sizes)
-                    return Err(anyhow::anyhow!(
-                        "Cannot achieve exact target size {} bytes (closest: {} bytes with {} padding)",
-                        target_size,
-                        bundle_low.len(),
-                        low
-                    ));
-                }
-            }
-        }
-    } else {
-        // No size target - build without padding
-        build_bundle_with_padding(args, seq_no, 0, creation)?
+    let Some(target_size) = args.size else {
+        // No size target - build without padding.
+        return build_bundle_with_padding(args, seq_no, 0, creation);
     };
 
-    Ok((bundle, creation_timestamp))
+    // Binary search for the padding that hits the exact target bundle size.
+    // More padding = larger bundle (monotonic). build_bundle_with_padding returns
+    // the payload bytes it built, so there is no need to re-parse the bundle.
+    let min = build_bundle_with_padding(args, seq_no, 0, creation)?;
+    if min.0.len() > target_size {
+        return Err(anyhow::anyhow!(
+            "Minimum bundle size ({} bytes) exceeds target size ({} bytes)",
+            min.0.len(),
+            target_size
+        ));
+    }
+    if min.0.len() == target_size {
+        return Ok(min);
+    }
+
+    let mut low = 0usize;
+    let mut high = target_size;
+    loop {
+        let mid = (low + high) / 2;
+        let built = build_bundle_with_padding(args, seq_no, mid, creation)?;
+
+        match built.0.len().cmp(&target_size) {
+            std::cmp::Ordering::Equal => return Ok(built),
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid.saturating_sub(1),
+        }
+
+        // Convergence check - if we can't make progress, take the closest match.
+        if low > high {
+            let built_low = build_bundle_with_padding(args, seq_no, low, creation)?;
+            if built_low.0.len() == target_size {
+                return Ok(built_low);
+            }
+            return Err(anyhow::anyhow!(
+                "Cannot achieve exact target size {} bytes (closest: {} bytes with {} padding)",
+                target_size,
+                built_low.0.len(),
+                low
+            ));
+        }
+    }
 }

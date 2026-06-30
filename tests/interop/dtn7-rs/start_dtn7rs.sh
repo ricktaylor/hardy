@@ -5,7 +5,7 @@
 #   ./tests/interop/dtn7-rs/start_dtn7rs.sh
 #
 # Then in another terminal:
-#   bp ping ipn:23.7 127.0.0.1:4556 --no-sign
+#   bp ping ipn:23.7 127.0.0.1:4556
 
 set -e
 
@@ -63,7 +63,7 @@ echo "  Echo:     ipn:$DTN7_NODE_NUM.7"
 echo "  TCPCLv4:  127.0.0.1:$DTN7_PORT"
 echo ""
 echo "Test with:"
-echo "  bp ping ipn:$DTN7_NODE_NUM.7 127.0.0.1:$DTN7_PORT --no-sign"
+echo "  bp ping ipn:$DTN7_NODE_NUM.7 127.0.0.1:$DTN7_PORT"
 echo ""
 echo "Press Ctrl+C to stop..."
 echo "============================================"

@@ -29,7 +29,7 @@ Hardy is tested against 7 peer implementations. Each test verifies bidirectional
 ./tests/interop/run_all.sh --skip-build      # skip Hardy cargo build
 ```
 
-Results are saved to `run_all_results.md`.
+Results are saved to `interop_results.md`.
 
 ### Individual tests
 
@@ -49,7 +49,7 @@ Each implementation has a `start_*.sh` script for manual testing:
 ./tests/interop/HDTN/start_hdtn.sh
 
 # Terminal 2: Ping it
-bp ping ipn:10.2047 127.0.0.1:4556 --no-sign
+bp ping ipn:10.2047 127.0.0.1:4556
 ```
 
 ## MTCP/STCP CLA

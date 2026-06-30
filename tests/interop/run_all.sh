@@ -5,25 +5,46 @@
 # to produce a markdown comparison table.
 #
 # Usage:
-#   ./tests/interop/run_all.sh [--skip-build]
+#   ./tests/interop/run_all.sh [--skip-build] [--refresh] [--count N]
 #
 # Options:
-#   --skip-build   Skip building Hardy binaries (passed to test scripts)
+#   --skip-build   Skip building Hardy binaries AND skip building any missing peer
+#                  Docker image (such peers are reported "No image"). Default: build
+#                  both, so a plain run will build absent peer images on demand.
+#   --refresh      Force a clean rebuild (docker build --no-cache) of every peer
+#                  image — picks up upstream/Dockerfile changes (passed to each script).
+#   --count N      Pings per implementation (default 20; higher = tighter averages)
+#
+# Writes a generated results table to tests/interop/interop_results.md (git-tracked,
+# do not edit by hand) and prints it to stdout.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# Hardy build under test (git tag/commit), recorded in the results for provenance.
+HARDY_VERSION="$(git -C "$WORKSPACE_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)"
+
 # Configuration
 PING_COUNT=20
 
 # Parse options
 SKIP_BUILD_FLAG=""
+# Whether the *user* asked to skip building. When false (default), missing peer
+# Docker images are built on demand; when true, peers without an image are skipped.
+USER_SKIP_BUILD=false
+# When set, force each peer image to be rebuilt (--no-cache); passed to peer scripts.
+REFRESH_FLAG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD_FLAG="--skip-build"
+            USER_SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH_FLAG="--refresh"
             shift
             ;;
         --count|-c)
@@ -203,7 +224,6 @@ EOF
         OUTPUT=$("$BP_BIN" ping "ipn:99.7" "127.0.0.1:4559" \
             --source "ipn:1.1" \
             --count "$PING_COUNT" \
-            --no-sign \
             2>&1) || true
 
         extract_rtt_stats "$OUTPUT" "Hardy"
@@ -234,9 +254,9 @@ fi
 
 # dtn7-rs
 if [ -x "$SCRIPT_DIR/dtn7-rs/test_dtn7rs_ping.sh" ]; then
-    if docker image inspect dtn7-interop &>/dev/null; then
+    if docker image inspect dtn7-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running dtn7-rs test..."
-        OUTPUT=$("$SCRIPT_DIR/dtn7-rs/test_dtn7rs_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/dtn7-rs/test_dtn7rs_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "dtn7-rs"
         log_info "dtn7-rs complete"
     else
@@ -249,9 +269,9 @@ fi
 
 # HDTN
 if [ -x "$SCRIPT_DIR/HDTN/test_hdtn_ping.sh" ]; then
-    if docker image inspect hdtn-interop &>/dev/null; then
+    if docker image inspect hdtn-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running HDTN test..."
-        OUTPUT=$("$SCRIPT_DIR/HDTN/test_hdtn_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/HDTN/test_hdtn_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "HDTN"
         log_info "HDTN complete"
     else
@@ -264,9 +284,9 @@ fi
 
 # DTNME
 if [ -x "$SCRIPT_DIR/DTNME/test_dtnme_ping.sh" ]; then
-    if docker image inspect dtnme-interop &>/dev/null; then
+    if docker image inspect dtnme-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running DTNME test..."
-        OUTPUT=$("$SCRIPT_DIR/DTNME/test_dtnme_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/DTNME/test_dtnme_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "DTNME"
         log_info "DTNME complete"
     else
@@ -279,9 +299,9 @@ fi
 
 # ION
 if [ -x "$SCRIPT_DIR/ION/test_ion_ping.sh" ]; then
-    if docker image inspect ion-interop &>/dev/null; then
+    if docker image inspect ion-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running ION test..."
-        OUTPUT=$("$SCRIPT_DIR/ION/test_ion_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/ION/test_ion_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "ION"
         log_info "ION complete"
     else
@@ -294,9 +314,9 @@ fi
 
 # ud3tn (MTCP)
 if [ -x "$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" ]; then
-    if docker image inspect ud3tn-interop &>/dev/null; then
+    if docker image inspect ud3tn-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running ud3tn test..."
-        OUTPUT=$("$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/ud3tn/test_ud3tn_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "ud3tn"
         log_info "ud3tn complete"
     else
@@ -309,9 +329,9 @@ fi
 
 # NASA cFS (STCP)
 if [ -x "$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" ]; then
-    if docker image inspect cfs-interop &>/dev/null; then
+    if docker image inspect cfs-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running NASA cFS test..."
-        OUTPUT=$("$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/NASA-cFS/test_cfs_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "NASA cFS"
         log_info "NASA cFS complete"
     else
@@ -324,9 +344,9 @@ fi
 
 # ESA-BP (STCP)
 if [ -x "$SCRIPT_DIR/ESA-BP/test_esa_bp_ping.sh" ]; then
-    if docker image inspect esa-bp-interop &>/dev/null; then
+    if docker image inspect esa-bp-interop &>/dev/null || [ "$USER_SKIP_BUILD" = false ]; then
         log_step "Running ESA-BP test..."
-        OUTPUT=$("$SCRIPT_DIR/ESA-BP/test_esa_bp_ping.sh" $SKIP_BUILD_FLAG --count "$PING_COUNT" 2>&1) || true
+        OUTPUT=$("$SCRIPT_DIR/ESA-BP/test_esa_bp_ping.sh" $SKIP_BUILD_FLAG $REFRESH_FLAG --count "$PING_COUNT" 2>&1) || true
         extract_rtt_stats "$OUTPUT" "ESA-BP"
         log_info "ESA-BP complete"
     else
@@ -373,16 +393,58 @@ calc_comparison() {
     fi
 }
 
+# Collect each implementation's version into VERSION[name]: the Hardy build plus,
+# for each peer, the upstream ref recorded in its image (/interop-version) or pinned
+# in its Dockerfile, so the results record exactly which versions were tested.
+declare -A VERSION
+collect_versions() {
+    VERSION["Hardy"]="$HARDY_VERSION"
+    local meta name image dir df ref esa_src desc pom
+    for meta in \
+        "dtn7-rs|dtn7-interop|dtn7-rs" \
+        "HDTN|hdtn-interop|HDTN" \
+        "DTNME|dtnme-interop|DTNME" \
+        "ION|ion-interop|ION" \
+        "ud3tn|ud3tn-interop|ud3tn" \
+        "NASA cFS|cfs-interop|NASA-cFS" \
+        "ESA-BP|esa-bp-interop|ESA-BP"; do
+        IFS='|' read -r name image dir <<< "$meta"
+        df="$SCRIPT_DIR/$dir/docker/Dockerfile"
+        if [ "$dir" = "ESA-BP" ]; then
+            # ESA-BP builds from a local checkout (the ESCL export ships no .git): report
+            # git describe of that checkout plus the Maven project version from src/pom.xml.
+            esa_src="${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}"
+            desc=$(git -C "$esa_src" describe --tags --always --dirty 2>/dev/null || true)
+            pom=$(grep -m1 -oE '<version>[^<]+</version>' "$esa_src/src/pom.xml" 2>/dev/null | sed -E 's#</?version>##g')
+            if [ -n "$desc" ] && [ -n "$pom" ]; then ref="$desc (declared: $pom)"
+            elif [ -n "$desc" ]; then ref="$desc"
+            else ref="${pom:-source build}"; fi
+        else
+            # Peers bake their version into /interop-version at build time (git describe +
+            # declared manifest version); read it back, overriding the image entrypoint.
+            ref=$(docker run --rm --entrypoint cat "$image" /interop-version 2>/dev/null | head -1)
+            if [ -z "$ref" ]; then
+                # Fallback: the upstream ref pinned in the Dockerfile (image not built yet).
+                ref=$(grep -m1 -E '^ARG [A-Z0-9_]+_REF=' "$df" 2>/dev/null | sed -E 's/^ARG [A-Z0-9_]+_REF=//; s/[[:space:]].*//')
+            fi
+            ref="${ref:-not built}"
+        fi
+        VERSION["$name"]="$ref"
+    done
+}
+collect_versions
+
 # Print markdown table
 echo "## DTN Implementation Ping Benchmark"
 echo ""
-echo "| Implementation | Min | Avg | Max | Stddev | Loss | Pings | vs Hardy |"
-echo "|----------------|-----|-----|-----|--------|------|-------|----------|"
+echo "| Implementation | Version | Min | Avg | Max | Stddev | Loss | Pings | vs Hardy |"
+echo "|----------------|---------|-----|-----|-----|--------|------|-------|----------|"
 
 for result in "${RESULTS[@]}"; do
     IFS='|' read -r name min avg max stddev loss pings avg_us <<< "$result"
     comparison=$(calc_comparison "$avg_us")
-    echo "| $name | $min | $avg | $max | $stddev | $loss | $pings | $comparison |"
+    ver="${VERSION[$name]:-unknown}"
+    echo "| $name | $ver | $min | $avg | $max | $stddev | $loss | $pings | $comparison |"
 done
 
 echo ""
@@ -390,16 +452,19 @@ echo "_Benchmark: $PING_COUNT pings, $(date '+%Y-%m-%d %H:%M:%S')_"
 echo ""
 
 # Also save to file
-OUTPUT_FILE="$SCRIPT_DIR/run_all_results.md"
+OUTPUT_FILE="$SCRIPT_DIR/interop_results.md"
 {
     echo "# DTN Implementation Ping Benchmark"
     echo ""
-    echo "| Implementation | Min | Avg | Max | Stddev | Loss | Pings | vs Hardy |"
-    echo "|----------------|-----|-----|-----|--------|------|-------|----------|"
+    echo "_Generated $(date '+%Y-%m-%d %H:%M:%S') by \`tests/interop/run_all.sh\` — do not edit by hand._"
+    echo ""
+    echo "| Implementation | Version | Min | Avg | Max | Stddev | Loss | Pings | vs Hardy |"
+    echo "|----------------|---------|-----|-----|-----|--------|------|-------|----------|"
     for result in "${RESULTS[@]}"; do
         IFS='|' read -r name min avg max stddev loss pings avg_us <<< "$result"
         comparison=$(calc_comparison "$avg_us")
-        echo "| $name | $min | $avg | $max | $stddev | $loss | $pings | $comparison |"
+        ver="${VERSION[$name]:-unknown}"
+        echo "| $name | $ver | $min | $avg | $max | $stddev | $loss | $pings | $comparison |"
     done
     echo ""
     echo "## Notes"
@@ -408,8 +473,6 @@ OUTPUT_FILE="$SCRIPT_DIR/run_all_results.md"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
     echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION, ESA-BP, NASA cFS use STCP via client CLA"
     echo "- Hardy baseline runs inline; other tests use existing interop scripts"
-    echo ""
-    echo "_$PING_COUNT pings per test, generated $(date '+%Y-%m-%d %H:%M:%S')_"
 } > "$OUTPUT_FILE"
 
 log_info "Results saved to: $OUTPUT_FILE"

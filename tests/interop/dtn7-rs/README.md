@@ -73,7 +73,6 @@ disk I/O during benchmarks.
 | Echo service | 7 | Standard BPv7 echo service |
 | TCPCLv4 port | 4556 | IANA standard; used by dtn7-rs in Test 1, Hardy in Test 2 |
 | TLS | Disabled | |
-| Bundle signing | Disabled | `--no-sign` |
 
 ## File Layout
 

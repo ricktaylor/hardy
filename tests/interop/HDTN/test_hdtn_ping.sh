@@ -43,11 +43,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -145,7 +150,10 @@ fi
 # Build or check for HDTN
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for hdtn-interop Docker image..."
-    if ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing hdtn-interop image (--no-cache)..."
+        docker build --no-cache -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
         log_info "Building hdtn-interop Docker image (this may take a while)..."
         docker build -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
     else
@@ -242,10 +250,9 @@ echo ""
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Use a known source EID so HDTN can route responses back
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
     --source "ipn:$HARDY_NODE_NUM.1" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"

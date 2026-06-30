@@ -19,7 +19,7 @@
 
 FROM debian:bookworm AS builder
 
-ARG ION_REF=integration
+ARG ION_REF=ion-open-source-4.1.4
 ARG CORES=4
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,7 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Clone ION from GitHub
 WORKDIR /build
 RUN git clone https://github.com/nasa-jpl/ION-DTN.git . && \
-    git checkout ${ION_REF}
+    git checkout ${ION_REF} && \
+    { d=$(git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD); \
+      m=$(grep -hm1 -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[0-9]' Cargo.toml 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/'); \
+      [ -z "$m" ] && m=$(grep -rhim1 'project[[:space:]]*(' CMakeLists.txt 2>/dev/null | grep -oE 'VERSION[[:space:]]+[0-9][0-9.]*' | grep -oE '[0-9][0-9.]*' | head -1); \
+      [ -z "$m" ] && m=$(sed -n 's/.*AC_INIT(\[[^]]*\],[[:space:]]*\[\([^]]*\)\].*/\1/p' configure.ac 2>/dev/null | head -1); \
+      [ -z "$m" ] && [ -f VERSION ] && m=$(head -1 VERSION); \
+      printf '%s%s\n' "$d" "${m:+ (declared: $m)}"; } > /interop-version
 
 # Build ION using autotools
 RUN autoreconf -fi && \
@@ -56,6 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy installed ION binaries and libraries
 COPY --from=builder /install/usr/local/ /usr/local/
+COPY --from=builder /interop-version /interop-version
 
 # Refresh shared library cache
 RUN ldconfig

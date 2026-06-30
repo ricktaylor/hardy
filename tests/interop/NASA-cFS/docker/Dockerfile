@@ -17,10 +17,10 @@
 ##############################################
 FROM ubuntu:22.04 AS builder
 
-ARG CFS_REF=main
-ARG BPNODE_REF=main
-ARG BPLIB_REF=main
-ARG CF_REF=main
+ARG CFS_REF=v7.0.1
+ARG BPNODE_REF=v7.0.5
+ARG BPLIB_REF=v7.0.5
+ARG CF_REF=v7.0.1
 ARG TINYCBOR_REF=v0.6.0
 ARG CORES=4
 
@@ -58,6 +58,13 @@ RUN git clone --depth 1 --branch ${BPLIB_REF} \
 RUN git clone --depth 1 --branch ${CF_REF} \
         https://github.com/nasa/cf.git src/cf
 
+# Record the BP-relevant component versions (closest tag to HEAD; sha for shallow branch clones)
+RUN { printf 'cFS=%s bpnode=%s bplib=%s' \
+        "$(cd cfs-bundle && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })" \
+        "$(cd src/bpnode && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })" \
+        "$(cd src/bplib && { git describe --tags --always --dirty 2>/dev/null || git rev-parse HEAD; })"; \
+    } > /interop-version
+
 # Build and install TinyCBOR
 RUN git clone --depth 1 --branch ${TINYCBOR_REF} \
         https://github.com/intel/tinycbor.git && \
@@ -75,6 +82,11 @@ COPY stcpsock_intf cfs-bundle/psp/fsw/modules/stcpsock_intf
 # Echo service app — relays ADU payloads through a second SB message so that
 # a single BPLib channel can echo from the same service EID (RFC 9171 §4.2.2)
 COPY echo_app src/echo_app
+
+# Ping app — the originator mirror of echo_app for the reverse-direction test
+# (cFS pings Hardy). Shares Channel 0's wiring; loaded instead of echo_app when
+# start_cfs runs in TEST_MODE=ping.
+COPY ping_app src/ping_app
 
 # ---- BPNode bug fixes (candidates for upstream) ----
 
@@ -138,7 +150,9 @@ RUN cp -v cfs-bundle/apps/ci_lab/fsw/inc/ci_lab_topicids.h ./interop_defs/ && \
 # Overlay our interop-specific configuration
 COPY cfs-config/targets.cmake        ./interop_defs/targets.cmake
 COPY cfs-config/bpnode_mission_cfg.h ./interop_defs/bpnode_mission_cfg.h
-COPY cfs-config/cfe_es_startup.scr   ./interop_defs/cfe_es_startup.scr
+# The build installs the echo variant as the default cf/cfe_es_startup.scr;
+# start_cfs overwrites it with the mode-specific variant at runtime.
+COPY cfs-config/cfe_es_startup_echo.scr ./interop_defs/cfe_es_startup.scr
 COPY cfs-config/extra_install.cmake  ./interop_defs/extra_install.cmake
 COPY cfs-config/install_custom.cmake ./interop_defs/install_custom.cmake
 
@@ -184,9 +198,11 @@ COPY --from=builder /build/exe /opt/cfs
 
 # Copy the host utilities (cmdUtil etc.)
 COPY --from=builder /build/exe/host /opt/cfs/host
+COPY --from=builder /interop-version /interop-version
 
-# Copy startup script to a known location
-COPY cfs-config/cfe_es_startup.scr /opt/cfs/cfe_es_startup.scr
+# Ship both per-test startup scripts; start_cfs picks one by TEST_MODE
+COPY cfs-config/cfe_es_startup_echo.scr /opt/cfs/cfe_es_startup_echo.scr
+COPY cfs-config/cfe_es_startup_ping.scr /opt/cfs/cfe_es_startup_ping.scr
 
 # Copy start script
 COPY docker/start_cfs /usr/local/bin/start_cfs

@@ -1,9 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
-use hardy_bpv7::{
-    bpsec, bundle::ParsedBundle, creation_timestamp::CreationTimestamp, eid::Eid,
-    status_report::AdministrativeRecord,
-};
+use hardy_bpv7::{bpsec, bundle::ParsedBundle, eid::Eid, status_report::AdministrativeRecord};
 use hardy_cbor::decode::FromCbor;
 use std::{
     collections::{HashMap, HashSet},
@@ -63,33 +60,50 @@ impl Statistics {
     }
 }
 
-// Entry for tracking a sent bundle, with timestamp for aging out old entries.
+// Entry for tracking a sent request bundle, keyed by its bundle-id, so that
+// forward-leg ("Ping") status reports can be matched to a sequence number.
 struct SentBundle {
     seqno: u32,
     send_time: time::OffsetDateTime,
 }
 
-// A hop in the bundle's path, discovered via status reports.
+// A hop on the outbound (Ping) path for one sequence number, from a status
+// report; elapsed is measured from when that request was sent.
 struct PathHop {
     node: Eid,
     elapsed: std::time::Duration,
     kind: hardy_bpa::services::StatusNotify,
-    // Whether this hop is from the return-trip (pong) path vs outbound (ping) path.
-    is_return_trip: bool,
+}
+
+// A hop on the return (Pong) path of one echo response bundle. The client never
+// sent the response, so there is no send time to measure against — the absolute
+// report time is kept and rendered relative to the first report for that bundle.
+struct ReturnHop {
+    node: Eid,
+    kind: hardy_bpa::services::StatusNotify,
+    report_time: time::OffsetDateTime,
 }
 
 // Shared mutable state protected by a single mutex.
 struct SharedState {
     sent_bundles: HashMap<hardy_bpv7::bundle::Id, SentBundle>,
-    expected_responses: HashMap<u32, time::OffsetDateTime>,
+    // Sequence number -> (send time, the payload bytes we sent). The send time
+    // drives the RTT calculation; the payload bytes are compared against the
+    // reflected payload for round-trip integrity.
+    expected_responses: HashMap<u32, (time::OffsetDateTime, Box<[u8]>)>,
     stats: Statistics,
-    // Path hops discovered via status reports, keyed by sequence number.
+    // Outbound (Ping) path hops, keyed by sequence number.
     path_hops: HashMap<u32, Vec<PathHop>>,
-    // Sequence numbers that received echo replies (to filter "Lost" display).
-    replied: std::collections::HashSet<u32>,
-    // Reverse lookup: creation timestamp -> (seqno, send_time).
-    // Used to match return-trip status reports where bundle_id.source is the echo service.
-    creation_to_seqno: HashMap<CreationTimestamp, (u32, time::OffsetDateTime)>,
+    // Sequence numbers that received a reply (to filter the "lost" display).
+    replied: HashSet<u32>,
+    // Sequence numbers already counted towards count-based termination. A single
+    // ping generates several status reports (delivery is always followed by a
+    // deletion, on both legs), so this guards each ping to exactly one permit.
+    resolved: HashSet<u32>,
+    // Return (Pong) journeys, keyed by the echo response bundle-id (echo source
+    // + creation timestamp). A status report carries no echoed sequence number,
+    // so return-leg reports can only be grouped per response bundle, not per ping.
+    return_journeys: HashMap<hardy_bpv7::bundle::Id, Vec<ReturnHop>>,
 }
 
 pub struct Service {
@@ -98,8 +112,6 @@ pub struct Service {
     destination: Eid,
     lifetime: std::time::Duration,
     quiet: bool,
-    // Random ephemeral key for BIB signing/verification (None if --no-sign)
-    signing_key: Option<bpsec::key::Key>,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
     state: std::sync::Mutex<SharedState>,
@@ -107,33 +119,12 @@ pub struct Service {
 
 impl Service {
     pub fn new(args: &Command) -> Self {
-        // Generate random 256-bit key for HMAC-SHA256 if signing enabled
-        let signing_key = if args.no_sign {
-            None
-        } else {
-            let mut key_bytes = [0u8; 32];
-            rand::rng().fill(&mut key_bytes);
-
-            Some(bpsec::key::Key {
-                key_type: bpsec::key::Type::OctetSequence {
-                    key: key_bytes.into(),
-                },
-                key_algorithm: Some(bpsec::key::KeyAlgorithm::HS256),
-                operations: Some(HashSet::from([
-                    bpsec::key::Operation::Sign,
-                    bpsec::key::Operation::Verify,
-                ])),
-                ..Default::default()
-            })
-        };
-
         Self {
             sink: std::sync::OnceLock::new(),
             node_id: args.node_id().unwrap().to_string(),
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             quiet: args.quiet,
-            signing_key,
             count: args.count,
             semaphore: args.count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
             state: std::sync::Mutex::new(SharedState {
@@ -141,8 +132,9 @@ impl Service {
                 expected_responses: HashMap::new(),
                 stats: Statistics::default(),
                 path_hops: HashMap::new(),
-                replied: std::collections::HashSet::new(),
-                creation_to_seqno: HashMap::new(),
+                replied: HashSet::new(),
+                resolved: HashSet::new(),
+                return_journeys: HashMap::new(),
             }),
         }
     }
@@ -156,14 +148,13 @@ impl Service {
             .retain(|_, entry| entry.send_time > cutoff);
         state
             .expected_responses
-            .retain(|_, send_time| *send_time > cutoff);
+            .retain(|_, (send_time, _)| *send_time > cutoff);
         state
-            .creation_to_seqno
-            .retain(|_, (_, send_time)| *send_time > cutoff);
+            .return_journeys
+            .retain(|_, hops| hops.iter().any(|h| h.report_time > cutoff));
     }
 
-    // Print and clear the discovered path for a sequence number.
-    // Shows outbound (ping) and return (pong) paths as a hairpin visualization.
+    // Print and clear the discovered outbound (Ping) path for a sequence number.
     fn print_path(&self, seqno: u32) {
         let hops = self
             .state
@@ -177,106 +168,38 @@ impl Service {
             return;
         }
 
-        // Separate hops by direction
-        let (outbound, return_trip): (Vec<_>, Vec<_>) =
-            hops.iter().partition(|h| !h.is_return_trip);
-
-        // Helper to format a path segment
-        let format_segment = |hops: &[&PathHop]| -> Vec<String> {
-            // Group hops by node
-            let mut nodes: Vec<(&Eid, Vec<&PathHop>)> = Vec::new();
-            for hop in hops {
-                if let Some((_, node_hops)) = nodes.iter_mut().find(|(n, _)| *n == &hop.node) {
-                    node_hops.push(hop);
-                } else {
-                    nodes.push((&hop.node, vec![*hop]));
-                }
+        // Group hops by node, preserving discovery order.
+        let mut nodes: Vec<(&Eid, Vec<&PathHop>)> = Vec::new();
+        for hop in &hops {
+            if let Some((_, node_hops)) = nodes.iter_mut().find(|(n, _)| *n == &hop.node) {
+                node_hops.push(hop);
+            } else {
+                nodes.push((&hop.node, vec![hop]));
             }
-
-            // Sort nodes by their earliest status time
-            nodes.sort_by_key(|(_, node_hops)| node_hops.iter().map(|h| h.elapsed).min());
-
-            // Format each node's status times
-            nodes
-                .iter()
-                .map(|(node, node_hops)| {
-                    let mut statuses: Vec<String> = node_hops
-                        .iter()
-                        .map(|h| {
-                            let abbrev = match h.kind {
-                                hardy_bpa::services::StatusNotify::Received => "rcv",
-                                hardy_bpa::services::StatusNotify::Forwarded => "fwd",
-                                hardy_bpa::services::StatusNotify::Delivered => "dlv",
-                                hardy_bpa::services::StatusNotify::Deleted => "del",
-                            };
-                            format!("{} {}", abbrev, humantime::format_duration(h.elapsed))
-                        })
-                        .collect();
-                    statuses.sort();
-                    format!("{} ({})", node, statuses.join(", "))
-                })
-                .collect()
-        };
-
-        // Format outbound path (ping)
-        let outbound_refs: Vec<&PathHop> = outbound.into_iter().collect();
-        let outbound_nodes = format_segment(&outbound_refs);
-
-        // Format return path (pong), reversed for right-to-left display
-        let return_refs: Vec<&PathHop> = return_trip.into_iter().collect();
-        let mut return_nodes = format_segment(&return_refs);
-        return_nodes.reverse();
-
-        // Print hairpin visualization
-        if !outbound_nodes.is_empty() && !return_nodes.is_empty() {
-            // Both paths - show hairpin
-            let outbound_str = outbound_nodes.join(" -> ");
-            let return_str = return_nodes.join(" <- ");
-            println!("  path: {} \u{2500}\u{2510}", outbound_str); // ─┐
-            println!("        {} <\u{2518}", return_str); // <┘
-        } else if !outbound_nodes.is_empty() {
-            // Only outbound
-            println!("  path: {}", outbound_nodes.join(" -> "));
-        } else if !return_nodes.is_empty() {
-            // Only return
-            println!("  path: {}", return_nodes.join(" <- "));
         }
-    }
 
-    // Sign the payload block with BIB-HMAC-SHA2.
-    fn sign_bundle(
-        &self,
-        bundle_bytes: &[u8],
-        args: &Command,
-        key: &bpsec::key::Key,
-    ) -> anyhow::Result<Box<[u8]>> {
-        // Parse the bundle to get access to block structure
-        let parsed = ParsedBundle::parse(bundle_bytes, bpsec::no_keys)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle for signing: {e}"))?;
+        // Sort nodes by their earliest status time.
+        nodes.sort_by_key(|(_, node_hops)| node_hops.iter().map(|h| h.elapsed).min());
 
-        let source = args.source.clone().unwrap();
+        let segments: Vec<String> = nodes
+            .iter()
+            .map(|(node, node_hops)| {
+                let mut statuses: Vec<String> = node_hops
+                    .iter()
+                    .map(|h| {
+                        format!(
+                            "{} {}",
+                            abbrev(h.kind),
+                            humantime::format_duration(h.elapsed)
+                        )
+                    })
+                    .collect();
+                statuses.sort();
+                format!("{} ({})", node, statuses.join(", "))
+            })
+            .collect();
 
-        // Sign the payload block (block number 1)
-        // Exclude primary block from scope - the echo service modifies it
-        // (swapping source/destination). Include target and security headers.
-        let scope = bpsec::rfc9173::ScopeFlags {
-            include_primary_block: false,
-            include_target_header: true,
-            include_security_header: true,
-            unrecognised: None,
-        };
-        let signed_bytes = bpsec::signer::Signer::new(&parsed.bundle, bundle_bytes)
-            .sign_block(
-                1, // payload block
-                bpsec::signer::Context::HMAC_SHA2(scope),
-                source,
-                key,
-            )
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to sign payload: {e}"))?
-            .rebuild()
-            .map_err(|e| anyhow::anyhow!("Failed to rebuild signed bundle: {e}"))?;
-
-        Ok(signed_bytes)
+        println!("  path: {}", segments.join(" -> "));
     }
 
     // Get a copy of the current statistics.
@@ -327,58 +250,77 @@ impl Service {
             );
         }
 
-        // Show last-seen info for truly lost bundles — those that have
-        // status reports but never received an echo reply.
-        let lost_seqnos: Vec<_> = {
-            let mut seqnos: Vec<_> = state
-                .path_hops
-                .keys()
-                .filter(|seqno| !state.replied.contains(seqno))
-                .copied()
-                .collect();
-            seqnos.sort();
-            seqnos
-        };
+        // Last-seen info for lost bundles — those with outbound status reports
+        // but no reply.
+        let mut lost_seqnos: Vec<_> = state
+            .path_hops
+            .keys()
+            .filter(|seqno| !state.replied.contains(seqno))
+            .copied()
+            .collect();
+        lost_seqnos.sort();
 
         if !lost_seqnos.is_empty() {
             println!();
             println!("Lost bundles last seen:");
-
-            let seqnos = lost_seqnos;
-
-            for seqno in seqnos {
-                if let Some(hops) = state.path_hops.get(&seqno) {
-                    // Find the latest status report for this bundle
-                    if let Some(last_hop) = hops.iter().max_by_key(|h| h.elapsed) {
-                        let status = match last_hop.kind {
-                            hardy_bpa::services::StatusNotify::Received => "received by",
-                            hardy_bpa::services::StatusNotify::Forwarded => "forwarded by",
-                            hardy_bpa::services::StatusNotify::Delivered => "delivered to",
-                            hardy_bpa::services::StatusNotify::Deleted => "deleted by",
-                        };
-                        println!(
-                            "  seq={} {} {} after {}",
-                            seqno,
-                            status,
-                            last_hop.node,
-                            humantime::format_duration(last_hop.elapsed)
-                        );
-                    }
+            for seqno in lost_seqnos {
+                if let Some(hops) = state.path_hops.get(&seqno)
+                    && let Some(last_hop) = hops.iter().max_by_key(|h| h.elapsed)
+                {
+                    let status = match last_hop.kind {
+                        hardy_bpa::services::StatusNotify::Received => "received by",
+                        hardy_bpa::services::StatusNotify::Forwarded => "forwarded by",
+                        hardy_bpa::services::StatusNotify::Delivered => "delivered to",
+                        hardy_bpa::services::StatusNotify::Deleted => "deleted by",
+                    };
+                    println!(
+                        "  seq={} {} {} after {}",
+                        seqno,
+                        status,
+                        last_hop.node,
+                        humantime::format_duration(last_hop.elapsed)
+                    );
                 }
+            }
+        }
+
+        // Return (Pong) journeys: status reports about the echo's response
+        // bundles. No sequence number is recoverable, so each response bundle is
+        // listed in the order first observed, with times relative to its first
+        // report.
+        if !state.return_journeys.is_empty() {
+            println!();
+            println!("Return journeys (from {}):", self.destination);
+            let mut journeys: Vec<&Vec<ReturnHop>> = state.return_journeys.values().collect();
+            journeys.sort_by_key(|hops| hops.iter().map(|h| h.report_time).min());
+            for (n, hops) in journeys.iter().enumerate() {
+                let t0 = hops.iter().map(|h| h.report_time).min();
+                let mut sorted: Vec<&ReturnHop> = hops.iter().collect();
+                sorted.sort_by_key(|h| h.report_time);
+                let segments: Vec<String> = sorted
+                    .iter()
+                    .map(
+                        |h| match t0.and_then(|t0| (h.report_time - t0).try_into().ok()) {
+                            Some(elapsed) => {
+                                let elapsed: std::time::Duration = elapsed;
+                                format!(
+                                    "{} {} ({})",
+                                    abbrev(h.kind),
+                                    h.node,
+                                    humantime::format_duration(elapsed)
+                                )
+                            }
+                            None => format!("{} {}", abbrev(h.kind), h.node),
+                        },
+                    )
+                    .collect();
+                println!("  response {}: {}", n + 1, segments.join(" -> "));
             }
         }
     }
 
     pub async fn send(&self, args: &Command, seq_no: u32) -> anyhow::Result<()> {
-        // build_payload returns raw bundle bytes and creation timestamp
-        let (bundle_bytes, creation_timestamp) = ping::payload::build_payload(args, seq_no)?;
-
-        // Sign the bundle if signing is enabled
-        let bundle_bytes = if let Some(ref key) = self.signing_key {
-            self.sign_bundle(&bundle_bytes, args, key)?
-        } else {
-            bundle_bytes
-        };
+        let (bundle_bytes, payload_bytes) = ping::payload::build_payload(args, seq_no)?;
 
         if !self.quiet {
             eprintln!("Sending ping {seq_no}...");
@@ -404,11 +346,9 @@ impl Service {
                     send_time,
                 },
             );
-            // Store reverse lookup for matching return-trip status reports
             state
-                .creation_to_seqno
-                .insert(creation_timestamp, (seq_no, send_time));
-            state.expected_responses.insert(seq_no, send_time);
+                .expected_responses
+                .insert(seq_no, (send_time, payload_bytes));
             state.stats.sent += 1;
         }
 
@@ -430,201 +370,59 @@ impl Service {
             };
         }
     }
-}
 
-#[async_trait]
-impl hardy_bpa::services::Service for Service {
-    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
-        // Ensure single initialization
-        self.sink.get_or_init(|| sink);
-    }
-
-    async fn on_unregister(&self) {
-        // Nothing to do
-    }
-
-    async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
-        // Record receive time immediately for accurate RTT
-        let receive_time = time::OffsetDateTime::now_utc();
-
-        // Parse the raw bundle, verifying BIB if we have a signing key
-        let (bundle, corrupted) = if let Some(ref key) = self.signing_key {
-            // Create a KeySet that provides our key for verification
-            let key_set = bpsec::key::KeySet::new(vec![key.clone()]);
-            match hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_set) {
-                Ok(b) => (b.bundle, false),
-                Err(e) => {
-                    // Check if this is a BIB verification failure (integrity check failed)
-                    let is_integrity_failure = matches!(
-                        e,
-                        hardy_bpv7::Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)
-                    );
-                    if is_integrity_failure {
-                        // Try parsing without keys to get basic bundle info for logging
-                        match hardy_bpv7::bundle::ParsedBundle::parse(&data, bpsec::no_keys) {
-                            Ok(b) => (b.bundle, true),
-                            Err(e2) => {
-                                eprintln!("Failed to parse corrupted bundle: {e2}");
-                                return;
-                            }
-                        }
-                    } else {
-                        eprintln!("Failed to parse bundle: {e}");
-                        return;
-                    }
-                }
-            }
-        } else {
-            // No signing key - parse without verification
-            match hardy_bpv7::bundle::ParsedBundle::parse(&data, bpsec::no_keys) {
-                Ok(b) => (b.bundle, false),
-                Err(e) => {
-                    eprintln!("Failed to parse bundle: {e}");
-                    return;
-                }
-            }
-        };
-
-        // Extract payload from payload block (block number 1)
-        let payload_block = match bundle.blocks.get(&1) {
-            Some(b) => b,
-            None => {
-                eprintln!("Bundle has no payload block");
-                return;
-            }
-        };
-        let payload_data = match payload_block.payload(&data) {
-            Some(p) => p,
-            None => {
-                eprintln!("Bundle has no payload data");
-                return;
-            }
-        };
-
-        // Check if this is an admin record (status report)
-        // Must check BEFORE source validation - status reports come from intermediate nodes
-        if bundle.flags.is_admin_record {
-            self.handle_status_report(payload_data, &bundle.id.source);
+    // Mark a ping resolved for count-based termination, releasing its single
+    // permit the first time. A ping is resolved by its reply, a payload
+    // mismatch, or an outbound-leg deletion; every subsequent status report for
+    // the same sequence number (notably the deletion that always follows local
+    // delivery) is a no-op. Does nothing outside count mode, where the set is
+    // bounded by the ping count.
+    fn resolve(&self, seqno: u32) {
+        let Some(semaphore) = &self.semaphore else {
             return;
-        }
-
-        // For ping responses (not admin records), verify source is the echo destination
-        if bundle.id.source != self.destination {
-            eprintln!(
-                "Ignoring bundle from unexpected source EID '{}'",
-                bundle.id.source
-            );
-            return;
-        }
-
-        // Parse CBOR payload
-        let payload = match payload::Payload::from_cbor(payload_data) {
-            Ok((p, _, _)) => p,
-            Err(e) => {
-                eprintln!("Failed to parse ping payload: {e}");
-                return;
-            }
         };
-
-        // Handle corrupted bundles
-        if corrupted {
-            eprintln!(
-                "WARNING: Ping {} integrity check FAILED - payload corrupted!",
-                payload.seqno
-            );
-            {
-                let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
-                state.stats.corrupted += 1;
-                // Remove from expected responses but don't count in RTT stats
-                state.expected_responses.remove(&payload.seqno);
-            }
-
-            // Still signal response received for count-based termination
-            if let Some(semaphore) = &self.semaphore {
-                semaphore.add_permits(1);
-            }
-            return;
-        }
-
-        let sent_time = self
+        let newly_resolved = self
             .state
             .lock()
             .trace_expect("Failed to lock state mutex")
-            .expected_responses
-            .remove(&payload.seqno);
-        let Some(sent_time) = sent_time else {
-            eprintln!(
-                "Ignoring unexpected ping response with sequence number {}",
-                payload.seqno
-            );
-            return;
-        };
-
-        // Calculate RTT using LOCAL timestamps (not payload timestamps)
-        // This avoids clock synchronization issues between nodes
-        if let Ok(rtt) = (receive_time - sent_time).try_into() {
-            // Record statistics
-            {
-                let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
-                state.stats.record_rtt(rtt);
-                state.replied.insert(payload.seqno);
-            }
-
-            if !self.quiet {
-                println!(
-                    "Reply from {}: seq={} rtt={}",
-                    bundle.id.source,
-                    payload.seqno,
-                    humantime::format_duration(rtt)
-                );
-            }
-            // Print path (also cleans up path_hops entry)
-            self.print_path(payload.seqno);
-        } else {
-            eprintln!(
-                "Failed to compute round-trip time for ping {}",
-                payload.seqno
-            );
-        }
-
-        // Indicate that we have received a response
-        if let Some(semaphore) = &self.semaphore {
+            .resolved
+            .insert(seqno);
+        if newly_resolved {
             semaphore.add_permits(1);
         }
     }
 
-    async fn on_status_notify(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &hardy_bpv7::eid::Eid,
-        _kind: hardy_bpa::services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
-        _timestamp: Option<time::OffsetDateTime>,
-    ) {
-        // Status reports arrive via on_receive when report_to = service EID
-    }
-}
-
-impl Service {
-    // Handle incoming status reports (admin records).
-    fn handle_status_report(&self, payload_data: &[u8], from: &Eid) {
+    // Handle an incoming status report (administrative record).
+    fn handle_status_report(&self, payload_data: &[u8], report_source: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
 
-        // Parse as status report
         let report = match hardy_cbor::decode::parse::<AdministrativeRecord>(payload_data) {
             Ok(AdministrativeRecord::BundleStatusReport(r)) => r,
             _ => return,
         };
 
-        // Lookup seqno/send_time - try bundle_id first (outbound), then creation_timestamp (return-trip)
-        let (seqno, send_time, is_return_trip) = {
+        // A status report identifies its subject only by bundle-id (source +
+        // creation timestamp) — there is no echoed sequence number. Classify by
+        // subject: a forward-leg ("Ping") report is about one of our own request
+        // bundles (known id -> seqno); a return-leg ("Pong") report is about an
+        // echo response bundle (source == the echo endpoint) and cannot be tied
+        // to a sequence number, so it is grouped per response bundle-id.
+        enum Leg {
+            Forward {
+                seqno: u32,
+                send_time: time::OffsetDateTime,
+            },
+            Return,
+        }
+        let leg = {
             let state = self.state.lock().trace_expect("Failed to lock state mutex");
-            if let Some(e) = state.sent_bundles.get(&report.bundle_id) {
-                (e.seqno, e.send_time, false)
-            } else if let Some(&(seq, time)) =
-                state.creation_to_seqno.get(&report.bundle_id.timestamp)
-            {
-                (seq, time, true)
+            if let Some(entry) = state.sent_bundles.get(&report.bundle_id) {
+                Leg::Forward {
+                    seqno: entry.seqno,
+                    send_time: entry.send_time,
+                }
+            } else if report.bundle_id.source == self.destination {
+                Leg::Return
             } else {
                 if !self.quiet {
                     eprintln!("Spurious status report received!");
@@ -633,7 +431,6 @@ impl Service {
             }
         };
 
-        // Process each assertion with same output format as before
         for (kind, assertion) in [
             (
                 hardy_bpa::services::StatusNotify::Received,
@@ -651,51 +448,225 @@ impl Service {
         ] {
             let Some(assertion) = assertion else { continue };
 
-            let direction = if is_return_trip { "Pong" } else { "Ping" };
-            let mut output = format!("{direction} {seqno}");
+            let report_time = assertion.0.unwrap_or_else(time::OffsetDateTime::now_utc);
+            let location = if report_source.to_string() != self.node_id {
+                format!(" by {report_source}")
+            } else {
+                " locally".to_string()
+            };
+            let reason = if matches!(report.reason, ReasonCode::NoAdditionalInformation) {
+                String::new()
+            } else {
+                format!(", {:?},", report.reason)
+            };
 
-            match kind {
-                hardy_bpa::services::StatusNotify::Received => output.push_str(" received"),
-                hardy_bpa::services::StatusNotify::Forwarded => output.push_str(" forwarded"),
-                hardy_bpa::services::StatusNotify::Delivered => output.push_str(" delivered"),
-                hardy_bpa::services::StatusNotify::Deleted => {
-                    output.push_str(" deleted");
-                    if let Some(semaphore) = &self.semaphore {
-                        semaphore.add_permits(1);
+            match &leg {
+                Leg::Forward { seqno, send_time } => {
+                    let elapsed: Option<std::time::Duration> =
+                        (report_time - *send_time).try_into().ok();
+                    let after = elapsed
+                        .map(|e| format!(" after {}", humantime::format_duration(e)))
+                        .unwrap_or_default();
+                    if !self.quiet {
+                        println!("Ping {seqno} {}{location}{reason}{after}", verb(kind));
+                    }
+                    // Track non-local hops for the per-seqno outbound path.
+                    if let Some(elapsed) = elapsed
+                        && report_source.to_string() != self.node_id
+                    {
+                        self.state
+                            .lock()
+                            .trace_expect("Failed to lock state mutex")
+                            .path_hops
+                            .entry(*seqno)
+                            .or_default()
+                            .push(PathHop {
+                                node: report_source.clone(),
+                                elapsed,
+                                kind,
+                            });
+                    }
+                    // A deletion on the outbound leg ends this ping: it either
+                    // never reached the echo, or was delivered and cleaned up.
+                    // Either way no further reply is expected for this seqno.
+                    if matches!(kind, hardy_bpa::services::StatusNotify::Deleted) {
+                        self.resolve(*seqno);
                     }
                 }
-            }
-
-            if from.to_string() != self.node_id {
-                output = format!("{output} by {from}");
-            } else {
-                output.push_str(" locally");
-            }
-
-            if !matches!(report.reason, ReasonCode::NoAdditionalInformation) {
-                output = format!("{output}, {:?},", report.reason);
-            }
-
-            let report_time = assertion.0.unwrap_or_else(time::OffsetDateTime::now_utc);
-            if let Ok(elapsed) = (report_time - send_time).try_into() {
-                let elapsed: std::time::Duration = elapsed;
-                output = format!("{output} after {}", humantime::format_duration(elapsed));
-
-                // Track hops for path display (exclude local node)
-                if from.to_string() != self.node_id {
-                    let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
-                    state.path_hops.entry(seqno).or_default().push(PathHop {
-                        node: from.clone(),
-                        elapsed,
-                        kind,
-                        is_return_trip,
-                    });
+                Leg::Return => {
+                    // Return-leg reports carry no echoed sequence number, so they
+                    // never resolve a ping for count-based termination; the
+                    // outbound leg always does that. They are recorded only for
+                    // the return-journey display.
+                    if !self.quiet {
+                        println!(
+                            "Pong (from {}) {}{location}{reason}",
+                            self.destination,
+                            verb(kind)
+                        );
+                    }
+                    self.state
+                        .lock()
+                        .trace_expect("Failed to lock state mutex")
+                        .return_journeys
+                        .entry(report.bundle_id.clone())
+                        .or_default()
+                        .push(ReturnHop {
+                            node: report_source.clone(),
+                            kind,
+                            report_time,
+                        });
                 }
+            }
+        }
+    }
+}
+
+// Short label for a status kind, used in path displays.
+fn abbrev(kind: hardy_bpa::services::StatusNotify) -> &'static str {
+    match kind {
+        hardy_bpa::services::StatusNotify::Received => "rcv",
+        hardy_bpa::services::StatusNotify::Forwarded => "fwd",
+        hardy_bpa::services::StatusNotify::Delivered => "dlv",
+        hardy_bpa::services::StatusNotify::Deleted => "del",
+    }
+}
+
+// Verb for a status kind, used in per-report lines.
+fn verb(kind: hardy_bpa::services::StatusNotify) -> &'static str {
+    match kind {
+        hardy_bpa::services::StatusNotify::Received => "received",
+        hardy_bpa::services::StatusNotify::Forwarded => "forwarded",
+        hardy_bpa::services::StatusNotify::Delivered => "delivered",
+        hardy_bpa::services::StatusNotify::Deleted => "deleted",
+    }
+}
+
+#[async_trait]
+impl hardy_bpa::services::Service for Service {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
+        // Ensure single initialization
+        self.sink.get_or_init(|| sink);
+    }
+
+    async fn on_unregister(&self) {
+        // Nothing to do
+    }
+
+    async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
+        // Record receive time immediately for accurate RTT
+        let receive_time = time::OffsetDateTime::now_utc();
+
+        // Parse the bundle (the client does not use BPSec).
+        let bundle = match ParsedBundle::parse(&data, bpsec::no_keys) {
+            Ok(b) => b.bundle,
+            Err(e) => {
+                eprintln!("Failed to parse bundle: {e}");
+                return;
+            }
+        };
+
+        // Extract the payload block contents.
+        let Some(payload_data) = bundle.blocks.get(&1).and_then(|b| b.payload(&data)) else {
+            eprintln!("Bundle has no payload");
+            return;
+        };
+
+        // Status reports arrive as administrative records; handle before the
+        // source check, since they originate at intermediate nodes.
+        if bundle.flags.is_admin_record {
+            self.handle_status_report(payload_data, &bundle.id.source);
+            return;
+        }
+
+        // A ping response must be sourced by the echo endpoint we pinged.
+        if bundle.id.source != self.destination {
+            eprintln!(
+                "Ignoring bundle from unexpected source EID '{}'",
+                bundle.id.source
+            );
+            return;
+        }
+
+        // Parse our sequence number out of the reflected payload.
+        let payload = match payload::Payload::from_cbor(payload_data) {
+            Ok((p, _, _)) => p,
+            Err(e) => {
+                eprintln!("Failed to parse ping payload: {e}");
+                return;
+            }
+        };
+
+        // Look up the request we sent for this sequence number: the send time
+        // (for RTT) and the payload we sent (for the integrity check).
+        let expected = self
+            .state
+            .lock()
+            .trace_expect("Failed to lock state mutex")
+            .expected_responses
+            .remove(&payload.seqno);
+        let Some((sent_time, sent_payload)) = expected else {
+            eprintln!(
+                "Ignoring unexpected ping response with sequence number {}",
+                payload.seqno
+            );
+            return;
+        };
+
+        // Integrity: the echo reflects the payload byte-for-byte, so the
+        // returned payload must equal what we sent. No BPSec required, and this
+        // works against any conformant echo.
+        if payload_data != sent_payload.as_ref() {
+            eprintln!(
+                "WARNING: Ping {} payload mismatch — response was modified in transit!",
+                payload.seqno
+            );
+            self.state
+                .lock()
+                .trace_expect("Failed to lock state mutex")
+                .stats
+                .corrupted += 1;
+            self.resolve(payload.seqno);
+            return;
+        }
+
+        // Calculate RTT using LOCAL timestamps (not payload timestamps) to avoid
+        // clock synchronization issues between nodes.
+        if let Ok(rtt) = (receive_time - sent_time).try_into() {
+            {
+                let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+                state.stats.record_rtt(rtt);
+                state.replied.insert(payload.seqno);
             }
 
             if !self.quiet {
-                println!("{output}");
+                println!(
+                    "Reply from {}: seq={} rtt={}",
+                    bundle.id.source,
+                    payload.seqno,
+                    humantime::format_duration(rtt)
+                );
             }
+            self.print_path(payload.seqno);
+        } else {
+            eprintln!(
+                "Failed to compute round-trip time for ping {}",
+                payload.seqno
+            );
         }
+
+        // This ping is resolved; release its permit for count-based termination.
+        self.resolve(payload.seqno);
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &hardy_bpv7::eid::Eid,
+        _kind: hardy_bpa::services::StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+        // Status reports arrive via on_receive when report_to = service EID
     }
 }

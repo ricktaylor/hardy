@@ -4,7 +4,7 @@
 # This script tests bidirectional bundle exchange between Hardy and
 # NASA's cFS BPNode implementation:
 #   TEST 1: cFS as server with SB echo, Hardy pings it (via STCP CLA)
-#   TEST 2: (future) cFS injects bundle to Hardy via ci_lab
+#   TEST 2: cFS as client, ping_app originates and counts Hardy's reflections
 #
 # The Hardy side uses the mtcp-cla binary in STCP mode as an external
 # CLA for bp ping (--cla flag).
@@ -45,11 +45,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -147,7 +152,10 @@ done
 # Build or check for cFS Docker image
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for $CFS_IMAGE Docker image..."
-    if ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing cfs-interop image (--no-cache)..."
+        docker build --no-cache -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
+    elif ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
         log_info "Building $CFS_IMAGE Docker image (this may take a while)..."
         docker build -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
     else
@@ -227,13 +235,12 @@ log_step "Hardy pinging cFS echo service at ipn:$CFS_NODE_NUM.7 via STCP..."
 echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-PING_OUTPUT=$(timeout 30s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
     --cla "$MTCP_CLA_BIN" \
     --cla-args "--config $TEST_DIR/stcp_cla.toml" \
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"
@@ -267,14 +274,16 @@ echo "$CFS_LOGS" | grep -i 'BPNODE\|STCP\|contact\|application\|Error\|listen\|a
 echo ""
 
 # =============================================================================
-# TEST 2: Hardy as server, verify cFS delivers bundles to Hardy
-# TODO: This test still uses cFS log-based verification instead of checking
-# actual bundle delivery at Hardy's BPA. Needs redesign — either verify via
-# Hardy BPA logs or use ci_lab to inject bundles for a true reverse-direction test.
+# TEST 2: cFS pings Hardy — cFS originates, Hardy reflects, cFS counts.
+# ping_app (loaded via TEST_MODE=ping) injects N ADUs that Channel 0 wraps
+# into bundles to Hardy's echo service (ipn:1.128). Hardy reflects each back
+# to ipn:100.7; Channel 0 delivers them to ping_app, which counts them and
+# prints the tally on a REPORT command. The reverse mirror of TEST 1, with
+# no UDP telemetry hop.
 # =============================================================================
 echo ""
 echo "============================================================"
-log_info "TEST 2: Hardy server receives echo bundles from cFS via STCP"
+log_info "TEST 2: cFS pings Hardy via ping_app (cFS originates, Hardy reflects)"
 echo "============================================================"
 
 # Start Hardy bpa-server with echo service and gRPC for standalone CLA
@@ -284,7 +293,10 @@ status-reports = true
 node-ids = "ipn:$HARDY_NODE_NUM.0"
 
 [built-in-services]
-echo = [7, 8]
+# Hardy's echo just reflects, so it only needs the service number cFS actually
+# sends to: cFS Channel 0's DestEID is hardcoded to ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM
+# (see docker/Dockerfile). 7/8 were spurious — cFS never targets ipn:1.7 or ipn:1.8.
+echo = [$HARDY_SERVICE_NUM]
 
 [storage.metadata]
 type = "memory"
@@ -332,13 +344,15 @@ EOF
     else
         log_info "MTCP CLA started with PID $MTCP_PID"
 
-        # Start cFS — once contacts start, CLA Out will connect to Hardy's port
+        # Start cFS in ping mode — ping_app originates, Hardy reflects.
+        # Once contacts start, CLA Out will connect to Hardy's STCP port.
         docker rm -f cfs-interop-test 2>/dev/null || true
 
         CFS_CONTAINER=$(docker run -d \
             --name cfs-interop-test \
             --network host \
             --privileged \
+            -e TEST_MODE=ping \
             "$CFS_IMAGE")
 
         log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
@@ -362,45 +376,41 @@ EOF
             log_error "cFS failed to start"
             TEST2_RESULT="FAIL"
         else
-            # Trigger cFS to send bundles to Hardy: use a throwaway bp ping
-            # (separate inline BPA) to send bundles to cFS. cFS echoes them
-            # back to ipn:1.128 via CLA Out → Hardy's standalone MTCP CLA.
-            # bp ping reports 100% loss (responses go to bpa-server, not
-            # its inline BPA), but we verify Hardy received them.
-            cat > "$TEST_DIR/cla_trigger.toml" << EOF
-bpa-address = "http://[::1]:50052"
-cla-name = "cl0"
-framing = "stcp"
-address = "0.0.0.0:0"
-peer = "127.0.0.1:$CFS_STCP_PORT"
-peer-node = "ipn:$CFS_NODE_NUM.0"
-EOF
-
-            log_step "Triggering cFS echo (sending bundles to cFS)..."
-            timeout 20s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
-                --cla "$MTCP_CLA_BIN" \
-                --cla-args "--config $TEST_DIR/cla_trigger.toml" \
-                --grpc-listen "[::1]:50052" \
-                --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
-                --count 3 \
-                --no-sign \
-                2>&1 | grep -E 'transmitted|forwarded' | head -5
-            echo ""
-
+            # Give start_cfs a moment to finish contact setup (CLA Out to Hardy)
             sleep 3
 
-            # Verify: cFS sent echo bundles that arrived at Hardy's CLA
+            # Drive ping_app over ci_lab (UDP 1234): START a burst of N, wait
+            # for the round-trips, then REPORT the tally. cmd_send is the
+            # v7.0.1 command sender (cmdUtil before the rename); ci_lab forwards
+            # the CCSDS packet to ping_app by its MID (0x18A1).
+            CMD_PRE='CMD=$(command -v cmd_send || command -v cmdUtil); "$CMD" --port 1234 --endian=LE --pktid=0x18A1'
+
+            log_step "Commanding ping_app to ping Hardy x$PING_COUNT..."
+            docker exec "$CFS_CONTAINER" sh -c \
+                "$CMD_PRE --cmdcode=0 --uint32=$PING_COUNT" >/dev/null 2>&1 || true
+
+            # Allow the burst (~10ms/send) plus reflections to complete
+            sleep $((PING_COUNT / 20 + 5))
+
+            log_step "Requesting ping_app result..."
+            docker exec "$CFS_CONTAINER" sh -c \
+                "$CMD_PRE --cmdcode=1" >/dev/null 2>&1 || true
+            sleep 1
+
+            # Read the authoritative tally ping_app logged to the cFS console
             CFS_LOGS2=$(docker logs "$CFS_CONTAINER" 2>&1)
-            BUNDLES_IN2=$(echo "$CFS_LOGS2" | grep -c 'STCP received complete bundle' || true)
-            ECHO_SENT=$(echo "$CFS_LOGS2" | grep -c 'STCP output connected' || true)
+            RESULT_LINE=$(echo "$CFS_LOGS2" | grep -E 'PINGAPP: RESULT' | tail -1)
+            PING_SENT=$(echo "$RESULT_LINE" | sed -nE 's/.*sent=([0-9]+).*/\1/p')
+            PING_RECV=$(echo "$RESULT_LINE" | sed -nE 's/.*received=([0-9]+).*/\1/p')
 
-            log_info "cFS received $BUNDLES_IN2 bundles, made $ECHO_SENT outbound connections to Hardy"
+            [ -n "$RESULT_LINE" ] && echo "  $RESULT_LINE"
+            log_info "ping_app reported sent=${PING_SENT:-?} received=${PING_RECV:-?}"
 
-            if [ "$ECHO_SENT" -ge 1 ] && [ "$BUNDLES_IN2" -ge 1 ]; then
-                log_info "TEST 2 PASSED: cFS delivered bundles to Hardy via STCP ($ECHO_SENT outbound)"
+            if [ -n "$PING_RECV" ] && [ "$PING_RECV" = "$PING_SENT" ] && [ "$PING_SENT" = "$PING_COUNT" ]; then
+                log_info "TEST 2 PASSED: cFS pinged Hardy ($PING_RECV/$PING_COUNT reflected)"
                 TEST2_RESULT="PASS"
             else
-                log_error "TEST 2 FAILED: cFS received=$BUNDLES_IN2, outbound=$ECHO_SENT"
+                log_error "TEST 2 FAILED: sent=${PING_SENT:-0} received=${PING_RECV:-0} (expected $PING_COUNT)"
                 TEST2_RESULT="FAIL"
             fi
         fi
@@ -423,7 +433,7 @@ log_info "TEST SUMMARY"
 echo "============================================================"
 echo ""
 echo "  TEST 1 (Hardy pings cFS via STCP):     $TEST1_RESULT"
-echo "  TEST 2 (cFS sends bundles to Hardy):   ${TEST2_RESULT:-SKIP}"
+echo "  TEST 2 (cFS pings Hardy via ping_app): ${TEST2_RESULT:-SKIP}"
 echo ""
 
 if [ "$TEST1_RESULT" = "PASS" ] && [ "${TEST2_RESULT:-FAIL}" = "PASS" ]; then

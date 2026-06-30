@@ -43,11 +43,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -147,7 +152,10 @@ fi
 # Build or check for dtn7-rs
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for dtn7-interop Docker image..."
-    if ! docker image inspect "$DTN7_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing dtn7-interop image (--no-cache)..."
+        docker build --no-cache -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$DTN7_IMAGE" &>/dev/null; then
         log_info "Building dtn7-interop Docker image..."
         # Use docker directory as context - Dockerfile clones from GitHub, doesn't need workspace files
         docker build -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
@@ -185,13 +193,17 @@ if [ "$USE_DOCKER" = true ]; then
 
     # Run dtn7-rs in Docker
     # NODE_ID env var sets the node number for IPN naming (start_dtnd wrapper handles -n)
-    # dtnd flags: -d (debug), -i0 (interval), -r epidemic (routing), -C tcp:port=PORT
+    # dtnd flags: -d (debug), -i0 (interval), -p 1h (peer timeout), -r epidemic (routing), -C tcp:port=PORT
+    # -p 1h: Hardy connects as a no-IPND dynamic peer, and dtn7-rs reaps such peers at
+    # peer_timeout (default 20s) even while bundles are flowing (last_contact is only
+    # refreshed by IPND beacons, not traffic), which kills the return path at ~seq 22.
+    # A timeout longer than any test run holds the peer. (-p 0 would reap instantly.)
     DTN7_CONTAINER=$(docker run -d \
         --name dtn7-interop-test \
         --network host \
         -e NODE_ID="$DTN7_NODE_NUM" \
         "$DTN7_IMAGE" \
-        -d -i0 -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$TCPCLV4_PORT")
+        -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$TCPCLV4_PORT")
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
@@ -233,8 +245,8 @@ if [ "$USE_DOCKER" = true ]; then
     sleep 2
 else
     # Run dtn7-rs natively
-    # dtnd: -d debug, -i0 interval, -r epidemic routing, -n node number, -C tcp convergence layer
-    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
+    # dtnd: -d debug, -i0 interval, -p 1h peer timeout (hold dynamic peer past reaper), -r epidemic routing, -n node number, -C tcp convergence layer
+    dtnd -d -i0 -p 1h -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
     DTND_PID=$!
     log_info "Started dtnd with PID $DTND_PID"
 
@@ -264,9 +276,8 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"
@@ -363,12 +374,14 @@ if [ "$USE_DOCKER" = true ]; then
     docker rm -f dtn7-interop-test 2>/dev/null || true
 
     # Start dtn7-rs container — induct on unused port (Hardy has $TCPCLV4_PORT)
+    # -p 1h: hold the peer past peer_timeout (see TEST 1 note) so the dynamic peer
+    # isn't reaped mid-run while bundles are still flowing.
     DTN7_CONTAINER=$(docker run -d \
         --name dtn7-interop-test \
         --network host \
         -e NODE_ID="$DTN7_NODE_NUM" \
         "$DTN7_IMAGE" \
-        -d -i0 -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
+        -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
 
     log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
@@ -405,7 +418,7 @@ if [ "$USE_DOCKER" = true ]; then
     # PEER_URL format for IPN: tcp://host:port/<node_number>
     log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
     docker exec "$DTN7_CONTAINER" \
-        curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
+        curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=STATIC" \
         2>&1 || log_warn "Could not add peer"
 
     sleep 1
@@ -451,14 +464,14 @@ if [ "$USE_DOCKER" = true ]; then
         TEST2_RESULT="FAIL"
     fi
 else
-    # Native mode
-    dtnd -d -i0 -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
+    # Native mode (-p 1h: hold dynamic peer past reaper, see TEST 1 note)
+    dtnd -d -i0 -p 1h -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
     DTND_PID=$!
     sleep 3
 
     # Add Hardy as peer via REST API
     log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
-    curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=DYNAMIC" \
+    curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=STATIC" \
         >/dev/null 2>&1 || log_warn "Could not add peer"
 
     sleep 1

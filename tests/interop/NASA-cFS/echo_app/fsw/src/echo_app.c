@@ -7,8 +7,8 @@
  * published message, which the SB does not deliver back to the same pipe.
  *
  * Flow:
- *   Channel 0 AduWrapping  --> ADU_OUT_MID  --> [this app] -->
- *   ECHO_RESPONSE_MID  --> Channel 0 AduUnwrapping --> BPLib --> CLA Out
+ *   Channel 0 AduWrapping  --> HARDY_TEST_IN_MID  --> [this app] -->
+ *   HARDY_TEST_OUT_MID --> Channel 0 AduUnwrapping --> BPLib --> CLA Out
  *
  * The echo response bundle is created by Channel 0 (service 7), so its
  * source EID matches the destination that was pinged — RFC 9171 compliant.
@@ -18,13 +18,16 @@
 #include <string.h>
 
 /*
- * Message IDs (V1 TLM format: 0x0800 | topic).
+ * Message IDs (V1 TLM format: 0x0800 | topic).  Shared with ping_app and the
+ * Channel 0 ADU proxy table (cf. bpnode_adup.c).
  *
- * ADU_OUT_MID   = BPNode ADU output, topic 0xA0 — published by Channel 0.
- * ECHO_RESP_MID = Echo relay,        topic 0xA1 — subscribed by Channel 0.
+ * HARDY_TEST_IN_MID  = inbound ADU from Hardy, topic 0xA0 — published by
+ *                      Channel 0 (== BPNODE_ADU_OUT_SEND_TO_MID); app reads it.
+ * HARDY_TEST_OUT_MID = outbound to Hardy,      topic 0xA1 — read by Channel 0
+ *                      to wrap a bundle; app writes it.
  */
-#define ADU_OUT_MID    0x08A0
-#define ECHO_RESP_MID  0x08A1
+#define HARDY_TEST_IN_MID   0x08A0
+#define HARDY_TEST_OUT_MID  0x08A1
 
 #define PIPE_DEPTH  10
 
@@ -45,7 +48,7 @@ void EchoApp_Main(void)
         return;
     }
 
-    if (CFE_SB_Subscribe(CFE_SB_ValueToMsgId(ADU_OUT_MID), Pipe) != CFE_SUCCESS)
+    if (CFE_SB_Subscribe(CFE_SB_ValueToMsgId(HARDY_TEST_IN_MID), Pipe) != CFE_SUCCESS)
     {
         CFE_ES_WriteToSysLog("EchoApp: subscribe failed\n");
         return;
@@ -64,7 +67,7 @@ void EchoApp_Main(void)
                 continue;
 
             memcpy(&Out, BufPtr, Sz);
-            CFE_MSG_SetMsgId(&Out.SB.Msg, CFE_SB_ValueToMsgId(ECHO_RESP_MID));
+            CFE_MSG_SetMsgId(&Out.SB.Msg, CFE_SB_ValueToMsgId(HARDY_TEST_OUT_MID));
             CFE_SB_TransmitMsg(&Out.SB.Msg, true);
         }
     }

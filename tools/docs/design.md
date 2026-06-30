@@ -10,7 +10,7 @@ Command-line diagnostic and testing tools for Bundle Protocol networks.
 
 - **Path visibility.** When status reports are available, display the bundle's path through the network with timing at each hop. This reveals store-and-forward delays and helps identify where bundles are being dropped.
 
-- **Security by default.** Bundles are signed with BIB-HMAC-SHA256 to detect payload corruption in transit. This catches both accidental corruption and unauthorized modification without requiring key management.
+- **Round-trip integrity by default.** Each reflected payload is compared byte-for-byte against what was sent, detecting corruption in transit. This needs no key management and works against any conformant echo, which is not required to reflect BPSec blocks.
 
 - **Interoperability.** Compatible with any "dumb reflector" echo service that preserves payloads unchanged. No special protocol or coordination required with the echo endpoint.
 
@@ -48,8 +48,8 @@ The embedded approach trades code reuse for operational simplicity.
 
 The ping service implements `Service` rather than `Application`. The `Application` trait provides a higher-level ADU (Application Data Unit) interface, but ping needs raw bundle access for:
 
-- BPSec signing and verification at the bundle level
-- Extension block inspection (HopCount verification)
+- Payload extraction and byte-for-byte round-trip comparison
+- Administrative-record (status report) parsing
 - Full control over bundle structure and flags
 
 ### Local RTT Calculation
@@ -60,15 +60,13 @@ RTT is calculated using locally stored timestamps, not payload timestamps:
 RTT = receive_time - sent_times[sequence_number]
 ```
 
-This approach requires no clock synchronization between nodes, works even if the payload is corrupted, and avoids serialization overhead in measurements. The alternative of embedding timestamps in the payload would require synchronized clocks and add parsing overhead to the critical measurement path.
+This approach requires no clock synchronization between nodes and avoids serialization overhead in measurements. The alternative of embedding timestamps in the payload would require synchronized clocks and add parsing overhead to the critical measurement path.
 
-### Security by Default
+### Round-Trip Integrity
 
-Bundles are signed with BIB-HMAC-SHA256 using a random ephemeral key generated per session. Since the echo service reflects bundles with only the primary block modified (source/destination swapped), the same key can verify returning bundles. This detects payload corruption and unauthorized modification without requiring key management infrastructure.
+The client retains the payload it sent for each sequence number and compares it byte-for-byte against the payload reflected by the echo. Any mismatch is counted as a corrupted response. This needs no BPSec, no per-bundle key, and no clock synchronization, and it works against any echo that reflects the payload unchanged — as the echo-service draft (`draft-taylor-dtn-echo-service`) requires. The draft does not require an echo to reflect BPSec blocks, so a BIB-based check would fail against conformant foreign echoes; local comparison does not.
 
-The BIB scope flags exclude the primary block but include the target and security headers. The primary block must be excluded because the echo service modifies it to route the response back to the sender (swapping source and destination). The target and security headers are preserved by the echo service, so including them provides better integrity coverage.
-
-The `--no-sign` option disables signing for compatibility with echo services that may not preserve BIB blocks, falling back to CRC32 integrity only.
+The `--no-payload-crc` option is orthogonal: it disables the CRC on the payload block (keeping it on the primary block) to work around DTNME, which rejects bundles on payload-CRC validation failure despite not validating the CRC itself.
 
 ### Status Report Path Tracking
 
@@ -117,11 +115,11 @@ TCPCLv4 is embedded for direct peer connection. The tool establishes a single co
 
 ### With hardy-bpv7
 
-Uses the `Service` trait for raw bundle access. BPSec signing via `bpsec::signer::Signer` with HMAC-SHA256 context. Bundle construction via `builder::Builder` with optional HopCount extension blocks.
+Uses the `Service` trait for raw bundle access: payload extraction, administrative-record (status report) parsing, and round-trip payload comparison. Bundle construction via `builder::Builder` with optional HopCount extension blocks.
 
 ## Standards Compliance
 
-The ping payload uses CBOR encoding per the Bundle Protocol conventions:
+The echo-service draft (`draft-taylor-dtn-echo-service`) defines no payload wire format — the echo reflects the payload unchanged and never parses it. The structure below is the client's own internal format, carried only so responses can be matched to requests and to pad for MTU probing:
 
 ```cbor
 [

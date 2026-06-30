@@ -43,11 +43,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -147,7 +152,10 @@ fi
 # Build or check for DTNME
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for dtnme-interop Docker image..."
-    if ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing dtnme-interop image (--no-cache)..."
+        docker build --no-cache -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
         log_info "Building dtnme-interop Docker image (this may take a while)..."
         docker build -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
     else
@@ -249,14 +257,12 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Use --source to specify an EID that matches DTNME's route (ipn:$HARDY_NODE_NUM.*)
-# Note: --no-sign disables BIB signing (DTNME echo doesn't sign responses)
 # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
 #       payload block CRC but rejects bundles when CRC validation fails.
 # Capture output to check actual received count
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
-    --no-sign \
     --no-payload-crc \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 

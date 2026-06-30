@@ -78,7 +78,6 @@ for echo pings.
 | Hardy echo service | 7 | Standard BPv7 echo service |
 | TCPCLv4 port | 4556 | IANA standard; used by HDTN in Test 1, Hardy in Test 2 |
 | TLS | Disabled | `must-use-tls = false` |
-| Bundle signing | Disabled | `--no-sign` |
 | Storage | `/dev/shm` | tmpfs — avoids disk I/O in benchmarks |
 
 ## File Layout

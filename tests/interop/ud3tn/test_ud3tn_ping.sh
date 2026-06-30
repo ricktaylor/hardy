@@ -50,11 +50,16 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 
 # Parse options
 SKIP_BUILD=false
+REFRESH=false
 USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
             SKIP_BUILD=true
+            shift
+            ;;
+        --refresh)
+            REFRESH=true
             shift
             ;;
         --no-docker)
@@ -155,7 +160,10 @@ fi
 # Build or check for ud3tn
 if [ "$USE_DOCKER" = true ]; then
     log_step "Checking for ud3tn-interop Docker image..."
-    if ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
+    if [ "$REFRESH" = true ]; then
+        log_info "Refreshing ud3tn-interop image (--no-cache)..."
+        docker build --no-cache -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
+    elif ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
         log_info "Building ud3tn-interop Docker image..."
         docker build -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
     else
@@ -286,13 +294,12 @@ EOF
 log_step "Hardy pinging ud3tn echo service at ipn:$UD3TN_NODE_NUM.7 via MTCP..."
 echo ""
 
-PING_OUTPUT=$("$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
+PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
     --cla "$CLA_BIN" \
     --cla-args "--config $TEST_DIR/cla_ping.toml" \
     --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
     --source "ipn:$HARDY_NODE_NUM.12345" \
     --count "$PING_COUNT" \
-    --no-sign \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"
