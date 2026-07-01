@@ -17,7 +17,7 @@ Hardy is tested against 7 peer implementations. Each test verifies bidirectional
 | [ION](ION/) | STCP (via mtcp-cla) | bpecho (service 7) | Passing | [README](ION/README.md) |
 | [ud3tn](ud3tn/) | MTCP (via mtcp-cla) | AAP2 echo agent (service 7) | Passing | [README](ud3tn/README.md) |
 | [ESA BP](ESA-BP/) | STCP (via mtcp-cla) | STCP CLE + echo (service 7) | Passing | [README](ESA-BP/README.md) |
-| [NASA cFS](NASA-cFS/) | STCP (custom PSP module) | SB routing echo (service 7) | Passing | [README](NASA-cFS/README.md) |
+| [NASA cFS](NASA-cFS/) | STCP (via mtcp-cla) | SB routing echo (service 7) | Passing | [README](NASA-cFS/README.md) |
 
 ## Running
 
@@ -38,7 +38,7 @@ Results are saved to `interop_results.md`.
 ./tests/interop/HDTN/test_hdtn_ping.sh --skip-build --count 10
 ```
 
-All test scripts support `--skip-build`, `--count N`, and `--no-docker`.
+All test scripts support `--skip-build`, `--refresh` (rebuild the peer's Docker image from scratch), and `--count N`.
 
 ### Interactive testing
 
