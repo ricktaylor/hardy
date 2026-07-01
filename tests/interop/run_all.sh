@@ -399,7 +399,7 @@ calc_comparison() {
 declare -A VERSION
 collect_versions() {
     VERSION["Hardy"]="$HARDY_VERSION"
-    local meta name image dir df ref esa_src desc pom
+    local meta name image dir df ref
     for meta in \
         "dtn7-rs|dtn7-interop|dtn7-rs" \
         "HDTN|hdtn-interop|HDTN" \
@@ -410,25 +410,16 @@ collect_versions() {
         "ESA-BP|esa-bp-interop|ESA-BP"; do
         IFS='|' read -r name image dir <<< "$meta"
         df="$SCRIPT_DIR/$dir/docker/Dockerfile"
-        if [ "$dir" = "ESA-BP" ]; then
-            # ESA-BP builds from a local checkout (the ESCL export ships no .git): report
-            # git describe of that checkout plus the Maven project version from src/pom.xml.
-            esa_src="${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}"
-            desc=$(git -C "$esa_src" describe --tags --always --dirty 2>/dev/null || true)
-            pom=$(grep -m1 -oE '<version>[^<]+</version>' "$esa_src/src/pom.xml" 2>/dev/null | sed -E 's#</?version>##g')
-            if [ -n "$desc" ] && [ -n "$pom" ]; then ref="$desc (declared: $pom)"
-            elif [ -n "$desc" ]; then ref="$desc"
-            else ref="${pom:-source build}"; fi
-        else
-            # Peers bake their version into /interop-version at build time (git describe +
-            # declared manifest version); read it back, overriding the image entrypoint.
-            ref=$(docker run --rm --entrypoint cat "$image" /interop-version 2>/dev/null | head -1)
-            if [ -z "$ref" ]; then
-                # Fallback: the upstream ref pinned in the Dockerfile (image not built yet).
-                ref=$(grep -m1 -E '^ARG [A-Z0-9_]+_REF=' "$df" 2>/dev/null | sed -E 's/^ARG [A-Z0-9_]+_REF=//; s/[[:space:]].*//')
-            fi
-            ref="${ref:-not built}"
+        # Every peer bakes its version into /interop-version at build time (git
+        # describe + declared manifest version); read it back, overriding the
+        # image entrypoint. ESA-BP is captured from its pinned ref before the
+        # proprietary-strip and baked in the same way (see test_esa_bp_ping.sh).
+        ref=$(docker run --rm --entrypoint cat "$image" /interop-version 2>/dev/null | head -1)
+        if [ -z "$ref" ]; then
+            # Fallback: the upstream ref pinned in the Dockerfile (image not built yet).
+            ref=$(grep -m1 -E '^ARG [A-Z0-9_]+_REF=' "$df" 2>/dev/null | sed -E 's/^ARG [A-Z0-9_]+_REF=//; s/[[:space:]].*//')
         fi
+        ref="${ref:-not built}"
         VERSION["$name"]="$ref"
     done
 }

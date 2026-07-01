@@ -164,6 +164,21 @@ if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_IMAGE" &>/dev/null; 
             || log_warn "Could not checkout $ESA_BP_REF; using $(git -C "$ESA_BP_SRC" describe --tags --always 2>/dev/null)"
     fi
 
+    # Capture the tested version from the pinned ref *before* strip-proprietary.sh
+    # mutates the working tree, then bake it into the interop image (below) so
+    # run_all.sh reads it uniformly from /interop-version like the other peers.
+    # `git describe` without --dirty reports the checked-out commit; the strip
+    # that follows is a deterministic, in-repo transform, not a source change to
+    # flag.
+    esa_desc="$(git -C "$ESA_BP_SRC" describe --tags --always 2>/dev/null || true)"
+    esa_pom="$(grep -m1 -oE '<version>[^<]+</version>' "$ESA_BP_SRC/src/pom.xml" 2>/dev/null | sed -E 's#</?version>##g')"
+    if [ -n "$esa_desc" ] && [ -n "$esa_pom" ]; then
+        ESA_BP_VERSION="$esa_desc (declared: $esa_pom)"
+    else
+        ESA_BP_VERSION="${esa_desc:-${esa_pom:-source build}}"
+    fi
+    log_info "Tested ESA-BP version: $ESA_BP_VERSION"
+
     # Step 1: Build the base ESA-BP image.
     # 3.0.0's docker/Dockerfile unpacks a Maven-produced dist/bp-packager.zip (it
     # no longer compiles in-container), so we: reset to a clean checkout, strip the
@@ -193,6 +208,7 @@ if [ "$REFRESH" = true ] || ! docker image inspect "$ESA_BP_IMAGE" &>/dev/null; 
     log_info "Building $ESA_BP_IMAGE interop image..."
     docker build $NOCACHE -t "$ESA_BP_IMAGE" \
         --build-arg "BASE_IMAGE=$ESA_BP_BASE_IMAGE" \
+        --build-arg "INTEROP_VERSION=$ESA_BP_VERSION" \
         -f "$SCRIPT_DIR/docker/Dockerfile" \
         "$SCRIPT_DIR"
 else
