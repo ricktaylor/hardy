@@ -11,11 +11,10 @@
 #   - DTNME Docker image built (dtnme-interop)
 #
 # Usage:
-#   ./tests/interop/DTNME/test_dtnme_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/DTNME/test_dtnme_ping.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy binaries
-#   --no-docker    Use local DTNME binaries instead of Docker
 
 set -e
 
@@ -44,7 +43,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -53,10 +51,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -150,25 +144,15 @@ if [ ! -x "$BP_BIN" ]; then
 fi
 
 # Build or check for DTNME
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for dtnme-interop Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing dtnme-interop image (--no-cache)..."
-        docker build --no-cache -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
-    elif ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
-        log_info "Building dtnme-interop Docker image (this may take a while)..."
-        docker build -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
-    else
-        log_info "Using existing dtnme-interop image"
-    fi
+log_step "Checking for dtnme-interop Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing dtnme-interop image (--no-cache)..."
+    docker build --no-cache -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
+elif ! docker image inspect "$DTNME_IMAGE" &>/dev/null; then
+    log_info "Building dtnme-interop Docker image (this may take a while)..."
+    docker build -t "$DTNME_IMAGE" "$SCRIPT_DIR/docker"
 else
-    # Check for native DTNME
-    if ! command -v dtnme &> /dev/null; then
-        log_error "dtnme not found in PATH"
-        log_error "Install DTNME or use Docker mode"
-        exit 1
-    fi
-    log_info "Found dtnme at: $(which dtnme)"
+    log_info "Using existing dtnme-interop image"
 fi
 
 # =============================================================================
@@ -181,74 +165,67 @@ echo "============================================================"
 
 log_step "Starting DTNME daemon with TCP CL and static routing..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f dtnme-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f dtnme-interop-test 2>/dev/null || true
 
-    # Run DTNME in Docker with flood routing enabled (default)
-    # REMOTE_HOST must be set so DTNME creates a link back to Hardy
-    # Even though Hardy initiates the connection, DTNME needs an outbound
-    # link definition to route response bundles back
-    DTNME_CONTAINER=$(docker run -d \
-        --name dtnme-interop-test \
-        --network host \
-        -e NODE_ID="$DTNME_NODE_NUM" \
-        -e TCPCL_PORT="$TCPCLV4_PORT" \
-        -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$((TCPCLV4_PORT+1))" \
-        -e REMOTE_NODE="$HARDY_NODE_NUM" \
-        "$DTNME_IMAGE")
+# Run DTNME in Docker with flood routing enabled (default)
+# REMOTE_HOST must be set so DTNME creates a link back to Hardy
+# Even though Hardy initiates the connection, DTNME needs an outbound
+# link definition to route response bundles back
+DTNME_CONTAINER=$(docker run -d \
+    --name dtnme-interop-test \
+    --network host \
+    -e NODE_ID="$DTNME_NODE_NUM" \
+    -e TCPCL_PORT="$TCPCLV4_PORT" \
+    -e REMOTE_HOST="127.0.0.1" \
+    -e REMOTE_PORT="$((TCPCLV4_PORT+1))" \
+    -e REMOTE_NODE="$HARDY_NODE_NUM" \
+    "$DTNME_IMAGE")
 
-    log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
+log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
 
-    # Wait for DTNME to start (ss preferred — no TCP connection created)
-    log_info "Waiting for DTNME to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-            log_error "DTNME container exited unexpectedly. Logs:"
-            docker logs "$DTNME_CONTAINER" 2>&1 | tail -50
-            docker rm "$DTNME_CONTAINER" 2>/dev/null || true
-            exit 1
-        fi
-
-        if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-            log_info "DTNME is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give DTNME time to finish internal setup after port opens
-    sleep 2
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "DTNME did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-        docker logs "$DTNME_CONTAINER" 2>&1 | tail -30
+# Wait for DTNME to start (ss preferred — no TCP connection created)
+log_info "Waiting for DTNME to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
+        log_error "DTNME container exited unexpectedly. Logs:"
+        docker logs "$DTNME_CONTAINER" 2>&1 | tail -50
+        docker rm "$DTNME_CONTAINER" 2>/dev/null || true
         exit 1
     fi
 
-    # Start echo service in the container
-    log_step "Starting echo_me service in container..."
-    docker exec -d "$DTNME_CONTAINER" /dtn/bin/echo_me -B 5010 -s "ipn:$DTNME_NODE_NUM.7"
+    if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
+        log_info "DTNME is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
 
-    # Give echo service time to start
-    sleep 2
-else
-    log_error "Native DTNME mode not yet implemented - use Docker mode"
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give DTNME time to finish internal setup after port opens
+sleep 2
+
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "DTNME did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
+    docker logs "$DTNME_CONTAINER" 2>&1 | tail -30
     exit 1
 fi
 
+# Start echo service in the container
+log_step "Starting echo_me service in container..."
+docker exec -d "$DTNME_CONTAINER" /dtn/bin/echo_me -B 5010 -s "ipn:$DTNME_NODE_NUM.7"
+
+# Give echo service time to start
+sleep 2
+
 # Verify DTNME is running
-if [ "$USE_DOCKER" = true ]; then
-    if ! docker ps | grep -q dtnme-interop-test; then
-        log_error "DTNME container is not running"
-        docker logs "$DTNME_CONTAINER" 2>&1 || true
-        exit 1
-    fi
+if ! docker ps | grep -q dtnme-interop-test; then
+    log_error "DTNME container is not running"
+    docker logs "$DTNME_CONTAINER" 2>&1 || true
+    exit 1
 fi
 
 # Hardy pings DTNME echo service (ipn:2.7)
@@ -292,11 +269,9 @@ fi
 
 # Stop DTNME for test 2
 log_info "Stopping DTNME..."
-if [ "$USE_DOCKER" = true ]; then
-    docker stop "$DTNME_CONTAINER" 2>/dev/null || true
-    docker rm -f "$DTNME_CONTAINER" 2>/dev/null || true
-    DTNME_CONTAINER=""
-fi
+docker stop "$DTNME_CONTAINER" 2>/dev/null || true
+docker rm -f "$DTNME_CONTAINER" 2>/dev/null || true
+DTNME_CONTAINER=""
 
 sleep 1
 
@@ -348,87 +323,85 @@ log_info "Hardy BPA server started with PID $HARDY_PID"
 # Start DTNME to ping Hardy
 log_step "Starting DTNME to ping Hardy..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f dtnme-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f dtnme-interop-test 2>/dev/null || true
 
-    # Start DTNME container — induct on 4558 (Hardy has 4556)
-    DTNME_CONTAINER=$(docker run -d \
-        --name dtnme-interop-test \
-        --network host \
-        -e NODE_ID="$DTNME_NODE_NUM" \
-        -e TCPCL_PORT=$((TCPCLV4_PORT+1)) \
-        -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$TCPCLV4_PORT" \
-        -e REMOTE_NODE="$HARDY_NODE_NUM" \
-        "$DTNME_IMAGE")
+# Start DTNME container — induct on 4558 (Hardy has 4556)
+DTNME_CONTAINER=$(docker run -d \
+    --name dtnme-interop-test \
+    --network host \
+    -e NODE_ID="$DTNME_NODE_NUM" \
+    -e TCPCL_PORT=$((TCPCLV4_PORT+1)) \
+    -e REMOTE_HOST="127.0.0.1" \
+    -e REMOTE_PORT="$TCPCLV4_PORT" \
+    -e REMOTE_NODE="$HARDY_NODE_NUM" \
+    "$DTNME_IMAGE")
 
-    log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
+log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
 
-    # Wait for DTNME to start
-    log_info "Waiting for DTNME to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-            break
-        fi
-        if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
-            log_info "DTNME is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
-            break
-        fi
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give DTNME time to finish internal setup after port opens
-    sleep 2
-
-    # Check if container is still running
+# Wait for DTNME to start
+log_info "Waiting for DTNME to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
     if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-        log_error "DTNME container exited unexpectedly. Logs:"
-        docker logs "$DTNME_CONTAINER" 2>&1 | tail -20
-        docker rm "$DTNME_CONTAINER" 2>/dev/null || true
+        break
+    fi
+    if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
+        log_info "DTNME is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
+        break
+    fi
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give DTNME time to finish internal setup after port opens
+sleep 2
+
+# Check if container is still running
+if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
+    log_error "DTNME container exited unexpectedly. Logs:"
+    docker logs "$DTNME_CONTAINER" 2>&1 | tail -20
+    docker rm "$DTNME_CONTAINER" 2>/dev/null || true
+    TEST2_RESULT="FAIL"
+else
+    # Establish DTNME link to Hardy before pinging
+    log_info "Establishing DTNME -> Hardy TCP connection..."
+    docker exec "$DTNME_CONTAINER" /dtn/bin/send_me -s "ipn:$DTNME_NODE_NUM.1" -d "127.0.0.1:$TCPCLV4_PORT" -p "link warmup" 2>/dev/null || true
+
+    # Wait for connection to stabilize (prevents losing first pings)
+    log_info "Waiting for connection to stabilize..."
+    sleep 3
+
+    # Run ping from DTNME container
+    log_step "DTNME ping_me to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+    # -e 2: 2 second expiration (loopback is fast, connection already established)
+    # -c N: send N pings (configurable via --count)
+    # timeout: allow ~2s per ping plus 10s margin, safety net in case ping_me hangs
+    PING_TIMEOUT=$((PING_COUNT * 2 + 10))
+    PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$DTNME_CONTAINER" /dtn/bin/ping_me \
+        -B 5010 \
+        -s "ipn:$DTNME_NODE_NUM.1" \
+        -e 2 \
+        -c "$PING_COUNT" \
+        "ipn:$HARDY_NODE_NUM.7" \
+        2>&1) || true
+
+    echo "$PING_OUTPUT"
+    echo ""
+
+    # Count responses - look for "time=" which indicates a successful reply
+    RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -c "time=" || echo "0")
+
+    if [ "$RESPONSE_COUNT" = "$PING_COUNT" ]; then
+        log_info "TEST 2 PASSED: DTNME received $RESPONSE_COUNT/$PING_COUNT responses from Hardy"
+        TEST2_RESULT="PASS"
+    elif [ "$RESPONSE_COUNT" -ge 1 ]; then
+        log_error "TEST 2 FAILED: Partial loss - only $RESPONSE_COUNT/$PING_COUNT responses received"
         TEST2_RESULT="FAIL"
     else
-        # Establish DTNME link to Hardy before pinging
-        log_info "Establishing DTNME -> Hardy TCP connection..."
-        docker exec "$DTNME_CONTAINER" /dtn/bin/send_me -s "ipn:$DTNME_NODE_NUM.1" -d "127.0.0.1:$TCPCLV4_PORT" -p "link warmup" 2>/dev/null || true
-
-        # Wait for connection to stabilize (prevents losing first pings)
-        log_info "Waiting for connection to stabilize..."
-        sleep 3
-
-        # Run ping from DTNME container
-        log_step "DTNME ping_me to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-        # -e 2: 2 second expiration (loopback is fast, connection already established)
-        # -c N: send N pings (configurable via --count)
-        # timeout: allow ~2s per ping plus 10s margin, safety net in case ping_me hangs
-        PING_TIMEOUT=$((PING_COUNT * 2 + 10))
-        PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$DTNME_CONTAINER" /dtn/bin/ping_me \
-            -B 5010 \
-            -s "ipn:$DTNME_NODE_NUM.1" \
-            -e 2 \
-            -c "$PING_COUNT" \
-            "ipn:$HARDY_NODE_NUM.7" \
-            2>&1) || true
-
-        echo "$PING_OUTPUT"
-        echo ""
-
-        # Count responses - look for "time=" which indicates a successful reply
-        RESPONSE_COUNT=$(echo "$PING_OUTPUT" | grep -c "time=" || echo "0")
-
-        if [ "$RESPONSE_COUNT" = "$PING_COUNT" ]; then
-            log_info "TEST 2 PASSED: DTNME received $RESPONSE_COUNT/$PING_COUNT responses from Hardy"
-            TEST2_RESULT="PASS"
-        elif [ "$RESPONSE_COUNT" -ge 1 ]; then
-            log_error "TEST 2 FAILED: Partial loss - only $RESPONSE_COUNT/$PING_COUNT responses received"
-            TEST2_RESULT="FAIL"
-        else
-            log_error "TEST 2 FAILED: No echo responses received"
-            TEST2_RESULT="FAIL"
-        fi
+        log_error "TEST 2 FAILED: No echo responses received"
+        TEST2_RESULT="FAIL"
     fi
 fi
 

@@ -11,11 +11,10 @@
 #   - HDTN Docker image built (hdtn-interop)
 #
 # Usage:
-#   ./tests/interop/HDTN/test_hdtn_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/HDTN/test_hdtn_ping.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy binaries
-#   --no-docker    Use local HDTN binaries instead of Docker
 
 set -e
 
@@ -44,7 +43,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -53,10 +51,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -148,25 +142,15 @@ if [ ! -x "$BP_BIN" ]; then
 fi
 
 # Build or check for HDTN
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for hdtn-interop Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing hdtn-interop image (--no-cache)..."
-        docker build --no-cache -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
-    elif ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
-        log_info "Building hdtn-interop Docker image (this may take a while)..."
-        docker build -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
-    else
-        log_info "Using existing hdtn-interop image"
-    fi
+log_step "Checking for hdtn-interop Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing hdtn-interop image (--no-cache)..."
+    docker build --no-cache -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
+elif ! docker image inspect "$HDTN_IMAGE" &>/dev/null; then
+    log_info "Building hdtn-interop Docker image (this may take a while)..."
+    docker build -t "$HDTN_IMAGE" "$SCRIPT_DIR/docker"
 else
-    # Check for native HDTN
-    if ! command -v hdtn-one-process &> /dev/null; then
-        log_error "hdtn-one-process not found in PATH"
-        log_error "Install HDTN or use Docker mode"
-        exit 1
-    fi
-    log_info "Found hdtn-one-process at: $(which hdtn-one-process)"
+    log_info "Using existing hdtn-interop image"
 fi
 
 # =============================================================================
@@ -179,66 +163,61 @@ echo "============================================================"
 
 log_step "Starting HDTN daemon with TCPCLv4..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f hdtn-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f hdtn-interop-test 2>/dev/null || true
 
-    # Run HDTN in Docker
-    HDTN_CONTAINER=$(docker run -d \
-        --name hdtn-interop-test \
-        --network host \
-        -e NODE_ID="$HDTN_NODE_NUM" \
-        -e TCPCL_PORT="$TCPCLV4_PORT" \
-        "$HDTN_IMAGE")
+# Run HDTN in Docker
+HDTN_CONTAINER=$(docker run -d \
+    --name hdtn-interop-test \
+    --network host \
+    -e NODE_ID="$HDTN_NODE_NUM" \
+    -e TCPCL_PORT="$TCPCLV4_PORT" \
+    "$HDTN_IMAGE")
 
-    log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
+log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
 
-    # Wait for HDTN to start and be ready
-    log_info "Waiting for HDTN to initialize..."
+# Wait for HDTN to start and be ready
+log_info "Waiting for HDTN to initialize..."
 
-    # Wait up to 30 seconds for HDTN to be ready (port open)
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        # Check if container is still running
-        if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
-            log_error "HDTN container exited unexpectedly. Logs:"
-            docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
-            docker rm "$HDTN_CONTAINER" 2>/dev/null || true
-            exit 1
-        fi
-
-        # Check if port is open (try multiple methods for compatibility)
-        if nc -z 127.0.0.1 "$TCPCLV4_PORT" 2>/dev/null; then
-            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-            break
-        elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$TCPCLV4_PORT" 2>/dev/null; then
-            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-            break
-        elif ss -tlnp 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-            log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s, detected via ss)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give HDTN time to finish internal setup after port opens
-    sleep 2
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "HDTN did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-        log_error "Checking what ports are listening inside container:"
-        docker exec "$HDTN_CONTAINER" netstat -tlnp 2>/dev/null || docker exec "$HDTN_CONTAINER" ss -tlnp 2>/dev/null || true
-        log_error "Checking from host:"
-        netstat -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || ss -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || true
-        log_error "HDTN container logs:"
+# Wait up to 30 seconds for HDTN to be ready (port open)
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    # Check if container is still running
+    if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
+        log_error "HDTN container exited unexpectedly. Logs:"
         docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
+        docker rm "$HDTN_CONTAINER" 2>/dev/null || true
         exit 1
     fi
-else
-    log_error "Native HDTN mode not yet implemented - use Docker mode"
+
+    # Check if port is open (try multiple methods for compatibility)
+    if nc -z 127.0.0.1 "$TCPCLV4_PORT" 2>/dev/null; then
+        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+        break
+    elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$TCPCLV4_PORT" 2>/dev/null; then
+        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+        break
+    elif ss -tlnp 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
+        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s, detected via ss)"
+        break
+    fi
+
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give HDTN time to finish internal setup after port opens
+sleep 2
+
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "HDTN did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
+    log_error "Checking what ports are listening inside container:"
+    docker exec "$HDTN_CONTAINER" netstat -tlnp 2>/dev/null || docker exec "$HDTN_CONTAINER" ss -tlnp 2>/dev/null || true
+    log_error "Checking from host:"
+    netstat -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || ss -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || true
+    log_error "HDTN container logs:"
+    docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
     exit 1
 fi
 
@@ -281,11 +260,9 @@ fi
 
 # Stop HDTN for test 2
 log_info "Stopping HDTN..."
-if [ "$USE_DOCKER" = true ]; then
-    docker stop "$HDTN_CONTAINER" 2>/dev/null || true
-    docker rm -f "$HDTN_CONTAINER" 2>/dev/null || true
-    HDTN_CONTAINER=""
-fi
+docker stop "$HDTN_CONTAINER" 2>/dev/null || true
+docker rm -f "$HDTN_CONTAINER" 2>/dev/null || true
+HDTN_CONTAINER=""
 
 sleep 1
 
@@ -336,32 +313,31 @@ log_info "Hardy BPA server started with PID $HARDY_PID"
 # Start HDTN to ping Hardy
 log_step "Starting HDTN to ping Hardy..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f hdtn-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f hdtn-interop-test 2>/dev/null || true
 
-    # Start container without the HDTN daemon — bping is standalone
-    HDTN_CONTAINER=$(docker run -d \
-        --name hdtn-interop-test \
-        --network host \
-        --entrypoint sleep \
-        "$HDTN_IMAGE" infinity)
+# Start container without the HDTN daemon — bping is standalone
+HDTN_CONTAINER=$(docker run -d \
+    --name hdtn-interop-test \
+    --network host \
+    --entrypoint sleep \
+    "$HDTN_IMAGE" infinity)
 
-    log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
-    sleep 1
+log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
+sleep 1
 
-    if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
-        log_error "HDTN container exited unexpectedly. Logs:"
-        docker logs "$HDTN_CONTAINER" 2>&1 | tail -20
-        docker rm "$HDTN_CONTAINER" 2>/dev/null || true
-        TEST2_RESULT="FAIL"
-    else
-        # Use HDTN's bping to ping Hardy's echo service
-        # bping sends to destination and expects echo back
-        log_step "HDTN bping to Hardy echo service at ipn:$HARDY_NODE_NUM.2047..."
+if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
+    log_error "HDTN container exited unexpectedly. Logs:"
+    docker logs "$HDTN_CONTAINER" 2>&1 | tail -20
+    docker rm "$HDTN_CONTAINER" 2>/dev/null || true
+    TEST2_RESULT="FAIL"
+else
+    # Use HDTN's bping to ping Hardy's echo service
+    # bping sends to destination and expects echo back
+    log_step "HDTN bping to Hardy echo service at ipn:$HARDY_NODE_NUM.2047..."
 
-        # Create outduct config for bping to connect to Hardy
-        cat > "$TEST_DIR/bping_outduct.json" << EOF
+    # Create outduct config for bping to connect to Hardy
+    cat > "$TEST_DIR/bping_outduct.json" << EOF
 {
     "outductConfigName": "bping_outduct",
     "outductVector": [
@@ -387,50 +363,49 @@ if [ "$USE_DOCKER" = true ]; then
 }
 EOF
 
-        # Copy config to container
-        docker cp "$TEST_DIR/bping_outduct.json" hdtn-interop-test:/tmp/bping_outduct.json
+    # Copy config to container
+    docker cp "$TEST_DIR/bping_outduct.json" hdtn-interop-test:/tmp/bping_outduct.json
 
-        # Run bping from HDTN container
-        # --duration is in seconds (sends at --bundle-rate per second, default 1)
-        echo ""
-        PING_OUTPUT=$(docker exec hdtn-interop-test bping \
-            --use-bp-version-7 \
-            --my-uri-eid="ipn:$HDTN_NODE_NUM.1" \
-            --dest-uri-eid="ipn:$HARDY_NODE_NUM.7" \
-            --outducts-config-file=/tmp/bping_outduct.json \
-            --bundle-send-timeout-seconds=10 \
-            --duration="$((PING_COUNT + 1))" \
-            2>&1) || true
+    # Run bping from HDTN container
+    # --duration is in seconds (sends at --bundle-rate per second, default 1)
+    echo ""
+    PING_OUTPUT=$(docker exec hdtn-interop-test bping \
+        --use-bp-version-7 \
+        --my-uri-eid="ipn:$HDTN_NODE_NUM.1" \
+        --dest-uri-eid="ipn:$HARDY_NODE_NUM.7" \
+        --outducts-config-file=/tmp/bping_outduct.json \
+        --bundle-send-timeout-seconds=10 \
+        --duration="$((PING_COUNT + 1))" \
+        2>&1) || true
 
-        echo "$PING_OUTPUT"
-        echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-        # Check for success: compare sent vs received bundle counts
-        # bping outputs "totalBundlesReceived N" and "totalNonAdminRecordBpv7BundlesRx: N"
-        # and "Ping received: sequence=N" for each successful ping response
-        BUNDLES_RECEIVED=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesReceived \K[0-9]+' || echo "0")
-        if [ "$BUNDLES_RECEIVED" = "0" ]; then
-            BUNDLES_RECEIVED=$(echo "$PING_OUTPUT" | grep -oP 'totalNonAdminRecordBpv7BundlesRx: \K[0-9]+' || echo "0")
-        fi
-        # For sent bundles, look for "totalBundlesSent N" in the output
-        BUNDLES_SENT=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesSent \K[0-9]+' | head -1 || echo "0")
+    # Check for success: compare sent vs received bundle counts
+    # bping outputs "totalBundlesReceived N" and "totalNonAdminRecordBpv7BundlesRx: N"
+    # and "Ping received: sequence=N" for each successful ping response
+    BUNDLES_RECEIVED=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesReceived \K[0-9]+' || echo "0")
+    if [ "$BUNDLES_RECEIVED" = "0" ]; then
+        BUNDLES_RECEIVED=$(echo "$PING_OUTPUT" | grep -oP 'totalNonAdminRecordBpv7BundlesRx: \K[0-9]+' || echo "0")
+    fi
+    # For sent bundles, look for "totalBundlesSent N" in the output
+    BUNDLES_SENT=$(echo "$PING_OUTPUT" | grep -oP 'totalBundlesSent \K[0-9]+' | head -1 || echo "0")
 
-        # HDTN bping with --duration sends N+1 bundles (one per second including
-        # time zero) but may not receive the last reply before shutdown. Accept
-        # receiving at least PING_COUNT responses as a pass.
-        if [ "$BUNDLES_RECEIVED" -ge "$PING_COUNT" ] 2>/dev/null; then
-            log_info "TEST 2 PASSED: HDTN pinged Hardy ($BUNDLES_RECEIVED/$BUNDLES_SENT)"
-            TEST2_RESULT="PASS"
-        elif [ "$BUNDLES_RECEIVED" -gt 0 ] 2>/dev/null; then
-            log_error "TEST 2 FAILED: Partial loss - only $BUNDLES_RECEIVED/$BUNDLES_SENT responses received"
-            TEST2_RESULT="FAIL"
-        elif [ "$BUNDLES_SENT" -gt 0 ] 2>/dev/null; then
-            log_error "TEST 2 FAILED: HDTN sent $BUNDLES_SENT bundles but received 0 responses"
-            TEST2_RESULT="FAIL"
-        else
-            log_error "TEST 2 FAILED: Unable to determine ping result"
-            TEST2_RESULT="FAIL"
-        fi
+    # HDTN bping with --duration sends N+1 bundles (one per second including
+    # time zero) but may not receive the last reply before shutdown. Accept
+    # receiving at least PING_COUNT responses as a pass.
+    if [ "$BUNDLES_RECEIVED" -ge "$PING_COUNT" ] 2>/dev/null; then
+        log_info "TEST 2 PASSED: HDTN pinged Hardy ($BUNDLES_RECEIVED/$BUNDLES_SENT)"
+        TEST2_RESULT="PASS"
+    elif [ "$BUNDLES_RECEIVED" -gt 0 ] 2>/dev/null; then
+        log_error "TEST 2 FAILED: Partial loss - only $BUNDLES_RECEIVED/$BUNDLES_SENT responses received"
+        TEST2_RESULT="FAIL"
+    elif [ "$BUNDLES_SENT" -gt 0 ] 2>/dev/null; then
+        log_error "TEST 2 FAILED: HDTN sent $BUNDLES_SENT bundles but received 0 responses"
+        TEST2_RESULT="FAIL"
+    else
+        log_error "TEST 2 FAILED: Unable to determine ping result"
+        TEST2_RESULT="FAIL"
     fi
 fi
 
