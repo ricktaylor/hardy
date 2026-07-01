@@ -41,6 +41,11 @@ RUN set -eux; \
 FROM base
 USER root
 
+# Bake the tested version (captured from the pinned ref before strip-proprietary.sh
+# ran) into /interop-version, so run_all.sh reads it uniformly with the other peers.
+ARG INTEROP_VERSION=
+RUN printf '%s\n' "${INTEROP_VERSION:-source build}" > /interop-version
+
 COPY --from=compiler /tmp/interop-cle/   /opt/esa-bp/interop-cle/
 COPY --from=compiler /tmp/echo-service/  /opt/esa-bp/echo-service/
 COPY docker/start_esa_bp /usr/local/bin/
