@@ -14,7 +14,7 @@
 #   - Hardy tools, bpa-server, and mtcp-cla built
 #
 # Usage:
-#   ./tests/interop/NASA-cFS/test_cfs_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/NASA-cFS/test_cfs_ping.sh [--skip-build]
 
 set -e
 
@@ -46,7 +46,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -55,10 +54,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -150,17 +145,15 @@ for bin in "$BP_BIN" "$BPA_BIN" "$MTCP_CLA_BIN"; do
 done
 
 # Build or check for cFS Docker image
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for $CFS_IMAGE Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing cfs-interop image (--no-cache)..."
-        docker build --no-cache -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
-    elif ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
-        log_info "Building $CFS_IMAGE Docker image (this may take a while)..."
-        docker build -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
-    else
-        log_info "Using existing $CFS_IMAGE image"
-    fi
+log_step "Checking for $CFS_IMAGE Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing cfs-interop image (--no-cache)..."
+    docker build --no-cache -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
+elif ! docker image inspect "$CFS_IMAGE" &>/dev/null; then
+    log_info "Building $CFS_IMAGE Docker image (this may take a while)..."
+    docker build -t "$CFS_IMAGE" -f "$SCRIPT_DIR/docker/Dockerfile" "$SCRIPT_DIR"
+else
+    log_info "Using existing $CFS_IMAGE image"
 fi
 
 # =============================================================================
@@ -173,47 +166,42 @@ echo "============================================================"
 
 log_step "Starting cFS BPNode daemon with STCP..."
 
-if [ "$USE_DOCKER" = true ]; then
-    docker rm -f cfs-interop-test 2>/dev/null || true
+docker rm -f cfs-interop-test 2>/dev/null || true
 
-    CFS_CONTAINER=$(docker run -d \
-        --name cfs-interop-test \
-        --network host \
-        --privileged \
-        "$CFS_IMAGE")
+CFS_CONTAINER=$(docker run -d \
+    --name cfs-interop-test \
+    --network host \
+    --privileged \
+    "$CFS_IMAGE")
 
-    log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
+log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
 
-    # Wait for cFS to start — start_cfs sends setup/start commands internally
-    # (avoid nc -z probes that create spurious TCP connections to the STCP port)
-    # Wait for cFS STCP port to open (start_cfs sends setup/start commands internally)
-    # Use ss to check without creating TCP connections (nc -z would be accepted by the CLA)
-    log_info "Waiting for cFS to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
-            log_error "cFS container exited unexpectedly. Logs:"
-            docker logs "$CFS_CONTAINER" 2>&1
-            exit 1
-        fi
-
-        if ss -tln 2>/dev/null | grep -q ":$CFS_STCP_PORT "; then
-            log_info "cFS is listening on port $CFS_STCP_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "cFS did not start listening on port $CFS_STCP_PORT within ${WAIT_TIMEOUT}s"
-        docker logs "$CFS_CONTAINER" 2>&1 | tail -30
+# Wait for cFS to start — start_cfs sends setup/start commands internally
+# (avoid nc -z probes that create spurious TCP connections to the STCP port)
+# Wait for cFS STCP port to open (start_cfs sends setup/start commands internally)
+# Use ss to check without creating TCP connections (nc -z would be accepted by the CLA)
+log_info "Waiting for cFS to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
+        log_error "cFS container exited unexpectedly. Logs:"
+        docker logs "$CFS_CONTAINER" 2>&1
         exit 1
     fi
-else
-    log_error "Native cFS mode not implemented — use Docker mode"
+
+    if ss -tln 2>/dev/null | grep -q ":$CFS_STCP_PORT "; then
+        log_info "cFS is listening on port $CFS_STCP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
+
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "cFS did not start listening on port $CFS_STCP_PORT within ${WAIT_TIMEOUT}s"
+    docker logs "$CFS_CONTAINER" 2>&1 | tail -30
     exit 1
 fi
 

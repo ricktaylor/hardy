@@ -12,11 +12,10 @@
 #   - ud3tn Docker image built (ud3tn-interop)
 #
 # Usage:
-#   ./tests/interop/ud3tn/test_ud3tn_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/ud3tn/test_ud3tn_ping.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy and CLA binaries
-#   --no-docker    Use local ud3tn binaries instead of Docker
 
 set -e
 
@@ -51,7 +50,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -60,10 +58,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -158,24 +152,15 @@ if [ ! -x "$CLA_BIN" ]; then
 fi
 
 # Build or check for ud3tn
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for ud3tn-interop Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing ud3tn-interop image (--no-cache)..."
-        docker build --no-cache -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
-    elif ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
-        log_info "Building ud3tn-interop Docker image..."
-        docker build -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
-    else
-        log_info "Using existing ud3tn-interop image"
-    fi
+log_step "Checking for ud3tn-interop Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing ud3tn-interop image (--no-cache)..."
+    docker build --no-cache -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
+elif ! docker image inspect "$UD3TN_IMAGE" &>/dev/null; then
+    log_info "Building ud3tn-interop Docker image..."
+    docker build -t "$UD3TN_IMAGE" "$SCRIPT_DIR/docker"
 else
-    if ! command -v ud3tn &> /dev/null; then
-        log_error "ud3tn not found in PATH"
-        log_error "Install ud3tn or use Docker mode"
-        exit 1
-    fi
-    log_info "Found ud3tn at: $(which ud3tn)"
+    log_info "Using existing ud3tn-interop image"
 fi
 
 # =============================================================================
@@ -188,60 +173,59 @@ echo "============================================================"
 
 log_step "Starting ud3tn daemon with MTCP CL..."
 
-if [ "$USE_DOCKER" = true ]; then
-    docker rm -f ud3tn-interop-test 2>/dev/null || true
+docker rm -f ud3tn-interop-test 2>/dev/null || true
 
-    # -e: EID, -c: CLA options, -A/-P: AAP2 TCP host/port, -R: allow remote config
-    UD3TN_CONTAINER=$(docker run -d \
-        --name ud3tn-interop-test \
-        --network host \
-        "$UD3TN_IMAGE" \
-        -e "ipn:$UD3TN_NODE_NUM.0" \
-        -c "mtcp:0.0.0.0,$UD3TN_MTCP_PORT" \
-        -b 7 \
-        -A 0.0.0.0 -P "$UD3TN_AAP2_PORT" \
-        -R)
+# -e: EID, -c: CLA options, -A/-P: AAP2 TCP host/port, -R: allow remote config
+UD3TN_CONTAINER=$(docker run -d \
+    --name ud3tn-interop-test \
+    --network host \
+    "$UD3TN_IMAGE" \
+    -e "ipn:$UD3TN_NODE_NUM.0" \
+    -c "mtcp:0.0.0.0,$UD3TN_MTCP_PORT" \
+    -b 7 \
+    -A 0.0.0.0 -P "$UD3TN_AAP2_PORT" \
+    -R)
 
-    log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
+log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
 
-    # Wait for ud3tn to start (ss preferred — no TCP connection created)
-    log_info "Waiting for ud3tn to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-            log_error "ud3tn container exited unexpectedly. Logs:"
-            docker logs "$UD3TN_CONTAINER" 2>&1 | tail -50
-            docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
-            exit 1
-        fi
-
-        if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
-            log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give ud3tn time to finish internal setup after port opens
-    sleep 2
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "ud3tn did not start listening on port $UD3TN_MTCP_PORT within ${WAIT_TIMEOUT}s"
-        docker logs "$UD3TN_CONTAINER" 2>&1 | tail -30
+# Wait for ud3tn to start (ss preferred — no TCP connection created)
+log_info "Waiting for ud3tn to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
+        log_error "ud3tn container exited unexpectedly. Logs:"
+        docker logs "$UD3TN_CONTAINER" 2>&1 | tail -50
+        docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
         exit 1
     fi
 
-    # Start echo agent via AAP2 inside the container.
-    # ud3tn doesn't ship an echo agent, so we create one inline.
-    # Uses two AAP2 connections (subscriber for recv, active for send)
-    # because ud3tn's subscriber mode is receive-only.
-    # Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
-    log_step "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
-    docker exec -d "$UD3TN_CONTAINER" \
-        python3 -c "
+    if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
+        log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
+
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give ud3tn time to finish internal setup after port opens
+sleep 2
+
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "ud3tn did not start listening on port $UD3TN_MTCP_PORT within ${WAIT_TIMEOUT}s"
+    docker logs "$UD3TN_CONTAINER" 2>&1 | tail -30
+    exit 1
+fi
+
+# Start echo agent via AAP2 inside the container.
+# ud3tn doesn't ship an echo agent, so we create one inline.
+# Uses two AAP2 connections (subscriber for recv, active for send)
+# because ud3tn's subscriber mode is receive-only.
+# Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
+log_step "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
+docker exec -d "$UD3TN_CONTAINER" \
+    python3 -c "
 from ud3tn_utils.aap2 import AAP2TCPClient, BundleADU
 recv_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
 recv_client.connect()
@@ -263,11 +247,7 @@ while True:
     send_client.receive_response()
 " || log_warn "Echo agent exited"
 
-    sleep 2
-else
-    log_error "Native ud3tn mode not yet implemented - use Docker mode"
-    exit 1
-fi
+sleep 2
 
 # Configure ud3tn contact to Hardy (so it knows how to route responses back)
 log_step "Configuring ud3tn contact to Hardy node..."
@@ -327,11 +307,9 @@ fi
 
 # Stop ud3tn for test 2
 log_info "Stopping ud3tn..."
-if [ "$USE_DOCKER" = true ]; then
-    docker stop "$UD3TN_CONTAINER" 2>/dev/null || true
-    docker rm -f "$UD3TN_CONTAINER" 2>/dev/null || true
-    UD3TN_CONTAINER=""
-fi
+docker stop "$UD3TN_CONTAINER" 2>/dev/null || true
+docker rm -f "$UD3TN_CONTAINER" 2>/dev/null || true
+UD3TN_CONTAINER=""
 
 sleep 1
 
@@ -403,87 +381,85 @@ log_info "MTCP CLA started with PID $CLA_PID"
 # Start ud3tn to ping Hardy
 log_step "Starting ud3tn to ping Hardy..."
 
-if [ "$USE_DOCKER" = true ]; then
-    docker rm -f ud3tn-interop-test 2>/dev/null || true
+docker rm -f ud3tn-interop-test 2>/dev/null || true
 
-    UD3TN_CONTAINER=$(docker run -d \
-        --name ud3tn-interop-test \
-        --network host \
-        "$UD3TN_IMAGE" \
-        -e "ipn:$UD3TN_NODE_NUM.0" \
-        -c "mtcp:0.0.0.0,$UD3TN_MTCP_PORT" \
-        -b 7 \
-        -A 0.0.0.0 -P "$UD3TN_AAP2_PORT" \
-        -R)
+UD3TN_CONTAINER=$(docker run -d \
+    --name ud3tn-interop-test \
+    --network host \
+    "$UD3TN_IMAGE" \
+    -e "ipn:$UD3TN_NODE_NUM.0" \
+    -c "mtcp:0.0.0.0,$UD3TN_MTCP_PORT" \
+    -b 7 \
+    -A 0.0.0.0 -P "$UD3TN_AAP2_PORT" \
+    -R)
 
-    log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
+log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
 
-    log_info "Waiting for ud3tn to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-            break
-        fi
-        if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
-            log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
+log_info "Waiting for ud3tn to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
+        break
+    fi
+    if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
+        log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
 
-    # Give ud3tn time to finish internal setup after port opens
+# Give ud3tn time to finish internal setup after port opens
+sleep 2
+
+if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
+    log_error "ud3tn container exited unexpectedly. Logs:"
+    docker logs "$UD3TN_CONTAINER" 2>&1 | tail -20
+    docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
+    TEST2_RESULT="FAIL"
+else
+    # Configure contact to Hardy
+    log_step "Configuring ud3tn contact to Hardy..."
+    docker exec "$UD3TN_CONTAINER" \
+        python3 -m ud3tn_utils.aap2.bin.aap2_configure_link \
+        --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
+        "ipn:$HARDY_NODE_NUM.0" \
+        "mtcp:127.0.0.1:$HARDY_MTCP_PORT" \
+        2>/dev/null || log_warn "Could not configure contact"
+
     sleep 2
 
-    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-        log_error "ud3tn container exited unexpectedly. Logs:"
-        docker logs "$UD3TN_CONTAINER" 2>&1 | tail -20
-        docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
-        TEST2_RESULT="FAIL"
-    else
-        # Configure contact to Hardy
-        log_step "Configuring ud3tn contact to Hardy..."
-        docker exec "$UD3TN_CONTAINER" \
-            python3 -m ud3tn_utils.aap2.bin.aap2_configure_link \
-            --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
-            "ipn:$HARDY_NODE_NUM.0" \
-            "mtcp:127.0.0.1:$HARDY_MTCP_PORT" \
-            2>/dev/null || log_warn "Could not configure contact"
+    # Run ping from ud3tn container using aap2_ping
+    log_step "ud3tn pinging Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+    PING_TIMEOUT=$((PING_COUNT * 2 + 10))
+    PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$UD3TN_CONTAINER" \
+        python3 -m ud3tn_utils.aap2.bin.aap2_ping \
+        --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
+        --agentid 128 \
+        --count "$PING_COUNT" \
+        "ipn:$HARDY_NODE_NUM.7" \
+        2>&1) || true
 
-        sleep 2
+    echo "$PING_OUTPUT"
+    echo ""
 
-        # Run ping from ud3tn container using aap2_ping
-        log_step "ud3tn pinging Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-        PING_TIMEOUT=$((PING_COUNT * 2 + 10))
-        PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$UD3TN_CONTAINER" \
-            python3 -m ud3tn_utils.aap2.bin.aap2_ping \
-            --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
-            --agentid 128 \
-            --count "$PING_COUNT" \
-            "ipn:$HARDY_NODE_NUM.7" \
-            2>&1) || true
+    # aap2_ping output: "Ping ran for X seconds, received N of M sent"
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep "received .* of .* sent" | tail -1)
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*received ([0-9]+) of.*/\1/')
+    SENT=$(echo "$STATS_LINE" | sed -E 's/.*of ([0-9]+) sent.*/\1/')
 
-        echo "$PING_OUTPUT"
-        echo ""
-
-        # aap2_ping output: "Ping ran for X seconds, received N of M sent"
-        STATS_LINE=$(echo "$PING_OUTPUT" | grep "received .* of .* sent" | tail -1)
-        RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*received ([0-9]+) of.*/\1/')
-        SENT=$(echo "$STATS_LINE" | sed -E 's/.*of ([0-9]+) sent.*/\1/')
-
-        if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
-            if [ "$RECEIVED" = "$SENT" ]; then
-                log_info "TEST 2 PASSED: ud3tn received $RECEIVED/$SENT responses from Hardy"
-                TEST2_RESULT="PASS"
-            else
-                log_error "TEST 2 FAILED: Partial loss ($RECEIVED/$SENT)"
-                TEST2_RESULT="FAIL"
-            fi
+    if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
+        if [ "$RECEIVED" = "$SENT" ]; then
+            log_info "TEST 2 PASSED: ud3tn received $RECEIVED/$SENT responses from Hardy"
+            TEST2_RESULT="PASS"
         else
-            log_error "TEST 2 FAILED: No echo responses received"
+            log_error "TEST 2 FAILED: Partial loss ($RECEIVED/$SENT)"
             TEST2_RESULT="FAIL"
         fi
+    else
+        log_error "TEST 2 FAILED: No echo responses received"
+        TEST2_RESULT="FAIL"
     fi
 fi
 

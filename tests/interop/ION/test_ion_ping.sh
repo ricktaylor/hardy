@@ -12,11 +12,10 @@
 #   - ION Docker image built (ion-interop)
 #
 # Usage:
-#   ./tests/interop/ION/test_ion_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/ION/test_ion_ping.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy and CLA binaries
-#   --no-docker    Use local ION binaries instead of Docker
 
 set -e
 
@@ -49,7 +48,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -58,10 +56,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -157,24 +151,15 @@ if [ ! -x "$CLA_BIN" ]; then
 fi
 
 # Build or check for ION
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for ion-interop Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing ion-interop image (--no-cache)..."
-        docker build --no-cache -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
-    elif ! docker image inspect "$ION_IMAGE" &>/dev/null; then
-        log_info "Building ion-interop Docker image (this may take a while)..."
-        docker build -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
-    else
-        log_info "Using existing ion-interop image"
-    fi
+log_step "Checking for ion-interop Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing ion-interop image (--no-cache)..."
+    docker build --no-cache -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
+elif ! docker image inspect "$ION_IMAGE" &>/dev/null; then
+    log_info "Building ion-interop Docker image (this may take a while)..."
+    docker build -t "$ION_IMAGE" "$SCRIPT_DIR/docker"
 else
-    if ! command -v ionstart &> /dev/null; then
-        log_error "ION not found in PATH"
-        log_error "Install ION or use Docker mode"
-        exit 1
-    fi
-    log_info "Found ION at: $(which ionstart)"
+    log_info "Using existing ion-interop image"
 fi
 
 # =============================================================================
@@ -187,60 +172,55 @@ echo "============================================================"
 
 log_step "Starting ION daemon with STCP CL..."
 
-if [ "$USE_DOCKER" = true ]; then
-    docker rm -f ion-interop-test 2>/dev/null || true
+docker rm -f ion-interop-test 2>/dev/null || true
 
-    ION_CONTAINER=$(docker run -d \
-        --name ion-interop-test \
-        --network host \
-        --ipc=host \
-        -e ION_NODE_NUM="$ION_NODE_NUM" \
-        -e STCP_PORT="$ION_STCP_PORT" \
-        -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$HARDY_STCP_PORT" \
-        -e REMOTE_NODE="$HARDY_NODE_NUM" \
-        "$ION_IMAGE")
+ION_CONTAINER=$(docker run -d \
+    --name ion-interop-test \
+    --network host \
+    --ipc=host \
+    -e ION_NODE_NUM="$ION_NODE_NUM" \
+    -e STCP_PORT="$ION_STCP_PORT" \
+    -e REMOTE_HOST="127.0.0.1" \
+    -e REMOTE_PORT="$HARDY_STCP_PORT" \
+    -e REMOTE_NODE="$HARDY_NODE_NUM" \
+    "$ION_IMAGE")
 
-    log_info "Started ION container: ${ION_CONTAINER:0:12}"
+log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
-    log_info "Waiting for ION to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-            log_error "ION container exited unexpectedly. Logs:"
-            docker logs "$ION_CONTAINER" 2>&1 | tail -50
-            docker rm "$ION_CONTAINER" 2>/dev/null || true
-            exit 1
-        fi
-
-        if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
-            log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give ION time to finish internal setup after port opens
-    sleep 2
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "ION did not start listening on port $ION_STCP_PORT within ${WAIT_TIMEOUT}s"
-        docker logs "$ION_CONTAINER" 2>&1 | tail -30
+log_info "Waiting for ION to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
+        log_error "ION container exited unexpectedly. Logs:"
+        docker logs "$ION_CONTAINER" 2>&1 | tail -50
+        docker rm "$ION_CONTAINER" 2>/dev/null || true
         exit 1
     fi
 
-    # Start bpecho service
-    log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
-    docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
+    if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
+        log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
 
-    sleep 2
-else
-    log_error "Native ION mode not yet implemented - use Docker mode"
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Give ION time to finish internal setup after port opens
+sleep 2
+
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "ION did not start listening on port $ION_STCP_PORT within ${WAIT_TIMEOUT}s"
+    docker logs "$ION_CONTAINER" 2>&1 | tail -30
     exit 1
 fi
+
+# Start bpecho service
+log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
+docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
+
+sleep 2
 
 # Create CLA config for bp ping (TEST 1)
 cat > "$TEST_DIR/cla_ping.toml" << EOF
@@ -289,13 +269,11 @@ fi
 
 # Stop ION for test 2
 log_info "Stopping ION..."
-if [ "$USE_DOCKER" = true ]; then
-    docker stop "$ION_CONTAINER" 2>/dev/null || true
-    docker rm -f "$ION_CONTAINER" 2>/dev/null || true
-    ION_CONTAINER=""
-    # Clean up stale ION shared memory from --ipc=host
-    docker run --rm --ipc=host --entrypoint killm "$ION_IMAGE" 2>/dev/null || true
-fi
+docker stop "$ION_CONTAINER" 2>/dev/null || true
+docker rm -f "$ION_CONTAINER" 2>/dev/null || true
+ION_CONTAINER=""
+# Clean up stale ION shared memory from --ipc=host
+docker run --rm --ipc=host --entrypoint killm "$ION_IMAGE" 2>/dev/null || true
 
 sleep 1
 
@@ -367,73 +345,71 @@ log_info "MTCP/STCP CLA started with PID $CLA_PID"
 # Start ION to ping Hardy
 log_step "Starting ION to ping Hardy..."
 
-if [ "$USE_DOCKER" = true ]; then
-    docker rm -f ion-interop-test 2>/dev/null || true
+docker rm -f ion-interop-test 2>/dev/null || true
 
-    ION_CONTAINER=$(docker run -d \
-        --name ion-interop-test \
-        --network host \
-        --ipc=host \
-        -e ION_NODE_NUM="$ION_NODE_NUM" \
-        -e STCP_PORT="$ION_STCP_PORT" \
-        -e REMOTE_HOST="127.0.0.1" \
-        -e REMOTE_PORT="$HARDY_STCP_PORT" \
-        -e REMOTE_NODE="$HARDY_NODE_NUM" \
-        "$ION_IMAGE")
+ION_CONTAINER=$(docker run -d \
+    --name ion-interop-test \
+    --network host \
+    --ipc=host \
+    -e ION_NODE_NUM="$ION_NODE_NUM" \
+    -e STCP_PORT="$ION_STCP_PORT" \
+    -e REMOTE_HOST="127.0.0.1" \
+    -e REMOTE_PORT="$HARDY_STCP_PORT" \
+    -e REMOTE_NODE="$HARDY_NODE_NUM" \
+    "$ION_IMAGE")
 
-    log_info "Started ION container: ${ION_CONTAINER:0:12}"
+log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
-    log_info "Waiting for ION to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-            break
-        fi
-        if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
-            log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give ION time to finish internal setup after port opens
-    sleep 2
-
+log_info "Waiting for ION to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
     if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-        log_error "ION container exited unexpectedly. Logs:"
-        docker logs "$ION_CONTAINER" 2>&1 | tail -20
-        docker rm "$ION_CONTAINER" 2>/dev/null || true
-        TEST2_RESULT="FAIL"
-    else
-        # Run bping from ION container
-        log_step "ION bping to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-        PING_TIMEOUT=$((PING_COUNT * 2 + 10))
-        PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$ION_CONTAINER" \
-            bping -c "$PING_COUNT" -q 5 \
-            "ipn:$ION_NODE_NUM.1" "ipn:$HARDY_NODE_NUM.7" \
-            2>&1) || true
+        break
+    fi
+    if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
+        log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
 
-        echo "$PING_OUTPUT"
-        echo ""
+# Give ION time to finish internal setup after port opens
+sleep 2
 
-        # bping reports "N bundles transmitted, M bundles received, X% bundle loss"
-        STATS_LINE=$(echo "$PING_OUTPUT" | grep "bundle loss" | head -1)
-        RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) bundles received.*/\1/')
+if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
+    log_error "ION container exited unexpectedly. Logs:"
+    docker logs "$ION_CONTAINER" 2>&1 | tail -20
+    docker rm "$ION_CONTAINER" 2>/dev/null || true
+    TEST2_RESULT="FAIL"
+else
+    # Run bping from ION container
+    log_step "ION bping to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+    PING_TIMEOUT=$((PING_COUNT * 2 + 10))
+    PING_OUTPUT=$(timeout "${PING_TIMEOUT}s" docker exec "$ION_CONTAINER" \
+        bping -c "$PING_COUNT" -q 5 \
+        "ipn:$ION_NODE_NUM.1" "ipn:$HARDY_NODE_NUM.7" \
+        2>&1) || true
 
-        if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
-            if echo "$STATS_LINE" | grep -q "0.00% bundle loss"; then
-                log_info "TEST 2 PASSED: ION received $RECEIVED responses from Hardy"
-                TEST2_RESULT="PASS"
-            else
-                log_error "TEST 2 FAILED: Partial loss ($STATS_LINE)"
-                TEST2_RESULT="FAIL"
-            fi
+    echo "$PING_OUTPUT"
+    echo ""
+
+    # bping reports "N bundles transmitted, M bundles received, X% bundle loss"
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep "bundle loss" | head -1)
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) bundles received.*/\1/')
+
+    if [ -n "$RECEIVED" ] && [ "$RECEIVED" -ge 1 ] 2>/dev/null; then
+        if echo "$STATS_LINE" | grep -q "0.00% bundle loss"; then
+            log_info "TEST 2 PASSED: ION received $RECEIVED responses from Hardy"
+            TEST2_RESULT="PASS"
         else
-            log_error "TEST 2 FAILED: No echo responses received"
+            log_error "TEST 2 FAILED: Partial loss ($STATS_LINE)"
             TEST2_RESULT="FAIL"
         fi
+    else
+        log_error "TEST 2 FAILED: No echo responses received"
+        TEST2_RESULT="FAIL"
     fi
 fi
 

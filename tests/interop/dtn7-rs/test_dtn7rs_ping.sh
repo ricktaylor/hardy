@@ -10,11 +10,10 @@
 #   - Hardy tools and bpa-server built
 #
 # Usage:
-#   ./tests/interop/dtn7-rs/test_dtn7rs_ping.sh [--skip-build] [--no-docker]
+#   ./tests/interop/dtn7-rs/test_dtn7rs_ping.sh [--skip-build]
 #
 # Options:
 #   --skip-build   Skip building Hardy binaries
-#   --no-docker    Use local dtnd/dtnecho2 instead of Docker
 
 set -e
 
@@ -44,7 +43,6 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
 # Parse options
 SKIP_BUILD=false
 REFRESH=false
-USE_DOCKER=true
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-build)
@@ -53,10 +51,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --refresh)
             REFRESH=true
-            shift
-            ;;
-        --no-docker)
-            USE_DOCKER=false
             shift
             ;;
         --count|-c)
@@ -150,31 +144,16 @@ if [ ! -x "$BP_BIN" ]; then
 fi
 
 # Build or check for dtn7-rs
-if [ "$USE_DOCKER" = true ]; then
-    log_step "Checking for dtn7-interop Docker image..."
-    if [ "$REFRESH" = true ]; then
-        log_info "Refreshing dtn7-interop image (--no-cache)..."
-        docker build --no-cache -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
-    elif ! docker image inspect "$DTN7_IMAGE" &>/dev/null; then
-        log_info "Building dtn7-interop Docker image..."
-        # Use docker directory as context - Dockerfile clones from GitHub, doesn't need workspace files
-        docker build -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
-    else
-        log_info "Using existing dtn7-interop image"
-    fi
+log_step "Checking for dtn7-interop Docker image..."
+if [ "$REFRESH" = true ]; then
+    log_info "Refreshing dtn7-interop image (--no-cache)..."
+    docker build --no-cache -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
+elif ! docker image inspect "$DTN7_IMAGE" &>/dev/null; then
+    log_info "Building dtn7-interop Docker image..."
+    # Use docker directory as context - Dockerfile clones from GitHub, doesn't need workspace files
+    docker build -t "$DTN7_IMAGE" "$SCRIPT_DIR/docker"
 else
-    # Check for native dtn7-rs
-    if ! command -v dtnd &> /dev/null; then
-        log_error "dtnd (dtn7-rs) not found in PATH"
-        log_error "Install with: cargo install dtn7"
-        exit 1
-    fi
-    if ! command -v dtnecho2 &> /dev/null; then
-        log_error "dtnecho2 not found in PATH"
-        log_error "Build from dtn7-rs examples"
-        exit 1
-    fi
-    log_info "Found dtnd at: $(which dtnd)"
+    log_info "Using existing dtn7-interop image"
 fi
 
 # =============================================================================
@@ -187,87 +166,67 @@ echo "============================================================"
 
 log_step "Starting dtn7-rs daemon with TCPCLv4..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f dtn7-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f dtn7-interop-test 2>/dev/null || true
 
-    # Run dtn7-rs in Docker
-    # NODE_ID env var sets the node number for IPN naming (start_dtnd wrapper handles -n)
-    # dtnd flags: -d (debug), -i0 (interval), -p 1h (peer timeout), -r epidemic (routing), -C tcp:port=PORT
-    # -p 1h: Hardy connects as a no-IPND dynamic peer, and dtn7-rs reaps such peers at
-    # peer_timeout (default 20s) even while bundles are flowing (last_contact is only
-    # refreshed by IPND beacons, not traffic), which kills the return path at ~seq 22.
-    # A timeout longer than any test run holds the peer. (-p 0 would reap instantly.)
-    DTN7_CONTAINER=$(docker run -d \
-        --name dtn7-interop-test \
-        --network host \
-        -e NODE_ID="$DTN7_NODE_NUM" \
-        "$DTN7_IMAGE" \
-        -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$TCPCLV4_PORT")
+# Run dtn7-rs in Docker
+# NODE_ID env var sets the node number for IPN naming (start_dtnd wrapper handles -n)
+# dtnd flags: -d (debug), -i0 (interval), -p 1h (peer timeout), -r epidemic (routing), -C tcp:port=PORT
+# -p 1h: Hardy connects as a no-IPND dynamic peer, and dtn7-rs reaps such peers at
+# peer_timeout (default 20s) even while bundles are flowing (last_contact is only
+# refreshed by IPND beacons, not traffic), which kills the return path at ~seq 22.
+# A timeout longer than any test run holds the peer. (-p 0 would reap instantly.)
+DTN7_CONTAINER=$(docker run -d \
+    --name dtn7-interop-test \
+    --network host \
+    -e NODE_ID="$DTN7_NODE_NUM" \
+    "$DTN7_IMAGE" \
+    -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$TCPCLV4_PORT")
 
-    log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
+log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
-    # Wait for dtnd to start (ss preferred — no TCP connection created)
-    log_info "Waiting for dtnd to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-            log_error "dtn7-rs container exited unexpectedly. Logs:"
-            docker logs "$DTN7_CONTAINER" 2>&1 | tail -50
-            docker rm "$DTN7_CONTAINER" 2>/dev/null || true
-            exit 1
-        fi
-
-        if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-            log_info "dtnd is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-            break
-        fi
-
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give dtnd time to finish internal setup after port opens
-    sleep 2
-
-    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-        log_error "dtnd did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-        docker logs "$DTN7_CONTAINER" 2>&1 | tail -30
+# Wait for dtnd to start (ss preferred — no TCP connection created)
+log_info "Waiting for dtnd to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+    if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
+        log_error "dtn7-rs container exited unexpectedly. Logs:"
+        docker logs "$DTN7_CONTAINER" 2>&1 | tail -50
+        docker rm "$DTN7_CONTAINER" 2>/dev/null || true
         exit 1
     fi
 
-    # Start dtnecho2 in the container
-    log_step "Starting dtnecho2 service in container..."
-    docker exec -d "$DTN7_CONTAINER" dtnecho2 -v
+    if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
+        log_info "dtnd is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+        break
+    fi
 
-    # Give echo service time to connect
-    sleep 2
-else
-    # Run dtn7-rs natively
-    # dtnd: -d debug, -i0 interval, -p 1h peer timeout (hold dynamic peer past reaper), -r epidemic routing, -n node number, -C tcp convergence layer
-    dtnd -d -i0 -p 1h -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
-    DTND_PID=$!
-    log_info "Started dtnd with PID $DTND_PID"
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
 
-    sleep 3
+# Give dtnd time to finish internal setup after port opens
+sleep 2
 
-    # Start echo service
-    log_step "Starting dtnecho2 service..."
-    dtnecho2 -v &
-    DTNECHO_PID=$!
-    log_info "Started dtnecho2 with PID $DTNECHO_PID"
-
-    sleep 2
+if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+    log_error "dtnd did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
+    docker logs "$DTN7_CONTAINER" 2>&1 | tail -30
+    exit 1
 fi
 
+# Start dtnecho2 in the container
+log_step "Starting dtnecho2 service in container..."
+docker exec -d "$DTN7_CONTAINER" dtnecho2 -v
+
+# Give echo service time to connect
+sleep 2
+
 # Verify dtn7-rs is running
-if [ "$USE_DOCKER" = true ]; then
-    if ! docker ps | grep -q dtn7-interop-test; then
-        log_error "dtn7-rs container is not running"
-        docker logs "$DTN7_CONTAINER" 2>&1 || true
-        exit 1
-    fi
+if ! docker ps | grep -q dtn7-interop-test; then
+    log_error "dtn7-rs container is not running"
+    docker logs "$DTN7_CONTAINER" 2>&1 || true
+    exit 1
 fi
 
 # Hardy pings dtn7-rs echo service (ipn:23.7)
@@ -306,18 +265,9 @@ fi
 
 # Stop dtn7-rs for test 2
 log_info "Stopping dtn7-rs..."
-if [ "$USE_DOCKER" = true ]; then
-    docker stop "$DTN7_CONTAINER" 2>/dev/null || true
-    docker rm -f "$DTN7_CONTAINER" 2>/dev/null || true
-    DTN7_CONTAINER=""
-else
-    kill "$DTNECHO_PID" 2>/dev/null || true
-    kill "$DTND_PID" 2>/dev/null || true
-    wait "$DTNECHO_PID" 2>/dev/null || true
-    wait "$DTND_PID" 2>/dev/null || true
-    DTNECHO_PID=""
-    DTND_PID=""
-fi
+docker stop "$DTN7_CONTAINER" 2>/dev/null || true
+docker rm -f "$DTN7_CONTAINER" 2>/dev/null || true
+DTN7_CONTAINER=""
 
 sleep 1
 
@@ -369,152 +319,98 @@ log_info "Hardy BPA server started with PID $HARDY_PID"
 # Start dtn7-rs to ping Hardy
 log_step "Starting dtn7-rs to ping Hardy..."
 
-if [ "$USE_DOCKER" = true ]; then
-    # Clean up any existing container with the same name
-    docker rm -f dtn7-interop-test 2>/dev/null || true
+# Clean up any existing container with the same name
+docker rm -f dtn7-interop-test 2>/dev/null || true
 
-    # Start dtn7-rs container — induct on unused port (Hardy has $TCPCLV4_PORT)
-    # -p 1h: hold the peer past peer_timeout (see TEST 1 note) so the dynamic peer
-    # isn't reaped mid-run while bundles are still flowing.
-    DTN7_CONTAINER=$(docker run -d \
-        --name dtn7-interop-test \
-        --network host \
-        -e NODE_ID="$DTN7_NODE_NUM" \
-        "$DTN7_IMAGE" \
-        -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
+# Start dtn7-rs container — induct on unused port (Hardy has $TCPCLV4_PORT)
+# -p 1h: hold the peer past peer_timeout (see TEST 1 note) so the dynamic peer
+# isn't reaped mid-run while bundles are still flowing.
+DTN7_CONTAINER=$(docker run -d \
+    --name dtn7-interop-test \
+    --network host \
+    -e NODE_ID="$DTN7_NODE_NUM" \
+    "$DTN7_IMAGE" \
+    -d -i0 -p 1h -r epidemic -W /dev/shm/dtn7 -C "tcp:port=$((TCPCLV4_PORT+1))")
 
-    log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
+log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
-    log_info "Waiting for dtnd to initialize..."
-    WAIT_TIMEOUT=30
-    WAIT_COUNT=0
-    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-        if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-            break
-        fi
-        if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
-            log_info "dtnd is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
-            break
-        fi
-        sleep 1
-        WAIT_COUNT=$((WAIT_COUNT + 1))
-    done
-
-    # Give dtnd time to finish internal setup after port opens
-    sleep 2
-
+log_info "Waiting for dtnd to initialize..."
+WAIT_TIMEOUT=30
+WAIT_COUNT=0
+while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
     if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-        log_error "dtn7-rs container exited unexpectedly. Logs:"
-        docker logs "$DTN7_CONTAINER" 2>&1 | tail -20
-        docker rm "$DTN7_CONTAINER" 2>/dev/null || true
-        TEST2_RESULT="FAIL"
+        break
     fi
-
-    # Use dtnsend to send a bundle to Hardy's echo service
-    log_step "dtn7-rs sending bundle to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-
-    # First, add Hardy as a peer via dtn7-rs REST API
-    # Format: /peers/add?p=<PEER_URL>&p_t=<STATIC|DYNAMIC>
-    # PEER_URL format for IPN: tcp://host:port/<node_number>
-    log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
-    docker exec "$DTN7_CONTAINER" \
-        curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=STATIC" \
-        2>&1 || log_warn "Could not add peer"
-
+    if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
+        log_info "dtnd is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
+        break
+    fi
     sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
 
-    # Register endpoint to receive echo responses
-    log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
-    docker exec "$DTN7_CONTAINER" dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
+# Give dtnd time to finish internal setup after port opens
+sleep 2
 
-    # Send pings to Hardy's echo service
-    log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-    for i in $(seq 1 $PING_COUNT); do
-        echo "ping $i from dtn7-rs" | docker exec -i "$DTN7_CONTAINER" \
-            dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
-        sleep 0.5
-    done
+if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
+    log_error "dtn7-rs container exited unexpectedly. Logs:"
+    docker logs "$DTN7_CONTAINER" 2>&1 | tail -20
+    docker rm "$DTN7_CONTAINER" 2>/dev/null || true
+    TEST2_RESULT="FAIL"
+fi
 
-    # Wait for round-trips
-    sleep 3
+# Use dtnsend to send a bundle to Hardy's echo service
+log_step "dtn7-rs sending bundle to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
 
-    # Fetch all received bundles
-    RECV_COUNT=0
-    for i in $(seq 1 $PING_COUNT); do
-        RECV_OUTPUT="$TEST_DIR/dtnrecv_$i.txt"
-        docker exec "$DTN7_CONTAINER" dtnrecv -e "ipn:$DTN7_NODE_NUM.0" > "$RECV_OUTPUT" 2>&1 || true
-        if [ -s "$RECV_OUTPUT" ] && ! grep -q "Nothing to fetch" "$RECV_OUTPUT" 2>/dev/null; then
-            RECV_COUNT=$((RECV_COUNT + 1))
-        fi
-    done
-
-    # Report results
-    echo ""
-    echo "--- ipn:$HARDY_NODE_NUM.7 ping statistics ---"
-    echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
-
-    if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
-        log_info "TEST 2 PASSED: dtn7-rs received $RECV_COUNT/$PING_COUNT responses from Hardy"
-        TEST2_RESULT="PASS"
-    elif [ "$RECV_COUNT" -gt 0 ]; then
-        log_error "TEST 2 FAILED: Partial loss - only $RECV_COUNT/$PING_COUNT responses received"
-        TEST2_RESULT="FAIL"
-    else
-        log_error "TEST 2 FAILED: No echo responses received"
-        TEST2_RESULT="FAIL"
-    fi
-else
-    # Native mode (-p 1h: hold dynamic peer past reaper, see TEST 1 note)
-    dtnd -d -i0 -p 1h -r epidemic -n "$DTN7_NODE_NUM" -C "tcp:port=$TCPCLV4_PORT" &
-    DTND_PID=$!
-    sleep 3
-
-    # Add Hardy as peer via REST API
-    log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
+# First, add Hardy as a peer via dtn7-rs REST API
+# Format: /peers/add?p=<PEER_URL>&p_t=<STATIC|DYNAMIC>
+# PEER_URL format for IPN: tcp://host:port/<node_number>
+log_info "Adding Hardy as peer at 127.0.0.1:$TCPCLV4_PORT..."
+docker exec "$DTN7_CONTAINER" \
     curl -s "http://127.0.0.1:$DTN7_WS_PORT/peers/add?p=tcp://127.0.0.1:$TCPCLV4_PORT/$HARDY_NODE_NUM&p_t=STATIC" \
-        >/dev/null 2>&1 || log_warn "Could not add peer"
+    2>&1 || log_warn "Could not add peer"
 
-    sleep 1
+sleep 1
 
-    # Register endpoint to receive echo responses
-    log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
-    dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
+# Register endpoint to receive echo responses
+log_step "Registering endpoint ipn:$DTN7_NODE_NUM.0 to receive echoes..."
+docker exec "$DTN7_CONTAINER" dtnrecv -r "ipn:$DTN7_NODE_NUM.0" >/dev/null 2>&1 || true
 
-    # Send pings to Hardy's echo service
-    log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
-    for i in $(seq 1 $PING_COUNT); do
-        echo "ping $i from dtn7-rs" | dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
-        sleep 0.5
-    done
+# Send pings to Hardy's echo service
+log_step "Sending $PING_COUNT pings to Hardy echo service at ipn:$HARDY_NODE_NUM.7..."
+for i in $(seq 1 $PING_COUNT); do
+    echo "ping $i from dtn7-rs" | docker exec -i "$DTN7_CONTAINER" \
+        dtnsend -r "ipn:$HARDY_NODE_NUM.7" >/dev/null 2>&1 || true
+    sleep 0.5
+done
 
-    # Wait for round-trips
-    sleep 3
+# Wait for round-trips
+sleep 3
 
-    # Fetch all received bundles
-    RECV_COUNT=0
-    for i in $(seq 1 $PING_COUNT); do
-        RECV_OUTPUT="$TEST_DIR/dtnrecv_$i.txt"
-        dtnrecv -e "ipn:$DTN7_NODE_NUM.0" > "$RECV_OUTPUT" 2>&1 || true
-        if [ -s "$RECV_OUTPUT" ] && ! grep -q "Nothing to fetch" "$RECV_OUTPUT" 2>/dev/null; then
-            RECV_COUNT=$((RECV_COUNT + 1))
-        fi
-    done
-
-    # Report results
-    echo ""
-    echo "--- ipn:$HARDY_NODE_NUM.7 ping statistics ---"
-    echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
-
-    if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
-        log_info "TEST 2 PASSED: dtn7-rs received $RECV_COUNT/$PING_COUNT responses from Hardy"
-        TEST2_RESULT="PASS"
-    elif [ "$RECV_COUNT" -gt 0 ]; then
-        log_error "TEST 2 FAILED: Partial loss - only $RECV_COUNT/$PING_COUNT responses received"
-        TEST2_RESULT="FAIL"
-    else
-        log_error "TEST 2 FAILED: No echo responses received"
-        TEST2_RESULT="FAIL"
+# Fetch all received bundles
+RECV_COUNT=0
+for i in $(seq 1 $PING_COUNT); do
+    RECV_OUTPUT="$TEST_DIR/dtnrecv_$i.txt"
+    docker exec "$DTN7_CONTAINER" dtnrecv -e "ipn:$DTN7_NODE_NUM.0" > "$RECV_OUTPUT" 2>&1 || true
+    if [ -s "$RECV_OUTPUT" ] && ! grep -q "Nothing to fetch" "$RECV_OUTPUT" 2>/dev/null; then
+        RECV_COUNT=$((RECV_COUNT + 1))
     fi
+done
+
+# Report results
+echo ""
+echo "--- ipn:$HARDY_NODE_NUM.7 ping statistics ---"
+echo "$PING_COUNT bundles transmitted, $RECV_COUNT received"
+
+if [ "$RECV_COUNT" -eq "$PING_COUNT" ]; then
+    log_info "TEST 2 PASSED: dtn7-rs received $RECV_COUNT/$PING_COUNT responses from Hardy"
+    TEST2_RESULT="PASS"
+elif [ "$RECV_COUNT" -gt 0 ]; then
+    log_error "TEST 2 FAILED: Partial loss - only $RECV_COUNT/$PING_COUNT responses received"
+    TEST2_RESULT="FAIL"
+else
+    log_error "TEST 2 FAILED: No echo responses received"
+    TEST2_RESULT="FAIL"
 fi
 
 # =============================================================================
