@@ -4,19 +4,19 @@ use hardy_cbor::{decode, encode};
 
 // The echo-service draft defines no payload wire format — the echo reflects the
 // payload unchanged and never parses it (see draft-taylor-dtn-echo-service). This
-// is purely the `bp ping` client's own internal format: a sequence number so
-// responses can be matched to requests, plus optional padding for path-MTU
-// probing. RTT timing and response validation are held in local client state
-// (see service.rs), not carried on the wire.
+// is purely the `bp ping` client's own internal format: a CBOR-encoded sequence
+// number so responses can be matched to requests, followed by optional 0xAA
+// padding for path-MTU probing. RTT timing and response validation are held in
+// local client state (see service.rs), not carried on the wire.
 //
-// Structure: `[sequence, options_map]`
+// Wire layout: <CBOR unsigned integer: sequence number><0xAA padding bytes>
 //
-// Options map keys:
-// - 0: Padding (bstr) - for MTU testing
-#[repr(u64)]
-enum OptionKey {
-    Padding = 0,
-}
+// The padding is raw bytes rather than a CBOR item, so it never affects the
+// decoded sequence number; the client's byte-for-byte payload comparison is what
+// verifies the padding round-tripped intact.
+
+// Fill byte for path-MTU padding.
+const PADDING_BYTE: u8 = 0xAA;
 
 // Parsed ping payload.
 pub struct Payload {
@@ -36,72 +36,21 @@ impl Payload {
         self.padding_len = padding_len;
         self
     }
-}
 
-impl encode::ToCbor for Payload {
-    type Result = ();
-
-    fn to_cbor(&self, encoder: &mut encode::Encoder) -> Self::Result {
-        // Count options for definite-length map
-        let opt_count = if self.padding_len > 0 { 1 } else { 0 };
-
-        // Emit 2-element array: [sequence, options_map]
-        encoder.emit_array(Some(2), |a| {
-            a.emit(&self.seqno);
-
-            a.emit_map(Some(opt_count), |m| {
-                // Padding (key 0)
-                if self.padding_len > 0 {
-                    m.emit(&(OptionKey::Padding as u64));
-                    // Zero-filled padding
-                    m.emit(&encode::Bytes(&vec![0u8; self.padding_len]));
-                }
-            });
-        });
+    // Encode as a CBOR sequence number followed by `padding_len` 0xAA bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = encode::emit(&self.seqno).0;
+        bytes.resize(bytes.len() + self.padding_len, PADDING_BYTE);
+        bytes
     }
-}
 
-impl decode::FromCbor for Payload {
-    type Error = decode::Error;
-
-    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        decode::parse_array(data, |arr, _shortest, _tags| {
-            // Parse sequence number
-            let seqno: u32 = arr.parse()?;
-
-            // Parse options map
-            let mut padding_len = 0;
-
-            arr.parse_map(|map, _shortest, _tags| {
-                while !map.at_end()? {
-                    let key: u64 = map.parse()?;
-                    match key {
-                        k if k == OptionKey::Padding as u64 => {
-                            // Parse padding bytes, just record length
-                            map.parse_value(|value, _shortest, _tags| {
-                                if let decode::Value::Bytes(bytes) = value {
-                                    padding_len = bytes.len();
-                                    Ok(())
-                                } else {
-                                    Err(decode::Error::IncorrectType(
-                                        "bytes".into(),
-                                        value.type_name(false),
-                                    ))
-                                }
-                            })?;
-                        }
-                        _ => {
-                            // Skip unknown options
-                            map.skip_value(16)?;
-                        }
-                    }
-                }
-                Ok::<_, decode::Error>(())
-            })?;
-
-            Ok((Payload { seqno, padding_len }, true))
+    // Parse the leading CBOR sequence number; any trailing bytes are padding.
+    pub fn parse(data: &[u8]) -> Result<Self, decode::Error> {
+        let (seqno, _shortest, consumed) = <u32 as decode::FromCbor>::from_cbor(data)?;
+        Ok(Self {
+            seqno,
+            padding_len: data.len() - consumed,
         })
-        .map(|((payload, shortest), len)| (payload, shortest, len))
     }
 }
 
@@ -119,7 +68,7 @@ fn build_bundle_with_padding(
     creation: time::OffsetDateTime,
 ) -> anyhow::Result<BuiltPing> {
     let payload = Payload::new(seq_no).with_padding(padding);
-    let payload_bytes = encode::emit(&payload).0;
+    let payload_bytes = payload.to_bytes();
 
     let source = args.source.clone().unwrap();
 
