@@ -94,9 +94,9 @@ impl Sink {
                 .registry
                 .unregister(service, &self.node_ids, &self.rib)
                 .await
-            {
-                error!("Failed to unregister service: {e}");
-            }
+        {
+            error!("Failed to unregister service: {e}");
+        }
     }
 
     async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {

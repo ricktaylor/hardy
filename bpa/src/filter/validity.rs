@@ -37,15 +37,16 @@ impl ReadFilter for BundleValidityFilter {
         }
 
         if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
-            && hop_info.count > hop_info.limit {
-                debug!(
-                    bundle_id = %bundle.bundle.id,
-                    limit = hop_info.limit,
-                    count = hop_info.count,
-                    "Rejecting bundle: hop limit exceeded"
-                );
-                return Ok(ReadResult::Drop(Some(ReasonCode::HopLimitExceeded)));
-            }
+            && hop_info.count > hop_info.limit
+        {
+            debug!(
+                bundle_id = %bundle.bundle.id,
+                limit = hop_info.limit,
+                count = hop_info.count,
+                "Rejecting bundle: hop limit exceeded"
+            );
+            return Ok(ReadResult::Drop(Some(ReasonCode::HopLimitExceeded)));
+        }
 
         Ok(ReadResult::Continue)
     }

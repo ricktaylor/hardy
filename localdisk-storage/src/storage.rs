@@ -317,9 +317,10 @@ impl BundleStorage for Storage {
 
                 // And now sync the parent directory, i.e. metadata
                 if let Some(parent_dir) = storage_name.parent()
-                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all()) {
-                        warn!("Failed to sync parent directory: {e}");
-                    }
+                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all())
+                {
+                    warn!("Failed to sync parent directory: {e}");
+                }
 
                 storage::Result::Ok(storage_name)
             })
@@ -377,9 +378,10 @@ impl BundleStorage for Storage {
                     _ = std::fs::remove_file(&tmp_path);
                 })?;
                 if let Some(parent_dir) = final_path.parent()
-                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all()) {
-                        warn!("Failed to sync parent directory: {e}");
-                    }
+                    && let Err(e) = std::fs::File::open(parent_dir).and_then(|f| f.sync_all())
+                {
+                    warn!("Failed to sync parent directory: {e}");
+                }
                 storage::Result::Ok(())
             })
             .await

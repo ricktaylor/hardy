@@ -284,9 +284,10 @@ impl ConnectionRegistry {
         {
             let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
             if let Some(current) = pools.get(remote_addr)
-                && Arc::ptr_eq(current, &pool) {
-                    pools.remove(remote_addr);
-                }
+                && Arc::ptr_eq(current, &pool)
+            {
+                pools.remove(remote_addr);
+            }
         }
     }
 
