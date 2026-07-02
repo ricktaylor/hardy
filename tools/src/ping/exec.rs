@@ -28,10 +28,29 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     }
 
     let node_ids = [args.node_id()?].as_slice().try_into().unwrap();
+
+    // bp is a diagnostic client, so it must accept echoes from peers that don't
+    // meet every RFC9171 ingress policy — notably dtn7-rs's dtnecho2, which
+    // reflects bundles without a primary-block CRC. The strict auto-registered
+    // filter is disabled via the `no-rfc9171-autoregister` feature; register a
+    // configured instance here, relaxed by --lax-rfc9171. Round-trip integrity is
+    // still guaranteed by the client's byte-for-byte payload comparison.
+    let rfc9171_config = hardy_bpa::filter::rfc9171::Config {
+        primary_block_integrity: !args.lax_rfc9171,
+        bundle_age_required: !args.lax_rfc9171,
+    };
     let bpa = std::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
             .node_ids(node_ids)
+            .filter(
+                hardy_bpa::filter::Hook::Ingress,
+                "rfc9171-validity",
+                &[],
+                hardy_bpa::filter::Filter::Read(std::sync::Arc::new(
+                    hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter::new(&rfc9171_config),
+                )),
+            )
             .build()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to build BPA: {e}"))?,

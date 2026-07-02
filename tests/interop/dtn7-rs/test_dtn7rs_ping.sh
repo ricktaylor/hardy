@@ -215,12 +215,27 @@ if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
     exit 1
 fi
 
-# Start dtnecho2 in the container
+# Start dtnecho2 and wait until it has registered its echo endpoint. Under load
+# it can lose the startup race with dtnd and exit before registering, leaving
+# TEST 1 with zero replies; poll dtnd's endpoint list (its HTTP API) until
+# ipn:NODE.7 appears rather than sleeping a fixed interval.
 log_step "Starting dtnecho2 service in container..."
 docker exec -d "$DTN7_CONTAINER" dtnecho2 -v
 
-# Give echo service time to connect
-sleep 2
+echo_ready=false
+for _ in $(seq 1 30); do
+    if docker exec "$DTN7_CONTAINER" curl -sf http://localhost:3000/status/eids 2>/dev/null \
+        | grep -q "ipn:$DTN7_NODE_NUM\.7"; then
+        echo_ready=true
+        break
+    fi
+    sleep 0.5
+done
+if [ "$echo_ready" = true ]; then
+    log_info "dtnecho2 registered ipn:$DTN7_NODE_NUM.7"
+else
+    log_warn "dtnecho2 endpoint not confirmed within 15s; TEST 1 may fail"
+fi
 
 # Verify dtn7-rs is running
 if ! docker ps | grep -q dtn7-interop-test; then
@@ -235,8 +250,12 @@ echo ""
 
 # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
 # Capture output to check actual received count
+# --lax-rfc9171: dtn7-rs's dtnecho2 reflects bundles without a primary-block CRC,
+# which the default RFC9171 ingress filter would drop (the Hardy server config
+# relaxes the same check for TEST 2 via [rfc9171-validity]).
 PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
     --count "$PING_COUNT" \
+    --lax-rfc9171 \
     2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
 echo "$PING_OUTPUT"
