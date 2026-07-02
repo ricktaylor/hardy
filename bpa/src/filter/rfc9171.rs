@@ -108,8 +108,8 @@ impl Rfc9171ValidityFilter {
 impl ReadFilter for Rfc9171ValidityFilter {
     async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
         // RFC9171 §4.3.1: Primary block integrity check
-        if self.config.primary_block_integrity {
-            if let Some(primary_block) = bundle.bundle.blocks.get(&0) {
+        if self.config.primary_block_integrity
+            && let Some(primary_block) = bundle.bundle.blocks.get(&0) {
                 let has_crc = !matches!(bundle.bundle.crc_type, CrcType::None);
                 let has_bib = !matches!(primary_block.bib, BibCoverage::None);
 
@@ -121,7 +121,6 @@ impl ReadFilter for Rfc9171ValidityFilter {
                     return Ok(ReadResult::Drop(Some(ReasonCode::BlockUnintelligible)));
                 }
             }
-        }
 
         // RFC9171 §4.4.2: Bundle Age required when no clock
         if self.config.bundle_age_required
