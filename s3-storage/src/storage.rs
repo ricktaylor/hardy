@@ -213,9 +213,10 @@ impl storage::BundleStorage for Storage {
             Ok(resp) => Ok(Some(resp.body.collect().await?.into_bytes())),
             Err(e) => {
                 if let aws_sdk_s3::error::SdkError::ServiceError(ref se) = e
-                    && se.err().is_no_such_key() {
-                        return Ok(None);
-                    }
+                    && se.err().is_no_such_key()
+                {
+                    return Ok(None);
+                }
                 Err(Box::new(e))
             }
         }

@@ -207,15 +207,14 @@ fn print_system_info() {
     use std::fs;
 
     // CPU model
-    if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo") {
-        if let Some(model) = cpuinfo
+    if let Ok(cpuinfo) = fs::read_to_string("/proc/cpuinfo")
+        && let Some(model) = cpuinfo
             .lines()
             .find(|l| l.starts_with("model name"))
             .and_then(|l| l.split(':').nth(1))
         {
             eprintln!("CPU: {}", model.trim());
         }
-    }
 
     // Logical cores
     let cores = std::thread::available_parallelism()
@@ -224,8 +223,8 @@ fn print_system_info() {
     eprintln!("Cores: {cores}");
 
     // Total RAM
-    if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
-        if let Some(total) = meminfo
+    if let Ok(meminfo) = fs::read_to_string("/proc/meminfo")
+        && let Some(total) = meminfo
             .lines()
             .find(|l| l.starts_with("MemTotal"))
             .and_then(|l| l.split_whitespace().nth(1))
@@ -233,18 +232,16 @@ fn print_system_info() {
         {
             eprintln!("RAM: {} GB", total / 1_048_576);
         }
-    }
 
     // OS
-    if let Ok(release) = fs::read_to_string("/etc/os-release") {
-        if let Some(pretty) = release
+    if let Ok(release) = fs::read_to_string("/etc/os-release")
+        && let Some(pretty) = release
             .lines()
             .find(|l| l.starts_with("PRETTY_NAME"))
             .and_then(|l| l.split('=').nth(1))
         {
             eprintln!("OS: {}", pretty.trim_matches('"'));
         }
-    }
 
     eprintln!("Arch: {}", std::env::consts::ARCH);
 
