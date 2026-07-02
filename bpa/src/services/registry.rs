@@ -89,15 +89,14 @@ struct Sink {
 
 impl Sink {
     async fn unregister_inner(&self) {
-        if let Some(service) = self.service.upgrade() {
-            if let Err(e) = self
+        if let Some(service) = self.service.upgrade()
+            && let Err(e) = self
                 .registry
                 .unregister(service, &self.node_ids, &self.rib)
                 .await
             {
                 error!("Failed to unregister service: {e}");
             }
-        }
     }
 
     async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {

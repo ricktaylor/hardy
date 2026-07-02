@@ -36,8 +36,8 @@ impl ReadFilter for BundleValidityFilter {
             return Ok(ReadResult::Drop(Some(ReasonCode::LifetimeExpired)));
         }
 
-        if let Some(hop_info) = bundle.bundle.hop_count.as_ref() {
-            if hop_info.count > hop_info.limit {
+        if let Some(hop_info) = bundle.bundle.hop_count.as_ref()
+            && hop_info.count > hop_info.limit {
                 debug!(
                     bundle_id = %bundle.bundle.id,
                     limit = hop_info.limit,
@@ -46,7 +46,6 @@ impl ReadFilter for BundleValidityFilter {
                 );
                 return Ok(ReadResult::Drop(Some(ReasonCode::HopLimitExceeded)));
             }
-        }
 
         Ok(ReadResult::Continue)
     }
