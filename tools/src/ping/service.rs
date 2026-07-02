@@ -1,7 +1,6 @@
 use super::*;
 use hardy_bpa::async_trait;
 use hardy_bpv7::{bpsec, bundle::ParsedBundle, eid::Eid, status_report::AdministrativeRecord};
-use hardy_cbor::decode::FromCbor;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -589,8 +588,8 @@ impl hardy_bpa::services::Service for Service {
         }
 
         // Parse our sequence number out of the reflected payload.
-        let payload = match payload::Payload::from_cbor(payload_data) {
-            Ok((p, _, _)) => p,
+        let payload = match payload::Payload::parse(payload_data) {
+            Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to parse ping payload: {e}");
                 return;
