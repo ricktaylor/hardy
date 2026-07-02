@@ -50,6 +50,6 @@ sqlx-sqlite = { path = "patches/sqlx-sqlite" }
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/ricktaylor/hardy"
