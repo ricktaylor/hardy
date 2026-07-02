@@ -116,9 +116,9 @@ fn print_system_info() {
             .lines()
             .find(|l| l.starts_with("model name"))
             .and_then(|l| l.split(':').nth(1))
-        {
-            eprintln!("CPU: {}", model.trim());
-        }
+    {
+        eprintln!("CPU: {}", model.trim());
+    }
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(0);
@@ -129,9 +129,9 @@ fn print_system_info() {
             .find(|l| l.starts_with("MemTotal"))
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|v| v.parse::<u64>().ok())
-        {
-            eprintln!("RAM: {} GB", total / 1_048_576);
-        }
+    {
+        eprintln!("RAM: {} GB", total / 1_048_576);
+    }
     eprintln!("Arch: {}", std::env::consts::ARCH);
     eprintln!(
         "Profile: {}",
