@@ -26,7 +26,6 @@ std = [
     "zeroize/std",
     "portable-atomic/std",
     "rand?/std",
-    "aes-gcm?/std",
 ]
 # Enable this feature on targets without native CAS instructions (e.g., thumbv6m / Cortex-M0).
 # Requires a critical-section implementation - see https://docs.rs/portable-atomic
@@ -52,7 +51,7 @@ winnow = { version = "1", default-features = false, features = ["alloc", "ascii"
 hashbrown = "0.17"
 smallvec = "1"
 hmac = { version = "0.13", default-features = false, optional = true }
-aes-gcm = { version = "0.10", default-features = false, features = ["alloc", "aes", "zeroize"], optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = ["alloc", "aes", "zeroize"], optional = true }
 aes-kw = { version = "0.3", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["alloc","derive"], optional = true }
 

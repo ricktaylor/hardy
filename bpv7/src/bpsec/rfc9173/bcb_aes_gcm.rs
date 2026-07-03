@@ -182,14 +182,16 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
 }
 
 #[allow(clippy::type_complexity)]
-fn encrypt_inner(
-    cipher: impl aes_gcm::aead::Aead,
+fn encrypt_inner<C: aes_gcm::aead::Aead>(
+    cipher: C,
     iv: Box<[u8]>,
     aad: &[u8],
     msg: &[u8],
 ) -> Result<(Box<[u8]>, Box<[u8]>), Error> {
+    let nonce =
+        <&aes_gcm::aead::Nonce<C>>::try_from(iv.as_ref()).map_err(|_| Error::EncryptionFailed)?;
     cipher
-        .encrypt(iv.as_ref().into(), aes_gcm::aead::Payload { msg, aad })
+        .encrypt(nonce, aes_gcm::aead::Payload { msg, aad })
         .map(|r| (r.into(), iv))
         .map_err(|_| Error::EncryptionFailed)
 }
@@ -411,31 +413,26 @@ impl Operation {
         }
     }
 
-    fn decrypt_inner<C: aes_gcm::aead::Aead + aes_gcm::aead::AeadInPlace>(
+    fn decrypt_inner<C: aes_gcm::aead::Aead + aes_gcm::aead::AeadInOut>(
         &self,
         cipher: C,
         aad: &[u8],
         msg: &[u8],
     ) -> Option<zeroize::Zeroizing<Box<[u8]>>> {
+        let nonce = <&aes_gcm::aead::Nonce<C>>::try_from(self.parameters.iv.as_ref()).ok()?;
         if let Some(tag) = self.results.0.as_ref() {
-            let mut msg = zeroize::Zeroizing::new(Box::from(msg));
+            let tag = <&aes_gcm::aead::Tag<C>>::try_from(tag.as_ref()).ok()?;
+            let mut msg = zeroize::Zeroizing::new(Box::<[u8]>::from(msg));
             cipher
-                .decrypt_in_place_detached(
-                    self.parameters.iv.as_ref().into(),
-                    aad,
-                    &mut msg,
-                    tag.as_ref().into(),
-                )
+                .decrypt_inout_detached(nonce, aad, (&mut msg[..]).into(), tag)
+                .ok()
                 .map(|_| msg)
         } else {
             cipher
-                .decrypt(
-                    self.parameters.iv.as_ref().into(),
-                    aes_gcm::aead::Payload { aad, msg },
-                )
+                .decrypt(nonce, aes_gcm::aead::Payload { aad, msg })
+                .ok()
                 .map(|r| zeroize::Zeroizing::new(r.into()))
         }
-        .ok()
     }
 
     pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
