@@ -101,7 +101,8 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
     }
 }
 
-// The listen address for fuzz targets.
+// The listen address for the passive (listener) fuzz target. The active target
+// binds its own ephemeral port, so this is the only fixed port in the harness.
 //
 // Defaults to `[::1]:4556`. Override with `FUZZ_LISTEN_ADDR` env var
 // to avoid port conflicts in CI or parallel fuzzing (e.g., `FUZZ_LISTEN_ADDR=[::1]:0`).
@@ -117,10 +118,12 @@ pub fn fuzz_addr() -> SocketAddr {
         )))
 }
 
-// Session config tuned for fuzzing — short timeouts to avoid blocking.
+// Session config tuned for fuzzing — the shortest timeouts the config allows,
+// to keep corpus replay (coverage) fast. `contact_timeout` is in whole seconds,
+// so 1 is the floor.
 fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
     hardy_tcpclv4::config::SessionConfig {
-        contact_timeout: 2,
+        contact_timeout: 1,
         keepalive_interval: None,
         require_tls: false,
     }
