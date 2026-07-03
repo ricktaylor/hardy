@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-06-24
+## [0.6.0]
 
 ### Added
 - Implement the new required `BundleStorage::replace(storage_name, data)` (atomic temp-file write + rename, fsync-aware).

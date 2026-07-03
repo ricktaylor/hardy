@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-06-24
+## [2.0.0]
 
 ### Added
 - `decode::skip_value(data, max_recursion)`: walk past a CBOR item directly on the byte slice with no allocation.

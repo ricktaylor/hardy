@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-06-24
+## [0.2.0]
 
 ### Changed
 - Use the shared `hardy-async` file watcher and decouple the watch config from the runtime watch mode.

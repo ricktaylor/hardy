@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-24
+## [0.4.0]
 
 ### Added
 - `EidPattern::expand_local_node(&self, &IpnNodeId) -> Option<EidPattern>`: replaces the `ipn:!.*` LocalNode sentinel with a concrete `IpnNodeId`, returning `None` when no LocalNode item is present.
