@@ -116,6 +116,10 @@ extract_rtt_stats() {
 
     if [ -z "$rtt_lines" ]; then
         RESULTS+=("$name|-|-|-|-|N/A|-|")
+        # Surface why: run_all captures each peer's output, so a silent N/A is
+        # otherwise undebuggable. Show the tail of what the peer test printed.
+        log_warn "$name: no RTT summary produced — last 25 lines of its output:"
+        printf '%s\n' "$output" | tail -25 | sed 's/^/    /'
         return
     fi
 
@@ -168,18 +172,29 @@ echo ""
 log_step "Running Hardy baseline test..."
 
 BP_BIN="$WORKSPACE_DIR/target/release/bp"
-BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
+HARDY_IMAGE="hardy-bpa-server-interop"
 
-# Build if needed
+# Build if needed: the bp ping client (host) and the Hardy echo-server image.
+# The echo server runs in Docker on the same pinned trixie base as the peers, so
+# its RTT carries the same container/bridge overhead — a fair baseline, not an
+# inline best case.
 if [ -z "$SKIP_BUILD_FLAG" ]; then
-    log_info "Building Hardy..."
-    if ! (cd "$WORKSPACE_DIR" && cargo build --release \
-        -p hardy-tools \
-        -p hardy-bpa-server); then
-        log_warn "Build failed, skipping Hardy baseline"
+    log_info "Building bp (ping client)..."
+    if ! (cd "$WORKSPACE_DIR" && cargo build --release -p hardy-tools); then
+        log_warn "bp build failed, skipping Hardy baseline"
         RESULTS+=("Hardy|-|-|-|-|Build failed|-|")
-        BPA_BIN=""
         BP_BIN=""
+    fi
+
+    if [ -n "$BP_BIN" ]; then
+        log_info "Building Hardy echo image ($HARDY_IMAGE)..."
+        NOCACHE=""; [ -n "$REFRESH_FLAG" ] && NOCACHE="--no-cache"
+        if ! docker build $NOCACHE -t "$HARDY_IMAGE" \
+            -f "$WORKSPACE_DIR/bpa-server/Dockerfile" "$WORKSPACE_DIR"; then
+            log_warn "Hardy echo image build failed, skipping baseline"
+            RESULTS+=("Hardy|-|-|-|-|Build failed|-|")
+            BP_BIN=""
+        fi
     fi
 
     # Build the MTCP/STCP CLA client for ION interop
@@ -194,8 +209,8 @@ if [ -z "$SKIP_BUILD_FLAG" ]; then
     SKIP_BUILD_FLAG="--skip-build"
 fi
 
-if [ -x "$BPA_BIN" ] && [ -x "$BP_BIN" ]; then
-    # Create temp config
+if [ -n "$BP_BIN" ] && [ -x "$BP_BIN" ] && docker image inspect "$HARDY_IMAGE" >/dev/null 2>&1; then
+    # Config for the containerised Hardy echo node: echo service on 7, TCPCLv4 on 4559.
     HARDY_TEST_DIR=$(mktemp -d)
     cat > "$HARDY_TEST_DIR/config.toml" << EOF
 log-level = "warn"
@@ -214,13 +229,33 @@ address = "[::]:4559"
 must-use-tls = false
 EOF
 
-    # Start Hardy server
-    "$BPA_BIN" -c "$HARDY_TEST_DIR/config.toml" &
-    HARDY_PID=$!
-    sleep 2
+    # Run the Hardy echo node in a container like the peers (config mounted, the
+    # TCPCLv4 port published to the host), then ping it from the host bp client.
+    docker rm -f hardy-interop >/dev/null 2>&1 || true
+    launched=true
+    docker run -d --name hardy-interop \
+        -p 4559:4559 \
+        -v "$HARDY_TEST_DIR/config.toml:/etc/hardy/config.toml:ro" \
+        "$HARDY_IMAGE" -c /etc/hardy/config.toml >/dev/null 2>&1 || launched=false
 
-    if kill -0 "$HARDY_PID" 2>/dev/null; then
-        # Run ping test
+    # Wait up to 30s for the TCPCLv4 port (noisy hosts start slowly); bail early only
+    # if the container has actually exited. Liveness is checked via docker inspect
+    # rather than a name-filtered `docker ps`, which can transiently miss.
+    READY=false
+    if [ "$launched" = true ]; then
+        for _ in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Running}}' hardy-interop 2>/dev/null)" = "true" ] || break
+            if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/4559" 2>/dev/null; then
+                READY=true
+                break
+            fi
+            sleep 0.5
+        done
+    else
+        log_warn "Hardy echo container failed to launch (is port 4559 already in use?)"
+    fi
+
+    if [ "$READY" = true ]; then
         OUTPUT=$("$BP_BIN" ping "ipn:99.7" "127.0.0.1:4559" \
             --source "ipn:1.1" \
             --count "$PING_COUNT" \
@@ -236,19 +271,18 @@ EOF
                 log_info "Baseline RTT: ${avg_us}us"
             fi
         fi
-
-        # Cleanup
-        kill "$HARDY_PID" 2>/dev/null || true
-        wait "$HARDY_PID" 2>/dev/null || true
     else
-        log_warn "Hardy server failed to start"
+        log_warn "Hardy echo container failed to start"
+        docker logs hardy-interop 2>&1 | tail -20 || true
         RESULTS+=("Hardy|-|-|-|-|Failed to start|-|")
     fi
 
+    # Cleanup
+    docker rm -f hardy-interop >/dev/null 2>&1 || true
     rm -rf "$HARDY_TEST_DIR"
     log_info "Hardy baseline complete"
 else
-    log_warn "Hardy binaries not found, skipping baseline"
+    log_warn "bp binary or Hardy image not found, skipping baseline"
     RESULTS+=("Hardy|-|-|-|-|Not built|-|")
 fi
 
@@ -463,7 +497,8 @@ OUTPUT_FILE="$SCRIPT_DIR/interop_results.md"
     echo "- **Pings**: Received/Transmitted count"
     echo "- **vs Hardy**: Percentage relative to Hardy baseline (100% = same, >100% = slower)"
     echo "- Hardy, dtn7-rs, HDTN, DTNME use TCPCLv4; ud3tn uses MTCP; ION, ESA-BP, NASA cFS use STCP via client CLA"
-    echo "- Hardy baseline runs inline; other tests use existing interop scripts"
+    echo "- All implementations, including the Hardy baseline, run in Docker on the pinned trixie base, so container/bridge overhead is common to every row"
+    echo "- The TCPCLv4 rows are directly comparable; MTCP/STCP rows carry an extra mtcp-cla bridge hop, so 'vs Hardy' reflects transport as well as implementation for those"
 } > "$OUTPUT_FILE"
 
 log_info "Results saved to: $OUTPUT_FILE"

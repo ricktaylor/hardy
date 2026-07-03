@@ -15,7 +15,7 @@
 ##############################################
 # Builder
 ##############################################
-FROM ubuntu:22.04 AS builder
+FROM debian:trixie-slim AS builder
 
 ARG CFS_REF=v7.0.1
 ARG BPNODE_REF=v7.0.5
@@ -178,7 +178,7 @@ RUN make -C build DESTDIR=/build -j${CORES} mission-install
 ##############################################
 # Runtime
 ##############################################
-FROM ubuntu:22.04
+FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 ENV DEBIAN_FRONTEND=noninteractive
 
