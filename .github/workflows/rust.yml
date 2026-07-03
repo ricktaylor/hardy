@@ -139,3 +139,28 @@ jobs:
         run: |
           ./target/debug/hardy-bpa-server &
           bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust toolchain (MSRV ${{ steps.msrv.outputs.version }})
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Use cached dependencies and artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv
+
+      - name: Install Protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Check on MSRV
+        run: cargo check --locked --all-features --workspace
