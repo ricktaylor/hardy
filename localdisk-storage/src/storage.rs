@@ -239,29 +239,30 @@ impl BundleStorage for Storage {
     async fn load(&self, storage_name: &str) -> storage::Result<Option<Bytes>> {
         let storage_name = self.store_root.join(PathBuf::from_str(storage_name)?);
 
-        #[cfg(feature = "mmap")]
-        {
-            let file = match tokio::fs::File::open(storage_name).await {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(None);
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
-                Ok(file) => file,
-            };
-            let data = unsafe { memmap2::Mmap::map(&file) };
-            Ok(Some(Bytes::from_owner(data?)))
+        cfg_select! {
+            feature = "mmap" => {
+                let file = match tokio::fs::File::open(storage_name).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        return Err(e.into());
+                    }
+                    Ok(file) => file,
+                };
+                let data = unsafe { memmap2::Mmap::map(&file) };
+                Ok(Some(Bytes::from_owner(data?)))
+            }
+            _ => {
+                tokio::fs::read(storage_name)
+                    .await
+                    .map(|data| Some(Bytes::from_owner(data)))
+                    .or_else(|e| match e.kind() {
+                        std::io::ErrorKind::NotFound => Ok(None),
+                        _ => Err(e.into()),
+                    })
+            }
         }
-
-        #[cfg(not(feature = "mmap"))]
-        tokio::fs::read(storage_name)
-            .await
-            .map(|data| Some(Bytes::from_owner(data)))
-            .or_else(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => Ok(None),
-                _ => Err(e.into()),
-            })
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
@@ -595,15 +596,15 @@ mod tests {
         assert!(result.is_err(), "save to read-only dir should return Err");
 
         // Restore permissions so tempdir cleanup succeeds
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        #[cfg(not(unix))]
-        {
-            perms.set_readonly(false);
-            std::fs::set_permissions(dir.path(), perms).unwrap();
+        cfg_select! {
+            unix => {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            _ => {
+                perms.set_readonly(false);
+                std::fs::set_permissions(dir.path(), perms).unwrap();
+            }
         }
     }
 

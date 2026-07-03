@@ -149,21 +149,24 @@ async fn build(
         builder = builder.routing_agent(sr_config.protocol_id, agent);
     }
 
-    #[cfg(feature = "echo")]
-    if let Some(services) = config.built_in_services.echo {
-        if services.is_empty() {
-            warn!("built-in-services.echo: no endpoints configured, skipping");
-        } else {
-            for service_id in services {
-                builder =
-                    builder.service(Arc::new(hardy_echo_service::EchoService::new()), service_id);
+    cfg_select! {
+        feature = "echo" => {
+            if let Some(services) = config.built_in_services.echo {
+                if services.is_empty() {
+                    warn!("built-in-services.echo: no endpoints configured, skipping");
+                } else {
+                    for service_id in services {
+                        builder = builder
+                            .service(Arc::new(hardy_echo_service::EchoService::new()), service_id);
+                    }
+                }
             }
         }
-    }
-
-    #[cfg(not(feature = "echo"))]
-    if config.built_in_services.echo.is_some() {
-        warn!("Ignoring built-in-services.echo: echo feature is disabled at compile time");
+        _ => {
+            if config.built_in_services.echo.is_some() {
+                warn!("Ignoring built-in-services.echo: echo feature is disabled at compile time");
+            }
+        }
     }
 
     let mut policies = HashMap::new();
