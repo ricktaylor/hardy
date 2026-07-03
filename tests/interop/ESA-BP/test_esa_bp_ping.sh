@@ -20,6 +20,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 ESA_BP_SRC="$(cd "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}" 2>/dev/null && pwd || echo "${ESA_BP_SRC:-$WORKSPACE_DIR/../esa-bp}")"
 # Current master commit (3.0.0.v20260521) for a fair, up-to-date interop comparison.
 # The proprietary space-link CLs (SLE + generic-packetiser) are stripped after
@@ -238,50 +242,34 @@ ESA_BP_CONTAINER=$(docker run -d \
 
 log_info "Started ESA-BP container: ${ESA_BP_CONTAINER:0:12}"
 
-# Wait for ESA-BP to start listening
-log_info "Waiting for ESA-BP to initialize..."
-WAIT_TIMEOUT=60
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$ESA_BP_CONTAINER" | grep -q .; then
-        log_error "ESA-BP container exited unexpectedly. Logs:"
+# TEST 1 runs only if ESA-BP comes up. The `for … in 1` block lets any peer-side
+# setup step `break` out recording FAIL, so a peer-side failure falls through to
+# the summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until ESA-BP is accepting connections (see lib/wait.sh).
+    log_info "Waiting for ESA-BP to accept connections on port $ESA_BP_PORT..."
+    if ! wait_for_port 127.0.0.1 "$ESA_BP_PORT" 60 "$ESA_BP_CONTAINER"; then
+        log_error "ESA-BP did not become ready on port $ESA_BP_PORT; skipping TEST 1"
         docker logs "$ESA_BP_CONTAINER" 2>&1 | tail -50
-        exit 1
-    fi
-
-    # Check if port is open (ss preferred — no TCP connection created)
-    if ss -tln 2>/dev/null | grep -q ":$ESA_BP_PORT "; then
-        log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
-        break
-    elif nc -z 127.0.0.1 "$ESA_BP_PORT" 2>/dev/null; then
-        log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
         break
     fi
+    log_info "ESA-BP is accepting connections on port $ESA_BP_PORT"
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Give ESA-BP time to finish internal setup after the port opens
+    sleep 2
 
-# Give ESA-BP time to finish internal setup after port opens
-sleep 2
+    # Start echo service inside ESA-BP container
+    log_step "Starting echo service on ipn:$ESA_BP_NODE_NUM.7..."
+    # Run the echo service against node.jar — the shaded uber jar that bundles the
+    # gRPC runtime + stubs (the thin cli.jar does not include io.grpc).
+    NODE_JAR=$(docker exec esa-bp-interop-test sh -c "find /opt/esa-bp -name 'node.jar' | head -1")
+    docker exec -d esa-bp-interop-test sh -c \
+        "java -Xmx128m -cp '$NODE_JAR:/opt/esa-bp/echo-service' EchoService 7 localhost 5672 > /tmp/echo.log 2>&1"
+    sleep 3
 
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "ESA-BP did not start within ${WAIT_TIMEOUT}s"
-    docker logs "$ESA_BP_CONTAINER" 2>&1 | tail -50
-    exit 1
-fi
-
-# Start echo service inside ESA-BP container
-log_step "Starting echo service on ipn:$ESA_BP_NODE_NUM.7..."
-# Run the echo service against node.jar — the shaded uber jar that bundles the
-# gRPC runtime + stubs (the thin cli.jar does not include io.grpc).
-NODE_JAR=$(docker exec esa-bp-interop-test sh -c "find /opt/esa-bp -name 'node.jar' | head -1")
-docker exec -d esa-bp-interop-test sh -c \
-    "java -Xmx128m -cp '$NODE_JAR:/opt/esa-bp/echo-service' EchoService 7 localhost 5672 > /tmp/echo.log 2>&1"
-sleep 3
-
-# Create CLA config for bp ping (inline BPA mode)
-cat > "$TEST_DIR/cla_ping.toml" << EOF
+    # Create CLA config for bp ping (inline BPA mode)
+    cat > "$TEST_DIR/cla_ping.toml" << EOF
 bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
 cla-name = "cl0"
 framing = "stcp"
@@ -290,46 +278,42 @@ peer-node = "ipn:$ESA_BP_NODE_NUM.0"
 address = "0.0.0.0:$HARDY_STCP_PORT"
 EOF
 
-# Hardy pings ESA-BP using bp ping with external CLA binary
-# Note: ESA-BP may not have an echo service, so we may get no responses
-log_step "Hardy pinging ESA-BP at ipn:$ESA_BP_NODE_NUM.7 via STCP..."
-echo ""
+    # Hardy pings ESA-BP using bp ping with external CLA binary
+    # Note: ESA-BP may not have an echo service, so we may get no responses
+    log_step "Hardy pinging ESA-BP at ipn:$ESA_BP_NODE_NUM.7 via STCP..."
+    echo ""
 
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$ESA_BP_NODE_NUM.7" \
-    --cla "$MTCP_BIN" \
-    --cla-args "--config $TEST_DIR/cla_ping.toml" \
-    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.12345" \
-    --count "$PING_COUNT" \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$ESA_BP_NODE_NUM.7" \
+        --cla "$MTCP_BIN" \
+        --cla-args "--config $TEST_DIR/cla_ping.toml" \
+        --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.12345" \
+        --count "$PING_COUNT" \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-echo "$PING_OUTPUT"
-echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged ESA-BP ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
 
-# Dump echo service log for debugging
-log_info "Echo service log:"
-docker exec esa-bp-interop-test cat /tmp/echo.log 2>/dev/null || true
-echo ""
+    # Dump echo service log for debugging
+    log_info "Echo service log:"
+    docker exec esa-bp-interop-test cat /tmp/echo.log 2>/dev/null || true
+    echo ""
+done
 
 # Stop ESA-BP for test 2
 log_info "Stopping ESA-BP..."
@@ -417,23 +401,20 @@ ESA_BP_CONTAINER=$(docker run -d \
 
 log_info "Started ESA-BP container: ${ESA_BP_CONTAINER:0:12}"
 
-# Wait for ESA-BP to initialize
-log_info "Waiting for ESA-BP to initialize..."
-WAIT_TIMEOUT=60
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$ESA_BP_CONTAINER" | grep -q .; then
-        break
-    fi
-    if ss -tln 2>/dev/null | grep -q ":$ESA_BP_PORT "; then
-        log_info "ESA-BP is listening on port $ESA_BP_PORT (took ${WAIT_COUNT}s)"
-        break
-    fi
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server/CLA-start failures above hard-exit, as harness
+# errors).
+TEST2_RESULT="FAIL"
 
-# Give ESA-BP time to finish internal setup after port opens
+# Wait until ESA-BP is accepting connections (see lib/wait.sh).
+log_info "Waiting for ESA-BP to accept connections on port $ESA_BP_PORT..."
+if wait_for_port 127.0.0.1 "$ESA_BP_PORT" 60 "$ESA_BP_CONTAINER"; then
+    log_info "ESA-BP is accepting connections on port $ESA_BP_PORT"
+else
+    log_warn "ESA-BP not confirmed on port $ESA_BP_PORT; continuing"
+fi
+
+# Give ESA-BP time to finish internal setup after the port opens
 sleep 2
 
 if ! docker ps -q -f "id=$ESA_BP_CONTAINER" | grep -q .; then

@@ -24,6 +24,9 @@ INTEROP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 MTCP_CLA_DIR="$INTEROP_DIR/mtcp"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 UD3TN_NODE_NUM=2
@@ -188,44 +191,31 @@ UD3TN_CONTAINER=$(docker run -d \
 
 log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
 
-# Wait for ud3tn to start (ss preferred — no TCP connection created)
-log_info "Waiting for ud3tn to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-        log_error "ud3tn container exited unexpectedly. Logs:"
+# TEST 1 runs only if ud3tn comes up. The `for … in 1` block lets any setup
+# step `break` out recording FAIL, so a peer-side failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until ud3tn is accepting MTCP connections (see lib/wait.sh).
+    log_info "Waiting for ud3tn to accept connections on port $UD3TN_MTCP_PORT..."
+    if ! wait_for_port 127.0.0.1 "$UD3TN_MTCP_PORT" 30 "$UD3TN_CONTAINER"; then
+        log_error "ud3tn did not become ready on port $UD3TN_MTCP_PORT; skipping TEST 1"
         docker logs "$UD3TN_CONTAINER" 2>&1 | tail -50
-        docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
-        exit 1
-    fi
-
-    if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
-        log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
         break
     fi
+    log_info "ud3tn is accepting connections on port $UD3TN_MTCP_PORT"
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Give ud3tn time to finish internal setup after the port opens
+    sleep 2
 
-# Give ud3tn time to finish internal setup after port opens
-sleep 2
-
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "ud3tn did not start listening on port $UD3TN_MTCP_PORT within ${WAIT_TIMEOUT}s"
-    docker logs "$UD3TN_CONTAINER" 2>&1 | tail -30
-    exit 1
-fi
-
-# Start echo agent via AAP2 inside the container.
-# ud3tn doesn't ship an echo agent, so we create one inline.
-# Uses two AAP2 connections (subscriber for recv, active for send)
-# because ud3tn's subscriber mode is receive-only.
-# Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
-log_step "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
-docker exec -d "$UD3TN_CONTAINER" \
-    python3 -c "
+    # Start echo agent via AAP2 inside the container.
+    # ud3tn doesn't ship an echo agent, so we create one inline.
+    # Uses two AAP2 connections (subscriber for recv, active for send)
+    # because ud3tn's subscriber mode is receive-only.
+    # Must send RESPONSE_STATUS_SUCCESS (1) after each received ADU.
+    log_step "Starting echo agent on ipn:$UD3TN_NODE_NUM.7..."
+    docker exec -d "$UD3TN_CONTAINER" \
+        python3 -c "
 from ud3tn_utils.aap2 import AAP2TCPClient, BundleADU
 recv_client = AAP2TCPClient(('127.0.0.1', $UD3TN_AAP2_PORT))
 recv_client.connect()
@@ -247,21 +237,21 @@ while True:
     send_client.receive_response()
 " || log_warn "Echo agent exited"
 
-sleep 2
+    sleep 2
 
-# Configure ud3tn contact to Hardy (so it knows how to route responses back)
-log_step "Configuring ud3tn contact to Hardy node..."
-docker exec "$UD3TN_CONTAINER" \
-    python3 -m ud3tn_utils.aap2.bin.aap2_configure_link \
-    --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
-    "ipn:$HARDY_NODE_NUM.0" \
-    "mtcp:127.0.0.1:$HARDY_MTCP_PORT" \
-    2>/dev/null || log_warn "Could not configure contact (may not be needed)"
+    # Configure ud3tn contact to Hardy (so it knows how to route responses back)
+    log_step "Configuring ud3tn contact to Hardy node..."
+    docker exec "$UD3TN_CONTAINER" \
+        python3 -m ud3tn_utils.aap2.bin.aap2_configure_link \
+        --tcp 127.0.0.1 "$UD3TN_AAP2_PORT" \
+        "ipn:$HARDY_NODE_NUM.0" \
+        "mtcp:127.0.0.1:$HARDY_MTCP_PORT" \
+        2>/dev/null || log_warn "Could not configure contact (may not be needed)"
 
-sleep 1
+    sleep 1
 
-# Create CLA config for bp ping (TEST 1)
-cat > "$TEST_DIR/cla_ping.toml" << EOF
+    # Create CLA config for bp ping (TEST 1)
+    cat > "$TEST_DIR/cla_ping.toml" << EOF
 bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
 cla-name = "cl0"
 framing = "mtcp"
@@ -270,40 +260,36 @@ peer-node = "ipn:$UD3TN_NODE_NUM.0"
 address = "[::]:$HARDY_MTCP_PORT"
 EOF
 
-# Hardy pings ud3tn echo service via MTCP using the external CLA binary
-log_step "Hardy pinging ud3tn echo service at ipn:$UD3TN_NODE_NUM.7 via MTCP..."
-echo ""
+    # Hardy pings ud3tn echo service via MTCP using the external CLA binary
+    log_step "Hardy pinging ud3tn echo service at ipn:$UD3TN_NODE_NUM.7 via MTCP..."
+    echo ""
 
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
-    --cla "$CLA_BIN" \
-    --cla-args "--config $TEST_DIR/cla_ping.toml" \
-    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.12345" \
-    --count "$PING_COUNT" \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$UD3TN_NODE_NUM.7" \
+        --cla "$CLA_BIN" \
+        --cla-args "--config $TEST_DIR/cla_ping.toml" \
+        --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.12345" \
+        --count "$PING_COUNT" \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-echo "$PING_OUTPUT"
-echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged ud3tn ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Stop ud3tn for test 2
 log_info "Stopping ud3tn..."
@@ -395,29 +381,26 @@ UD3TN_CONTAINER=$(docker run -d \
 
 log_info "Started ud3tn container: ${UD3TN_CONTAINER:0:12}"
 
-log_info "Waiting for ud3tn to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
-        break
-    fi
-    if ss -tln 2>/dev/null | grep -q ":$UD3TN_MTCP_PORT "; then
-        log_info "ud3tn is listening on port $UD3TN_MTCP_PORT (took ${WAIT_COUNT}s)"
-        break
-    fi
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server/CLA-start failures above hard-exit, as harness
+# errors).
+TEST2_RESULT="FAIL"
 
-# Give ud3tn time to finish internal setup after port opens
+# Wait until ud3tn is accepting MTCP connections (see lib/wait.sh).
+log_info "Waiting for ud3tn to accept connections on port $UD3TN_MTCP_PORT..."
+if wait_for_port 127.0.0.1 "$UD3TN_MTCP_PORT" 30 "$UD3TN_CONTAINER"; then
+    log_info "ud3tn is accepting connections on port $UD3TN_MTCP_PORT"
+else
+    log_warn "ud3tn not confirmed on port $UD3TN_MTCP_PORT; continuing"
+fi
+
+# Give ud3tn time to finish internal setup after the port opens
 sleep 2
 
 if ! docker ps -q -f "id=$UD3TN_CONTAINER" | grep -q .; then
     log_error "ud3tn container exited unexpectedly. Logs:"
     docker logs "$UD3TN_CONTAINER" 2>&1 | tail -20
     docker rm "$UD3TN_CONTAINER" 2>/dev/null || true
-    TEST2_RESULT="FAIL"
 else
     # Configure contact to Hardy
     log_step "Configuring ud3tn contact to Hardy..."
@@ -455,11 +438,9 @@ else
             TEST2_RESULT="PASS"
         else
             log_error "TEST 2 FAILED: Partial loss ($RECEIVED/$SENT)"
-            TEST2_RESULT="FAIL"
         fi
     else
         log_error "TEST 2 FAILED: No echo responses received"
-        TEST2_RESULT="FAIL"
     fi
 fi
 

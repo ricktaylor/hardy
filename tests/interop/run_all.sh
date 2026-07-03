@@ -23,6 +23,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# shellcheck source=lib/wait.sh
+source "$SCRIPT_DIR/lib/wait.sh"
+
 # Hardy build under test (git tag/commit), recorded in the results for provenance.
 HARDY_VERSION="$(git -C "$WORKSPACE_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)"
 
@@ -243,19 +246,18 @@ EOF
     # rather than a name-filtered `docker ps`, which can transiently miss.
     READY=false
     if [ "$launched" = true ]; then
-        for _ in $(seq 1 60); do
-            [ "$(docker inspect -f '{{.State.Running}}' hardy-interop 2>/dev/null)" = "true" ] || break
-            if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/4559" 2>/dev/null; then
-                READY=true
-                break
-            fi
-            sleep 0.5
-        done
+        # Wait for the TCPCLv4 port; fast-fails if the container exits (see lib/wait.sh).
+        if wait_for_port 127.0.0.1 4559 30 hardy-interop; then
+            READY=true
+        fi
     else
         log_warn "Hardy echo container failed to launch (is port 4559 already in use?)"
     fi
 
     if [ "$READY" = true ]; then
+        # Port-connectable != handshake-ready: let the TCPCLv4 server settle before
+        # the measured ping (the peer scripts keep the same grace after readiness).
+        sleep 2
         OUTPUT=$("$BP_BIN" ping "ipn:99.7" "127.0.0.1:4559" \
             --source "ipn:1.1" \
             --count "$PING_COUNT" \

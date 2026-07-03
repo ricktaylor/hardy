@@ -20,6 +20,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 DTN7_NODE_NUM=23
@@ -185,102 +188,85 @@ DTN7_CONTAINER=$(docker run -d \
 
 log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
-# Wait for dtnd to start (ss preferred — no TCP connection created)
-log_info "Waiting for dtnd to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-        log_error "dtn7-rs container exited unexpectedly. Logs:"
+# TEST 1 runs only if dtn7-rs comes up. The `for … in 1` block lets any setup
+# step `break` out recording FAIL, so a peer-side failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until dtnd is accepting TCPCLv4 connections (see lib/wait.sh).
+    log_info "Waiting for dtnd to accept connections on port $TCPCLV4_PORT..."
+    if ! wait_for_port 127.0.0.1 "$TCPCLV4_PORT" 30 "$DTN7_CONTAINER"; then
+        log_error "dtn7-rs did not become ready on port $TCPCLV4_PORT; skipping TEST 1"
         docker logs "$DTN7_CONTAINER" 2>&1 | tail -50
-        docker rm "$DTN7_CONTAINER" 2>/dev/null || true
-        exit 1
+        break
+    fi
+    log_info "dtnd is accepting connections on port $TCPCLV4_PORT"
+
+    # Give dtnd time to finish internal setup after the port opens
+    sleep 2
+
+    # Start dtnecho2 and wait until it has registered its echo endpoint. Under load
+    # it can lose the startup race with dtnd and exit before registering, leaving
+    # TEST 1 with zero replies; poll dtnd's endpoint list (its HTTP API) until
+    # ipn:NODE.7 appears rather than sleeping a fixed interval.
+    log_step "Starting dtnecho2 service in container..."
+    docker exec -d "$DTN7_CONTAINER" dtnecho2 -v
+
+    echo_ready=false
+    for _ in $(seq 1 30); do
+        if docker exec "$DTN7_CONTAINER" curl -sf http://localhost:3000/status/eids 2>/dev/null \
+            | grep -q "ipn:$DTN7_NODE_NUM\.7"; then
+            echo_ready=true
+            break
+        fi
+        sleep 0.5
+    done
+    if [ "$echo_ready" = true ]; then
+        log_info "dtnecho2 registered ipn:$DTN7_NODE_NUM.7"
+    else
+        log_warn "dtnecho2 endpoint not confirmed within 15s; TEST 1 may fail"
     fi
 
-    if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-        log_info "dtnd is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+    # Verify dtn7-rs is running
+    if ! docker ps | grep -q dtn7-interop-test; then
+        log_error "dtn7-rs container is not running; skipping TEST 1"
+        docker logs "$DTN7_CONTAINER" 2>&1 || true
         break
     fi
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Hardy pings dtn7-rs echo service (ipn:23.7)
+    log_step "Hardy pinging dtn7-rs echo service at ipn:$DTN7_NODE_NUM.7..."
+    echo ""
 
-# Give dtnd time to finish internal setup after port opens
-sleep 2
+    # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
+    # Capture output to check actual received count
+    # --lax-rfc9171: dtn7-rs's dtnecho2 reflects bundles without a primary-block CRC,
+    # which the default RFC9171 ingress filter would drop (the Hardy server config
+    # relaxes the same check for TEST 2 via [rfc9171-validity]).
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+        --count "$PING_COUNT" \
+        --lax-rfc9171 \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "dtnd did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-    docker logs "$DTN7_CONTAINER" 2>&1 | tail -30
-    exit 1
-fi
+    echo "$PING_OUTPUT"
+    echo ""
 
-# Start dtnecho2 and wait until it has registered its echo endpoint. Under load
-# it can lose the startup race with dtnd and exit before registering, leaving
-# TEST 1 with zero replies; poll dtnd's endpoint list (its HTTP API) until
-# ipn:NODE.7 appears rather than sleeping a fixed interval.
-log_step "Starting dtnecho2 service in container..."
-docker exec -d "$DTN7_CONTAINER" dtnecho2 -v
+    # Extract received count from "N bundles transmitted, M received" line
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-echo_ready=false
-for _ in $(seq 1 30); do
-    if docker exec "$DTN7_CONTAINER" curl -sf http://localhost:3000/status/eids 2>/dev/null \
-        | grep -q "ipn:$DTN7_NODE_NUM\.7"; then
-        echo_ready=true
-        break
-    fi
-    sleep 0.5
-done
-if [ "$echo_ready" = true ]; then
-    log_info "dtnecho2 registered ipn:$DTN7_NODE_NUM.7"
-else
-    log_warn "dtnecho2 endpoint not confirmed within 15s; TEST 1 may fail"
-fi
-
-# Verify dtn7-rs is running
-if ! docker ps | grep -q dtn7-interop-test; then
-    log_error "dtn7-rs container is not running"
-    docker logs "$DTN7_CONTAINER" 2>&1 || true
-    exit 1
-fi
-
-# Hardy pings dtn7-rs echo service (ipn:23.7)
-log_step "Hardy pinging dtn7-rs echo service at ipn:$DTN7_NODE_NUM.7..."
-echo ""
-
-# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Capture output to check actual received count
-# --lax-rfc9171: dtn7-rs's dtnecho2 reflects bundles without a primary-block CRC,
-# which the default RFC9171 ingress filter would drop (the Hardy server config
-# relaxes the same check for TEST 2 via [rfc9171-validity]).
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
-    --count "$PING_COUNT" \
-    --lax-rfc9171 \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
-
-echo "$PING_OUTPUT"
-echo ""
-
-# Extract received count from "N bundles transmitted, M received" line
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
-
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged dtn7-rs ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Stop dtn7-rs for test 2
 log_info "Stopping dtn7-rs..."
@@ -353,20 +339,17 @@ DTN7_CONTAINER=$(docker run -d \
 
 log_info "Started dtn7-rs container: ${DTN7_CONTAINER:0:12}"
 
-log_info "Waiting for dtnd to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$DTN7_CONTAINER" | grep -q .; then
-        break
-    fi
-    if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
-        log_info "dtnd is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
-        break
-    fi
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server-start failure above hard-exits, as a harness error).
+TEST2_RESULT="FAIL"
+
+# Wait until dtnd is accepting connections on the reverse-link port.
+log_info "Waiting for dtnd to accept connections on port $((TCPCLV4_PORT+1))..."
+if wait_for_port 127.0.0.1 "$((TCPCLV4_PORT+1))" 30 "$DTN7_CONTAINER"; then
+    log_info "dtn7-rs is accepting connections on port $((TCPCLV4_PORT+1))"
+else
+    log_warn "dtn7-rs not confirmed on port $((TCPCLV4_PORT+1)); continuing"
+fi
 
 # Give dtnd time to finish internal setup after port opens
 sleep 2
