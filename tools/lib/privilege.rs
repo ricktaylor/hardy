@@ -53,16 +53,13 @@ fn test() -> anyhow::Result<()> {
         eprintln!("\nError: This application requires elevated privileges to run.");
 
         // Provide platform-specific instructions for the user.
-        #[cfg(target_os = "windows")]
-        eprintln!("Please right-click the executable and select 'Run as Administrator'.");
-
-        #[cfg(target_os = "linux")]
-        eprintln!(
-            "Please re-run as root or grant the application the 'CAP_NET_ADMIN' capability using 'setcap'."
-        );
-
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        eprintln!("Please re-run as root.");
+        cfg_select! {
+            target_os = "windows" => eprintln!("Please right-click the executable and select 'Run as Administrator'."),
+            target_os = "linux" => eprintln!(
+                "Please re-run as root or grant the application the 'CAP_NET_ADMIN' capability using 'setcap'."
+            ),
+            _ => eprintln!("Please re-run as root."),
+        }
 
         // Exit with a non-zero status code to indicate an error.
         return Err(anyhow::anyhow!("Missing required privileges."));

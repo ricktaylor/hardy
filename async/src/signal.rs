@@ -41,29 +41,29 @@ pub fn listen_for_cancel(tasks: &TaskPool) {
 }
 
 async fn wait_for_signal(cancel_token: &crate::CancellationToken) {
-    #[cfg(unix)]
-    {
-        let mut term_handler =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("Failed to register signal handlers");
-        tokio::select! {
-            _ = term_handler.recv() => {
-                info!("Received terminate signal, stopping...");
+    cfg_select! {
+        unix => {
+            let mut term_handler =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to register signal handlers");
+            tokio::select! {
+                _ = term_handler.recv() => {
+                    info!("Received terminate signal, stopping...");
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received CTRL+C, stopping...");
+                }
+                _ = cancel_token.cancelled() => {}
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received CTRL+C, stopping...");
-            }
-            _ = cancel_token.cancelled() => {}
         }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                result.expect("Failed to listen for CTRL+C");
-                info!("Received CTRL+C, stopping...");
+        _ => {
+            tokio::select! {
+                result = tokio::signal::ctrl_c() => {
+                    result.expect("Failed to listen for CTRL+C");
+                    info!("Received CTRL+C, stopping...");
+                }
+                _ = cancel_token.cancelled() => {}
             }
-            _ = cancel_token.cancelled() => {}
         }
     }
 }
