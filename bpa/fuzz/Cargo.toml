@@ -30,7 +30,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 time = { version = "0.3", features = ["parsing"] }
 tracing = { version = "0.1", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
-cfg-if = "1"
 flume = "0.12"
 percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
 
