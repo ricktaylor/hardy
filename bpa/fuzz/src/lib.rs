@@ -57,8 +57,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
         );
 
     // Bundle storage
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "localdisk-storage")] {
+    cfg_select! {
+        feature = "localdisk-storage" => {
             builder = builder.bundle_storage(hardy_localdisk_storage::new(
                 &hardy_localdisk_storage::Config {
                     store_dir: path.join("localdisk"),
@@ -66,7 +66,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 },
                 true,
             ));
-        } else {
+        }
+        _ => {
             builder = builder.bundle_storage(std::sync::Arc::new(
                 hardy_bpa::storage::BundleMemStorage::new(
                     &hardy_bpa::storage::BundleMemStorageConfig {
@@ -79,8 +80,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     }
 
     // Metadata storage
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "sqlite-storage")] {
+    cfg_select! {
+        feature = "sqlite-storage" => {
             builder = builder.metadata_storage(hardy_sqlite_storage::new(
                 &hardy_sqlite_storage::Config {
                     db_dir: path.clone(),
@@ -88,7 +89,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 },
                 true,
             ));
-        } else if #[cfg(feature = "postgres-storage")] {
+        }
+        feature = "postgres-storage" => {
             builder = builder.metadata_storage(
                 hardy_postgres_storage::new(
                     &hardy_postgres_storage::Config {
@@ -100,7 +102,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
                 .await
                 .expect("Failed to create postgres metadata storage"),
             );
-        } else {
+        }
+        _ => {
             builder = builder.metadata_storage(std::sync::Arc::new(
                 hardy_bpa::storage::MetadataMemStorage::new(
                     &hardy_bpa::storage::MetadataMemStorageConfig {
