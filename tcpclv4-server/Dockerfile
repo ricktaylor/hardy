@@ -1,11 +1,11 @@
 # ── Stage 1: chef base ────────────────────────────────────────────────────────
-FROM rust:1-slim-bookworm AS chef
+FROM rust:1-slim-trixie AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         protobuf-compiler \
         libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && cargo install cargo-chef
+    && cargo install cargo-chef --locked
 WORKDIR /build
 
 # ── Stage 2: planner ──────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ COPY . .
 RUN cargo build --release --bin hardy-tcpclv4-server $CARGO_ARGS
 
 # ── Stage 4: minimal runtime image ───────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12 AS runtime
+FROM gcr.io/distroless/cc-debian13@sha256:a017e74bd2a12d98342dbecd33d121d2b160415ed777573dc1808969e989d94d AS runtime
 COPY --from=builder \
     /build/target/release/hardy-tcpclv4-server \
     /usr/local/bin/hardy-tcpclv4-server

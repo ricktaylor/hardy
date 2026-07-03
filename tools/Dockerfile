@@ -1,11 +1,11 @@
 # ── Stage 1: chef base ────────────────────────────────────────────────────────
-FROM rust:1-slim-bookworm AS chef
+FROM rust:1-slim-trixie AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         protobuf-compiler \
         libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && cargo install cargo-chef
+    && cargo install cargo-chef --locked
 WORKDIR /build
 
 # ── Stage 2: planner ──────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ COPY . .
 RUN cargo build --release -p hardy-tools -p hardy-bpv7-tools -p hardy-cbor-tools
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \

@@ -17,7 +17,7 @@
 ##############################################
 # Builder
 ##############################################
-FROM debian:11-slim AS builder
+FROM debian:trixie-slim AS builder
 
 # Optional: specify a git ref (tag, branch, or commit hash)
 ARG HDTN_REF=v2.0.0
@@ -67,7 +67,7 @@ RUN cd /opt/hdtn-src && \
 ##############################################
 # HDTN Interop Testing Container
 ##############################################
-FROM debian:11-slim
+FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 ENV DEBIAN_FRONTEND=noninteractive
 

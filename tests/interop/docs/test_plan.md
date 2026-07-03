@@ -6,7 +6,7 @@
 | **Package** | `tests/interop` |
 | **Requirements Ref** | [REQ-20](../../../docs/requirements.md#req-20-interoperability-with-existing-implementations) |
 | **Test Suite ID** | PLAN-INTEROP-01 |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 
 ## 1. Introduction
 
@@ -78,7 +78,7 @@ This pattern verifies session establishment, bundle encoding/decoding, CLA frami
 | **ION** | STCP (via mtcp-cla) | A, B | Passing | `ION/` |
 | **ud3tn** | MTCP (via mtcp-cla) | A, B | Passing | `ud3tn/` |
 | **ESA BP** | STCP (via mtcp-cla) | A, B | Passing | `ESA-BP/` |
-| **NASA cFS** | STCP (via mtcp-cla) | B | Passing | `NASA-cFS/` |
+| **NASA cFS** | STCP (via mtcp-cla) | A, B | Passing | `NASA-cFS/` |
 
 All 7 peer implementations are merged to main and passing 20/20 at 0% loss.
 
@@ -91,6 +91,10 @@ Uses Hardy's built-in TCPCLv4 CLA. Both nodes on Docker bridge network.
 ### STCP/MTCP (ION, ud3tn, ESA BP, NASA cFS)
 
 Uses Hardy's standalone `mtcp-cla` binary (`tests/interop/mtcp/`), which provides STCP framing (4-byte length prefix) or MTCP framing (CBOR byte string). Both nodes on same host via `--network host`.
+
+### Base images
+
+Every peer builds and runs in Docker on a single digest-pinned base (`debian:trixie-slim`), so OS and glibc are constant across the comparison; DTNME (Debian buster) and ud3tn (`python:3.13-slim`) are the documented exceptions. The Hardy baseline runs its echo from the shipping distroless `bpa-server` image. See [README § Docker images](../README.md#docker-images).
 
 ## 6. Coverage Boundary
 

@@ -67,6 +67,19 @@ cd tests/interop/mtcp && cargo build --release
 
 See [mtcp/design.md](mtcp/design.md) for wire format details.
 
+## Docker images
+
+Every peer builds and runs in Docker. For reproducibility and a fair, apples-to-apples comparison, every peer except the two noted below **runs** on a single, digest-pinned base — `debian:trixie-slim` — so the OS and glibc are constant across implementations and only the implementation and its convergence layer vary. Build stages use that same base (layering GCC/CMake, OpenJDK, … on top), except dtn7-rs, whose build stage uses the maintained `rust:1.86` toolchain image.
+
+**Run** stages are pinned by digest (`image:tag@sha256:…`) so the tested (and, for Hardy, shipped) environment is reproducible. **Build** stages float on release-locked tags (`rust:1-slim-trixie`, `debian:trixie-slim`, …): Debian freezes library sonames within a stable release, so a same-release build and run stay ABI-consistent without pinning the throwaway toolchain — which also keeps it current and avoids stranding it on a version newer tooling has moved past. Implementations are separately pinned to known-good refs (each Dockerfile's `ARG *_REF`). (`ud3tn`'s build stays pinned, as its `python:3.13-slim` tag isn't release-locked.)
+
+Exceptions:
+
+- **DTNME** builds and runs on `debian:buster` — its binary links Boost 1.67 and OpenSSL 1.1, whose sonames exist only on that (now archived) release; moving forward would require porting DTNME itself.
+- **ud3tn** builds and runs on `python:3.13-slim` (itself a trixie-based image) for its Python 3.13 echo agent.
+
+**ESA-BP source:** ESA-BP is the one peer not built from a public git clone — it builds from a local checkout at `$ESA_BP_SRC` (default `../esa-bp`, an ESCL export). The pinned ref is checked out and proprietary-stripped before the build, and its reported version is captured from that ref. Without the checkout, `run_all.sh` reports ESA-BP as *not built* and continues; the standalone `test_esa_bp_ping.sh` errors clearly.
+
 ## Documentation
 
 - [Test Plan](docs/test_plan.md)

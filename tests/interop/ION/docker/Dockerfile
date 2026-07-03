@@ -17,7 +17,7 @@
 #       -e ION_NODE_NUM=2 -e STCP_PORT=4557 \
 #       ion-interop
 
-FROM debian:bookworm AS builder
+FROM debian:trixie-slim AS builder
 
 ARG ION_REF=ion-open-source-4.1.4
 ARG CORES=4
@@ -52,7 +52,7 @@ RUN autoreconf -fi && \
     make DESTDIR=/install install
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 ENV DEBIAN_FRONTEND=noninteractive
 

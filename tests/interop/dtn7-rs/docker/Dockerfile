@@ -36,7 +36,7 @@ RUN cd dtn7 && \
 RUN cargo install --locked --bins --examples --root /usr/local dtn7-plus \
     --git https://github.com/dtn7/dtn7-plus-rs --rev ${DTN7_PLUS_REF}
 
-FROM docker.io/debian:bookworm-slim
+FROM docker.io/debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 ENV DEBIAN_FRONTEND=noninteractive
 

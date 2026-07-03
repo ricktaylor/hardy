@@ -14,7 +14,7 @@
 #       ud3tn-interop \
 #       -e ipn:2.0 -c "mtcp:0.0.0.0,4557" -b 7 -A 0.0.0.0 -P 4243 -R
 
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim@sha256:2b7445fb71ca9cb15e9aab053fe8cb3162796f8e1d92ada12a49c766a811bc1e AS builder
 
 ARG UD3TN_REF=v0.15.0
 ARG CORES=4
@@ -51,7 +51,7 @@ RUN pip install --no-cache-dir --prefix=/install/python \
     ./python-ud3tn-utils
 
 # Runtime stage
-FROM python:3.13-slim
+FROM python:3.13-slim@sha256:2b7445fb71ca9cb15e9aab053fe8cb3162796f8e1d92ada12a49c766a811bc1e
 
 ENV DEBIAN_FRONTEND=noninteractive
 

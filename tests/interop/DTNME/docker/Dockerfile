@@ -67,7 +67,7 @@ RUN sh step_1_make_gcc_dtnme.sh && \
     sh step_2_install_dtnme.sh /dtn 1
 
 # Runtime stage
-FROM debian:buster-slim
+FROM debian:buster-slim@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc
 
 ENV DEBIAN_FRONTEND=noninteractive
 
