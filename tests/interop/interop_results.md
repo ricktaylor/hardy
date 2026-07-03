@@ -1,17 +1,17 @@
 # DTN Implementation Ping Benchmark
 
-_Generated 2026-07-02 17:11:05 by `tests/interop/run_all.sh` — do not edit by hand._
+_Generated 2026-07-03 11:01:35 by `tests/interop/run_all.sh` — do not edit by hand._
 
 | Implementation | Version | Min | Avg | Max | Stddev | Loss | Pings | vs Hardy |
 |----------------|---------|-----|-----|-----|--------|------|-------|----------|
-| Hardy | v0.1.0-250-g611d3ff5-dirty | 1ms 463us 10ns | 2ms 430us | 5ms 606us 247ns | 1ms 64us | 0% | 20/20 | baseline |
-| dtn7-rs | v0.21.0-20-g7e2ae44 | 42ms 4us 650ns | 44ms 94us | 48ms 507us 146ns | 1ms 628us | 0% | 20/20 | 1814% (slower) |
-| HDTN | v2.0.0 | 5ms 814us 22ns | 41ms 895us | 48ms 560us 645ns | 8ms 511us | 0% | 20/20 | 1724% (slower) |
-| DTNME | 7d8311f (declared: 1.3.2-2024-01-03) | 41ms 824us 547ns | 44ms 740us | 49ms 546us 901ns | 2ms 465us | 0% | 20/20 | 1841% (slower) |
-| ION | ion-open-source-4.1.4 (declared: 4.1.4) | 2ms 227us 532ns | 3ms 144us | 8ms 534us 910ns | 1ms 323us | 0% | 20/20 | 129% (slower) |
-| ud3tn | v0.15.0 | 43ms 716us 92ns | 46ms 117us | 48ms 543us 579ns | 1ms 398us | 0% | 20/20 | 1897% (slower) |
-| NASA cFS | cFS=v7.0.1 bpnode=v7.0.5 bplib=v7.0.5 | 1ms 770us 988ns | 6ms 936us | 11ms 629us 545ns | 2ms 879us | 0% | 20/20 | 285% (slower) |
-| ESA-BP | 1.2.6.BETA-BPSEC-943-gf59410a90 (declared: 3.0.0.v20260521) | 13ms 363us 30ns | 26ms 302us | 188ms 85us 865ns | 37ms 208us | 0% | 20/20 | 1082% (slower) |
+| Hardy | v0.1.0-253-g48800e8c-dirty | 1ms 467us 368ns | 3ms 908us | 11ms 998us 495ns | 2ms 898us | 0% | 20/20 | baseline |
+| dtn7-rs | v0.21.0-20-g7e2ae44 | 41ms 642us 731ns | 43ms 237us | 45ms 13us 453ns | 1ms 136us | 0% | 20/20 | 1106% (slower) |
+| HDTN | v2.0.0 | 4ms 887us 798ns | 41ms 980us | 47ms 903us 884ns | 8ms 639us | 0% | 20/20 | 1074% (slower) |
+| DTNME | 7d8311f (declared: 1.3.2-2024-01-03) | 42ms 68us 242ns | 46ms 602us | 55ms 558us 80ns | 3ms 570us | 0% | 20/20 | 1192% (slower) |
+| ION | ion-open-source-4.1.4 (declared: 4.1.4) | 2ms 271us 829ns | 3ms 303us | 7ms 729us 280ns | 1ms 195us | 0% | 20/20 | 84% (faster) |
+| ud3tn | v0.15.0 | 44ms 454us 296ns | 46ms 208us | 53ms 35us 535ns | 1ms 965us | 0% | 20/20 | 1182% (slower) |
+| NASA cFS | cFS=v7.0.1 bpnode=v7.0.5 bplib=v7.0.5 | 1ms 672us 660ns | 6ms 939us | 11ms 673us 919ns | 3ms 55us | 0% | 20/20 | 177% (slower) |
+| ESA-BP | 1.2.6.BETA-BPSEC-943-gf59410a90 (declared: 3.0.0.v20260521) | 14ms 955us 421ns | 31ms 435us | 211ms 99us 188ns | 41ms 708us | 0% | 20/20 | 804% (slower) |
 
 ## Notes
 

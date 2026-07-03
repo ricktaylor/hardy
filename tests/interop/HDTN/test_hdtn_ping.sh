@@ -21,6 +21,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 HDTN_NODE_NUM=10
@@ -176,87 +179,55 @@ HDTN_CONTAINER=$(docker run -d \
 
 log_info "Started HDTN container: ${HDTN_CONTAINER:0:12}"
 
-# Wait for HDTN to start and be ready
-log_info "Waiting for HDTN to initialize..."
-
-# Wait up to 30 seconds for HDTN to be ready (port open)
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    # Check if container is still running
-    if ! docker ps -q -f "id=$HDTN_CONTAINER" | grep -q .; then
-        log_error "HDTN container exited unexpectedly. Logs:"
+# TEST 1 runs only if HDTN comes up. The `for … in 1` block lets any setup
+# step `break` out recording FAIL, so a peer-side failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until HDTN is accepting TCPCLv4 connections (see lib/wait.sh).
+    log_info "Waiting for HDTN to accept connections on port $TCPCLV4_PORT..."
+    if ! wait_for_port 127.0.0.1 "$TCPCLV4_PORT" 30 "$HDTN_CONTAINER"; then
+        log_error "HDTN did not become ready on port $TCPCLV4_PORT; skipping TEST 1"
         docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
-        docker rm "$HDTN_CONTAINER" 2>/dev/null || true
-        exit 1
-    fi
-
-    # Check if port is open (try multiple methods for compatibility)
-    if nc -z 127.0.0.1 "$TCPCLV4_PORT" 2>/dev/null; then
-        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-        break
-    elif timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$TCPCLV4_PORT" 2>/dev/null; then
-        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
-        break
-    elif ss -tlnp 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-        log_info "HDTN is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s, detected via ss)"
         break
     fi
+    log_info "HDTN is accepting connections on port $TCPCLV4_PORT"
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Give HDTN time to finish internal setup after the port opens
+    sleep 2
 
-# Give HDTN time to finish internal setup after port opens
-sleep 2
+    # Hardy pings HDTN echo service (ipn:10.2047)
+    # Note: HDTN uses service ID 2047 for echo (not 7)
+    log_step "Hardy pinging HDTN echo service at ipn:$HDTN_NODE_NUM.2047..."
+    echo ""
 
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "HDTN did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-    log_error "Checking what ports are listening inside container:"
-    docker exec "$HDTN_CONTAINER" netstat -tlnp 2>/dev/null || docker exec "$HDTN_CONTAINER" ss -tlnp 2>/dev/null || true
-    log_error "Checking from host:"
-    netstat -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || ss -tlnp 2>/dev/null | grep -E ":$TCPCLV4_PORT|:4556" || true
-    log_error "HDTN container logs:"
-    docker logs "$HDTN_CONTAINER" 2>&1 | tail -50
-    exit 1
-fi
+    # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
+    # Use a known source EID so HDTN can route responses back
+    # Capture output to check actual received count
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.1" \
+        --count "$PING_COUNT" \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-# Hardy pings HDTN echo service (ipn:10.2047)
-# Note: HDTN uses service ID 2047 for echo (not 7)
-log_step "Hardy pinging HDTN echo service at ipn:$HDTN_NODE_NUM.2047..."
-echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Use a known source EID so HDTN can route responses back
-# Capture output to check actual received count
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$HDTN_NODE_NUM.2047" "127.0.0.1:$TCPCLV4_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.1" \
-    --count "$PING_COUNT" \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+    # Extract received count from "N bundles transmitted, M received" line
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-echo "$PING_OUTPUT"
-echo ""
-
-# Extract received count from "N bundles transmitted, M received" line
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
-
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged HDTN ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Stop HDTN for test 2
 log_info "Stopping HDTN..."
@@ -309,6 +280,20 @@ if ! kill -0 "$HARDY_PID" 2>/dev/null; then
     exit 1
 fi
 log_info "Hardy BPA server started with PID $HARDY_PID"
+
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server-start failure above hard-exits, as a harness error).
+TEST2_RESULT="FAIL"
+
+# Wait until Hardy is accepting connections on the TCPCLv4 port that HDTN's
+# bping will dial. Soft check: log a warning and continue on failure. HDTN's
+# container is not up yet, so no container liveness argument is passed here.
+log_info "Waiting for Hardy to accept connections on port $TCPCLV4_PORT..."
+if wait_for_port 127.0.0.1 "$TCPCLV4_PORT" 30; then
+    log_info "Hardy is accepting connections on port $TCPCLV4_PORT"
+else
+    log_warn "Hardy not confirmed on port $TCPCLV4_PORT; continuing"
+fi
 
 # Start HDTN to ping Hardy
 log_step "Starting HDTN to ping Hardy..."

@@ -21,6 +21,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 HARDY_SERVICE_NUM=128
@@ -176,38 +179,23 @@ CFS_CONTAINER=$(docker run -d \
 
 log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
 
-# Wait for cFS to start — start_cfs sends setup/start commands internally
-# (avoid nc -z probes that create spurious TCP connections to the STCP port)
-# Wait for cFS STCP port to open (start_cfs sends setup/start commands internally)
-# Use ss to check without creating TCP connections (nc -z would be accepted by the CLA)
-log_info "Waiting for cFS to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
-        log_error "cFS container exited unexpectedly. Logs:"
-        docker logs "$CFS_CONTAINER" 2>&1
-        exit 1
-    fi
-
-    if ss -tln 2>/dev/null | grep -q ":$CFS_STCP_PORT "; then
-        log_info "cFS is listening on port $CFS_STCP_PORT (took ${WAIT_COUNT}s)"
+# TEST 1 runs only if cFS comes up. The `for … in 1` block lets any peer-side
+# setup step `break` out recording FAIL, so a cFS failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until cFS is accepting STCP connections (see lib/wait.sh).
+    # start_cfs sends setup/start commands internally.
+    log_info "Waiting for cFS to accept connections on port $CFS_STCP_PORT..."
+    if ! wait_for_port 127.0.0.1 "$CFS_STCP_PORT" 30 "$CFS_CONTAINER"; then
+        log_error "cFS did not become ready on port $CFS_STCP_PORT; skipping TEST 1"
+        docker logs "$CFS_CONTAINER" 2>&1 | tail -50
         break
     fi
+    log_info "cFS is accepting connections on port $CFS_STCP_PORT"
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
-
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "cFS did not start listening on port $CFS_STCP_PORT within ${WAIT_TIMEOUT}s"
-    docker logs "$CFS_CONTAINER" 2>&1 | tail -30
-    exit 1
-fi
-
-
-# Create STCP CLA config for Hardy's mtcp-cla binary
-cat > "$TEST_DIR/stcp_cla.toml" << EOF
+    # Create STCP CLA config for Hardy's mtcp-cla binary
+    cat > "$TEST_DIR/stcp_cla.toml" << EOF
 bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
 cla-name = "cl0"
 framing = "stcp"
@@ -218,42 +206,38 @@ peer-node = "ipn:$CFS_NODE_NUM.0"
 max-bundle-size = 65536
 EOF
 
-# Hardy pings cFS echo service at ipn:CFS_NODE.7
-log_step "Hardy pinging cFS echo service at ipn:$CFS_NODE_NUM.7 via STCP..."
-echo ""
+    # Hardy pings cFS echo service at ipn:CFS_NODE.7
+    log_step "Hardy pinging cFS echo service at ipn:$CFS_NODE_NUM.7 via STCP..."
+    echo ""
 
-# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
-    --cla "$MTCP_CLA_BIN" \
-    --cla-args "--config $TEST_DIR/stcp_cla.toml" \
-    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
-    --count "$PING_COUNT" \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+    # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
+        --cla "$MTCP_CLA_BIN" \
+        --cla-args "--config $TEST_DIR/stcp_cla.toml" \
+        --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
+        --count "$PING_COUNT" \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-echo "$PING_OUTPUT"
-echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-# Extract received count from "N bundles transmitted, M received" line
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
+    # Extract received count from "N bundles transmitted, M received" line
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged cFS ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Show cFS container logs for diagnostics
 CFS_LOGS=$(docker logs "$CFS_CONTAINER" 2>&1)
@@ -300,6 +284,11 @@ address = "[::1]:$HARDY_GRPC_PORT"
 services = ["cla"]
 EOF
 
+# TEST 2 records FAIL by default; a peer-side cFS failure below falls through to
+# the summary rather than aborting. Hardy/MTCP harness-start failures still set
+# FAIL explicitly in their branches.
+TEST2_RESULT="FAIL"
+
 log_step "Starting Hardy BPA server..."
 "$BPA_BIN" -c "$TEST_DIR/hardy_config.toml" &
 HARDY_PID=$!
@@ -344,23 +333,17 @@ EOF
             "$CFS_IMAGE")
 
         log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
-        log_info "Waiting for cFS to initialize..."
-        WAIT_TIMEOUT=30
-        WAIT_COUNT=0
-        while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-            if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
-                log_error "cFS container exited unexpectedly"
-                break
-            fi
-            if ss -tln 2>/dev/null | grep -q ":$CFS_STCP_PORT "; then
-                log_info "cFS is listening on port $CFS_STCP_PORT (took ${WAIT_COUNT}s)"
-                break
-            fi
-            sleep 1
-            WAIT_COUNT=$((WAIT_COUNT + 1))
-        done
 
-        if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q . || [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        # Wait until cFS is accepting STCP connections. Used softly: a failure
+        # here is a peer-side problem, so warn and continue rather than exit.
+        log_info "Waiting for cFS to accept connections on port $CFS_STCP_PORT..."
+        if wait_for_port 127.0.0.1 "$CFS_STCP_PORT" 30 "$CFS_CONTAINER"; then
+            log_info "cFS is accepting connections on port $CFS_STCP_PORT"
+        else
+            log_warn "cFS not confirmed on port $CFS_STCP_PORT; continuing"
+        fi
+
+        if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
             log_error "cFS failed to start"
             TEST2_RESULT="FAIL"
         else

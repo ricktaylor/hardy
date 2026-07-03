@@ -24,6 +24,9 @@ INTEROP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 MTCP_CLA_DIR="$INTEROP_DIR/mtcp"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 ION_NODE_NUM=2
@@ -187,43 +190,31 @@ ION_CONTAINER=$(docker run -d \
 
 log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
-log_info "Waiting for ION to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-        log_error "ION container exited unexpectedly. Logs:"
+# TEST 1 runs only if ION comes up. The `for … in 1` block lets any setup
+# step `break` out recording FAIL, so a peer-side failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until ION is accepting STCP connections (see lib/wait.sh).
+    log_info "Waiting for ION to accept connections on port $ION_STCP_PORT..."
+    if ! wait_for_port 127.0.0.1 "$ION_STCP_PORT" 30 "$ION_CONTAINER"; then
+        log_error "ION did not become ready on port $ION_STCP_PORT; skipping TEST 1"
         docker logs "$ION_CONTAINER" 2>&1 | tail -50
-        docker rm "$ION_CONTAINER" 2>/dev/null || true
-        exit 1
-    fi
-
-    if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
-        log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
         break
     fi
+    log_info "ION is accepting connections on port $ION_STCP_PORT"
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Give ION time to finish internal setup after the port opens
+    sleep 2
 
-# Give ION time to finish internal setup after port opens
-sleep 2
+    # Start bpecho service
+    log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
+    docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
 
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "ION did not start listening on port $ION_STCP_PORT within ${WAIT_TIMEOUT}s"
-    docker logs "$ION_CONTAINER" 2>&1 | tail -30
-    exit 1
-fi
+    sleep 2
 
-# Start bpecho service
-log_step "Starting bpecho service on ipn:$ION_NODE_NUM.7..."
-docker exec -d "$ION_CONTAINER" bpecho "ipn:$ION_NODE_NUM.7"
-
-sleep 2
-
-# Create CLA config for bp ping (TEST 1)
-cat > "$TEST_DIR/cla_ping.toml" << EOF
+    # Create CLA config for bp ping (TEST 1)
+    cat > "$TEST_DIR/cla_ping.toml" << EOF
 bpa-address = "http://[::1]:$HARDY_GRPC_PORT"
 cla-name = "cl0"
 framing = "stcp"
@@ -232,40 +223,36 @@ peer-node = "ipn:$ION_NODE_NUM.0"
 address = "0.0.0.0:$HARDY_STCP_PORT"
 EOF
 
-# Hardy pings ION echo service via STCP using the external CLA binary
-log_step "Hardy pinging ION echo service at ipn:$ION_NODE_NUM.7 via STCP..."
-echo ""
+    # Hardy pings ION echo service via STCP using the external CLA binary
+    log_step "Hardy pinging ION echo service at ipn:$ION_NODE_NUM.7 via STCP..."
+    echo ""
 
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
-    --cla "$CLA_BIN" \
-    --cla-args "--config $TEST_DIR/cla_ping.toml" \
-    --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.12345" \
-    --count "$PING_COUNT" \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$ION_NODE_NUM.7" \
+        --cla "$CLA_BIN" \
+        --cla-args "--config $TEST_DIR/cla_ping.toml" \
+        --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.12345" \
+        --count "$PING_COUNT" \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-echo "$PING_OUTPUT"
-echo ""
+    echo "$PING_OUTPUT"
+    echo ""
 
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged ION ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Stop ION for test 2
 log_info "Stopping ION..."
@@ -360,22 +347,20 @@ ION_CONTAINER=$(docker run -d \
 
 log_info "Started ION container: ${ION_CONTAINER:0:12}"
 
-log_info "Waiting for ION to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then
-        break
-    fi
-    if ss -tln 2>/dev/null | grep -q ":$ION_STCP_PORT "; then
-        log_info "ION is listening on port $ION_STCP_PORT (took ${WAIT_COUNT}s)"
-        break
-    fi
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server/CLA-start failures above hard-exit, as harness
+# errors).
+TEST2_RESULT="FAIL"
 
-# Give ION time to finish internal setup after port opens
+# Wait until ION is accepting STCP connections.
+log_info "Waiting for ION to accept connections on port $ION_STCP_PORT..."
+if wait_for_port 127.0.0.1 "$ION_STCP_PORT" 30 "$ION_CONTAINER"; then
+    log_info "ION is accepting connections on port $ION_STCP_PORT"
+else
+    log_warn "ION not confirmed on port $ION_STCP_PORT; continuing"
+fi
+
+# Give ION time to finish internal setup after the port opens
 sleep 2
 
 if ! docker ps -q -f "id=$ION_CONTAINER" | grep -q .; then

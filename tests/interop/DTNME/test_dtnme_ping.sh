@@ -21,6 +21,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# shellcheck source=../lib/wait.sh
+source "$SCRIPT_DIR/../lib/wait.sh"
+
 # Configuration
 HARDY_NODE_NUM=1
 DTNME_NODE_NUM=2
@@ -184,88 +187,71 @@ DTNME_CONTAINER=$(docker run -d \
 
 log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
 
-# Wait for DTNME to start (ss preferred — no TCP connection created)
-log_info "Waiting for DTNME to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-        log_error "DTNME container exited unexpectedly. Logs:"
+# TEST 1 runs only if DTNME comes up. The `for … in 1` block lets any setup
+# step `break` out recording FAIL, so a peer-side failure falls through to the
+# summary instead of aborting the whole script.
+TEST1_RESULT="FAIL"
+for _ in 1; do
+    # Wait until DTNME is accepting TCPCLv4 connections (see lib/wait.sh).
+    log_info "Waiting for DTNME to accept connections on port $TCPCLV4_PORT..."
+    if ! wait_for_port 127.0.0.1 "$TCPCLV4_PORT" 30 "$DTNME_CONTAINER"; then
+        log_error "DTNME did not become ready on port $TCPCLV4_PORT; skipping TEST 1"
         docker logs "$DTNME_CONTAINER" 2>&1 | tail -50
-        docker rm "$DTNME_CONTAINER" 2>/dev/null || true
-        exit 1
+        break
     fi
+    log_info "DTNME is accepting connections on port $TCPCLV4_PORT"
 
-    if ss -tln 2>/dev/null | grep -q ":$TCPCLV4_PORT "; then
-        log_info "DTNME is listening on port $TCPCLV4_PORT (took ${WAIT_COUNT}s)"
+    # Give DTNME time to finish internal setup after the port opens
+    sleep 2
+
+    # Start echo service in the container
+    log_step "Starting echo_me service in container..."
+    docker exec -d "$DTNME_CONTAINER" /dtn/bin/echo_me -B 5010 -s "ipn:$DTNME_NODE_NUM.7"
+
+    # Give echo service time to start
+    sleep 2
+
+    # Verify DTNME is running
+    if ! docker ps | grep -q dtnme-interop-test; then
+        log_error "DTNME container is not running; skipping TEST 1"
+        docker logs "$DTNME_CONTAINER" 2>&1 || true
         break
     fi
 
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+    # Hardy pings DTNME echo service (ipn:2.7)
+    log_step "Hardy pinging DTNME echo service at ipn:$DTNME_NODE_NUM.7..."
+    echo ""
 
-# Give DTNME time to finish internal setup after port opens
-sleep 2
+    # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
+    # Use --source to specify an EID that matches DTNME's route (ipn:$HARDY_NODE_NUM.*)
+    # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
+    #       payload block CRC but rejects bundles when CRC validation fails.
+    # Capture output to check actual received count
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+        --source "ipn:$HARDY_NODE_NUM.12345" \
+        --count "$PING_COUNT" \
+        --no-payload-crc \
+        2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
-if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
-    log_error "DTNME did not start listening on port $TCPCLV4_PORT within ${WAIT_TIMEOUT}s"
-    docker logs "$DTNME_CONTAINER" 2>&1 | tail -30
-    exit 1
-fi
+    echo "$PING_OUTPUT"
+    echo ""
 
-# Start echo service in the container
-log_step "Starting echo_me service in container..."
-docker exec -d "$DTNME_CONTAINER" /dtn/bin/echo_me -B 5010 -s "ipn:$DTNME_NODE_NUM.7"
+    # Extract received count from "N bundles transmitted, M received" line
+    STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
+    TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
+    RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
 
-# Give echo service time to start
-sleep 2
-
-# Verify DTNME is running
-if ! docker ps | grep -q dtnme-interop-test; then
-    log_error "DTNME container is not running"
-    docker logs "$DTNME_CONTAINER" 2>&1 || true
-    exit 1
-fi
-
-# Hardy pings DTNME echo service (ipn:2.7)
-log_step "Hardy pinging DTNME echo service at ipn:$DTNME_NODE_NUM.7..."
-echo ""
-
-# Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-# Use --source to specify an EID that matches DTNME's route (ipn:$HARDY_NODE_NUM.*)
-# Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
-#       payload block CRC but rejects bundles when CRC validation fails.
-# Capture output to check actual received count
-PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
-    --source "ipn:$HARDY_NODE_NUM.12345" \
-    --count "$PING_COUNT" \
-    --no-payload-crc \
-    2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
-
-echo "$PING_OUTPUT"
-echo ""
-
-# Extract received count from "N bundles transmitted, M received" line
-STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)
-TRANSMITTED=$(echo "$STATS_LINE" | sed -E 's/^([0-9]+).*/\1/')
-RECEIVED=$(echo "$STATS_LINE" | sed -E 's/.*, ([0-9]+) received.*/\1/')
-
-if [ $EXIT_CODE -eq 0 ]; then
-    if [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
+    if [ $EXIT_CODE -eq 0 ] && [ "$RECEIVED" = "$TRANSMITTED" ] && [ -n "$RECEIVED" ]; then
         log_info "TEST 1 PASSED: Hardy successfully pinged DTNME ($RECEIVED/$TRANSMITTED)"
         TEST1_RESULT="PASS"
-    else
+    elif [ $EXIT_CODE -eq 0 ]; then
         log_error "TEST 1 FAILED: Partial loss - only $RECEIVED/$TRANSMITTED responses received"
-        TEST1_RESULT="FAIL"
+    elif [ $EXIT_CODE -eq 1 ]; then
+        log_error "TEST 1 FAILED: No echo responses received (100% loss)"
+    else
+        log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
     fi
-elif [ $EXIT_CODE -eq 1 ]; then
-    log_error "TEST 1 FAILED: No echo responses received (100% loss)"
-    TEST1_RESULT="FAIL"
-else
-    log_error "TEST 1 FAILED: Error during ping (exit code $EXIT_CODE)"
-    TEST1_RESULT="FAIL"
-fi
+done
 
 # Stop DTNME for test 2
 log_info "Stopping DTNME..."
@@ -339,23 +325,19 @@ DTNME_CONTAINER=$(docker run -d \
 
 log_info "Started DTNME container: ${DTNME_CONTAINER:0:12}"
 
-# Wait for DTNME to start
-log_info "Waiting for DTNME to initialize..."
-WAIT_TIMEOUT=30
-WAIT_COUNT=0
-while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
-    if ! docker ps -q -f "id=$DTNME_CONTAINER" | grep -q .; then
-        break
-    fi
-    if ss -tln 2>/dev/null | grep -q ":$((TCPCLV4_PORT+1)) "; then
-        log_info "DTNME is listening on port $((TCPCLV4_PORT+1)) (took ${WAIT_COUNT}s)"
-        break
-    fi
-    sleep 1
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-done
+# TEST 2 records FAIL by default; a peer-side failure below falls through to the
+# summary (only the Hardy-server-start failure above hard-exits, as a harness error).
+TEST2_RESULT="FAIL"
 
-# Give DTNME time to finish internal setup after port opens
+# Wait until DTNME is accepting connections on the reverse-link port.
+log_info "Waiting for DTNME to accept connections on port $((TCPCLV4_PORT+1))..."
+if wait_for_port 127.0.0.1 "$((TCPCLV4_PORT+1))" 30 "$DTNME_CONTAINER"; then
+    log_info "DTNME is accepting connections on port $((TCPCLV4_PORT+1))"
+else
+    log_warn "DTNME not confirmed on port $((TCPCLV4_PORT+1)); continuing"
+fi
+
+# Give DTNME time to finish internal setup after the port opens
 sleep 2
 
 # Check if container is still running
