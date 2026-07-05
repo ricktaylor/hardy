@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use super::*;
-use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpa::{bpa::BpaRegistration, services::Service};
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,8 +280,21 @@ async fn run_ping(
     let tasks = hardy_async::TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    let stats = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
+    let service = std::sync::Arc::new(service::Service::new(args));
+    let exec_res = exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone());
 
+    match args.timeout {
+        Some(t) => tokio::select! {
+            r = exec_res => Some(r?),
+            _ = tokio::time::sleep(*t) => { tasks.cancel_token().cancel();
+                None
+                 }
+        },
+        None => Some(exec_res.await?),
+    };
+
+    service.print_summary();
+    let stats = service.statistics();
     tasks.shutdown().await;
 
     bpa.shutdown().await;
@@ -295,8 +310,8 @@ async fn exec_inner(
     args: &Command,
     bpa: &dyn BpaRegistration,
     cancel_token: &tokio_util::sync::CancellationToken,
-) -> anyhow::Result<service::Statistics> {
-    let service = std::sync::Arc::new(service::Service::new(args));
+    service: Arc<service::Service>,
+) -> anyhow::Result<()> {
     if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
         bpa.register_service(service_id, service.clone()).await
     } else {
@@ -335,11 +350,7 @@ async fn exec_inner(
             eprintln!("Timeout waiting for responses");
         }
     }
-
-    // Print summary statistics
-    service.print_summary();
-
-    Ok(service.statistics())
+    Ok(())
 }
 
 pub fn exec(args: Command) -> ! {
