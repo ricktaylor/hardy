@@ -243,8 +243,10 @@ for _ in 1; do
     # --lax-rfc9171: dtn7-rs's dtnecho2 reflects bundles without a primary-block CRC,
     # which the default RFC9171 ingress filter would drop (the Hardy server config
     # relaxes the same check for TEST 2 via [rfc9171-validity]).
-    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+    PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
         --count "$PING_COUNT" \
+        --timeout "$((PING_COUNT * 2 + 10))s" \
+        --no-sign \
         --lax-rfc9171 \
         2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
