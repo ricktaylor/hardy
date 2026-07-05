@@ -31,7 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     automake \
     autoconf \
+    autoconf-archive \
     libtool \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone ION from GitHub
