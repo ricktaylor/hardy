@@ -33,8 +33,8 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // meet every RFC9171 ingress policy — notably dtn7-rs's dtnecho2, which
     // reflects bundles without a primary-block CRC. The strict auto-registered
     // filter is disabled via the `no-rfc9171-autoregister` feature; register a
-    // configured instance here, relaxed by --lax-rfc9171. Round-trip integrity is
-    // still guaranteed by the client's byte-for-byte payload comparison.
+    // configured instance here, relaxed by --lax-rfc9171. The reflected payload
+    // is still compared byte-for-byte by the client.
     let rfc9171_config = hardy_bpa::filter::rfc9171::Config {
         primary_block_integrity: !args.lax_rfc9171,
         bundle_age_required: !args.lax_rfc9171,

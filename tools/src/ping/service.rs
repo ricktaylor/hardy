@@ -107,7 +107,7 @@ struct SharedState {
 
 pub struct Service {
     sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ServiceSink>>,
-    node_id: String,
+    local_node: NodeId,
     destination: Eid,
     lifetime: std::time::Duration,
     quiet: bool,
@@ -120,7 +120,7 @@ impl Service {
     pub fn new(args: &Command) -> Self {
         Self {
             sink: std::sync::OnceLock::new(),
-            node_id: args.node_id().unwrap().to_string(),
+            local_node: args.node_id().unwrap(),
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             quiet: args.quiet,
@@ -141,16 +141,32 @@ impl Service {
     // Remove entries older than bundle lifetime to prevent unbounded memory growth.
     fn cleanup_expired(&self, now: time::OffsetDateTime) {
         let cutoff = now - self.lifetime;
-        let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
-        state
-            .sent_bundles
-            .retain(|_, entry| entry.send_time > cutoff);
-        state
-            .expected_responses
-            .retain(|_, (send_time, _)| *send_time > cutoff);
-        state
-            .return_journeys
-            .retain(|_, hops| hops.iter().any(|h| h.report_time > cutoff));
+        let mut expired = Vec::new();
+        {
+            let mut state = self.state.lock().trace_expect("Failed to lock state mutex");
+            state
+                .sent_bundles
+                .retain(|_, entry| entry.send_time > cutoff);
+            state.expected_responses.retain(|seqno, (send_time, _)| {
+                if *send_time > cutoff {
+                    true
+                } else {
+                    expired.push(*seqno);
+                    false
+                }
+            });
+            state
+                .return_journeys
+                .retain(|_, hops| hops.iter().any(|h| h.report_time > cutoff));
+        }
+
+        // Once its tracking entries are gone, nothing can resolve an expired
+        // ping — a late reply or status report no longer matches anything — so
+        // resolve it here, or count-based termination would sit out the full
+        // wait timeout.
+        for seqno in expired {
+            self.resolve(seqno);
+        }
     }
 
     // Print and clear the discovered outbound (Ping) path for a sequence number.
@@ -391,6 +407,13 @@ impl Service {
         }
     }
 
+    // Whether a status report was sourced by this client's own node.
+    fn is_local_report(&self, report_source: &Eid) -> bool {
+        report_source
+            .to_node_id()
+            .is_ok_and(|node| node == self.local_node)
+    }
+
     // Handle an incoming status report (administrative record).
     fn handle_status_report(&self, payload_data: &[u8], report_source: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
@@ -420,7 +443,7 @@ impl Service {
                     seqno: entry.seqno,
                     send_time: entry.send_time,
                 }
-            } else if report.bundle_id.source == self.destination {
+            } else if same_endpoint(&report.bundle_id.source, &self.destination) {
                 Leg::Return
             } else {
                 if !self.quiet {
@@ -448,7 +471,7 @@ impl Service {
             let Some(assertion) = assertion else { continue };
 
             let report_time = assertion.0.unwrap_or_else(time::OffsetDateTime::now_utc);
-            let location = if report_source.to_string() != self.node_id {
+            let location = if !self.is_local_report(report_source) {
                 format!(" by {report_source}")
             } else {
                 " locally".to_string()
@@ -471,7 +494,7 @@ impl Service {
                     }
                     // Track non-local hops for the per-seqno outbound path.
                     if let Some(elapsed) = elapsed
-                        && report_source.to_string() != self.node_id
+                        && !self.is_local_report(report_source)
                     {
                         self.state
                             .lock()
@@ -519,6 +542,19 @@ impl Service {
             }
         }
     }
+}
+
+// Endpoint-identity comparison for parsed EIDs. Structural `Eid` equality
+// keeps the legacy two-element and three-element `ipn` encodings of the same
+// endpoint (RFC 9758) as distinct variants; comparing (node-id, service)
+// collapses that. Anything else that differs — including dtn demux strings —
+// is a genuinely different endpoint and does not match.
+fn same_endpoint(a: &Eid, b: &Eid) -> bool {
+    a == b
+        || match (a.to_node_id(), b.to_node_id()) {
+            (Ok(a_node), Ok(b_node)) => a_node == b_node && a.service() == b.service(),
+            _ => false,
+        }
 }
 
 // Short label for a status kind, used in path displays.
@@ -579,7 +615,7 @@ impl hardy_bpa::services::Service for Service {
         }
 
         // A ping response must be sourced by the echo endpoint we pinged.
-        if bundle.id.source != self.destination {
+        if !same_endpoint(&bundle.id.source, &self.destination) {
             eprintln!(
                 "Ignoring bundle from unexpected source EID '{}'",
                 bundle.id.source
