@@ -30,10 +30,10 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 
 fuzz_target!(|data: &[u8]| {
     get_runtime().block_on(async {
-        // Timeout the entire iteration — the CLA's contact timeout is 2s,
-        // so 5s is generous. Prevents slow-unit reports from libfuzzer.
+        // Backstop the whole iteration — the CLA's contact timeout is 1s, so 3s
+        // is generous. Prevents slow-unit reports from libfuzzer.
         let _ =
-            tokio::time::timeout(tokio::time::Duration::from_secs(5), run_iteration(data)).await;
+            tokio::time::timeout(tokio::time::Duration::from_secs(3), run_iteration(data)).await;
     });
 });
 
