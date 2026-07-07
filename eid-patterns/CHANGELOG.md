@@ -13,5 +13,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - **BREAKING:** raised the `hardy-bpv7` requirement to the incompatible 0.6 release. `EidPattern::matches` takes `&hardy_bpv7::Eid`, so consumers must move to `hardy-bpv7` 0.6 in lockstep.
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 Releases before this version predate this changelog; see the git history for details.

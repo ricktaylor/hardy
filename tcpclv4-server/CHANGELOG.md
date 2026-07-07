@@ -13,5 +13,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - Raised the `hardy-tcpclv4`/`hardy-bpa`/`hardy-proto`/`hardy-async` dependency requirements to the v0.2.0 release line.
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 Releases before this version predate this changelog; see the git history for details.

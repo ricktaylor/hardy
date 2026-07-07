@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Use the shared `hardy-async` file watcher; reorganised static-routes handling; flattened the module structure (build moved to `main`, config split out).
 - Track the `hardy-bpa` `filters` → `filter` module rename.
 - Raised all internal `hardy-*` dependency requirements to the v0.2.0 release line.
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 ### Fixed
 - Surface route-validation errors through `Result` from the RIB.

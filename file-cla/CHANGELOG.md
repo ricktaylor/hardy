@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - **BREAKING:** raised the `hardy-bpa`/`hardy-bpv7`/`hardy-async` requirements to their incompatible releases. `Cla` implements `hardy_bpa::cla::Cla`, so consumers must move to `hardy-bpa` 0.2 in lockstep.
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 ### Fixed
 - Map invalid-bundle ingress failures to `cla::Error::Internal` explicitly instead of relying on a blanket conversion.

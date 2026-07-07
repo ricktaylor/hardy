@@ -8,7 +8,7 @@ Part of the [Hardy](https://github.com/ricktaylor/hardy) DTN Bundle Protocol imp
 
 ```toml
 [dependencies]
-hardy-otel = "0.1"
+hardy-otel = "0.2"
 ```
 
 Published on [crates.io](https://crates.io/crates/hardy-otel).
