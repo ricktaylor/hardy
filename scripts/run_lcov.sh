@@ -19,22 +19,37 @@
 #   docs/coverage_summary.md   # Committed, generated coverage table
 #   lcov-*.info                # Per-crate unit lcov files (removed at the end)
 
-set -e
+set -euo pipefail
 
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
 RESULTS_FILE="lcov-results.txt"
 UNIT_ONLY=false
 FUZZ_UNAVAILABLE=0
+FUZZ_TOOLS_MISSING=false
 
 # Base URL of the CFLite-published coverage on GitHub Pages (the fuzz source).
 # Override with HARDY_COVERAGE_URL.
 COVERAGE_URL_BASE="${HARDY_COVERAGE_URL:-https://ricktaylor.github.io/hardy-fuzz-corpus/coverage/latest}"
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--unit-only]
+
+Collects unit test coverage locally (cargo llvm-cov + lcov) and reads fuzz
+coverage from the CFLite-published reports on GitHub Pages.
+
+Options:
+  --unit-only   Skip fuzz coverage (faster; no network access needed)
+  -h, --help    Show this help
+EOF
+}
+
 for arg in "$@"; do
     case "$arg" in
         --unit-only) UNIT_ONLY=true ;;
-        *) echo "Unknown option: $arg" >&2; exit 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -108,7 +123,8 @@ echo "" | tee -a "$RESULTS_FILE"
 for crate in "${UNIT_CRATES[@]}"; do
     echo "--- $crate ---" | tee -a "$RESULTS_FILE"
     if cargo llvm-cov test --package "$crate" --lcov --output-path "lcov-${crate}.info" 2>&1; then
-        lcov --summary "lcov-${crate}.info" 2>&1 | tee -a "$RESULTS_FILE"
+        lcov --summary "lcov-${crate}.info" 2>&1 | tee -a "$RESULTS_FILE" \
+            || echo "  FAILED — lcov summary error" | tee -a "$RESULTS_FILE"
     else
         echo "  FAILED — see output above" | tee -a "$RESULTS_FILE"
     fi
@@ -149,26 +165,29 @@ fuzz_coverage_from_ghpages() {
     echo "" | tee -a "$RESULTS_FILE"
 
     if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-        echo "ERROR: reading published fuzz coverage needs 'curl' and 'python3'" | tee -a "$RESULTS_FILE"
-        FUZZ_UNAVAILABLE=$(( FUZZ_UNAVAILABLE + ${#FUZZ_TARGETS[@]} ))
+        echo "ERROR: reading published fuzz coverage needs 'curl' and 'python3' — fuzz section skipped" | tee -a "$RESULTS_FILE"
+        FUZZ_TOOLS_MISSING=true
         return 0
     fi
 
-    # Sum lines/functions over just this crate's source files in the export JSON.
+    # Sum lines/functions over just this crate's source files in the export
+    # JSON. Files are matched by the "/<crate_dir>/src/" path fragment rather
+    # than an absolute prefix, so the CFLite container's checkout location
+    # doesn't matter.
     local summ_py
     summ_py="$(mktemp)"
     cat > "$summ_py" <<'PY'
 import sys, json
-prefix = sys.argv[1]
+needle = sys.argv[1]  # "/<crate_dir>/src/"
 files = json.load(sys.stdin)["data"][0]["files"]
 lc = lt = fc = ft = 0
 for f in files:
-    if f["filename"].startswith(prefix):
+    if needle in f["filename"]:
         s = f["summary"]
         lc += s["lines"]["covered"];     lt += s["lines"]["count"]
         fc += s["functions"]["covered"]; ft += s["functions"]["count"]
 if lt == 0:
-    sys.exit(2)  # no source under prefix — treat as unavailable
+    sys.exit(2)  # no matching source files — treat as unavailable
 lp = 100.0 * lc / lt
 fp = 100.0 * fc / ft if ft else 0.0
 print("  lines......: %.1f%% (%d of %d lines)" % (lp, lc, lt))
@@ -189,10 +208,10 @@ PY
             echo "  functions..: UNAVAILABLE" | tee -a "$RESULTS_FILE"
             echo "  (no report at ${url})" | tee -a "$RESULTS_FILE"
             FUZZ_UNAVAILABLE=$(( FUZZ_UNAVAILABLE + 1 ))
-        elif out="$(printf '%s' "$json" | python3 "$summ_py" "/src/hardy/${crate_dir}/src/" 2>/dev/null)"; then
+        elif out="$(printf '%s' "$json" | python3 "$summ_py" "/${crate_dir}/src/" 2>/dev/null)"; then
             printf '%s\n' "$out" | tee -a "$RESULTS_FILE"
         else
-            echo "  lines......: UNAVAILABLE (no ${crate_dir}/src data in report)" | tee -a "$RESULTS_FILE"
+            echo "  lines......: UNAVAILABLE (no files matching */${crate_dir}/src/* in report)" | tee -a "$RESULTS_FILE"
             echo "  functions..: UNAVAILABLE" | tee -a "$RESULTS_FILE"
             FUZZ_UNAVAILABLE=$(( FUZZ_UNAVAILABLE + 1 ))
         fi
@@ -214,6 +233,12 @@ rm -f lcov-*.info
 
 echo ""
 echo "Results saved to $RESULTS_FILE"
+
+if [ "$FUZZ_TOOLS_MISSING" = true ]; then
+    echo ""
+    echo "WARNING: fuzz coverage was skipped entirely — 'curl' and/or 'python3' is" >&2
+    echo "         not installed. Install both and re-run, or use --unit-only." >&2
+fi
 
 if [ "$FUZZ_UNAVAILABLE" -gt 0 ]; then
     echo ""
