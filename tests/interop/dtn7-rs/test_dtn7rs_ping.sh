@@ -246,7 +246,6 @@ for _ in 1; do
     PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTN7_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
         --count "$PING_COUNT" \
         --timeout "$((PING_COUNT * 2 + 10))s" \
-        --no-sign \
         --lax-rfc9171 \
         2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 

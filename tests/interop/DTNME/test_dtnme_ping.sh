@@ -224,7 +224,6 @@ for _ in 1; do
 
     # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
     # Use --source to specify an EID that matches DTNME's route (ipn:$HARDY_NODE_NUM.*)
-    # Note: --no-sign disables BIB signing (DTNME echo doesn't sign responses)
     # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
     #       payload block CRC but rejects bundles when CRC validation fails.
     # Capture output to check actual received count
@@ -232,7 +231,6 @@ for _ in 1; do
         --source "ipn:$HARDY_NODE_NUM.12345" \
         --count "$PING_COUNT" \
         --timeout "$((PING_COUNT * 2 + 10))s" \
-        --no-sign \
         --no-payload-crc \
         2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 

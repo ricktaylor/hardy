@@ -237,7 +237,6 @@ EOF
         --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
         --count "$PING_COUNT" \
         --timeout "$((PING_COUNT * 2 + 10))s" \
-        --no-sign \
         2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
     echo "$PING_OUTPUT"
