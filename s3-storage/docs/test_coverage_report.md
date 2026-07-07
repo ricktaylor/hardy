@@ -14,7 +14,7 @@ The `BundleStorage` trait contract is verified by the shared storage harness (4 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
 | 9.1 | Bundle storage | **Pass** | BLOB-01..04 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §5) |
-| 9.1.1 | Configurable location/credentials | **Not tested** | S3-01 ([`PLAN-S3-01`](test_plan.md) §4) |
+| 9.1.1 | Configurable location/credentials | **Pass** | Harness setup ([`PLAN-S3-01`](test_plan.md) §5) — every run supplies the endpoint and credentials via configuration; CI runs against MinIO |
 | 9.1.2 | Configurable maximum total size | **Not tested** | Not planned |
 | 9.1.4 | Common S3 APIs | **Pass** | By design (`aws-sdk-s3`) |
 | 9.2 | Recovery after restart | **Pass** | BLOB-04 (recovery scan) |
