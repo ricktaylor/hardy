@@ -25,6 +25,8 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=lib/wait.sh
 source "$SCRIPT_DIR/lib/wait.sh"
+# shellcheck source=../lib/docker_pins.sh
+source "$SCRIPT_DIR/../lib/docker_pins.sh"
 
 # Hardy build under test (git tag/commit), recorded in the results for provenance.
 HARDY_VERSION="$(git -C "$WORKSPACE_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)"
@@ -177,13 +179,15 @@ log_step "Running Hardy baseline test..."
 BP_BIN="$WORKSPACE_DIR/target/release/bp"
 HARDY_IMAGE="hardy-bpa-server-interop"
 
-# Build if needed: the bp ping client (host) and the Hardy echo-server image.
-# The echo server runs in Docker on the same pinned trixie base as the peers, so
-# its RTT carries the same container/bridge overhead — a fair baseline, not an
-# inline best case.
+# Build if needed: the bp ping client and hardy-bpa-server (host binaries) and
+# the Hardy echo-server image. The peer scripts are invoked with --skip-build
+# and expect both host binaries to exist — hardy-bpa-server serves their
+# reverse-direction (peer pings Hardy) tests. The echo server runs in Docker on
+# the same pinned trixie base as the peers, so its RTT carries the same
+# container/bridge overhead — a fair baseline, not an inline best case.
 if [ -z "$SKIP_BUILD_FLAG" ]; then
-    log_info "Building bp (ping client)..."
-    if ! (cd "$WORKSPACE_DIR" && cargo build --release -p hardy-tools); then
+    log_info "Building bp (ping client) and hardy-bpa-server..."
+    if ! (cd "$WORKSPACE_DIR" && cargo build --release -p hardy-tools -p hardy-bpa-server); then
         log_warn "bp build failed, skipping Hardy baseline"
         RESULTS+=("Hardy|-|-|-|-|Build failed|-|")
         BP_BIN=""
@@ -192,12 +196,17 @@ if [ -z "$SKIP_BUILD_FLAG" ]; then
     if [ -n "$BP_BIN" ]; then
         log_info "Building Hardy echo image ($HARDY_IMAGE)..."
         NOCACHE=""; [ -n "$REFRESH_FLAG" ] && NOCACHE="--no-cache"
+        # The production Dockerfile floats on base-image tags; pin them by
+        # digest for the test build (see tests/lib/docker_pins.sh).
+        PINNED_DF=$(mktemp)
+        pin_dockerfile "$WORKSPACE_DIR/bpa-server/Dockerfile" > "$PINNED_DF"
         if ! docker build $NOCACHE -t "$HARDY_IMAGE" \
-            -f "$WORKSPACE_DIR/bpa-server/Dockerfile" "$WORKSPACE_DIR"; then
+            -f "$PINNED_DF" "$WORKSPACE_DIR"; then
             log_warn "Hardy echo image build failed, skipping baseline"
             RESULTS+=("Hardy|-|-|-|-|Build failed|-|")
             BP_BIN=""
         fi
+        rm -f "$PINNED_DF"
     fi
 
     # Build the MTCP/STCP CLA client for ION interop

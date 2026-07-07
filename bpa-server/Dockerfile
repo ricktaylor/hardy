@@ -26,7 +26,9 @@ COPY . .
 RUN cargo build --release --bin hardy-bpa-server $CARGO_ARGS
 
 # ── Stage 4: minimal runtime image ───────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian13@sha256:a017e74bd2a12d98342dbecd33d121d2b160415ed777573dc1808969e989d94d AS runtime
+# The base floats on its tag; test harnesses pin it by digest at build time via
+# tests/lib/docker_pins.sh.
+FROM gcr.io/distroless/cc-debian13 AS runtime
 COPY --from=ghcr.io/grpc-ecosystem/grpc-health-probe:v0.4.38 /ko-app/grpc-health-probe /bin/grpc_health_probe
 COPY --from=builder \
     /build/target/release/hardy-bpa-server \

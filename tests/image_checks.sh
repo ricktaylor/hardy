@@ -23,6 +23,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# shellcheck source=lib/docker_pins.sh
+source "$SCRIPT_DIR/lib/docker_pins.sh"
+
 SKIP_BUILD=false
 PASS=0
 FAIL=0
@@ -48,34 +51,34 @@ log_fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 # ── Build ────────────────────────────────────────────────────────────────────
 
+# Build an image from a production Dockerfile with its base images pinned by
+# digest (see tests/lib/docker_pins.sh).
+build_pinned() {
+    local tag="$1" dockerfile="$2"
+    local pinned rc=0
+    pinned=$(mktemp)
+    pin_dockerfile "$dockerfile" > "$pinned"
+    docker build -t "$tag" -f "$pinned" --target runtime "$WORKSPACE_DIR" || rc=$?
+    rm -f "$pinned"
+    return $rc
+}
+
 if [ "$SKIP_BUILD" = false ]; then
     echo "Building images..."
 
-    docker build -t hardy-bpa-server:test \
-        -f "$WORKSPACE_DIR/bpa-server/Dockerfile" \
-        --target runtime \
-        "$WORKSPACE_DIR" \
+    build_pinned hardy-bpa-server:test "$WORKSPACE_DIR/bpa-server/Dockerfile" \
         && log_pass "build hardy-bpa-server" \
         || log_fail "build hardy-bpa-server"
 
-    docker build -t hardy-tcpclv4-server:test \
-        -f "$WORKSPACE_DIR/tcpclv4-server/Dockerfile" \
-        --target runtime \
-        "$WORKSPACE_DIR" \
+    build_pinned hardy-tcpclv4-server:test "$WORKSPACE_DIR/tcpclv4-server/Dockerfile" \
         && log_pass "build hardy-tcpclv4-server" \
         || log_fail "build hardy-tcpclv4-server"
 
-    docker build -t hardy-tvr:test \
-        -f "$WORKSPACE_DIR/tvr/Dockerfile" \
-        --target runtime \
-        "$WORKSPACE_DIR" \
+    build_pinned hardy-tvr:test "$WORKSPACE_DIR/tvr/Dockerfile" \
         && log_pass "build hardy-tvr" \
         || log_fail "build hardy-tvr"
 
-    docker build -t hardy-tools:test \
-        -f "$WORKSPACE_DIR/tools/Dockerfile" \
-        --target runtime \
-        "$WORKSPACE_DIR" \
+    build_pinned hardy-tools:test "$WORKSPACE_DIR/tools/Dockerfile" \
         && log_pass "build hardy-tools" \
         || log_fail "build hardy-tools"
 else
