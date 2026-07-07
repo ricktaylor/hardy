@@ -3,7 +3,7 @@
 | Document Info | Details |
 | :--- | :--- |
 | **Module** | `hardy-otel` |
-| **Crate version** | `0.1.1` |
+| **Crate version** | `0.2.0` |
 | **Standard** | OpenTelemetry Specification v1.x |
 | **Test Plans** | [`UTP-OTEL-01`](unit_test_plan.md), [`COMP-OTEL-01`](component_test_plan.md) |
 

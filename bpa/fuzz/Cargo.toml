@@ -18,7 +18,7 @@ instrument = ["hardy-bpa/instrument","hardy-sqlite-storage?/instrument","hardy-l
 
 [dependencies]
 libfuzzer-sys = "0.4"
-hardy-otel = { version = "0.1", path = "../../otel" }
+hardy-otel = { version = "0.2", path = "../../otel" }
 hardy-async = { version = "0.2", path = "../../async" }
 hardy-bpv7 = { version = "0.6", path = "../../bpv7" }
 hardy-bpa = { path = ".." }

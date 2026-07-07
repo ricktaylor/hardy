@@ -23,7 +23,7 @@ hardy-bpv7 = { version = "0.6", path = "../bpv7" }
 hardy-proto = { version = "0.2", path = "../proto" }
 hardy-async = { version = "0.2", path = "../async", features = ["watcher"] }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns" }
-hardy-otel = { version = "0.1", path = "../otel", optional = true }
+hardy-otel = { version = "0.2", path = "../otel", optional = true }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }

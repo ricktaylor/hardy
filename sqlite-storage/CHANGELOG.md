@@ -12,5 +12,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** adopt the `hardy_bpa::stream::Sender` push-trait — the streaming `MetadataStorage` methods (`remove_unconfirmed`, `poll_expiry`, `poll_waiting`, `poll_service_waiting`) take `&dyn Sender<Bundle>` instead of a `flume::Sender`; requires `hardy-bpa` 0.2.
 - Removed the direct `flume` dependency.
 - Bumped `rusqlite` 0.39 → 0.40 (internal; no public-API impact).
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 Releases before this version predate this changelog; see the git history for details.

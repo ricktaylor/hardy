@@ -46,7 +46,7 @@ hardy-localdisk-storage = { version = "0.6", path = "../localdisk-storage", feat
 hardy-s3-storage = { version = "0.2", path = "../s3-storage", features = ["serde"], optional = true }
 hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { version = "0.2", path = "../file-cla", features = ["serde"], optional = true }
-hardy-otel = { version = "0.1", path = "../otel", optional = true }
+hardy-otel = { version = "0.2", path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { version = "0.2", path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { version = "0.2", path = "../echo-service", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }

@@ -11,5 +11,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - **BREAKING:** raised the `hardy-bpa`/`hardy-bpv7`/`hardy-async` requirements to their incompatible releases. `EchoService` implements `hardy_bpa::services::Service`, so consumers must move to `hardy-bpa` 0.2 in lockstep.
 - Build echo replies via the chunked zero-copy Editor output, reusing the inbound buffer when possible to avoid an extra payload copy.
+- Raised the minimum supported Rust version (MSRV) to 1.95.
 
 Releases before this version predate this changelog; see the git history for details.
