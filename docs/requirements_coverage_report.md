@@ -15,9 +15,9 @@ Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
 * 11 of 21 top-level requirements Done
   * 4 Partial
   * 6 Not started
-* 73 of 78 LLRs Done
+* 74 of 78 LLRs Done
   * 1 N/A
-  * 4 Not Tested
+  * 3 Not Tested
 * Gaps and implementation status detailed in [§4](#4-gaps)
 
 ## 2. Requirements Traceability Matrix
@@ -198,7 +198,7 @@ Implementing crate: `bpv7` — [coverage report](../bpv7/docs/test_coverage_repo
 | **2.1.2** | Remove BPSec target information when targeted block is removed | Done |
 | **2.1.3** | Validate fragment + BPSec restriction | N/A |
 
-Note: LLR 2.1.3 is a sender constraint enforced by `signer.rs:75`, not a parser validation. LLR to be corrected.
+Note: LLR 2.1.3 is a sender constraint enforced by the `FragmentedBundle` checks in `bpsec::signer` and `bpsec::encryptor`, not a parser validation. LLR to be corrected.
 
 ### RFC 9173 Security Contexts (2.2)
 
@@ -289,12 +289,12 @@ Implementing crate: `s3-storage` — [coverage report](../s3-storage/docs/test_c
 
 | LLR | Description | Status |
 | :--- | :--- | :--- |
-| **9.1.1** | Configurable location and access credentials for S3 instance | Not tested |
+| **9.1.1** | Configurable location and access credentials for S3 instance | Done |
 | **9.1.2** | Configurable maximum total for stored bundle data on S3 | Not implemented |
 | **9.1.3** | Configurable discard mechanism at S3 capacity | Not implemented |
 | **9.1.4** | Use common S3 APIs (not implementor-specific) | Done |
 
-Note: LLR 9.1.1 is planned (S3-01) but not yet implemented. LLR 9.1.2/9.1.3 enforcement is in the BPA layer. LLR 9.1.4 is verified by design (uses `aws-sdk-s3`).
+Note: LLR 9.1.1 is verified by the storage-harness setup — every run supplies the endpoint and access credentials via configuration, and CI runs the suite against MinIO. LLR 9.1.2/9.1.3 enforcement is in the BPA layer. LLR 9.1.4 is verified by design (uses `aws-sdk-s3`).
 
 ### OpenTelemetry (19.1)
 
@@ -362,13 +362,13 @@ Verified by: visual inspection (GitHub)
 | **6.1** Routing | 6 | 6 | 0 | 0 |
 | **7.1** Local Disk Storage | 3 | 2 | 0 | 1 |
 | **7.2** SQLite Storage | 2 | 2 | 0 | 0 |
-| **9.1** S3 Storage | 4 | 1 | 0 | 3 |
+| **9.1** S3 Storage | 4 | 2 | 0 | 2 |
 | **19.1** OpenTelemetry | 3 | 3 | 0 | 0 |
 | **19.2** Tools | 5 | 5 | 0 | 0 |
 | **21.1** Documentation | 0 | 0 | 0 | 0 |
 | **21.2** Documentation | 3 | 3 | 0 | 0 |
 | **21.3** Issue Reporting | 2 | 2 | 0 | 0 |
-| **Total** | **78** | **73** | **1** | **4** |
+| **Total** | **78** | **74** | **1** | **3** |
 
 ## 4. Gaps
 
@@ -377,7 +377,6 @@ Verified by: visual inspection (GitHub)
 | REQ | Gap | Notes |
 | :--- | :--- | :--- |
 | REQ-9 | S3 capacity enforcement not implemented | LLR 9.1.2, 9.1.3 (BPA-layer enforcement planned) |
-| REQ-9 | S3 configuration not tested | LLR 9.1.1 |
 
 ### 4.2. Not Implemented (Full Activity / Stretch)
 
@@ -402,4 +401,4 @@ Verified by: visual inspection (GitHub)
 
 ## 5. Conclusion
 
-All initial phase requirements are Done except REQ-9 (Partial). Core protocol compliance (REQ-1, REQ-2, REQ-3), infrastructure (REQ-6, REQ-7, REQ-15, REQ-17, REQ-19, REQ-21), and documentation (REQ-18) are fully satisfied. REQ-9 (S3 storage) is Partial due to missing capacity enforcement (LLR 9.1.2, 9.1.3) and untested configuration (LLR 9.1.1). At the LLR level, 73 of 78 requirements are done, with the 4 untested items concentrated in S3 storage. Stretch goal REQ-20 (interoperability) is complete with 7 peer implementations verified.
+All initial phase requirements are Done except REQ-9 (Partial). Core protocol compliance (REQ-1, REQ-2, REQ-3), infrastructure (REQ-6, REQ-7, REQ-15, REQ-17, REQ-19, REQ-21), and documentation (REQ-18) are fully satisfied. REQ-9 (S3 storage) is Partial due to missing capacity enforcement (LLR 9.1.2, 9.1.3). At the LLR level, 74 of 78 requirements are done, with the 3 remaining items all being capacity enforcement that is not yet implemented (LLR 7.1.2, 9.1.2, 9.1.3). Stretch goal REQ-20 (interoperability) is complete with 7 peer implementations verified.

@@ -21,7 +21,7 @@ Trait-level contract testing (save, load, delete, recovery scan) is covered by t
 | Ref | Description | Verified By |
 | :--- | :--- | :--- |
 | **9.1** | Store bundles on a remote system supporting the Amazon S3 API | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..04) |
-| **9.1.1** | Configurable location and access credentials for the S3 instance | S3-01 |
+| **9.1.1** | Configurable location and access credentials for the S3 instance | Harness setup (§5) — every run supplies the endpoint and credentials via configuration (`TEST_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`); CI runs against MinIO |
 | **9.1.2** | Configurable maximum total for all bundle data stored on S3 | Not tested |
 | **9.1.4** | Use common S3 APIs, avoiding provider-specific extensions | By design (`aws-sdk-s3`) |
 | **9.2** | Restart the system and recover state from S3 | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) BLOB-04 |
