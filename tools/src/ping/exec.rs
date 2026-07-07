@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::*;
-use hardy_bpa::{bpa::BpaRegistration, services::Service};
+use hardy_bpa::bpa::BpaRegistration;
 
 // Exit codes matching Linux/BSD ping conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
