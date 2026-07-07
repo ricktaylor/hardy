@@ -22,7 +22,9 @@ COPY . .
 RUN cargo build --release -p hardy-tools -p hardy-bpv7-tools -p hardy-cbor-tools
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────────
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS runtime
+# The base floats on its tag; test harnesses pin it by digest at build time via
+# tests/lib/docker_pins.sh.
+FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
