@@ -117,13 +117,15 @@ pub trait Application: Send + Sync {
     async fn on_unregister(&self);
 
     /// Called when a bundle payload is delivered to this application.
+    /// Returning `Err` parks the bundle as `WaitingForService`; a
+    /// subsequent registration on the same EID re-delivers it.
     async fn on_receive(
         &self,
         source: Eid,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         payload: Bytes,
-    );
+    ) -> Result<()>;
 
     /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
@@ -241,10 +243,13 @@ pub trait Service: Send + Sync {
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     async fn on_unregister(&self);
 
-    /// Called when a bundle arrives
+    /// Called when a bundle arrives.
     /// - `data`: raw bundle bytes (service can parse if needed)
     /// - `expiry`: calculated from bundle metadata by dispatcher
-    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime);
+    ///
+    /// Returning `Err` parks the bundle as `WaitingForService`; a
+    /// subsequent registration on the same EID re-delivers it.
+    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime) -> Result<()>;
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
@@ -298,7 +303,9 @@ pub(crate) mod tests {
     impl Service for NullService {
         async fn on_register(&self, _: &Eid, _: Box<dyn ServiceSink>) {}
         async fn on_unregister(&self) {}
-        async fn on_receive(&self, _: Bytes, _: time::OffsetDateTime) {}
+        async fn on_receive(&self, _: Bytes, _: time::OffsetDateTime) -> Result<()> {
+            Ok(())
+        }
         async fn on_status_notify(
             &self,
             _: &hardy_bpv7::bundle::Id,

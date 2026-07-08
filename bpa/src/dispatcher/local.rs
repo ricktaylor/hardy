@@ -174,7 +174,7 @@ impl Dispatcher {
         };
 
         // Deliver filter hook
-        let (bundle, data) = match self
+        let (mut bundle, data) = match self
             .filter_engine
             .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
@@ -193,10 +193,10 @@ impl Dispatcher {
             }
         };
 
-        match &service.service {
+        let delivery_result = match &service.service {
             services::registry::ServiceImpl::LowLevel(svc) => {
                 // Pass raw bundle bytes to low-level services
-                svc.on_receive(data, bundle.expiry()).await;
+                svc.on_receive(data, bundle.expiry()).await
             }
             services::registry::ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application
@@ -237,8 +237,17 @@ impl Dispatcher {
                     bundle.bundle.flags.app_ack_requested,
                     payload,
                 )
-                .await;
+                .await
             }
+        };
+
+        if let Err(e) = delivery_result {
+            debug!("Service delivery deferred: {e}");
+            let desired = bundle::BundleStatus::WaitingForService {
+                service: bundle.bundle.destination.clone(),
+            };
+            self.store.update_status(&mut bundle, &desired).await;
+            return self.store.watch_bundle(bundle).await;
         }
 
         metrics::counter!("bpa.bundle.delivered").increment(1);

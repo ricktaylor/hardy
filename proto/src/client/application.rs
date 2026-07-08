@@ -18,7 +18,8 @@ async fn receive(
 
     service
         .on_receive(source, expiry, request.ack_requested, request.payload)
-        .await;
+        .await
+        .map_err(|e| tonic::Status::from_error(e.into()))?;
 
     Ok(ReceiveResponse {})
 }

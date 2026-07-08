@@ -588,7 +588,11 @@ impl hardy_bpa::services::Service for Service {
         // Nothing to do
     }
 
-    async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
+    async fn on_receive(
+        &self,
+        data: hardy_bpa::Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
 
@@ -597,21 +601,21 @@ impl hardy_bpa::services::Service for Service {
             Ok(b) => b.bundle,
             Err(e) => {
                 eprintln!("Failed to parse bundle: {e}");
-                return;
+                return Ok(());
             }
         };
 
         // Extract the payload block contents.
         let Some(payload_data) = bundle.blocks.get(&1).and_then(|b| b.payload(&data)) else {
             eprintln!("Bundle has no payload");
-            return;
+            return Ok(());
         };
 
         // Status reports arrive as administrative records; handle before the
         // source check, since they originate at intermediate nodes.
         if bundle.flags.is_admin_record {
             self.handle_status_report(payload_data, &bundle.id.source);
-            return;
+            return Ok(());
         }
 
         // A ping response must be sourced by the echo endpoint we pinged.
@@ -620,7 +624,7 @@ impl hardy_bpa::services::Service for Service {
                 "Ignoring bundle from unexpected source EID '{}'",
                 bundle.id.source
             );
-            return;
+            return Ok(());
         }
 
         // Parse our sequence number out of the reflected payload.
@@ -628,7 +632,7 @@ impl hardy_bpa::services::Service for Service {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to parse ping payload: {e}");
-                return;
+                return Ok(());
             }
         };
 
@@ -645,7 +649,7 @@ impl hardy_bpa::services::Service for Service {
                 "Ignoring unexpected ping response with sequence number {}",
                 payload.seqno
             );
-            return;
+            return Ok(());
         };
 
         // Integrity: the echo reflects the payload byte-for-byte, so the
@@ -662,7 +666,7 @@ impl hardy_bpa::services::Service for Service {
                 .stats
                 .corrupted += 1;
             self.resolve(payload.seqno);
-            return;
+            return Ok(());
         }
 
         // Calculate RTT using LOCAL timestamps (not payload timestamps) to avoid
@@ -692,6 +696,7 @@ impl hardy_bpa::services::Service for Service {
 
         // This ping is resolved; release its permit for count-based termination.
         self.resolve(payload.seqno);
+        Ok(())
     }
 
     async fn on_status_notify(
