@@ -55,7 +55,7 @@ pub mod watcher;
 // Re-export commonly used types at crate root
 pub use async_trait::async_trait;
 
-pub use self::bounded_task_pool::{BoundedTaskPool, Permit};
+pub use self::bounded_task_pool::BoundedTaskPool;
 pub use self::cancellation_token::CancellationToken;
 pub use self::join_handle::JoinHandle;
 pub use self::notify::Notify;

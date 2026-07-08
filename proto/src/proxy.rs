@@ -80,7 +80,8 @@ async fn reader_task<S, R>(
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
     handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
-    tasks: hardy_async::BoundedTaskPool,
+    tasks: hardy_async::TaskPool,
+    permits: Arc<tokio::sync::Semaphore>,
     cancel: hardy_async::CancellationToken,
 ) where
     R: RecvMsg + Send + 'static,
@@ -90,7 +91,7 @@ async fn reader_task<S, R>(
 {
     loop {
         let permit = tokio::select! {
-            p = tasks.acquire_permit() => p,
+            p = permits.clone().acquire_owned() => p.expect("semaphore closed unexpectedly"),
             _ = cancel.cancelled() => break,
         };
 
@@ -114,7 +115,8 @@ async fn reader_task<S, R>(
             Ok(msg) => {
                 let handler = handler.clone();
                 let write_tx = write_tx.clone();
-                hardy_async::spawn_with_permit!(tasks, permit, "rpc_proxy_handler", async move {
+                hardy_async::spawn!(tasks, "rpc_proxy_handler", async move {
+                    let _permit = permit;
                     if let Some(response) = handler.on_notify(msg).await {
                         _ = write_tx
                             .send(S::compose(msg_id, response))
@@ -162,7 +164,7 @@ where
     pending: PendingMap<R::Msg>,
     next_msg_id: Mutex<u32>,
     tasks: hardy_async::TaskPool,
-    handler_tasks: hardy_async::BoundedTaskPool,
+    handler_tasks: hardy_async::TaskPool,
 }
 
 impl<S, R> RpcProxy<S, R>
@@ -222,11 +224,9 @@ where
 
     /// Start the proxy with split reader/writer tasks.
     ///
-    /// The proxy creates its own task pools: a `TaskPool` for the reader and
-    /// writer infrastructure tasks, and a `BoundedTaskPool` for handler tasks
-    /// (bounded to [`DEFAULT_MAX_HANDLERS`] concurrent handlers). Call
-    /// `close()` to shut down the proxy and await completion of all in-flight
-    /// handlers.
+    /// The proxy creates its own task pools plus a semaphore that bounds
+    /// concurrent handlers to `available_parallelism()`. Call `shutdown()`
+    /// to await completion of all in-flight handlers.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
@@ -235,7 +235,12 @@ where
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
     ) -> Self {
         let tasks = hardy_async::TaskPool::new();
-        let handler_tasks = hardy_async::BoundedTaskPool::default();
+        let handler_tasks = hardy_async::TaskPool::new();
+        // Held only by the reader task's clone plus any live handler's
+        // OwnedSemaphorePermit; drops when the last reference is gone.
+        let handler_permits = Arc::new(tokio::sync::Semaphore::new(
+            hardy_async::available_parallelism().get(),
+        ));
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
         let pending: PendingMap<R::Msg> = Arc::new(Mutex::new(Some(HashMap::new())));
         let cancel = tasks.cancel_token().clone();
@@ -247,7 +252,7 @@ where
             writer_task(write_rx, writer_sender, writer_cancel).await;
         });
 
-        // Reader task: gRPC inbound → dispatch handlers on bounded pool
+        // Reader task: gRPC inbound → dispatch handlers, bounded by handler_permits
         let reader_write_tx = write_tx.clone();
         let reader_pending = pending.clone();
         let handler = Arc::from(handler);
@@ -260,6 +265,7 @@ where
                 reader_pending,
                 handler,
                 reader_tasks,
+                handler_permits,
                 reader_cancel,
             )
             .await;
