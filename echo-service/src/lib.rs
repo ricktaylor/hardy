@@ -143,8 +143,13 @@ impl hardy_bpa::services::Service for EchoService {
     }
 
     /// Called when a bundle arrives
-    async fn on_receive(&self, data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
+    async fn on_receive(
+        &self,
+        data: hardy_bpa::Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
         _ = self.echo(data).await;
+        Ok(())
     }
 }
 

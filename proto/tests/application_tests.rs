@@ -52,8 +52,9 @@ impl Application for MockApplication {
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _payload: hardy_bpa::Bytes,
-    ) {
+    ) -> hardy_bpa::services::Result<()> {
         self.received.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn on_status_notify(
@@ -179,7 +180,8 @@ async fn app_cli_04_receive_payload() {
             false,
             hardy_bpa::Bytes::from_static(b"hello"),
         )
-        .await;
+        .await
+        .expect("Delivery should succeed");
 
     assert!(
         app.received.load(Ordering::Relaxed),

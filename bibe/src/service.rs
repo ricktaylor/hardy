@@ -80,7 +80,11 @@ impl Service for DecapService {
         debug!("BIBE DecapService unregistered");
     }
 
-    async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
+    async fn on_receive(
+        &self,
+        data: Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
         match self.decapsulate(data) {
             Ok(inner) => {
                 debug!("BIBE decapsulated bundle, dispatching");
@@ -92,6 +96,7 @@ impl Service for DecapService {
                 warn!("BIBE decapsulation failed: {e}");
             }
         }
+        Ok(())
     }
 
     async fn on_status_notify(

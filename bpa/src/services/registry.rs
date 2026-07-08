@@ -422,7 +422,8 @@ mod tests {
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
             _payload: bytes::Bytes,
-        ) {
+        ) -> services::Result<()> {
+            Ok(())
         }
         async fn on_status_notify(
             &self,

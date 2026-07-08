@@ -10,7 +10,10 @@ async fn receive(
         .map(from_timestamp)
         .ok_or(tonic::Status::invalid_argument("Missing expiry"))??;
 
-    service.on_receive(request.data, expiry).await;
+    service
+        .on_receive(request.data, expiry)
+        .await
+        .map_err(|e| tonic::Status::from_error(e.into()))?;
 
     Ok(ReceiveResponse {})
 }

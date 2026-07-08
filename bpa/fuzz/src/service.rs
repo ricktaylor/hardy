@@ -82,8 +82,9 @@ impl hardy_bpa::services::Application for PipeService {
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _payload: hardy_bpa::Bytes,
-    ) {
+    ) -> hardy_bpa::services::Result<()> {
         // Do nothing
+        Ok(())
     }
 
     async fn on_status_notify(

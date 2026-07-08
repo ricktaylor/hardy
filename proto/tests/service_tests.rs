@@ -46,8 +46,13 @@ impl Service for MockService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(&self, _data: hardy_bpa::Bytes, _expiry: time::OffsetDateTime) {
+    async fn on_receive(
+        &self,
+        _data: hardy_bpa::Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
         self.received.store(true, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn on_status_notify(
@@ -136,7 +141,10 @@ async fn svc_cli_03_receive_bundle() {
 
     let data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-    server_svc.on_receive(data, expiry).await;
+    server_svc
+        .on_receive(data, expiry)
+        .await
+        .expect("Delivery should succeed");
 
     assert!(
         svc.received.load(Ordering::Relaxed),

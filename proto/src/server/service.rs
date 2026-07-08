@@ -85,21 +85,22 @@ impl hardy_bpa::services::Service for LowLevelService {
         }
     }
 
-    async fn on_receive(&self, data: hardy_bpa::Bytes, expiry: time::OffsetDateTime) {
+    async fn on_receive(
+        &self,
+        data: hardy_bpa::Bytes,
+        expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
         match self
             .call(bpa_to_service::Msg::Receive(ServiceReceiveRequest {
                 data,
                 expiry: Some(to_timestamp(expiry)),
             }))
-            .await
+            .await?
         {
-            Ok(service_to_bpa::Msg::Receive(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Service refused notification: {e}");
-            }
+            service_to_bpa::Msg::Receive(_) => Ok(()),
+            msg => Err(hardy_bpa::services::Error::Internal(
+                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+            )),
         }
     }
 

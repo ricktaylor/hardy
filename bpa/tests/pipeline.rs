@@ -87,8 +87,9 @@ impl services::Application for TestApp {
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         payload: Bytes,
-    ) {
+    ) -> services::Result<()> {
         let _ = self.received_tx.send((source, payload));
+        Ok(())
     }
 
     async fn on_status_notify(
@@ -126,7 +127,7 @@ impl services::Service for EchoService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) {
+    async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) -> services::Result<()> {
         if let Some(sink) = self.sink.get()
             && let Ok(parsed) =
                 hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
@@ -145,6 +146,7 @@ impl services::Service for EchoService {
             };
             let _ = sink.send(reply).await;
         }
+        Ok(())
     }
 
     async fn on_status_notify(
@@ -788,6 +790,119 @@ async fn egress_filter_sees_consistent_extents() {
         *mismatch.lock().unwrap(),
         None,
         "Egress filter saw an inconsistent (bundle, data) pair"
+    );
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Failing Application — always returns Err from on_receive
+// ---------------------------------------------------------------------------
+
+struct FailingApp {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+    attempted_tx: flume::Sender<()>,
+}
+
+impl FailingApp {
+    fn new() -> (Arc<Self>, flume::Receiver<()>) {
+        let (tx, rx) = flume::bounded(16);
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                attempted_tx: tx,
+            }),
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl services::Application for FailingApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_receive(
+        &self,
+        _source: Eid,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        _payload: Bytes,
+    ) -> services::Result<()> {
+        let _ = self.attempted_tx.send(());
+        Err(services::Error::Internal(
+            "test: simulated delivery failure".into(),
+        ))
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-05: on_receive error parks the bundle instead of deleting it
+// ---------------------------------------------------------------------------
+
+/// A service that returns `Err` from `on_receive` must not have its bundle
+/// deleted: the dispatcher parks it (as `WaitingForService`) so a future
+/// `poll_service_waiting` can re-deliver. Verified via
+/// `ApplicationSink::cancel`, which returns `true` iff the metadata entry
+/// still exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delivery_error_keeps_bundle_in_metadata() {
+    let bpa = Bpa::builder().build().await.unwrap();
+    bpa.start(false);
+
+    let (sender, _sender_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(43), sender.clone())
+        .await
+        .unwrap();
+
+    let (failing, attempted_rx) = FailingApp::new();
+    let receiver_eid = bpa
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), failing.clone())
+        .await
+        .unwrap();
+
+    let sender_sink = sender.sink.get().unwrap();
+    let bundle_id = sender_sink
+        .send(
+            receiver_eid,
+            Bytes::from_static(b"deferred-payload"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        attempted_rx.recv_async(),
+    )
+    .await
+    .expect("timed out waiting for the delivery attempt")
+    .unwrap();
+
+    // Wait long enough for the dispatcher to finish its Err-path branch
+    // (update_status + watch_bundle, or, without the fix, delete_bundle).
+    // Polling `cancel` earlier would race and could observe the bundle
+    // in its pre-Err `Dispatching` state, giving a false pass.
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    let cancelled = sender_sink.cancel(&bundle_id).await.unwrap();
+    assert!(
+        cancelled,
+        "bundle must still be in metadata after failed delivery (dispatcher must not delete on Err)"
     );
 
     bpa.shutdown().await;

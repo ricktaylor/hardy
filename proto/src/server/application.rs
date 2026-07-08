@@ -116,7 +116,7 @@ impl hardy_bpa::services::Application for Application {
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         payload: hardy_bpa::Bytes,
-    ) {
+    ) -> hardy_bpa::services::Result<()> {
         match self
             .call(bpa_to_app::Msg::Receive(AppReceiveRequest {
                 source: source.to_string(),
@@ -124,15 +124,12 @@ impl hardy_bpa::services::Application for Application {
                 expiry: Some(to_timestamp(expiry)),
                 payload,
             }))
-            .await
+            .await?
         {
-            Ok(app_to_bpa::Msg::Receive(_)) => {}
-            Ok(msg) => {
-                warn!("Unexpected response: {msg:?}");
-            }
-            Err(e) => {
-                warn!("Service refused notification: {e}");
-            }
+            app_to_bpa::Msg::Receive(_) => Ok(()),
+            msg => Err(hardy_bpa::services::Error::Internal(
+                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+            )),
         }
     }
 
