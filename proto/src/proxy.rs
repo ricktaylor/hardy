@@ -71,10 +71,10 @@ async fn writer_task<S>(
 /// Reader half: reads from the gRPC inbound stream, dispatches responses to
 /// pending callers and requests to handler tasks.
 ///
-/// Handler tasks are spawned on a bounded task pool, providing explicit
-/// backpressure: when max concurrency is reached, the reader stops consuming
-/// from the gRPC stream until a handler completes, which flows back through
-/// HTTP/2 flow control to the sender.
+/// Acquires a handler-pool permit before each `stream.message()`. Responses
+/// drop it; requests consume it to spawn a handler. Without pre-acquisition
+/// a full pool would park the reader on `spawn(...).await`, blocking the
+/// very responses whose completion frees the pool.
 async fn reader_task<S, R>(
     mut stream: tonic::Streaming<R>,
     write_tx: tokio::sync::mpsc::Sender<S>,
@@ -89,47 +89,41 @@ async fn reader_task<S, R>(
     S::Msg: Send + 'static,
 {
     loop {
-        tokio::select! {
-            msg = stream.message() => {
-                match msg {
-                    Err(e) => {
-                        error!("gRPC connection failed: {e}");
-                        break;
-                    }
-                    Ok(None) => {
-                        debug!("gRPC connection closed");
-                        break;
-                    }
-                    Ok(Some(msg)) => {
-                        let msg_id = msg.msg_id();
-
-                        // Check if this is a response to a pending call
-                        let pending_sender =
-                            pending.lock().as_mut().and_then(|m| m.remove(&msg_id));
-                        if let Some(ret) = pending_sender {
-                            _ = ret.send(msg.msg());
-                        } else {
-                            // It's a new request from the remote — spawn handler
-                            match msg.msg() {
-                                Ok(msg) => {
-                                    let handler = handler.clone();
-                                    let write_tx = write_tx.clone();
-                                    hardy_async::spawn!(tasks, "rpc_proxy_handler", async move {
-                                        if let Some(response) = handler.on_notify(msg).await {
-                                            _ = write_tx
-                                                .send(S::compose(msg_id, response))
-                                                .await
-                                                .inspect_err(|_| debug!("Response dropped (connection closed)"));
-                                        }
-                                    }).await;
-                                }
-                                Err(status) => warn!("{status}"),
-                            }
-                        }
-                    }
-                }
-            }
+        let permit = tokio::select! {
+            p = tasks.acquire_permit() => p,
             _ = cancel.cancelled() => break,
+        };
+
+        let msg = tokio::select! {
+            r = stream.message() => match r {
+                Ok(Some(m)) => m,
+                Ok(None) => { debug!("gRPC connection closed"); break; }
+                Err(e) => { error!("gRPC connection failed: {e}"); break; }
+            },
+            _ = cancel.cancelled() => break,
+        };
+
+        let msg_id = msg.msg_id();
+        let pending_sender = pending.lock().as_mut().and_then(|m| m.remove(&msg_id));
+        if let Some(ret) = pending_sender {
+            _ = ret.send(msg.msg());
+            continue;
+        }
+
+        match msg.msg() {
+            Ok(msg) => {
+                let handler = handler.clone();
+                let write_tx = write_tx.clone();
+                hardy_async::spawn_with_permit!(tasks, permit, "rpc_proxy_handler", async move {
+                    if let Some(response) = handler.on_notify(msg).await {
+                        _ = write_tx
+                            .send(S::compose(msg_id, response))
+                            .await
+                            .inspect_err(|_| debug!("Response dropped (connection closed)"));
+                    }
+                });
+            }
+            Err(status) => warn!("{status}"),
         }
     }
 
