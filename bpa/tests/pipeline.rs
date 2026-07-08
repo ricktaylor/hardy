@@ -679,3 +679,116 @@ async fn forwarding_latency() {
     drop(arrival_rx);
     bpa.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// INT-BPA-06: Egress filter bundle/data consistency
+// ---------------------------------------------------------------------------
+
+/// Records any divergence between the Bundle's block extents and the wire
+/// data it is handed alongside.
+struct ExtentCheckFilter {
+    mismatch: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
+    async fn filter(
+        &self,
+        bundle: &hardy_bpa::bundle::Bundle,
+        data: &[u8],
+    ) -> Result<hardy_bpa::filter::ReadResult, hardy_bpa::Error> {
+        let mut mismatch = self.mismatch.lock().unwrap();
+        match hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys) {
+            Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
+            Ok(parsed) => {
+                for (number, block) in &parsed.bundle.blocks {
+                    match bundle.bundle.blocks.get(number) {
+                        Some(b) if b.extent == block.extent => {}
+                        Some(b) => {
+                            *mismatch = Some(format!(
+                                "block {number}: extent {:?} != wire extent {:?}",
+                                b.extent, block.extent
+                            ))
+                        }
+                        None => *mismatch = Some(format!("block {number} missing from Bundle")),
+                    }
+                }
+            }
+        }
+        Ok(hardy_bpa::filter::ReadResult::Continue)
+    }
+}
+
+/// Forwarding rewrites extension blocks (Previous Node insertion shifts every
+/// later block), and Egress filters receive (bundle, data) as a consistent
+/// pair: the Bundle's extents must index the rewritten bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn egress_filter_sees_consistent_extents() {
+    let mismatch = Arc::new(std::sync::Mutex::new(None));
+    let bpa = Bpa::builder()
+        .filter(
+            hardy_bpa::filter::Hook::Egress,
+            "extent-check",
+            &[],
+            hardy_bpa::filter::Filter::Read(Arc::new(ExtentCheckFilter {
+                mismatch: mismatch.clone(),
+            })),
+        )
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    // Register CLA and add a peer for the remote node (ipn:0.2)
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, &[remote_node])
+        .await
+        .unwrap();
+
+    // Register an application and send a bundle to the remote node — a
+    // locally-originated bundle has no Previous Node block, so the
+    // forward-time rewrite inserts one and shifts the payload extent
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.99".parse().unwrap(),
+            Bytes::from_static(b"Hello remote"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    assert_eq!(
+        *mismatch.lock().unwrap(),
+        None,
+        "Egress filter saw an inconsistent (bundle, data) pair"
+    );
+
+    bpa.shutdown().await;
+}
