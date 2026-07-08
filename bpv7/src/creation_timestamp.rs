@@ -98,17 +98,21 @@ impl CreationTimestamp {
 
     /// Converts the `CreationTimestamp` to a `time::OffsetDateTime`, if possible.
     ///
-    /// Returns `Some(OffsetDateTime)` if the `creation_time` is present, combining it
-    /// with the sequence number for nanosecond precision. Returns `None` if the
-    /// `creation_time` is not set.
+    /// Returns `Some(OffsetDateTime)` if the `creation_time` is present, nudged
+    /// forward by the sequence number for sub-millisecond ordering. Returns
+    /// `None` if the `creation_time` is not set.
     ///
-    /// This may not always be accurate as the `sequence_number` may not be true nanoseconds,
-    /// but instead some incrementing number.
-    ///
-    /// However, for checking against 'now' it should be fine
+    /// The sequence number is an unrestricted `u64` on the wire and need not be
+    /// nanoseconds — [`CreationTimestamp::now`] uses the sub-millisecond
+    /// nanosecond remainder, but other implementations use plain counters. The
+    /// nudge is therefore clamped below the millisecond resolution of
+    /// [`DtnTime`](dtn_time::DtnTime), so a sender-chosen sequence number
+    /// cannot shift the result outside the creation millisecond.
     pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
         let t: time::OffsetDateTime = self.creation_time?.into();
-        Some(t.saturating_add(time::Duration::nanoseconds(self.sequence_number as i64)))
+        Some(t.saturating_add(time::Duration::nanoseconds(
+            self.sequence_number.min(999_999) as i64,
+        )))
     }
 }
 
@@ -176,5 +180,41 @@ impl TryFrom<time::OffsetDateTime> for CreationTimestamp {
             creation_time: Some(value.try_into()?),
             sequence_number: (value.nanosecond() % 1_000_000) as u64,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clocked(sequence_number: u64) -> CreationTimestamp {
+        CreationTimestamp {
+            creation_time: Some(dtn_time::DtnTime::new(820_000_000_000)),
+            sequence_number,
+        }
+    }
+
+    #[test]
+    fn as_datetime_applies_sub_millisecond_nudge() {
+        let base = clocked(0).as_datetime().unwrap();
+        let nudged = clocked(500).as_datetime().unwrap();
+        assert_eq!(nudged - base, time::Duration::nanoseconds(500));
+    }
+
+    // Wire sequence numbers are unrestricted u64: values at or above 2^63
+    // must not wrap to a negative nanosecond offset, and large positive
+    // values must not shift the time by centuries. Both clamp to less than
+    // one millisecond.
+    #[test]
+    fn as_datetime_clamps_wire_range_sequence_numbers() {
+        let base = clocked(0).as_datetime().unwrap();
+        for seq in [1_000_000, i64::MAX as u64, 1 << 63, u64::MAX] {
+            let nudged = clocked(seq).as_datetime().unwrap();
+            let delta = nudged - base;
+            assert!(
+                delta >= time::Duration::ZERO && delta < time::Duration::MILLISECOND,
+                "sequence {seq} produced out-of-millisecond delta {delta}"
+            );
+        }
     }
 }
