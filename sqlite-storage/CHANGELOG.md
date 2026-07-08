@@ -14,4 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Bumped `rusqlite` 0.39 → 0.40 (internal; no public-API impact).
 - Raised the minimum supported Rust version (MSRV) to 1.95.
 
+### Fixed
+- Enable WAL journal mode at connection setup. The `PRAGMA journal_mode = WAL` in the initial schema never took effect — journal mode cannot be changed inside the migration transaction, and SQLite refuses silently — so databases were running with the default rollback journal, serialising readers behind write commits. Existing databases are converted on first open.
+
 Releases before this version predate this changelog; see the git history for details.
