@@ -15,8 +15,9 @@ impl Dispatcher {
             return;
         };
 
-        // Increment Hop Count, etc...
-        // We ignore the fact that a new bundle has been created, as it makes no difference below
+        // Increment Hop Count, etc... The rewrite shifts block extents, and
+        // the Egress filters below receive (bundle, data) as a consistent
+        // pair, so the updated Bundle must replace the pre-rewrite one.
         let data = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
@@ -25,7 +26,10 @@ impl Dispatcher {
                     .await;
                 return self.store.watch_bundle(bundle).await;
             }
-            Ok(data) => data,
+            Ok((new_bundle, data)) => {
+                bundle.bundle = new_bundle;
+                data
+            }
         };
 
         // - Runs after dequeue from ForwardPending, just before CLA send
@@ -90,7 +94,7 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
-    ) -> Result<Bytes, hardy_bpv7::editor::Error> {
+    ) -> Result<(hardy_bpv7::bundle::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&bundle.bundle, &source_data)
             .insert_block(hardy_bpv7::block::Type::PreviousNode)
@@ -149,19 +153,22 @@ impl Dispatcher {
                 .rebuild();
         }
 
-        let chunks = editor.rebuild()?;
+        // rebuild_bundle() returns a Bundle whose block extents index the
+        // rewritten data, keeping the (bundle, data) pair consistent for the
+        // Egress filter chain
+        let (new_bundle, chunks) = editor.rebuild_bundle()?;
 
         // Try to modify the source buffer in place if exclusively owned
-        match source_data.try_into_mut() {
+        let data = match source_data.try_into_mut() {
             Ok(buf) => {
                 let mut vec = buf.into();
                 hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
-                Ok(Bytes::from(vec))
+                Bytes::from(vec)
             }
-            Err(source_data) => Ok(Bytes::from(hardy_bpv7::editor::Chunk::flatten(
-                chunks,
-                &source_data,
-            ))),
-        }
+            Err(source_data) => {
+                Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &source_data))
+            }
+        };
+        Ok((new_bundle, data))
     }
 }
