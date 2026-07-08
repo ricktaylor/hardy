@@ -48,3 +48,23 @@ macro_rules! spawn {
         }
     }};
 }
+
+/// Like [`spawn!`] but uses a pre-acquired [`crate::Permit`] instead of
+/// awaiting one from the pool's semaphore. Only applies to
+/// [`crate::BoundedTaskPool`].
+#[macro_export]
+macro_rules! spawn_with_permit {
+    ($pool:expr, $permit:expr, $name:literal, async $($rest:tt)*) => {{
+        #[cfg(feature = "instrument")]
+        {
+            let task = async $($rest)*;
+            let span = tracing::trace_span!(parent: None, $name);
+            span.follows_from(tracing::Span::current());
+            $pool.spawn_with_permit($permit, tracing::Instrument::instrument(task, span))
+        }
+        #[cfg(not(feature = "instrument"))]
+        {
+            $pool.spawn_with_permit($permit, async $($rest)*)
+        }
+    }};
+}
