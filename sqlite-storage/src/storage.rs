@@ -47,8 +47,11 @@ impl ConnectionPool {
             None
         };
 
+        // journal_mode cannot be changed inside a transaction (migrations run
+        // in one), so WAL is applied per connection here, not in the schema.
         conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
+            "PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
             PRAGMA optimize = 0x10002;",
         )
         .trace_expect("Failed to optimize");
@@ -139,9 +142,12 @@ impl Storage {
         //     .busy_timeout(std::time::Duration::ZERO)
         //     .trace_expect("Failed to set timeout");
 
+        // journal_mode cannot be changed inside a transaction (migrations run
+        // in one), so WAL is applied here, before migrate(), not in the schema.
         connection
             .execute_batch(
-                "PRAGMA foreign_keys = ON;
+                "PRAGMA journal_mode = WAL;
+                PRAGMA foreign_keys = ON;
                 PRAGMA optimize = 0x10002;",
             )
             .trace_expect("Failed to prepare metadata store database");
@@ -811,6 +817,21 @@ mod tests {
             bundle: parsed.bundle,
             metadata: hardy_bpa::bundle::BundleMetadata::default(),
         }
+    }
+
+    // Database runs in WAL journal mode (set at connection setup; the schema
+    // copy of the pragma cannot take effect inside the migration transaction).
+    #[test]
+    fn test_journal_mode_is_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = make_config(dir.path());
+        let _storage = Storage::new(&config, true);
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
     }
 
     // SQL-01: Database is created at the configured path.

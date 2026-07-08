@@ -95,21 +95,37 @@ impl Chunk {
     /// The buffer is resized (truncated or extended) if the total output
     /// length differs from the source.
     pub fn flatten_inplace(chunks: Vec<Self>, source: &mut Vec<u8>) {
-        // Single pass: compute total length and check if backward copy is needed
+        // Single pass: compute total length and the required copy direction. An
+        // Unchanged range shifts right if its destination is past its source
+        // (needs a backward pass), left if before it (needs a forward pass).
         let mut content_len: usize = 0;
         let mut write_pos: usize = 1; // after 0x9F
-        let mut needs_backward = false;
+        let mut shifts_right = false;
+        let mut shifts_left = false;
         for chunk in &chunks {
             let len = chunk.len();
             if let Chunk::Unchanged(range) = chunk {
                 debug_assert!(range.end <= source.len());
-                if !needs_backward && write_pos > range.start {
-                    needs_backward = true;
+                if write_pos > range.start {
+                    shifts_right = true;
+                } else if write_pos < range.start {
+                    shifts_left = true;
                 }
             }
             content_len += len;
             write_pos += len;
         }
+
+        // A single in-place pass is only sound when all Unchanged ranges shift
+        // the same way: forward copy for all-left, backward copy for all-right.
+        // If ranges shift both ways, either pass would overwrite source bytes it
+        // has not yet copied, so assemble into a fresh buffer instead.
+        if shifts_right && shifts_left {
+            *source = Self::flatten(chunks, source).into_vec();
+            return;
+        }
+        let needs_backward = shifts_right;
+
         let total_len = 1 + content_len + 1; // 0x9F prefix + content + 0xFF suffix
 
         // Ensure buffer is large enough
@@ -1836,6 +1852,47 @@ mod tests {
         let chunks = ok(Editor::new(&bundle, &data).remove_block(hop_block))
             .rebuild()
             .unwrap();
+        let mut inplace = data.to_vec();
+        Chunk::flatten_inplace(chunks, &mut inplace);
+        assert_eq!(&*flattened, &*inplace);
+    }
+
+    // A single edit that shrinks a block before an Unchanged block and grows one
+    // after it makes ranges shift both left and right in one rebuild. The
+    // in-place fast path cannot copy that soundly and must fall back to
+    // assembling into a fresh buffer; the result must equal `Chunk::flatten`.
+    #[test]
+    fn flatten_inplace_mixed_shift() {
+        let long: eid::Eid = "dtn://a-long-destination-endpoint.example.org/svc"
+            .parse()
+            .unwrap();
+        let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), long)
+            .with_hop_count(&hop_info::HopInfo {
+                limit: 30,
+                count: 1,
+            })
+            .with_payload("payload-bytes-here".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+        let bundle = reparse(&data);
+        let short: eid::Eid = "ipn:2.0".parse().unwrap();
+
+        let flattened = ok(
+            ok(Editor::new(&bundle, &data).with_destination(short.clone()))
+                .push_block(block::Type::PreviousNode),
+        )
+        .with_data(vec![0xAA; 64].into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .unwrap();
+
+        let chunks = ok(ok(Editor::new(&bundle, &data).with_destination(short))
+            .push_block(block::Type::PreviousNode))
+        .with_data(vec![0xAA; 64].into())
+        .rebuild()
+        .rebuild()
+        .unwrap();
         let mut inplace = data.to_vec();
         Chunk::flatten_inplace(chunks, &mut inplace);
         assert_eq!(&*flattened, &*inplace);
