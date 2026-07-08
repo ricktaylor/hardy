@@ -574,9 +574,17 @@ mod tests {
                     store.tombstone_metadata(&b.bundle.id).await;
                     seen.insert(b.bundle.id);
                 }
-                _ => {
-                    // No bundle for 200ms — channel quiesced
+                Ok(Err(_)) => {
+                    // Channel closed
                     break;
+                }
+                Err(_) if seen.len() >= 17 => {
+                    // No bundle for 200ms after full delivery — channel quiesced
+                    break;
+                }
+                Err(_) => {
+                    // Delivery can stall past 200ms under load — keep waiting
+                    // until the deadline
                 }
             }
             if tokio::time::Instant::now() > drain_deadline {
