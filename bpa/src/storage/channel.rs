@@ -376,15 +376,14 @@ impl Store {
                 if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
                     // Send into queue. A closeable send already parked on a full
                     // buffer is not woken by the channel's own close(), so race it
-                    // against pool shutdown; otherwise store.shutdown() (which
-                    // awaits this task) would hang. Bundles not yet enqueued on
-                    // cancel keep their persisted status and are recovered on
-                    // next process start.
+                    // against pool shutdown — otherwise store.shutdown() (which
+                    // awaits this task) would hang. The dropped bundle stays
+                    // persisted and is recovered on restart.
                     let send = shared_cloned.tx.send(bundle);
                     pin_mut!(send);
                     select_biased! {
                         r = send.fuse() => r.map_err(|_| ())?,
-                        _ = cancel.cancelled().fuse() => return Err(()),
+                        _ = cancel.cancelled().fuse() => return Ok(pushed_one),
                     }
 
                     pushed_one = true;
