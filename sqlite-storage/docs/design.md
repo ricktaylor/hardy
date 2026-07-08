@@ -45,7 +45,7 @@ It has excellent tooling. Standard tools can inspect and modify the database for
 
 ### WAL Mode for Concurrent Access
 
-The database uses Write-Ahead Logging (WAL) mode rather than the default rollback journal. This choice directly supports the BPA's access pattern where the dispatcher reads metadata frequently while the store writes updates.
+The database uses Write-Ahead Logging (WAL) mode rather than the default rollback journal, applied at connection setup — journal mode cannot be changed inside the migration transaction, so it cannot live in the schema files. This choice directly supports the BPA's access pattern where the dispatcher reads metadata frequently while the store writes updates.
 
 In WAL mode, readers don't block writers and writers don't block readers. Readers see a consistent snapshot even during writes. This is critical because bundle processing involves frequent metadata lookups that shouldn't stall behind write operations.
 
@@ -122,6 +122,10 @@ The server instantiates sqlite-storage based on configuration and injects it int
 | rusqlite | SQLite database access (bundled SQLite) |
 | serde_json | Bundle serialisation |
 | directories | Platform-specific default paths |
+
+## Future Work
+
+- **IO-thread write queue with INSERT batching.** Move all SQLite operations onto dedicated IO threads — a single batching write thread plus a read-only connection pool — per [insert_batch_design.md](insert_batch_design.md). The design's WAL-mode prerequisite is already met — WAL is applied at connection setup (the schema copy of the pragma is inert: journal mode cannot be changed inside the migration transaction).
 
 ## Testing
 
