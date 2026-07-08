@@ -68,6 +68,11 @@ pub struct BoundedTaskPool {
     semaphore: Arc<tokio::sync::Semaphore>,
 }
 
+/// A reserved slot in a [`BoundedTaskPool`], acquired via
+/// [`BoundedTaskPool::acquire_permit`] and consumed by
+/// [`BoundedTaskPool::spawn_with_permit`] or dropped to release.
+pub struct Permit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
+
 impl BoundedTaskPool {
     /// Creates a new bounded task pool with the specified concurrency limit.
     ///
@@ -117,13 +122,30 @@ impl BoundedTaskPool {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed unexpectedly");
+        let permit = self.acquire_permit().await;
+        self.spawn_with_permit(permit, task)
+    }
 
+    /// Acquires a pool slot without spawning. Lets a caller commit to
+    /// running work before it knows what the work is; pair with
+    /// [`spawn_with_permit`](Self::spawn_with_permit).
+    pub async fn acquire_permit(&self) -> Permit {
+        Permit(
+            self.semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("semaphore closed unexpectedly"),
+        )
+    }
+
+    /// Spawns a task with a pre-acquired [`Permit`]. The permit is held
+    /// for the task's lifetime and released on completion.
+    pub fn spawn_with_permit<F>(&self, permit: Permit, task: F) -> JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
         self.inner.spawn(async move {
             let result = task.await;
             drop(permit);
@@ -281,5 +303,71 @@ mod tests {
 
         // All tasks should have completed
         assert_eq!(completed.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn acquire_permit_blocks_when_pool_full_and_releases_on_drop() {
+        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(1).unwrap());
+
+        let first = pool.acquire_permit().await;
+
+        let blocked = tokio::time::timeout(Duration::from_millis(50), pool.acquire_permit()).await;
+        assert!(blocked.is_err());
+
+        drop(first);
+
+        let second = tokio::time::timeout(Duration::from_secs(1), pool.acquire_permit())
+            .await
+            .expect("second acquire must complete once the first slot is released");
+        drop(second);
+
+        pool.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn spawn_with_permit_holds_slot_until_task_returns() {
+        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(1).unwrap());
+
+        let permit = pool.acquire_permit().await;
+        let handle = pool.spawn_with_permit(permit, async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            7u32
+        });
+
+        let blocked = tokio::time::timeout(Duration::from_millis(5), pool.acquire_permit()).await;
+        assert!(blocked.is_err());
+
+        assert_eq!(handle.await.unwrap(), 7);
+
+        tokio::time::timeout(Duration::from_secs(1), pool.acquire_permit())
+            .await
+            .expect("permit must be released when the spawned task returns");
+
+        pool.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn acquire_permit_succeeds_after_saturating_spawns_complete() {
+        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
+        let done = Arc::new(tokio::sync::Notify::new());
+
+        for _ in 0..2 {
+            let done = done.clone();
+            pool.spawn(async move {
+                done.notified().await;
+            })
+            .await;
+        }
+
+        let blocked = tokio::time::timeout(Duration::from_millis(20), pool.acquire_permit()).await;
+        assert!(blocked.is_err());
+
+        done.notify_waiters();
+
+        tokio::time::timeout(Duration::from_secs(1), pool.acquire_permit())
+            .await
+            .expect("acquire_permit must succeed once a slot is freed");
+
+        pool.shutdown().await;
     }
 }
