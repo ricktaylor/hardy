@@ -113,6 +113,8 @@ The server instantiates localdisk-storage based on configuration and injects it 
 
 - **Capacity limits and eviction.** Configurable maximum storage capacity with eviction policies when capacity is reached, integrated with BPA's `storage_priority` metadata.
 
+- **Spool-and-commit engine for streaming storage.** When the streaming `BundleStorage::store`/`load` traits land (see [streaming pipeline design](../../bpa/docs/streaming_pipeline_design.md)), the write path becomes a two-stage engine. *Spool stage:* one spool file per in-flight bundle, segments appended as they are pulled from the `Receiver`; backpressure propagates to the CLA through the pull model rather than a queue depth, and a small bundle arriving as a single segment degenerates to the current single-write path. *Commit stage:* completed spools enqueue to a commit queue serviced by one IO thread; commits are batched and grouped by parent directory — one fsync per data file plus coalesced directory fsyncs per batch — under a configurable durability ladder (none / data-only / full per-commit / batched-full). Bucket selection can deliberately bias commits within a batching window into the same `xx/yy` bucket to maximise directory-fsync coalescing. The existing tmp-write → rename commit is already the atomic spool commit the streaming design requires, and `replace` becomes spool-and-swap through the same commit path. The motivating problem is measurable today — each `save()` costs one `spawn_blocking` and an unamortised per-file fsync — but the rework should land with the streaming traits, not before, because batching whole-buffer writes would be thrown away by the switch to segment spooling.
+
 ## Testing
 
 - [Test Plan](test_plan.md) - Filesystem persistence verification

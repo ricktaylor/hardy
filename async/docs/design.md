@@ -67,6 +67,8 @@ Most types in this library are thin wrappers or type aliases over runtime-specif
 
 The abstraction adds minimal overhead - it's primarily organisational. Each runtime backend provides the same API surface, so consuming code remains unchanged when switching runtimes via feature flags.
 
+Hardy code selects over futures with `futures::select_biased!` rather than `tokio::select!`: it is runtime-agnostic, and the explicit priority ordering (cancellation arm first) avoids the subtle bugs that random polling fairness can hide in work-versus-cancel patterns.
+
 ## Integration
 
 ### With Hardy Components
