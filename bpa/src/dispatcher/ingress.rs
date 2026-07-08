@@ -202,13 +202,7 @@ impl Dispatcher {
         // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
         match self
             .filter_engine
-            .exec(
-                filter::Hook::Ingress,
-                bundle,
-                data,
-                self.key_provider(),
-                &self.processing_pool,
-            )
+            .exec(filter::Hook::Ingress, bundle, data, self.key_provider())
             .await
             // TODO: Recover gracefully once filter error handling is redesigned
             .trace_expect("Ingress filter execution failed")

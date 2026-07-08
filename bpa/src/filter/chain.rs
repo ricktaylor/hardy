@@ -1,6 +1,6 @@
 use core::ops::ControlFlow;
 
-use hardy_async::BoundedTaskPool;
+use hardy_async::TaskPool;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
 use hardy_bpv7::status_report::ReasonCode;
@@ -173,11 +173,17 @@ struct Level {
 }
 
 impl Level {
-    /// Run all readers in parallel. Takes ownership to avoid cloning,
-    /// returns the bundle and data back via `Arc::try_unwrap`.
+    /// Run all readers in parallel on `pool`. Takes ownership to avoid
+    /// cloning, returns the bundle and data back via `Arc::try_unwrap`.
+    ///
+    /// `pool` must be the filter engine's dedicated unbounded pool, never
+    /// one whose permits exec() callers may already hold (such as the
+    /// dispatcher's processing pool): permit-holding tasks parked waiting
+    /// for further permits from the same semaphore deadlock the whole pool
+    /// once it saturates.
     async fn run_readers(
         &self,
-        pool: &BoundedTaskPool,
+        pool: &TaskPool,
         bundle: Bundle,
         data: Bytes,
     ) -> Result<(Bundle, Bytes, ControlFlow<Option<ReasonCode>>), crate::Error> {
@@ -202,13 +208,10 @@ impl Level {
         for filter in &self.readers {
             let shared = shared.clone();
             let filter = filter.clone();
-            handles.push(
-                hardy_async::spawn!(pool, "filter_task", async move {
-                    let (bundle, data) = &*shared;
-                    filter.filter(bundle, data.as_ref()).await
-                })
-                .await,
-            );
+            handles.push(hardy_async::spawn!(pool, "filter_task", async move {
+                let (bundle, data) = &*shared;
+                filter.filter(bundle, data.as_ref()).await
+            }));
         }
 
         let mut results = Vec::new();
@@ -280,7 +283,7 @@ pub struct FilterChain {
 impl FilterChain {
     pub async fn exec<F>(
         &self,
-        pool: &hardy_async::BoundedTaskPool,
+        pool: &TaskPool,
         mut bundle: Bundle,
         mut data: Bytes,
         key_provider: F,
@@ -518,7 +521,7 @@ mod tests {
 
     async fn run_chain(builder: &FilterChainBuilder) -> ExecResult {
         let chain = builder.build();
-        let pool = hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
+        let pool = hardy_async::TaskPool::new();
         let bundle = Bundle {
             bundle: Default::default(),
             metadata: Default::default(),

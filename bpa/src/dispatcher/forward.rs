@@ -40,13 +40,7 @@ impl Dispatcher {
         // - On Drop result: call drop_bundle() and return early
         let (bundle, data) = match self
             .filter_engine
-            .exec(
-                filter::Hook::Egress,
-                bundle,
-                data,
-                self.key_provider(),
-                &self.processing_pool,
-            )
+            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
             .await
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
