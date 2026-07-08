@@ -49,6 +49,7 @@ impl Dispatcher {
     /// | `Deliver` (fragment) | Queue for reassembly | `Dispatching` → `AduFragment` |
     /// | `Deliver` (whole) | Deliver to service | `Dispatching` → Tombstone |
     /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
+    /// | `Forward` (peer gone) | Wait for route | `Dispatching` → `Waiting` |
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
@@ -84,8 +85,15 @@ impl Dispatcher {
             }
             Some(routing::DispatchAction::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
-                    debug!("CLA forward failed, returning bundle to watch queue");
+                if let Err(mut bundle) = cla_registry.forward(peer, bundle).await {
+                    // The peer vanished between the RIB lookup and the forward:
+                    // return the bundle to Waiting so the next route event
+                    // re-dispatches it, rather than leaving it stranded in
+                    // Dispatching/ForwardPending until lifetime expiry
+                    debug!("CLA forward failed, returning bundle to Waiting");
+                    self.store
+                        .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                        .await;
                     self.store.watch_bundle(bundle).await;
                 }
             }
