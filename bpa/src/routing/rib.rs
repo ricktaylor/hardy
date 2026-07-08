@@ -459,7 +459,10 @@ impl Rib {
     }
 
     async fn notify_updated(&self) {
-        self.poll_waiting_notify.notify_waiters();
+        // notify_one() stores a permit if the poll_waiting_task is mid-scan,
+        // so a route change during an in-flight scan triggers a re-scan rather
+        // than being lost (notify_waiters() stores nothing).
+        self.poll_waiting_notify.notify_one();
     }
 
     async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
