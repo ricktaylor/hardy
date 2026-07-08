@@ -117,8 +117,8 @@ lcov --summary lcov.info
 Results (2026-06-24, from workspace-wide run):
 
 ```
-  lines......: 84.6% (534 of 631 lines)
-  functions..: 14.7% (139 of 945 functions)
+  lines......: 76.1% (534 of 702 lines)
+  functions..: 6.5% (139 of 2124 functions)
 ```
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation.
@@ -135,6 +135,7 @@ Per-file breakdown:
 | `notify.rs` | 0 | 12 | 0% | Thin tokio::sync::Notify wrapper — no unit tests |
 | `signal.rs` | 0 | 19 | 0% | SIGTERM/Ctrl+C handler — requires process signals |
 | `time.rs` | 0 | 8 | 0% | Thin tokio::time::sleep wrapper — no unit tests |
+| `watcher.rs` | 0 | 71 | 0% | Filesystem watcher — exercised by hardy-tvr at the system level |
 
 ## 5. Test Infrastructure
 
@@ -157,4 +158,4 @@ Tests use straightforward inline `#[test]` and `#[tokio::test]` modules within t
 
 ## 7. Conclusion
 
-The `hardy-async` crate has 24 unit tests with 84.6% line coverage (534/631 lines). Core modules are well-covered: `bounded_task_pool.rs` (97%), `sync/mod.rs` (97%), `sync/spin.rs` (90%), `task_pool.rs` (87%) (per-module figures from a previous detailed run). The untested modules (`notify.rs`, `signal.rs`, `time.rs`) are thin wrappers over tokio primitives exercised at the system level by consuming crates. The primary strength is thorough verification of the shutdown and concurrency-limiting semantics that are critical to Hardy's graceful shutdown behaviour.
+The `hardy-async` crate has 24 unit tests with 76.1% line coverage (534/702 lines). Core modules are well-covered: `bounded_task_pool.rs` (97%), `sync/mod.rs` (97%), `sync/spin.rs` (90%), `task_pool.rs` (87%) (per-module figures from a previous detailed run). The untested modules (`notify.rs`, `signal.rs`, `time.rs`, `watcher.rs`) are thin wrappers over tokio/notify primitives exercised at the system level by consuming crates. The primary strength is thorough verification of the shutdown and concurrency-limiting semantics that are critical to Hardy's graceful shutdown behaviour.

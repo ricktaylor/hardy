@@ -80,7 +80,7 @@ This pattern verifies session establishment, bundle encoding/decoding, CLA frami
 | **ESA BP** | STCP (via mtcp-cla) | A, B | Passing | `ESA-BP/` |
 | **NASA cFS** | STCP (via mtcp-cla) | A, B | Passing | `NASA-cFS/` |
 
-All 7 peer implementations are merged to main and passing 20/20 at 0% loss.
+All 7 peer implementations are merged to main and passing 100/100 at 0% loss.
 
 ## 5. Test Topologies
 

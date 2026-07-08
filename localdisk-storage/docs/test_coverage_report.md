@@ -58,8 +58,8 @@ lcov --summary lcov.info
 ```
 
 ```
-  lines......: 71.0% (250 of 352 lines)
-  functions..: 57.1% (28 of 49 functions)
+  lines......: 71.8% (250 of 348 lines)
+  functions..: 35.0% (28 of 80 functions)
 ```
 
 Unit tests (5) exercise configuration, recovery cleanup, filesystem structure, atomic save, and write failure handling. The uncovered lines are primarily in the `recover()` parallel directory walker and mmap load path. The generic storage harness (4 tests) runs in a separate crate and is not captured by `llvm-cov`. The crate has since grown (new `BundleStorage::replace` and `StreamIn`-based result adoption added lines that the unit tests do not yet exercise), so the headline percentage is lower than the previous report despite the larger covered-line count.

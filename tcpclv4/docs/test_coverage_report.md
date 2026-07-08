@@ -116,7 +116,7 @@ lcov --summary lcov.info
 
 ```
   lines......: 24.7% (604 of 2443 lines)
-  functions..: 24.2% (55 of 227 functions)
+  functions..: 7.0% (55 of 791 functions)
 ```
 
 Unit tests cover the codec (encode/decode), negotiation logic, and segmentation calculations. The remaining 75% is session management, connection handling, TLS, and listener code which requires live TCP connections — this is exercised by interop tests (4 implementations) and fuzz targets (2 targets), both of which run out-of-process and are not captured by `llvm-cov`.
@@ -133,12 +133,12 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/active/lcov.info
 ```
 
-Results (2026-06-24):
+Results (2026-07-07):
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- |
-| `passive` | 49.1% (1048/2135) | 32.2% (94/292) |
-| `active` | 48.1% (1028/2135) | 21.3% (91/428) |
+| `passive` | 49.0% (1071/2187) | 49.5% (94/190) |
+| `active` | 47.5% (1049/2208) | 47.4% (91/192) |
 
 Both targets achieve similar coverage (~48%) as they now exercise the full session paths. The `passive` target (listener acceptance) and `active` target (connector session) are complementary. Combined with unit tests (24.7%), the crate has broad coverage across codec, negotiation, and session management.
 

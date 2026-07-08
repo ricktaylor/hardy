@@ -45,4 +45,4 @@ Suites A and B are the core interoperability requirement. IOP-07 (delivery statu
 
 ## 5. Conclusion
 
-8 implementations (7 peers + Hardy baseline) pass bidirectional bundle exchange over TCPCLv4, STCP, and MTCP transports. All deliver 20/20 pings at 0% loss. Transport connectivity (Suite A) and basic bundle exchange (Suite B) are verified across all implementations. Administrative logic, BPSec, and fragmentation suites remain unimplemented due to peer capability constraints.
+8 implementations (7 peers + Hardy baseline) pass bidirectional bundle exchange over TCPCLv4, STCP, and MTCP transports. All deliver 100/100 pings at 0% loss. Transport connectivity (Suite A) and basic bundle exchange (Suite B) are verified across all implementations. Administrative logic, BPSec, and fragmentation suites remain unimplemented due to peer capability constraints.

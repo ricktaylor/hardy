@@ -226,6 +226,8 @@ Results (2026-06-24):
 | `src/watcher.rs` | 0 / 74 | 0.0% |
 | **Total** | **2206 / 2856** | **77.2%** |
 
+_Per-file figures are from a previous detailed run; regenerate with `cargo llvm-cov --html`._
+
 The three core unit-tested modules exceed their 80% target: `parser.rs`
 (91.1%) and `cron.rs` (89.6%) are well above; `scheduler.rs` (79.9%) is
 marginally below due to the async `run()` function and metrics code
