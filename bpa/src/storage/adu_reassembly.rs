@@ -230,8 +230,8 @@ impl Store {
 
         // Reassemble payload by writing each fragment at its ADU offset.
         // Fragment 0's data is already in old_data — copy its payload first,
-        // then load remaining fragments. This avoids reloading fragment 0
-        // (load_data takes from storage, so a second load would return None).
+        // then load remaining fragments, avoiding a redundant load of
+        // fragment 0.
         let mut new_data: Vec<u8> = vec![0; adu_len];
 
         // Copy fragment 0's payload from old_data (already loaded)
