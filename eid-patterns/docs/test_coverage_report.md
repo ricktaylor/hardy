@@ -62,11 +62,11 @@ cargo llvm-cov test --package hardy-eid-pattern --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-06-24):
+Results (2026-07-07):
 
 ```
   lines......: 62.3% (402 of 645 lines)
-  functions..: 18.1% (76 of 420 functions)
+  functions..: 7.3% (76 of 1040 functions)
 ```
 
 Per-file breakdown (from HTML report):
@@ -92,11 +92,11 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/eid_pattern_str/lcov.info
 ```
 
-Results (2026-06-24):
+Results (2026-07-07):
 
 ```
-  lines......: 26.4% (126 of 477 lines)
-  functions..: 31.6% (24 of 76 functions)
+  lines......: 23.3% (146 of 627 lines)
+  functions..: 26.3% (25 of 95 functions)
 ```
 
 Fuzz coverage is complementary to unit tests: unit tests verify pattern matching correctness, fuzz verifies parser robustness against adversarial input strings.
