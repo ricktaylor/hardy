@@ -281,6 +281,7 @@ macro_rules! storage_blob_tests {
             blob_test!(blob_02_delete);
             blob_test!(blob_03_missing_load);
             blob_test!(blob_04_recovery_scan);
+            blob_test!(blob_05_repeatable_load);
         }
     };
 }
@@ -340,6 +341,7 @@ macro_rules! storage_blob_tests_async {
             blob_test!(blob_02_delete);
             blob_test!(blob_03_missing_load);
             blob_test!(blob_04_recovery_scan);
+            blob_test!(blob_05_repeatable_load);
         }
     };
 }

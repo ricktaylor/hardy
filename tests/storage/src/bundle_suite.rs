@@ -70,3 +70,26 @@ pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
         );
     }
 }
+
+/// BLOB-05: Repeatable Load
+///
+/// Loading is non-destructive: the BPA re-loads on every forwarding retry,
+/// so the entry must survive until `delete()`.
+pub async fn blob_05_repeatable_load(store: Arc<dyn BundleStorage>) {
+    let data = fixtures::random_payload(1024);
+    let name = store.save(data.clone()).await.unwrap();
+
+    let first = store.load(&name).await.unwrap();
+    assert_eq!(
+        first.as_ref(),
+        Some(&data),
+        "first load should return the saved bytes"
+    );
+
+    let second = store.load(&name).await.unwrap();
+    assert_eq!(
+        second.as_ref(),
+        Some(&data),
+        "load must be repeatable until delete()"
+    );
+}
