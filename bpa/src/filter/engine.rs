@@ -60,6 +60,15 @@ pub struct FilterEngine {
     builders: Mutex<Builders>,
     /// Lock-free access to the current built filter chains.
     filters: ArcSwap<Filters>,
+    /// Dedicated unbounded pool for parallel ReadFilter execution, shared by
+    /// all chains. Deliberately NOT the dispatcher's processing pool:
+    /// exec() callers hold processing-pool permits (process_bundle →
+    /// reassembly/delivery → exec), and spawning filter tasks onto that pool
+    /// self-deadlocks once it saturates. Unbounded is safe here because
+    /// every spawned task is awaited within exec(), so concurrency is
+    /// transitively bounded by the callers and the pool is idle between
+    /// calls — and with no semaphore, no permit cycle can form at all.
+    pool: hardy_async::TaskPool,
 }
 
 impl FilterEngine {
@@ -67,7 +76,11 @@ impl FilterEngine {
         let builders = Mutex::new(Builders::default());
         let filters = ArcSwap::from_pointee(Filters::default());
 
-        Self { builders, filters }
+        Self {
+            builders,
+            filters,
+            pool: hardy_async::TaskPool::new(),
+        }
     }
 
     pub fn clear(&self) {
@@ -110,7 +123,6 @@ impl FilterEngine {
         bundle: Bundle,
         data: Bytes,
         key_provider: F,
-        pool: &hardy_async::BoundedTaskPool,
     ) -> Result<ExecResult, crate::Error>
     where
         F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
@@ -119,7 +131,7 @@ impl FilterEngine {
         let filters = self.filters.load();
         let result = filters
             .chain(&hook)
-            .exec(pool, bundle, data, key_provider)
+            .exec(&self.pool, bundle, data, key_provider)
             .await;
 
         match &result {
@@ -137,5 +149,73 @@ impl FilterEngine {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_async::async_trait;
+
+    use super::*;
+    use crate::filter::ReadResult;
+
+    struct PassFilter;
+
+    #[async_trait]
+    impl crate::filter::ReadFilter for PassFilter {
+        async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
+            Ok(ReadResult::Continue)
+        }
+    }
+
+    // exec() must complete even when every caller holds a permit of a
+    // saturated BoundedTaskPool: filter tasks run on the engine's own
+    // dedicated pool, never the callers'. Spawning them on the callers'
+    // pool deadlocks this exact arrangement (all permits held by tasks
+    // parked waiting for another permit).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exec_completes_from_saturated_caller_pool() {
+        let engine = Arc::new(FilterEngine::new());
+        engine
+            .register(Hook::Ingress, "a", &[], Filter::Read(Arc::new(PassFilter)))
+            .unwrap();
+        engine
+            .register(Hook::Ingress, "b", &[], Filter::Read(Arc::new(PassFilter)))
+            .unwrap();
+
+        let caller_pool =
+            hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let engine = engine.clone();
+            handles.push(
+                hardy_async::spawn!(caller_pool, "outer_task", async move {
+                    let bundle = Bundle {
+                        bundle: Default::default(),
+                        metadata: Default::default(),
+                    };
+                    let result = engine
+                        .exec(
+                            Hook::Ingress,
+                            bundle,
+                            Bytes::new(),
+                            hardy_bpv7::bpsec::no_keys,
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(result, ExecResult::Continue(..)));
+                })
+                .await,
+            );
+        }
+
+        tokio::time::timeout(core::time::Duration::from_secs(5), async {
+            for handle in handles {
+                handle.await.unwrap();
+            }
+        })
+        .await
+        .expect("exec() deadlocked while callers held all pool permits");
     }
 }

@@ -212,9 +212,11 @@ The registry holds pre-built `FilterChain`s wrapped in an `Arc`. On each `exec` 
 
 This prevents writer starvation, is Send-safe for async runtimes, and avoids per-bundle rebuilds of the execution structure.
 
-### Rate-Limited Execution
+### Filter Task Scheduling
 
-ReadFilter parallelism is bounded by the dispatcher's `processing_pool` (a `BoundedTaskPool`). Bundle processing itself runs inline in the caller's context — for CLA ingress, backpressure comes from the RpcProxy's handler pool; for dispatch queue consumers and reassembly, from the dispatcher's processing pool spawns.
+ReadFilter tasks run on the filter engine's own dedicated unbounded `TaskPool`, shared by all chains. This pool is deliberately separate from the dispatcher's `processing_pool`: `exec()` callers hold processing-pool permits (`process_bundle` → reassembly/delivery → `exec`), and spawning filter tasks onto that same pool self-deadlocks once it saturates — every permit holder parks waiting for a permit only another parked holder could release. The dedicated pool is unbounded, so no such cycle can form; concurrency remains transitively bounded by the callers because every spawned filter task is awaited within `exec()`.
+
+Bundle processing itself runs inline in the caller's context — for CLA ingress, backpressure comes from the RpcProxy's handler pool; for dispatch queue consumers and reassembly, from the dispatcher's processing pool spawns.
 
 ### Parallelism Rules
 

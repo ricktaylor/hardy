@@ -15,13 +15,7 @@ impl Dispatcher {
     ) -> Result<Option<(bundle::Bundle, Bytes)>, crate::Error> {
         match self
             .filter_engine
-            .exec(
-                filter::Hook::Originate,
-                bundle,
-                data,
-                self.key_provider(),
-                &self.processing_pool,
-            )
+            .exec(filter::Hook::Originate, bundle, data, self.key_provider())
             .await
             .inspect_err(|_e| {
                 error!("Originate filter execution failed");
@@ -182,13 +176,7 @@ impl Dispatcher {
         // Deliver filter hook
         let (bundle, data) = match self
             .filter_engine
-            .exec(
-                filter::Hook::Deliver,
-                bundle,
-                data,
-                self.key_provider(),
-                &self.processing_pool,
-            )
+            .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
