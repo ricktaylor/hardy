@@ -182,13 +182,57 @@ impl Store {
             .trace_expect("Fragment 0 missing fragment_info in reassembly?!")
             .total_adu_length;
 
+        // total_adu_length and fragment offsets are wire-derived u64s: all
+        // range arithmetic below is done in u64, and values are only narrowed
+        // to usize via try_from once proven in range, so nothing truncates on
+        // 32-bit targets.
+        let Ok(adu_len) = usize::try_from(total_adu_length) else {
+            debug!(
+                "Total ADU length {total_adu_length} is not addressable: {:?}",
+                first.0
+            );
+            return None;
+        };
+
+        // The fragments must tile [0, total_adu_length) exactly: contiguous,
+        // non-overlapping and complete. Summing payload lengths instead would
+        // accept overlapping fragments whose lengths happen to total the ADU
+        // length, delivering zero-filled gaps as payload.
+        let mut extents = results
+            .adus
+            .iter()
+            .map(|(offset, (_, _, payload))| (*offset, payload.len() as u64))
+            .collect::<Vec<_>>();
+        extents.sort_unstable();
+        let mut covered: u64 = 0;
+        for (offset, len) in extents {
+            if offset != covered {
+                debug!(
+                    "Fragment at offset {offset} {} covered length {covered}: {:?}",
+                    if offset > covered {
+                        "leaves a gap below"
+                    } else {
+                        "overlaps"
+                    },
+                    first.0
+                );
+                return None;
+            }
+            covered = covered.saturating_add(len);
+        }
+        if covered != total_adu_length {
+            debug!(
+                "Total reassembled ADU does not match fragment info: {:?}",
+                first.0
+            );
+            return None;
+        }
+
         // Reassemble payload by writing each fragment at its ADU offset.
         // Fragment 0's data is already in old_data — copy its payload first,
         // then load remaining fragments. This avoids reloading fragment 0
         // (load_data takes from storage, so a second load would return None).
-        let adu_len = total_adu_length as usize;
         let mut new_data: Vec<u8> = vec![0; adu_len];
-        let mut bytes_written: u64 = 0;
 
         // Copy fragment 0's payload from old_data (already loaded)
         {
@@ -198,7 +242,6 @@ impl Store {
                 return None;
             }
             new_data[..len].copy_from_slice(&old_data[first.2.clone()]);
-            bytes_written = bytes_written.saturating_add(len as u64);
         }
 
         for (bundle_id, storage_name, payload) in results.adus.values() {
@@ -218,24 +261,18 @@ impl Store {
                 return None;
             }
 
-            let offset = fi.offset as usize;
             let len = payload.len();
-            if offset.saturating_add(len) > adu_len {
+            if fi.offset.saturating_add(len as u64) > total_adu_length {
                 debug!("Fragment extends beyond total ADU length: {bundle_id}");
                 return None;
             }
+            let Ok(offset) = usize::try_from(fi.offset) else {
+                debug!("Fragment offset is not addressable: {bundle_id}");
+                return None;
+            };
 
             let adu = self.load_data(storage_name).await?.slice(payload.clone());
             new_data[offset..offset + len].copy_from_slice(adu.as_ref());
-            bytes_written = bytes_written.saturating_add(len as u64);
-        }
-
-        if bytes_written != total_adu_length {
-            debug!(
-                "Total reassembled ADU does not match fragment info: {:?}",
-                first.0
-            );
-            return None;
         }
 
         // Rewrite primary block
@@ -418,6 +455,64 @@ mod tests {
         assert!(
             result.is_none(),
             "Should reject when bytes_written < total_adu_length"
+        );
+    }
+
+    // Overlapping fragments whose payload lengths sum to total_adu_length
+    // must not pass coverage validation: [3..5) would be double-written and
+    // [8..10) would be delivered as zero-fill.
+    #[tokio::test]
+    async fn reassemble_rejects_overlapping_fragments() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let data = b"HelloWorld";
+        let name0 = store_bytes(&store, data).await;
+        let name1 = store_bytes(&store, data).await;
+
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 3, 10);
+
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (3, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject overlapping fragments even when lengths sum to total"
+        );
+    }
+
+    // Fragment offsets are wire-derived u64 values: an offset >= 2^32 must be
+    // rejected as a coverage gap, not wrapped into range by a usize cast on
+    // 32-bit targets.
+    #[tokio::test]
+    async fn reassemble_rejects_offset_beyond_u32() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let data = b"HelloWorld";
+        let name0 = store_bytes(&store, data).await;
+        let name1 = store_bytes(&store, data).await;
+
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 1 << 32, 10);
+
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (1 << 32, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should reject fragment with offset beyond u32 range"
         );
     }
 
