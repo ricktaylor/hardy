@@ -155,6 +155,7 @@ impl BundleStorage for BundleMemStorage {
             .capacity
             .saturating_sub(old_len)
             .saturating_add(new_len);
+        metrics::gauge!("bpa.mem_store.bundles").set(inner.cache.len() as f64);
         metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
         Ok(())
     }
