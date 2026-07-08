@@ -162,6 +162,11 @@ pub trait BundleStorage: Send + Sync {
     async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> Result<()>;
 
     /// Loads the bundle stored under `storage_name`, or `None` if absent.
+    ///
+    /// Loading is non-destructive: repeated loads of the same name return
+    /// the same data until [`delete`](BundleStorage::delete) or
+    /// [`replace`](BundleStorage::replace). The BPA re-loads on every
+    /// forwarding retry.
     async fn load(&self, storage_name: &str) -> Result<Option<Bytes>>;
 
     /// Saves bundle `data`, returning the generated storage name.
