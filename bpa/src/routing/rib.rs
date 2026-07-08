@@ -237,15 +237,16 @@ impl Rib {
             Action::Internal(InternalAction::Local(_))
             | Action::Internal(InternalAction::Forward(_)) => true,
             Action::Route(_) => {
-                let mut changed = false;
+                // Preempt any queues now resolving through the new route, but
+                // notify regardless: a new route is a new forwarding
+                // opportunity for Waiting bundles even when every impacted
+                // peer queue is idle.
                 for v in vias {
-                    if let Some(peers) = self.find_peers(&v)
-                        && self.reset_peer_queues(peers).await
-                    {
-                        changed = true;
+                    if let Some(peers) = self.find_peers(&v) {
+                        self.reset_peer_queues(peers).await;
                     }
                 }
-                changed
+                true
             }
         };
         if changed {
@@ -883,6 +884,32 @@ mod tests {
         assert!(
             matches!(result, Ok(true)),
             "Default route should be accepted, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_add_wakes_waiting_poller() {
+        let rib = make_rib();
+
+        // A connected but idle peer for ipn:0.2.0 — no queued bundles, so
+        // reset_peer_queues() flips nothing.
+        add_local_forward(&rib, ipn_node(2), 42);
+
+        let mut notified = core::pin::pin!(rib.poll_waiting_notify.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        rib.add(
+            "ipn:0.7.*".parse().unwrap(),
+            "test".into(),
+            Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+            10,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "Route add must wake the Waiting poller even when no peer queue was preempted"
         );
     }
 }
