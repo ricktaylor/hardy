@@ -39,7 +39,7 @@ bpsec = []
 [dependencies]
 hardy-cbor = { version = "1", path = "../cbor" }
 thiserror = { version = "2", default-features = false }
-time = { version = "0.3", default-features = false, features = ["formatting", "macros"] }
+time = { version = "0.3", default-features = false, features = ["macros"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
 crc = "3"

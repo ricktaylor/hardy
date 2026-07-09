@@ -46,6 +46,49 @@ jobs:
       - name: Build all tests
         run: cargo test --no-run --locked --all-features --workspace
 
+  no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain (32-bit bare-metal target)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: thumbv7em-none-eabihf
+
+      - name: Use cached dependencies and artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: no-std
+
+      # thumbv7em-none-eabihf is a bare-metal target (no std) that is also
+      # 32-bit (usize == u32), so this one job guards BOTH no_std compatibility
+      # AND 32-bit-pointer-width compilation. --no-default-features keeps the
+      # `std` feature off, so a dependency that silently pulls std — e.g. an
+      # accidental `time/formatting` — fails here instead of shipping a broken
+      # no_std build. This is a COMPILE check: it does not run tests, so it does
+      # not catch runtime `as usize` truncation (a 32-bit *test* run would).
+      #
+      # bpv7's GLOBAL_COUNTER is an AtomicU64, which Cortex-M lacks natively, so
+      # bpv7 (and eid-patterns, which depends on it) build with the
+      # `critical-section` feature; a library (rlib) build compiles without a
+      # critical-section impl — only final binaries need one.
+      # TODO: extend to hardy-bpa once its --no-default-features build is
+      # confirmed clean on this target.
+      - name: Build cbor (no_std, 32-bit)
+        run: >
+          cargo build --locked --no-default-features
+          -p hardy-cbor
+          --target thumbv7em-none-eabihf
+
+      - name: Build bpv7 + eid-patterns (no_std, 32-bit)
+        run: >
+          cargo build --locked --no-default-features
+          --features hardy-bpv7/critical-section
+          -p hardy-bpv7
+          -p hardy-eid-patterns
+          --target thumbv7em-none-eabihf
+
   test:
     runs-on: ubuntu-latest
     needs: build
