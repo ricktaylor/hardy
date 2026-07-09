@@ -380,10 +380,10 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(data)?;
     output.append_str(format!(
         "### BCB Data\n\nSecurity Source: {}\n\n",
-        ops.source
+        ops.source()
     ))?;
 
-    match ops.operations.values().next().unwrap() {
+    match ops.operations().values().next().unwrap() {
         bpsec::bcb::Operation::AES_GCM(op) => {
             output.append_str(format!(
                 "Context: BCB-AES-GCM {:?}\n\n",
@@ -430,7 +430,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         }
     }
 
-    for (target, op) in ops.operations {
+    for (target, op) in ops.operations() {
         output.append_str(format!("#### Target Block {target}\n\n"))?;
 
         match op {
@@ -456,10 +456,10 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     let ops = hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(data)?;
     output.append_str(format!(
         "### BIB Data\n\nSecurity Source: {}\n\n",
-        ops.source
+        ops.source()
     ))?;
 
-    match ops.operations.values().next().unwrap() {
+    match ops.operations().values().next().unwrap() {
         bpsec::bib::Operation::HMAC_SHA2(op) => {
             output.append_str(format!(
                 "Context: BIB-HMAC-SHA2 {:?}\n\n",
@@ -501,7 +501,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
         }
     }
 
-    for (target, op) in ops.operations {
+    for (target, op) in ops.operations() {
         output.append_str(format!("#### Target Block: {target}\n\n"))?;
 
         match op {
