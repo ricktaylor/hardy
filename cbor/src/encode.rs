@@ -652,7 +652,13 @@ impl ToCbor for f64 {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        if let Some(f) = lossless_float_coerce::<half::f16>(*self) {
+        if self.is_nan() {
+            // RFC 8949 §4.2.2: NaN encodes canonically as the half-precision
+            // 0xf97e00. lossless_float_coerce can't narrow a NaN (NaN != NaN),
+            // so handle it here to avoid emitting a non-canonical full-width NaN.
+            encoder.data.push((7 << 5) | 25);
+            encoder.data.extend(half::f16::NAN.to_be_bytes())
+        } else if let Some(f) = lossless_float_coerce::<half::f16>(*self) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
         } else if let Some(f) = lossless_float_coerce::<f32>(*self) {
@@ -669,7 +675,12 @@ impl ToCbor for f32 {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        if let Some(f) = lossless_float_coerce::<half::f16>(*self as f64) {
+        if self.is_nan() {
+            // RFC 8949 §4.2.2: NaN encodes canonically as the half-precision
+            // 0xf97e00 (see the f64 impl).
+            encoder.data.push((7 << 5) | 25);
+            encoder.data.extend(half::f16::NAN.to_be_bytes())
+        } else if let Some(f) = lossless_float_coerce::<half::f16>(*self as f64) {
             encoder.data.push((7 << 5) | 25);
             encoder.data.extend(f.to_be_bytes())
         } else {
