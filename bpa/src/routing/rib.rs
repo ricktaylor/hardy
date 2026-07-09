@@ -249,7 +249,7 @@ impl Rib {
             }
         };
         if changed {
-            self.notify_updated().await;
+            self.poll_waiting_notify.notify_one();
         }
         Ok(true)
     }
@@ -286,16 +286,16 @@ impl Rib {
                 if let Some(peers) = self.find_peers(to)
                     && self.reset_peer_queues(peers).await
                 {
-                    self.notify_updated().await;
+                    self.poll_waiting_notify.notify_one();
                 }
             }
             Action::Internal(InternalAction::Forward(peer))
                 if self.store.reset_peer_queue(peer).await =>
             {
-                self.notify_updated().await;
+                self.poll_waiting_notify.notify_one();
             }
             Action::Internal(InternalAction::Local(_)) => {
-                self.notify_updated().await;
+                self.poll_waiting_notify.notify_one();
             }
             _ => {}
         }
@@ -332,7 +332,7 @@ impl Rib {
             }
         }
         if changed {
-            self.notify_updated().await;
+            self.poll_waiting_notify.notify_one();
         }
     }
 
@@ -456,13 +456,6 @@ impl Rib {
             )),
             other => other,
         }
-    }
-
-    async fn notify_updated(&self) {
-        // notify_one() stores a permit if the poll_waiting_task is mid-scan,
-        // so a route change during an in-flight scan triggers a re-scan rather
-        // than being lost (notify_waiters() stores nothing).
-        self.poll_waiting_notify.notify_one();
     }
 
     async fn reset_peer_queues(&self, peers: HashSet<u32>) -> bool {
