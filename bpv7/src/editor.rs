@@ -739,8 +739,21 @@ impl<'a> Editor<'a> {
             return Err((self, Error::PayloadBlock));
         }
 
-        // Check BIB coverage
+        // Reject security blocks and check BIB coverage of the target.
         if let Some((block, _)) = self.block(block_number) {
+            // Security blocks are managed only via Signer/Encryptor (and
+            // remove_integrity/remove_encryption), as push/insert/update_block
+            // also enforce. Removing a BCB here would leave its targets holding
+            // ciphertext with no covering BCB — surfacing ciphertext as
+            // plaintext on reparse — and removing a BIB would silently strip
+            // integrity protection.
+            if matches!(
+                block.block_type,
+                block::Type::BlockIntegrity | block::Type::BlockSecurity
+            ) {
+                return Err((self, Error::SecurityBlock));
+            }
+
             match block.bib {
                 block::BibCoverage::Maybe => {
                     return Err((self, bpsec::Error::MaybeHasBib(block_number).into()));
