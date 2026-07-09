@@ -94,13 +94,14 @@ impl EidPattern {
 
     /// Harmonized Specificity Score.
     ///
-    /// Returns `None` for union sets (multiple items) or patterns violating
-    /// monotonic constraints.
+    /// A union set scores as its *broadest* (least specific) member, since it
+    /// matches the union of its members and is therefore only as narrow as the
+    /// widest one. Returns `None` for an empty set or if any member is
+    /// unscoreable.
     pub fn specificity_score(&self) -> Option<u32> {
         match self {
             EidPattern::Any => Some(0),
-            EidPattern::Set(items) if items.len() == 1 => items[0].specificity_score(),
-            EidPattern::Set(_) => None, // Union sets not valid for scoring
+            EidPattern::Set(items) => items.iter().map(|i| i.specificity_score()).min().flatten(),
         }
     }
 
@@ -300,6 +301,28 @@ impl core::fmt::Display for EidPattern {
     }
 }
 
+/// The canonical numeric scheme code of an EID (`dtn` = 1, `ipn` = 2), or the
+/// raw code for an unrecognised scheme. The null endpoint is scheme-ambiguous
+/// (`dtn:none` / `ipn:0.0`) and is matched by the concrete ipn/dtn pattern
+/// arms rather than by scheme-family wildcards, so it maps to `None` here.
+fn eid_numeric_scheme(eid: &Eid) -> Option<u64> {
+    match eid {
+        Eid::Null => None,
+        Eid::LocalNode(_) | Eid::LegacyIpn { .. } | Eid::Ipn { .. } => Some(2),
+        Eid::Dtn { .. } => Some(1),
+        Eid::Unknown { scheme, .. } => Some(*scheme),
+    }
+}
+
+/// The numeric code for a text scheme name, for the schemes that have both forms.
+fn numeric_scheme_of_text(scheme: &str) -> Option<u64> {
+    match scheme {
+        "dtn" => Some(1),
+        "ipn" => Some(2),
+        _ => None,
+    }
+}
+
 /// A single scheme-specific EID pattern within an [`EidPattern`] union set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EidPatternItem {
@@ -321,7 +344,12 @@ impl EidPatternItem {
             EidPatternItem::IpnPatternItem(i) => i.matches(eid),
             #[cfg(feature = "dtn-pat-item")]
             EidPatternItem::DtnPatternItem(i) => i.matches(eid),
-            _ => false,
+            // Scheme-family wildcards (`N:**` / `scheme:**`) match any EID of
+            // that scheme — including an `Eid::Unknown` decoded from the wire.
+            EidPatternItem::AnyNumericScheme(n) => eid_numeric_scheme(eid) == Some(*n),
+            EidPatternItem::AnyTextScheme(s) => {
+                eid_numeric_scheme(eid) == numeric_scheme_of_text(s)
+            }
         }
     }
 
