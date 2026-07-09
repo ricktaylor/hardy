@@ -41,6 +41,9 @@ pub enum Error {
     #[error("Invalid security context parameter id {0}")]
     InvalidContextParameter(u64),
 
+    #[error("Invalid AES-GCM IV length {0}, must be 8-16 bytes (RFC 9173 Section 4.3.1)")]
+    InvalidIvLength(usize),
+
     #[error("Missing security context parameter id {0}")]
     MissingContextParameter(u64),
 
