@@ -36,6 +36,19 @@ fn scheme_wildcard_matches_unknown_scheme_eid() {
     }));
 }
 
+// A text scheme with no numeric code (anything but `dtn`/`ipn`) has no
+// representable EID, so `scheme:**` matches nothing — in particular it must not
+// match the null endpoint, whose numeric scheme is also `None`.
+#[test]
+fn unknown_text_scheme_matches_nothing() {
+    let pat: EidPattern = "foo:**".parse().unwrap();
+    assert!(!pat.matches(&Eid::Null));
+    assert!(!pat.matches(&Eid::Unknown {
+        scheme: 88,
+        data: Box::default(),
+    }));
+}
+
 // R-21: a multi-item union must sort as more specific than the `*:**` default
 // so it can override broader routes at the same priority.
 #[test]

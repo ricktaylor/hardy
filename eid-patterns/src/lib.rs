@@ -347,8 +347,12 @@ impl EidPatternItem {
             // Scheme-family wildcards (`N:**` / `scheme:**`) match any EID of
             // that scheme — including an `Eid::Unknown` decoded from the wire.
             EidPatternItem::AnyNumericScheme(n) => eid_numeric_scheme(eid) == Some(*n),
+            // A text scheme with no numeric code (anything but `dtn`/`ipn`)
+            // matches nothing: guard on `numeric_scheme_of_text` so an unknown
+            // scheme does not fall through to `None == None` and wrongly match
+            // the null endpoint (whose `eid_numeric_scheme` is also `None`).
             EidPatternItem::AnyTextScheme(s) => {
-                eid_numeric_scheme(eid) == numeric_scheme_of_text(s)
+                numeric_scheme_of_text(s).is_some_and(|n| eid_numeric_scheme(eid) == Some(n))
             }
         }
     }
