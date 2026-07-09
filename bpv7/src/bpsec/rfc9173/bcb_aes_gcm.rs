@@ -69,8 +69,14 @@ impl Parameters {
             }
         }
 
+        // RFC 9173 §4.3.1: the IV length MUST be between 8 and 16 bytes.
+        let iv = iv.ok_or(Error::MissingContextParameter(1))?;
+        if !(8..=16).contains(&iv.len()) {
+            return Err(Error::InvalidIvLength(iv.len()));
+        }
+
         Ok(Self {
-            iv: iv.ok_or(Error::MissingContextParameter(1))?,
+            iv,
             variant: variant.unwrap_or_default(),
             key,
             flags: flags.unwrap_or_default(),
@@ -397,19 +403,56 @@ impl Operation {
     ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error> {
         match (self.parameters.variant, enc_algorithm) {
             (AesVariant::A128GCM, Some(key::EncAlgorithm::A128GCM)) => {
-                let cipher =
-                    aes_gcm::Aes128Gcm::new_from_slice(cek).map_err(|_| Error::DecryptionFailed)?;
-                self.decrypt_inner(cipher, aad, data)
-                    .ok_or(Error::DecryptionFailed)
+                self.decrypt_gcm::<aes_gcm::aes::Aes128>(cek, aad, data)
             }
             (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
-                let cipher =
-                    aes_gcm::Aes256Gcm::new_from_slice(cek).map_err(|_| Error::DecryptionFailed)?;
-                self.decrypt_inner(cipher, aad, data)
-                    .ok_or(Error::DecryptionFailed)
+                self.decrypt_gcm::<aes_gcm::aes::Aes256>(cek, aad, data)
             }
             (AesVariant::Unrecognised(_), _) => Err(Error::UnsupportedOperation),
             _ => Err(Error::DecryptionFailed),
+        }
+    }
+
+    // AES-GCM decryption dispatched on the wire IV length. RFC 9173 §4.3.1
+    // permits any IV of 8-16 bytes; aes-gcm parameterises the cipher by its
+    // nonce size, so the runtime length is matched to the corresponding
+    // `AesGcm<Aes, Un>` type (decrypt_inner is generic over the cipher). Encrypt
+    // always emits 12-byte IVs (the RFC's SHOULD); this only widens acceptance
+    // on decrypt. Parameters::from_cbor already bounds the length to 8-16, so
+    // the fallthrough is defensive.
+    fn decrypt_gcm<Aes>(
+        &self,
+        cek: &[u8],
+        aad: &[u8],
+        data: &[u8],
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
+    where
+        Aes: aes_gcm::aes::cipher::BlockSizeUser<BlockSize = aes_gcm::aes::cipher::consts::U16>
+            + aes_gcm::aes::cipher::BlockCipherEncrypt
+            + KeyInit,
+    {
+        use aes_gcm::aes::cipher::consts::{U8, U9, U10, U11, U12, U13, U14, U15, U16};
+
+        macro_rules! decrypt_sized {
+            ($n:ty) => {{
+                let cipher = aes_gcm::AesGcm::<Aes, $n>::new_from_slice(cek)
+                    .map_err(|_| Error::DecryptionFailed)?;
+                self.decrypt_inner(cipher, aad, data)
+                    .ok_or(Error::DecryptionFailed)
+            }};
+        }
+
+        match self.parameters.iv.len() {
+            8 => decrypt_sized!(U8),
+            9 => decrypt_sized!(U9),
+            10 => decrypt_sized!(U10),
+            11 => decrypt_sized!(U11),
+            12 => decrypt_sized!(U12),
+            13 => decrypt_sized!(U13),
+            14 => decrypt_sized!(U14),
+            15 => decrypt_sized!(U15),
+            16 => decrypt_sized!(U16),
+            n => Err(Error::InvalidIvLength(n)),
         }
     }
 
@@ -469,4 +512,72 @@ pub fn parse(
         );
     }
     Ok((asb.source, operations))
+}
+
+#[cfg(test)]
+mod tests {
+    use aes_gcm::KeyInit;
+    use alloc::rc::Rc;
+    use core::ops::Range;
+
+    use super::*;
+    use crate::HashMap;
+    use crate::bpsec::Error;
+    use crate::bpsec::rfc9173::ScopeFlags;
+
+    // RFC 9173 §4.3.1: decrypt must accept any IV of 8-16 bytes, not only 12.
+    // Encrypt with a given nonce size via the crate's own encrypt_inner, then
+    // decrypt through the size-dispatching decrypt_gcm and check the round trip.
+    #[test]
+    fn decrypt_accepts_8_to_16_byte_iv() {
+        let key = [0x42u8; 32];
+        let aad: &[u8] = b"associated data";
+        let plaintext: &[u8] = b"confidential payload";
+
+        macro_rules! roundtrip {
+            ($n:ty, $len:expr) => {{
+                let iv: Box<[u8]> = alloc::vec![0xAB; $len].into();
+                let cipher =
+                    aes_gcm::AesGcm::<aes_gcm::aes::Aes256, $n>::new_from_slice(&key).unwrap();
+                let (ct, _) = encrypt_inner(cipher, iv.clone(), aad, plaintext).unwrap();
+                let (ciphertext, tag) = ct.split_at(ct.len() - 16);
+                let op = Operation {
+                    parameters: Rc::new(Parameters {
+                        iv,
+                        variant: AesVariant::A256GCM,
+                        key: None,
+                        flags: ScopeFlags::default(),
+                    }),
+                    results: Results(Some(tag.into())),
+                };
+                let out = op
+                    .decrypt_gcm::<aes_gcm::aes::Aes256>(&key, aad, ciphertext)
+                    .unwrap_or_else(|e| panic!("IV length {} should decrypt: {e}", $len));
+                assert_eq!(out.as_ref(), plaintext, "IV length {} round trip", $len);
+            }};
+        }
+
+        roundtrip!(aes_gcm::aes::cipher::consts::U8, 8);
+        roundtrip!(aes_gcm::aes::cipher::consts::U12, 12);
+        roundtrip!(aes_gcm::aes::cipher::consts::U16, 16);
+    }
+
+    // RFC 9173 §4.3.1: an IV outside the 8-16 byte range is rejected at parse.
+    #[test]
+    fn parameters_reject_out_of_range_iv() {
+        // Parameter 1 (IV) as a 20-byte CBOR byte string: 0x54 head + 20 bytes.
+        let mut data = alloc::vec![0x54u8];
+        data.extend_from_slice(&[0u8; 20]);
+        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
+        assert!(matches!(
+            Parameters::from_cbor(params, &data),
+            Err(Error::InvalidIvLength(20))
+        ));
+
+        // A 12-byte IV (0x4C head + 12 bytes) is accepted.
+        let mut data = alloc::vec![0x4Cu8];
+        data.extend_from_slice(&[0u8; 12]);
+        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
+        assert!(Parameters::from_cbor(params, &data).is_ok());
+    }
 }
