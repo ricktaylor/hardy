@@ -1,6 +1,11 @@
-use super::*;
-use aes_gcm::KeyInit;
 use alloc::rc::Rc;
+
+use aes_gcm::{
+    KeyInit,
+    aes::cipher::consts::{U8, U9, U10, U11, U12, U13, U14, U15, U16},
+};
+
+use super::*;
 
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -431,8 +436,6 @@ impl Operation {
             + aes_gcm::aes::cipher::BlockCipherEncrypt
             + KeyInit,
     {
-        use aes_gcm::aes::cipher::consts::{U8, U9, U10, U11, U12, U13, U14, U15, U16};
-
         macro_rules! decrypt_sized {
             ($n:ty) => {{
                 let cipher = aes_gcm::AesGcm::<Aes, $n>::new_from_slice(cek)
