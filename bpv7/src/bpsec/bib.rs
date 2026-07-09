@@ -75,14 +75,31 @@ impl Operation {
 }
 
 /// A set of BIB operations sharing a common security source.
+///
+/// Fields are crate-private: an `OperationSet` is only ever produced by the
+/// parser or by `Signer`, both of which guarantee it is non-empty (`to_cbor`
+/// relies on that invariant). External code builds BIBs via `Signer` and reads
+/// via the [`source`](Self::source)/[`operations`](Self::operations) accessors.
 pub struct OperationSet {
-    /// The EID of the security source.
-    pub source: eid::Eid,
-    /// Operations keyed by target block number.
-    pub operations: HashMap<u64, Operation>,
+    // The EID of the security source.
+    pub(crate) source: eid::Eid,
+    // Operations keyed by target block number.
+    pub(crate) operations: HashMap<u64, Operation>,
 }
 
 impl OperationSet {
+    /// The EID of the security source.
+    #[inline]
+    pub fn source(&self) -> &eid::Eid {
+        &self.source
+    }
+
+    /// The operations in this set, keyed by target block number.
+    #[inline]
+    pub fn operations(&self) -> &HashMap<u64, Operation> {
+        &self.operations
+    }
+
     /// Returns `true` if any operation in this set uses an unrecognised context.
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
@@ -100,10 +117,10 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
         // Targets
         encoder.emit(targets.as_slice());
 
-        // Context
+        // Context (an OperationSet is non-empty by construction)
         operations
             .first()
-            .unwrap()
+            .expect("OperationSet must contain at least one operation")
             .emit_context(encoder, &self.source);
 
         // Results
