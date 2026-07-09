@@ -232,26 +232,20 @@ impl Rib {
             vias
         };
 
-        let changed = match action {
-            Action::Internal(InternalAction::AdminEndpoint) => false,
-            Action::Internal(InternalAction::Local(_))
-            | Action::Internal(InternalAction::Forward(_)) => true,
-            Action::Route(_) => {
-                // Preempt any queues now resolving through the new route, but
-                // notify regardless: a new route is a new forwarding
-                // opportunity for Waiting bundles even when every impacted
-                // peer queue is idle.
-                for v in vias {
-                    if let Some(peers) = self.find_peers(&v) {
-                        self.reset_peer_queues(peers).await;
-                    }
+        if matches!(action, Action::Route(_)) {
+            // Preempt any queues now resolving through the new route
+            for v in vias {
+                if let Some(peers) = self.find_peers(&v) {
+                    self.reset_peer_queues(peers).await;
                 }
-                true
             }
-        };
-        if changed {
+        }
+
+        // notify if not AdminEndpoint
+        if !matches!(action, Action::Internal(InternalAction::AdminEndpoint)) {
             self.poll_waiting_notify.notify_one();
         }
+
         Ok(true)
     }
 
