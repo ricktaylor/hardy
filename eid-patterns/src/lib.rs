@@ -30,7 +30,7 @@ mod parse;
 mod dtn_pattern;
 
 #[cfg(test)]
-mod str_tests;
+mod tests;
 
 /// Errors produced by EID pattern parsing and conversion.
 #[derive(Error, Debug)]
