@@ -437,7 +437,13 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
                                 ranges
                                     .into_iter()
                                     .fold(Vec::new(), |mut acc, r| {
-                                        acc.extend_from_slice(&data[r]);
+                                        // `r` is relative to the value start
+                                        // (`payload_start`), as in the definite
+                                        // `Bytes` arm above — rebase it into
+                                        // `data` before slicing.
+                                        acc.extend_from_slice(
+                                            &data[payload_start + r.start..payload_start + r.end],
+                                        );
                                         acc
                                     })
                                     .into(),
@@ -474,5 +480,45 @@ impl hardy_cbor::decode::FromCbor for BlockWithNumber {
             block.block.extent.end = len;
             (block, shortest, len)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_cbor::decode::FromCbor;
+
+    use super::*;
+
+    // A block whose block-type-specific data is a CBOR indefinite-length byte
+    // string must be reassembled from the payload chunks, not from the block
+    // header. Regression for the ByteStream offset bug (rescan R-1): the chunk
+    // ranges are relative to the value start, so they must be rebased into the
+    // block buffer before slicing.
+    #[test]
+    fn indefinite_length_byte_string_payload_reassembles_correctly() {
+        // Block array [type=10 (HopCount), number=2, flags=0, crc_type=0, data].
+        // data = indefinite-length byte string { "HEL", "LO" } == "HELLO".
+        let block = [
+            0x85, // array(5)
+            0x0A, // block type 10 (HopCount)
+            0x02, // block number 2
+            0x00, // flags
+            0x00, // crc type (None)
+            0x5F, // indefinite-length byte string
+            0x43, b'H', b'E', b'L', // chunk "HEL"
+            0x42, b'L', b'O', // chunk "LO"
+            0xFF, // break
+        ];
+
+        let (parsed, shortest, len) =
+            BlockWithNumber::from_cbor(&block).expect("block should parse");
+
+        assert_eq!(len, block.len());
+        assert!(!shortest, "indefinite-length encoding is not shortest-form");
+        assert_eq!(
+            parsed.payload.as_deref(),
+            Some(&b"HELLO"[..]),
+            "indefinite-length byte-string payload must reassemble to the payload bytes"
+        );
     }
 }
