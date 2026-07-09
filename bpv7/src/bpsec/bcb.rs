@@ -149,9 +149,10 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
         // Targets
         encoder.emit(targets.as_slice());
 
-        // Context (an OperationSet is non-empty by construction)
+        // Context
         operations
             .first()
+            // SAFETY: An OperationSet is non-empty by construction
             .expect("OperationSet must contain at least one operation")
             .emit_context(encoder, &self.source);
 
