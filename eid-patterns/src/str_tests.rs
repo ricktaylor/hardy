@@ -245,11 +245,17 @@ fn tests() {
         // Scheme wildcard
         assert!(dtn_match("dtn:**", "dtn://anything/here"));
 
-        // NOTE: Glob-based DTN matching (dtn://node/*, dtn://node/**, dtn://**/service)
-        // is known-incomplete — see dtn_pattern.rs:17 TODO. The glob pattern uses a
-        // single slash separator but do_glob matches against a double-slash form,
-        // causing mismatches with require_literal_separator. Glob parsing is tested
-        // above via struct equality; matching tests deferred until the glob rework.
+        // Glob-based DTN matching (single-slash separator, R-13).
+        // Single-star matches one demux segment but not across a separator.
+        assert!(dtn_match("dtn://node/*", "dtn://node/service"));
+        assert!(!dtn_match("dtn://node/*", "dtn://other/service"));
+        assert!(!dtn_match("dtn://node/*", "dtn://node/pre/post"));
+        // Authority-position single-star.
+        assert!(dtn_match("dtn://*/service", "dtn://node/service"));
+        assert!(!dtn_match("dtn://*/service", "dtn://node/other"));
+        // Double-star spans separators.
+        assert!(dtn_match("dtn://node/**", "dtn://node/pre/post"));
+        assert!(dtn_match("dtn://**/some/serv", "dtn://node/some/serv"));
 
         assert_eq!(
             "dtn:none".parse::<EidPattern>().expect("Failed to parse"),
@@ -281,6 +287,65 @@ fn tests() {
             )
         );
     }
+}
+
+// R-11: a numeric scheme whose first digit is 9 must parse (grammar is
+// %x31-39 inclusive); '1'..'9' would exclude it.
+#[test]
+fn scheme_beginning_with_nine_parses() {
+    for s in ["9:**", "91:**", "900:**"] {
+        let pat: EidPattern = s
+            .parse()
+            .unwrap_or_else(|e| panic!("{s} should parse: {e}"));
+        assert_eq!(
+            pat,
+            EidPattern::Set(
+                [EidPatternItem::AnyNumericScheme(
+                    s[..s.len() - 3].parse().unwrap()
+                )]
+                .into()
+            )
+        );
+    }
+}
+
+// R-12: a scheme-family wildcard must match an unknown-scheme EID (the RIB
+// routing table relies on this).
+#[test]
+fn scheme_wildcard_matches_unknown_scheme_eid() {
+    use hardy_bpv7::eid::Eid;
+
+    let pat: EidPattern = "88:**".parse().unwrap();
+    assert!(pat.matches(&Eid::Unknown {
+        scheme: 88,
+        data: Box::default(),
+    }));
+    assert!(!pat.matches(&Eid::Unknown {
+        scheme: 89,
+        data: Box::default(),
+    }));
+}
+
+// R-21: a multi-item union must sort as more specific than the `*:**` default
+// so it can override broader routes at the same priority.
+#[test]
+fn union_sorts_more_specific_than_any() {
+    let union: EidPattern = "ipn:0.5.*|ipn:0.6.*".parse().unwrap();
+    let any: EidPattern = "*:**".parse().unwrap();
+
+    assert_eq!(
+        union.specificity_score(),
+        "ipn:0.5.*"
+            .parse::<EidPattern>()
+            .unwrap()
+            .specificity_score(),
+        "a union scores as its broadest member, not None"
+    );
+    // Ord: more specific compares Less (sorted first in the RIB BTreeMap).
+    assert!(
+        union < any,
+        "union route must order before the default route"
+    );
 }
 
 fn ipn_match(pattern: &str, eid: &str) -> bool {
@@ -392,13 +457,15 @@ fn test_specificity_score() {
     // Invalid: range node with specific service
     assert_eq!(score("ipn:100.[10-13].5"), None);
 
-    // Invalid: union set (multiple items)
+    // Union set scores as its broadest (min-scoring) member (R-21), not None.
+    let a = score("ipn:100.1.*");
+    let b = score("ipn:200.1.*");
     assert_eq!(
         "ipn:100.1.*|ipn:200.1.*"
             .parse::<EidPattern>()
             .unwrap()
             .specificity_score(),
-        None
+        a.min(b),
     );
 }
 

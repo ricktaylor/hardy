@@ -91,7 +91,8 @@ where
     T: core::str::FromStr,
     <T as core::str::FromStr>::Err: core::error::Error + Send + Sync + 'static,
 {
-    (one_of('1'..'9'), digit0)
+    // Inclusive '1'..='9' per the grammar (%x31-39); '1'..'9' would exclude 9.
+    (one_of('1'..='9'), digit0)
         .take()
         .try_map(|v: &str| v.parse::<T>())
         .parse_next(input)

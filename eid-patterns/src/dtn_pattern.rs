@@ -255,8 +255,13 @@ fn parse_dtn_glob(input: &mut &str) -> ModalResult<DtnPatternItem> {
 }
 
 fn do_glob(node_name: &str, demux: &str, pattern: &glob::Pattern) -> bool {
+    // The glob pattern is built as `{node_name}/{demux}` (single separator, see
+    // parse_dtn_glob / new_glob), so the match target must use a single slash
+    // too — otherwise, with require_literal_separator, a single `*` cannot cross
+    // the extra `/` and single-star globs (`dtn://node/*`, `dtn://*/svc`) match
+    // nothing.
     pattern.matches_with(
-        &format!("{node_name}//{demux}"),
+        &format!("{node_name}/{demux}"),
         glob::MatchOptions {
             case_sensitive: false,
             require_literal_separator: true,
