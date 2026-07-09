@@ -46,8 +46,10 @@ fn rfc_tests() {
     assert_eq!(*emit(&half::f16::INFINITY).0, hex!("f97c00"));
     assert_eq!(*emit(&half::f16::NAN).0, hex!("f97e00"));
     assert_eq!(*emit(&half::f16::NEG_INFINITY).0, hex!("f9fc00"));
-    assert_eq!(*emit(&f32::NAN).0, hex!("fa7fc00000"));
-    assert_eq!(*emit(&f64::NAN).0, hex!("fb7ff8000000000000"));
+    // RFC 8949 §4.2.2: NaN canonically encodes as the half-precision 0xf97e00,
+    // like the infinities in §4.2.1 above (was previously emitted full-width).
+    assert_eq!(*emit(&f32::NAN).0, hex!("f97e00"));
+    assert_eq!(*emit(&f64::NAN).0, hex!("f97e00"));
 
     /* According to https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1
     +-INF data should go smaller when canonically encoding */
