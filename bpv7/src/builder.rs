@@ -62,8 +62,10 @@ impl<'a> Builder<'a> {
     pub fn with_flags(mut self, flags: bundle::Flags) -> Self {
         self.bundle_flags = flags;
 
-        // Do not allow the fragment flag to be set
-        assert!(!self.bundle_flags.is_fragment);
+        // The fragment flag is owned by the fragmentation logic, not the
+        // caller: flag it in debug builds to catch API misuse, but always
+        // normalise rather than panic in release (this is public API).
+        debug_assert!(!self.bundle_flags.is_fragment);
         self.bundle_flags.is_fragment = false;
 
         self
