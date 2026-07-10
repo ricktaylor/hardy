@@ -109,18 +109,39 @@ Metrics are exported every 60 seconds to the collector.
 | `bpa.rib.agents` | gauge | | Registered routing agents |
 | `bpa.rib.entries` | gauge | `source` | Route entries by source agent |
 
-#### Storage
+#### Storage Cache
+
+The read-through LRU cache in front of the bundle data backend, enabled automatically for persistent backends:
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `bpa.store.cache.hits` | counter | LRU cache hits |
 | `bpa.store.cache.misses` | counter | LRU cache misses |
 | `bpa.store.cache.oversized` | counter | Bundles too large for LRU cache |
-| `bpa.mem_store.bundles` | gauge | In-memory bundle store entry count |
-| `bpa.mem_store.bytes` | gauge | In-memory bundle store total bytes |
-| `bpa.mem_store.evictions` | counter | LRU evictions from in-memory store |
-| `bpa.mem_metadata.entries` | gauge | In-memory metadata store entries |
-| `bpa.mem_metadata.tombstones` | gauge | In-memory metadata store tombstones |
+
+#### In-Memory Bundle Storage
+
+Present only when the `memory` bundle data backend is explicitly selected:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bpa.mem_store.bundles` | gauge | Stored bundle count |
+| `bpa.mem_store.bytes` | gauge | Total bytes stored |
+| `bpa.mem_store.evictions` | counter | Bundles evicted when over the byte capacity |
+
+The store logs a single `info` line when byte usage crosses 95% of the configured capacity and another when it falls back below 90% (reporting anything evicted in between), so sustained pressure is visible in the logs without flooding them.
+
+#### In-Memory Metadata Storage
+
+Present only when the `memory` metadata backend is explicitly selected:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `bpa.mem_metadata.entries` | gauge | | Live bundle entries |
+| `bpa.mem_metadata.tombstones` | gauge | | Tombstone entries |
+| `bpa.mem_metadata.evictions` | counter | `kind` | Capacity evictions, by kind: `live`, `expired`, or `tombstone` |
+
+The store logs the same 95%/90% edge-triggered `info` lines, measured on the live entry count against `max-bundles`.
 
 #### Restart Recovery
 
