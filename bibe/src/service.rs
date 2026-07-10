@@ -85,18 +85,24 @@ impl Service for DecapService {
         data: Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
-        match self.decapsulate(data) {
-            Ok(inner) => {
-                debug!("BIBE decapsulated bundle, dispatching");
-                if let Err(e) = self.cla.dispatch(inner).await {
-                    warn!("Failed to dispatch decapsulated bundle: {e}");
-                }
-            }
+        // A malformed outer bundle is a permanent failure: log and accept it,
+        // so it is not parked for a retry that could never succeed.
+        let inner = match self.decapsulate(data) {
+            Ok(inner) => inner,
             Err(e) => {
                 warn!("BIBE decapsulation failed: {e}");
+                return Ok(());
             }
-        }
-        Ok(())
+        };
+
+        // A dispatch failure is transient: propagate it so the outer bundle is
+        // parked and retried rather than dropped.
+        debug!("BIBE decapsulated bundle, dispatching");
+        self.cla
+            .dispatch(inner)
+            .await
+            .inspect_err(|e| warn!("Failed to dispatch decapsulated bundle: {e}"))
+            .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
     }
 
     async fn on_status_notify(

@@ -88,8 +88,9 @@ impl services::Application for TestApp {
         _ack_requested: bool,
         payload: Bytes,
     ) -> services::Result<()> {
-        let _ = self.received_tx.send((source, payload));
-        Ok(())
+        self.received_tx
+            .send((source, payload))
+            .map_err(|e| services::Error::Internal(e.into()))
     }
 
     async fn on_status_notify(
@@ -144,9 +145,10 @@ impl services::Service for EchoService {
                 }
                 Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
             };
-            let _ = sink.send(reply).await;
+            sink.send(reply).await.map(|_| ())
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     async fn on_status_notify(
