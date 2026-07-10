@@ -8,7 +8,7 @@ use rand::{
     rngs::{SmallRng, SysRng},
 };
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{BundleStorage, RecoveryResponse, Result};
 use crate::{Arc, Bytes, stream::Sender};
@@ -116,8 +116,8 @@ pub struct BundleMemStorage {
 impl BundleMemStorage {
     /// Creates a store holding at most [`Config::capacity`] bytes.
     pub fn new(config: &Config) -> Self {
-        info!(
-            "Using in-memory bundle storage (capacity {} bytes, non-persistent)",
+        warn!(
+            "Using in-memory bundle storage (capacity {} bytes): stored bundles will NOT survive a restart",
             config.capacity
         );
 

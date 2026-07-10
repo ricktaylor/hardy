@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [features]
-default = ["localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
+default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
 postgres-storage = ["dep:hardy-postgres-storage"]
