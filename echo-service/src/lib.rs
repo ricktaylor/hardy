@@ -148,8 +148,7 @@ impl hardy_bpa::services::Service for EchoService {
         data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
-        _ = self.echo(data).await;
-        Ok(())
+        self.echo(data).await.map_err(Into::into)
     }
 }
 

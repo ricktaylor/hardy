@@ -336,5 +336,11 @@ async fn svc_cli_06_concurrent_reply_from_on_receive() {
 
     assert_eq!(replied.load(Ordering::Relaxed), N);
 
+    // Close the client so the server's bidi stream ends; otherwise
+    // server_tasks.shutdown() waits on the still-open stream.
+    let sink = svc.sink.lock().take();
+    if let Some(sink) = sink {
+        sink.unregister().await;
+    }
     server_tasks.shutdown().await;
 }
