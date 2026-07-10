@@ -7,8 +7,7 @@ use hardy_bpa::storage::{
 };
 use serde::{Deserialize, Serialize};
 
-// Metadata storage backend selector (default: `sqlite`, or the non-persistent
-// `memory` when built without the sqlite-storage feature).
+// Metadata storage backend selector (default: `sqlite`).
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum MetadataStorageConfig {
@@ -31,14 +30,19 @@ impl Default for MetadataStorageConfig {
                 Self::Sqlite(Default::default())
             }
             _ => {
-                Self::Memory(Default::default())
+                // The unconfigured default must never silently degrade to
+                // the non-persistent memory backend. Explicitly configured
+                // backends (including `memory`) remain available in such
+                // builds, so this only fires when the default is requested.
+                panic!(
+                    "no default metadata storage: built without the `sqlite-storage` feature that provides the default backend; configure `storage.metadata` explicitly (e.g. `type: memory`) or rebuild with the feature"
+                )
             }
         }
     }
 }
 
-// Bundle data storage backend selector (default: `localdisk`, or the
-// non-persistent `memory` when built without the localdisk-storage feature).
+// Bundle data storage backend selector (default: `localdisk`).
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum BundleStorageConfig {
@@ -61,7 +65,13 @@ impl Default for BundleStorageConfig {
                 Self::LocalDisk(Default::default())
             }
             _ => {
-                Self::Memory(Default::default())
+                // The unconfigured default must never silently degrade to
+                // the non-persistent memory backend. Explicitly configured
+                // backends (including `memory`) remain available in such
+                // builds, so this only fires when the default is requested.
+                panic!(
+                    "no default bundle storage: built without the `localdisk-storage` feature that provides the default backend; configure `storage.bundle` explicitly (e.g. `type: memory`) or rebuild with the feature"
+                )
             }
         }
     }

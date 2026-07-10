@@ -226,9 +226,15 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
-    // Empty config file produces sensible defaults.
+    // Empty config file produces sensible defaults. In a build without the
+    // default storage features, relying on the unconfigured storage default
+    // panics instead of silently degrading to the memory backend.
     #[test]
     #[serial]
+    #[cfg_attr(
+        not(all(feature = "sqlite-storage", feature = "localdisk-storage")),
+        should_panic(expected = "built without the")
+    )]
     fn empty_config_has_defaults() {
         let config = write_and_load("empty.yaml", "");
         assert_eq!(config.log_level, Level::INFO);

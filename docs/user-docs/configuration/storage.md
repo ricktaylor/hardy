@@ -5,7 +5,7 @@ Hardy uses a dual storage model: one backend for **bundle metadata**
 (the actual bytes). The two backends can be
 mixed independently.
 
-When no storage is configured, the server defaults to SQLite metadata and local-disk bundle data (builds without those features fall back to memory).
+When no storage is configured, the server defaults to **SQLite** metadata and **local-disk** bundle data: a stock build persists to disk out of the box, writing to the platform default paths listed below, and will fail to start if those locations are unwritable (read-only filesystem, full volume). The non-persistent `memory` backends are never chosen by default — they must be selected explicitly, and the server logs a warning at startup when they are in use. The `sqlite-storage` and `localdisk-storage` build features that provide the default backends are enabled by default; a build that disables either feature refuses to start while the corresponding storage section is unconfigured (the backend must then be selected explicitly, e.g. `type: memory`), so the default never silently shifts to non-persistent storage.
 
 ## `storage` — Cache Settings
 
