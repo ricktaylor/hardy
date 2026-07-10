@@ -3,7 +3,7 @@ use core::num::{NonZero, NonZeroUsize};
 use hardy_async::{async_trait, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
 use lru::LruCache;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{MetadataStorage, Result};
 use crate::{
@@ -142,8 +142,8 @@ pub struct MetadataMemStorage {
 impl MetadataMemStorage {
     /// Creates a store holding at most [`Config::max_bundles`] entries.
     pub fn new(config: &Config) -> Self {
-        info!(
-            "Using in-memory metadata storage (max {} bundles, non-persistent)",
+        warn!(
+            "Using in-memory metadata storage (max {} bundles): bundle metadata will NOT survive a restart",
             config.max_bundles
         );
 

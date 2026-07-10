@@ -238,6 +238,18 @@ mod tests {
         assert!(config.grpc.is_none());
         assert!(config.static_routes.is_none());
         assert!(config.clas.is_empty());
+
+        // Unconfigured storage defaults to the persistent backends
+        #[cfg(feature = "sqlite-storage")]
+        assert!(matches!(
+            config.storage.metadata,
+            storage::MetadataStorageConfig::Sqlite(_)
+        ));
+        #[cfg(feature = "localdisk-storage")]
+        assert!(matches!(
+            config.storage.bundle,
+            storage::BundleStorageConfig::LocalDisk(_)
+        ));
     }
 
     // YAML config file overrides defaults.
@@ -448,8 +460,15 @@ storage:
     type: memory
 "#,
         );
-        // Should load without error — memory is always available.
-        assert_eq!(config.log_level, Level::INFO);
+        // Explicitly selecting memory must override the persistent defaults
+        assert!(matches!(
+            config.storage.metadata,
+            storage::MetadataStorageConfig::Memory(_)
+        ));
+        assert!(matches!(
+            config.storage.bundle,
+            storage::BundleStorageConfig::Memory(_)
+        ));
     }
 
     // Malformed YAML returns an error.

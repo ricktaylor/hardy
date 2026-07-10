@@ -7,7 +7,8 @@ use hardy_bpa::storage::{
 };
 use serde::{Deserialize, Serialize};
 
-// Metadata storage backend selector (default: `memory`).
+// Metadata storage backend selector (default: `sqlite`, or the non-persistent
+// `memory` when built without the sqlite-storage feature).
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum MetadataStorageConfig {
@@ -25,11 +26,19 @@ pub enum MetadataStorageConfig {
 
 impl Default for MetadataStorageConfig {
     fn default() -> Self {
-        Self::Memory(Default::default())
+        cfg_select! {
+            feature = "sqlite-storage" => {
+                Self::Sqlite(Default::default())
+            }
+            _ => {
+                Self::Memory(Default::default())
+            }
+        }
     }
 }
 
-// Bundle data storage backend selector (default: `memory`).
+// Bundle data storage backend selector (default: `localdisk`, or the
+// non-persistent `memory` when built without the localdisk-storage feature).
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum BundleStorageConfig {
@@ -47,7 +56,14 @@ pub enum BundleStorageConfig {
 
 impl Default for BundleStorageConfig {
     fn default() -> Self {
-        Self::Memory(Default::default())
+        cfg_select! {
+            feature = "localdisk-storage" => {
+                Self::LocalDisk(Default::default())
+            }
+            _ => {
+                Self::Memory(Default::default())
+            }
+        }
     }
 }
 
