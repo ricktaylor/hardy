@@ -64,7 +64,7 @@ Organise `use` statements into up to three blocks, each separated by a single bl
 
 1. The standard library — `std::…`, `core::…`, and `alloc::…` all share this one block (`no_std` crates use `core`/`alloc` in place of `std`).
 2. Third-party crates — `<external_crate>::…`.
-3. Local imports — `crate::…`, `super::…`, and `self::…` share this one block.
+3. Local imports — `self::…`, `super::…`, and `crate::…` share this one block, listed here in the order rustfmt sorts them.
 
 This is the order of the (currently unstable) rustfmt option `group_imports = "StdExternalCrate"`: writing it by hand now means that if the option stabilises and we enable it, `cargo fmt` reproduces the layout with no churn. Omit any block that has no imports (hence "up to three") — never leave an empty block. `rustfmt` sorts within each block and preserves the blank-line separation, but under its default settings it does not reorder or merge the blocks themselves, so the order above is a manual discipline.
 
