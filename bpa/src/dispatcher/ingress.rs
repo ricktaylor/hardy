@@ -64,7 +64,7 @@ impl Dispatcher {
         // Fast pre-check: reject empty, BPv6, and non-CBOR-array data
         if let Err(e) = crate::cbor::precheck(&data) {
             debug!("Bundle rejected by CBOR precheck: {e}");
-            metrics::counter!("bpa.bundle.received.dropped").increment(1);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
             if let Some(storage_name) = &metadata.storage_name {
                 self.store.delete_data(storage_name).await;
             }
@@ -72,75 +72,95 @@ impl Dispatcher {
         }
 
         // Parse the bundle with full processing (block removal, canonicalization, BPSec)
-        let (bundle, reason, report_unsupported) =
-            match hardy_bpv7::bundle::RewrittenBundle::parse(&data, self.key_provider()) {
-                Err(e) => {
-                    debug!("Bundle parse failed: {e}");
-                    metrics::counter!("bpa.bundle.received.dropped").increment(1);
-                    if let Some(storage_name) = &metadata.storage_name {
-                        self.store.delete_data(storage_name).await;
-                    }
-                    return None;
+        let (bundle, reason, report_unsupported) = match hardy_bpv7::bundle::RewrittenBundle::parse(
+            &data,
+            self.key_provider(),
+        ) {
+            Err(e) => {
+                debug!("Bundle parse failed: {e}");
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                if let Some(storage_name) = &metadata.storage_name {
+                    self.store.delete_data(storage_name).await;
                 }
-                Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
-                    bundle,
+                return None;
+            }
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
+                bundle,
+                report_unsupported,
+            }) => {
+                if metadata.storage_name.is_none() {
+                    metadata.storage_name = Some(self.store.save_data(data.clone()).await);
+                }
+                (
+                    bundle::Bundle { metadata, bundle },
+                    None,
                     report_unsupported,
-                }) => {
-                    if metadata.storage_name.is_none() {
-                        metadata.storage_name = Some(self.store.save_data(data.clone()).await);
+                )
+            }
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
+                bundle,
+                new_data,
+                report_unsupported,
+                non_canonical: _,
+            }) => {
+                debug!("Received bundle has been rewritten");
+
+                data = match data.try_into_mut() {
+                    Ok(buf) => {
+                        let mut vec = buf.into();
+                        hardy_bpv7::editor::Chunk::flatten_inplace(new_data, &mut vec);
+                        Bytes::from(vec)
                     }
-                    (
-                        bundle::Bundle { metadata, bundle },
-                        None,
-                        report_unsupported,
-                    )
+                    Err(original) => {
+                        Bytes::from(hardy_bpv7::editor::Chunk::flatten(new_data, &original))
+                    }
+                };
+
+                if let Some(storage_name) = &metadata.storage_name {
+                    self.store.replace_data(storage_name, data.clone()).await;
+                } else {
+                    metadata.storage_name = Some(self.store.save_data(data.clone()).await);
                 }
-                Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
-                    bundle,
-                    new_data,
+
+                (
+                    bundle::Bundle { metadata, bundle },
+                    None,
                     report_unsupported,
-                    non_canonical: _,
-                }) => {
-                    debug!("Received bundle has been rewritten");
+                )
+            }
+            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
+                bundle,
+                reason,
+                error,
+            }) => {
+                debug!("Invalid bundle received: {error}");
 
-                    data = match data.try_into_mut() {
-                        Ok(buf) => {
-                            let mut vec = buf.into();
-                            hardy_bpv7::editor::Chunk::flatten_inplace(new_data, &mut vec);
-                            Bytes::from(vec)
-                        }
-                        Err(original) => {
-                            Bytes::from(hardy_bpv7::editor::Chunk::flatten(new_data, &original))
-                        }
-                    };
-
-                    if let Some(storage_name) = &metadata.storage_name {
-                        self.store.replace_data(storage_name, data.clone()).await;
-                    } else {
-                        metadata.storage_name = Some(self.store.save_data(data.clone()).await);
-                    }
-
-                    (
-                        bundle::Bundle { metadata, bundle },
-                        None,
-                        report_unsupported,
-                    )
+                // Delete any pre-saved data (reassembly case)
+                if let Some(storage_name) = metadata.storage_name.take() {
+                    self.store.delete_data(&storage_name).await;
                 }
-                Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
-                    bundle,
-                    reason,
-                    error,
-                }) => {
-                    debug!("Invalid bundle received: {error}");
 
-                    // Delete any pre-saved data (reassembly case)
-                    if let Some(storage_name) = metadata.storage_name.take() {
-                        self.store.delete_data(&storage_name).await;
-                    }
+                (bundle::Bundle { metadata, bundle }, Some(reason), false)
+            }
+        };
 
-                    (bundle::Bundle { metadata, bundle }, Some(reason), false)
-                }
-            };
+        // Expired bundles are dropped here, as close to the successful parse
+        // as possible and before the metadata write: an expired bundle must
+        // not consume a metadata entry, and no tombstone is needed to refuse
+        // a later duplicate, because a duplicate shares the bundle's
+        // lifetime and is dropped by this same check. No status reports are
+        // generated — deliberately forgoing the RFC 9171 §5.6/§5.10 reports:
+        // a bundle that arrives already expired is treated as if it never
+        // arrived, rather than amplified into report traffic for something
+        // already dead. Bundles that expire in custody still produce §5.10
+        // deletion reports via the validity filter and reaper paths.
+        if reason.is_none() && bundle.has_expired() {
+            if let Some(storage_name) = &bundle.metadata.storage_name {
+                self.store.delete_data(storage_name).await;
+            }
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::LifetimeExpired)).increment(1);
+            return None;
+        }
 
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store
@@ -168,10 +188,10 @@ impl Dispatcher {
         )
         .await;
 
-        if reason.is_some() {
+        if let Some(reason) = &reason {
             // Invalid bundle — never entered the pipeline, just clean up
             self.store.tombstone_metadata(&bundle.bundle.id).await;
-            metrics::counter!("bpa.bundle.received.dropped").increment(1);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(reason)).increment(1);
             None
         } else {
             Some((bundle, data))
