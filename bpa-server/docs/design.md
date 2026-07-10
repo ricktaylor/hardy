@@ -63,14 +63,14 @@ Command line `-c` or `HARDY_BPA_SERVER_CONFIG_FILE` environment variable overrid
 Storage backends are selected in configuration:
 
 ```yaml
-metadata_storage:
-  type: sqlite  # or "memory"
-
-bundle_storage:
-  type: localdisk  # or "memory"
+storage:
+  metadata:
+    type: sqlite  # the default; or "memory", "postgres"
+  bundle:
+    type: localdisk  # the default; or "memory", "s3"
 ```
 
-Each backend type supports its own configuration options. Memory backends are useful for testing; production deployments typically use sqlite for metadata and localdisk for bundles.
+Each backend type supports its own configuration options. When no storage is configured, the server defaults to SQLite metadata and local-disk bundle storage (falling back to memory only when built without those features). The memory backends must be selected explicitly, are useful for testing, and warn at startup that contents do not survive a restart.
 
 ## Feature Flags
 

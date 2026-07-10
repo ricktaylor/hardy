@@ -184,8 +184,10 @@ Implements `BundleStorage` using the Amazon S3 API via `aws-sdk-s3`, storing eac
 
 ### In-Memory Storage (Testing)
 
-**Bundle:** `src/storage/bundle_mem.rs` - LRU cache with capacity limit
-**Metadata:** `src/storage/metadata_mem.rs` - HashMap-based
+**Bundle:** `src/storage/bundle_mem.rs` - byte-capacity LRU; when over capacity, least-recently-used bundles are evicted (a `min_bundles` floor, clamped to at least 1, protects the most recent saves).
+**Metadata:** `src/storage/metadata_mem.rs` - bounded LRU keyed by bundle ID; tombstones are demoted to the LRU tail so capacity evictions consume them before any live bundle, and eviction of an already-expired bundle is accounted as housekeeping rather than data loss.
+
+Both stores warn at startup that contents do not survive a restart, and emit edge-triggered `info` lines when occupancy crosses 95% of capacity and again when it falls back below 90%, so sustained pressure produces two log lines per episode rather than one per eviction.
 
 ## LRU Cache Management
 
@@ -360,6 +362,6 @@ Each storage component is configured separately:
 | **Store** | LRU cache capacity (default: 1024), max cached bundle size (default: 16 KB) |
 | **Localdisk** | Storage directory, atomic writes (fsync) |
 | **SQLite** | Database directory and name |
-| **In-memory** | Capacity limit, minimum bundle count |
+| **In-memory** | Bundle: byte capacity, minimum bundle count; metadata: maximum entry count |
 
 See rustdoc for `Config` structs and the respective storage backend design docs for configuration details.

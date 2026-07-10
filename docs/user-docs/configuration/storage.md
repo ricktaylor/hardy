@@ -5,6 +5,8 @@ Hardy uses a dual storage model: one backend for **bundle metadata**
 (the actual bytes). The two backends can be
 mixed independently.
 
+When no storage is configured, the server defaults to SQLite metadata and local-disk bundle data (builds without those features fall back to memory).
+
 ## `storage` — Cache Settings
 
 | Key | Valid Values | Default | Description |
@@ -16,11 +18,16 @@ mixed independently.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `type` | `memory`, `sqlite`, `postgres` | `memory` | Metadata storage engine. |
+| `type` | `memory`, `sqlite`, `postgres` | `sqlite` | Metadata storage engine. |
 
 ### Memory
 
-No persistence — metadata is lost on restart. Suitable for testing only.
+No persistence — metadata is lost on restart, and the server logs a warning at startup to say so. Suitable for testing only, and must be selected explicitly.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `type` | `memory` | - | Selects the in-memory backend. |
+| `max-bundles` | Positive integer | `1048576` | Maximum entries held before the oldest are evicted. |
 
 ```yaml
 storage:
@@ -83,12 +90,17 @@ storage:
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `type` | `memory`, `localdisk`, `s3` | `memory` | Bundle data storage engine. |
+| `type` | `memory`, `localdisk`, `s3` | `localdisk` | Bundle data storage engine. |
 
 ### Memory
 
-No persistence — bundle data is lost on restart. Suitable for testing
-only.
+No persistence — bundle data is lost on restart, and the server logs a warning at startup to say so. Suitable for testing only, and must be selected explicitly.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `type` | `memory` | - | Selects the in-memory backend. |
+| `capacity` | Positive integer (bytes) | `268435456` (256 MiB) | Total bytes held before least-recently-used bundles are evicted. |
+| `min-bundles` | Positive integer | `32` | Bundle count never evicted below, even when over the byte capacity. Values below 1 are treated as 1. |
 
 ```yaml
 storage:
