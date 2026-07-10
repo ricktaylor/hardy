@@ -252,10 +252,7 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> Result<Option<BundleMetadata>> {
+    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<BundleMetadata>> {
         Ok(None)
     }
 
