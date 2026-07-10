@@ -260,7 +260,7 @@ pub async fn register_endpoint_service(
     });
 
     // Start the proxy
-    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler);
+    let proxy = RpcProxy::run(channel_sender, channel_receiver, handler, Side::Client);
 
     // Call on_register()
     service.on_register(&eid, Box::new(Sink { proxy })).await;

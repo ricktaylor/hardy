@@ -275,7 +275,7 @@ async fn run_cla_session(
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { cla: cla.clone() });
     cla.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
 }
 
 /// Create a new CLA gRPC service.

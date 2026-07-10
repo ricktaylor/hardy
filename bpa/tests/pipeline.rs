@@ -855,10 +855,12 @@ impl services::Application for FailingApp {
 // INT-BPA-05: dispatcher tolerates on_receive returning Err
 // ---------------------------------------------------------------------------
 
-/// The dispatcher must invoke `on_receive` and handle a returned `Err`
-/// without panicking or deadlocking shutdown. Wiring check only — the
-/// dispatcher's follow-up "park as WaitingForService" behavior is
-/// reviewable by inspection in `dispatcher/local.rs`.
+/// When `on_receive` returns `Err`, the dispatcher must preserve the bundle
+/// as `WaitingForService`, not report it delivered and delete it. Proven
+/// end-to-end: after the failing receiver rejects the bundle, a fresh working
+/// receiver registered on the same service id must have it re-delivered. A
+/// regression to the old drop-on-error behaviour makes the re-delivery time
+/// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_handles_on_receive_err() {
     let bpa = Bpa::builder().build().await.unwrap();
@@ -888,6 +890,7 @@ async fn dispatcher_handles_on_receive_err() {
         .await
         .unwrap();
 
+    // The failing receiver rejects the bundle from within on_receive.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         completed_rx.recv_async(),
@@ -895,6 +898,27 @@ async fn dispatcher_handles_on_receive_err() {
     .await
     .expect("dispatcher must call on_receive")
     .unwrap();
+
+    // Let the dispatcher's Err branch finish parking the bundle before the
+    // re-registration polls for waiting bundles.
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Swap in a working receiver on the same service id. Its registration
+    // polls WaitingForService bundles, which must re-deliver the parked one.
+    failing.sink.get().unwrap().unregister().await;
+    let (receiver, received_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), receiver.clone())
+        .await
+        .unwrap();
+
+    let (_source, payload) = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        received_rx.recv_async(),
+    )
+    .await
+    .expect("parked bundle must be re-delivered on re-registration")
+    .unwrap();
+    assert_eq!(payload, Bytes::from_static(b"payload"));
 
     bpa.shutdown().await;
 }

@@ -214,7 +214,7 @@ async fn run_routing_session(
     });
     agent
         .proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
 }
 
 /// Create a new RoutingAgent gRPC service.

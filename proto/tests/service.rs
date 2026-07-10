@@ -1,4 +1,4 @@
-//! Service client proxy tests (SVC-CLI-01 through SVC-CLI-05).
+//! Service client proxy tests (SVC-CLI-01 through SVC-CLI-06).
 //!
 //! Verify the low-level Service client correctly maps Rust trait calls
 //! to service.proto messages via the gRPC proxy.
@@ -12,7 +12,7 @@ use hardy_bpa::services::{Service, ServiceSink, StatusNotify};
 use hardy_bpv7::eid::Eid;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // A mock Service that records lifecycle callbacks and incoming bundles.
 struct MockService {
@@ -238,5 +238,103 @@ async fn svc_cli_05_cancel() {
 
     // Clean up
     sink.unregister().await;
+    server_tasks.shutdown().await;
+}
+
+// A service that replies from inside `on_receive`, the shape echo-service
+// and any request/reply service uses.
+struct ReplyingService {
+    sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn ServiceSink>>>,
+    replied: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Service for ReplyingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn ServiceSink>) {
+        *self.sink.lock() = Some(Arc::from(sink));
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_receive(
+        &self,
+        data: hardy_bpa::Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> hardy_bpa::services::Result<()> {
+        let sink = self.sink.lock().clone().expect("registered");
+        // Send back to the BPA before returning. The mock sink answers with an
+        // error, but the round-trip must complete: a Send drawn from the same
+        // id space as the BPA's in-flight Receive used to be mis-routed as that
+        // Receive's response, hanging this call forever.
+        let _ = sink.send(data).await;
+        self.replied.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &Eid,
+        _kind: StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+// SVC-CLI-06 (regression): concurrent deliveries to a service that replies
+// from within `on_receive` must not wedge. The two ends of the proxy draw
+// request ids from disjoint parities (proxy::Side), so a reply Send can never
+// collide with the BPA's outstanding Receive. Before the fix this deadlocked
+// deterministically on the first bundle.
+#[tokio::test]
+async fn svc_cli_06_concurrent_reply_from_on_receive() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
+
+    let replied = Arc::new(AtomicUsize::new(0));
+    let svc = Arc::new(ReplyingService {
+        sink: hardy_async::sync::spin::Mutex::new(None),
+        replied: replied.clone(),
+    });
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+    remote_bpa
+        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
+        .await
+        .expect("registration should succeed");
+
+    let server_svc = bpa
+        .last_service
+        .lock()
+        .clone()
+        .expect("BPA should have the server-side service");
+
+    // Drive more concurrent deliveries than the handler pool has permits, so a
+    // wedge (leaked permits) cannot be masked by spare capacity.
+    const N: usize = 32;
+    let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let deliveries = (0..N).map(|_| {
+        let server_svc = server_svc.clone();
+        tokio::spawn(async move {
+            let _ = server_svc
+                .on_receive(hardy_bpa::Bytes::from_static(b"payload"), expiry)
+                .await;
+        })
+    });
+
+    let drive = async {
+        for d in deliveries {
+            let _ = d.await;
+        }
+        while replied.load(Ordering::Relaxed) < N {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), drive)
+        .await
+        .expect("concurrent replying deliveries must not wedge");
+
+    assert_eq!(replied.load(Ordering::Relaxed), N);
+
     server_tasks.shutdown().await;
 }
