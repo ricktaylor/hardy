@@ -152,7 +152,10 @@ where
     fn dispatch(&self, msg: R) {
         let msg_id = msg.msg_id();
 
-        // Bind before matching so the pending lock is released either way.
+        // An id present in our pending map is a response to one of our own
+        // calls: the per-side parity (see `Side`) guarantees it cannot be a
+        // colliding request from the peer. Bind before matching so the pending
+        // lock is released either way.
         let pending_sender = self.pending.lock().as_mut().and_then(|m| m.remove(&msg_id));
         if let Some(ret) = pending_sender {
             let _ = ret.send(msg.msg());
@@ -190,6 +193,31 @@ where
 }
 
 pub type Sender<S> = tokio::sync::mpsc::Sender<S>;
+
+/// Which end of a proxied connection this is.
+///
+/// The two ends draw request ids from disjoint parities: [`Side::Client`]
+/// odd, [`Side::Server`] even, the same convention HTTP/2 uses for stream
+/// ids. Because neither end can mint an id the other might, an inbound id
+/// found in our own pending map is unambiguously a response to one of our
+/// calls, never a colliding request the peer has in flight.
+#[derive(Clone, Copy)]
+pub enum Side {
+    Client,
+    Server,
+}
+
+impl Side {
+    // The first id this side hands out; both step by 2 from here, so the
+    // client's odd ids and the server's even ids never collide. The pre-run
+    // handshake uses 0, which is over before any of these are minted.
+    fn first_id(self) -> u32 {
+        match self {
+            Side::Client => 1,
+            Side::Server => 2,
+        }
+    }
+}
 
 #[allow(clippy::type_complexity)]
 pub struct RpcProxy<S, R>
@@ -263,15 +291,17 @@ where
 
     /// Start the proxy.
     ///
-    /// The reader, writer, and per-request handlers all run on one task pool.
-    /// Call `shutdown()` to cancel and drain them, or drop the proxy to cancel
-    /// them.
+    /// `side` selects the request-id parity for this end (see [`Side`]); the
+    /// two ends of a connection must pass opposite sides. The reader, writer,
+    /// and per-request handlers all run on one task pool. Call `shutdown()` to
+    /// cancel and drain them, or drop the proxy to cancel them.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
         channel_sender: Sender<S>,
         channel_receiver: tonic::Streaming<R>,
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
+        side: Side,
     ) -> Self {
         let tasks = hardy_async::TaskPool::new();
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
@@ -294,7 +324,7 @@ where
         Self {
             write_tx,
             pending,
-            next_msg_id: AtomicU32::new(1),
+            next_msg_id: AtomicU32::new(side.first_id()),
             tasks,
         }
     }
@@ -306,12 +336,7 @@ where
     /// by msg_id. The reader task completes the oneshot when it sees the
     /// matching response.
     pub async fn call(&self, msg: S::Msg) -> Result<Option<R::Msg>, tonic::Status> {
-        // fetch_add wraps; 0 is reserved for the handshake, so the caller that
-        // draws it takes the next id instead.
-        let mut msg_id = self.next_msg_id.fetch_add(1, Ordering::Relaxed);
-        if msg_id == 0 {
-            msg_id = self.next_msg_id.fetch_add(1, Ordering::Relaxed);
-        }
+        let msg_id = self.next_msg_id.fetch_add(2, Ordering::Relaxed);
 
         let (ret_tx, ret_rx) = tokio::sync::oneshot::channel();
 

@@ -243,8 +243,16 @@ impl Dispatcher {
 
         if let Err(e) = delivery_result {
             debug!("Service delivery deferred: {e}");
+            // Park under the service's registration EID, the exact key
+            // `poll_service_waiting` matches on re-registration. The bundle's
+            // own destination can be a different Eid variant for the same
+            // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
+            let service_eid = self
+                .node_ids
+                .resolve_eid(&service.service_id)
+                .unwrap_or_else(|_| bundle.bundle.destination.clone());
             let desired = bundle::BundleStatus::WaitingForService {
-                service: bundle.bundle.destination.clone(),
+                service: service_eid,
             };
             self.store.update_status(&mut bundle, &desired).await;
             return self.store.watch_bundle(bundle).await;

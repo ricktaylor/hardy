@@ -262,7 +262,7 @@ async fn run_service_session(
     // Start the proxy for ongoing communication
     let handler = Box::new(Handler { svc: svc.clone() });
     svc.proxy
-        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler));
+        .call_once(|| RpcProxy::run(channel_sender, channel_receiver, handler, Side::Server));
 }
 
 /// Create a new low-level Service gRPC service.
