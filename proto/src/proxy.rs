@@ -1,6 +1,9 @@
-use super::*;
-use hardy_async::sync::spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::collections::HashMap;
+
+use hardy_async::sync::spin::Mutex;
+
+use super::*;
 
 pub trait SendMsg {
     type Msg;
@@ -68,86 +71,122 @@ async fn writer_task<S>(
     }
 }
 
-/// Reader half: reads from the gRPC inbound stream, dispatches responses to
-/// pending callers and requests to handler tasks.
+/// Reader half: a pure demultiplexer over the gRPC inbound stream.
 ///
-/// Acquires a handler-pool permit before each `stream.message()`. Responses
-/// drop it; requests consume it to spawn a handler. Without pre-acquisition
-/// a full pool would park the reader on `spawn(...).await`, blocking the
-/// very responses whose completion frees the pool.
-async fn reader_task<S, R>(
-    mut stream: tonic::Streaming<R>,
+/// The stream multiplexes responses to our own `call()`s (which unblock a
+/// handler somewhere) with requests from the peer. The reader must never block
+/// on anything a handler depends on, or it cannot deliver the responses that
+/// let handlers finish. So requests are spawned and their concurrency permit is
+/// acquired *inside* the task, never on the read path — acquiring it here would
+/// stall the reader against the very responses that release it.
+struct Reader<S, R>
+where
+    R: RecvMsg,
+    S: SendMsg,
+{
+    stream: tonic::Streaming<R>,
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
     handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
     tasks: hardy_async::TaskPool,
     permits: Arc<tokio::sync::Semaphore>,
-    cancel: hardy_async::CancellationToken,
-) where
+}
+
+impl<S, R> Reader<S, R>
+where
     R: RecvMsg + Send + 'static,
     R::Msg: Send + 'static,
     S: SendMsg + Send + 'static,
     S::Msg: Send + 'static,
 {
-    loop {
-        let permit = tokio::select! {
-            p = permits.clone().acquire_owned() => p.expect("semaphore closed unexpectedly"),
-            _ = cancel.cancelled() => break,
-        };
+    fn new(
+        stream: tonic::Streaming<R>,
+        write_tx: tokio::sync::mpsc::Sender<S>,
+        pending: PendingMap<R::Msg>,
+        handler: Arc<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
+        tasks: hardy_async::TaskPool,
+    ) -> Self {
+        Self {
+            stream,
+            write_tx,
+            pending,
+            handler,
+            tasks,
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                hardy_async::available_parallelism().get(),
+            )),
+        }
+    }
 
-        let msg = tokio::select! {
-            r = stream.message() => match r {
-                Ok(Some(m)) => m,
-                Ok(None) => { debug!("gRPC connection closed"); break; }
-                Err(e) => { error!("gRPC connection failed: {e}"); break; }
-            },
-            _ = cancel.cancelled() => break,
-        };
+    async fn run(mut self) {
+        let cancel = self.tasks.cancel_token().clone();
+        loop {
+            let msg = tokio::select! {
+                r = self.stream.message() => match r {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => { debug!("gRPC connection closed"); break; }
+                    Err(e) => { error!("gRPC connection failed: {e}"); break; }
+                },
+                _ = cancel.cancelled() => break,
+            };
+            self.dispatch(msg);
+        }
 
+        // The reader exiting means the connection is gone: wind the whole proxy
+        // down. Cancelling here (not only on the external `shutdown` path)
+        // makes "reader exited" imply "cancelled", so a re-entrant `shutdown`
+        // from `on_close`/`on_unregister` hits its guard and returns instead of
+        // awaiting its own task.
+        cancel.cancel();
+
+        // Fail in-flight calls (unblocking handlers parked in `call()`) and
+        // reject new ones.
+        let pending_calls: Vec<_> = self.pending.lock().take().into_iter().flatten().collect();
+        for (_, ret) in pending_calls {
+            let _ = ret.send(Err(tonic::Status::cancelled("Connection closed")));
+        }
+
+        self.handler.on_close().await;
+    }
+
+    fn dispatch(&self, msg: R) {
         let msg_id = msg.msg_id();
-        let pending_sender = pending.lock().as_mut().and_then(|m| m.remove(&msg_id));
+
+        // Bind before matching so the pending lock is released either way.
+        let pending_sender = self.pending.lock().as_mut().and_then(|m| m.remove(&msg_id));
         if let Some(ret) = pending_sender {
-            _ = ret.send(msg.msg());
-            continue;
+            let _ = ret.send(msg.msg());
+            return;
         }
 
-        match msg.msg() {
-            Ok(msg) => {
-                let handler = handler.clone();
-                let write_tx = write_tx.clone();
-                hardy_async::spawn!(tasks, "rpc_proxy_handler", async move {
-                    let _permit = permit;
-                    if let Some(response) = handler.on_notify(msg).await {
-                        _ = write_tx
-                            .send(S::compose(msg_id, response))
-                            .await
-                            .inspect_err(|_| debug!("Response dropped (connection closed)"));
-                    }
-                });
+        let req = match msg.msg() {
+            Ok(req) => req,
+            Err(status) => {
+                warn!("{status}");
+                return;
             }
-            Err(status) => warn!("{status}"),
-        }
+        };
+
+        let handler = self.handler.clone();
+        let write_tx = self.write_tx.clone();
+        let permits = self.permits.clone();
+        let cancel = self.tasks.cancel_token().clone();
+        hardy_async::spawn!(self.tasks, "rpc_proxy_handler", async move {
+            let _permit = tokio::select! {
+                permit = permits.acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => return,
+                },
+                _ = cancel.cancelled() => return,
+            };
+            if let Some(response) = handler.on_notify(req).await {
+                let _ = write_tx
+                    .send(S::compose(msg_id, response))
+                    .await
+                    .inspect_err(|_| debug!("Response dropped (connection closed)"));
+            }
+        });
     }
-
-    handler.on_close().await;
-
-    // Close the pending map — fail any remaining calls and prevent new ones.
-    // This signals to call() that the reader is dead without cancelling the
-    // writer, so in-flight handler tasks can still send their responses.
-    let pending_calls: Vec<_> = pending
-        .lock()
-        .take() // Close: None = no new inserts allowed
-        .into_iter()
-        .flatten()
-        .collect();
-    for (_, ret) in pending_calls {
-        _ = ret.send(Err(tonic::Status::cancelled("Connection closed")));
-    }
-
-    // Drop our write_tx clone. The writer stays alive as long as handler
-    // tasks hold their clones. When all handlers complete, write_rx closes
-    // and the writer exits naturally.
-    drop(write_tx);
 }
 
 pub type Sender<S> = tokio::sync::mpsc::Sender<S>;
@@ -162,9 +201,9 @@ where
 {
     write_tx: tokio::sync::mpsc::Sender<S>,
     pending: PendingMap<R::Msg>,
-    next_msg_id: Mutex<u32>,
+    next_msg_id: AtomicU32,
+    /// Reader, writer, and per-request handlers.
     tasks: hardy_async::TaskPool,
-    handler_tasks: hardy_async::TaskPool,
 }
 
 impl<S, R> RpcProxy<S, R>
@@ -222,11 +261,11 @@ where
             .map_err(|e| tonic::Status::unavailable(format!("Server shut down: {e}")))
     }
 
-    /// Start the proxy with split reader/writer tasks.
+    /// Start the proxy.
     ///
-    /// The proxy creates its own task pools plus a semaphore that bounds
-    /// concurrent handlers to `available_parallelism()`. Call `shutdown()`
-    /// to await completion of all in-flight handlers.
+    /// The reader, writer, and per-request handlers all run on one task pool.
+    /// Call `shutdown()` to cancel and drain them, or drop the proxy to cancel
+    /// them.
     ///
     /// After this call, use `call()` to send messages and await responses.
     pub fn run(
@@ -235,48 +274,28 @@ where
         handler: Box<dyn ProxyHandler<SMsg = S::Msg, RMsg = R::Msg>>,
     ) -> Self {
         let tasks = hardy_async::TaskPool::new();
-        let handler_tasks = hardy_async::TaskPool::new();
-        // Held only by the reader task's clone plus any live handler's
-        // OwnedSemaphorePermit; drops when the last reference is gone.
-        let handler_permits = Arc::new(tokio::sync::Semaphore::new(
-            hardy_async::available_parallelism().get(),
-        ));
         let (write_tx, write_rx) = tokio::sync::mpsc::channel(16);
         let pending: PendingMap<R::Msg> = Arc::new(Mutex::new(Some(HashMap::new())));
-        let cancel = tasks.cancel_token().clone();
 
-        // Writer task: write_rx → gRPC outbound
-        let writer_sender = channel_sender;
-        let writer_cancel = cancel.clone();
+        let writer_cancel = tasks.cancel_token().clone();
         hardy_async::spawn!(tasks, "rpc_proxy_writer", async move {
-            writer_task(write_rx, writer_sender, writer_cancel).await;
+            writer_task(write_rx, channel_sender, writer_cancel).await;
         });
 
-        // Reader task: gRPC inbound → dispatch handlers, bounded by handler_permits
-        let reader_write_tx = write_tx.clone();
-        let reader_pending = pending.clone();
-        let handler = Arc::from(handler);
-        let reader_tasks = handler_tasks.clone();
-        let reader_cancel = cancel.clone();
-        hardy_async::spawn!(tasks, "rpc_proxy_reader", async move {
-            reader_task(
-                channel_receiver,
-                reader_write_tx,
-                reader_pending,
-                handler,
-                reader_tasks,
-                handler_permits,
-                reader_cancel,
-            )
-            .await;
-        });
+        let reader = Reader::new(
+            channel_receiver,
+            write_tx.clone(),
+            pending.clone(),
+            Arc::from(handler),
+            tasks.clone(),
+        );
+        hardy_async::spawn!(tasks, "rpc_proxy_reader", async move { reader.run().await });
 
         Self {
             write_tx,
             pending,
-            next_msg_id: Mutex::new(1),
+            next_msg_id: AtomicU32::new(1),
             tasks,
-            handler_tasks,
         }
     }
 
@@ -287,16 +306,12 @@ where
     /// by msg_id. The reader task completes the oneshot when it sees the
     /// matching response.
     pub async fn call(&self, msg: S::Msg) -> Result<Option<R::Msg>, tonic::Status> {
-        let msg_id = {
-            let mut id = self.next_msg_id.lock();
-            let current = *id;
-            *id = id.wrapping_add(1);
-            // Skip 0 — reserved for handshake send/recv
-            if *id == 0 {
-                *id = 1;
-            }
-            current
-        };
+        // fetch_add wraps; 0 is reserved for the handshake, so the caller that
+        // draws it takes the next id instead.
+        let mut msg_id = self.next_msg_id.fetch_add(1, Ordering::Relaxed);
+        if msg_id == 0 {
+            msg_id = self.next_msg_id.fetch_add(1, Ordering::Relaxed);
+        }
 
         let (ret_tx, ret_rx) = tokio::sync::oneshot::channel();
 
@@ -332,24 +347,20 @@ where
     /// any context, including from within a handler task. Tasks exit
     /// asynchronously.
     pub fn cancel(&self) {
-        self.handler_tasks.cancel_token().cancel();
         self.tasks.cancel_token().cancel();
     }
 
-    /// Shut down the proxy and await completion of all tasks.
+    /// Cancel all tasks and await their completion.
     ///
-    /// Drains the handler pool first (allowing in-flight handlers to send
-    /// their responses via the still-active writer), then shuts down the
-    /// infrastructure pool (reader + writer).
-    ///
-    /// Safe to call multiple times (idempotent). If the proxy is already
-    /// cancelled (e.g., re-entrant call from within `on_close`), this
-    /// returns immediately to avoid deadlock.
+    /// Idempotent. The reader cancels the pool on exit, so once the connection
+    /// is gone the guard below short-circuits any re-entrant call from
+    /// `on_close`/`on_unregister` — it returns instead of awaiting its own
+    /// task. A `shutdown` from within a still-running handler would still
+    /// self-deadlock; use [`cancel`](Self::cancel) there.
     pub async fn shutdown(&self) {
         if self.tasks.is_cancelled() {
             return;
         }
-        self.handler_tasks.shutdown().await;
         self.tasks.shutdown().await;
     }
 }
@@ -365,7 +376,6 @@ where
         // Cancel tasks so the stream closes promptly. Matches the
         // "Drop = unregister" design principle — an abandoned proxy
         // should not leave orphaned tasks on the runtime.
-        self.handler_tasks.cancel_token().cancel();
         self.tasks.cancel_token().cancel();
     }
 }
