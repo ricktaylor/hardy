@@ -312,9 +312,11 @@ mod tests {
         }
     }
 
-    // When capacity is exceeded, the oldest-inserted bundle is evicted.
+    // When capacity is exceeded, the least-recently-used bundle is evicted.
+    // Nothing is load()ed between the saves, so LRU order here matches
+    // insertion order.
     #[tokio::test]
-    async fn test_eviction_policy_fifo() {
+    async fn test_eviction_policy_lru() {
         // 100 bytes capacity, min 0 bundles (so eviction is purely capacity-driven)
         let storage = BundleMemStorage::new(&small_config(100, 0));
 
@@ -325,35 +327,38 @@ mod tests {
         // At this point, capacity = 100, exactly at limit
         let name3 = storage.save(Bytes::from(vec![3u8; 50])).await.unwrap();
 
-        // name3 pushed capacity to 150 > 100, so oldest (name1) should be evicted
+        // name3 pushed capacity to 150 > 100, so the LRU entry (name1) is evicted
         assert!(
             storage.load(&name1).await.unwrap().is_none(),
-            "Oldest bundle should be evicted"
+            "LRU bundle should be evicted"
         );
         assert!(storage.load(&name2).await.unwrap().is_some());
         assert!(storage.load(&name3).await.unwrap().is_some());
     }
 
-    // Eviction is strictly FIFO by insertion order.
+    // Eviction is LRU, not FIFO: load() promotes, so a recently read bundle
+    // outlives a later-inserted but never-read one.
     #[tokio::test]
-    async fn test_eviction_policy_priority() {
+    async fn load_promotes_against_eviction() {
         let storage = BundleMemStorage::new(&small_config(100, 0));
 
         // Insert two bundles (50 bytes each, total 100 = at capacity)
         let name1 = storage.save(Bytes::from(vec![0xFFu8; 50])).await.unwrap();
         let name2 = storage.save(Bytes::from(vec![0x00u8; 50])).await.unwrap();
 
-        // Insert a third — pushes over capacity, evicts oldest (name1)
+        // Reading name1 promotes it: name2 is now the LRU entry
+        assert!(storage.load(&name1).await.unwrap().is_some());
+
+        // Pushing over capacity evicts name2, not the first-inserted name1
         let name3 = storage.save(Bytes::from(vec![0xABu8; 50])).await.unwrap();
 
-        // name1 was inserted first (oldest), so it gets evicted
         assert!(
-            storage.load(&name1).await.unwrap().is_none(),
-            "Oldest insertion should be evicted"
+            storage.load(&name2).await.unwrap().is_none(),
+            "Least-recently-used entry should be evicted"
         );
         assert!(
-            storage.load(&name2).await.unwrap().is_some(),
-            "Second insertion should survive"
+            storage.load(&name1).await.unwrap().is_some(),
+            "Promoted entry should survive"
         );
         assert!(storage.load(&name3).await.unwrap().is_some());
     }

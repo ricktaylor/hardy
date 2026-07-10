@@ -81,14 +81,14 @@ Metrics are exported every 60 seconds to the collector.
 |--------|------|--------|-------------|
 | `bpa.bundle.received` | counter | | Bundles received from CLAs |
 | `bpa.bundle.received.bytes` | counter | | Total bytes received |
-| `bpa.bundle.received.dropped` | counter | | Bundles dropped during ingress (validation, filter, expiry) |
+| `bpa.bundle.received.dropped` | counter | `reason` | Arrivals refused at ingress before acceptance (unparseable, invalid, or expired on arrival; never entered custody), labelled by reason code |
 | `bpa.bundle.received.duplicate` | counter | | Duplicate bundles detected |
 | `bpa.bundle.originated` | counter | | Bundles originated by local services |
 | `bpa.bundle.originated.bytes` | counter | | Total bytes originated |
 | `bpa.bundle.forwarded` | counter | | Bundles successfully forwarded to CLAs |
 | `bpa.bundle.forwarding.failed` | counter | | Forward attempts that failed |
 | `bpa.bundle.delivered` | counter | | Bundles delivered to local services |
-| `bpa.bundle.dropped` | counter | `reason` | Bundles deleted (labelled by reason code) |
+| `bpa.bundle.dropped` | counter | `reason` | Bundles deleted from custody via the RFC 9171 §5.10 deletion procedure (labelled by reason code) |
 | `bpa.bundle.reassembled` | counter | | ADUs successfully reassembled from fragments |
 | `bpa.bundle.reassembly.failed` | counter | | Reassembly failures |
 | `bpa.bundle.status` | gauge | `state` | Current bundles by processing state (new, dispatching, forward_pending, waiting, etc.) |

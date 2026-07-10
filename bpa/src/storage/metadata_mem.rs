@@ -3,6 +3,7 @@ use core::num::{NonZero, NonZeroUsize};
 use hardy_async::{async_trait, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
 use lru::LruCache;
+use time::OffsetDateTime;
 use tracing::{info, warn};
 
 use super::{MetadataStorage, Result};
@@ -35,10 +36,25 @@ enum Edge {
     Exit { live: usize, evicted_live: u64 },
 }
 
+// A live bundle, or a tombstone remembering a deletion (and the deleted
+// bundle's expiry time) so duplicates are refused for as long as one could
+// still legitimately arrive.
+enum Entry {
+    Live(Box<Bundle>),
+    Tombstone(OffsetDateTime),
+}
+
+impl Entry {
+    fn live(&self) -> Option<&Bundle> {
+        match self {
+            Self::Live(bundle) => Some(bundle),
+            Self::Tombstone(_) => None,
+        }
+    }
+}
+
 struct Inner {
-    // Some = live bundle, None = a tombstone remembering a deletion so
-    // duplicates of the bundle are not re-accepted.
-    entries: LruCache<Id, Option<Bundle>>,
+    entries: LruCache<Id, Entry>,
     live: usize,
     tombstones: usize,
     near_capacity: bool,
@@ -47,62 +63,61 @@ struct Inner {
 
 impl Inner {
     // Insert or replace `value` under `key`, maintaining the live/tombstone
-    // counts and eviction metrics. A capacity eviction takes the LRU entry,
-    // which is always the oldest tombstone while any tombstone exists,
-    // because tombstoned keys are demoted to the LRU tail and never promoted
-    // afterwards. Returns the previous value stored under `key`, if any.
-    fn upsert(&mut self, key: Id, value: Option<Bundle>) -> Option<Option<Bundle>> {
-        let is_tombstone = value.is_none();
-        match &value {
-            Some(_) => self.live += 1,
-            None => self.tombstones += 1,
-        }
-
-        let prev = match self.entries.push(key.clone(), value) {
-            Some((k, prev)) if k == key => {
-                match &prev {
-                    Some(_) => self.live -= 1,
-                    None => self.tombstones -= 1,
-                }
-                Some(prev)
+    // counts and eviction metrics. Fresh entries land at the MRU end, so a
+    // just-written tombstone shields against a burst of duplicates of the
+    // deleted bundle. Only a tombstone whose bundle has already expired is
+    // demoted to the LRU tail, making expired tombstones the preferred
+    // capacity-eviction victims: a late duplicate of an expired bundle is
+    // itself expired and is refused by the ingress expiry check, so an
+    // expired tombstone guards nothing. The expiry test happens once, at
+    // write time; a tombstone that outlives its bundle's expiry in place
+    // simply ages out of the LRU normally.
+    fn upsert(&mut self, key: Id, value: Entry) {
+        let demote = match &value {
+            Entry::Live(_) => {
+                self.live += 1;
+                false
             }
-            Some((_, evicted)) => {
-                match &evicted {
-                    // With no background sweep, expired bundles linger until
-                    // evicted or reaped; discarding one is housekeeping, not
-                    // data loss, so it stays out of the episode accounting.
-                    Some(bundle) if bundle.has_expired() => {
-                        self.live -= 1;
-                        metrics::counter!("bpa.mem_metadata.evictions", "kind" => "expired")
-                            .increment(1);
-                    }
-                    Some(_) => {
-                        self.live -= 1;
-                        self.evicted_live += 1;
-                        metrics::counter!("bpa.mem_metadata.evictions", "kind" => "live")
-                            .increment(1);
-                    }
-                    None => {
-                        self.tombstones -= 1;
-                        metrics::counter!("bpa.mem_metadata.evictions", "kind" => "tombstone")
-                            .increment(1);
-                    }
-                }
-                None
+            Entry::Tombstone(expiry) => {
+                self.tombstones += 1;
+                *expiry <= OffsetDateTime::now_utc()
             }
-            None => None,
         };
 
-        if is_tombstone {
-            // Tombstones are expendable: sink them to the LRU tail so
-            // capacity evictions consume them before any live bundle.
+        match self.entries.push(key.clone(), value) {
+            Some((k, prev)) if k == key => match prev {
+                Entry::Live(_) => self.live -= 1,
+                Entry::Tombstone(_) => self.tombstones -= 1,
+            },
+            Some((_, evicted)) => match evicted {
+                // With no background sweep, expired bundles linger until
+                // evicted or reaped; discarding one is housekeeping, not
+                // data loss, so it stays out of the episode accounting.
+                Entry::Live(bundle) if bundle.has_expired() => {
+                    self.live -= 1;
+                    metrics::counter!("bpa.mem_metadata.evictions", "kind" => "expired")
+                        .increment(1);
+                }
+                Entry::Live(_) => {
+                    self.live -= 1;
+                    self.evicted_live += 1;
+                    metrics::counter!("bpa.mem_metadata.evictions", "kind" => "live").increment(1);
+                }
+                Entry::Tombstone(_) => {
+                    self.tombstones -= 1;
+                    metrics::counter!("bpa.mem_metadata.evictions", "kind" => "tombstone")
+                        .increment(1);
+                }
+            },
+            None => {}
+        }
+
+        if demote {
             self.entries.demote(&key);
         }
 
         metrics::gauge!("bpa.mem_metadata.entries").set(self.live as f64);
         metrics::gauge!("bpa.mem_metadata.tombstones").set(self.tombstones as f64);
-
-        prev
     }
 
     // Edge-triggered watermark detection with hysteresis: fires once when
@@ -126,12 +141,16 @@ impl Inner {
 
 /// An in-memory [`MetadataStorage`] implementation backed by a bounded LRU cache.
 ///
-/// Contents are not persisted: all metadata is lost on restart. When the
-/// cache is full, tombstones are evicted in preference to live bundles, and
-/// a live bundle is evicted only once no tombstones remain. A single `info!`
-/// line is emitted when the live bundle count crosses 95% of capacity, and
-/// another when it falls back below 90%, so sustained pressure does not
-/// flood the log.
+/// Contents are not persisted: all metadata is lost on restart. Deletions
+/// are remembered as tombstones so duplicates of a deleted bundle are
+/// refused for as long as one could still legitimately arrive. When the
+/// cache is full, entries are evicted in least-recently-used order, except
+/// that a tombstone whose bundle has already expired is demoted to the LRU
+/// tail at write time and so is consumed first — it guards nothing, since a
+/// late duplicate of an expired bundle is itself expired and is refused by
+/// the ingress expiry check. A single `info!` line is emitted when the live
+/// bundle count crosses 95% of capacity, and another when it falls back
+/// below 90%, so sustained pressure does not flood the log.
 pub struct MetadataMemStorage {
     inner: Mutex<Inner>,
     max_bundles: NonZeroUsize,
@@ -167,17 +186,13 @@ impl MetadataMemStorage {
 
     // Apply a mutation, then emit any watermark transition once the lock has
     // been released.
-    fn apply(&self, key: Id, value: Option<Bundle>) -> Option<Option<Bundle>> {
-        let (prev, edge) = {
+    fn apply(&self, key: Id, value: Entry) {
+        let edge = {
             let mut inner = self.inner.lock();
-            let prev = inner.upsert(key, value);
-            (
-                prev,
-                inner.check_watermark(self.high_watermark, self.low_watermark),
-            )
+            inner.upsert(key, value);
+            inner.check_watermark(self.high_watermark, self.low_watermark)
         };
         self.log_edge(edge);
-        prev
     }
 
     fn log_edge(&self, edge: Option<Edge>) {
@@ -215,7 +230,13 @@ impl MetadataMemStorage {
 #[async_trait]
 impl MetadataStorage for MetadataMemStorage {
     async fn get(&self, bundle_id: &Id) -> Result<Option<Bundle>> {
-        Ok(self.inner.lock().entries.peek(bundle_id).cloned().flatten())
+        Ok(self
+            .inner
+            .lock()
+            .entries
+            .peek(bundle_id)
+            .and_then(Entry::live)
+            .cloned())
     }
 
     async fn insert(&self, bundle: &Bundle) -> Result<bool> {
@@ -227,7 +248,7 @@ impl MetadataStorage for MetadataMemStorage {
             if inner.entries.contains(&key) {
                 return Ok(false);
             }
-            inner.upsert(key, Some(bundle.clone()));
+            inner.upsert(key, Entry::Live(Box::new(bundle.clone())));
             inner.check_watermark(self.high_watermark, self.low_watermark)
         };
         self.log_edge(edge);
@@ -235,7 +256,10 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn replace(&self, bundle: &Bundle) -> Result<()> {
-        self.apply(bundle.bundle.id.clone(), Some(bundle.clone()));
+        self.apply(
+            bundle.bundle.id.clone(),
+            Entry::Live(Box::new(bundle.clone())),
+        );
         Ok(())
     }
 
@@ -244,7 +268,22 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
-        self.apply(bundle_id.clone(), None);
+        let edge = {
+            let mut inner = self.inner.lock();
+            // An id that is already gone (evicted under pressure) is not
+            // re-recorded: pushing its tombstone into a full cache can
+            // evict a live bundle, and the dedup protection for the deleted
+            // bundle was already forfeited when its entry was evicted.
+            // peek() leaves the LRU order untouched.
+            let expiry = match inner.entries.peek(bundle_id) {
+                None => return Ok(()),
+                Some(Entry::Live(bundle)) => bundle.expiry(),
+                Some(Entry::Tombstone(expiry)) => *expiry,
+            };
+            inner.upsert(bundle_id.clone(), Entry::Tombstone(expiry));
+            inner.check_watermark(self.high_watermark, self.low_watermark)
+        };
+        self.log_edge(edge);
         Ok(())
     }
 
@@ -263,7 +302,7 @@ impl MetadataStorage for MetadataMemStorage {
     async fn reset_peer_queue(&self, peer: u32) -> Result<u64> {
         let mut updated = 0;
         for (_, v) in self.inner.lock().entries.iter_mut() {
-            if let Some(v) = v
+            if let Entry::Live(v) = v
                 && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.metadata.status
                 && p == peer
             {
@@ -280,7 +319,7 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .entries
             .iter()
-            .filter_map(|(_, v)| v.as_ref())
+            .filter_map(|(_, v)| v.live())
             .filter(|v| v.metadata.status != BundleStatus::New)
             .cloned()
             .collect();
@@ -301,7 +340,7 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .entries
             .iter()
-            .filter_map(|(_, v)| v.as_ref())
+            .filter_map(|(_, v)| v.live())
             .filter(|b| b.metadata.status == BundleStatus::Waiting)
             .cloned()
             .collect();
@@ -322,7 +361,7 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .entries
             .iter()
-            .filter_map(|(_, v)| v.as_ref())
+            .filter_map(|(_, v)| v.live())
             .filter(|b| {
                 matches!(&b.metadata.status, BundleStatus::WaitingForService { service } if service == &source)
             })
@@ -349,7 +388,7 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .entries
             .iter()
-            .filter_map(|(_, v)| v.as_ref())
+            .filter_map(|(_, v)| v.live())
             .filter(|v| &v.metadata.status == status)
             .filter_map(|v| {
                 v.bundle
@@ -381,7 +420,7 @@ impl MetadataStorage for MetadataMemStorage {
             .lock()
             .entries
             .iter()
-            .filter_map(|(_, v)| v.as_ref())
+            .filter_map(|(_, v)| v.live())
             .filter(|v| &v.metadata.status == state)
             .cloned()
             .collect();
@@ -429,10 +468,38 @@ mod tests {
         }
     }
 
-    // A full cache must evict a tombstone in preference to a live bundle,
-    // even though the tombstone was written more recently.
+    // A full cache must evict an expired tombstone in preference to a live
+    // bundle, even though the tombstone was written most recently.
     #[tokio::test]
-    async fn tombstone_evicted_before_live() {
+    async fn expired_tombstone_evicted_before_live() {
+        let storage = MetadataMemStorage::new(&small_config(3));
+        let (a, b, c, d) = (
+            make_expired_bundle(1),
+            make_bundle(2),
+            make_bundle(3),
+            make_bundle(4),
+        );
+
+        assert!(storage.insert(&a).await.unwrap());
+        assert!(storage.insert(&b).await.unwrap());
+        assert!(storage.insert(&c).await.unwrap());
+
+        // a has already expired, so its tombstone is demoted at write time
+        storage.tombstone(&a.bundle.id).await.unwrap();
+
+        // The cache is full: inserting d must evict a's expired tombstone,
+        // not the least-recently-used live bundle (b).
+        assert!(storage.insert(&d).await.unwrap());
+        assert!(storage.get(&b.bundle.id).await.unwrap().is_some());
+        assert!(storage.get(&c.bundle.id).await.unwrap().is_some());
+        assert!(storage.get(&d.bundle.id).await.unwrap().is_some());
+    }
+
+    // An unexpired tombstone is live dedup state: it enters at the MRU end,
+    // outlives less recently touched live entries, and keeps refusing a
+    // burst of duplicates of the deleted bundle.
+    #[tokio::test]
+    async fn fresh_tombstone_shields_duplicates_over_live() {
         let storage = MetadataMemStorage::new(&small_config(3));
         let (a, b, c, d) = (
             make_bundle(1),
@@ -445,17 +512,19 @@ mod tests {
         assert!(storage.insert(&b).await.unwrap());
         assert!(storage.insert(&c).await.unwrap());
 
+        // a has not expired: its tombstone lands at the MRU end
         storage.tombstone(&a.bundle.id).await.unwrap();
 
-        // The cache is full: inserting d must evict a's tombstone, not the
-        // oldest live bundle (b).
+        // Inserting d evicts the LRU live bundle (b), not the fresh tombstone
         assert!(storage.insert(&d).await.unwrap());
-        assert!(storage.get(&b.bundle.id).await.unwrap().is_some());
+        assert!(storage.get(&b.bundle.id).await.unwrap().is_none());
         assert!(storage.get(&c.bundle.id).await.unwrap().is_some());
-        assert!(storage.get(&d.bundle.id).await.unwrap().is_some());
+
+        // The tombstone still refuses a duplicate of a
+        assert!(!storage.insert(&a).await.unwrap());
     }
 
-    // With no tombstones to consume, capacity eviction falls back to the
+    // With nothing tombstoned, capacity eviction takes the
     // least-recently-used live bundle.
     #[tokio::test]
     async fn oldest_live_evicted_when_no_tombstones() {
@@ -472,12 +541,12 @@ mod tests {
     }
 
     // A duplicate of a tombstoned bundle is refused, and the refusal must
-    // not promote the tombstone off the LRU tail.
+    // not promote an expired tombstone off the LRU tail.
     #[tokio::test]
     async fn reinsert_of_tombstoned_id_refused_without_promotion() {
         let storage = MetadataMemStorage::new(&small_config(3));
         let (a, b, c, d) = (
-            make_bundle(1),
+            make_expired_bundle(1),
             make_bundle(2),
             make_bundle(3),
             make_bundle(4),
@@ -490,11 +559,33 @@ mod tests {
         storage.tombstone(&a.bundle.id).await.unwrap();
         assert!(!storage.insert(&a).await.unwrap());
 
-        // The tombstone must still be the next eviction victim.
+        // The expired tombstone must still be the next eviction victim.
         assert!(storage.insert(&d).await.unwrap());
         assert!(storage.get(&b.bundle.id).await.unwrap().is_some());
 
         // The tombstone is gone with it, so a duplicate of a is accepted again.
+        assert!(storage.insert(&a).await.unwrap());
+    }
+
+    // Tombstoning an id that has already been evicted must not push a
+    // tombstone into the full cache and evict a live bundle with it.
+    #[tokio::test]
+    async fn tombstone_of_absent_id_does_not_evict_live() {
+        let storage = MetadataMemStorage::new(&small_config(2));
+        let (a, b, c) = (make_bundle(1), make_bundle(2), make_bundle(3));
+
+        assert!(storage.insert(&a).await.unwrap());
+        assert!(storage.insert(&b).await.unwrap());
+        // The cache is full with no tombstones: inserting c evicts a
+        assert!(storage.insert(&c).await.unwrap());
+        assert!(storage.get(&a.bundle.id).await.unwrap().is_none());
+
+        storage.tombstone(&a.bundle.id).await.unwrap();
+
+        // Both live bundles survive; the deletion went unrecorded, so a
+        // duplicate of a is accepted again.
+        assert!(storage.get(&b.bundle.id).await.unwrap().is_some());
+        assert!(storage.get(&c.bundle.id).await.unwrap().is_some());
         assert!(storage.insert(&a).await.unwrap());
     }
 

@@ -20,7 +20,7 @@ pub fn init() {
     metrics::describe_counter!(
         "bpa.bundle.received.dropped",
         metrics::Unit::Count,
-        "Bundles dropped at reception (invalid CBOR, BPv6, parse failure)"
+        "Arrivals refused at ingress before acceptance (unparseable, invalid, or expired on arrival; never entered custody), labelled by reason code"
     );
     metrics::describe_counter!(
         "bpa.bundle.received.duplicate",
@@ -66,7 +66,7 @@ pub fn init() {
     metrics::describe_counter!(
         "bpa.bundle.dropped",
         metrics::Unit::Count,
-        "Bundles dropped (by reason code)"
+        "Bundles deleted from custody via the RFC 9171 section 5.10 deletion procedure, labelled by reason code"
     );
     metrics::describe_counter!(
         "bpa.bundle.reassembled",

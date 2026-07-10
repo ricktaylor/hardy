@@ -185,7 +185,7 @@ Implements `BundleStorage` using the Amazon S3 API via `aws-sdk-s3`, storing eac
 ### In-Memory Storage (Testing)
 
 **Bundle:** `src/storage/bundle_mem.rs` - byte-capacity LRU; when over capacity, least-recently-used bundles are evicted (a `min_bundles` floor, clamped to at least 1, protects the most recent saves).
-**Metadata:** `src/storage/metadata_mem.rs` - bounded LRU keyed by bundle ID; tombstones are demoted to the LRU tail so capacity evictions consume them before any live bundle, and eviction of an already-expired bundle is accounted as housekeeping rather than data loss.
+**Metadata:** `src/storage/metadata_mem.rs` - bounded LRU keyed by bundle ID; a tombstone records the deleted bundle's expiry and, while unexpired, is live de-duplication state that ages out of the LRU like any other entry, whereas a tombstone written for an already-expired bundle is demoted to the LRU tail so capacity evictions consume it first (a late duplicate of an expired bundle is itself expired and is refused at ingress); eviction of an already-expired bundle is accounted as housekeeping rather than data loss.
 
 Both stores warn at startup that contents do not survive a restart, and emit edge-triggered `info` lines when occupancy crosses 95% of capacity and again when it falls back below 90%, so sustained pressure produces two log lines per episode rather than one per eviction.
 
