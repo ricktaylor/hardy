@@ -837,6 +837,12 @@ impl<'a> Editor<'a> {
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
                         .rebuild();
                 }
+
+                // The target is no longer covered by this BIB. Clear its
+                // coverage so `rebuild_bundle()` does not report a dangling
+                // reference to a BIB that has been removed or rewritten.
+                self.bib_overrides
+                    .insert(target_block, block::BibCoverage::None);
             }
         }
         Ok(self)
