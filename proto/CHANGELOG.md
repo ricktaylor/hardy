@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - Map routing validation errors to appropriate gRPC status codes (`invalid_argument` for null/own-node next hops, `unavailable` for disconnects, `internal` otherwise) instead of always surfacing as internal errors.
 - Pre-check payload size before sending so an over-sized bundle returns a typed error instead of breaking the underlying gRPC stream.
+- RpcProxy concurrent-delivery correctness: the reader is now a pure demultiplexer and request ids are drawn per-side, so concurrent request/reply traffic on a single stream can no longer deadlock the reader or mis-route replies.
+- Harden receive-path error handling and propagate failures instead of swallowing them.
 
 ### Removed
 - `server::init()` (superseded by `GrpcServer`).

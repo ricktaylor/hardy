@@ -13,4 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Build echo replies via the chunked zero-copy Editor output, reusing the inbound buffer when possible to avoid an extra payload copy.
 - Raised the minimum supported Rust version (MSRV) to 1.95.
 
+### Fixed
+- Propagate delivery/send failures from `on_receive` instead of swallowing them.
+
 Releases before this version predate this changelog; see the git history for details.
