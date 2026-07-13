@@ -127,9 +127,12 @@ impl hardy_bpa::services::Application for Application {
             .await?
         {
             app_to_bpa::Msg::Receive(_) => Ok(()),
-            msg => Err(hardy_bpa::services::Error::Internal(
-                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-            )),
+            msg => {
+                warn!("Unexpected response: {msg:?}");
+                Err(hardy_bpa::services::Error::Internal(
+                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+                ))
+            }
         }
     }
 
