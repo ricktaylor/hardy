@@ -172,12 +172,27 @@ impl<'a> Signer<'a> {
                     .blocks
                     .get(target)
                     .expect("Missing target block");
-                if *target != 0 && !matches!(target_block.crc_type, crc::CrcType::None) {
-                    editor = editor
-                        .update_block_inner(*target)
-                        .map_err(|(_, e)| e)?
-                        .with_crc_type(crc::CrcType::None)
-                        .rebuild();
+                if !matches!(target_block.crc_type, crc::CrcType::None) {
+                    // The rule applies to every target, including the primary
+                    // (RFC 9171 permits the primary to carry no CRC when a BIB
+                    // targets it).
+                    if *target == 0 {
+                        // Re-emit the primary canonically with no CRC and
+                        // register the bytes, so the IPPT (which reads the
+                        // primary via `block(0)`) and the rebuilt bundle agree
+                        // on the CRC-removed form.
+                        let mut primary = self.original.clone();
+                        primary.crc_type = crc::CrcType::None;
+                        let canonical = crate::bundle::primary_block::PrimaryBlock::emit(&primary)
+                            .map_err(editor::Error::from)?;
+                        editor.set_canonical_primary(canonical.into());
+                    } else {
+                        editor = editor
+                            .update_block_inner(*target)
+                            .map_err(|(_, e)| e)?
+                            .with_crc_type(crc::CrcType::None)
+                            .rebuild();
+                    }
                 }
             }
 

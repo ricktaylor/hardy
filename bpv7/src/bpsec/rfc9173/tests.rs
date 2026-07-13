@@ -973,9 +973,10 @@ fn test_encrypt_bib_directly_fails() {
 
 #[test]
 fn test_sign_primary_block_with_crc() {
-    // Test that signing the primary block (block 0) works even when
-    // the primary block has a CRC. RFC 9171 Section 4.3.1 allows
-    // both CRC and BIB on the primary block.
+    // Test that signing the primary block (block 0) removes its CRC.
+    // RFC 9173 Section 3.8.1 requires the target's CRC to be removed before
+    // the IPPT is generated, with no exemption for the primary block; RFC 9171
+    // Section 4.3.1 permits the primary to carry no CRC when a BIB targets it.
 
     // 1. Create a bundle (primary block will have a CRC by default)
     let (bundle, bundle_bytes) =
@@ -1027,11 +1028,11 @@ fn test_sign_primary_block_with_crc() {
         "Should have 1 BIB after signing primary block"
     );
 
-    // 5. Verify the primary block still has its CRC (RFC 9171 allows this)
+    // 5. Verify the primary block's CRC was removed (RFC 9173 Section 3.8.1)
     let signed_primary = parsed.bundle.blocks.get(&0).expect("Primary block missing");
     assert!(
-        !matches!(signed_primary.crc_type, crate::crc::CrcType::None),
-        "Primary block should still have CRC after signing"
+        matches!(signed_primary.crc_type, crate::crc::CrcType::None),
+        "Primary block CRC must be removed after signing (RFC 9173 Section 3.8.1)"
     );
 
     // 6. Verify the signature
