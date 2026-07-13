@@ -149,12 +149,12 @@ impl<'a> Builder<'a> {
                 bundle::primary_block::PrimaryBlock::as_block(bundle.crc_type, extent),
             );
 
-            // Emit extension blocks
-            for (block_number, block) in self.extensions.into_iter().enumerate() {
-                bundle.blocks.insert(
-                    block_number as u64,
-                    block.build(block_number as u64 + 2, a)?,
-                );
+            // Emit extension blocks, numbered from 2 (primary is 0, payload is 1)
+            for (index, block) in self.extensions.into_iter().enumerate() {
+                let block_number = index as u64 + 2;
+                bundle
+                    .blocks
+                    .insert(block_number, block.build(block_number, a)?);
             }
 
             // Emit payload
@@ -341,6 +341,29 @@ fn test_builder() {
         .with_payload("Hello".as_bytes().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
+}
+
+// Requirement: LLR 1.1.25 — the returned `blocks` map is keyed by wire block
+// number (primary 0, payload 1, extensions 2..), matching a parsed bundle.
+#[test]
+fn test_builder_block_map_keys() {
+    let prev_node: eid::Eid = "ipn:3.0".parse().unwrap();
+    let (bundle, _data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::PreviousNode)
+        .unwrap()
+        .build(hardy_cbor::encode::emit(&prev_node).0.into())
+        .add_extension_block(block::Type::BundleAge)
+        .unwrap()
+        .build(hardy_cbor::encode::emit(&0u64).0.into())
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    assert_eq!(bundle.blocks.len(), 4);
+    assert_eq!(bundle.blocks[&0].block_type, block::Type::Primary);
+    assert_eq!(bundle.blocks[&1].block_type, block::Type::Payload);
+    assert_eq!(bundle.blocks[&2].block_type, block::Type::PreviousNode);
+    assert_eq!(bundle.blocks[&3].block_type, block::Type::BundleAge);
 }
 
 // Requirement: LLR 1.1.25
