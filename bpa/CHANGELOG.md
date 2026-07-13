@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Switched the node-id RNG from `ThreadRng` to a `SysRng`-seeded `SmallRng`; moved internal channels off `flume` to `hardy-async`/`arc-swap`.
 - Raised the minimum supported Rust version (MSRV) to 1.95.
 
+### Fixed
+- Preserve bundles when a service delivery returns an error: the failure is propagated so the bundle is re-queued for retry instead of being dropped.
+- Treat unexpired tombstones as dedup state and drop already-expired bundles at ingress, before the metadata write.
+- `MetadataMemStorage` evicts tombstones before live bundles; `BundleMemStorage` uses an edge-triggered capacity watermark with corrected eviction.
+- Exit the storage `poll_queue` drain promptly on cancellation instead of running one extra poll cycle.
+
 ### Removed
 - `cla::Error::InvalidBundle(hardy_bpv7::Error)` variant.
 - Public `storage::Sender<T> = flume::Sender<T>` alias and the public `storage::bundle_mem`/`storage::metadata_mem` modules (reach them via the re-exports above).
