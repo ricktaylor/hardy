@@ -50,10 +50,16 @@ impl EchoService {
             return Ok(());
         };
 
-        // Parse the request bundle.
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
-            .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))?
-            .bundle;
+        // Parse the request bundle. A malformed bundle is a permanent failure:
+        // stop rather than propagate, which would park it for a retry that can
+        // never succeed. Only a failed send (below) is transient and worth a
+        // retry. In practice the BPA already parsed these bytes at ingress.
+        let Ok(parsed) = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
+            .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))
+        else {
+            return Ok(());
+        };
+        let bundle = parsed.bundle;
 
         // When a Response Is Sent: do not respond to a bundle with no return
         // path (null source), nor to an administrative record (which would risk
@@ -95,10 +101,15 @@ impl EchoService {
             builder = builder.with_report_to(bundle.report_to.clone());
         }
 
-        let (_, response) = builder
+        // Building from an already-parsed bundle is deterministic, so a failure
+        // here is permanent too: stop rather than park for retry.
+        let Ok((_, response)) = builder
             .with_payload(payload.into())
             .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-            .inspect_err(|e| debug!("Failed to build echo response: {e:?}"))?;
+            .inspect_err(|e| debug!("Failed to build echo response: {e:?}"))
+        else {
+            return Ok(());
+        };
 
         debug!(
             source = %bundle.destination,
