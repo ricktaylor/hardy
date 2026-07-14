@@ -26,7 +26,7 @@ All LLRs assigned to this module pass (15 pass, 2 N/A).
 | **1.1.30** | Rewriting rules for unknown blocks | Pass | `parse.rs::unknown_block_discard` | REWRITE-01 | 1.2 |
 | **1.1.33** | Bundle Age for expiry | N/A | Enforced by BPA rfc9171-filter, not parser | — | 1.2 |
 | **1.1.34** | Hop Count processing | Pass | `parse.rs::hop_count_extraction` | EXT-02 (add hop-count) | 1.2 |
-| **2.1.1** | BPSec integrity/confidentiality | Pass | 16 tests in `bpsec/rfc9173/test.rs` | SIGN + ENC suites (12 tests) | 2.3, 2.4 |
+| **2.1.1** | BPSec integrity/confidentiality | Pass | 18 tests in `tests/rfc9173.rs` | SIGN + ENC suites (12 tests) | 2.3, 2.4 |
 | **2.1.2** | BPSec target cleanup | Pass | `test_bib_removal_and_readd`, `test_bcb_without_bib_removal` | remove-integrity, remove-encryption | 2.3 |
 | **2.1.3** | Fragment + BPSec rejection | N/A | Sender constraint: `signer.rs:75`. LLR to be corrected | — | 2.3 |
 | **2.2.1-3** | BIB-HMAC-SHA2 (256/384/512) | Pass | RFC 9173 Appendix A test vectors | SIGN-01 (SHA-256) | 2.4 |
@@ -43,14 +43,14 @@ All LLRs assigned to this module pass (15 pass, 2 N/A).
 | `tests` | `eid/cbor_tests.rs` | IPN legacy/modern/DTN/null EID CBOR parsing (LLR 1.1.23, 1.1.24) |
 | `tests` | `eid/str_tests.rs` | EID string parsing |
 | `tests` | `eid/roundtrip_tests.rs` | EID serialisation roundtrip |
-| `rfc9173_appendix_a_1..4` | `bpsec/rfc9173/test.rs` | RFC 9173 test vectors (BIB + BCB) |
-| `test_sign_then_encrypt` | `bpsec/rfc9173/test.rs` | BIB then BCB workflow |
-| `test_encrypt_then_sign_fails` | `bpsec/rfc9173/test.rs` | Constraint: can't sign encrypted block |
-| `test_signature_tamper_detection` | `bpsec/rfc9173/test.rs` | Integrity verification failure |
-| `test_sign_primary_block_with_crc*` | `bpsec/rfc9173/test.rs` | Primary block signing + CRC interaction |
-| 5 more constraint tests | `bpsec/rfc9173/test.rs` | Removal, re-add, error paths |
+| `rfc9173_appendix_a_1..4` | `tests/rfc9173.rs` | RFC 9173 test vectors (BIB + BCB) |
+| `test_sign_then_encrypt` | `tests/rfc9173.rs` | BIB then BCB workflow |
+| `test_encrypt_then_sign_fails` | `tests/rfc9173.rs` | Constraint: can't sign encrypted block |
+| `test_signature_tamper_detection` | `tests/rfc9173.rs` | Integrity verification failure |
+| `test_sign_primary_block_with_crc*` | `tests/rfc9173.rs` | Primary block signing + CRC interaction |
+| 5 more constraint tests | `tests/rfc9173.rs` | Removal, re-add, error paths |
 
-**Total: 58 unit test functions**
+**Total: 110 test functions (78 unit, 32 integration)**
 
 ### Component Tests (CLI Integration)
 
@@ -77,21 +77,19 @@ All unit test plan scenarios (UTP-BPV7-01, UTP-BPSEC-01) are implemented — no 
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-bpv7 --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 77.3% (4421 of 5722 lines)
-  functions..: 9.3% (670 of 7219 functions)
+  lines......: 75.6% (4585 of 6067 lines)
+  functions..: 9.2% (702 of 7652 functions)
 ```
 
-Per-file breakdown (from HTML report):
+Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-cov test --html`):
 
 | File | Covered | Total | Coverage | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -140,9 +138,9 @@ lcov --summary ./fuzz/coverage/eid_str/lcov.info
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- | :--- |
-| `random_bundles` | 28.5% (1434/5031) | 28.4% (133/468) |
-| `eid_cbor` | 3.9% (197/5031) | 4.7% (22/468) |
-| `eid_str` | 1.8% (93/5031) | 3.4% (16/468) |
+| `random_bundles` | 28.2% (1435/5083) | 28.1% (133/473) |
+| `eid_cbor` | 3.9% (197/5083) | 4.7% (22/473) |
+| `eid_str` | 1.8% (93/5083) | 3.4% (16/473) |
 
 The `random_bundles` target provides strong coverage of the parser pipeline, achieving 98% on `bundle/primary_block.rs`, 76% on `block.rs`, and 56% on `bpsec/parse.rs` (per-file figures from the published CFLite run). Combined with unit tests, the parser has comprehensive verification from both known-good (RFC vectors) and adversarial (fuzz) inputs.
 
@@ -161,8 +159,8 @@ All LLRs are verified. Remaining gaps are limited to line coverage in low-value 
 
 The bpv7 crate has **complete LLR coverage** (15/15 verified, 2 N/A) across three test layers:
 
-- **58 unit tests** — 77.3% line coverage, all planned scenarios implemented, no stubs remaining
+- **110 tests** (78 unit, 32 integration) — 75.6% line coverage, all planned scenarios implemented, no stubs remaining
 - **26 CLI integration tests** (`bundle_tools_test.sh`) — end-to-end verification of the Builder→Editor→Signer→Encryptor→Validator pipeline through the `bundle` and `cbor` CLI tools
-- **3 fuzz targets** — the `random_bundles` target alone achieves 28.5% line coverage with 98% on `bundle/primary_block.rs`, 76% on `block.rs`, and 56% on `bpsec/parse.rs`
+- **3 fuzz targets** — the `random_bundles` target alone achieves 28.2% line coverage with 98% on `bundle/primary_block.rs`, 76% on `block.rs`, and 56% on `bpsec/parse.rs`
 
 Unit tests and fuzz coverage are complementary: unit tests verify correctness against RFC vectors and known edge cases; fuzz verifies robustness against adversarial input. Combined, the parser pipeline (`parse.rs`, `primary_block.rs`, `block.rs`, `bpsec/parse.rs`) has near-complete coverage from both directions. Remaining line coverage gaps are in conversion/display impls and the editor (exercised by consuming crates and CLI tests). The 17 component test plan scenarios not yet in the CLI script are all already verified by unit tests.

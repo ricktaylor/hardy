@@ -107,7 +107,7 @@ Target B (structured service logic fuzzing) was deprecated in v1.1 of the fuzz p
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-tcpclv4 --lcov --output-path lcov.info --html
@@ -132,8 +132,6 @@ cargo +nightly fuzz coverage active
 cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/active/lcov.info
 ```
-
-Results (2026-07-07):
 
 | Target | Line Coverage | Function Coverage |
 | :--- | :--- | :--- |

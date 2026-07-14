@@ -109,7 +109,7 @@ All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
 
 `benches/bundle_bench.rs` — single-bundle forwarding throughput via criterion.
 
-### Performance Results (2026-04-13)
+### Performance Results
 
 Test machine: Intel Xeon @ 2.20GHz, 4 cores, 16 GB RAM, Debian 12, x86_64. Tokio multi-thread (4 workers). In-memory storage, no I/O.
 
@@ -174,22 +174,20 @@ Covered by interop test suite (`tests/interop/`). All 7 implementations passing 
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-bpa --lcov --output-path lcov.info --html
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 72.2% (3883 of 5380 lines)
-  functions..: 14.3% (720 of 5042 functions)
+  lines......: 74.2% (4298 of 5792 lines)
+  functions..: 15.3% (786 of 5140 functions)
 ```
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation. The pipeline integration tests (`tests/pipeline.rs`) contributed a 10 percentage point increase by exercising the dispatcher pipeline end-to-end.
 
-Per-file breakdown (from HTML report):
+Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-cov test --html`):
 
 | File | Covered | Total | Coverage | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -243,11 +241,9 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/bpa/lcov.info
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 55.8% (2209 of 3961 lines)
-  functions..: 52.9% (268 of 507 functions)
+  lines......: 55.9% (2276 of 4074 lines)
+  functions..: 53.5% (274 of 512 functions)
 ```
 
 Key files where fuzz coverage exceeds unit+pipeline coverage:
@@ -295,6 +291,6 @@ Inline mock types (`TestApp`, `TestCla`) implement the `Application`/`Cla` trait
 
 ## 7. Conclusion
 
-The BPA crate has **complete LLR coverage** (7 pass, 3 pass via bpv7, 1 N/A; Part 4 refs 1.2, 2.3, 2.4, 6.6, 7.1) with 55 unit test functions covering 93% of in-scope plan scenarios (55/59), 5 pipeline integration tests, a criterion benchmark, 72.2% unit+pipeline line coverage (3883/5380), and 55.8% fuzz line coverage (2209/3961). The fuzz coverage is highly complementary — it achieves 97% on `dispatcher/report.rs` and 65% on `dispatcher/admin.rs`, areas untouched by unit tests. Four scenarios (§3.12 BPSec Policy, §3.13 Canonicalization) are delegated to the bpv7 test suite. One fuzz target exercises the full pipeline with random events. Integration-level coverage is provided by interoperability testing with 7 independent Bundle Protocol implementations.
+The BPA crate has **complete LLR coverage** (7 pass, 3 pass via bpv7, 1 N/A; Part 4 refs 1.2, 2.3, 2.4, 6.6, 7.1) with 55 unit test functions covering 93% of in-scope plan scenarios (55/59), 5 pipeline integration tests, a criterion benchmark, 74.2% unit+pipeline line coverage (4298/5792), and 55.9% fuzz line coverage (2276/4074). The fuzz coverage is highly complementary — it achieves 97% on `dispatcher/report.rs` and 65% on `dispatcher/admin.rs`, areas untouched by unit tests. Four scenarios (§3.12 BPSec Policy, §3.13 Canonicalization) are delegated to the bpv7 test suite. One fuzz target exercises the full pipeline with random events. Integration-level coverage is provided by interoperability testing with 7 independent Bundle Protocol implementations.
 
 The pipeline tests (`tests/pipeline.rs`) exercise the dispatcher end-to-end: app-to-CLA routing, echo round-trip, local delivery, throughput (5,130 bundles/sec, REQ-13 target >1,000), and forwarding latency (P50=536µs, P95=1.19ms, P99=1.31ms). The criterion benchmark (`benches/bundle_bench.rs`) provides statistically rigorous throughput measurement at ~8K bundles/sec with in-memory storage. The `Bpa::builder()` pattern proved effective for both unit tests and integration tests with inline mock types.

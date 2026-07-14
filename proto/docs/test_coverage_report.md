@@ -108,18 +108,16 @@ These are unit tests on the `RemoteRoutingAgent` struct. SRV-01 (Registration ha
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-proto --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 80.4% (1283 of 1596 lines)
-  functions..: 23.2% (380 of 1637 functions)
+  lines......: 80.4% (1280 of 1593 lines)
+  functions..: 23.5% (400 of 1705 functions)
 ```
 
 | File | Lines | Coverage |
@@ -168,4 +166,4 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 ## 7. Conclusion
 
-The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1283/1596 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
+The `hardy-proto` crate has 31 tests covering all 7 functional areas at 100% plan coverage. Line coverage is 80.4% (1280/1593 lines). The core proxy infrastructure and routing modules have the highest coverage (87-90%), while Application and Service client proxies are lower (57-70%) due to untested server-push error branches. The lifecycle test suite (6 tests) provides thorough verification of the unregistration protocol including concurrent, crash, and drop scenarios.
