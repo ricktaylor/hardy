@@ -247,11 +247,21 @@ impl PrimaryBlock {
     /// This function is used during bundle creation to serialize the primary block
     /// based on the data in a `bundle::Bundle` struct.
     pub fn emit(bundle: &bundle::Bundle) -> Result<Vec<u8>, Error> {
+        Self::emit_with_crc_type(bundle, bundle.crc_type)
+    }
+
+    // Emits the primary block using `crc_type` in place of `bundle.crc_type`,
+    // so callers can emit a CRC-stripped form (RFC 9173 Section 3.8.1) without
+    // cloning the bundle.
+    pub fn emit_with_crc_type(
+        bundle: &bundle::Bundle,
+        crc_type: crc::CrcType,
+    ) -> Result<Vec<u8>, Error> {
         crc::append_crc_value(
-            bundle.crc_type,
+            crc_type,
             hardy_cbor::encode::emit_array(
                 Some({
-                    let mut count = if let crc::CrcType::None = bundle.crc_type {
+                    let mut count = if let crc::CrcType::None = crc_type {
                         8
                     } else {
                         9
@@ -264,7 +274,7 @@ impl PrimaryBlock {
                 |a| {
                     a.emit(&7);
                     a.emit(&bundle.flags);
-                    a.emit(&bundle.crc_type);
+                    a.emit(&crc_type);
                     a.emit(&bundle.destination);
                     a.emit(&bundle.id.source);
                     a.emit(&bundle.report_to);
@@ -278,7 +288,7 @@ impl PrimaryBlock {
                     }
 
                     // CRC
-                    if let crc::CrcType::None = bundle.crc_type {
+                    if let crc::CrcType::None = crc_type {
                     } else {
                         a.skip_value();
                     }
