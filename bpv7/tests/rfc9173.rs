@@ -1,14 +1,22 @@
-#![cfg(test)]
+//! Integration tests for the RFC 9173 default security contexts
+//! (BIB-HMAC-SHA2 and BCB-AES-GCM), including the Appendix A test vectors.
+//!
+//! These exercise the public `Signer`/`Encryptor` + `Editor` surface, so they
+//! require a security context (`rfc9173`, which enables `bpsec`) and `serde`
+//! for the JWK key literals. The whole file is gated so `--no-default-features`
+//! builds do not attempt to reference the feature-gated modules.
+#![cfg(all(feature = "rfc9173", feature = "serde"))]
 
-use super::*;
-use crate::bpsec::{encryptor, key, signer};
-use crate::builder::Builder;
-use crate::bundle;
-use crate::creation_timestamp::CreationTimestamp;
-use crate::editor::{Chunk, Editor};
+use hardy_bpv7::{
+    bpsec::{encryptor, key, rfc9173::ScopeFlags, signer},
+    builder::Builder,
+    bundle,
+    creation_timestamp::CreationTimestamp,
+    editor::{Chunk, Editor},
+};
 
 // Helper function to count blocks of a specific type
-fn count_blocks_of_type(bundle: &bundle::Bundle, block_type: crate::block::Type) -> usize {
+fn count_blocks_of_type(bundle: &bundle::Bundle, block_type: hardy_bpv7::block::Type) -> usize {
     bundle
         .blocks
         .values()
@@ -336,7 +344,7 @@ fn test_sign_then_encrypt() {
 
     // Attempt to decrypt the BIB first to isolate decryption issues from verification issues
     if let Some(bib_num) = parsed_enc.bundle.blocks.get(&1).and_then(|b| match b.bib {
-        crate::block::BibCoverage::Some(n) => Some(n),
+        hardy_bpv7::block::BibCoverage::Some(n) => Some(n),
         _ => None,
     }) {
         // println!("Found BIB at block {bib_num}");
@@ -444,14 +452,16 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         .expect("Failed to parse encrypted bundle");
 
     // Verify we have 2 BCB blocks (separate BCBs for payload and BIB)
-    let bcb_count = count_blocks_of_type(&parsed_enc.bundle, crate::block::Type::BlockSecurity);
+    let bcb_count =
+        count_blocks_of_type(&parsed_enc.bundle, hardy_bpv7::block::Type::BlockSecurity);
     assert_eq!(
         bcb_count, 2,
         "BCB-AES-GCM should create 2 separate BCBs (one for payload, one for BIB)"
     );
 
     // Verify we have 1 BIB block (encrypted by its own BCB)
-    let bib_count = count_blocks_of_type(&parsed_enc.bundle, crate::block::Type::BlockIntegrity);
+    let bib_count =
+        count_blocks_of_type(&parsed_enc.bundle, hardy_bpv7::block::Type::BlockIntegrity);
     assert_eq!(bib_count, 1, "Should have 1 BIB block");
 
     // 4. Remove BCB from payload only
@@ -469,16 +479,20 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
 
     // 5. Assert: 1 BCB remains (the BIB's BCB is still present)
     // This is expected RFC 9173 behavior - separate BCBs mean separate operations
-    let bcb_count_after =
-        count_blocks_of_type(&parsed_decrypted.bundle, crate::block::Type::BlockSecurity);
+    let bcb_count_after = count_blocks_of_type(
+        &parsed_decrypted.bundle,
+        hardy_bpv7::block::Type::BlockSecurity,
+    );
     assert_eq!(
         bcb_count_after, 1,
         "BIB's BCB should remain (RFC 9173 creates separate BCBs due to IV uniqueness)"
     );
 
     // 6. Assert: 1 BIB remains (still encrypted by its BCB)
-    let bib_count_after =
-        count_blocks_of_type(&parsed_decrypted.bundle, crate::block::Type::BlockIntegrity);
+    let bib_count_after = count_blocks_of_type(
+        &parsed_decrypted.bundle,
+        hardy_bpv7::block::Type::BlockIntegrity,
+    );
     assert_eq!(
         bib_count_after, 1,
         "BIB should remain encrypted (RFC 9173 creates separate BCBs)"
@@ -500,7 +514,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
 
     // 8. Verify payload does NOT have CRC (BIB provides integrity protection)
     assert!(
-        matches!(payload_block.crc_type, crate::crc::CrcType::None),
+        matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
         "Payload should not have CRC when BIB exists"
     );
 }
@@ -547,7 +561,10 @@ fn test_bib_removal_and_readd() {
         .verify_block(1, &signed_bytes, &keys)
         .expect("Signature verification should succeed");
 
-    let bib_count = count_blocks_of_type(&parsed_signed.bundle, crate::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(
+        &parsed_signed.bundle,
+        hardy_bpv7::block::Type::BlockIntegrity,
+    );
     assert_eq!(bib_count, 1, "Should have 1 BIB after signing");
 
     // 4. Remove BIB using Editor::remove_integrity
@@ -564,8 +581,10 @@ fn test_bib_removal_and_readd() {
         .expect("Failed to parse unsigned bundle");
 
     // 5. Assert: No BIB blocks exist
-    let bib_count_after =
-        count_blocks_of_type(&parsed_unsigned.bundle, crate::block::Type::BlockIntegrity);
+    let bib_count_after = count_blocks_of_type(
+        &parsed_unsigned.bundle,
+        hardy_bpv7::block::Type::BlockIntegrity,
+    );
     assert_eq!(bib_count_after, 0, "Should have 0 BIBs after removal");
 
     // 6. Verify signature fails (no BIB)
@@ -731,8 +750,8 @@ fn test_signature_tamper_detection() {
     assert!(
         matches!(
             parse_result,
-            Err(crate::Error::InvalidBPSec(
-                crate::bpsec::Error::IntegrityCheckFailed
+            Err(hardy_bpv7::Error::InvalidBPSec(
+                hardy_bpv7::bpsec::Error::IntegrityCheckFailed
             ))
         ),
         "Tampered bundle should fail to parse with IntegrityCheckFailed, got: {:?}",
@@ -785,7 +804,8 @@ fn test_bcb_without_bib_removal() {
         .expect("Failed to parse encrypted bundle");
 
     // Verify BCB exists
-    let bcb_count = count_blocks_of_type(&parsed_enc.bundle, crate::block::Type::BlockSecurity);
+    let bcb_count =
+        count_blocks_of_type(&parsed_enc.bundle, hardy_bpv7::block::Type::BlockSecurity);
     assert_eq!(bcb_count, 1, "Should have 1 BCB after encryption");
 
     // 3. Remove BCB using Editor::remove_encryption
@@ -802,8 +822,10 @@ fn test_bcb_without_bib_removal() {
         .expect("Failed to parse decrypted bundle");
 
     // 4. Assert: 0 BCBs, payload is decrypted
-    let bcb_count_after =
-        count_blocks_of_type(&parsed_decrypted.bundle, crate::block::Type::BlockSecurity);
+    let bcb_count_after = count_blocks_of_type(
+        &parsed_decrypted.bundle,
+        hardy_bpv7::block::Type::BlockSecurity,
+    );
     assert_eq!(bcb_count_after, 0, "Should have 0 BCBs after removal");
 
     // 5. Payload content matches original
@@ -846,7 +868,7 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
             .expect("Failed to build bundle");
 
     // Verify no BCBs exist
-    let bcb_count = count_blocks_of_type(&bundle, crate::block::Type::BlockSecurity);
+    let bcb_count = count_blocks_of_type(&bundle, hardy_bpv7::block::Type::BlockSecurity);
     assert_eq!(bcb_count, 0, "Should have 0 BCBs (bundle is not encrypted)");
 
     // Attempt to remove encryption from payload block (which is not encrypted)
@@ -876,7 +898,7 @@ fn test_remove_integrity_fails_on_unsigned_block() {
             .expect("Failed to build bundle");
 
     // Verify no BIBs exist
-    let bib_count = count_blocks_of_type(&bundle, crate::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&bundle, hardy_bpv7::block::Type::BlockIntegrity);
     assert_eq!(bib_count, 0, "Should have 0 BIBs (bundle is not signed)");
 
     // Attempt to remove integrity from payload block (which is not signed)
@@ -937,7 +959,7 @@ fn test_encrypt_bib_directly_fails() {
         .blocks
         .get(&1)
         .and_then(|b| match b.bib {
-            crate::block::BibCoverage::Some(n) => Some(n),
+            hardy_bpv7::block::BibCoverage::Some(n) => Some(n),
             _ => None,
         })
         .expect("BIB not found on payload block");
@@ -988,7 +1010,7 @@ fn test_sign_primary_block_with_crc() {
     // Verify primary block has a CRC
     let primary = bundle.blocks.get(&0).expect("Primary block missing");
     assert!(
-        !matches!(primary.crc_type, crate::crc::CrcType::None),
+        !matches!(primary.crc_type, hardy_bpv7::crc::CrcType::None),
         "Primary block should have a CRC"
     );
 
@@ -1022,7 +1044,7 @@ fn test_sign_primary_block_with_crc() {
         .expect("Failed to parse signed bundle");
 
     // 4. Verify BIB exists and targets block 0
-    let bib_count = count_blocks_of_type(&parsed.bundle, crate::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&parsed.bundle, hardy_bpv7::block::Type::BlockIntegrity);
     assert_eq!(
         bib_count, 1,
         "Should have 1 BIB after signing primary block"
@@ -1031,7 +1053,7 @@ fn test_sign_primary_block_with_crc() {
     // 5. Verify the primary block's CRC was removed (RFC 9173 Section 3.8.1)
     let signed_primary = parsed.bundle.blocks.get(&0).expect("Primary block missing");
     assert!(
-        matches!(signed_primary.crc_type, crate::crc::CrcType::None),
+        matches!(signed_primary.crc_type, hardy_bpv7::crc::CrcType::None),
         "Primary block CRC must be removed after signing (RFC 9173 Section 3.8.1)"
     );
 
@@ -1103,7 +1125,7 @@ fn test_sign_removes_crc_from_target_block() {
     // Verify payload block (block 1) has a CRC before signing
     let payload_block = bundle.blocks.get(&1).expect("Payload block missing");
     assert!(
-        !matches!(payload_block.crc_type, crate::crc::CrcType::None),
+        !matches!(payload_block.crc_type, hardy_bpv7::crc::CrcType::None),
         "Payload block should have a CRC before signing"
     );
 
@@ -1138,7 +1160,7 @@ fn test_sign_removes_crc_from_target_block() {
 
     let signed_payload = parsed.bundle.blocks.get(&1).expect("Payload block missing");
     assert!(
-        matches!(signed_payload.crc_type, crate::crc::CrcType::None),
+        matches!(signed_payload.crc_type, hardy_bpv7::crc::CrcType::None),
         "Payload block CRC type should be None after signing, got {:?}",
         signed_payload.crc_type
     );
