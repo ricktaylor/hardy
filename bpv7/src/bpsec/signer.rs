@@ -181,9 +181,11 @@ impl<'a> Signer<'a> {
                         // register the bytes, so the IPPT (which reads the
                         // primary via `block(0)`) and the rebuilt bundle agree
                         // on the CRC-removed form.
-                        let mut primary = self.original.clone();
-                        primary.crc_type = crc::CrcType::None;
-                        let canonical = crate::bundle::primary_block::PrimaryBlock::emit(&primary)
+                        let canonical =
+                            crate::bundle::primary_block::PrimaryBlock::emit_with_crc_type(
+                                self.original,
+                                crc::CrcType::None,
+                            )
                             .map_err(editor::Error::from)?;
                         editor.set_canonical_primary(canonical.into());
                     } else {
