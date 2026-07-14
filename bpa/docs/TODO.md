@@ -42,3 +42,11 @@ Two layers of work:
 **Bespoke per-backend metrics** where only the backend knows the truth: sqlite database/WAL file size, localdisk store-directory bytes and file count, postgres connection-pool stats, s3 request retries. These need either per-crate `metrics` emission or a `stats()`-style trait extension sampled periodically — a trait-surface decision to make when the work is picked up.
 
 Documentation: a new backend-agnostic "Storage Operations" table in `docs/user-docs/operations/observability.md`, plus per-backend tables as bespoke metrics land.
+
+## Registration/routing concurrency races (whole-codebase review 2026-07-08, #14/#15)
+
+Two non-atomic await sequences in the CLA/routing registries can race and leave stranded or wrongly-deleted state. Neither is data-loss or wire-corruption, and both need specific concurrent timing, so they were deferred past v0.2.0.
+
+**`add_peer` vs concurrent removal (`src/cla/registry.rs`, review #14).** `add_peer` is a multi-await sequence (PeerTable insert → `cla.peers` insert → `peer.start().await` → `rib.add_forward().await`) with no re-check against a concurrent `remove_peer`/`unregister_cla` interleaving during the awaits. If the peer is removed mid-sequence, `add_peer` resumes and installs priority-0 `Forward` RIB entries for a `peer_id` no longer in the PeerTable, and nothing later cleans them (`unregister_cla` only iterates `cla.peers`, which no longer holds the address). Mirror race leaks a live PeerTable entry after CLA teardown. Fix needs a post-await liveness re-check (or a generation/epoch guard) before `rib.add_forward`.
+
+**`unregister_agent` name-reuse race (`src/routing/rib.rs`, review #15).** `unregister_agent` removes the agent from the name map, `await`s `agent.on_unregister()` (arbitrary duration — e.g. a gRPC proxy drain), then calls `remove_by_source(name)`. A new agent that registers under the same name during that await (the map slot is already free) has its freshly-installed routes deleted by the stale `remove_by_source`, which matches purely on the source string. Fix needs an identity/generation token so `remove_by_source` only removes routes owned by the unregistering agent instance, not a same-named successor.
