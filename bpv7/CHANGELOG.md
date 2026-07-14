@@ -30,5 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Use `core::cmp::Reverse` so `no_std` builds compile.
 - `Builder::build` keys the returned `Bundle.blocks` map by wire block number (primary 0, payload 1, extensions 2+) instead of the extension enumeration index, which previously collided with the primary and payload entries.
 - `Editor::flatten_inplace` handles mixed-direction edits (a block shrinking before an unchanged block while another grows after it) by assembling into a fresh buffer instead of an unsound single-direction in-place copy.
+- **BREAKING (behaviour):** signing the primary block with a BIB now removes the primary's CRC before generating the IPPT (RFC 9173 §3.8.1), matching what conformant verifiers compute; a prior release signed the primary with its CRC still present, producing a non-interoperable signature. The CRC is retained when the primary is only IPPT scope context, not the BIB target.
+- `Editor::remove_integrity` clears the target block's BIB coverage when its covering BIB is removed, so `rebuild_bundle()` no longer reports a dangling reference to a BIB that no longer exists.
 
 Releases before this version predate this changelog; see the git history for details.
