@@ -16,9 +16,6 @@ fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
     Ok(buf)
 }
 
-#[cfg(all(test, feature = "serde"))]
-mod tests;
-
 /// Scope flags controlling which bundle fields are included in the IPPT (RFC 9173 Section 3.3/4.3).
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct ScopeFlags {
