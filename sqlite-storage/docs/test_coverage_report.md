@@ -57,7 +57,7 @@ Coverage is measured against [`PLAN-SQLITE-01`](test_plan.md) (backend-specific)
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-sqlite-storage --lcov --output-path lcov.info
@@ -65,13 +65,11 @@ lcov --summary lcov.info
 ```
 
 ```
-  lines......: 71.4% (444 of 622 lines)
-  functions..: 69.2% (74 of 107 functions)
+  lines......: 71.8% (455 of 634 lines)
+  functions..: 37.4% (76 of 203 functions)
 ```
 
-Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The uncovered lines are in the `MetadataStorage` trait implementation (poll methods, recovery protocol) which are exercised by the generic storage harness in a separate crate.
-
-Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The generic storage harness (14 tests) runs in a separate crate and is not captured by `llvm-cov`.
+Unit tests (10) exercise migration logic, configuration, concurrency, corrupt data handling, and waiting queue invalidation. The uncovered lines are in the `MetadataStorage` trait implementation (poll methods, recovery protocol) which are exercised by the generic storage harness (14 tests) — that harness runs in a separate crate and is not captured by `llvm-cov`. The function-coverage figure varies with monomorphisation counting and is not a meaningful measure here; line coverage is the reliable signal.
 
 ## 5. Conclusion
 

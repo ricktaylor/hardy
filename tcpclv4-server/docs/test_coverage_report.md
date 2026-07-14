@@ -65,14 +65,12 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-tcpclv4-server --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
-
-Results (2026-06-24):
 
 ```
   lines......: 70.9% (180 of 254 lines)

@@ -55,21 +55,19 @@ All 25 planned scenarios have corresponding test assertions. DTN glob matching t
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-eid-pattern --lcov --output-path lcov.info
 lcov --summary lcov.info
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 62.3% (402 of 645 lines)
-  functions..: 7.3% (76 of 1040 functions)
+  lines......: 64.9% (428 of 659 lines)
+  functions..: 9.3% (111 of 1188 functions)
 ```
 
-Per-file breakdown (from HTML report):
+Per-file breakdown (from a previous detailed run; regenerate with `cargo llvm-cov test --html`):
 
 | File | Covered | Total | Coverage | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -78,7 +76,7 @@ Per-file breakdown (from HTML report):
 | `dtn_pattern.rs` | 93 | 153 | 60% | Uncovered: `do_glob` (broken), `is_subset`, `try_to_eid`, `Display` |
 | `lib.rs` | 40 | 173 | 23% | Uncovered: `From` conversions, `Display`, cross-scheme `is_subset` |
 
-The line coverage (62.3%) is below the 90% target. The gaps fall into three categories:
+The line coverage (64.9%) is below the 90% target. The gaps fall into three categories:
 
 1. **Known-broken code** — `do_glob()` DTN glob matching (see §5)
 2. **Conversion/Display impls** — `From<IpnNodeId>`, `From<NodeId>`, `From<Eid>`, `TryFrom<EidPattern>`, `Display` for all types — these are API surface exercised by consuming crates (bpa, bpv7), not by eid-patterns unit tests
@@ -92,11 +90,9 @@ cargo +nightly cov -- export --format=lcov ...
 lcov --summary ./fuzz/coverage/eid_pattern_str/lcov.info
 ```
 
-Results (2026-07-07):
-
 ```
-  lines......: 23.3% (146 of 627 lines)
-  functions..: 26.3% (25 of 95 functions)
+  lines......: 22.8% (146 of 640 lines)
+  functions..: 25.5% (25 of 98 functions)
 ```
 
 Fuzz coverage is complementary to unit tests: unit tests verify pattern matching correctness, fuzz verifies parser robustness against adversarial input strings.
@@ -112,4 +108,4 @@ Fuzz coverage is complementary to unit tests: unit tests verify pattern matching
 
 ## 6. Conclusion
 
-The EID patterns crate has 8 unit tests and 1 fuzz target covering 25/25 planned scenarios (100% plan coverage, Part 4 Ref 6.6). Both LLRs (6.1.1, 6.1.2) are verified as Pass. Line coverage is 62.3% — below the 90% target, with the parser at 98% and IPN matching near-complete. The primary gap is the DTN glob matching — early IETF drafts specified complex regex matching for DTN patterns which was removed before WG adoption. Hardy implements a simplified glob-based variation for practical use, but it is not standardised and the current matching has limitations. The remaining gaps are `From`/`Display` conversion impls exercised only at the workspace level.
+The EID patterns crate has 8 unit tests and 1 fuzz target covering 25/25 planned scenarios (100% plan coverage, Part 4 Ref 6.6). Both LLRs (6.1.1, 6.1.2) are verified as Pass. Line coverage is 64.9% — below the 90% target, with the parser at 98% and IPN matching near-complete. The primary gap is the DTN glob matching — early IETF drafts specified complex regex matching for DTN patterns which was removed before WG adoption. Hardy implements a simplified glob-based variation for practical use, but it is not standardised and the current matching has limitations. The remaining gaps are `From`/`Display` conversion impls exercised only at the workspace level.

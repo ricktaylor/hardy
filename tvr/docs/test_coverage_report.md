@@ -201,13 +201,11 @@ Implemented in [`tests/test_tvr.sh`](../tests/test_tvr.sh). Requires built binar
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-tvr --lcov --output-path lcov.info --html
 ```
-
-Results (2026-06-24):
 
 ```
   lines......: 78.1% (2203 of 2821 lines)

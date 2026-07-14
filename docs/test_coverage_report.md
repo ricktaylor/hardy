@@ -11,9 +11,9 @@ This report summarizes the test planning and execution status for the Hardy proj
 
 **Overall status:**
 
-* **Core Logic:** CBOR 74.4% line coverage (100% plan). BPv7 77.3% line coverage (100% plan). EID patterns 62.3% line coverage (85% plan, DTN glob matching known-broken).
-* **BPA:** 72.2% line coverage, 55/59 plan scenarios (93%). 2 stubs remaining (queue selection/fallback). 8 fuzz targets across 5 crates.
-* **Storage:** Generic integration suite covers trait-level CRUD, polling, and recovery for all backends. SQLite 71.4%, localdisk 71.8%, PostgreSQL and S3 via harness (14/14 and 4/4 plan).
+* **Core Logic:** CBOR 74.3% line coverage (100% plan). BPv7 75.6% line coverage (100% plan). EID patterns 64.9% line coverage (85% plan, DTN glob matching known-broken).
+* **BPA:** 74.2% line coverage, 55/59 plan scenarios (93%). 2 stubs remaining (queue selection/fallback). 8 fuzz targets across 5 crates.
+* **Storage:** Generic integration suite covers trait-level CRUD, polling, and recovery for all backends. SQLite 71.8%, localdisk 71.8%, PostgreSQL and S3 via harness (14/14 and 4/4 plan).
 * **Transport:** TCPCLv4 interop-verified with 7 independent implementations + 2 fuzz targets. All 10 LLRs verified.
 * **gRPC Proxies:** Proto crate 31/31 plan tests, 80.4% line coverage.
 * **TVR:** 78.1% line coverage, 137/137 unit tests, 10 system/component integration tests via grpcurl.

@@ -107,18 +107,18 @@ Cross-reference against [`UTP-ASYNC-01`](unit_test_plan.md):
 
 ## 4. Line Coverage
 
-> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the run dated in the header.
+> Current figures are generated — see the [coverage summary](../../docs/coverage_summary.md) (refreshed by `scripts/run_lcov.sh`) and the live coverage dashboards (CFLite fuzz coverage on gh-pages; CI-published coverage planned). The snapshot below is from the crate version in the header.
 
 ```
 cargo llvm-cov test --package hardy-async --lcov --output-path lcov.info --html
 lcov --summary lcov.info
 ```
 
-Results (2026-06-24, from workspace-wide run):
+Results (from the workspace-wide run):
 
 ```
   lines......: 76.1% (534 of 702 lines)
-  functions..: 6.5% (139 of 2124 functions)
+  functions..: 6.7% (139 of 2065 functions)
 ```
 
 Line coverage is for production code only (test modules excluded). Function count is inflated by generic monomorphisation.
