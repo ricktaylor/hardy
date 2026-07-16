@@ -66,6 +66,7 @@ bpv7 supplies the mechanism; `hardy_bpa::bp7_parse` composes it with BPA policy 
 
 ## Testing
 
+- `bpv7/tests/parse.rs` — the structural parser's public-API acceptance and rejection decisions on wire bytes (truncation, trailing data, canonical-form rules, CRC types).
 - `bpv7/tests/checks.rs` — §A–§E pipeline composition and the BPSec removal cascade.
 - `bpv7/tests/rfc9173.rs` — RFC 9173 security-context test vectors (sign / encrypt / verify / decrypt).
 - `bpv7/fuzz` — structural and validation fuzzing with a rewrite-convergence assertion.

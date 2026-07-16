@@ -75,10 +75,23 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
             _ => return Err(Error::InvalidCBOR(CborError::AdditionalItems)),
         }
 
-        // Block-type-specific data byte string head. RFC 9171 §4.3.2:
-        // MUST be a single definite-length CBOR byte string. Appendix B
-        // permits an optional `#6.24` tag (CBOR-embedded content); no
-        // other tags are allowed.
+        // Block-type-specific data byte string head. RFC 9171 §4.3.2 is
+        // categorical for this field: "a single definite-length CBOR byte
+        // string, i.e., a CBOR byte string that is not of indefinite length"
+        // — a specific override of §4.1's general "indefinite-length items
+        // are not prohibited" carve-out. The `Bytes(None)` rejection below is
+        // therefore deliberate and spec-backed: do not relax it to
+        // accept-and-canonicalise. §4.1's separate "MAY accept ... and
+        // transform it into conformant BP structure" robustness clause is
+        // intentionally not exercised — a definite extent is also what makes
+        // zero-copy payload ranges and sequential payload spooling possible.
+        // The primary block is the opposite case: no §4.3.2-style override
+        // applies there, §4.1 governs, and a non-canonical primary is
+        // tolerated (see `bpsec::rfc9173::canonical_primary`). Pinned by
+        // `tests/parse.rs`.
+        //
+        // Appendix B permits an optional `#6.24` tag (CBOR-embedded
+        // content); no other tags are allowed.
         let marker: Head = parse_canonical(data, &mut offset, "block data")?;
         if !matches!(marker.tags.as_slice(), [] | [24]) {
             return Err(Error::NotCanonical);
