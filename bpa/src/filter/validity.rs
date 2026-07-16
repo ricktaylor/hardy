@@ -36,7 +36,7 @@ impl ReadFilter for BundleValidityFilter {
             return Ok(ReadResult::Drop(Some(ReasonCode::LifetimeExpired)));
         }
 
-        if let Some(hop_info) = bundle.metadata.read_only.hop_count.as_ref()
+        if let Some(hop_info) = bundle.metadata.wire.hop_count.as_ref()
             && hop_info.count > hop_info.limit
         {
             debug!(

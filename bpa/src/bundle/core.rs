@@ -3,7 +3,7 @@ use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-use super::metadata::BundleMetadata;
+use super::metadata::{BundleMetadata, Origin};
 
 /// A bundle together with its BPA-local processing metadata.
 ///
@@ -27,12 +27,11 @@ impl Bundle {
             .as_datetime()
             .unwrap_or_else(|| {
                 self.metadata
-                    .read_only
-                    .received_at
+                    .received_at()
                     // No clock: creation = received time − Bundle Age.
                     .saturating_sub(
                         self.metadata
-                            .read_only
+                            .wire
                             .age
                             .unwrap_or_default()
                             .try_into()
@@ -62,13 +61,17 @@ impl Bundle {
     /// the CLA peer node ID (out-of-band). Per RFC 9171 Section 4.4.1, both
     /// identify the immediate 1-hop forwarding node when present.
     pub fn previous_node(&self) -> Option<Eid> {
-        self.metadata.read_only.previous_node.clone().or_else(|| {
-            self.metadata
-                .read_only
-                .ingress_peer_node
-                .clone()
-                .map(Into::into)
-        })
+        self.metadata
+            .wire
+            .previous_node
+            .clone()
+            .or_else(|| match self.metadata.origin() {
+                Origin::Ingress {
+                    peer_node: Some(node),
+                    ..
+                } => Some(node.clone().into()),
+                _ => None,
+            })
     }
 }
 
@@ -82,8 +85,8 @@ mod tests {
         age: Option<core::time::Duration>,
         lifetime: core::time::Duration,
     ) -> Bundle {
-        let mut metadata = BundleMetadata::default();
-        metadata.read_only.age = age;
+        let mut metadata = BundleMetadata::originated();
+        metadata.wire.age = age;
         Bundle {
             bundle: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
@@ -120,8 +123,7 @@ mod tests {
         // With zero timestamp, creation_time = received_at - age
         let expected = bundle
             .metadata
-            .read_only
-            .received_at
+            .received_at()
             .saturating_sub(age.try_into().unwrap());
         let actual = bundle.creation_time();
 

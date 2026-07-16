@@ -89,15 +89,8 @@ impl Dispatcher {
             // Orphan — data exists but no metadata. Run the full receive
             // pipeline (process_received_bundle: parse, block removal,
             // canonicalization, storage, reporting, and Ingress filter).
-            let metadata = bundle::BundleMetadata {
-                status: bundle::BundleStatus::New,
-                storage_name: Some(storage_name.clone()),
-                read_only: bundle::ReadOnlyMetadata {
-                    received_at: file_time,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
+            let mut metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
+            metadata.storage_name = Some(storage_name.clone());
 
             // TODO: Just push the entire bundle into the stream
             let (tx, mut rx) = hardy_async::channel::bounded(1);
@@ -303,13 +296,12 @@ mod tests {
             hardy_bpv7::bpsec::no_keys,
         )
         .unwrap();
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.status = bundle::BundleStatus::ForwardAckPending { peer: 7 };
+        metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
             bundle: parsed,
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-                storage_name: Some(storage_name),
-                ..Default::default()
-            },
+            metadata,
         };
         let id = bundle.bundle.primary.id.clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());

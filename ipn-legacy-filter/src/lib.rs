@@ -55,7 +55,7 @@ impl IpnLegacyFilter {
 #[async_trait]
 impl WriteFilter for IpnLegacyFilter {
     async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<WriteResult, hardy_bpa::Error> {
-        let Some(next_hop) = &bundle.metadata.read_only.next_hop else {
+        let Some(next_hop) = &bundle.metadata.next_hop else {
             return Ok(WriteResult::Continue(None, None));
         };
 
@@ -130,8 +130,8 @@ mod tests {
             .build(CreationTimestamp::now())
             .unwrap();
 
-        let mut metadata = BundleMetadata::default();
-        metadata.read_only.next_hop = next_hop.map(|nh| nh.parse().unwrap());
+        let mut metadata = BundleMetadata::originated();
+        metadata.next_hop = next_hop.map(|nh| nh.parse().unwrap());
 
         let bundle = Bundle {
             bundle: raw,

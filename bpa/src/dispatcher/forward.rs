@@ -264,7 +264,7 @@ impl Dispatcher {
         source_data: Bytes,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
-        // `metadata.read_only`) to rebuild the wire blocks, but never write the
+        // `metadata.wire`) to rebuild the wire blocks, but never write the
         // bumped values back: `forward_bundle` deletes the bundle on a successful
         // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
         // in-memory cache is never observed again after this rewrite.
@@ -304,7 +304,7 @@ impl Dispatcher {
             .rebuild();
 
         // Increment Hop Count
-        if let Some(hop_count) = &bundle.metadata.read_only.hop_count {
+        if let Some(hop_count) = &bundle.metadata.wire.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
@@ -325,9 +325,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.metadata.read_only.age.is_some()
-            || !bundle.bundle.primary.id.timestamp.is_clocked()
-        {
+        if bundle.metadata.wire.age.is_some() || !bundle.bundle.primary.id.timestamp.is_clocked() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
