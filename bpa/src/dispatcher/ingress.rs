@@ -109,11 +109,12 @@ impl Dispatcher {
         // transfer must not be acknowledged, so the peer retransmits — while
         // invalid-but-complete bundles are handled internally: the CLA cannot
         // fix invalid content, and the transfer itself succeeded.
-        match self.process_received_bundle(stream, metadata).await? {
-            Some((bundle, data)) => self.ingress_bundle(bundle, data).await,
-            // Nothing was stored on the CLA path before a drop, so there's no
-            // data to clean up here — just count it.
-            None => metrics::counter!("bpa.bundle.received.dropped").increment(1),
+        //
+        // Drop sites inside `process_received_bundle` count themselves under
+        // `bpa.bundle.received.dropped` with a `reason` label. Nothing was
+        // stored on the CLA path before a drop, so there's no data to clean up.
+        if let Some((bundle, data)) = self.process_received_bundle(stream, metadata).await? {
+            self.ingress_bundle(bundle, data).await;
         }
         Ok(())
     }
@@ -141,31 +142,42 @@ impl Dispatcher {
         // payload is spooled. `Err` carries an optional reception report to emit
         // before dropping (reporting stays here — we own the machinery); a
         // structural / truncation drop carries no recoverable bundle.
-        let (mut hv, headers, tail) =
-            match parse::parse_headers(stream, self.max_bundle_size, self.key_provider()).await {
-                Ok(parts) => parts,
-                Err(parse::HeaderFailure::Cancelled) => {
-                    debug!("Bundle stream cancelled mid-header");
-                    return Err(cla::Error::StreamCancelled);
-                }
-                Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                    return Err(cla::Error::PayloadTooLarge { size, max });
-                }
-                Err(parse::HeaderFailure::Invalid(report)) => {
-                    if let Some((bundle, reason)) = report {
+        let (mut hv, headers, tail) = match parse::parse_headers(
+            stream,
+            self.max_bundle_size,
+            self.key_provider(),
+        )
+        .await
+        {
+            Ok(parts) => parts,
+            Err(parse::HeaderFailure::Cancelled) => {
+                debug!("Bundle stream cancelled mid-header");
+                return Err(cla::Error::StreamCancelled);
+            }
+            Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                return Err(cla::Error::PayloadTooLarge { size, max });
+            }
+            Err(parse::HeaderFailure::Invalid(report)) => {
+                let reason = match report {
+                    Some((bundle, reason)) => {
                         let bundle = bundle::Bundle { metadata, bundle };
                         self.report_bundle_reception(&bundle, reason).await;
+                        reason
                     }
-                    return Ok(None);
-                }
-            };
+                    None => ReasonCode::BlockUnintelligible,
+                };
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                return Ok(None);
+            }
+        };
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
         // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
-        // re-checks lifetime post-store in the ingress filter — a cheap,
-        // harmless overlap.)
+        // re-checks lifetime post-store in the ingress filter — a cheap, harmless
+        // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -199,7 +211,10 @@ impl Dispatcher {
                     debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
                     return Err(cla::Error::PayloadTooLarge { size, max });
                 }
-                Err(DrainFailure::Rejected) => return Ok(None),
+                Err(DrainFailure::Rejected) => {
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    return Ok(None);
+                }
             },
         };
 
@@ -210,17 +225,21 @@ impl Dispatcher {
         metadata.read_only.previous_node = hv.extracted.previous_node.take();
         metadata.read_only.age = hv.extracted.age.take();
         metadata.read_only.hop_count = hv.extracted.hop_count.take();
-        let (bundle, chunks, report_reason) =
-            match parse::finalize_with_provider(&whole, hv, self.key_provider()) {
-                Ok(x) => x,
-                Err((bundle, error)) => {
-                    debug!("Invalid bundle received: {error}");
-                    let reason = parse::status_report_reason_for(&error);
-                    let bundle = bundle::Bundle { metadata, bundle };
-                    self.report_bundle_reception(&bundle, reason).await;
-                    return Ok(None);
-                }
-            };
+        let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
+            &whole,
+            hv,
+            self.key_provider(),
+        ) {
+            Ok(x) => x,
+            Err((bundle, error)) => {
+                debug!("Invalid bundle received: {error}");
+                let reason = parse::status_report_reason_for(&error);
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                let bundle = bundle::Bundle { metadata, bundle };
+                self.report_bundle_reception(&bundle, reason).await;
+                return Ok(None);
+            }
+        };
 
         // Persist (flatten any rewrite chunks first).
         let data = match chunks {
