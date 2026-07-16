@@ -94,11 +94,11 @@ impl Dispatcher {
         };
 
         let stream = CountingReceiver { stream };
-        match self.process_received_bundle(&stream, metadata).await {
-            Some((bundle, data)) => self.ingress_bundle(bundle, data).await,
-            // Nothing was stored on the CLA path before a drop, so there's no
-            // data to clean up here — just count it.
-            None => metrics::counter!("bpa.bundle.received.dropped").increment(1),
+        // Drop sites inside `process_received_bundle` count themselves under
+        // `bpa.bundle.received.dropped` with a `reason` label. Nothing was
+        // stored on the CLA path before a drop, so there's no data to clean up.
+        if let Some((bundle, data)) = self.process_received_bundle(&stream, metadata).await {
+            self.ingress_bundle(bundle, data).await;
         }
         Ok(())
     }
@@ -130,19 +130,35 @@ impl Dispatcher {
         {
             Ok(parts) => parts,
             Err(report) => {
-                if let Some((bundle, reason)) = report {
-                    let bundle = bundle::Bundle { metadata, bundle };
-                    self.report_bundle_reception(&bundle, reason).await;
-                }
+                let reason = match report {
+                    Some((bundle, reason)) => {
+                        let bundle = bundle::Bundle { metadata, bundle };
+                        self.report_bundle_reception(&bundle, reason).await;
+                        reason
+                    }
+                    None => ReasonCode::BlockUnintelligible,
+                };
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
                 return None;
             }
         };
 
-        // Early-reject gate (lifetime / hop) before the payload is drained, so an
-        // expired / hop-exhausted bundle is reported and dropped having spooled
-        // nothing. (`Bundle::has_expired` re-checks lifetime post-store in the
-        // ingress filter — a cheap, harmless overlap.)
+        // Early-reject gate (lifetime / hop) before the payload is drained, so a
+        // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
+        // re-checks lifetime post-store in the ingress filter — a cheap, harmless
+        // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+            if let ReasonCode::LifetimeExpired = reason {
+                // A bundle that arrives already expired is treated as if it
+                // never arrived, not amplified into report traffic — §5.10
+                // deletion reports are for bundles that expire in custody (the
+                // validity filter and reaper paths). Dropping before anything
+                // is stored also keeps expired traffic from churning the
+                // metadata store's dedup LRU.
+                debug!("Bundle arrived already expired; dropped");
+                return None;
+            }
             metadata.read_only.previous_node = hv.extracted.previous_node;
             metadata.read_only.age = hv.extracted.age;
             metadata.read_only.hop_count = hv.extracted.hop_count;
@@ -159,7 +175,13 @@ impl Dispatcher {
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
             None => headers,
-            Some(tail) => drain_payload(stream, headers, tail).await?,
+            Some(tail) => match drain_payload(stream, headers, tail).await {
+                Some(whole) => whole,
+                None => {
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    return None;
+                }
+            },
         };
 
         // Post-drain finalize: verify the deferred block-1 BIB targets and apply
@@ -169,17 +191,21 @@ impl Dispatcher {
         metadata.read_only.previous_node = hv.extracted.previous_node.take();
         metadata.read_only.age = hv.extracted.age.take();
         metadata.read_only.hop_count = hv.extracted.hop_count.take();
-        let (bundle, chunks, report_reason) =
-            match parse::finalize_with_provider(&whole, hv, self.key_provider()) {
-                Ok(x) => x,
-                Err((bundle, error)) => {
-                    debug!("Invalid bundle received: {error}");
-                    let reason = parse::status_report_reason_for(&error);
-                    let bundle = bundle::Bundle { metadata, bundle };
-                    self.report_bundle_reception(&bundle, reason).await;
-                    return None;
-                }
-            };
+        let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
+            &whole,
+            hv,
+            self.key_provider(),
+        ) {
+            Ok(x) => x,
+            Err((bundle, error)) => {
+                debug!("Invalid bundle received: {error}");
+                let reason = parse::status_report_reason_for(&error);
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                let bundle = bundle::Bundle { metadata, bundle };
+                self.report_bundle_reception(&bundle, reason).await;
+                return None;
+            }
+        };
 
         // Persist (flatten any rewrite chunks first).
         let data = match chunks {
