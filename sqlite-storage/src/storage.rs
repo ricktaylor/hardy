@@ -253,7 +253,7 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let expiry = bundle.expiry();
-        let received_at = bundle.metadata.read_only.received_at;
+        let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
         let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
@@ -273,7 +273,7 @@ impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let expiry = bundle.expiry();
-        let received_at = bundle.metadata.read_only.received_at;
+        let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.metadata.status);
         let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
@@ -861,7 +861,7 @@ mod tests {
         // wire-aligned block numbers.)
         hardy_bpa::bundle::Bundle {
             bundle: raw,
-            metadata: hardy_bpa::bundle::BundleMetadata::default(),
+            metadata: hardy_bpa::bundle::BundleMetadata::originated(),
         }
     }
 

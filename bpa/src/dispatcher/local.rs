@@ -146,13 +146,11 @@ impl Dispatcher {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
-        let mut metadata = bundle::BundleMetadata {
-            status: bundle::BundleStatus::Dispatching,
-            ..Default::default()
-        };
-        metadata.read_only.previous_node = extracted.previous_node;
-        metadata.read_only.age = extracted.age;
-        metadata.read_only.hop_count = extracted.hop_count;
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.status = bundle::BundleStatus::Dispatching;
+        metadata.wire.previous_node = extracted.previous_node;
+        metadata.wire.age = extracted.age;
+        metadata.wire.hop_count = extracted.hop_count;
         let bundle = bundle::Bundle { metadata, bundle };
 
         // Run Originate filter (pure in-memory)

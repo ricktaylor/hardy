@@ -12,7 +12,7 @@ use tracing::{debug, error};
 use super::store::Store;
 use crate::{
     Arc, Bytes, HashMap,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleStatus, Origin},
 };
 
 pub enum ReassemblyResult {
@@ -25,10 +25,13 @@ pub enum ReassemblyResult {
     /// expiry estimate for no-clock sources (creation = received_at − age)
     /// under-ages the bundle by the whole reassembly window if the reassembled
     /// bundle carries a later fragment's arrival time.
+    /// `origin` is the provenance of that earliest-arriving fragment, carried
+    /// onto the reassembled bundle for the same reason.
     Done {
         storage_name: Arc<str>,
         data: Bytes,
         received_at: OffsetDateTime,
+        origin: Origin,
     },
     /// All fragments arrived but reassembly failed (corrupt/misaligned data).
     /// Fragment data has already been deleted; caller should drop the trigger bundle.
@@ -37,6 +40,7 @@ pub enum ReassemblyResult {
 
 struct FragmentSet {
     received_at: OffsetDateTime,
+    origin: Origin,
     adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<usize>)>,
 }
 
@@ -65,6 +69,7 @@ impl Store {
                 storage_name,
                 data,
                 received_at: fragments.received_at,
+                origin: fragments.origin,
             },
             None => ReassemblyResult::Failed,
         }
@@ -98,7 +103,8 @@ impl Store {
 
         let mut adu_totals = payload.len() as u64;
         let mut results = FragmentSet {
-            received_at: bundle.metadata.read_only.received_at,
+            received_at: bundle.metadata.received_at(),
+            origin: bundle.metadata.origin().clone(),
             adus: [(
                 fragment_info.offset,
                 (
@@ -156,7 +162,11 @@ impl Store {
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
-                                results.received_at = results.received_at.min(bundle.metadata.read_only.received_at);
+                                let received_at = bundle.metadata.received_at();
+                                if received_at < results.received_at {
+                                    results.received_at = received_at;
+                                    results.origin = bundle.metadata.origin().clone();
+                                }
                                 results.adus.insert(fragment_info.offset,
                                     (
                                         bundle.bundle.primary.id,
@@ -174,7 +184,8 @@ impl Store {
                     }
                 }
             }
-        ).1
+        )
+        .1
     }
 
     async fn reassemble(&self, results: &FragmentSet) -> Option<(Arc<str>, Bytes)> {
@@ -414,9 +425,10 @@ mod tests {
                 },
                 blocks: Default::default(),
             },
-            metadata: BundleMetadata {
-                storage_name: Some(storage_name.clone()),
-                ..Default::default()
+            metadata: {
+                let mut m = BundleMetadata::originated();
+                m.storage_name = Some(storage_name.clone());
+                m
             },
         };
         store.insert_metadata(&bundle).await;
@@ -430,6 +442,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(5, (id, "unused".into(), 0..5))].into(),
         };
 
@@ -456,6 +469,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
         };
 
@@ -483,6 +497,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (8, (id1, name1, 0..5))].into(),
         };
 
@@ -508,6 +523,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..9))].into(),
         };
 
@@ -535,6 +551,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
         };
 
@@ -560,6 +577,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5))].into(),
         };
 
@@ -589,6 +607,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (3, (id1, name1, 0..5))].into(),
         };
 
@@ -618,6 +637,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (1 << 32, (id1, name1, 0..5))].into(),
         };
 
@@ -699,9 +719,10 @@ mod tests {
         // passes it to Editor::new which needs the blocks map, not just the ID)
         let meta_bundle = Bundle {
             bundle: bundle0.clone(),
-            metadata: BundleMetadata {
-                storage_name: Some(name0.clone()),
-                ..Default::default()
+            metadata: {
+                let mut m = BundleMetadata::originated();
+                m.storage_name = Some(name0.clone());
+                m
             },
         };
         store.insert_metadata(&meta_bundle).await;
@@ -714,6 +735,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [
                 (0, (bundle0.primary.id.clone(), name0, payload0_range)),
                 (5, (bundle1.primary.id.clone(), name1, payload1_range)),

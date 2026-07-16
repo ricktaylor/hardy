@@ -235,7 +235,7 @@ impl storage::MetadataStorage for PostgresStorage {
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let bundle_key = bundle.bundle.primary.id.to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
-        let received_at = bundle.metadata.read_only.received_at;
+        let received_at = bundle.metadata.received_at();
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.metadata.status)?;
 
