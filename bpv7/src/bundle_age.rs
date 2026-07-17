@@ -65,11 +65,7 @@ impl hardy_cbor::decode::FromCbor for BundleAge {
     ///   * Returns `shortest = true` on success (no encoder discretion
     ///     left to surface), so callers can drop the flag check.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (v, shortest, len) =
-            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
-        if !shortest {
-            return Err(Error::NotCanonical);
-        }
+        let (v, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((Self(v), true, len))
     }
 }
