@@ -88,39 +88,46 @@ impl RouteTable {
             }
         }
 
-        match self.routes.entry(priority) {
-            btree_map::Entry::Vacant(e) => {
-                e.insert([(pattern, [entry].into())].into());
-            }
-            btree_map::Entry::Occupied(mut e) => match e.get_mut().entry(pattern) {
-                btree_map::Entry::Vacant(pe) => {
-                    pe.insert([entry].into());
+        let mut inserted = false;
+        for pattern in flatten(pattern) {
+            match self.routes.entry(priority) {
+                btree_map::Entry::Vacant(e) => {
+                    e.insert([(pattern, [entry.clone()].into())].into());
+                    inserted = true;
                 }
-                btree_map::Entry::Occupied(mut pe) => {
-                    if !pe.get_mut().insert(entry) {
-                        return Ok(false);
+                btree_map::Entry::Occupied(mut e) => match e.get_mut().entry(pattern) {
+                    btree_map::Entry::Vacant(pe) => {
+                        pe.insert([entry.clone()].into());
+                        inserted = true;
                     }
-                }
-            },
+                    btree_map::Entry::Occupied(mut pe) => {
+                        if pe.get_mut().insert(entry.clone()) {
+                            inserted = true;
+                        }
+                    }
+                },
+            }
         }
-        Ok(true)
+        Ok(inserted)
     }
 
     pub(super) fn remove(&mut self, pattern: &EidPattern, entry: &Entry, priority: u32) -> bool {
-        if let Some(patterns) = self.routes.get_mut(&priority)
-            && let Some(actions) = patterns.get_mut(pattern)
-            && actions.remove(entry)
-        {
-            if actions.is_empty() {
-                patterns.remove(pattern);
-                if patterns.is_empty() {
-                    self.routes.remove(&priority);
+        let mut removed = false;
+        for pattern in flatten(pattern.clone()) {
+            if let Some(patterns) = self.routes.get_mut(&priority)
+                && let Some(actions) = patterns.get_mut(&pattern)
+                && actions.remove(entry)
+            {
+                if actions.is_empty() {
+                    patterns.remove(&pattern);
+                    if patterns.is_empty() {
+                        self.routes.remove(&priority);
+                    }
                 }
+                removed = true;
             }
-            true
-        } else {
-            false
         }
+        removed
     }
 
     pub(super) fn remove_by_source(
@@ -282,6 +289,22 @@ impl RouteTable {
 fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
+    }
+}
+
+// Route selection iterates patterns in specificity order and must compare the
+// specificity of the pattern that *matched*, so a multi-item union is never
+// stored as a single key: any set-level score ranks every member by one
+// aggregate, letting a broad member drag a specific sibling behind routes the
+// sibling strictly beats. A union route is shorthand for one route per member.
+fn flatten(pattern: EidPattern) -> Vec<EidPattern> {
+    match pattern {
+        EidPattern::Set(items) if items.len() > 1 => items
+            .into_vec()
+            .into_iter()
+            .map(|item| EidPattern::Set([item].into()))
+            .collect(),
+        pattern => Vec::from([pattern]),
     }
 }
 
@@ -450,6 +473,58 @@ mod tests {
         let e2 = entry(Action::Route(RouteAction::Reflect), "src");
         assert!(set.insert(e1));
         assert!(!set.insert(e2));
+    }
+
+    #[test]
+    fn test_union_route_member_specificity() {
+        let mut table = make_table();
+
+        // A union pairing a specific member with a broad one: the broad
+        // member must not drag the specific member's selection rank down.
+        let union: EidPattern = "ipn:0.2.*|ipn:**".parse().unwrap();
+        let union_entry = entry(Action::Internal(InternalAction::Forward(1)), "union");
+        assert!(
+            table
+                .insert(union.clone(), union_entry.clone(), 10)
+                .unwrap()
+        );
+
+        // Strictly broader than the union's ipn:0.2.* member, strictly
+        // narrower than its ipn:** member.
+        table
+            .insert(
+                "ipn:0.*.*".parse().unwrap(),
+                entry(Action::Internal(InternalAction::Forward(2)), "broad"),
+                10,
+            )
+            .unwrap();
+
+        // ipn:0.2.5 matches both routes; the union's matching member is the
+        // most specific pattern in the table and must win.
+        let to: Eid = "ipn:0.2.5".parse().unwrap();
+        match table.find_recurse(&to, false, &mut HashSet::new()) {
+            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+
+        // The union's broad member routes independently.
+        let elsewhere: Eid = "ipn:7.7.7".parse().unwrap();
+        match table.find_recurse(&elsewhere, false, &mut HashSet::new()) {
+            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+
+        // Removing the union removes every member.
+        assert!(table.remove(&union, &union_entry, 10));
+        assert!(
+            table
+                .find_recurse(&elsewhere, false, &mut HashSet::new())
+                .is_none()
+        );
+        match table.find_recurse(&to, false, &mut HashSet::new()) {
+            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 2),
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
     }
 
     #[test]
