@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::HasInvalidField;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::ops::Range;
 use smallvec::SmallVec;
 
@@ -58,7 +58,7 @@ fn parse_ranges<const D: usize>(
 
 #[derive(Debug)]
 pub struct UnknownOperation {
-    pub parameters: Rc<HashMap<u64, Box<[u8]>>>,
+    pub parameters: Arc<HashMap<u64, Box<[u8]>>>,
     pub results: HashMap<u64, Box<[u8]>>,
 }
 
@@ -68,7 +68,7 @@ impl UnknownOperation {
         source_data: &[u8],
     ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
         let param_count = asb.parameters.len();
-        let parameters = Rc::from(asb.parameters.into_iter().fold(
+        let parameters = Arc::from(asb.parameters.into_iter().fold(
             HashMap::with_capacity(param_count),
             |mut map, (id, range)| {
                 map.insert(id, source_data[range].into());
