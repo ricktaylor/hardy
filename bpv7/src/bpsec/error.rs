@@ -106,6 +106,15 @@ pub enum Error {
     #[error("Unsupported operation")]
     UnsupportedOperation,
 
+    #[error(
+        "BPSec parameter/result range {start}..{end} does not fit in source data of {source_len} bytes"
+    )]
+    SourceOutOfRange {
+        start: usize,
+        end: usize,
+        source_len: usize,
+    },
+
     #[error(transparent)]
     InvalidCBOR(#[from] hardy_cbor::decode::Error),
 
