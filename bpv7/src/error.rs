@@ -161,3 +161,25 @@ where
         Ok((t, true)) => Ok(t),
     }
 }
+
+/// Decode a `T` from the start of `data` in its canonical (shortest) form,
+/// returning the value and the bytes consumed. A non-canonical encoding —
+/// `T::from_cbor` reporting `shortest == false` — is rejected with
+/// `not_canonical`. The whole-slice counterpart of [`require_canonical`] (which
+/// decodes an array element), shared by leaf `FromCbor` impls whose wire form is
+/// a single bare value: block/CRC type codes, lifetimes, DTN times, BPSec
+/// context and variant ids. Generic over the caller's error so each keeps its
+/// own `NotCanonical`.
+pub(crate) fn parse_canonical<T, E>(data: &[u8], not_canonical: E) -> Result<(T, usize), E>
+where
+    T: hardy_cbor::decode::FromCbor,
+    T::Error: From<hardy_cbor::decode::Error>,
+    E: From<T::Error>,
+{
+    let (value, shortest, len) = hardy_cbor::decode::parse::<(T, bool, usize)>(data)?;
+    if shortest {
+        Ok((value, len))
+    } else {
+        Err(not_canonical)
+    }
+}

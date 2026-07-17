@@ -418,7 +418,7 @@ impl Service {
     fn handle_status_report(&self, payload_data: &[u8], report_source: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
 
-        let report = match hardy_cbor::decode::parse::<AdministrativeRecord>(payload_data) {
+        let report = match hardy_cbor::decode::parse_exact::<AdministrativeRecord>(payload_data) {
             Ok(AdministrativeRecord::BundleStatusReport(r)) => r,
             _ => return,
         };
