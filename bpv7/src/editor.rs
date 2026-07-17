@@ -810,20 +810,20 @@ impl<'a> Editor<'a> {
         bib_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bib_payload))) = self.block(bib_block) {
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bib::OperationSet>(bib_payload)
-            {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        error::Error::InvalidField {
-                            field: "BIB Abstract Syntax Block",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ));
-                }
-            };
+            let mut opset =
+                match hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(bib_payload) {
+                    Ok(opset) => opset,
+                    Err(e) => {
+                        return Err((
+                            self,
+                            error::Error::InvalidField {
+                                field: "BIB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ));
+                    }
+                };
 
             // Remove the target from the BIB
             if opset.operations.remove(&target_block).is_some() {
@@ -857,20 +857,20 @@ impl<'a> Editor<'a> {
         bcb_block: u64,
     ) -> Result<Self, (Self, Error)> {
         if let Some((_, Some(bcb_payload))) = self.block(bcb_block) {
-            let mut opset = match hardy_cbor::decode::parse::<bpsec::bcb::OperationSet>(bcb_payload)
-            {
-                Ok(opset) => opset,
-                Err(e) => {
-                    return Err((
-                        self,
-                        error::Error::InvalidField {
-                            field: "BCB Abstract Syntax Block",
-                            source: e.into(),
-                        }
-                        .into(),
-                    ));
-                }
-            };
+            let mut opset =
+                match hardy_cbor::decode::parse_exact::<bpsec::bcb::OperationSet>(bcb_payload) {
+                    Ok(opset) => opset,
+                    Err(e) => {
+                        return Err((
+                            self,
+                            error::Error::InvalidField {
+                                field: "BCB Abstract Syntax Block",
+                                source: e.into(),
+                            }
+                            .into(),
+                        ));
+                    }
+                };
 
             // Remove the target from the BCB
             if opset.operations.remove(&target_block).is_some() {
