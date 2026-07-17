@@ -1,4 +1,4 @@
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 
 use aes_gcm::{
     KeyInit,
@@ -209,7 +209,7 @@ fn encrypt_inner<C: aes_gcm::aead::Aead>(
 
 #[derive(Debug)]
 pub struct Operation {
-    pub parameters: Rc<Parameters>,
+    pub parameters: Arc<Parameters>,
     pub results: Results,
 }
 
@@ -321,7 +321,7 @@ impl Operation {
 
         Ok((
             Self {
-                parameters: Rc::new(Parameters {
+                parameters: Arc::new(Parameters {
                     iv,
                     variant,
                     key,
@@ -497,7 +497,7 @@ pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>), Error> {
-    let parameters = Rc::from(
+    let parameters = Arc::from(
         Parameters::from_cbor(asb.parameters, data)
             .map_field_err::<Error>("RFC9173 AES-GCM parameters")?,
     );
@@ -520,7 +520,7 @@ pub fn parse(
 #[cfg(test)]
 mod tests {
     use aes_gcm::KeyInit;
-    use alloc::rc::Rc;
+    use alloc::sync::Arc;
     use core::ops::Range;
 
     use super::*;
@@ -545,7 +545,7 @@ mod tests {
                 let (ct, _) = encrypt_inner(cipher, iv.clone(), aad, plaintext).unwrap();
                 let (ciphertext, tag) = ct.split_at(ct.len() - 16);
                 let op = Operation {
-                    parameters: Rc::new(Parameters {
+                    parameters: Arc::new(Parameters {
                         iv,
                         variant: AesVariant::A256GCM,
                         key: None,
