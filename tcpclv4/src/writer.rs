@@ -1,27 +1,27 @@
-use super::*;
+use core::ops::ControlFlow;
+
 use futures::SinkExt;
 
-/// Commands sent to the session writer task.
+use super::*;
+
+// Commands sent to the session writer task.
 pub enum WriteCommand<E> {
-    /// Send a message (waits for write to complete, then flushes).
+    // Send a message, flush, and report the result.
     Send {
         msg: codec::Message,
         result: tokio::sync::oneshot::Sender<Result<bool, E>>,
     },
-    /// Feed a message (buffers without flushing).
+    // Queue a message for transmission without waiting for completion. The
+    // writer flushes once its command queue runs dry; a write failure closes
+    // the writer, which later commands observe as a closed channel.
     Feed {
         msg: codec::Message,
-        result: tokio::sync::oneshot::Sender<Result<bool, E>>,
     },
-    /// Flush pending messages.
-    Flush {
-        result: tokio::sync::oneshot::Sender<Result<bool, E>>,
-    },
-    /// Close the writer.
+    // Close the writer.
     Close,
 }
 
-/// Handle for sending commands to the writer task.
+// Handle for sending commands to the writer task.
 pub struct WriterHandle<E> {
     tx: tokio::sync::mpsc::Sender<WriteCommand<E>>,
 }
@@ -34,13 +34,24 @@ impl<E> Clone for WriterHandle<E> {
     }
 }
 
+// Reserved space for feeding a single message, obtained via
+// [WriterHandle::reserve].
+pub struct FeedPermit<'a, E>(tokio::sync::mpsc::Permit<'a, WriteCommand<E>>);
+
+impl<E> FeedPermit<'_, E> {
+    // Queue the message on the reserved slot. Never blocks.
+    pub fn feed(self, msg: codec::Message) {
+        self.0.send(WriteCommand::Feed { msg });
+    }
+}
+
 impl<E> WriterHandle<E> {
     pub fn new(tx: tokio::sync::mpsc::Sender<WriteCommand<E>>) -> Self {
         Self { tx }
     }
 
-    /// Send a message and wait for acknowledgment.
-    /// Returns Ok(true) on success, Ok(false) if writer closed, Err on IO error.
+    // Send a message, wait for it to be written and flushed.
+    // Returns Ok(true) on success, Ok(false) if writer closed, Err on IO error.
     pub async fn send(&self, msg: codec::Message) -> Result<bool, E> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         if self
@@ -57,53 +68,38 @@ impl<E> WriterHandle<E> {
         result_rx.await.unwrap_or(Ok(false))
     }
 
-    /// Feed a message (buffer without flushing).
-    /// Returns Ok(true) on success, Ok(false) if writer closed, Err on IO error.
-    pub async fn feed(&self, msg: codec::Message) -> Result<bool, E> {
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        if self
-            .tx
-            .send(WriteCommand::Feed {
-                msg,
-                result: result_tx,
-            })
-            .await
-            .is_err()
-        {
-            return Ok(false);
-        }
-        result_rx.await.unwrap_or(Ok(false))
+    // Queue a message without waiting for the write to complete. Write errors
+    // surface as a closed writer on a later command.
+    // Returns false if the writer has closed.
+    pub async fn feed(&self, msg: codec::Message) -> bool {
+        self.tx.send(WriteCommand::Feed { msg }).await.is_ok()
     }
 
-    /// Flush pending messages.
-    /// Returns Ok(true) on success, Ok(false) if writer closed, Err on IO error.
-    pub async fn flush(&self) -> Result<bool, E> {
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        if self
-            .tx
-            .send(WriteCommand::Flush { result: result_tx })
-            .await
-            .is_err()
-        {
-            return Ok(false);
-        }
-        result_rx.await.unwrap_or(Ok(false))
+    // Reserve space for one message, waiting until the writer has room.
+    // Returns None if the writer has closed.
+    //
+    // Reservation is cancel-safe and the returned permit queues its message
+    // without blocking, so a caller can reserve inside a select that
+    // concurrently processes inbound messages.
+    pub async fn reserve(&self) -> Option<FeedPermit<'_, E>> {
+        self.tx.reserve().await.ok().map(FeedPermit)
     }
 
-    /// Request the writer to close.
+    // Request the writer to close.
     pub async fn close(&self) {
         _ = self.tx.send(WriteCommand::Close).await;
     }
 }
 
-/// Session writer that handles keepalives independently of the main session loop.
-///
-/// This runs in its own task so that keepalives are sent even when the session
-/// is blocked waiting for bundle dispatch (which can block on BoundedTaskPool
-/// backpressure).
+// Session writer that handles keepalives independently of the main session
+// loop.
+//
+// This runs in its own task so that keepalives are sent even when the session
+// is busy elsewhere, and so the session can apply backpressure at the command
+// channel rather than blocking on transport writes.
 pub struct SessionWriter<W>
 where
-    W: futures::Sink<codec::Message> + std::marker::Unpin,
+    W: futures::Sink<codec::Message> + core::marker::Unpin,
 {
     writer: W,
     from_session: tokio::sync::mpsc::Receiver<WriteCommand<W::Error>>,
@@ -113,8 +109,8 @@ where
 
 impl<W> SessionWriter<W>
 where
-    W: futures::Sink<codec::Message> + std::marker::Unpin,
-    W::Error: std::fmt::Debug,
+    W: futures::Sink<codec::Message> + core::marker::Unpin,
+    W::Error: core::fmt::Debug,
 {
     pub fn new(
         writer: W,
@@ -130,15 +126,42 @@ where
         }
     }
 
-    /// Run the writer task.
-    ///
-    /// This task handles:
-    /// 1. Sending messages from the session
-    /// 2. Sending keepalives when idle (independent of session dispatch blocking)
+    // Run the writer task.
+    //
+    // This task handles:
+    // 1. Sending messages from the session and ingest tasks
+    // 2. Flushing when the command queue runs dry, so consecutive Feeds
+    //    stream into the transport without intermediate flushes
+    // 3. Sending keepalives when idle
     pub async fn run(mut self) {
         let mut last_sent = tokio::time::Instant::now();
+        let mut needs_flush = false;
 
         loop {
+            // Drain any queued commands before flushing fed messages
+            if needs_flush {
+                match self.from_session.try_recv() {
+                    Ok(cmd) => {
+                        if self
+                            .handle_command(cmd, &mut last_sent, &mut needs_flush)
+                            .await
+                            .is_break()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        if self.writer.flush().await.is_err() {
+                            debug!("Failed to flush, closing writer");
+                            break;
+                        }
+                        needs_flush = false;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                }
+                continue;
+            }
+
             // Calculate time until next keepalive
             let keepalive_sleep = if let Some(interval) = self.keepalive_interval {
                 let elapsed = last_sent.elapsed();
@@ -167,35 +190,12 @@ where
 
                 // Commands from session (prioritized over keepalive)
                 cmd = self.from_session.recv() => {
-                    match cmd {
-                        Some(WriteCommand::Send { msg, result }) => {
-                            let msg_type = msg.message_type();
-                            let r = self.writer.send(msg).await;
-                            if r.is_ok() {
-                                last_sent = tokio::time::Instant::now();
-                            } else {
-                                debug!("Failed to send {msg_type:?}");
-                            }
-                            _ = result.send(r.map(|()| true));
-                        }
-                        Some(WriteCommand::Feed { msg, result }) => {
-                            let msg_type = msg.message_type();
-                            let r = self.writer.feed(msg).await;
-                            if r.is_ok() {
-                                last_sent = tokio::time::Instant::now();
-                            } else {
-                                debug!("Failed to feed {msg_type:?}");
-                            }
-                            _ = result.send(r.map(|()| true));
-                        }
-                        Some(WriteCommand::Flush { result }) => {
-                            let r = self.writer.flush().await;
-                            _ = result.send(r.map(|()| true));
-                        }
-                        Some(WriteCommand::Close) | None => {
-                            debug!("Writer received close command");
-                            break;
-                        }
+                    let Some(cmd) = cmd else {
+                        debug!("Writer command channel closed");
+                        break;
+                    };
+                    if self.handle_command(cmd, &mut last_sent, &mut needs_flush).await.is_break() {
+                        break;
                     }
                 }
 
@@ -204,7 +204,7 @@ where
                     if let Some(sleep_duration) = keepalive_sleep {
                         tokio::time::sleep(sleep_duration).await
                     } else {
-                        std::future::pending::<()>().await
+                        core::future::pending::<()>().await
                     }
                 } => {
                     if self.writer.send(codec::Message::Keepalive).await.is_err() {
@@ -216,26 +216,63 @@ where
             }
         }
 
-        // Best-effort close
+        // Best-effort close, flushing anything still buffered
         _ = self.writer.close().await;
+    }
+
+    async fn handle_command(
+        &mut self,
+        cmd: WriteCommand<W::Error>,
+        last_sent: &mut tokio::time::Instant,
+        needs_flush: &mut bool,
+    ) -> ControlFlow<()> {
+        match cmd {
+            WriteCommand::Send { msg, result } => {
+                let msg_type = msg.message_type();
+                let r = self.writer.send(msg).await;
+                if r.is_ok() {
+                    *last_sent = tokio::time::Instant::now();
+                    // SinkExt::send flushes
+                    *needs_flush = false;
+                } else {
+                    debug!("Failed to send {msg_type:?}");
+                }
+                _ = result.send(r.map(|()| true));
+                ControlFlow::Continue(())
+            }
+            WriteCommand::Feed { msg } => {
+                let msg_type = msg.message_type();
+                if self.writer.feed(msg).await.is_err() {
+                    debug!("Failed to feed {msg_type:?}, closing writer");
+                    return ControlFlow::Break(());
+                }
+                *last_sent = tokio::time::Instant::now();
+                *needs_flush = true;
+                ControlFlow::Continue(())
+            }
+            WriteCommand::Close => {
+                debug!("Writer received close command");
+                ControlFlow::Break(())
+            }
+        }
     }
 }
 
-/// Creates a writer task and returns the handle.
-///
-/// This function splits the transport setup from running, allowing the caller
-/// to spawn the writer in their own task pool.
+// Creates a writer task and returns the handle.
+//
+// This function splits the transport setup from running, allowing the caller
+// to spawn the writer in their own task pool.
 pub fn create_writer<W>(
     writer: W,
     keepalive_interval: Option<tokio::time::Duration>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> (WriterHandle<W::Error>, SessionWriter<W>)
 where
-    W: futures::Sink<codec::Message> + std::marker::Unpin,
-    W::Error: std::fmt::Debug,
+    W: futures::Sink<codec::Message> + core::marker::Unpin,
+    W::Error: core::fmt::Debug,
 {
     // Channel for session to send commands to writer
-    // Bounded to 16 to provide some backpressure but allow concurrency
+    // Bounded to 16 to provide backpressure while allowing segments to stream
     let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     let handle = WriterHandle::new(tx);

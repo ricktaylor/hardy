@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- Bundle dispatch to the BPA moved off the session reader loop into a per-session ordered ingest task: segments, acknowledgments of outbound transfers, and keepalives keep flowing while a received bundle is being stored. The final `XFER_ACK` of a transfer is still only sent after dispatch completes, and acknowledgments are emitted in segment-arrival order.
+- Outbound segments are queued to the writer task without a per-segment completion round-trip, and the writer flushes when its command queue runs dry. The session never awaits a blocked write without concurrently processing inbound messages, removing a mutual-stall risk when both peers send large transfers simultaneously.
+
+### Fixed
+- A mid-transfer `XFER_REFUSE` now clears all outstanding acknowledgment expectations for the refused transfer (RFC 9174 Section 5.2.2 sends no further `XFER_ACK` messages for it), where previously stale expectations desynchronised the acknowledgment matcher and tore down the session.
+
 ## [0.4.0]
 
 ### Changed
