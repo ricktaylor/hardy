@@ -58,8 +58,9 @@ Each `ConnectionPool` maintains separate sets of idle and active connections. Wh
 1. Try an idle connection first, moving it to the active set
 2. If no idle connections exist and the pool isn't at capacity, signal the caller to establish a new connection
 3. If at capacity, queue to a random active connection
+4. If establishing a new connection fails while sessions remain open, queue to a busy session anyway — a peer with asymmetric reachability (RFC 9174 Section 3.3) can hold a session open without being able to accept another
 
-This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity.
+This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity. Concurrent forwards may each signal a dial before the first new session registers, briefly overshooting the bound; excess connections are shed after use when they fail the idle-return check.
 
 ### Tower Service for Listener
 

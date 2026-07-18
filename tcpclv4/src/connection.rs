@@ -122,6 +122,7 @@ impl ConnectionPool {
     async fn try_send(
         &self,
         bundle: hardy_bpa::Bytes,
+        may_dial: bool,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         // We repeatedly search as this function is async, so changes can happen
         // while running. Cap the retries so a peer whose sessions repeatedly
@@ -163,7 +164,22 @@ impl ConnectionPool {
                     .remove(&conn.local_addr);
             }
 
-            // Pick a random active connection and enqueue
+            // No idle sessions: prefer dialing a new connection over queueing
+            // behind a busy session while the pool has capacity. Concurrent
+            // forwards may each signal a dial, briefly overshooting the bound;
+            // excess connections are shed after use by the idle-return check
+            // above.
+            if may_dial
+                && (self.max_idle == 0 || {
+                    let inner = self.inner.lock().trace_expect("Failed to lock mutex");
+                    inner.active.len() + inner.idle.len()
+                } <= self.max_idle)
+            {
+                return Err(bundle);
+            }
+
+            // At capacity (or dialing is not an option): queue on a random
+            // active connection
             while let Some((local_addr, conn_tx)) = {
                 self.inner
                     .lock()
@@ -189,17 +205,8 @@ impl ConnectionPool {
                     .remove(&local_addr);
             }
 
-            if self.max_idle == 0 || {
-                let inner = self.inner.lock().trace_expect("Failed to lock mutex");
-                inner.active.len() + inner.idle.len()
-            } <= self.max_idle
-            {
-                // We can support more active connections
-                return Err(bundle);
-            }
-
-            // Pool is above max_idle but nothing could send. Retry — bounded, and
-            // yielding so the tasks that manage the pool get a chance to run.
+            // Nothing could send. Retry — bounded, and yielding so the tasks
+            // that manage the pool get a chance to run.
             retries += 1;
             if retries >= MAX_RETRIES {
                 return Err(bundle);
@@ -291,11 +298,18 @@ impl ConnectionRegistry {
         }
     }
 
+    // Forward a bundle over a pooled session for `remote_addr`.
+    //
+    // With `may_dial` set, Err(bundle) signals the caller to establish a new
+    // connection (the pool has capacity and no session is free). With
+    // `may_dial` clear, busy sessions are queued on instead — the fallback for
+    // peers that hold a session open but cannot accept new connections.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn forward(
         &self,
         remote_addr: &SocketAddr,
         mut bundle: hardy_bpa::Bytes,
+        may_dial: bool,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         let pool = self
             .pools
@@ -305,7 +319,7 @@ impl ConnectionRegistry {
             .cloned();
 
         if let Some(pool) = pool {
-            match pool.try_send(bundle).await {
+            match pool.try_send(bundle, may_dial).await {
                 Ok(r) => return Ok(r),
                 Err(b) => {
                     bundle = b;
@@ -313,5 +327,149 @@ impl ConnectionRegistry {
             }
         }
         Err(bundle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpa::async_trait;
+
+    use super::*;
+
+    type ConnectionRx = tokio::sync::mpsc::Receiver<(
+        hardy_bpa::Bytes,
+        tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+    )>;
+
+    struct MockSink;
+
+    #[async_trait]
+    impl hardy_bpa::cla::Sink for MockSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _bundle: hardy_bpa::Bytes,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
+        }
+
+        async fn add_peer(
+            &self,
+            _cla_addr: hardy_bpa::cla::ClaAddress,
+            _node_ids: &[NodeId],
+        ) -> hardy_bpa::cla::Result<bool> {
+            Ok(true)
+        }
+
+        async fn remove_peer(
+            &self,
+            _cla_addr: &hardy_bpa::cla::ClaAddress,
+        ) -> hardy_bpa::cla::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn conn(port: u16) -> (Connection, ConnectionRx) {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        (
+            Connection {
+                tx,
+                local_addr: addr(port),
+            },
+            rx,
+        )
+    }
+
+    // A stand-in session that accepts every bundle and reports it sent
+    fn serve_sent(mut rx: ConnectionRx) {
+        tokio::spawn(async move {
+            while let Some((_bundle, result)) = rx.recv().await {
+                _ = result.send(hardy_bpa::cla::ForwardBundleResult::Sent);
+            }
+        });
+    }
+
+    // Move the pool's sole idle connection into the active (busy) set
+    fn make_busy(pool: &ConnectionPool) {
+        let mut inner = pool.inner.lock().unwrap();
+        let conn = inner.idle.pop().unwrap();
+        inner.active.insert(conn.local_addr, conn.tx);
+    }
+
+    #[tokio::test]
+    async fn dials_when_under_capacity_and_all_sessions_busy() {
+        let (conn, _rx) = conn(1);
+        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        make_busy(&pool);
+
+        // Must signal a dial without blocking on the busy session
+        let r = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            pool.try_send(hardy_bpa::Bytes::from_static(b"bundle"), true),
+        )
+        .await
+        .expect("try_send queued on a busy session instead of signalling a dial");
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn queues_on_busy_session_at_capacity() {
+        let (conn1, rx1) = conn(1);
+        let (conn2, rx2) = conn(2);
+        serve_sent(rx1);
+        serve_sent(rx2);
+
+        // A max_idle of 1 with two busy connections puts the pool over
+        // capacity, so the forward queues rather than dialling
+        let pool = ConnectionPool::new(conn1, Arc::new(MockSink), addr(4556), 1);
+        make_busy(&pool);
+        pool.inner
+            .lock()
+            .unwrap()
+            .active
+            .insert(conn2.local_addr, conn2.tx);
+
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), true)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+    }
+
+    #[tokio::test]
+    async fn no_dial_forward_queues_on_busy_session() {
+        let (conn, rx) = conn(1);
+        serve_sent(rx);
+
+        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        make_busy(&pool);
+
+        // With dialling ruled out, the forward queues despite spare capacity
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), false)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+    }
+
+    #[tokio::test]
+    async fn idle_session_is_used_and_returned() {
+        let (conn, rx) = conn(1);
+        serve_sent(rx);
+
+        let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
+        let r = pool
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), true)
+            .await;
+        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+
+        let inner = pool.inner.lock().unwrap();
+        assert_eq!(inner.idle.len(), 1);
+        assert!(inner.active.is_empty());
     }
 }

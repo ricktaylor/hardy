@@ -74,14 +74,15 @@ impl hardy_bpa::cla::Cla for Cla {
 
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
-                // See if we have an active connection already
-                bundle = match self.registry.forward(remote_addr, bundle).await {
+                // Use a pooled session, dialing a new connection when the
+                // pool has capacity and no session is free
+                bundle = match self.registry.forward(remote_addr, bundle, true).await {
                     Ok(r) => {
                         debug!("Bundle forwarded successfully using existing connection");
                         return Ok(r);
                     }
                     Err(bundle) => {
-                        debug!("No live connections, will attempt to create new one");
+                        debug!("No free connections, will attempt to create new one");
                         bundle
                     }
                 };
@@ -94,11 +95,26 @@ impl hardy_bpa::cla::Cla for Cla {
                 match conn.connect(remote_addr).await {
                     Ok(()) | Err(transport::Error::Timeout) => {}
                     Err(_) => {
-                        // No point retrying
-                        break;
+                        // The peer is not accepting new connections; fall
+                        // back to queueing on a busy session, if any — peers
+                        // with asymmetric reachability can hold a session
+                        // open without being able to accept another
+                        return Ok(self
+                            .registry
+                            .forward(remote_addr, bundle, false)
+                            .await
+                            .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
                     }
                 }
             }
+
+            // Repeated dial timeouts: last try on a busy session before
+            // reporting the neighbour gone
+            return Ok(self
+                .registry
+                .forward(remote_addr, bundle, false)
+                .await
+                .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
         }
 
         Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)

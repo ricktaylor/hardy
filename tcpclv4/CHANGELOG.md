@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - A mid-transfer `XFER_REFUSE` now clears all outstanding acknowledgment expectations for the refused transfer (RFC 9174 Section 5.2.2 sends no further `XFER_ACK` messages for it), where previously stale expectations desynchronised the acknowledgment matcher and tore down the session.
+- The connection pool now dials a new connection when every pooled session is busy and the pool is under capacity, matching the documented pooling strategy — previously a forward queued behind a busy session and parallel connections were only established when none existed at all. If the peer cannot accept a new connection, the forward falls back to queueing on a busy session, preserving delivery to peers with asymmetric reachability.
 
 ## [0.4.0]
 
