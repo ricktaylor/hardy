@@ -20,11 +20,7 @@ async fn forward(
     {
         hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
         hardy_bpa::cla::ForwardBundleResult::Accepted => {
-            // No wire form yet: the transfer-outcome extension to the proto
-            // has not landed, so a deferring CLA cannot be carried over gRPC.
-            return Err(tonic::Status::unimplemented(
-                "Deferred transfer outcomes are not yet supported over gRPC",
-            ));
+            forward_bundle_response::Result::Accepted(())
         }
         hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
             forward_bundle_response::Result::NoNeighbour(())
@@ -123,17 +119,30 @@ impl hardy_bpa::cla::Sink for Sink {
 
     async fn transfer_outcome(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _outcome: hardy_bpa::cla::TransferOutcome,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: hardy_bpa::cla::TransferOutcome,
     ) -> hardy_bpa::cla::Result<()> {
-        // No wire form yet: the transfer-outcome extension to the proto has
-        // not landed. CLAs must not answer Accepted over this transport.
-        Err(hardy_bpa::cla::Error::Internal(
-            tonic::Status::unimplemented(
-                "Deferred transfer outcomes are not yet supported over gRPC",
-            )
-            .into(),
-        ))
+        let outcome = match outcome {
+            hardy_bpa::cla::TransferOutcome::Delivered => {
+                transfer_outcome_request::Outcome::Delivered(())
+            }
+            hardy_bpa::cla::TransferOutcome::Failed => transfer_outcome_request::Outcome::Failed(
+                tonic::Status::aborted("Transfer failed").into(),
+            ),
+        };
+
+        match self
+            .call(cla_to_bpa::Msg::TransferOutcome(TransferOutcomeRequest {
+                bundle_id: bundle_id.to_key(),
+                outcome: Some(outcome),
+            }))
+            .await?
+        {
+            bpa_to_cla::Msg::TransferOutcome(_) => Ok(()),
+            msg => Err(hardy_bpa::cla::Error::Internal(
+                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+            )),
+        }
     }
 
     async fn unregister(&self) {

@@ -1,4 +1,4 @@
-//! CLA client proxy tests (CLA-CLI-01 through CLA-CLI-05).
+//! CLA client proxy tests (CLA-CLI-01 through CLA-CLI-06).
 //!
 //! Verify the CLA client correctly maps Rust trait calls to cla.proto
 //! messages via the gRPC proxy.
@@ -19,6 +19,8 @@ struct MockCla {
     registered: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn cla::Sink>>>,
     forwarded: AtomicBool,
+    // Answer Accepted (deferring the outcome) instead of Sent.
+    defer: bool,
 }
 
 impl MockCla {
@@ -27,6 +29,14 @@ impl MockCla {
             registered: AtomicBool::new(false),
             sink: hardy_async::sync::spin::Mutex::new(None),
             forwarded: AtomicBool::new(false),
+            defer: false,
+        }
+    }
+
+    fn new_deferring() -> Self {
+        Self {
+            defer: true,
+            ..Self::new()
         }
     }
 
@@ -56,7 +66,11 @@ impl cla::Cla for MockCla {
         _bundle: hardy_bpa::Bytes,
     ) -> cla::Result<ForwardBundleResult> {
         self.forwarded.store(true, Ordering::Relaxed);
-        Ok(ForwardBundleResult::Sent)
+        Ok(if self.defer {
+            ForwardBundleResult::Accepted
+        } else {
+            ForwardBundleResult::Sent
+        })
     }
 }
 
@@ -225,5 +239,74 @@ async fn cla_cli_05_remove_peer() {
 
     // Clean up
     sink.unregister().await;
+    server_tasks.shutdown().await;
+}
+
+// CLA-CLI-06: Deferred transfer outcome round trip.
+// A CLA answers Accepted to a forward and later resolves the transfer with
+// a TransferOutcomeRequest carrying the same bundle id.
+#[tokio::test]
+async fn cla_cli_06_deferred_outcome() {
+    let bpa = Arc::new(MockBpa::new());
+    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["cla"]).await;
+
+    let cla = Arc::new(MockCla::new_deferring());
+    let remote_bpa = RemoteBpa::new(grpc_addr);
+
+    let _node_ids: Vec<NodeId> = remote_bpa
+        .register_cla("test-cla".to_string(), cla.clone(), None)
+        .await
+        .expect("registration should succeed");
+
+    let server_cla = bpa
+        .last_cla
+        .lock()
+        .clone()
+        .expect("BPA should have the server-side CLA");
+
+    // The forward is answered Accepted: ownership transferred, no outcome yet.
+    let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
+    let bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let bundle_id = hardy_bpv7::bundle::Id {
+        source: "ipn:0.9.2".parse().unwrap(),
+        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+        fragment_info: None,
+    };
+    let result = server_cla
+        .forward(None, &addr, &bundle_id, bundle)
+        .await
+        .expect("forward should succeed");
+    assert!(
+        matches!(result, ForwardBundleResult::Accepted),
+        "forward should return Accepted"
+    );
+    let sink = bpa
+        .last_cla_sink
+        .lock()
+        .clone()
+        .expect("BPA should have the CLA sink");
+    assert!(
+        sink.outcomes().is_empty(),
+        "No outcome should have been reported yet"
+    );
+
+    // The CLA resolves the transfer; the outcome arrives at the BPA sink
+    // keyed by the same bundle id. The call is correlated, so the outcome is
+    // recorded by the time it returns.
+    let client_sink = cla.take_sink().expect("CLA should have a sink");
+    client_sink
+        .transfer_outcome(&bundle_id, cla::TransferOutcome::Delivered)
+        .await
+        .expect("transfer_outcome should succeed");
+
+    assert_eq!(
+        sink.outcomes(),
+        vec![(bundle_id, cla::TransferOutcome::Delivered)],
+        "The BPA should have received the outcome"
+    );
+
+    // Clean up
+    drop(client_sink);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     server_tasks.shutdown().await;
 }

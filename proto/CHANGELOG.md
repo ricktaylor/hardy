@@ -8,9 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - `ForwardBundleRequest.bundle_id` — the RFC 9171 bundle identifier in key form, identifying the transfer for correlation. Additive; CLAs treat it as opaque.
-
-### Changed
-- A CLA answering `ForwardBundleResult::Accepted`, or calling `Sink::transfer_outcome`, over gRPC gets `Unimplemented`: the deferred transfer-outcome messages have no wire form yet.
+- Deferred transfer outcomes on the wire: `accepted` as a `ForwardBundleResponse` result, and the `TransferOutcomeRequest`/`TransferOutcomeResponse` pair resolving an accepted transfer as `delivered` or `failed` (with an opaque `google.rpc.Status` reason), keyed by `bundle_id`. Deferral is a per-bundle choice in the forward answer — there is no registration-level capability negotiation.
 
 ## [0.2.0]
 
