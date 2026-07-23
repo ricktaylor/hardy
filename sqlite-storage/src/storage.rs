@@ -49,8 +49,14 @@ impl ConnectionPool {
 
         // journal_mode cannot be changed inside a transaction (migrations run
         // in one), so WAL is applied per connection here, not in the schema.
+        // synchronous is a per-connection pragma; NORMAL under WAL fsyncs at
+        // checkpoint rather than per commit. A crash loses at most the
+        // un-checkpointed tail of commits, never consistency — and bundle data
+        // storage is ground truth: restart replay re-ingests anything whose
+        // metadata the tail forgot.
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             PRAGMA optimize = 0x10002;",
         )
@@ -144,9 +150,13 @@ impl Storage {
 
         // journal_mode cannot be changed inside a transaction (migrations run
         // in one), so WAL is applied here, before migrate(), not in the schema.
+        // synchronous is a per-connection pragma; NORMAL under WAL fsyncs at
+        // checkpoint rather than per commit (see new_connection for the
+        // durability rationale).
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
                 PRAGMA foreign_keys = ON;
                 PRAGMA optimize = 0x10002;",
             )
