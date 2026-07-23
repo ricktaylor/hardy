@@ -91,6 +91,31 @@ impl Cla {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
+    async fn transfer_outcome(
+        &self,
+        request: TransferOutcomeRequest,
+    ) -> Result<bpa_to_cla::Msg, tonic::Status> {
+        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
+        let outcome = match request.outcome {
+            Some(transfer_outcome_request::Outcome::Delivered(_)) => {
+                hardy_bpa::cla::TransferOutcome::Delivered
+            }
+            Some(transfer_outcome_request::Outcome::Failed(status)) => {
+                debug!("CLA reports transfer of {bundle_id} failed: {status:?}");
+                hardy_bpa::cla::TransferOutcome::Failed
+            }
+            None => return Err(tonic::Status::invalid_argument("Missing outcome")),
+        };
+
+        self.sink()?
+            .transfer_outcome(&bundle_id, outcome)
+            .await
+            .map(|_| bpa_to_cla::Msg::TransferOutcome(TransferOutcomeResponse {}))
+            .map_err(|e| tonic::Status::from_error(e.into()))
+    }
+
     async fn unregister(&self) {
         let sink = self.sink.lock().take();
         if let Some(sink) = sink {
@@ -149,6 +174,9 @@ impl hardy_bpa::cla::Cla for Cla {
                 Some(forward_bundle_response::Result::NoNeighbour(_)) => {
                     Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
                 }
+                Some(forward_bundle_response::Result::Accepted(_)) => {
+                    Ok(hardy_bpa::cla::ForwardBundleResult::Accepted)
+                }
             },
             msg => {
                 warn!("Unexpected response: {msg:?}");
@@ -174,6 +202,7 @@ impl ProxyHandler for Handler {
             cla_to_bpa::Msg::Dispatch(msg) => self.cla.dispatch(msg).await,
             cla_to_bpa::Msg::AddPeer(msg) => self.cla.add_peer(msg).await,
             cla_to_bpa::Msg::RemovePeer(msg) => self.cla.remove_peer(msg).await,
+            cla_to_bpa::Msg::TransferOutcome(msg) => self.cla.transfer_outcome(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;
