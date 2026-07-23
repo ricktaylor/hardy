@@ -76,7 +76,11 @@ impl hardy_bpa::cla::Cla for Cla {
             for _ in 0..5 {
                 // Use a pooled session, dialing a new connection when the
                 // pool has capacity and no session is free
-                bundle = match self.registry.forward(remote_addr, bundle, true).await {
+                bundle = match self
+                    .registry
+                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
+                    .await
+                {
                     Ok(r) => {
                         debug!("Bundle forwarded successfully using existing connection");
                         return Ok(r);
@@ -93,7 +97,11 @@ impl hardy_bpa::cla::Cla for Cla {
                 // may already be registered
                 let dial_lock = self.registry.dial_lock(*remote_addr);
                 let _dialing = dial_lock.lock().await;
-                bundle = match self.registry.forward(remote_addr, bundle, true).await {
+                bundle = match self
+                    .registry
+                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
+                    .await
+                {
                     Ok(r) => return Ok(r),
                     Err(bundle) => bundle,
                 };
@@ -120,7 +128,7 @@ impl hardy_bpa::cla::Cla for Cla {
                         );
                         return Ok(self
                             .registry
-                            .forward(remote_addr, bundle, false)
+                            .forward(remote_addr, bundle, connection::OnBusy::Queue)
                             .await
                             .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
                     }
@@ -131,7 +139,7 @@ impl hardy_bpa::cla::Cla for Cla {
             // reporting the neighbour gone
             return Ok(self
                 .registry
-                .forward(remote_addr, bundle, false)
+                .forward(remote_addr, bundle, connection::OnBusy::Queue)
                 .await
                 .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
         }

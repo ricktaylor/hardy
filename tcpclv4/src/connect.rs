@@ -280,20 +280,14 @@ impl Connector {
         let (writer_handle, writer_task) =
             writer::create_writer(transport_writer, keepalive_duration, cancel_token.clone());
 
-        let session = session::Session::new(
+        let (session, ingest_rx) = session::Session::new(
             transport_reader,
             writer_handle,
             self.ctx.sink.clone(),
             peer_node,
             peer_addr,
             keepalive_duration,
-            // Wire-derived and config u64s are clamped, not truncated: on a
-            // 32-bit target `as usize` can truncate a large segment_mru to 0,
-            // turning the sender's segmentation loop into an infinite
-            // empty-segment spin.
-            segment_mtu
-                .map(|mtu| mtu.min(usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)))
-                .unwrap_or_else(|| usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)),
+            context::negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
             usize::try_from(self.ctx.transfer_mru).unwrap_or(usize::MAX),
             rx,
             cancel_token,
@@ -310,19 +304,23 @@ impl Connector {
             writer_task.run().await;
         });
 
+        // Register before returning: the dialing forward re-checks the pool
+        // as soon as connect() returns, and registration inside the spawned
+        // task would let that same forward miss its own fresh session and
+        // dial again
+        registry
+            .register_session(
+                sink,
+                connection::Connection { tx, local_addr },
+                remote_addr,
+                peer_init.node_id,
+            )
+            .await;
+
+        metrics::counter!("tcpclv4.session.established").increment(1);
+
         hardy_async::spawn!(self.tasks, "active_session_task", async move {
-            registry
-                .register_session(
-                    sink,
-                    connection::Connection { tx, local_addr },
-                    remote_addr,
-                    peer_init.node_id,
-                )
-                .await;
-
-            metrics::counter!("tcpclv4.session.established").increment(1);
-
-            session.run().await;
+            session.run(ingest_rx).await;
 
             debug!(%local_addr, %remote_addr, "Session closed");
 

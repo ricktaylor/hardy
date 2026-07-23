@@ -132,6 +132,8 @@ The final XFER_ACK of a transfer is a transfer of responsibility, not a transpor
 
 Failure inverts safely. If dispatch fails, the ingest task exits without acknowledging, the session terminates, and the peer — which still owns the bundle — retransmits later. A crash after store but before ack produces a retransmission that the BPA's duplicate detection absorbs. The chain is at-least-once delivery with dedup, which composes to effectively exactly-once.
 
+The sender-side matcher's `XferAck` type is named for the RFC 9174 XFER_ACK message it anticipates: each entry is the expected shape of the next acknowledgment (echoed flags, cumulative length), and the queue is popped strictly FIFO against arrivals — the code deliberately keeps the RFC's message vocabulary rather than inventing its own.
+
 Acknowledgments are emitted in segment-arrival order, across transfer boundaries. Our own ack matcher pops expectations strictly FIFO and peers may be equally strict, so an ack for a later transfer's segment must not overtake the dispatch-gated final ack of an earlier transfer. The single FIFO ingest consumer provides this ordering by construction; it is the reason all acks route through the ingest queue rather than only final ones.
 
 At session teardown, every terminal path converges on one epilogue: the ingest queue is closed and drained (dispatching any fully received bundles and flushing their acks), then the writer is closed. A bundle received but not yet dispatched at teardown is still delivered to the BPA; if its ack no longer reaches the peer, the resulting retransmission is deduplicated.

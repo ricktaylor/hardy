@@ -7,6 +7,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+// What a forward should do when every pooled session is busy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnBusy {
+    // Signal the caller to dial a new connection while the pool has capacity
+    Dial,
+    // Queue on a busy session — the fallback for peers that cannot accept
+    // another connection
+    Queue,
+}
+
 pub type ConnectionTx = tokio::sync::mpsc::Sender<(
     hardy_bpa::Bytes,
     tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
@@ -122,7 +132,7 @@ impl ConnectionPool {
     async fn try_send(
         &self,
         bundle: hardy_bpa::Bytes,
-        may_dial: bool,
+        on_busy: OnBusy,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         // We repeatedly search as this function is async, so changes can happen
         // while running. Cap the retries so a peer whose sessions repeatedly
@@ -169,7 +179,7 @@ impl ConnectionPool {
             // forwards may each signal a dial, briefly overshooting the bound;
             // excess connections are shed after use by the idle-return check
             // above.
-            if may_dial
+            if on_busy == OnBusy::Dial
                 && (self.max_idle == 0 || {
                     let inner = self.inner.lock().trace_expect("Failed to lock mutex");
                     inner.active.len() + inner.idle.len()
@@ -329,16 +339,16 @@ impl ConnectionRegistry {
 
     // Forward a bundle over a pooled session for `remote_addr`.
     //
-    // With `may_dial` set, Err(bundle) signals the caller to establish a new
+    // With `OnBusy::Dial`, Err(bundle) signals the caller to establish a new
     // connection (the pool has capacity and no session is free). With
-    // `may_dial` clear, busy sessions are queued on instead — the fallback for
+    // `OnBusy::Queue`, busy sessions are queued on instead — the fallback for
     // peers that hold a session open but cannot accept new connections.
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     pub async fn forward(
         &self,
         remote_addr: &SocketAddr,
         mut bundle: hardy_bpa::Bytes,
-        may_dial: bool,
+        on_busy: OnBusy,
     ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
         let pool = self
             .pools
@@ -348,7 +358,7 @@ impl ConnectionRegistry {
             .cloned();
 
         if let Some(pool) = pool {
-            match pool.try_send(bundle, may_dial).await {
+            match pool.try_send(bundle, on_busy).await {
                 Ok(r) => return Ok(r),
                 Err(b) => {
                     bundle = b;
@@ -441,7 +451,7 @@ mod tests {
         // Must signal a dial without blocking on the busy session
         let r = tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
-            pool.try_send(hardy_bpa::Bytes::from_static(b"bundle"), true),
+            pool.try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial),
         )
         .await
         .expect("try_send queued on a busy session instead of signalling a dial");
@@ -466,7 +476,7 @@ mod tests {
             .insert(conn2.local_addr, conn2.tx);
 
         let r = pool
-            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), true)
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
         assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
     }
@@ -481,7 +491,7 @@ mod tests {
 
         // With dialling ruled out, the forward queues despite spare capacity
         let r = pool
-            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), false)
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Queue)
             .await;
         assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
     }
@@ -493,7 +503,7 @@ mod tests {
 
         let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
         let r = pool
-            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), true)
+            .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
         assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
 

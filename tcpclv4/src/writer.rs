@@ -4,12 +4,25 @@ use futures::SinkExt;
 
 use super::*;
 
+// Failure modes of [`WriterHandle::send`]. Two variants instead of a
+// tri-state `Result<bool, E>`: a closed writer cannot be mistaken for
+// success by a caller that only propagates the error case.
+#[derive(Debug, thiserror::Error)]
+pub enum SendError<E> {
+    // The writer has closed; the message was not sent.
+    #[error("The writer has closed")]
+    Closed,
+    // The transport write failed.
+    #[error("Transport write failed")]
+    Transport(E),
+}
+
 // Commands sent to the session writer task.
 pub enum WriteCommand<E> {
     // Send a message, flush, and report the result.
     Send {
         msg: codec::Message,
-        result: tokio::sync::oneshot::Sender<Result<bool, E>>,
+        result: tokio::sync::oneshot::Sender<Result<(), E>>,
     },
     // Queue a message for transmission without waiting for completion. The
     // writer flushes once its command queue runs dry; a write failure closes
@@ -51,8 +64,7 @@ impl<E> WriterHandle<E> {
     }
 
     // Send a message, wait for it to be written and flushed.
-    // Returns Ok(true) on success, Ok(false) if writer closed, Err on IO error.
-    pub async fn send(&self, msg: codec::Message) -> Result<bool, E> {
+    pub async fn send(&self, msg: codec::Message) -> Result<(), SendError<E>> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         if self
             .tx
@@ -63,9 +75,14 @@ impl<E> WriterHandle<E> {
             .await
             .is_err()
         {
-            return Ok(false);
+            return Err(SendError::Closed);
         }
-        result_rx.await.unwrap_or(Ok(false))
+        match result_rx.await {
+            // The writer died before reporting
+            Err(_) => Err(SendError::Closed),
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(SendError::Transport(e)),
+        }
     }
 
     // Queue a message without waiting for the write to complete. Write errors
@@ -182,8 +199,18 @@ where
             let keepalive_sleep = if let Some(interval) = self.keepalive_interval {
                 let elapsed = last_sent.elapsed();
                 if elapsed >= interval {
-                    // Send keepalive immediately
-                    if self.writer.send(codec::Message::Keepalive).await.is_err() {
+                    // Send keepalive immediately, raced against cancellation
+                    // like every other socket write
+                    let cancel_token = self.cancel_token.clone();
+                    let sent = tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {
+                            debug!("Writer cancelled");
+                            break;
+                        }
+                        r = self.writer.send(codec::Message::Keepalive) => r,
+                    };
+                    if sent.is_err() {
                         debug!("Failed to send keepalive, closing writer");
                         break;
                     }
@@ -223,7 +250,16 @@ where
                         core::future::pending::<()>().await
                     }
                 } => {
-                    if self.writer.send(codec::Message::Keepalive).await.is_err() {
+                    let cancel_token = self.cancel_token.clone();
+                    let sent = tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {
+                            debug!("Writer cancelled");
+                            break;
+                        }
+                        r = self.writer.send(codec::Message::Keepalive) => r,
+                    };
+                    if sent.is_err() {
                         debug!("Failed to send keepalive, closing writer");
                         break;
                     }
@@ -254,7 +290,8 @@ where
                     biased;
                     _ = cancel_token.cancelled() => {
                         debug!("Writer cancelled");
-                        _ = result.send(Ok(false));
+                        // Dropping the result reports Closed to the caller
+                        drop(result);
                         return ControlFlow::Break(());
                     }
                     r = self.writer.send(msg) => r,
@@ -270,7 +307,7 @@ where
                     // SinkExt::send flushes
                     *needs_flush = false;
                 }
-                _ = result.send(r.map(|()| true));
+                _ = result.send(r);
                 if failed {
                     ControlFlow::Break(())
                 } else {
@@ -327,4 +364,21 @@ where
     let writer_task = SessionWriter::new(writer, rx, keepalive_interval, cancel_token);
 
     (handle, writer_task)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // send() reports Closed, not success, when the writer task is gone.
+    #[tokio::test]
+    async fn send_reports_closed_writer() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<WriteCommand<codec::Error>>(1);
+        drop(rx);
+        let handle = WriterHandle::new(tx);
+        assert!(matches!(
+            handle.send(codec::Message::Keepalive).await,
+            Err(SendError::Closed)
+        ));
+    }
 }

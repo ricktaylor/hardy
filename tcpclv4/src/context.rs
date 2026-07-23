@@ -66,10 +66,7 @@ impl ConnectionContext {
     /// Negotiate keepalive interval with peer per RFC9174 Section 5.1.1.
     /// Returns the minimum of our interval and peer's interval, or 0 if we have none configured.
     pub fn negotiate_keepalive(&self, peer_keepalive: u16) -> u16 {
-        self.session
-            .keepalive_interval
-            .map(|our_keepalive| peer_keepalive.min(our_keepalive))
-            .unwrap_or(0)
+        negotiate_keepalive(self.session.keepalive_interval, peer_keepalive)
     }
 
     /// Convert a keepalive interval (in seconds) to an Option<Duration>.
@@ -297,20 +294,14 @@ impl ConnectionContext {
         };
         tokio::spawn(task);
 
-        let session = session::Session::new(
+        let (session, ingest_rx) = session::Session::new(
             transport_reader,
             writer_handle,
             self.sink.clone(),
             peer_node,
             peer_addr,
             keepalive_duration,
-            // Wire-derived and config u64s are clamped, not truncated: on a
-            // 32-bit target `as usize` can truncate a large segment_mru to 0,
-            // turning the sender's segmentation loop into an infinite
-            // empty-segment spin.
-            segment_mtu
-                .map(|mtu| mtu.min(usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)))
-                .unwrap_or_else(|| usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)),
+            negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
             usize::try_from(self.transfer_mru).unwrap_or(usize::MAX),
             rx,
             cancel_token,
@@ -328,7 +319,7 @@ impl ConnectionContext {
 
         metrics::counter!("tcpclv4.session.established").increment(1);
 
-        session.run().await;
+        session.run(ingest_rx).await;
 
         debug!(%local_addr, %remote_addr, "Session closed");
 
@@ -371,5 +362,50 @@ impl ConnectionContext {
                 debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
             }
         }
+    }
+}
+
+// Negotiate the keepalive interval per RFC 9174 Section 5.1.1: the minimum
+// of the two proposals, or 0 (disabled) when we have none configured.
+pub fn negotiate_keepalive(local: Option<u16>, peer_keepalive: u16) -> u16 {
+    local
+        .map(|our_keepalive| peer_keepalive.min(our_keepalive))
+        .unwrap_or(0)
+}
+
+// Negotiate the outbound segment MTU: our configured MTU capped by the
+// peer's advertised segment MRU. The wire-derived u64 is clamped, not
+// truncated: on a 32-bit target `as usize` can truncate a large MRU to 0,
+// turning the sender's segmentation loop into an infinite empty-segment
+// spin.
+pub fn negotiate_segment_mtu(local_mtu: Option<usize>, peer_segment_mru: u64) -> usize {
+    let peer_segment_mru = usize::try_from(peer_segment_mru).unwrap_or(usize::MAX);
+    local_mtu
+        .map(|mtu| mtu.min(peer_segment_mru))
+        .unwrap_or(peer_segment_mru)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UT-TCP-03: keepalive negotiation (RFC 9174 Section 5.1.1), exercising
+    // the production function rather than a re-implementation.
+    #[test]
+    fn negotiate_keepalive_cases() {
+        assert_eq!(negotiate_keepalive(Some(30), 60), 30);
+        assert_eq!(negotiate_keepalive(Some(60), 30), 30);
+        assert_eq!(negotiate_keepalive(Some(45), 45), 45);
+        assert_eq!(negotiate_keepalive(None, 60), 0);
+        assert_eq!(negotiate_keepalive(Some(60), 0), 0);
+    }
+
+    // UT-TCP-03: segment MTU negotiation, including the 32-bit clamp.
+    #[test]
+    fn negotiate_segment_mtu_cases() {
+        assert_eq!(negotiate_segment_mtu(Some(8192), 16384), 8192);
+        assert_eq!(negotiate_segment_mtu(None, 16384), 16384);
+        assert_eq!(negotiate_segment_mtu(None, u64::MAX), usize::MAX);
+        assert_eq!(negotiate_segment_mtu(Some(8192), u64::MAX), 8192);
     }
 }
