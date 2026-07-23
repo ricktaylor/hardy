@@ -575,6 +575,40 @@ mod tests {
     }
 
     #[test]
+    fn test_via_chain_next_hop_is_adjacent_neighbour() {
+        let rib = make_rib();
+
+        // Two levels of via indirection ending at a directly-connected neighbour:
+        //   ipn:0.50.* -> via ipn:0.40.0 -> via ipn:0.3.0 -> Forward(77)
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "chain",
+            Action::Route(RouteAction::Via("ipn:0.40.0".parse().unwrap())),
+            10,
+        );
+        add_route(
+            &rib,
+            "ipn:0.40.*",
+            "chain",
+            Action::Route(RouteAction::Via("ipn:0.3.0".parse().unwrap())),
+            10,
+        );
+        add_local_forward(&rib, ipn_node(3), 77);
+
+        let mut bundle = make_bundle("ipn:0.50.1");
+        let result = rib.find(&mut bundle);
+        assert!(matches!(result, Some(DispatchAction::Forward(77))));
+
+        // The next-hop handed to egress filters must be the adjacent neighbour
+        // (ipn:0.3.0), not the first intermediate gateway (ipn:0.40.0).
+        assert_eq!(
+            bundle.metadata.read_only.next_hop,
+            Some("ipn:0.3.0".parse().unwrap()),
+        );
+    }
+
+    #[test]
     fn test_no_route() {
         let rib = make_rib();
         let mut bundle = make_bundle("ipn:0.50.1");
