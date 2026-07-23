@@ -52,6 +52,7 @@ impl cla::Cla for MockCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _bundle: hardy_bpa::Bytes,
     ) -> cla::Result<ForwardBundleResult> {
         self.forwarded.store(true, Ordering::Relaxed);
@@ -143,8 +144,13 @@ async fn cla_cli_03_forward_bundle() {
 
     let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
     let bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let bundle_id = hardy_bpv7::bundle::Id {
+        source: "ipn:0.9.1".parse().unwrap(),
+        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+        fragment_info: None,
+    };
     let result = server_cla
-        .forward(None, &addr, bundle)
+        .forward(None, &addr, &bundle_id, bundle)
         .await
         .expect("forward should succeed");
 

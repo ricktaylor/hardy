@@ -127,6 +127,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         queue: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
+        bundle_id: &hardy_bpv7::bundle::Id,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         match self
@@ -134,6 +135,7 @@ impl hardy_bpa::cla::Cla for Cla {
                 bundle,
                 address: Some(cla_addr.clone().into()),
                 queue,
+                bundle_id: bundle_id.to_key(),
             }))
             .await?
         {

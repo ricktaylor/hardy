@@ -313,6 +313,20 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
+    async fn reset_peer_ack_pending(&self, peer: u32) -> Result<u64> {
+        let mut updated = 0;
+        for (_, v) in self.inner.lock().entries.iter_mut() {
+            if let Entry::Live(v) = v
+                && let BundleStatus::ForwardAckPending { peer: p } = v.metadata.status
+                && p == peer
+            {
+                v.metadata.status = BundleStatus::Waiting;
+                updated += 1;
+            }
+        }
+        Ok(updated)
+    }
+
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .inner

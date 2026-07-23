@@ -55,6 +55,14 @@ impl core::fmt::Debug for Cla {
     }
 }
 
+impl Cla {
+    // Whether `peer_id` is one of this CLA's peers — the ownership check for
+    // deferred transfer outcomes.
+    pub fn owns_peer(&self, peer_id: u32) -> bool {
+        self.peers.lock().values().any(|(_, id)| *id == peer_id)
+    }
+}
+
 type ClaMap = HashMap<String, Arc<Cla>>;
 
 struct Sink {
@@ -109,6 +117,18 @@ impl cla::Sink for Sink {
                 cla_addr,
             )
             .await)
+    }
+
+    async fn transfer_outcome(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
+        self.dispatcher
+            .transfer_outcome(&cla, bundle_id, outcome)
+            .await;
+        Ok(())
     }
 }
 
@@ -406,6 +426,7 @@ mod tests {
             &self,
             _queue: Option<u32>,
             _cla_addr: &ClaAddress,
+            _bundle_id: &hardy_bpv7::bundle::Id,
             _bundle: bytes::Bytes,
         ) -> cla::Result<cla::ForwardBundleResult> {
             Ok(cla::ForwardBundleResult::Sent)

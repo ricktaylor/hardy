@@ -39,6 +39,7 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         _queue: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let _sink = self.sink.get().ok_or_else(|| {

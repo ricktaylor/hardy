@@ -60,8 +60,12 @@ impl Dispatcher {
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
                 }
-                bundle::BundleStatus::ForwardPending { .. } => {
-                    // Peer ID is stale after restart — reset to Waiting
+                bundle::BundleStatus::ForwardPending { .. }
+                | bundle::BundleStatus::ForwardAckPending { .. } => {
+                    // Peer IDs and CLA registrations are stale after restart —
+                    // queued bundles re-route, and an in-flight transfer's
+                    // outcome can never arrive (outcome-unknown) — reset to
+                    // Waiting
                     let mut bundle = bundle;
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
                     self.store

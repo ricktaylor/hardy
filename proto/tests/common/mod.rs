@@ -178,6 +178,13 @@ impl cla::Sink for ClaSinkWrapper {
     async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
         self.0.remove_peer(a).await
     }
+    async fn transfer_outcome(
+        &self,
+        id: &hardy_bpv7::bundle::Id,
+        o: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        self.0.transfer_outcome(id, o).await
+    }
 }
 
 #[async_trait]

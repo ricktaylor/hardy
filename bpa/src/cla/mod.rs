@@ -127,8 +127,27 @@ impl core::fmt::Display for ClaAddress {
 pub enum ForwardBundleResult {
     /// The bundle was successfully sent.
     Sent,
+    /// The CLA has taken ownership of the bundle and will report the
+    /// transfer's outcome later via [`Sink::transfer_outcome`]. The BPA
+    /// retains the bundle until the outcome arrives, the peer is removed,
+    /// or the bundle's lifetime expires.
+    Accepted,
     /// The bundle could not be sent because the neighbor is no longer available.
     NoNeighbour,
+}
+
+/// The final outcome of a transfer previously answered
+/// [`ForwardBundleResult::Accepted`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferOutcome {
+    /// The bundle was handed to the far bundle node.
+    Delivered,
+    /// The convergence layer gave up on the transfer.
+    ///
+    /// Not proof of non-delivery: the far end may already hold the bundle
+    /// (acknowledgement loss), and receiving-side deduplication absorbs the
+    /// re-forward.
+    Failed,
 }
 
 /// The primary trait for a Convergence Layer Adapter (CLA).
@@ -216,10 +235,17 @@ pub trait Cla: Send + Sync {
     /// Forwards a bundle to a specific CLA address over a given queue.
     ///
     /// Queue 'None' is the lowest priority Best Effort queue, often the only queue.
+    ///
+    /// `bundle_id` identifies the transfer if the CLA defers its outcome: a
+    /// CLA answering [`ForwardBundleResult::Accepted`] echoes it back in
+    /// [`Sink::transfer_outcome`]. It is the correlation key, not data to
+    /// transmit — CLAs that answer terminally may ignore it, and no CLA needs
+    /// to parse the bundle to learn it.
     async fn forward(
         &self,
         queue: Option<u32>,
         cla_addr: &ClaAddress,
+        bundle_id: &hardy_bpv7::bundle::Id,
         bundle: Bytes,
     ) -> Result<ForwardBundleResult>;
 }
@@ -289,6 +315,20 @@ pub trait Sink: Send + Sync {
     /// Notifies the BPA that a peer is no longer reachable at a given `ClaAddress`.
     /// The BPA will update its routing information to remove all paths through this address.
     async fn remove_peer(&self, cla_addr: &ClaAddress) -> Result<bool>;
+
+    /// Reports the final outcome of a transfer previously answered
+    /// [`ForwardBundleResult::Accepted`].
+    ///
+    /// Every accepted transfer resolves exactly once: `Delivered`, `Failed`,
+    /// or implicitly outcome-unknown when the CLA unregisters or the peer is
+    /// removed. An outcome is honoured only while the named bundle is still
+    /// awaiting one via a peer of the reporting CLA; anything else — already
+    /// resolved, expired, another CLA's transfer — is logged and dropped.
+    async fn transfer_outcome(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: TransferOutcome,
+    ) -> Result<()>;
 }
 
 #[cfg(test)]
