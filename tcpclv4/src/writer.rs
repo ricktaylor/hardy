@@ -138,8 +138,15 @@ where
         let mut needs_flush = false;
 
         loop {
-            // Drain any queued commands before flushing fed messages
+            // Drain any queued commands before flushing fed messages. The
+            // drain checks cancellation itself: under sustained feeds it
+            // never reaches the select below, and every socket write inside
+            // handle_command is raced against the token.
             if needs_flush {
+                if self.cancel_token.is_cancelled() {
+                    debug!("Writer cancelled");
+                    break;
+                }
                 match self.from_session.try_recv() {
                     Ok(cmd) => {
                         if self
@@ -151,7 +158,16 @@ where
                         }
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        if self.writer.flush().await.is_err() {
+                        let cancel_token = self.cancel_token.clone();
+                        let flushed = tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => {
+                                debug!("Writer cancelled");
+                                break;
+                            }
+                            r = self.writer.flush() => r,
+                        };
+                        if flushed.is_err() {
                             debug!("Failed to flush, closing writer");
                             break;
                         }
@@ -216,8 +232,12 @@ where
             }
         }
 
-        // Best-effort close, flushing anything still buffered
-        _ = self.writer.close().await;
+        // Best-effort close, flushing anything still buffered. A failure here
+        // drops fed-but-unflushed messages; safety holds via retransmission,
+        // but leave the breadcrumb for whoever debugs the peer's retry.
+        if self.writer.close().await.is_err() {
+            debug!("Failed to close writer transport; unflushed messages dropped");
+        }
     }
 
     async fn handle_command(
@@ -226,23 +246,48 @@ where
         last_sent: &mut tokio::time::Instant,
         needs_flush: &mut bool,
     ) -> ControlFlow<()> {
+        let cancel_token = self.cancel_token.clone();
         match cmd {
             WriteCommand::Send { msg, result } => {
                 let msg_type = msg.message_type();
-                let r = self.writer.send(msg).await;
-                if r.is_ok() {
+                let r = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        debug!("Writer cancelled");
+                        _ = result.send(Ok(false));
+                        return ControlFlow::Break(());
+                    }
+                    r = self.writer.send(msg) => r,
+                };
+                // After a failed transport write the sink is almost certainly
+                // dead: close, like the Feed path, rather than feeding frames
+                // into a broken sink
+                let failed = r.is_err();
+                if failed {
+                    debug!("Failed to send {msg_type:?}, closing writer");
+                } else {
                     *last_sent = tokio::time::Instant::now();
                     // SinkExt::send flushes
                     *needs_flush = false;
-                } else {
-                    debug!("Failed to send {msg_type:?}");
                 }
                 _ = result.send(r.map(|()| true));
-                ControlFlow::Continue(())
+                if failed {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             }
             WriteCommand::Feed { msg } => {
                 let msg_type = msg.message_type();
-                if self.writer.feed(msg).await.is_err() {
+                let r = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        debug!("Writer cancelled");
+                        return ControlFlow::Break(());
+                    }
+                    r = self.writer.feed(msg) => r,
+                };
+                if r.is_err() {
                     debug!("Failed to feed {msg_type:?}, closing writer");
                     return ControlFlow::Break(());
                 }
@@ -272,7 +317,10 @@ where
     W::Error: core::fmt::Debug,
 {
     // Channel for session to send commands to writer
-    // Bounded to 16 to provide backpressure while allowing segments to stream
+    // Bounded to 16 to provide backpressure while allowing segments to
+    // stream. The buffered bytes scale with segment size: 16 x segment_mtu
+    // per session (256 KiB at the default MRU, 16 MiB at a 1 MiB
+    // segment-mru).
     let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     let handle = WriterHandle::new(tx);

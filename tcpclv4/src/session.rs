@@ -14,7 +14,9 @@ const INGEST_QUEUE_DEPTH: usize = 128;
 
 // Number of completed bundles that may await dispatch to the BPA before the
 // session reader stops draining the socket. Each pending bundle can hold up
-// to transfer_mru bytes, so this bound is deliberately small.
+// to transfer_mru bytes, so this bound is deliberately small — at the 1 GiB
+// default transfer-mru it still permits 2 GiB held per session, bounded in
+// practice by peers' actual bundle sizes.
 const INGEST_MAX_PENDING_DISPATCH: usize = 2;
 
 #[derive(Error, Debug)]
@@ -78,15 +80,19 @@ enum Ingest {
 // acknowledgments of our own transfers, and keepalives keep flowing, bounded
 // by the ingest queue depth.
 //
-// Exits on dispatch or writer failure, which the session observes as a closed
-// queue. An undispatched transfer is then never acknowledged: the peer
-// retains responsibility for the bundle and will retransmit.
+// Exits on dispatch or writer failure, cancelling the session's token so the
+// session tears down promptly rather than discovering the closed queue on the
+// next inbound segment — with keepalives negotiated off, a quiet peer waiting
+// for its final ack and a stalled session could otherwise both wait forever.
+// An undispatched transfer is then never acknowledged: the peer retains
+// responsibility for the bundle and will retransmit.
 async fn run_ingest(
     mut queue: tokio::sync::mpsc::Receiver<Ingest>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     peer_node: Option<hardy_bpv7::eid::NodeId>,
     peer_addr: Option<hardy_bpa::cla::ClaAddress>,
     writer: writer::WriterHandle<codec::Error>,
+    cancel_token: tokio_util::sync::CancellationToken,
 ) {
     while let Some(item) = queue.recv().await {
         let ack = match item {
@@ -100,7 +106,8 @@ async fn run_ingest(
                     .dispatch(bundle, peer_node.as_ref(), peer_addr.as_ref())
                     .await
                 {
-                    debug!("CLA dispatch failed: {e:?}");
+                    warn!("CLA dispatch failed: {e:?}");
+                    cancel_token.cancel();
                     return;
                 }
 
@@ -111,6 +118,7 @@ async fn run_ingest(
 
         if !writer.feed(codec::Message::TransferAck(ack)).await {
             debug!("Writer closed, stopping ingest");
+            cancel_token.cancel();
             return;
         }
     }
@@ -176,6 +184,9 @@ where
     transfer_id: u64,
     acks: VecDeque<XferAck>,
     ingress_bundle: Option<BytesMut>,
+    // Transfer id whose remaining segments are being swallowed after an
+    // XFER_REFUSE (over-MRU)
+    refusing: Option<u64>,
     ingest_tx: Option<tokio::sync::mpsc::Sender<Ingest>>,
     ingest_rx: Option<tokio::sync::mpsc::Receiver<Ingest>>,
     dispatch_permits: Arc<tokio::sync::Semaphore>,
@@ -203,6 +214,10 @@ where
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
         let (ingest_tx, ingest_rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
+        // Each session gets its own child token: the ingest task cancels it
+        // to terminate just this session on failure, while CLA-wide
+        // cancellation still propagates down from the parent.
+        let cancel_token = cancel_token.child_token();
         Self {
             reader,
             writer,
@@ -216,6 +231,7 @@ where
             transfer_id: 0,
             acks: VecDeque::new(),
             ingress_bundle: None,
+            refusing: None,
             ingest_tx: Some(ingest_tx),
             ingest_rx: Some(ingest_rx),
             dispatch_permits: Arc::new(tokio::sync::Semaphore::new(INGEST_MAX_PENDING_DISPATCH)),
@@ -228,12 +244,18 @@ where
         reason_code: codec::MessageRejectionReasonCode,
         rejected_message: u8,
     ) -> Result<(), Error> {
-        self.writer
+        if !self
+            .writer
             .send(codec::Message::Reject(codec::MessageRejectMessage {
                 reason_code,
                 rejected_message,
             }))
-            .await?;
+            .await?
+        {
+            // Writer closed: the rejection never reached the peer and
+            // nothing further can be written
+            return Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown));
+        }
         Ok(())
     }
 
@@ -248,12 +270,21 @@ where
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn on_transfer(&mut self, msg: codec::TransferSegmentMessage) -> Result<(), Error> {
         if msg.message_flags.start {
-            if self.ingress_bundle.is_some() {
-                // Out of order bundle!
+            self.refusing = None;
+            if self.ingress_bundle.take().is_some() {
+                // Out of order bundle! The in-progress reassembly is dropped
+                // with it: appending the new transfer's segments to the old
+                // bytes would dispatch a cross-transfer amalgam to the BPA.
                 debug!("Out of order segment received");
                 return self.unexpected_msg(codec::MessageType::XFER_SEGMENT).await;
             }
             self.ingress_bundle = Some(BytesMut::with_capacity(msg.data.len()));
+        } else if self.refusing == Some(msg.transfer_id) {
+            // Remaining in-flight segments of a transfer we have refused
+            if msg.message_flags.end {
+                self.refusing = None;
+            }
+            return Ok(());
         }
 
         let Some(bundle) = &mut self.ingress_bundle else {
@@ -262,16 +293,23 @@ where
         };
 
         if msg.data.len() + bundle.len() > self.transfer_mru {
-            // Bundle beyond negotiated MRU
+            // Bundle beyond negotiated MRU: XFER_REFUSE is the
+            // protocol-level answer (RFC 9174 Section 5.2.2), and the
+            // transfer's remaining segments are swallowed above rather than
+            // rejected one by one
             self.ingress_bundle = None;
+            self.refusing = (!msg.message_flags.end).then_some(msg.transfer_id);
 
             debug!("Segment received beyond the negotiated MRU");
-            return self
-                .reject_msg(
-                    codec::MessageRejectionReasonCode::Unsupported,
-                    codec::MessageType::XFER_SEGMENT as u8,
-                )
-                .await;
+            self.writer
+                .send(codec::Message::TransferRefuse(
+                    codec::TransferRefuseMessage {
+                        transfer_id: msg.transfer_id,
+                        reason_code: codec::TransferRefuseReasonCode::NotAcceptable,
+                    },
+                ))
+                .await?;
+            return Ok(());
         }
 
         bundle.extend_from_slice(&msg.data);
@@ -323,7 +361,7 @@ where
             .await
             .map_err(|_| {
                 debug!("Ingest task has stopped");
-                Error::Shutdown(codec::SessionTermReasonCode::Unknown)
+                Error::Shutdown(codec::SessionTermReasonCode::ResourceExhaustion)
             })
     }
 
@@ -366,7 +404,7 @@ where
                 }
 
                 self.reject_msg(
-                    codec::MessageRejectionReasonCode::Unsupported,
+                    codec::MessageRejectionReasonCode::Unexpected,
                     codec::MessageType::XFER_ACK as u8,
                 )
                 .await?;
@@ -394,7 +432,7 @@ where
                 }
 
                 self.reject_msg(
-                    codec::MessageRejectionReasonCode::Unsupported,
+                    codec::MessageRejectionReasonCode::Unexpected,
                     codec::MessageType::XFER_REFUSE as u8,
                 )
                 .await?;
@@ -618,10 +656,13 @@ where
                     result = self.recv_from_peer() => {
                         if match result {
                             Ok(codec::Message::SessionTerm(msg)) => {
-                                if !msg.message_flags.reply {
-                                    // Terminations pass in the night...
-                                    return self.on_terminate(msg).await;
-                                }
+                                // A non-reply here is a crossing termination:
+                                // the peer sent its own SESS_TERM before
+                                // seeing ours. RFC 9174 Section 6.1: an
+                                // entity that has already sent a SESS_TERM
+                                // does not send an acknowledging one — both
+                                // ends are Ending, so just finish up.
+                                let _ = msg;
                                 break;
                             }
                             Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
@@ -645,16 +686,10 @@ where
         // Stop allowing more transfers
         self.from_sink.close();
 
-        // Drain the sink channel
-        while let Some((bundle, result)) = self.from_sink.recv().await {
-            if let Err(e) = self.forward_to_peer(bundle, result).await {
-                if let Error::Shutdown(_) = e {
-                    break;
-                } else {
-                    return;
-                }
-            }
-        }
+        // RFC 9174 Section 6.1: no new outgoing transfers once the session
+        // is Ending. Dropping each queued result sender returns the bundle
+        // to the pool, which retries it on another session.
+        while self.from_sink.recv().await.is_some() {}
 
         // Send our SESSION_TERM reply
         msg.message_flags.reply = true;
@@ -729,6 +764,7 @@ where
             self.peer_node.clone(),
             self.peer_addr.clone(),
             self.writer.clone(),
+            self.cancel_token.clone(),
         );
         #[cfg(feature = "instrument")]
         let ingest = {
@@ -801,6 +837,16 @@ where
                     Err(Error::Terminate(msg))
                 }
                 Ok(msg) => self.unexpected_msg(msg.message_type()).await,
+                Err(Error::Codec(codec::Error::InvalidMessageType(rejected_message))) => {
+                    // Reject-and-continue, mirroring recv_from_peer: an
+                    // unknown message type must not be fatal only when the
+                    // session happens to be idle
+                    self.reject_msg(
+                        codec::MessageRejectionReasonCode::UnknownType,
+                        rejected_message,
+                    )
+                    .await
+                }
                 Err(e) => Err(e),
             } {
                 break e;
@@ -850,7 +896,9 @@ where
         // Let the ingest queue drain - dispatching any fully received bundles
         // and flushing their acknowledgments - before the writer closes
         drop(self.ingest_tx.take());
-        _ = ingest.await;
+        if let Err(e) = ingest.await {
+            error!("Ingest task failed: {e}");
+        }
         self.writer.close().await;
     }
 }
@@ -915,6 +963,62 @@ mod tests {
         }
     }
 
+    // A mid-transfer XFER_REFUSE clears every outstanding acknowledgment
+    // expectation for the refused transfer (RFC 9174 Section 5.2.2: no
+    // further XFER_ACK messages follow for it), leaving later transfers'
+    // expectations intact — stale expectations desynchronise the
+    // acknowledgment matcher and tear the session down.
+    #[tokio::test]
+    async fn refuse_clears_all_expectations_for_refused_transfer() {
+        let (writer_tx, _writer_rx) = tokio::sync::mpsc::channel(16);
+        let (_sink_tx, from_sink) = tokio::sync::mpsc::channel(1);
+        let mut session = Session::new(
+            futures::stream::empty::<Result<codec::Message, codec::Error>>(),
+            writer::WriterHandle::new(writer_tx),
+            MockSink::new(false, None),
+            None,
+            None,
+            None,
+            1024,
+            1 << 20,
+            from_sink,
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        for (transfer_id, end) in [(7, false), (7, true), (8, false)] {
+            session.acks.push_back(XferAck {
+                flags: codec::TransferSegmentMessageFlags {
+                    start: false,
+                    end,
+                    ..Default::default()
+                },
+                transfer_id,
+                acknowledged_length: 10,
+            });
+        }
+
+        let r = session
+            .on_peer_msg_while_sending(codec::Message::TransferRefuse(
+                codec::TransferRefuseMessage {
+                    transfer_id: 7,
+                    reason_code: codec::TransferRefuseReasonCode::NotAcceptable,
+                },
+            ))
+            .await
+            .expect("a matched refuse must not error");
+
+        assert!(matches!(
+            r,
+            SendState::Refused(codec::TransferRefuseReasonCode::NotAcceptable)
+        ));
+        assert_eq!(
+            session.acks.len(),
+            1,
+            "the later transfer's expectation must survive"
+        );
+        assert_eq!(session.acks[0].transfer_id, 8);
+    }
+
     fn ack(transfer_id: u64, start: bool, end: bool, len: u64) -> codec::TransferAckMessage {
         codec::TransferAckMessage {
             transfer_id,
@@ -937,7 +1041,14 @@ mod tests {
         let permits = Arc::new(tokio::sync::Semaphore::new(INGEST_MAX_PENDING_DISPATCH));
 
         let (tx, rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
-        let task = tokio::spawn(run_ingest(rx, sink.clone(), None, None, writer));
+        let task = tokio::spawn(run_ingest(
+            rx,
+            sink.clone(),
+            None,
+            None,
+            writer,
+            tokio_util::sync::CancellationToken::new(),
+        ));
 
         tx.send(Ingest::Ack(ack(0, true, false, 100)))
             .await
@@ -985,7 +1096,14 @@ mod tests {
         let permits = Arc::new(tokio::sync::Semaphore::new(INGEST_MAX_PENDING_DISPATCH));
 
         let (tx, rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
-        let task = tokio::spawn(run_ingest(rx, sink, None, None, writer));
+        let task = tokio::spawn(run_ingest(
+            rx,
+            sink,
+            None,
+            None,
+            writer,
+            tokio_util::sync::CancellationToken::new(),
+        ));
 
         tx.send(Ingest::Dispatch {
             bundle: hardy_bpa::Bytes::from_static(b"lost"),

@@ -147,7 +147,7 @@ impl ConnectionPool {
                     if let Ok(r) = rx.await {
                         let mut inner = self.inner.lock().trace_expect("Failed to lock mutex");
                         inner.active.remove(&conn.local_addr);
-                        if inner.idle.len() + inner.active.len() <= self.max_idle {
+                        if inner.idle.len() + inner.active.len() < self.max_idle {
                             inner.idle.push(conn);
                             metrics::gauge!("tcpclv4.pool.idle").increment(1.0);
                         }
@@ -173,7 +173,7 @@ impl ConnectionPool {
                 && (self.max_idle == 0 || {
                     let inner = self.inner.lock().trace_expect("Failed to lock mutex");
                     inner.active.len() + inner.idle.len()
-                } <= self.max_idle)
+                } < self.max_idle)
             {
                 return Err(bundle);
             }
@@ -218,6 +218,11 @@ impl ConnectionPool {
 
 pub struct ConnectionRegistry {
     pools: Mutex<HashMap<SocketAddr, Arc<connection::ConnectionPool>>>,
+    // One dial at a time per remote address: concurrent forwards that find
+    // the pool busy coalesce on this lock instead of racing parallel dials
+    // past the capacity bound. Entries are never removed; the map is bounded
+    // by the deployment's peer-address cardinality.
+    dial_locks: Mutex<HashMap<SocketAddr, Arc<tokio::sync::Mutex<()>>>>,
     max_idle: usize,
 }
 
@@ -225,8 +230,32 @@ impl ConnectionRegistry {
     pub fn new(max_idle: usize) -> Self {
         Self {
             pools: Mutex::new(HashMap::new()),
+            dial_locks: Mutex::new(HashMap::new()),
             max_idle,
         }
+    }
+
+    // Whether any session (idle or active) currently exists for `remote_addr`.
+    pub fn has_sessions(&self, remote_addr: &SocketAddr) -> bool {
+        self.pools
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .get(remote_addr)
+            .is_some_and(|pool| {
+                let inner = pool.inner.lock().trace_expect("Failed to lock mutex");
+                !inner.active.is_empty() || !inner.idle.is_empty()
+            })
+    }
+
+    // The per-address dial lock. Callers re-check the pool after acquisition:
+    // the previous holder's session may already be registered.
+    pub fn dial_lock(&self, remote_addr: SocketAddr) -> Arc<tokio::sync::Mutex<()>> {
+        self.dial_locks
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .entry(remote_addr)
+            .or_default()
+            .clone()
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]

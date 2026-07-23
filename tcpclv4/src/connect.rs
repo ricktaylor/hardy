@@ -23,9 +23,19 @@ impl std::fmt::Debug for Connector {
 impl Connector {
     #[cfg_attr(feature = "instrument", instrument)]
     pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
-        let mut stream = TcpStream::connect(remote_addr)
-            .await
-            .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
+        // Bound the connect itself: a silently dropped SYN otherwise hangs
+        // for the OS connect timeout (minutes at Linux defaults), and the
+        // dial-before-queueing preference makes that stall a forward
+        let mut stream = tokio::time::timeout(
+            self.ctx.contact_timeout_duration(),
+            TcpStream::connect(remote_addr),
+        )
+        .await
+        .map_err(|_| {
+            debug!("Timed out TCP connecting to {remote_addr}");
+            transport::Error::Timeout
+        })?
+        .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
         // Disable Nagle's algorithm to ensure timely delivery of small messages
         // like XFER_ACK, KEEPALIVE, and SESS_TERM
@@ -277,10 +287,14 @@ impl Connector {
             peer_node,
             peer_addr,
             keepalive_duration,
+            // Wire-derived and config u64s are clamped, not truncated: on a
+            // 32-bit target `as usize` can truncate a large segment_mru to 0,
+            // turning the sender's segmentation loop into an infinite
+            // empty-segment spin.
             segment_mtu
-                .map(|mtu| mtu.min(peer_init.segment_mru as usize))
-                .unwrap_or(peer_init.segment_mru as usize),
-            self.ctx.transfer_mru as usize,
+                .map(|mtu| mtu.min(usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)))
+                .unwrap_or_else(|| usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)),
+            usize::try_from(self.ctx.transfer_mru).unwrap_or(usize::MAX),
             rx,
             cancel_token,
         );

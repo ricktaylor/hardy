@@ -87,18 +87,37 @@ impl hardy_bpa::cla::Cla for Cla {
                     }
                 };
 
+                // One dial at a time per peer: concurrent forwards coalesce
+                // here rather than racing parallel dials, and the pool is
+                // re-checked under the lock — the previous holder's session
+                // may already be registered
+                let dial_lock = self.registry.dial_lock(*remote_addr);
+                let _dialing = dial_lock.lock().await;
+                bundle = match self.registry.forward(remote_addr, bundle, true).await {
+                    Ok(r) => return Ok(r),
+                    Err(bundle) => bundle,
+                };
+
                 // Do a new active connect
                 let conn = connect::Connector {
                     tasks: self.tasks.clone(),
                     ctx: ctx.clone(),
                 };
                 match conn.connect(remote_addr).await {
-                    Ok(()) | Err(transport::Error::Timeout) => {}
-                    Err(_) => {
-                        // The peer is not accepting new connections; fall
-                        // back to queueing on a busy session, if any — peers
-                        // with asymmetric reachability can hold a session
-                        // open without being able to accept another
+                    Ok(()) => {}
+                    Err(transport::Error::Timeout) if !self.registry.has_sessions(remote_addr) => {
+                        // Nothing to fall back to: keep dialing
+                    }
+                    Err(e) => {
+                        // The dial failed but a session may be up: fall back
+                        // to queueing on it rather than stalling the forward
+                        // behind further dial attempts. Silently dropped SYNs
+                        // (dial timeout) are the norm for firewalled peers
+                        // with asymmetric reachability that hold a session
+                        // open without being able to accept another.
+                        debug!(
+                            "Dial to {remote_addr} failed: {e:?}; falling back to a busy session"
+                        );
                         return Ok(self
                             .registry
                             .forward(remote_addr, bundle, false)

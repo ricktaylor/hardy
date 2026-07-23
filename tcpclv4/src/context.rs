@@ -304,10 +304,14 @@ impl ConnectionContext {
             peer_node,
             peer_addr,
             keepalive_duration,
+            // Wire-derived and config u64s are clamped, not truncated: on a
+            // 32-bit target `as usize` can truncate a large segment_mru to 0,
+            // turning the sender's segmentation loop into an infinite
+            // empty-segment spin.
             segment_mtu
-                .map(|mtu| mtu.min(peer_init.segment_mru as usize))
-                .unwrap_or(peer_init.segment_mru as usize),
-            self.transfer_mru as usize,
+                .map(|mtu| mtu.min(usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)))
+                .unwrap_or_else(|| usize::try_from(peer_init.segment_mru).unwrap_or(usize::MAX)),
+            usize::try_from(self.transfer_mru).unwrap_or(usize::MAX),
             rx,
             cancel_token,
         );
