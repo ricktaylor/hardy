@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `forward_ack_pending` bundle status (migration 0002) and the `reset_peer_ack_pending` sweep, for the deferred CLA transfer-outcome extension.
+
 ## [0.2.0]
 
 ### Changed

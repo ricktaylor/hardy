@@ -12,6 +12,7 @@ pub enum BundleStatusKind {
     ForwardPending,
     AduFragment,
     WaitingForService,
+    ForwardAckPending,
 }
 
 /// Error returned when a `BundleStatus` value cannot be represented in the postgres schema.
@@ -81,6 +82,9 @@ impl StatusFields {
             BundleStatusKind::WaitingForService => Some(BundleStatus::WaitingForService {
                 service: self.service_eid?.parse().ok()?,
             }),
+            BundleStatusKind::ForwardAckPending => Some(BundleStatus::ForwardAckPending {
+                peer: u32::try_from(self.peer_id?).ok()?,
+            }),
         }
     }
 }
@@ -120,6 +124,12 @@ impl TryFrom<&BundleStatus> for StatusFields {
             BundleStatus::WaitingForService { service } => Self {
                 service_eid: Some(service.to_string()),
                 ..Self::with_kind(BundleStatusKind::WaitingForService)
+            },
+            BundleStatus::ForwardAckPending { peer } => Self {
+                peer_id: Some(
+                    i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
+                ),
+                ..Self::with_kind(BundleStatusKind::ForwardAckPending)
             },
         })
     }

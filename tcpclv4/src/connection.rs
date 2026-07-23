@@ -409,6 +409,14 @@ mod tests {
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _outcome: hardy_bpa::cla::TransferOutcome,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
+        }
     }
 
     fn addr(port: u16) -> SocketAddr {

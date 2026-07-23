@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `ForwardBundleRequest.bundle_id` — the RFC 9171 bundle identifier in key form, identifying the transfer for correlation. Additive; CLAs treat it as opaque.
+
+### Changed
+- A CLA answering `ForwardBundleResult::Accepted`, or calling `Sink::transfer_outcome`, over gRPC gets `Unimplemented`: the deferred transfer-outcome messages have no wire form yet.
+
 ## [0.2.0]
 
 ### Added

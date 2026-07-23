@@ -10,12 +10,22 @@ async fn forward(
         .ok_or(tonic::Status::invalid_argument("Missing address"))?
         .try_into()?;
 
+    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
     let result = match cla
-        .forward(request.queue, &cla_addr, request.bundle)
+        .forward(request.queue, &cla_addr, &bundle_id, request.bundle)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
         hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
+        hardy_bpa::cla::ForwardBundleResult::Accepted => {
+            // No wire form yet: the transfer-outcome extension to the proto
+            // has not landed, so a deferring CLA cannot be carried over gRPC.
+            return Err(tonic::Status::unimplemented(
+                "Deferred transfer outcomes are not yet supported over gRPC",
+            ));
+        }
         hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
             forward_bundle_response::Result::NoNeighbour(())
         }
@@ -109,6 +119,21 @@ impl hardy_bpa::cla::Sink for Sink {
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             )),
         }
+    }
+
+    async fn transfer_outcome(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _outcome: hardy_bpa::cla::TransferOutcome,
+    ) -> hardy_bpa::cla::Result<()> {
+        // No wire form yet: the transfer-outcome extension to the proto has
+        // not landed. CLAs must not answer Accepted over this transport.
+        Err(hardy_bpa::cla::Error::Internal(
+            tonic::Status::unimplemented(
+                "Deferred transfer outcomes are not yet supported over gRPC",
+            )
+            .into(),
+        ))
     }
 
     async fn unregister(&self) {

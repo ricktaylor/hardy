@@ -100,6 +100,7 @@ impl hardy_bpa::cla::Cla for NullCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &hardy_bpa::cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         Ok(hardy_bpa::cla::ForwardBundleResult::Sent)

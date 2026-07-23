@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Adapted to the `hardy-bpa` deferred transfer-outcome CLA contract (new `Cla::forward` signature). Behaviour is unchanged: transfers still complete synchronously on the final `XFER_ACK`.
 - `session::Error` is the session's outcome taxonomy: transport I/O failures split from codec (dialect) failures at conversion, and writer-closed / ingest-stopped are first-class outcomes with truthful `tcpclv4.session.terminated` labels (`writer_closed`, `ingest_stopped`; an `UnexpectedEof` counts as `hangup`). `WriterHandle::send` returns a two-variant `SendError` instead of a tri-state bool result, so a closed writer cannot be mistaken for success by construction.
 - The UT-TCP-03/04 unit tests exercise the production negotiation and segmentation code (`negotiate_keepalive` and `negotiate_segment_mtu` as free functions; `send_once` driven end-to-end against a preloaded acknowledgment stream) instead of asserting on re-implementations of the same arithmetic.
 - Bundle dispatch to the BPA moved off the session reader loop into a per-session ordered ingest task: segments, acknowledgments of outbound transfers, and keepalives keep flowing while a received bundle is being stored. The final `XFER_ACK` of a transfer is still only sent after dispatch completes, and acknowledgments are emitted in segment-arrival order.
