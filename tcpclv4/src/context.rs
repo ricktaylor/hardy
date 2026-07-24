@@ -5,7 +5,6 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::*,
 };
-use tokio_rustls::TlsAcceptor;
 
 /// Data needed to handle a connection, without the TaskPool to avoid circular references.
 ///
@@ -20,7 +19,7 @@ pub struct ConnectionContext {
     pub node_ids: Arc<[NodeId]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
-    pub tls_config: Option<Arc<tls::TlsConfig>>,
+    pub tls_config: Option<Arc<tls::Tls>>,
     pub session_cancel_token: tokio_util::sync::CancellationToken,
     pub task_cancel_token: hardy_async::CancellationToken,
 }
@@ -336,15 +335,12 @@ impl ConnectionContext {
         stream: TcpStream,
         remote_addr: SocketAddr,
         local_addr: SocketAddr,
-        tls_config: Arc<tls::TlsConfig>,
+        tls_config: Arc<tls::Tls>,
     ) {
         // This expect should be guarded by listeners not starting without TLS server config
-        let acceptor = TlsAcceptor::from(
-            tls_config
-                .server_config
-                .clone()
-                .trace_expect("TLS server config not available"),
-        );
+        let acceptor = tls_config
+            .acceptor()
+            .trace_expect("TLS server config not available");
 
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {

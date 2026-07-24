@@ -5,7 +5,6 @@ use tokio::{
     net::TcpStream,
     sync::mpsc::*,
 };
-use tokio_rustls::TlsConnector;
 
 pub struct Connector {
     pub tasks: Arc<hardy_async::TaskPool>,
@@ -143,12 +142,12 @@ impl Connector {
         stream: TcpStream,
         remote_addr: &SocketAddr,
         local_addr: SocketAddr,
-        tls_config: Arc<tls::TlsConfig>,
+        tls_config: Arc<tls::Tls>,
     ) -> Result<(), transport::Error> {
         // Priority: configured name > localhost (loopback) > IP address
-        let server_name = if let Some(configured_name) = &tls_config.server_name {
+        let server_name = if let Some(configured_name) = tls_config.server_name() {
             // Use the configured server name (for certificates issued to domain names)
-            rustls::pki_types::ServerName::try_from(configured_name.clone()).map_err(|e| {
+            rustls::pki_types::ServerName::try_from(configured_name.to_string()).map_err(|e| {
                 error!("Invalid configured server name for TLS: {e}");
                 transport::Error::InvalidProtocol
             })?
@@ -163,8 +162,7 @@ impl Connector {
             rustls::pki_types::ServerName::from(remote_addr.ip())
         };
 
-        // Use tokio-rustls::TlsConnector - simple wrapper around rustls for async I/O
-        let connector = TlsConnector::from(tls_config.client_config.clone());
+        let connector = tls_config.connector();
         let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
             debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
             transport::Error::InvalidProtocol

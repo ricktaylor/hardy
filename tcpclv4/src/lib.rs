@@ -46,9 +46,28 @@ pub enum Error {
     #[error("TLS is required but no TLS configuration has been provided")]
     TlsRequired,
 
+    /// A certificate file and a private key file must be configured together.
+    #[error("Both cert and key must be provided together")]
+    IncompleteCertificatePair,
+
+    /// No trust anchor is configured for verifying peer certificates.
+    #[error(
+        "No TLS trust anchor is configured. \
+        Set tls.ca-certs, or enable tls.insecure for testing only"
+    )]
+    MissingTrustAnchor,
+
+    /// Two competing trust anchors are configured; the insecure verifier
+    /// would silently ignore the CA bundle.
+    #[error(
+        "tls.ca-certs and tls.insecure are mutually exclusive: \
+        the insecure verifier ignores the CA bundle, so remove one"
+    )]
+    AmbiguousTrustAnchor,
+
     /// Failed to load or validate TLS configuration (certificates, keys).
     #[error("TLS configuration error: {0}")]
-    Tls(#[from] tls::TlsError),
+    Tls(#[from] tls::Error),
 
     /// BPA rejected the CLA registration.
     #[error("Registration failed: {0}")]
@@ -75,7 +94,7 @@ pub struct Cla {
     transfer_mru: u64,
 
     // Computed at construction
-    tls_config: Option<Arc<tls::TlsConfig>>,
+    tls_config: Option<Arc<tls::Tls>>,
     registry: Arc<connection::ConnectionRegistry>,
     session_cancel_token: tokio_util::sync::CancellationToken,
 
@@ -126,7 +145,30 @@ impl Cla {
 
         // Load TLS configuration eagerly
         let tls_config = if let Some(tls_cfg) = &config.tls {
-            let cfg = tls::TlsConfig::new(tls_cfg)?;
+            // The builder takes exactly one trust anchor; the two config
+            // fields are reconciled here at the config boundary
+            let trust = match (&tls_cfg.ca_certs, tls_cfg.insecure) {
+                (Some(dir), false) => tls::Trust::CaBundle(dir.clone()),
+                (None, true) => tls::Trust::Insecure,
+                (None, false) => return Err(Error::MissingTrustAnchor),
+                (Some(_), true) => return Err(Error::AmbiguousTrustAnchor),
+            };
+            let mut builder = tls::Tls::builder(trust);
+            match (&tls_cfg.cert_file, &tls_cfg.key_file) {
+                (Some(cert), Some(key)) => {
+                    builder = builder.server(cert.clone(), key.clone());
+                }
+                (None, None) => {}
+                // The builder takes the pair in one call; a lone half is a
+                // configuration error, caught here at the config boundary
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(Error::IncompleteCertificatePair);
+                }
+            }
+            if let Some(name) = &tls_cfg.server_name {
+                builder = builder.server_name(name.clone());
+            }
+            let cfg = builder.build()?;
             info!("TLS configuration loaded successfully");
             Some(Arc::new(cfg))
         } else {
