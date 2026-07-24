@@ -79,14 +79,23 @@ impl TlsBuilder {
 
         let client = match &self.trust {
             Trust::CaBundle(dir) => {
-                let mut root_store = RootCertStore::empty();
-                Self::load_ca_certs(&mut root_store, dir)?;
+                let certs = Self::load_ca_certs(dir)?;
+                if certs.is_empty() {
+                    return Err(Error::CaBundleEmpty { path: dir.clone() });
+                }
+
+                let mut store = RootCertStore::empty();
+                for (file, cert) in certs {
+                    store
+                        .add(cert)
+                        .map_err(|source| Error::AddTrustAnchor { path: file, source })?;
+                }
                 info!(
                     "Successfully loaded CA certificate(s) from bundle (total in store: {})",
-                    root_store.len()
+                    store.len()
                 );
                 ClientConfig::builder()
-                    .with_root_certificates(root_store)
+                    .with_root_certificates(store)
                     .with_no_client_auth()
             }
             Trust::Insecure => {
@@ -109,46 +118,49 @@ impl TlsBuilder {
         })
     }
 
-    fn load_ca_certs(store: &mut RootCertStore, path: &Path) -> Result<()> {
-        if !path.exists() {
+    // Scan `dir` for PEM certificates, pairing each with the file it came
+    // from so a later trust-store rejection stays attributable. Reports
+    // filesystem problems with the directory; the caller decides what an
+    // empty result and trust-store rejections mean.
+    fn load_ca_certs(dir: &Path) -> Result<Vec<(PathBuf, CertificateDer<'static>)>> {
+        if !dir.exists() {
             return Err(Error::CaBundleMissing {
-                path: path.to_path_buf(),
+                path: dir.to_path_buf(),
             });
         }
 
-        if !path.is_dir() {
+        if !dir.is_dir() {
             return Err(Error::CaBundleNotADirectory {
-                path: path.to_path_buf(),
+                path: dir.to_path_buf(),
             });
         }
 
-        let initial_len = store.len();
-        debug!("Loading CA certificates from directory: {}", path.display());
+        debug!("Loading CA certificates from directory: {}", dir.display());
 
-        let entries = fs::read_dir(path).map_err(|source| Error::ReadCaBundle {
-            path: path.to_path_buf(),
+        let entries = fs::read_dir(dir).map_err(|source| Error::ReadCaBundle {
+            path: dir.to_path_buf(),
             source,
         })?;
 
+        let mut certs = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|source| Error::ReadCaBundle {
-                path: path.to_path_buf(),
+                path: dir.to_path_buf(),
                 source,
             })?;
 
             let file_path = entry.path();
 
-            // Skip directories
             if file_path.is_dir() {
                 continue;
             }
 
             // Try to parse certificates - skip files that cannot be read or
             // parsed, they might be other files like .srl, .key, .csr, etc.
-            let certs = match CertificateDer::pem_file_iter(&file_path)
+            let parsed = match CertificateDer::pem_file_iter(&file_path)
                 .and_then(|iter| iter.collect::<std::result::Result<Vec<_>, _>>())
             {
-                Ok(certs) => certs,
+                Ok(parsed) => parsed,
                 Err(e) => {
                     debug!(
                         "Skipping file {} (not a valid certificate file: {e})",
@@ -158,26 +170,9 @@ impl TlsBuilder {
                 }
             };
 
-            if certs.is_empty() {
-                continue; // Skip files with no certificates silently
-            }
-
-            // Add all certificates to the store - fail if any cannot be added
-            // (this indicates a real problem with a valid certificate)
-            for cert in certs {
-                store.add(cert).map_err(|source| Error::AddTrustAnchor {
-                    path: file_path.clone(),
-                    source,
-                })?;
-            }
+            certs.extend(parsed.into_iter().map(|cert| (file_path.clone(), cert)));
         }
 
-        if store.len() == initial_len {
-            return Err(Error::CaBundleEmpty {
-                path: path.to_path_buf(),
-            });
-        }
-
-        Ok(())
+        Ok(certs)
     }
 }
