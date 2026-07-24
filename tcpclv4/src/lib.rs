@@ -52,16 +52,16 @@ pub enum Error {
 
     /// No trust anchor is configured for verifying peer certificates.
     #[error(
-        "TLS CA store is empty and accept_self_signed is disabled. \
-        Configure a CA bundle directory or enable accept_self_signed for testing only"
+        "No TLS trust anchor is configured. \
+        Set tls.ca-certs, or enable tls.insecure for testing only"
     )]
     MissingTrustAnchor,
 
-    /// Two competing trust anchors are configured; the self-signed verifier
+    /// Two competing trust anchors are configured; the insecure verifier
     /// would silently ignore the CA bundle.
     #[error(
-        "tls.ca_certs and tls.debug.accept_self_signed are mutually exclusive: \
-        the self-signed verifier ignores the CA bundle, so remove one"
+        "tls.ca-certs and tls.insecure are mutually exclusive: \
+        the insecure verifier ignores the CA bundle, so remove one"
     )]
     AmbiguousTrustAnchor,
 
@@ -147,14 +147,14 @@ impl Cla {
         let tls_config = if let Some(tls_cfg) = &config.tls {
             // The builder takes exactly one trust anchor; the two config
             // fields are reconciled here at the config boundary
-            let trust = match (&tls_cfg.ca_certs, tls_cfg.debug.accept_self_signed) {
+            let trust = match (&tls_cfg.ca_certs, tls_cfg.insecure) {
                 (Some(dir), false) => tls::Trust::CaBundle(dir.clone()),
                 (None, true) => tls::Trust::Insecure,
                 (None, false) => return Err(Error::MissingTrustAnchor),
                 (Some(_), true) => return Err(Error::AmbiguousTrustAnchor),
             };
             let mut builder = tls::Tls::builder(trust);
-            match (&tls_cfg.cert_file, &tls_cfg.private_key_file) {
+            match (&tls_cfg.cert_file, &tls_cfg.key_file) {
                 (Some(cert), Some(key)) => {
                     builder = builder.server(cert.clone(), key.clone());
                 }

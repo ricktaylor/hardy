@@ -57,10 +57,13 @@ When `require-tls: true`, plaintext connections are rejected.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `cert-file` | File path | *Required* | Server certificate in PEM format. |
-| `private-key-file` | File path | *Required* | Private key in PEM format. |
-| `ca-certs` | File or directory path | *(optional)* | CA certificates for verifying peers. Can be a single PEM file or a directory of certificates. |
+| `cert-file` | File path | *(optional)* | Certificate presented to peers, in PEM format. Enables accepting TLS connections; must be set together with `key-file`. |
+| `key-file` | File path | *(optional)* | Private key matching `cert-file`, in PEM format (PKCS#8, PKCS#1, or SEC1). Must be set together with `cert-file`. |
+| `ca-certs` | Directory path | *(one of these two)* | Directory of PEM CA certificates used to verify peers when connecting out. Mutually exclusive with `insecure`. |
+| `insecure` | `true`, `false` | `false` | Accept any peer certificate without validation. **Testing only; must not be used in production.** Mutually exclusive with `ca-certs`. |
 | `server-name` | Hostname string | *(optional)* | Expected server name for SNI verification. |
+
+Exactly one of `ca-certs` or `insecure` must be configured: it determines how peers' certificates are judged when connecting out. `cert-file`/`key-file` are only needed on nodes that accept incoming TLS connections.
 
 Example:
 
@@ -71,19 +74,10 @@ clas:
     require-tls: true
     tls:
       cert-file: /etc/hardy/certs/server.crt
-      private-key-file: /etc/hardy/private/server.key
-      ca-certs: /etc/hardy/ca/trusted.pem
+      key-file: /etc/hardy/private/server.key
+      ca-certs: /etc/hardy/ca
       server-name: ground-station.example.com
 ```
-
-#### `tls.debug` — Development Options
-
-!!! warning
-    These options are insecure and must not be used in production.
-
-| Key | Valid Values | Default | Description |
-|-----|-------------|---------|-------------|
-| `accept-self-signed` | `true`, `false` | `false` | Accept self-signed certificates from peers. |
 
 ## File CLA
 
@@ -145,8 +139,8 @@ keepalive-interval: 120
 require-tls: true
 tls:
   cert-file: /etc/hardy/certs/server.crt
-  private-key-file: /etc/hardy/private/server.key
-  ca-certs: /etc/hardy/ca/trusted.pem
+  key-file: /etc/hardy/private/server.key
+  ca-certs: /etc/hardy/ca
 ```
 
 See also:

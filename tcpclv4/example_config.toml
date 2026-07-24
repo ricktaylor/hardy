@@ -33,10 +33,10 @@
 # TLS configuration (optional, TLS disabled if not set)
 [tls]
 # cert-file = "/etc/hardy/certs/server.crt"
-# private-key-file = "/etc/hardy/private/server.key"
+# key-file = "/etc/hardy/private/server.key"
 # ca-certs = "/etc/hardy/ca"
 # server-name = "dtn.example.com"
-
-# Debug options for TLS (testing only, INSECURE)
-[tls.debug]
-# accept-self-signed = false
+#
+# Accept any peer certificate without validation (testing only, INSECURE).
+# Mutually exclusive with ca-certs.
+# insecure = false
