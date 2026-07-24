@@ -79,7 +79,8 @@ else
 fi
 
 echo "Running bp ping against Hardy echo at ipn:1.7 (peer $PEER_ADDR)..."
-PING_OUTPUT=$("$BP_BIN" ping "ipn:1.7" "$PEER_ADDR" --count "$PING_COUNT" 2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
+PING_TIMEOUT=$((PING_COUNT * 2 + 10))
+PING_OUTPUT=$("$BP_BIN" ping "ipn:1.7" "$PEER_ADDR" --count "$PING_COUNT" --timeout "${PING_TIMEOUT}s" 2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 echo "$PING_OUTPUT"
 
 STATS_LINE=$(echo "$PING_OUTPUT" | grep -E '[0-9]+ (bundles )?transmitted' | head -1)

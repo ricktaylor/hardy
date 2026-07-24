@@ -184,12 +184,31 @@ log_info "Started cFS container: ${CFS_CONTAINER:0:12}"
 # summary instead of aborting the whole script.
 TEST1_RESULT="FAIL"
 for _ in 1; do
-    # Wait until cFS is accepting STCP connections (see lib/wait.sh).
-    # start_cfs sends setup/start commands internally.
-    log_info "Waiting for cFS to accept connections on port $CFS_STCP_PORT..."
-    if ! wait_for_port 127.0.0.1 "$CFS_STCP_PORT" 30 "$CFS_CONTAINER"; then
-        log_error "cFS did not become ready on port $CFS_STCP_PORT; skipping TEST 1"
-        docker logs "$CFS_CONTAINER" 2>&1 | tail -50
+    # Wait for cFS STCP port to open. Use ss to check without creating TCP
+    # connections; nc -z would be accepted by the CLA.
+    log_info "Waiting for cFS to initialize..."
+    WAIT_TIMEOUT=30
+    WAIT_COUNT=0
+    while [ $WAIT_COUNT -lt $WAIT_TIMEOUT ]; do
+        if ! docker ps -q -f "id=$CFS_CONTAINER" | grep -q .; then
+            log_error "cFS container exited unexpectedly. Logs:"
+            docker logs "$CFS_CONTAINER" 2>&1
+            break
+        fi
+
+        if ss -tln 2>/dev/null | grep -q ":$CFS_STCP_PORT "; then
+            log_info "cFS is listening on port $CFS_STCP_PORT (took ${WAIT_COUNT}s)"
+            break
+        fi
+
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+
+    if [ $WAIT_COUNT -ge $WAIT_TIMEOUT ]; then
+        log_error "cFS did not start listening on port $CFS_STCP_PORT within ${WAIT_TIMEOUT}s"
+        docker logs "$CFS_CONTAINER" 2>&1 | grep -i 'BPNODE\|STCP\|stcpsock\|cmdUtil\|cmd_send\|contact\|application\|Error\|listen\|bind\|socket' | tail -80 || true
+        docker logs "$CFS_CONTAINER" 2>&1 | tail -30
         break
     fi
     log_info "cFS is accepting connections on port $CFS_STCP_PORT"
@@ -211,12 +230,13 @@ EOF
     echo ""
 
     # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 10))s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
+    PING_OUTPUT=$("$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
         --cla "$MTCP_CLA_BIN" \
         --cla-args "--config $TEST_DIR/stcp_cla.toml" \
         --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
         --source "ipn:$HARDY_NODE_NUM.$HARDY_SERVICE_NUM" \
         --count "$PING_COUNT" \
+        --timeout "$((PING_COUNT * 2 + 10))s" \
         2>&1) && EXIT_CODE=0 || EXIT_CODE=$?
 
     echo "$PING_OUTPUT"
