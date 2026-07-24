@@ -37,8 +37,8 @@ impl TlsBuilder {
     // Enable the server role: the PEM certificate presented to peers and
     // its private key (PKCS#8, PKCS#1, or SEC1). Taking both halves in one
     // call makes a lone certificate or key unrepresentable.
-    pub fn server(mut self, cert_file: PathBuf, private_key_file: PathBuf) -> Self {
-        self.server = Some((cert_file, private_key_file));
+    pub fn server(mut self, cert_file: PathBuf, key_file: PathBuf) -> Self {
+        self.server = Some((cert_file, key_file));
         self
     }
 
@@ -90,9 +90,7 @@ impl TlsBuilder {
                     .with_no_client_auth()
             }
             Trust::Insecure => {
-                warn!(
-                    "TLS client: Using custom verifier to accept self-signed certificates (INSECURE)"
-                );
+                warn!("TLS client: accepting any peer certificate without validation (INSECURE)");
                 let mut client_config = ClientConfig::builder()
                     .with_root_certificates(RootCertStore::empty())
                     .with_no_client_auth();

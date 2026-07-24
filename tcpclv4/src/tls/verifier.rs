@@ -1,4 +1,4 @@
-// The deliberately insecure trust policy behind `accept_self_signed`:
+// The deliberately insecure trust policy behind `tls.insecure`:
 // accepts any certificate chain (no trust validation) while still
 // verifying handshake signatures through the crypto provider. For testing
 // against self-signed peers only. rustls deliberately ships no such
