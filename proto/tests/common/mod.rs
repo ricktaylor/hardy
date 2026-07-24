@@ -25,6 +25,7 @@ pub struct MockBpa {
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
+    pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
     pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
 }
@@ -36,6 +37,7 @@ impl MockBpa {
             last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
+            last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
             last_application: hardy_async::sync::spin::Mutex::new(None),
         }
@@ -63,6 +65,7 @@ impl BpaRegistration for MockBpa {
     ) -> cla::Result<Vec<NodeId>> {
         let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());
+        *self.last_cla_sink.lock() = Some(sink.clone());
         cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
             .await;
         Ok(self.node_ids.clone())
@@ -177,6 +180,13 @@ impl cla::Sink for ClaSinkWrapper {
     }
     async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
         self.0.remove_peer(a).await
+    }
+    async fn transfer_outcome(
+        &self,
+        id: &hardy_bpv7::bundle::Id,
+        o: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        self.0.transfer_outcome(id, o).await
     }
 }
 

@@ -39,6 +39,8 @@ message ClaToBpa {
     RemovePeerRequest       remove_peer   = 6;
     // A response to a forward bundle request.
     ForwardBundleResponse   forward       = 7;
+    // The final outcome of a transfer previously answered `accepted`.
+    TransferOutcomeRequest  transfer_outcome = 8;
   }
 }
 
@@ -61,6 +63,8 @@ message BpaToCla {
     RemovePeerResponse     remove_peer   = 6;
     // A request to forward a bundle from the BPA to the CLA.
     ForwardBundleRequest   forward       = 7;
+    // A response to a transfer outcome request.
+    TransferOutcomeResponse transfer_outcome = 8;
   }
 }
 
@@ -146,12 +150,15 @@ message RemovePeerResponse {
 // A request to forward a bundle from the BPA to the CLA.
 message ForwardBundleRequest {
   // The bundle to forward. This should be a complete BPv7 bundle.
-  bytes           bundle  = 1;
+  bytes           bundle    = 1;
   // The address to forward the bundle to.
-  ClaAddress      address = 2;
+  ClaAddress      address   = 2;
   // The egress queue to use for forwarding. This is determined by the egress
   // policy.
-  optional uint32 queue   = 3;
+  optional uint32 queue     = 3;
+  // The unique bundle identifier, formatted as specified in RFC 9171.
+  // Identifies the transfer for correlation; the CLA treats it as opaque.
+  string          bundle_id = 4;
 }
 
 // A response to a forward bundle request.
@@ -162,6 +169,29 @@ message ForwardBundleResponse {
     google.protobuf.Empty sent         = 1;
     // The bundle could not be sent because the neighbor is no longer available.
     google.protobuf.Empty no_neighbour = 2;
+    // The CLA has taken ownership of the transfer and will report its outcome
+    // later with a `TransferOutcomeRequest` carrying the same `bundle_id`.
+    google.protobuf.Empty accepted     = 3;
   }
 }
+
+// The final outcome of a transfer previously answered `accepted`.
+// Every accepted transfer resolves exactly once: with this message, or
+// implicitly as outcome-unknown when the registration stream closes.
+message TransferOutcomeRequest {
+  // The unique bundle identifier from the corresponding
+  // `ForwardBundleRequest`, echoed back opaquely.
+  string bundle_id = 1;
+  // The outcome of the transfer.
+  oneof outcome {
+    // The bundle was handed to the far bundle node.
+    google.protobuf.Empty delivered = 2;
+    // The convergence layer gave up on the transfer. The status carries an
+    // opaque diagnostic reason; it does not assert non-delivery.
+    google.rpc.Status     failed    = 3;
+  }
+}
+
+// A response to a transfer outcome request.
+message TransferOutcomeResponse {}
 

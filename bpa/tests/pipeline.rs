@@ -44,6 +44,7 @@ impl cla::Cla for PipelineCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         bundle: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.forwarded_tx.send(bundle);
@@ -196,6 +197,7 @@ impl cla::Cla for TimedCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _bundle: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(tokio::time::Instant::now());
@@ -925,6 +927,328 @@ async fn dispatcher_handles_on_receive_err() {
     .expect("parked bundle must be re-delivered on re-registration")
     .unwrap();
     assert_eq!(payload, Bytes::from_static(b"payload"));
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Deferring CLA — answers Accepted for the first N offers, Sent afterwards,
+// and reports every offered bundle id to the test
+// ---------------------------------------------------------------------------
+
+struct DeferringCla {
+    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    offers_tx: flume::Sender<hardy_bpv7::bundle::Id>,
+    remaining_accepts: std::sync::atomic::AtomicUsize,
+}
+
+impl DeferringCla {
+    fn new(accepts: usize) -> (Arc<Self>, flume::Receiver<hardy_bpv7::bundle::Id>) {
+        let (tx, rx) = flume::bounded(16);
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                offers_tx: tx,
+                remaining_accepts: std::sync::atomic::AtomicUsize::new(accepts),
+            }),
+            rx,
+        )
+    }
+
+    fn sink(&self) -> &dyn cla::Sink {
+        self.sink.get().unwrap().as_ref()
+    }
+}
+
+#[async_trait]
+impl cla::Cla for DeferringCla {
+    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn forward(
+        &self,
+        _queue: Option<u32>,
+        _cla_addr: &cla::ClaAddress,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle: Bytes,
+    ) -> cla::Result<cla::ForwardBundleResult> {
+        let _ = self.offers_tx.send(bundle_id.clone());
+        if self
+            .remaining_accepts
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| n.checked_sub(1),
+            )
+            .is_ok()
+        {
+            Ok(cla::ForwardBundleResult::Accepted)
+        } else {
+            Ok(cla::ForwardBundleResult::Sent)
+        }
+    }
+}
+
+// Helper: BPA with a DeferringCla registered and a peer for ipn:0.<node>
+async fn deferring_setup(
+    accepts: usize,
+    peer_node_number: u32,
+) -> (
+    hardy_bpa::bpa::Bpa,
+    Arc<DeferringCla>,
+    flume::Receiver<hardy_bpv7::bundle::Id>,
+) {
+    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (cla, offers_rx) = DeferringCla::new(accepts);
+    bpa.register_cla(format!("deferring-{peer_node_number}"), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink()
+        .add_peer(
+            cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: peer_node_number,
+            })],
+        )
+        .await
+        .unwrap();
+
+    // The egress channel's poller does an initial storage sweep when the peer
+    // is created (see storage::channel's at-least-once delivery contract);
+    // let it complete before any bundle is sent so it cannot recover a second
+    // copy of the first bundle and duplicate the offer.
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    (bpa, cla, offers_rx)
+}
+
+async fn expect_offer(rx: &flume::Receiver<hardy_bpv7::bundle::Id>) -> hardy_bpv7::bundle::Id {
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv_async())
+        .await
+        .expect("Timeout waiting for CLA offer")
+        .expect("Channel closed")
+}
+
+async fn expect_no_offer(rx: &flume::Receiver<hardy_bpv7::bundle::Id>) {
+    assert!(
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), rx.recv_async())
+            .await
+            .is_err(),
+        "Unexpected CLA offer"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-07: deferred outcome — Failed re-enters dispatch per-bundle
+// ---------------------------------------------------------------------------
+
+/// A transfer answered `Accepted` whose outcome is reported `Failed` gets a
+/// fresh routing decision and is re-offered to the CLA; the bundle is never
+/// dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_outcome_failed_redispatches() {
+    let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
+
+    cla.sink()
+        .dispatch(
+            build_bundle(
+                &"ipn:0.3.1".parse().unwrap(),
+                &"ipn:0.2.99".parse().unwrap(),
+                b"deferred-fail",
+            ),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let id = expect_offer(&offers_rx).await;
+    cla.sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .await
+        .unwrap();
+
+    // The failed transfer re-enters dispatch and is re-offered (the route is
+    // unchanged); the second offer is answered Sent by the mock.
+    let id2 = expect_offer(&offers_rx).await;
+    assert_eq!(id, id2, "Re-offer must be the same bundle");
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-08: deferred outcome — Delivered completes the transfer
+// ---------------------------------------------------------------------------
+
+/// A transfer answered `Accepted` whose outcome is reported `Delivered` is
+/// complete: no re-offer, a late duplicate outcome is ignored, and the
+/// tombstone dedups a re-arrival of the same bundle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_outcome_delivered_completes() {
+    let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
+
+    let data = build_bundle(
+        &"ipn:0.3.1".parse().unwrap(),
+        &"ipn:0.2.99".parse().unwrap(),
+        b"deferred-ok",
+    );
+    cla.sink().dispatch(data.clone(), None, None).await.unwrap();
+
+    let id = expect_offer(&offers_rx).await;
+    cla.sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Delivered)
+        .await
+        .unwrap();
+
+    // A late duplicate outcome is ignored, not honoured twice.
+    cla.sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .await
+        .unwrap();
+    expect_no_offer(&offers_rx).await;
+
+    // The delivered bundle was deleted with a tombstone: a re-arrival of the
+    // same bundle is dropped as a duplicate rather than re-forwarded.
+    cla.sink().dispatch(data, None, None).await.unwrap();
+    expect_no_offer(&offers_rx).await;
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-09: deferred outcome — peer removal resolves outcome-unknown
+// ---------------------------------------------------------------------------
+
+/// Removing the peer while a transfer awaits its outcome resolves it as
+/// outcome-unknown: the bundle returns to Waiting and is re-offered when the
+/// peer comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_outcome_peer_removal_resolves_unknown() {
+    let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
+
+    cla.sink()
+        .dispatch(
+            build_bundle(
+                &"ipn:0.3.1".parse().unwrap(),
+                &"ipn:0.2.99".parse().unwrap(),
+                b"outcome-unknown",
+            ),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let id = expect_offer(&offers_rx).await;
+
+    let peer_addr = cla::ClaAddress::Private("peer-2".as_bytes().into());
+    let peer_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    assert!(cla.sink().remove_peer(&peer_addr).await.unwrap());
+    assert!(
+        cla.sink()
+            .add_peer(peer_addr, core::slice::from_ref(&peer_node))
+            .await
+            .unwrap()
+    );
+
+    // The unresolved transfer went back to Waiting on peer removal, and the
+    // re-added peer's route re-dispatches it.
+    let id2 = expect_offer(&offers_rx).await;
+    assert_eq!(id, id2, "Re-offer must be the same bundle");
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-10: deferred outcome — only the owning CLA may resolve a transfer
+// ---------------------------------------------------------------------------
+
+/// An outcome reported by a CLA that does not own the transfer's peer is
+/// ignored; the owning CLA's subsequent outcome is still honoured. Outcomes
+/// for unknown bundles are ignored without error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_outcome_ignores_wrong_cla() {
+    let (bpa, cla_a, offers_a) = deferring_setup(1, 2).await;
+
+    // A second CLA with its own peer on a different node
+    let (cla_b, offers_b) = DeferringCla::new(0);
+    bpa.register_cla("deferring-b".to_string(), cla_b.clone(), None)
+        .await
+        .unwrap();
+    cla_b
+        .sink()
+        .add_peer(
+            cla::ClaAddress::Private("peer-b".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 4,
+            })],
+        )
+        .await
+        .unwrap();
+
+    cla_a
+        .sink()
+        .dispatch(
+            build_bundle(
+                &"ipn:0.3.1".parse().unwrap(),
+                &"ipn:0.2.99".parse().unwrap(),
+                b"wrong-cla",
+            ),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let id = expect_offer(&offers_a).await;
+
+    // An outcome for a bundle the BPA has never seen is ignored without error.
+    let unknown = hardy_bpv7::bundle::Id {
+        source: "ipn:0.9.9".parse().unwrap(),
+        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+        fragment_info: None,
+    };
+    cla_b
+        .sink()
+        .transfer_outcome(&unknown, cla::TransferOutcome::Delivered)
+        .await
+        .unwrap();
+
+    // CLA B does not own the transfer's peer: its outcome is ignored.
+    cla_b
+        .sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Delivered)
+        .await
+        .unwrap();
+    expect_no_offer(&offers_a).await;
+
+    // The owning CLA's outcome is still honoured.
+    cla_a
+        .sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .await
+        .unwrap();
+    let id2 = expect_offer(&offers_a).await;
+    assert_eq!(id, id2, "Re-offer must be the same bundle");
+    expect_no_offer(&offers_b).await;
 
     bpa.shutdown().await;
 }

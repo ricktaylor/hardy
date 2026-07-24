@@ -162,6 +162,43 @@ This design means **no authorization token is required** for ownership enforceme
 
 For deployments requiring additional authorization (namespace restrictions, audit logging), the gRPC layer can add identity validation at registration time. See the [hardy-proto design](../../proto/docs/design.md#trust-model) for details.
 
+### Deferred CLA Transfer Outcomes
+
+A reliable convergence layer natively learns whether each transfer succeeded (TCPCLv4 transfer acknowledgments, LTP session reports). The CLA contract expresses that signal without holding a call open: `forward` may answer `Accepted` — the CLA has taken ownership of the bundle — and report the real outcome later, out-of-band, via `Sink::transfer_outcome`.
+
+Holding the forward call until the outcome is known pins a slot in the bounded processing pool (and, in the gRPC deployment, a proxy handler permit) for the full transfer duration, collapsing throughput to pool-size-per-round-trip on high bandwidth-delay-product links. Answering `Sent` early loses the failure signal entirely: the BPA deletes on `Sent`, so a late convergence-layer failure becomes silent end-to-end loss. Splitting acceptance from outcome removes the hold while keeping the store honest:
+
+```mermaid
+sequenceDiagram
+    participant BPA
+    participant CLA
+    BPA->>CLA: forward(bundle_id, bundle)
+    CLA-->>BPA: Accepted
+    Note over BPA: bundle retained,<br/>status ForwardAckPending
+    Note over CLA: transfer proceeds<br/>(segments, acks, retries…)
+    CLA->>BPA: transfer_outcome(bundle_id, Delivered | Failed)
+    Note over BPA: Delivered → report + delete<br/>Failed → re-dispatch
+```
+
+`Sent` and `NoNeighbour` keep their terminal semantics: deferral is a per-transfer choice made by the CLA on each forward — fire-and-forget CLAs like `file-cla` are untouched, and there is no registration-level capability flag or proxy negotiation state. A BPA that predates the extension maps the unknown `accepted` variant to a call error and re-queues the bundle, so version skew degrades safely.
+
+**The correlation key is the bundle ID** — the same `hardy_bpv7::bundle::Id` the Application trait already uses for status notifications and `cancel`, with the same key encoding on the wire. RFC 9171 bundle IDs are globally unique (fragments included), and a bundle in `ForwardAckPending` is not eligible for re-dispatch until its outcome resolves, so the BPA never has more than one transfer of a bundle outstanding. `forward` passes the ID alongside the bundle bytes for the CLA to echo back opaquely; a CLA-minted transfer ID would only add mint-and-map bookkeeping on both sides that a store lookup replaces.
+
+Every `Accepted` resolves in exactly one of four ways:
+
+- **`Delivered`** — what `Sent` does today: report forwarded, delete.
+- **`Failed`** — re-enqueued to Dispatch for a fresh routing decision, per-bundle: a deferred failure is bundle-scoped evidence about one transfer, not link-scoped evidence about the peer, so it does not reset the peer queue. A deferred failure does not assert non-delivery — the far end may hold the bundle with only the acknowledgment lost — and receiver-side deduplication absorbs the re-forward.
+- **CLA unregistration** (including gRPC stream teardown) — every unresolved transfer is outcome-unknown, reset to `Waiting` and re-forwarded at the next opportunity.
+- **Bundle lifetime expiry** — expiry wins, as everywhere else in the store.
+
+An outcome is honoured only if the named bundle is currently `ForwardAckPending` via a peer of the reporting CLA; anything else — already resolved, expired, another CLA's transfer — is logged and dropped. There is deliberately no BPA-side guard timer for CLAs that never resolve a transfer: bundle lifetime bounds retention, unregistration sweeps the rest, and a CLA that sits on transfers merely converts them to visible, attributable expiry drops.
+
+`ForwardAckPending { peer }` is persisted metadata status like any other, and is a holding state, not a queue (see [queue_architecture.md](queue_architecture.md)): bundles leave it only via the keyed outcome, a sweep (peer loss, or restart replay resetting it to `Waiting` exactly as `ForwardPending`, since registrations do not survive a restart), or the reaper. The persisted status is the only state — outcome resolution is a metadata lookup by bundle ID. The retention cost is explicit: a bundle stays in the store from acceptance to outcome, bounded by the transfer duration and hard-capped by bundle lifetime — the price of honest reliability accounting, and how BP/LTP stacks already behave.
+
+Verdict timing doubles as flow control: a CLA at admission capacity simply withholds its next verdict. Each peer queue is drained by a single egress poller, so one withheld verdict pauses that peer's drain at the cost of a single pool slot while every accepted transfer pipelines — depth is governed by the CLA's admission policy, with no BPA-side concurrency changes. `tcpclv4` adopts exactly this shape (`max-outstanding-transfers`), and the TestCla tool's reliable channel emulation is the design's motivating consumer ([`docs/test-cla-design.md`](../../docs/test-cla-design.md) §4.3).
+
+The wire mirror lives in `cla.proto`: `ForwardBundleRequest.bundle_id` (the RFC 9171 key form, opaque to the CLA), an `accepted` result variant, and the CLA→BPA `TransferOutcomeRequest` whose `failed` arm carries a `google.rpc.Status` so a failure reason travels opaquely.
+
 ### Routing Information Base
 
 The RIB maintains routing rules as a priority-ordered collection of EID patterns mapping to actions. When a route changes, the RIB notifies a background task to re-evaluate bundles in `Waiting` status. This ensures bundles aren't stranded when new routes become available.

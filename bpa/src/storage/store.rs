@@ -238,6 +238,24 @@ impl Store {
 
         reset != 0
     }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    pub async fn reset_peer_ack_pending(&self, peer: u32) -> bool {
+        let reset = self
+            .metadata_storage
+            .reset_peer_ack_pending(peer)
+            .await
+            .trace_expect("Failed to reset peer ack-pending transfers");
+
+        if reset > 0 {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardAckPending { peer }))
+                .decrement(reset as f64);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
+                .increment(reset as f64);
+        }
+
+        reset != 0
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `max-outstanding-transfers` (default: 16) bounds the transfers accepted but not yet resolved with an outcome, per peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Per-peer scoping keeps one unreachable peer's stalled dials from starving admission for healthy peers.
+
 ### Changed
+- Forwards resolve out-of-band per the `hardy-bpa` deferred transfer-outcome contract: `forward` answers `Accepted` once the transfer passes admission, the transfer runs to its terminal state on pooled sessions, and the outcome — `Delivered` on full acknowledgment, `Failed` otherwise — is reported via `Sink::transfer_outcome`. Transfers overlap across pooled connections instead of serialising behind a held forward call; completion order across connections is not guaranteed.
 - `session::Error` is the session's outcome taxonomy: transport I/O failures split from codec (dialect) failures at conversion, and writer-closed / ingest-stopped are first-class outcomes with truthful `tcpclv4.session.terminated` labels (`writer_closed`, `ingest_stopped`; an `UnexpectedEof` counts as `hangup`). `WriterHandle::send` returns a two-variant `SendError` instead of a tri-state bool result, so a closed writer cannot be mistaken for success by construction.
 - The UT-TCP-03/04 unit tests exercise the production negotiation and segmentation code (`negotiate_keepalive` and `negotiate_segment_mtu` as free functions; `send_once` driven end-to-end against a preloaded acknowledgment stream) instead of asserting on re-implementations of the same arithmetic.
 - Bundle dispatch to the BPA moved off the session reader loop into a per-session ordered ingest task: segments, acknowledgments of outbound transfers, and keepalives keep flowing while a received bundle is being stored. The final `XFER_ACK` of a transfer is still only sent after dispatch completes, and acknowledgments are emitted in segment-arrival order.

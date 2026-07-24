@@ -502,6 +502,25 @@ impl storage::MetadataStorage for Storage {
         Ok(rows)
     }
 
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status  = $2,
+                 peer_id = NULL
+             WHERE status = $3
+               AND peer_id = $1",
+        )
+        .bind(i32::try_from(peer)?)
+        .bind(status::BundleStatusKind::Waiting)
+        .bind(status::BundleStatusKind::ForwardAckPending)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
         let mut conn = begin_snapshot(&self.pool).await?;

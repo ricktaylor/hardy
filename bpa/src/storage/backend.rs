@@ -104,6 +104,12 @@ pub trait MetadataStorage: Send + Sync {
     /// Returns the number of bundles reset.
     async fn reset_peer_queue(&self, peer: u32) -> Result<u64>;
 
+    /// Resets all bundles with status `BundleStatus::ForwardAckPending { peer }`
+    /// to `Waiting`: the peer is gone, so the outcome of each accepted transfer
+    /// can never arrive and is resolved as outcome-unknown. Returns the number
+    /// of bundles reset.
+    async fn reset_peer_ack_pending(&self, peer: u32) -> Result<u64>;
+
     /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
     /// and ordered by expiry, to `stream`. Stops early if `stream.send`
     /// returns `Err(SendError(_))`.

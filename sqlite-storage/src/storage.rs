@@ -206,6 +206,7 @@ impl Storage {
 // 3 = AduFragment(timestamp, seq, source)
 // 4 = Dispatching
 // 5 = WaitingForService(source)
+// 6 = ForwardAckPending(peer)
 fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
         BundleStatus::New => (0, None, None, None),
@@ -225,6 +226,7 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
         ),
         BundleStatus::Dispatching => (4, None, None, None),
         BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
+        BundleStatus::ForwardAckPending { peer } => (6, Some(*peer as i64), None, None),
     }
 }
 
@@ -256,6 +258,9 @@ fn to_status(
         4 => Some(BundleStatus::Dispatching),
         5 => Some(BundleStatus::WaitingForService {
             service: param3?.parse().ok()?,
+        }),
+        6 => Some(BundleStatus::ForwardAckPending {
+            peer: param1? as u32,
         }),
         _ => None,
     }
@@ -521,6 +526,30 @@ impl storage::MetadataStorage for Storage {
         self.write(move |conn| {
             conn.prepare_cached(
                 "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
+            )?
+            .execute((Some(peer),))
+            .map(|c| c as u64)
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        // Ensure status codes match
+        debug_assert!(
+            from_status(&BundleStatus::Waiting).0 == 1,
+            "Status code mismatch"
+        );
+        debug_assert!(
+            from_status(&BundleStatus::ForwardAckPending { peer })
+                == (6, Some(peer as i64), None, None),
+            "Status code mismatch"
+        );
+
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET status_code = 1, status_param1 = NULL WHERE status_code = 6 AND status_param1 = ?1",
             )?
             .execute((Some(peer),))
             .map(|c| c as u64)
@@ -842,6 +871,40 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    // ForwardAckPending round-trips through the status columns, and
+    // reset_peer_ack_pending flips exactly the matching peer's transfers to
+    // Waiting.
+    #[tokio::test]
+    async fn test_forward_ack_pending_roundtrip_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        assert_eq!(
+            got.metadata.status,
+            BundleStatus::ForwardAckPending { peer: 7 }
+        );
+
+        // A different peer's transfer is untouched by the reset
+        let mut other = make_bundle(2);
+        other.metadata.status = BundleStatus::ForwardAckPending { peer: 8 };
+        assert!(storage.insert(&other).await.unwrap());
+
+        assert_eq!(storage.reset_peer_ack_pending(7).await.unwrap(), 1);
+
+        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        assert_eq!(got.metadata.status, BundleStatus::Waiting);
+        let got = storage.get(&other.bundle.id).await.unwrap().unwrap();
+        assert_eq!(
+            got.metadata.status,
+            BundleStatus::ForwardAckPending { peer: 8 }
+        );
     }
 
     // SQL-01: Database is created at the configured path.

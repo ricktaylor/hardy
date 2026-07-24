@@ -56,13 +56,19 @@ impl routing::RoutingSink for MockRoutingSink {
 
 pub struct MockClaSink {
     unregistered: AtomicBool,
+    outcomes: std::sync::Mutex<Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)>>,
 }
 
 impl MockClaSink {
     pub fn new() -> Self {
         Self {
             unregistered: AtomicBool::new(false),
+            outcomes: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn outcomes(&self) -> Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)> {
+        self.outcomes.lock().unwrap().clone()
     }
 }
 
@@ -91,6 +97,18 @@ impl cla::Sink for MockClaSink {
 
     async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
         Ok(true)
+    }
+
+    async fn transfer_outcome(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        self.outcomes
+            .lock()
+            .unwrap()
+            .push((bundle_id.clone(), outcome));
+        Ok(())
     }
 }
 

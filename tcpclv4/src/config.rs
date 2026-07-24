@@ -86,6 +86,13 @@ pub struct Config {
     /// Maximum number of idle connections retained per remote address. Default: `6`.
     pub max_idle_connections: usize,
 
+    /// Maximum number of transfers accepted but not yet resolved with an
+    /// outcome, per peer. Bounds the bundles held in memory by in-flight and
+    /// queued transfers to each peer; when reached, further forwards to that
+    /// peer are held unanswered, which is the flow control back to the BPA.
+    /// Values below 1 are treated as 1. Default: `16`.
+    pub max_outstanding_transfers: usize,
+
     /// Maximum inbound connection rate in connections per second. Default: `64`.
     pub connection_rate_limit: u32,
 
@@ -108,6 +115,7 @@ impl Default for Config {
             segment_mru: 16384,
             transfer_mru: 0x4000_0000, // 1GB
             max_idle_connections: 6,
+            max_outstanding_transfers: 16,
             connection_rate_limit: 64,
             session_defaults: Default::default(),
             tls: Default::default(),

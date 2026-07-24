@@ -22,6 +22,13 @@ pub enum BundleStatus {
         /// Optional queue index within the peer's egress queues.
         queue: Option<u32>,
     },
+    /// Offered to a CLA that has taken ownership of the transfer; retained
+    /// until the CLA reports the outcome via `Sink::transfer_outcome`, the
+    /// peer is removed, or the bundle's lifetime expires.
+    ForwardAckPending {
+        /// Identifier of the CLA peer the transfer was accepted for.
+        peer: u32,
+    },
     /// Fragment of an Application Data Unit awaiting reassembly.
     AduFragment {
         /// Source EID of the original (unfragmented) bundle.

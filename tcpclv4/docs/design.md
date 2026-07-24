@@ -138,6 +138,12 @@ Acknowledgments are emitted in segment-arrival order, across transfer boundaries
 
 At session teardown, every terminal path converges on one epilogue: the ingest queue is closed and drained (dispatching any fully received bundles and flushing their acks), then the writer is closed. A bundle received but not yet dispatched at teardown is still delivered to the BPA; if its ack no longer reaches the peer, the resulting retransmission is deduplicated.
 
+### Deferred forward outcomes
+
+`Cla::forward` answers `Accepted` once the transfer passes admission, and the transfer runs to its terminal state on a spawned task: pooled-session transmit, dialing new connections as the pool allows. The outcome is reported out-of-band via `Sink::transfer_outcome` — `Delivered` once the peer has fully acknowledged the transfer, `Failed` otherwise, after which the BPA re-routes the bundle. This is what lets transfers overlap: the per-transfer acknowledgment round trip no longer holds the BPA's forward call, so throughput scales with the connection pool rather than being paced at one transfer per round trip.
+
+Admission is a per-peer semaphore (`max-outstanding-transfers`) bounding accepted-but-unresolved transfers, which caps the bundle bytes held by in-flight and queued transfers to each peer. When exhausted, `forward` is held unanswered — withholding the verdict is the designed flow control back to the BPA's per-peer egress poller. The scope matters: dial attempts to an unreachable peer can pin a transfer for the full connect-timeout cycle, and a shared bound would let one such peer starve admission for every other. Transfers to the same peer may complete out of order across pooled connections, and the pool's retry of a failed session is at-least-once: both are absorbed by DTN semantics and receiver-side deduplication.
+
 ## Session Lifecycle
 
 Following RFC 9174 Section 3.2, session establishment proceeds through:
