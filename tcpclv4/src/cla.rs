@@ -74,16 +74,36 @@ impl hardy_bpa::cla::Cla for Cla {
 
             // We try this 5 times, because peers can close at random times
             for _ in 0..5 {
-                // See if we have an active connection already
-                bundle = match self.registry.forward(remote_addr, bundle).await {
+                // Use a pooled session, dialing a new connection when the
+                // pool has capacity and no session is free
+                bundle = match self
+                    .registry
+                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
+                    .await
+                {
                     Ok(r) => {
                         debug!("Bundle forwarded successfully using existing connection");
                         return Ok(r);
                     }
                     Err(bundle) => {
-                        debug!("No live connections, will attempt to create new one");
+                        debug!("No free connections, will attempt to create new one");
                         bundle
                     }
+                };
+
+                // One dial at a time per peer: concurrent forwards coalesce
+                // here rather than racing parallel dials, and the pool is
+                // re-checked under the lock — the previous holder's session
+                // may already be registered
+                let dial_lock = self.registry.dial_lock(*remote_addr);
+                let _dialing = dial_lock.lock().await;
+                bundle = match self
+                    .registry
+                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
+                    .await
+                {
+                    Ok(r) => return Ok(r),
+                    Err(bundle) => bundle,
                 };
 
                 // Do a new active connect
@@ -92,13 +112,36 @@ impl hardy_bpa::cla::Cla for Cla {
                     ctx: ctx.clone(),
                 };
                 match conn.connect(remote_addr).await {
-                    Ok(()) | Err(transport::Error::Timeout) => {}
-                    Err(_) => {
-                        // No point retrying
-                        break;
+                    Ok(()) => {}
+                    Err(transport::Error::Timeout) if !self.registry.has_sessions(remote_addr) => {
+                        // Nothing to fall back to: keep dialing
+                    }
+                    Err(e) => {
+                        // The dial failed but a session may be up: fall back
+                        // to queueing on it rather than stalling the forward
+                        // behind further dial attempts. Silently dropped SYNs
+                        // (dial timeout) are the norm for firewalled peers
+                        // with asymmetric reachability that hold a session
+                        // open without being able to accept another.
+                        debug!(
+                            "Dial to {remote_addr} failed: {e:?}; falling back to a busy session"
+                        );
+                        return Ok(self
+                            .registry
+                            .forward(remote_addr, bundle, connection::OnBusy::Queue)
+                            .await
+                            .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
                     }
                 }
             }
+
+            // Repeated dial timeouts: last try on a busy session before
+            // reporting the neighbour gone
+            return Ok(self
+                .registry
+                .forward(remote_addr, bundle, connection::OnBusy::Queue)
+                .await
+                .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
         }
 
         Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)

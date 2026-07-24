@@ -58,8 +58,9 @@ Each `ConnectionPool` maintains separate sets of idle and active connections. Wh
 1. Try an idle connection first, moving it to the active set
 2. If no idle connections exist and the pool isn't at capacity, signal the caller to establish a new connection
 3. If at capacity, queue to a random active connection
+4. If establishing a new connection fails while sessions remain open, queue to a busy session anyway — a peer with asymmetric reachability (RFC 9174 Section 3.3) can hold a session open without being able to accept another
 
-This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity.
+This balances connection reuse against parallelism. The `max_idle_connections` configuration (default: 6) limits memory usage from idle connections while allowing burst capacity. Concurrent forwards may each signal a dial before the first new session registers, briefly overshooting the bound; excess connections are shed after use when they fail the idle-return check.
 
 ### Tower Service for Listener
 
@@ -88,6 +89,55 @@ A debug option allows accepting self-signed certificates for testing, with promi
 
 When connecting to a peer that responds with protocol version 3, the implementation sends a TCPCLv3 SHUTDOWN message (`0x45, 0x01`) before closing. This allows legacy peers to clean up gracefully rather than interpreting the disconnect as an error.
 
+## Session Task Architecture
+
+Each established session runs as three cooperating tasks: the session loop, the writer task, and the ingest task. The split enforces one rule: **the session loop never awaits anything slower than the socket** — not transport writes, not BPA dispatch. Everything else in this section is a consequence of that rule.
+
+```mermaid
+graph TD
+    reader["Session loop (owns read half)"]
+    writer["Writer task (owns write half)"]
+    ingest["Ingest task"]
+    bpa["BPA Sink"]
+    pool["Connection pool"]
+    pool -->|"(bundle, result) channel"| reader
+    reader -->|"reserve()/Feed: XFER_SEGMENT<br/>Send: SESS_TERM, MSG_REJECT"| writer
+    reader -->|"Ack / Dispatch items (bounded FIFO)"| ingest
+    ingest -->|"dispatch()"| bpa
+    ingest -->|"Feed: XFER_ACK"| writer
+```
+
+**Session loop** (`Session::run`): reads and decodes frames, reassembles inbound transfers, matches inbound XFER_ACK/XFER_REFUSE against outstanding segment expectations, and drives outbound transfers accepted from the connection pool.
+
+**Writer task** (`writer.rs`): owns the write half of the transport and sends keepalives when idle, so a stalled BPA or a long transfer can never cause a keepalive timeout. Commands come in two flavours with deliberately different contracts:
+
+- `Send` carries a oneshot result and flushes — used for control messages (SESS_TERM, MSG_REJECT) where the caller needs a synchronous outcome.
+- `Feed` is fire-and-forget — used for the data path (segments, acks). Per-message completion would cost an allocation and two task wake-ups per segment, fully serialized, and the completion await could not be safely raced against the reader in a select. Backpressure is the bounded command channel; write errors close the writer, which producers observe as a closed channel on their next command.
+
+The writer flushes when its command queue runs dry, so consecutive segments stream into the transport without intermediate flushes while small tail messages never linger in the codec buffer.
+
+`WriterHandle::reserve()` returns a `FeedPermit`: a cancel-safe, two-phase send. Reservation can be raced in a select (dropping it leaves the channel untouched), and committing the permit is synchronous. This is how the session loop writes segments while still polling the reader.
+
+**Ingest task** (`run_ingest`): the ordered handoff to the BPA. Every XFER_ACK the session emits flows through its FIFO queue — not just final ones. The final segment of a transfer is queued as a `Dispatch` item carrying the reassembled bundle; its ack is only emitted after `sink.dispatch()` returns. Two bounds apply backpressure to the reader: a queue depth for small items, and a semaphore capping how many completed bundles may await dispatch. When either bound is hit the session loop stops draining the socket and backpressure reaches the peer through TCP — through the bounds, never by stalling the protocol loop.
+
+### Why the session loop must not block
+
+**On dispatch (inbound):** dispatch includes a storage write and can block on BPA ingress backpressure. If the reader awaited it inline, three things would stall behind a local disk write: acknowledgments of our own outbound transfers sitting in the TCP buffer, our outbound segment flow, and the remote sender's transfer cycle (which waits on our final ack and would otherwise include our storage latency on every bundle). With the ingest task, a pipelining peer can also stream its next transfer while the previous bundle is being stored.
+
+**On writes (outbound):** `Session::send_segment` reserves writer capacity inside a biased select that keeps processing inbound messages. Without this, two peers sending large transfers simultaneously can fill both directions' socket buffers and deadlock: each side blocked writing, neither side reading, keepalives stopped, no timeout running.
+
+### Transfer acknowledgment semantics
+
+The final XFER_ACK of a transfer is a transfer of responsibility, not a transport receipt. The sending BPA deletes its stored copy of a bundle when the CLA reports the transfer complete, so this implementation interprets RFC 9174 Section 5.2.3's "fully processed" strictly: the final segment is acknowledged only after `sink.dispatch()` has returned, which in hardy-bpa means the bundle is durably stored, dedup-registered, and checkpointed.
+
+Failure inverts safely. If dispatch fails, the ingest task exits without acknowledging, the session terminates, and the peer — which still owns the bundle — retransmits later. A crash after store but before ack produces a retransmission that the BPA's duplicate detection absorbs. The chain is at-least-once delivery with dedup, which composes to effectively exactly-once.
+
+The sender-side matcher's `XferAck` type is named for the RFC 9174 XFER_ACK message it anticipates: each entry is the expected shape of the next acknowledgment (echoed flags, cumulative length), and the queue is popped strictly FIFO against arrivals — the code deliberately keeps the RFC's message vocabulary rather than inventing its own.
+
+Acknowledgments are emitted in segment-arrival order, across transfer boundaries. Our own ack matcher pops expectations strictly FIFO and peers may be equally strict, so an ack for a later transfer's segment must not overtake the dispatch-gated final ack of an earlier transfer. The single FIFO ingest consumer provides this ordering by construction; it is the reason all acks route through the ingest queue rather than only final ones.
+
+At session teardown, every terminal path converges on one epilogue: the ingest queue is closed and drained (dispatching any fully received bundles and flushing their acks), then the writer is closed. A bundle received but not yet dispatched at teardown is still delivered to the BPA; if its ack no longer reaches the peer, the resulting retransmission is deduplicated.
+
 ## Session Lifecycle
 
 Following RFC 9174 Section 3.2, session establishment proceeds through:
@@ -104,7 +154,7 @@ Session termination follows RFC 9174 Section 6: send SESS_TERM, continue receivi
 
 Large bundles are segmented per RFC 9174 Section 5.2.2, respecting the peer's Segment MRU (maximum receive unit). Each segment receives an acknowledgement (XFER_ACK). Transfer IDs are per-session counters; if exhaustion is imminent, the session terminates with ResourceExhaustion rather than risk ID reuse.
 
-Peers may refuse transfers (XFER_REFUSE) for reasons including: already received (Completed), temporary overload (NoResources), or session ending (SessionTerminating). The implementation handles Retransmit by resending the bundle.
+Peers may refuse transfers (XFER_REFUSE) for reasons including: already received (Completed), temporary overload (NoResources), or session ending (SessionTerminating). The implementation handles Retransmit by resending the bundle. A refusal matched to the in-flight transfer clears every outstanding acknowledgment expectation for that transfer, because RFC 9174 Section 5.2.2 forbids further XFER_ACK messages for a refused transfer — without this, stale expectations would desynchronise the strict-FIFO ack matcher.
 
 ## Configuration
 
@@ -152,6 +202,9 @@ A standalone application linking this library with hardy-proto for gRPC connecti
 - **Mutual TLS (mTLS)**: Client certificate authentication is not yet implemented
 - **Session Extensions**: Currently rejects all critical extensions per RFC 9174 Section 4.8
 - **Transfer Extensions**: No transfer extensions have been published as of RFC 9174; support can be added when specifications emerge
+- **Outbound transfer pipelining**: A session completes each outbound transfer (fully acknowledged) before accepting the next, so per-peer goodput is bounded by one bundle per round trip. RFC 9174 Section 3.7 explicitly permits pipelining transfers without waiting for acknowledgments. A transfer window is blocked on the BPA egress-policy work supplying more than one in-flight forward per peer; the strict-FIFO ack matcher and ingest ordering already generalise across concurrent transfers
+- **Priority queues**: Exposing `Cla::queue_count()` priority queues, most likely mapped to parallel sessions per peer — RFC 9174 Section 3.2 names multiple sessions as the interleaving mechanism, and strict priority on a single session would conflict with the no-interleaving rule
+- **Uniform writer-task tracking**: The active-side writer task is spawned on the CLA task pool while the passive-side writer is not, so unregistration does not wait for passive writers to finish their final flush
 
 ## Standards Compliance
 
