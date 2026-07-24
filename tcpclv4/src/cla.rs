@@ -62,89 +62,143 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         _queue: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        mut bundle: hardy_bpa::Bytes,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle: hardy_bpa::Bytes,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("forward called before on_register!");
             hardy_bpa::cla::Error::Disconnected
         })?;
 
-        if let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr {
-            debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
+        let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
+            return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+        };
 
-            // We try this 5 times, because peers can close at random times
-            for _ in 0..5 {
-                // Use a pooled session, dialing a new connection when the
-                // pool has capacity and no session is free
-                bundle = match self
-                    .registry
-                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
-                    .await
-                {
-                    Ok(r) => {
-                        debug!("Bundle forwarded successfully using existing connection");
-                        return Ok(r);
-                    }
-                    Err(bundle) => {
-                        debug!("No free connections, will attempt to create new one");
-                        bundle
-                    }
-                };
+        debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
 
-                // One dial at a time per peer: concurrent forwards coalesce
-                // here rather than racing parallel dials, and the pool is
-                // re-checked under the lock — the previous holder's session
-                // may already be registered
-                let dial_lock = self.registry.dial_lock(*remote_addr);
-                let _dialing = dial_lock.lock().await;
-                bundle = match self
-                    .registry
-                    .forward(remote_addr, bundle, connection::OnBusy::Dial)
-                    .await
-                {
-                    Ok(r) => return Ok(r),
-                    Err(bundle) => bundle,
-                };
+        // Take ownership of the transfer and resolve it out-of-band: the
+        // session-side transmit-and-acknowledge cycle costs at least one
+        // round trip, and answering the offer first keeps the BPA's egress
+        // flowing while transfers overlap across pooled connections. The
+        // permit bounds accepted-but-unresolved transfers per peer; awaiting
+        // it withholds the verdict, which is the flow control back to the
+        // BPA.
+        let permits = self
+            .transfer_permits
+            .lock()
+            .entry(*remote_addr)
+            .or_insert_with(|| {
+                Arc::new(tokio::sync::Semaphore::new(self.max_outstanding_transfers))
+            })
+            .clone();
+        let permit = permits
+            .acquire_owned()
+            .await
+            .trace_expect("Transfer permit semaphore closed");
 
-                // Do a new active connect
-                let conn = connect::Connector {
-                    tasks: self.tasks.clone(),
-                    ctx: ctx.clone(),
-                };
-                match conn.connect(remote_addr).await {
-                    Ok(()) => {}
-                    Err(transport::Error::Timeout) if !self.registry.has_sessions(remote_addr) => {
-                        // Nothing to fall back to: keep dialing
-                    }
-                    Err(e) => {
-                        // The dial failed but a session may be up: fall back
-                        // to queueing on it rather than stalling the forward
-                        // behind further dial attempts. Silently dropped SYNs
-                        // (dial timeout) are the norm for firewalled peers
-                        // with asymmetric reachability that hold a session
-                        // open without being able to accept another.
-                        debug!(
-                            "Dial to {remote_addr} failed: {e:?}; falling back to a busy session"
-                        );
-                        return Ok(self
-                            .registry
-                            .forward(remote_addr, bundle, connection::OnBusy::Queue)
-                            .await
-                            .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
-                    }
+        let tasks = self.tasks.clone();
+        let bundle_id = bundle_id.clone();
+        let remote_addr = *remote_addr;
+        self.tasks.spawn(async move {
+            let _permit = permit;
+
+            let outcome = match transfer(tasks, &ctx, remote_addr, bundle).await {
+                hardy_bpa::cla::ForwardBundleResult::Sent => {
+                    hardy_bpa::cla::TransferOutcome::Delivered
                 }
+                hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
+                    hardy_bpa::cla::TransferOutcome::Failed
+                }
+                hardy_bpa::cla::ForwardBundleResult::Accepted => {
+                    // Sessions resolve transfers terminally
+                    warn!("Pooled session deferred a transfer; treating as failed");
+                    hardy_bpa::cla::TransferOutcome::Failed
+                }
+            };
+
+            if let Err(e) = ctx.sink.transfer_outcome(&bundle_id, outcome).await {
+                debug!("Failed to report transfer outcome: {e}");
             }
+        });
 
-            // Repeated dial timeouts: last try on a busy session before
-            // reporting the neighbour gone
-            return Ok(self
-                .registry
-                .forward(remote_addr, bundle, connection::OnBusy::Queue)
-                .await
-                .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour));
-        }
-
-        Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+        Ok(hardy_bpa::cla::ForwardBundleResult::Accepted)
     }
+}
+
+// Transmit a bundle to `remote_addr` over a pooled session, dialing new
+// connections as the pool allows, and return the terminal result of the
+// transfer: `Sent` only once the peer has fully acknowledged it.
+async fn transfer(
+    tasks: Arc<hardy_async::TaskPool>,
+    ctx: &context::ConnectionContext,
+    remote_addr: std::net::SocketAddr,
+    mut bundle: hardy_bpa::Bytes,
+) -> hardy_bpa::cla::ForwardBundleResult {
+    // We try this 5 times, because peers can close at random times
+    for _ in 0..5 {
+        // Use a pooled session, dialing a new connection when the
+        // pool has capacity and no session is free
+        bundle = match ctx
+            .registry
+            .forward(&remote_addr, bundle, connection::OnBusy::Dial)
+            .await
+        {
+            Ok(r) => {
+                debug!("Bundle forwarded successfully using existing connection");
+                return r;
+            }
+            Err(bundle) => {
+                debug!("No free connections, will attempt to create new one");
+                bundle
+            }
+        };
+
+        // One dial at a time per peer: concurrent forwards coalesce here
+        // rather than racing parallel dials, and the pool is re-checked
+        // under the lock — the previous holder's session may already be
+        // registered
+        let dial_lock = ctx.registry.dial_lock(remote_addr);
+        let _dialing = dial_lock.lock().await;
+        bundle = match ctx
+            .registry
+            .forward(&remote_addr, bundle, connection::OnBusy::Dial)
+            .await
+        {
+            Ok(r) => return r,
+            Err(bundle) => bundle,
+        };
+
+        // Do a new active connect
+        let conn = connect::Connector {
+            tasks: tasks.clone(),
+            ctx: ctx.clone(),
+        };
+        match conn.connect(&remote_addr).await {
+            Ok(()) => {}
+            Err(transport::Error::Timeout) if !ctx.registry.has_sessions(&remote_addr) => {
+                // Nothing to fall back to: keep dialing
+            }
+            Err(e) => {
+                // The dial failed but a session may be up: fall back to
+                // queueing on it rather than stalling the forward behind
+                // further dial attempts. Silently dropped SYNs (dial
+                // timeout) are the norm for firewalled peers with
+                // asymmetric reachability that hold a session open without
+                // being able to accept another.
+                debug!("Dial to {remote_addr} failed: {e:?}; falling back to a busy session");
+                return ctx
+                    .registry
+                    .forward(&remote_addr, bundle, connection::OnBusy::Queue)
+                    .await
+                    .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+            }
+        }
+    }
+
+    // Repeated dial timeouts: last try on a busy session before
+    // reporting the neighbour gone
+    ctx.registry
+        .forward(&remote_addr, bundle, connection::OnBusy::Queue)
+        .await
+        .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
 }
