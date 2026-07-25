@@ -6,7 +6,7 @@ use crate::storage::adu_reassembly::ReassemblyResult;
 
 impl Dispatcher {
     pub async fn reassemble(&self, mut bundle: Bundle) {
-        let (storage_name, data) = match self.store.adu_reassemble(&bundle).await {
+        let (storage_name, data, received_at) = match self.store.adu_reassemble(&bundle).await {
             ReassemblyResult::NotReady => {
                 let status = BundleStatus::AduFragment {
                     source: bundle.bundle.id.source.clone(),
@@ -19,7 +19,11 @@ impl Dispatcher {
                 debug!("Fragment reassembly failed for bundle {}", bundle.bundle.id);
                 return;
             }
-            ReassemblyResult::Done(storage_name, data) => (storage_name, data),
+            ReassemblyResult::Done {
+                storage_name,
+                data,
+                received_at,
+            } => (storage_name, data, received_at),
         };
 
         metrics::counter!("bpa.bundle.reassembled").increment(1);
@@ -28,7 +32,7 @@ impl Dispatcher {
             storage_name: Some(storage_name),
             status: BundleStatus::New,
             read_only: ReadOnlyMetadata {
-                received_at: bundle.metadata.read_only.received_at,
+                received_at,
                 ..Default::default()
             },
             ..Default::default()

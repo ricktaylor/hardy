@@ -20,7 +20,16 @@ pub enum ReassemblyResult {
     /// Caller should transition the bundle to `AduFragment` and wait.
     NotReady,
     /// All fragments arrived and the ADU was successfully reassembled.
-    Done(Arc<str>, Bytes),
+    /// `received_at` is the earliest arrival time across the fragment set: the
+    /// ADU has been arriving since its first fragment, and the ingress gate's
+    /// expiry estimate for no-clock sources (creation = received_at − age)
+    /// under-ages the bundle by the whole reassembly window if the reassembled
+    /// bundle carries a later fragment's arrival time.
+    Done {
+        storage_name: Arc<str>,
+        data: Bytes,
+        received_at: OffsetDateTime,
+    },
     /// All fragments arrived but reassembly failed (corrupt/misaligned data).
     /// Fragment data has already been deleted; caller should drop the trigger bundle.
     Failed,
@@ -51,10 +60,12 @@ impl Store {
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&status)).decrement(1.0);
         }
 
-        // TODO: It would be good to capture the aggregate received at value across all the fragments, and use that as the received_at for the reassembled bundle
-
         match result {
-            Some((storage_name, data)) => ReassemblyResult::Done(storage_name, data),
+            Some((storage_name, data)) => ReassemblyResult::Done {
+                storage_name,
+                data,
+                received_at: fragments.received_at,
+            },
             None => ReassemblyResult::Failed,
         }
     }
