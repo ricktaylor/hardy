@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.
 
 ### Fixed
+- Overlapping service-registration polls (a re-registering service, or a poll racing an application cancel) can no longer dispatch — and potentially deliver — the same bundle twice: the poll claims each bundle out of `WaitingForService` with a status-conditioned swap.
 - A duplicate bundle copy delivered by the hybrid channels' at-least-once storage recovery can no longer re-enter circulation or produce a second CLA offer: a queue move (`storage::channel::Sender::send`) is now a status-conditioned swap from the sender's snapshot, and forwarding claims the bundle out of its peer queue the same way before offering it — a duplicate dispatch copy could previously stomp an in-flight `ForwardAckPending` back to `ForwardPending`, re-arming the peer queue mid-transfer, and a duplicate egress copy could offer the same bundle twice.
 
 ## [0.2.0]

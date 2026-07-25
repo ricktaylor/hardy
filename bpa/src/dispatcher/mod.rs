@@ -171,10 +171,18 @@ impl Dispatcher {
             },
             async {
                 while let Ok(mut bundle) = rx.recv().await {
-                    dispatcher
+                    // Claim the bundle out of WaitingForService: overlapping
+                    // polls (a re-registering service) or a concurrent cancel
+                    // must not dispatch — and potentially deliver — the same
+                    // bundle twice
+                    if !dispatcher
                         .store
-                        .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                        .await;
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                        .await
+                    {
+                        debug!("Service-waiting bundle already claimed, skipping");
+                        continue;
+                    }
                     dispatcher.dispatch_bundle(bundle).await;
                 }
             }
