@@ -162,6 +162,23 @@ impl Dispatcher {
             return None;
         }
 
+        // Reception happened, so report it (when requested) before the
+        // duplicate check: RFC 9171 §5.6 reports on reception, and dedup
+        // belongs to the later dispatch step — a replayed or duplicate bundle
+        // is still reported as received (a sender may repeat a bundle
+        // deliberately, probing for status-report replies).
+        self.report_bundle_reception(
+            &bundle,
+            if let Some(reason) = &reason {
+                *reason
+            } else if report_unsupported {
+                ReasonCode::BlockUnsupported
+            } else {
+                ReasonCode::NoAdditionalInformation
+            },
+        )
+        .await;
+
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
@@ -174,19 +191,6 @@ impl Dispatcher {
             }
             return None;
         }
-
-        // Report we have received the bundle
-        self.report_bundle_reception(
-            &bundle,
-            if let Some(reason) = &reason {
-                *reason
-            } else if report_unsupported {
-                ReasonCode::BlockUnsupported
-            } else {
-                ReasonCode::NoAdditionalInformation
-            },
-        )
-        .await;
 
         if let Some(reason) = &reason {
             // Invalid bundle — never entered the pipeline, just clean up
