@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
-- `max-outstanding-transfers` (default: 16) bounds the transfers accepted but not yet resolved with an outcome, per peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Per-peer scoping keeps one unreachable peer's stalled dials from starving admission for healthy peers.
+- `max-outstanding-transfers` (default: 16, zero rejected at configuration parse) bounds the transfers accepted but not yet resolved with an outcome, per peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Per-peer scoping keeps one unreachable peer's stalled dials from starving admission for healthy peers.
 
 ### Changed
 - Forwards resolve out-of-band per the `hardy-bpa` deferred transfer-outcome contract: `forward` answers `Accepted` once the transfer passes admission, the transfer runs to its terminal state on pooled sessions, and the outcome — `Delivered` on full acknowledgment, `Failed` otherwise — is reported via `Sink::transfer_outcome`. Transfers overlap across pooled connections instead of serialising behind a held forward call; completion order across connections is not guaranteed.

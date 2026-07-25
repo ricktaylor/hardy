@@ -89,7 +89,7 @@ pub struct Cla {
     // entry is a single semaphore.
     transfer_permits:
         hardy_async::sync::spin::Mutex<HashMap<SocketAddr, Arc<tokio::sync::Semaphore>>>,
-    max_outstanding_transfers: usize,
+    max_outstanding_transfers: core::num::NonZeroUsize,
 
     // Late-init from registration (single atomic)
     inner: Once<Inner>,
@@ -163,7 +163,7 @@ impl Cla {
             )),
             session_cancel_token: tokio_util::sync::CancellationToken::new(),
             transfer_permits: hardy_async::sync::spin::Mutex::new(HashMap::new()),
-            max_outstanding_transfers: config.max_outstanding_transfers.max(1),
+            max_outstanding_transfers: config.max_outstanding_transfers,
 
             // Late-init
             inner: Once::new(),

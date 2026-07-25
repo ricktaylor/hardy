@@ -88,7 +88,9 @@ impl hardy_bpa::cla::Cla for Cla {
             .lock()
             .entry(*remote_addr)
             .or_insert_with(|| {
-                Arc::new(tokio::sync::Semaphore::new(self.max_outstanding_transfers))
+                Arc::new(tokio::sync::Semaphore::new(
+                    self.max_outstanding_transfers.get(),
+                ))
             })
             .clone();
         let permit = permits
@@ -102,7 +104,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.spawn(async move {
             let _permit = permit;
 
-            let outcome = match transfer(tasks, &ctx, remote_addr, bundle).await {
+            let outcome = match transmit(tasks, &ctx, remote_addr, bundle).await {
                 hardy_bpa::cla::ForwardBundleResult::Sent => {
                     hardy_bpa::cla::TransferOutcome::Delivered
                 }
@@ -128,7 +130,7 @@ impl hardy_bpa::cla::Cla for Cla {
 // Transmit a bundle to `remote_addr` over a pooled session, dialing new
 // connections as the pool allows, and return the terminal result of the
 // transfer: `Sent` only once the peer has fully acknowledged it.
-async fn transfer(
+async fn transmit(
     tasks: Arc<hardy_async::TaskPool>,
     ctx: &context::ConnectionContext,
     remote_addr: std::net::SocketAddr,
