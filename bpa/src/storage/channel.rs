@@ -9,12 +9,16 @@
 //!
 //! This channel does **not** persist bundles. The caller is responsible for
 //! having already inserted the bundle (blob + metadata) into the storage
-//! subsystem before invoking [`Sender::send`]; the channel only updates the
-//! metadata `status` column to match its configured target status, via
-//! [`Store::update_status`](super::store::Store::update_status). That update
-//! is fail-stop: on storage error the process aborts via `trace_expect`, so
-//! by the time a bundle is offered to the in-memory channel its status is
-//! durably persisted.
+//! subsystem before invoking [`Sender::send`]; the channel only moves the
+//! metadata `status` column to its configured target status, via the
+//! conditional [`Store::swap_status`](super::store::Store::swap_status) from
+//! the caller's snapshot. The swap is fail-stop: on storage error the
+//! process aborts via `trace_expect`, so by the time a bundle is offered to
+//! the in-memory channel its status is durably persisted. A lost swap drops
+//! the send: the channels themselves deliver at-least-once, so a duplicate
+//! copy of a bundle that has already moved on (claimed in-flight by the
+//! egress path, swept, or resolved) must lose its move here rather than
+//! stomp the live assignment and re-enter circulation.
 //!
 //! Given that precondition, the channel guarantees **at-least-once**
 //! delivery from `Sender::send` to `Receiver::recv`:
@@ -183,9 +187,17 @@ impl Sender {
     /// the caller's perspective — the bundle is in storage and will be
     /// drained by the poller.
     pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
-        self.store
-            .update_status(&mut bundle, &self.shared.status)
-            .await;
+        // Conditional move into this queue from the sender's snapshot: a
+        // duplicate copy of a bundle that has already moved on must lose
+        // here, not stomp the live assignment (see the delivery contract)
+        if !self
+            .store
+            .swap_status(&mut bundle, &self.shared.status)
+            .await
+        {
+            debug!("Bundle already moved on, dropping duplicate send");
+            return Ok(());
+        }
 
         // State can change between load and CAS - this is fine, CAS handles races
         let state = self.shared.load_state(Ordering::Acquire);
@@ -454,6 +466,14 @@ mod tests {
         queue: None,
     };
 
+    // The delivery contract requires the bundle to already exist in metadata
+    // storage before it is offered to the channel; insert it with the
+    // caller-side snapshot status, as every production sender does.
+    async fn send(tx: &Sender, bundle: Bundle) -> Result<(), SendError> {
+        tx.store.insert_metadata(&bundle).await;
+        tx.send(bundle).await
+    }
+
     // Poll until the channel reaches `target`, or panic after a generous
     // deadline. Replaces fixed sleeps so the tests stay robust on slow CI.
     async fn wait_for_state(tx: &Sender, target: ChannelState) {
@@ -497,11 +517,11 @@ mod tests {
         wait_for_state(&tx, ChannelState::Open).await;
 
         // Fill channel to capacity
-        tx.send(make_bundle(1)).await.unwrap();
-        tx.send(make_bundle(2)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(2)).await.unwrap();
 
         // Channel is full — next send triggers Draining
-        tx.send(make_bundle(3)).await.unwrap();
+        send(&tx, make_bundle(3)).await.unwrap();
 
         let state = tx.state();
         assert!(
@@ -529,12 +549,12 @@ mod tests {
         wait_for_state(&tx, ChannelState::Open).await;
 
         // Fill + overflow to enter Draining
-        tx.send(make_bundle(1)).await.unwrap();
-        tx.send(make_bundle(2)).await.unwrap();
-        tx.send(make_bundle(3)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(2)).await.unwrap();
+        send(&tx, make_bundle(3)).await.unwrap();
 
         // Another send while Draining should push to Congested
-        tx.send(make_bundle(4)).await.unwrap();
+        send(&tx, make_bundle(4)).await.unwrap();
 
         let state = tx.state();
         assert!(
@@ -561,7 +581,7 @@ mod tests {
 
         // Now send enough to overflow: cap=16, send 17
         for i in 1..=17u32 {
-            tx.send(make_bundle(i)).await.unwrap();
+            send(&tx, make_bundle(i)).await.unwrap();
         }
 
         // Drain ALL bundles (unique + duplicates) and tombstone each.
@@ -614,8 +634,8 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Send a valid bundle and an expired one
-        tx.send(make_bundle(1)).await.unwrap();
-        tx.send(make_expired_bundle(2)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
+        send(&tx, make_expired_bundle(2)).await.unwrap();
 
         // The valid bundle should arrive on the fast path
         let received = rx.recv().await;
@@ -647,7 +667,7 @@ mod tests {
         // state out of Closing, so the assertion needs no wait.
         assert_eq!(tx.state(), ChannelState::Closing);
 
-        let result = tx.send(make_bundle(1)).await;
+        let result = send(&tx, make_bundle(1)).await;
         assert!(result.is_err(), "Send after close should fail");
 
         store.shutdown().await;
@@ -661,9 +681,9 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Send 3 bundles — 2 fit in channel, 3rd overflows to storage
-        tx.send(make_bundle(1)).await.unwrap();
-        tx.send(make_bundle(2)).await.unwrap();
-        tx.send(make_bundle(3)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(2)).await.unwrap();
+        send(&tx, make_bundle(3)).await.unwrap();
 
         // Receive all 3, tombstoning each to prevent re-delivery.
         let mut seen = HashSet::new();
@@ -700,7 +720,7 @@ mod tests {
 
         let total = 4u32;
         for i in 1..=total {
-            tx.send(make_bundle(i)).await.unwrap();
+            send(&tx, make_bundle(i)).await.unwrap();
         }
 
         // Consume bundles and tombstone each so the poller won't re-send.
@@ -740,8 +760,8 @@ mod tests {
         let src1: hardy_bpv7::eid::Eid = "ipn:0.1.1".parse().unwrap();
         let src2: hardy_bpv7::eid::Eid = "ipn:0.2.1".parse().unwrap();
 
-        tx.send(make_bundle(1)).await.unwrap();
-        tx.send(make_bundle(2)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(2)).await.unwrap();
 
         // Collect unique bundles until we've seen both
         let mut seen = HashSet::new();
@@ -772,7 +792,7 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Send a bundle — this updates its status to ForwardPending{peer:1}
-        tx.send(make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
 
         // The bundle should arrive normally; verify it has the correct status
         let b = rx.recv().await.unwrap();
@@ -790,7 +810,7 @@ mod tests {
         let cap = 4;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        tx.send(make_bundle(1)).await.unwrap();
+        send(&tx, make_bundle(1)).await.unwrap();
         tx.close();
 
         // Drain until we see Disconnected or timeout

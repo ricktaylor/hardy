@@ -1027,12 +1027,6 @@ async fn deferring_setup(
         .await
         .unwrap();
 
-    // The egress channel's poller does an initial storage sweep when the peer
-    // is created (see storage::channel's at-least-once delivery contract);
-    // let it complete before any bundle is sent so it cannot recover a second
-    // copy of the first bundle and duplicate the offer.
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
     (bpa, cla, offers_rx)
 }
 

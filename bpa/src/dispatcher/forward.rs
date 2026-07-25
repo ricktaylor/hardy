@@ -15,19 +15,27 @@ impl Dispatcher {
             return;
         };
 
-        // Record the ownership hand-off before the in-memory rewrite below and
-        // before offering the bundle: a deferred outcome can arrive on another
-        // task the instant the CLA accepts, and transfer_outcome() only
-        // honours bundles already in ForwardAckPending. The persist must
-        // happen while the metadata still indexes the stored (un-rewritten)
-        // data. This also distinguishes an in-flight transfer from a queued
-        // one, so reset_peer_queue() no longer races the offer.
-        self.store
-            .update_status(
+        // Claim the bundle out of its peer queue before the in-memory rewrite
+        // below and before offering it. The claim must be a conditional swap:
+        // the egress channel delivers at-least-once, so a duplicate copy
+        // recovered by the storage poller must lose here rather than produce
+        // a second offer. It must happen first: a deferred outcome can arrive
+        // on another task the instant the CLA accepts, and transfer_outcome()
+        // only honours bundles already in ForwardAckPending, while the
+        // persist needs the metadata still indexing the stored (un-rewritten)
+        // data. The new status also distinguishes an in-flight transfer from
+        // a queued one, so reset_peer_queue() no longer races the offer.
+        if !self
+            .store
+            .swap_status(
                 &mut bundle,
                 &bundle::BundleStatus::ForwardAckPending { peer },
             )
-            .await;
+            .await
+        {
+            debug!("Bundle already claimed for forwarding or swept, skipping offer");
+            return;
+        }
 
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
