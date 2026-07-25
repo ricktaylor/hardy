@@ -73,6 +73,16 @@ impl Inner {
     // write time; a tombstone that outlives its bundle's expiry in place
     // simply ages out of the LRU normally.
     fn upsert(&mut self, key: Id, value: Entry) {
+        // Expiry wins: a live entry never replaces a tombstone. Without this,
+        // an unconditional metadata write racing a deletion (a transfer
+        // outcome or a rewrite against the reaper) re-installs the deleted
+        // bundle.
+        if matches!(&value, Entry::Live(_))
+            && matches!(self.entries.peek(&key), Some(Entry::Tombstone(_)))
+        {
+            return;
+        }
+
         let demote = match &value {
             Entry::Live(_) => {
                 self.live += 1;
@@ -265,6 +275,28 @@ impl MetadataStorage for MetadataMemStorage {
 
     async fn update_status(&self, bundle: &Bundle) -> Result<()> {
         self.replace(bundle).await
+    }
+
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> Result<bool> {
+        let mut inner = self.inner.lock();
+        // peek_mut leaves the LRU order untouched on a miss, so a lost swap
+        // does not promote a tombstone off the LRU tail
+        let swapped = match inner.entries.peek_mut(bundle_id) {
+            Some(Entry::Live(bundle)) if bundle.metadata.status == *expected => {
+                bundle.metadata.status = status.clone();
+                true
+            }
+            _ => false,
+        };
+        if swapped {
+            inner.entries.promote(bundle_id);
+        }
+        Ok(swapped)
     }
 
     async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
@@ -658,5 +690,92 @@ mod tests {
         // 17 live < 18 exits the episode
         storage.tombstone(&bundles[1].bundle.id).await.unwrap();
         assert!(!storage.near_capacity());
+    }
+
+    // A status swap applies only when the current status matches the caller's
+    // expectation, and never against a tombstone: the arbiter for outcome
+    // resolution racing the peer sweeps and the expiry reaper.
+    #[tokio::test]
+    async fn swap_status_is_conditional() {
+        let storage = MetadataMemStorage::new(&Config::default());
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong expectation: no swap
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::Waiting,
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // Matching expectation: swap applies
+        assert!(
+            storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .get(&bundle.bundle.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .metadata
+                .status,
+            BundleStatus::Dispatching
+        );
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // A deleted bundle swaps nothing
+        storage.tombstone(&bundle.bundle.id).await.unwrap();
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::Dispatching,
+                    &BundleStatus::Waiting,
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    // Expiry wins: an unconditional metadata write arriving after deletion
+    // must not resurrect the bundle over its tombstone.
+    #[tokio::test]
+    async fn tombstone_is_never_downgraded() {
+        let storage = MetadataMemStorage::new(&Config::default());
+        let mut bundle = make_bundle(1);
+        assert!(storage.insert(&bundle).await.unwrap());
+        storage.tombstone(&bundle.bundle.id).await.unwrap();
+
+        bundle.metadata.status = BundleStatus::Dispatching;
+        storage.update_status(&bundle).await.unwrap();
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+
+        storage.replace(&bundle).await.unwrap();
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
     }
 }

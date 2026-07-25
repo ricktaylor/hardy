@@ -327,6 +327,57 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
+    async fn swap_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let bundle_key = bundle_id.to_key();
+        let expected = status::StatusFields::try_from(expected)?;
+        let sf = status::StatusFields::try_from(status)?;
+
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status      = $2,
+                 peer_id     = $3,
+                 queue_id    = $4,
+                 adu_source  = $5,
+                 adu_ts_ms   = $6,
+                 adu_ts_seq  = $7,
+                 service_eid = $8
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
+               AND status = $9
+               AND peer_id     IS NOT DISTINCT FROM $10
+               AND queue_id    IS NOT DISTINCT FROM $11
+               AND adu_source  IS NOT DISTINCT FROM $12
+               AND adu_ts_ms   IS NOT DISTINCT FROM $13
+               AND adu_ts_seq  IS NOT DISTINCT FROM $14
+               AND service_eid IS NOT DISTINCT FROM $15",
+        )
+        .bind(bundle_key)
+        .bind(sf.status)
+        .bind(sf.peer_id)
+        .bind(sf.queue_id)
+        .bind(sf.adu_source)
+        .bind(sf.adu_ts_ms)
+        .bind(sf.adu_ts_seq)
+        .bind(sf.service_eid)
+        .bind(expected.status)
+        .bind(expected.peer_id)
+        .bind(expected.queue_id)
+        .bind(expected.adu_source)
+        .bind(expected.adu_ts_ms)
+        .bind(expected.adu_ts_seq)
+        .bind(expected.service_eid)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows == 1)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.bundle.id.to_key();

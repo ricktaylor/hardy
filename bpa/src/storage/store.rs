@@ -205,6 +205,27 @@ impl Store {
         }
     }
 
+    // Compare-and-swap from the caller's snapshot status: the arbiter for
+    // writers racing the peer sweeps, the expiry reaper, and each other.
+    // Gauges move only when the swap wins.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn swap_status(&self, bundle: &mut Bundle, status: &BundleStatus) -> bool {
+        let swapped = self
+            .metadata_storage
+            .swap_status(&bundle.bundle.id, &bundle.metadata.status, status)
+            .await
+            .trace_expect("Failed to swap bundle status");
+
+        if swapped {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
+
+            bundle.metadata.status = status.clone();
+        }
+
+        swapped
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) {
         self.metadata_storage

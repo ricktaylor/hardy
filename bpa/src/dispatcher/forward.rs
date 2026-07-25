@@ -116,7 +116,8 @@ impl Dispatcher {
     // previously answered `Accepted`. The status check is the stale-outcome
     // guard: anything not currently ForwardAckPending via a peer of the
     // reporting CLA — already resolved, expired, another CLA's transfer — is
-    // logged and dropped.
+    // logged and dropped. The snapshot checks only filter; the
+    // status-conditioned swap below is the authoritative arbiter.
     #[cfg_attr(feature = "instrument", instrument(skip(self, cla), fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
@@ -142,6 +143,18 @@ impl Dispatcher {
             return;
         }
 
+        // Claim the bundle: the snapshot checks above race the peer sweep,
+        // the expiry reaper, and duplicate outcomes, and losing the swap
+        // means one of them resolved the bundle first.
+        if !self
+            .store
+            .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+            .await
+        {
+            debug!("Transfer outcome for bundle {bundle_id} lost the resolution race, ignored");
+            return;
+        }
+
         match outcome {
             cla::TransferOutcome::Delivered => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
@@ -160,9 +173,6 @@ impl Dispatcher {
                 // semantic is "nowhere to go") or resetting the whole peer
                 // queue (link-scoped evidence). Dispatch parks the bundle in
                 // Waiting itself if no route remains.
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                    .await;
                 self.dispatch_bundle(bundle).await
             }
         }

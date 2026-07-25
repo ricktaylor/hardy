@@ -91,12 +91,15 @@ trait MetadataStorage {
     // --- Queue operations (queue ID is u32) ---
     async fn enqueue(&self, id: &Bundle::Id, queue: u32, priority: u32);
     async fn dequeue(&self, queue: u32) -> Option<Bundle>;
+    async fn requeue(&self, id: &Bundle::Id, from: u32, to: u32) -> bool;
     async fn move_queue(&self, from: u32, to: u32) -> u64;
     async fn drain(&self, queue: u32, tx: Sender<Bundle>);
 }
 ```
 
 Bundle CRUD owns the data, keyed by `Bundle::Id`. Queue operations own the ordering and assignment, keyed by a `u32` queue ID. The queue ID is opaque to the storage implementation — all semantics (which queue is Dispatch, which are ephemeral, the durability threshold) live in the BPA layer above. `dequeue` returns the full `Bundle` (which contains its own ID) to avoid a separate round-trip. This replaces the current per-status query methods with generic queue primitives.
+
+`requeue` is the per-bundle conditional form of `move_queue`: it moves `id` from `from` to `to` only if the bundle is still assigned to `from`, returning whether it moved. It is the arbiter for resolutions that race the sweeps and the reaper — a deferred transfer outcome claims its bundle out of the parking queue with it, and a lost claim means the bundle was already swept, expired, or resolved by a duplicate. Today's status-based `MetadataStorage::swap_status` is this primitive expressed against the current status-as-queue model and maps onto `requeue` directly.
 
 The pull-based `dequeue` also subsumes the interim poller in `storage::channel`. Today the hybrid channel bridges the push-based `poll_pending(&dyn Sender)` to its in-memory buffer with an intermediate channel and a forwarding task spawned per drain cycle, plus a cancel-token race so a send parked on a full buffer cannot stall shutdown. Under `dequeue` the poller becomes a plain pull loop — `while let Some(bundle) = dequeue(queue).await { ... }` — where each await is a clean cancellation point, eliminating the per-cycle channel allocation, the spawned task, and the cancel race together. This scaffolding is intentionally left in place until the redesign lands rather than optimised in the interim.
 
@@ -167,7 +170,7 @@ Created at BPA construction time via `QueueFactory::create(DurableQueue)`, which
 **Ephemeral queues** (ID >= threshold) — allocated dynamically:
 
 - Per-peer egress queues, active, priority-ordered. Created when a peer connects on a CLA, destroyed when the peer disconnects
-- Per-peer transfer-ack parking queues ([design.md](design.md#deferred-cla-transfer-outcomes)) — bundles accepted by a deferred-outcome CLA, held until the out-of-band outcome arrives. No receiver: resolved by keyed bundle lookup (delivered → delete; failed → enqueue to Dispatch), swept to Waiting on peer loss and restart like any ephemeral queue
+- Per-peer transfer-ack parking queues ([design.md](design.md#deferred-cla-transfer-outcomes)) — bundles accepted by a deferred-outcome CLA, held until the out-of-band outcome arrives. No receiver: resolved by a conditional `requeue` out of the parking queue (delivered → delete; failed → to Dispatch), so an outcome racing the peer-loss sweep or the reaper loses the claim; swept to Waiting on peer loss and restart like any ephemeral queue
 
 Allocated via `QueueFactory::allocate()`, which returns `(Sender, Receiver, u32)` — the `u32` is the assigned queue ID. The factory manages IDs above the durable threshold:
 

@@ -61,6 +61,22 @@ pub trait MetadataStorage: Send + Sync {
     /// for pure state-machine transitions where no other metadata has changed.
     async fn update_status(&self, bundle: &Bundle) -> Result<()>;
 
+    /// Updates the status of the bundle with the given `bundle_id` only if
+    /// its current status equals `expected`, returning whether the swap was
+    /// applied.
+    ///
+    /// The compare-and-swap must be atomic with respect to concurrent status
+    /// writes and `tombstone`: callers use it to arbitrate between an
+    /// out-of-band event (a CLA transfer outcome), the peer-loss sweeps, and
+    /// bundle expiry. A missing or tombstoned bundle swaps nothing and
+    /// returns `false`.
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> Result<bool>;
+
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     ///
     /// A tombstone marks the bundle as deleted, preventing it from being

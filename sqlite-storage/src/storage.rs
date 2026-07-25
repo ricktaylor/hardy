@@ -369,6 +369,38 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    async fn swap_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let (expected_code, expected_param1, expected_param2, expected_param3) =
+            from_status(expected);
+        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let id = serde_json::to_vec(bundle_id)?;
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 \
+                 WHERE bundle_id = ?1 AND status_code = ?6 AND status_param1 IS ?7 AND status_param2 IS ?8 AND status_param3 IS ?9",
+            )?
+            .execute((
+                id,
+                status_code,
+                status_param1,
+                status_param2,
+                status_param3,
+                expected_code,
+                expected_param1,
+                expected_param2,
+                expected_param3,
+            ))
+            .map_err(Into::into)
+        })
+        .await
+        .map(|rows| rows == 1)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_vec(bundle_id)?;
@@ -904,6 +936,77 @@ mod tests {
         assert_eq!(
             got.metadata.status,
             BundleStatus::ForwardAckPending { peer: 8 }
+        );
+    }
+
+    // swap_status applies only when every status column matches the expected
+    // status, making it the arbiter for outcome-resolution races.
+    #[tokio::test]
+    async fn test_swap_status_is_conditional() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong peer in the expectation: no swap
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 8 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // Matching expectation: swap applies
+        assert!(
+            storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .get(&bundle.bundle.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .metadata
+                .status,
+            BundleStatus::Dispatching
+        );
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // A deleted bundle swaps nothing
+        storage.tombstone(&bundle.bundle.id).await.unwrap();
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::Dispatching,
+                    &BundleStatus::Waiting,
+                )
+                .await
+                .unwrap()
         );
     }
 
