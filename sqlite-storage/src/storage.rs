@@ -402,6 +402,32 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    async fn tombstone_if(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let (expected_code, expected_param1, expected_param2, expected_param3) =
+            from_status(expected);
+        let id = serde_json::to_vec(bundle_id)?;
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL \
+                 WHERE bundle_id = ?1 AND status_code = ?2 AND status_param1 IS ?3 AND status_param2 IS ?4 AND status_param3 IS ?5",
+            )?
+            .execute((
+                id,
+                expected_code,
+                expected_param1,
+                expected_param2,
+                expected_param3,
+            ))
+            .map_err(Into::into)
+        })
+        .await
+        .map(|rows| rows == 1)
+    }
+
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let id = serde_json::to_vec(bundle_id)?;
         if self
@@ -1004,6 +1030,53 @@ mod tests {
                     &bundle.bundle.id,
                     &BundleStatus::Dispatching,
                     &BundleStatus::Waiting,
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    // tombstone_if removes the bundle only when every status column matches
+    // the expected status: the terminal arbiter for outcome-resolution races.
+    #[tokio::test]
+    async fn test_tombstone_if_is_conditional() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong peer in the expectation: not tombstoned
+        assert!(
+            !storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 8 }
+                )
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_some());
+
+        // Matching expectation: tombstoned
+        assert!(
+            storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 }
+                )
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 }
                 )
                 .await
                 .unwrap()

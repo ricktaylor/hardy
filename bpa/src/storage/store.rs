@@ -226,6 +226,20 @@ impl Store {
         swapped
     }
 
+    // Conditional, terminal form of swap_status: tombstones the bundle's
+    // metadata only if its status still matches the caller's snapshot. The
+    // arbiter for resolutions whose action is the deletion itself — the
+    // bundle never transits a status another queue's poller could recover.
+    // The caller owns the follow-up data deletion and gauge accounting
+    // (delete_bundle tolerates the already-present tombstone).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn tombstone_if(&self, bundle: &Bundle) -> bool {
+        self.metadata_storage
+            .tombstone_if(&bundle.bundle.id, &bundle.metadata.status)
+            .await
+            .trace_expect("Failed to tombstone bundle metadata")
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) {
         self.metadata_storage

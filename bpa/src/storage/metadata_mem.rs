@@ -299,6 +299,21 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(swapped)
     }
 
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> Result<bool> {
+        let edge = {
+            let mut inner = self.inner.lock();
+            // peek() leaves the LRU order untouched on a miss
+            let expiry = match inner.entries.peek(bundle_id) {
+                Some(Entry::Live(bundle)) if bundle.metadata.status == *expected => bundle.expiry(),
+                _ => return Ok(false),
+            };
+            inner.upsert(bundle_id.clone(), Entry::Tombstone(expiry));
+            inner.check_watermark(self.high_watermark, self.low_watermark)
+        };
+        self.log_edge(edge);
+        Ok(true)
+    }
+
     async fn tombstone(&self, bundle_id: &Id) -> Result<()> {
         let edge = {
             let mut inner = self.inner.lock();
@@ -756,6 +771,49 @@ mod tests {
                     &bundle.bundle.id,
                     &BundleStatus::Dispatching,
                     &BundleStatus::Waiting,
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    // A conditional tombstone applies only when the current status matches
+    // the caller's expectation: the arbiter for resolutions whose action is
+    // the deletion itself.
+    #[tokio::test]
+    async fn tombstone_if_is_conditional() {
+        let storage = MetadataMemStorage::new(&Config::default());
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong expectation: not tombstoned
+        assert!(
+            !storage
+                .tombstone_if(&bundle.bundle.id, &BundleStatus::Waiting)
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_some());
+
+        // Matching expectation: tombstoned
+        assert!(
+            storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                )
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
                 )
                 .await
                 .unwrap()

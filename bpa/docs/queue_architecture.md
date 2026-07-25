@@ -170,7 +170,7 @@ Created at BPA construction time via `QueueFactory::create(DurableQueue)`, which
 **Ephemeral queues** (ID >= threshold) — allocated dynamically:
 
 - Per-peer egress queues, active, priority-ordered. Created when a peer connects on a CLA, destroyed when the peer disconnects
-- Per-peer transfer-ack parking queues ([design.md](design.md#deferred-cla-transfer-outcomes)) — bundles accepted by a deferred-outcome CLA, held until the out-of-band outcome arrives. No receiver: resolved by a conditional `requeue` out of the parking queue (delivered → delete; failed → to Dispatch), so an outcome racing the peer-loss sweep or the reaper loses the claim; swept to Waiting on peer loss and restart like any ephemeral queue
+- Per-peer transfer-ack parking queues ([design.md](design.md#deferred-cla-transfer-outcomes)) — bundles accepted by a deferred-outcome CLA, held until the out-of-band outcome arrives. No receiver: resolved by a conditional move out of the parking queue (delivered → into the Tombstone queue; failed → `requeue` to Dispatch), so an outcome racing the peer-loss sweep or the reaper loses the claim; swept to Waiting on peer loss and restart like any ephemeral queue
 
 Allocated via `QueueFactory::allocate()`, which returns `(Sender, Receiver, u32)` — the `u32` is the assigned queue ID. The factory manages IDs above the durable threshold:
 

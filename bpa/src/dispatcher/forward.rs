@@ -144,19 +144,21 @@ impl Dispatcher {
         }
 
         // Claim the bundle: the snapshot checks above race the peer sweep,
-        // the expiry reaper, and duplicate outcomes, and losing the swap
+        // the expiry reaper, and duplicate outcomes, and losing the claim
         // means one of them resolved the bundle first.
-        if !self
-            .store
-            .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-            .await
-        {
-            debug!("Transfer outcome for bundle {bundle_id} lost the resolution race, ignored");
-            return;
-        }
-
         match outcome {
             cla::TransferOutcome::Delivered => {
+                // The terminal claim is a conditional tombstone: a status hop
+                // through Dispatching here is recoverable by the dispatch
+                // queue's storage poller mid-resolution, driving a duplicate
+                // transmission after delivery.
+                if !self.store.tombstone_if(&bundle).await {
+                    debug!(
+                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
+                    );
+                    return;
+                }
+
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
 
@@ -166,6 +168,17 @@ impl Dispatcher {
                 self.delete_bundle(bundle).await
             }
             cla::TransferOutcome::Failed => {
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
+                    );
+                    return;
+                }
+
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
 
                 // Bundle-scoped evidence about a single transfer: re-run the

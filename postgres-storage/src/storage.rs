@@ -414,6 +414,41 @@ impl storage::MetadataStorage for Storage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
+    async fn tombstone_if(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let bundle_key = bundle_id.to_key();
+        let expected = status::StatusFields::try_from(expected)?;
+
+        let rows = sqlx::query(
+            "DELETE FROM metadata
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
+               AND status = $2
+               AND peer_id     IS NOT DISTINCT FROM $3
+               AND queue_id    IS NOT DISTINCT FROM $4
+               AND adu_source  IS NOT DISTINCT FROM $5
+               AND adu_ts_ms   IS NOT DISTINCT FROM $6
+               AND adu_ts_seq  IS NOT DISTINCT FROM $7
+               AND service_eid IS NOT DISTINCT FROM $8",
+        )
+        .bind(bundle_key)
+        .bind(expected.status)
+        .bind(expected.peer_id)
+        .bind(expected.queue_id)
+        .bind(expected.adu_source)
+        .bind(expected.adu_ts_ms)
+        .bind(expected.adu_ts_seq)
+        .bind(expected.service_eid)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows == 1)
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn tombstone(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<()> {
         let bundle_key = bundle_id.to_key();
 

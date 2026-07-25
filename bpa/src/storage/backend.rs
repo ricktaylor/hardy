@@ -77,6 +77,16 @@ pub trait MetadataStorage: Send + Sync {
         status: &BundleStatus,
     ) -> Result<bool>;
 
+    /// Removes the metadata for the bundle with the given `bundle_id` and
+    /// leaves a tombstone, only if its current status equals `expected`,
+    /// returning whether the bundle was tombstoned.
+    ///
+    /// The conditional, terminal form of `swap_status`, with the same
+    /// atomicity requirement: callers use it when the resolution of a race is
+    /// the deletion itself, so the bundle never transits an intermediate
+    /// status that another queue's poller could recover.
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> Result<bool>;
+
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     ///
     /// A tombstone marks the bundle as deleted, preventing it from being
