@@ -59,6 +59,10 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Cheaper than `replace` because the bundle blob is not written. Use this
     /// for pure state-machine transitions where no other metadata has changed.
+    ///
+    /// A bundle deleted concurrently is not an error: delete is terminal, and
+    /// the update quietly loses. Backends must neither resurrect the bundle
+    /// nor fail the call.
     async fn update_status(&self, bundle: &Bundle) -> Result<()>;
 
     /// Updates the status of the bundle with the given `bundle_id` only if
@@ -92,6 +96,12 @@ pub trait MetadataStorage: Send + Sync {
     /// A tombstone marks the bundle as deleted, preventing it from being
     /// re-inserted or processed further. Does not error if the bundle does
     /// not exist.
+    ///
+    /// Unconditional — delete wins every race. Use for deletions whose
+    /// authority does not depend on the bundle's current state: expiry,
+    /// operator drop, or completing a bundle the caller has already claimed.
+    /// Use [`Self::tombstone_if`] when the authority to delete derives from
+    /// the bundle still being in an expected state.
     async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
 
     /// Begins the startup recovery protocol by marking all existing metadata

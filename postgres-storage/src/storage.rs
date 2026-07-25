@@ -7,7 +7,7 @@ use hardy_bpa::{
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::*;
 
@@ -407,7 +407,9 @@ impl storage::MetadataStorage for Storage {
         .rows_affected();
 
         if rows == 0 {
-            return Err(sqlx::Error::RowNotFound.into());
+            // Delete is terminal: the bundle was removed between the
+            // caller's read and this write, and the update quietly loses
+            debug!("Status update for a deleted bundle, ignored");
         }
 
         Ok(())

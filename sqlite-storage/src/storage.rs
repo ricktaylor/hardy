@@ -364,7 +364,9 @@ impl storage::MetadataStorage for Storage {
             .await?
             != 1
         {
-            error!("Failed to update bundle status!");
+            // Delete is terminal: the bundle was removed between the
+            // caller's read and this write, and the update quietly loses
+            debug!("Status update for a deleted bundle, ignored");
         }
         Ok(())
     }
@@ -441,7 +443,7 @@ impl storage::MetadataStorage for Storage {
             .await?
             != 1
         {
-            error!("Failed to tombstone bundle!");
+            debug!("Tombstone for a missing bundle, ignored");
         }
         Ok(())
     }
