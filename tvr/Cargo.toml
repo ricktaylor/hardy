@@ -43,7 +43,7 @@ prost-types = "0.14"
 tokio-stream = "0.1"
 
 [dev-dependencies]
-serial_test = "3"
+serial_test = "4"
 tempfile = "3"
 time = { version = "0.3", features = ["macros"] }
 

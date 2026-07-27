@@ -35,4 +35,4 @@ config = { version = "0.15", features = ["yaml", "toml", "json"] }
 
 [dev-dependencies]
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
