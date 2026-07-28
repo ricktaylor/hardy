@@ -53,6 +53,7 @@ foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.18", default-features = false }
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
+smallvec = "1"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 serde = { version = "1", default-features = false, features = ["derive","rc","alloc"], optional = true }
 base64 = { version = "0.22", default-features = false, features = ["alloc"], optional = true }

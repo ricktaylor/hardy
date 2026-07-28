@@ -13,6 +13,7 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+use smallvec::SmallVec;
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -137,18 +138,29 @@ impl Rib {
     pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
-        let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        // Perform lookup. The SmallVec inside ForwardEcmp has a Drop impl
+        // that extends the borrow scope, so we extract the dispatch-relevant
+        // data (peer, next_hop clone) before the LookupResult is dropped.
+        let destination = bundle.bundle.destination.clone();
+        let result = table.find_recurse(&destination, true, &mut HashSet::new())?;
 
-        let previous;
-        let result = if matches!(result, LookupResult::Reflect) {
-            previous = bundle
+        if matches!(result, LookupResult::Reflect) {
+            drop(result);
+            let previous = bundle
                 .previous_node()
                 .unwrap_or_else(|| bundle.bundle.id.source.clone());
-            table.find_recurse(&previous, false, &mut HashSet::new())?
-        } else {
-            result
-        };
+            let result = table.find_recurse(&previous, false, &mut HashSet::new())?;
+            return self.dispatch_from_lookup(result, bundle);
+        }
 
+        self.dispatch_from_lookup(result, bundle)
+    }
+
+    fn dispatch_from_lookup(
+        &self,
+        result: LookupResult<'_>,
+        bundle: &mut Bundle,
+    ) -> Option<DispatchAction> {
         match result {
             LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
@@ -174,7 +186,7 @@ impl Rib {
 
     fn select_peer(
         &self,
-        mut peers: Vec<(u32, &Eid)>,
+        mut peers: SmallVec<[(u32, &Eid); 4]>,
         bundle: &Bpv7Bundle,
         metadata: &mut BundleMetadata,
     ) -> Option<DispatchAction> {
