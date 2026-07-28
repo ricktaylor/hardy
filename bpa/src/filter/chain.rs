@@ -4,6 +4,7 @@ use hardy_async::TaskPool;
 use hardy_bpv7::bpsec::key::KeySource;
 use hardy_bpv7::bundle::{Bundle as Bpv7Bundle, CheckedBundle};
 use hardy_bpv7::status_report::ReasonCode;
+use smallvec::SmallVec;
 use trace_err::*;
 use tracing::debug;
 
@@ -204,7 +205,7 @@ impl Level {
         // Multiple readers: spawn in parallel
         let shared = Arc::new((bundle, data));
 
-        let mut handles = Vec::new();
+        let mut handles = SmallVec::<[_; 4]>::new();
         for filter in &self.readers {
             let shared = shared.clone();
             let filter = filter.clone();
@@ -214,7 +215,7 @@ impl Level {
             }));
         }
 
-        let mut results = Vec::new();
+        let mut results = SmallVec::<[_; 4]>::new();
         for handle in handles {
             results.push(handle.await.trace_expect("filter spawn failed!")?);
         }
