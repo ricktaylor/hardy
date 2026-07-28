@@ -289,7 +289,7 @@ impl FilterChain {
         key_provider: F,
     ) -> Result<ExecResult, crate::Error>
     where
-        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
+        F: Fn(&Bpv7Bundle, &[u8]) -> Box<dyn KeySource>,
     {
         let mut mutation = Mutation::default();
 
