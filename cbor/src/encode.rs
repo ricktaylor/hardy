@@ -132,29 +132,42 @@ impl Encoder {
     }
 
     fn emit_uint_minor(&mut self, major: u8, val: u64) {
-        const U8_MAX: u64 = (u8::MAX as u64) + 1;
-        const U16_MAX: u64 = (u16::MAX as u64) + 1;
-        const U32_MAX: u64 = (u32::MAX as u64) + 1;
-
-        match val {
-            0..24 => self.data.push((major << 5) | (val as u8)),
-            24..U8_MAX => {
-                self.data.push((major << 5) | 24u8);
-                self.data.push(val as u8)
+        // Write the marker byte and value bytes into a stack buffer, then
+        // extend once — avoids multiple push/extend calls and the
+        // associated per-call capacity checks.
+        let mut buf = [0u8; 9];
+        let head = major << 5;
+        let len = match val {
+            0..24 => {
+                buf[0] = head | (val as u8);
+                1
             }
-            U8_MAX..U16_MAX => {
-                self.data.push((major << 5) | 25u8);
-                self.data.extend((val as u16).to_be_bytes())
+            24..=0xFF => {
+                buf[0] = head | 24;
+                buf[1] = val as u8;
+                2
             }
-            U16_MAX..U32_MAX => {
-                self.data.push((major << 5) | 26u8);
-                self.data.extend((val as u32).to_be_bytes())
+            0x100..=0xFFFF => {
+                buf[0] = head | 25;
+                let bytes = (val as u16).to_be_bytes();
+                buf[1] = bytes[0];
+                buf[2] = bytes[1];
+                3
+            }
+            0x1_0000..=0xFFFF_FFFF => {
+                buf[0] = head | 26;
+                let bytes = (val as u32).to_be_bytes();
+                buf[1..5].copy_from_slice(&bytes);
+                5
             }
             _ => {
-                self.data.push((major << 5) | 27u8);
-                self.data.extend(val.to_be_bytes())
+                buf[0] = head | 27;
+                let bytes = val.to_be_bytes();
+                buf[1..9].copy_from_slice(&bytes);
+                9
             }
-        }
+        };
+        self.data.extend_from_slice(&buf[..len]);
     }
 
     fn emit_tag(&mut self, tag: u64) -> &mut Self {
