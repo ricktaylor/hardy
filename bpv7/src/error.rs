@@ -19,6 +19,18 @@ pub enum Error {
     #[error("Unsupported bundle protocol version {0}")]
     InvalidVersion(u64),
 
+    /// Indicates that the data begins with CBOR unsigned integer 6 — the
+    /// first byte of an RFC 5050 (BPv6) primary block — rather than the
+    /// outer array of a BPv7 bundle.
+    #[error("Possible BPv6 bundle")]
+    PossibleBpv6,
+
+    /// Indicates that the data begins with a byte that cannot start a BPv7
+    /// bundle: the outer item is not the RFC 9171 §4.1 indefinite-length
+    /// CBOR array.
+    #[error("Not a BPv7 bundle")]
+    NotABundle,
+
     /// Indicates that a bundle is missing the required payload block.
     #[error("Bundle has no payload block")]
     MissingPayload,

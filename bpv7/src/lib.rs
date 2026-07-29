@@ -92,11 +92,7 @@ configuration required (typically a `RUSTFLAGS` override or a platform crate dep
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
 
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 #[cfg(feature = "std")]
 use std::collections::{HashMap, HashSet};

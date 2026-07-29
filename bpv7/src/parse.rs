@@ -748,7 +748,7 @@ impl BundleParser {
         let offset = match data.first() {
             Some(&0x9F) => 1,
             None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
-            Some(_) => return Err(slow_bundle_array_error(data)),
+            Some(&first) => return Err(slow_bundle_array_error(first)),
         };
         self.state = State::PrimaryBlock(offset);
         self.parse_primary(data, offset)
@@ -1244,26 +1244,24 @@ where
     Ok((v, s))
 }
 
-/// Cold path: the outer-array first byte wasn't `0x9F`. Re-parse via
-/// `Head` to produce a high-quality diagnostic (definite-length
-/// arrays = `NotCanonical`; an unsigned integer 6 = "looks like BPv6";
-/// anything else = "this isn't a CBOR array head at all").
+/// Cold path: the outer-array first byte wasn't `0x9F`. Classify the head
+/// byte directly (definite-length arrays = `NotCanonical`; an unsigned
+/// integer 6 = "looks like BPv6"; anything else — including a tag wrapper —
+/// cannot start a bundle at all). This is the first gate every datagram
+/// crosses, so under adversarial traffic each malformed packet is rejected
+/// here: the classification works from the single byte and the error
+/// variants carry no owned data, keeping the reject path free of heap
+/// allocation.
 #[cold]
-fn slow_bundle_array_error(data: &[u8]) -> Error {
-    let parsed = hardy_cbor::decode::parse::<(Head, bool, usize)>(data);
-    match parsed {
-        Ok((marker, _, _)) => match marker.marker {
-            Marker::Array(Some(_)) => Error::NotCanonical,
-            Marker::UnsignedInteger(6) => Error::InvalidCBOR(CborError::IncorrectType(
-                "BPv7 bundle".to_string(),
-                "Possible BPv6 bundle".to_string(),
-            )),
-            _ => Error::InvalidCBOR(CborError::IncorrectType(
-                "BPv7 bundle".to_string(),
-                marker.to_string(),
-            )),
-        },
-        Err(e) => Error::InvalidCBOR(e),
+fn slow_bundle_array_error(first: u8) -> Error {
+    match first {
+        // Major type 4, definite length: a canonical-encoding violation of
+        // §4.1's indefinite-length requirement rather than a non-bundle.
+        0x80..=0x9B => Error::NotCanonical,
+        // CBOR unsigned integer 6 == the version byte opening an RFC 5050
+        // primary block.
+        0x06 => Error::PossibleBpv6,
+        _ => Error::NotABundle,
     }
 }
 
