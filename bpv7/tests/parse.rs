@@ -266,9 +266,38 @@ fn non_canonical_rewriting_rejects_outer_tag() {
     // (`slow_bundle_array_error` — the first byte isn't 0x9F).
     assert!(matches!(
         parse::parse(Bytes::copy_from_slice(&tagged)),
-        Err(Error::InvalidCBOR(
-            hardy_cbor::decode::Error::IncorrectType(..)
-        ))
+        Err(Error::NotABundle)
+    ));
+}
+
+// RFC 9171 §4.1: the only legal outer-array head byte is 0x9F. The
+// first-byte gate classifies everything else from that single byte, with
+// error variants that carry no owned data — adversarial garbage is rejected
+// without a heap allocation. Only the head byte is stamped below; the gate
+// never reads further.
+#[test]
+fn first_byte_gate_classifies_non_bundles() {
+    let mut data = build_minimal_bundle().into_vec();
+
+    // A definite-length outer array is the §4.1 canonical violation.
+    data[0] = 0x82;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::NotCanonical)
+    ));
+
+    // 0x06 is the version byte opening an RFC 5050 (BPv6) primary block.
+    data[0] = 0x06;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::PossibleBpv6)
+    ));
+
+    // A CBOR map head cannot start a bundle at all.
+    data[0] = 0xA1;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::NotABundle)
     ));
 }
 
