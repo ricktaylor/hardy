@@ -28,8 +28,8 @@ impl FromCbor for u64 {
             Ok((v, shortest && marker.tags.is_empty(), offset))
         } else {
             Err(Error::IncorrectType(
-                "Untagged Unsigned Integer".to_string(),
-                marker.to_string(),
+                "Untagged Unsigned Integer",
+                (&marker).into(),
             ))
         }
     }
@@ -70,10 +70,7 @@ impl FromCbor for i64 {
                 shortest && marker.tags.is_empty(),
                 offset,
             )),
-            _ => Err(Error::IncorrectType(
-                "Untagged Integer".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Untagged Integer", (&marker).into())),
         }
     }
 }
@@ -114,10 +111,7 @@ impl FromCbor for f64 {
         if let Marker::Float(v) = marker.marker {
             Ok((v, shortest && marker.tags.is_empty(), offset))
         } else {
-            Err(Error::IncorrectType(
-                "Untagged Float".to_string(),
-                marker.to_string(),
-            ))
+            Err(Error::IncorrectType("Untagged Float", (&marker).into()))
         }
     }
 }
@@ -131,10 +125,7 @@ impl FromCbor for bool {
         match marker.marker {
             Marker::False => Ok((false, shortest && marker.tags.is_empty(), offset)),
             Marker::True => Ok((true, shortest && marker.tags.is_empty(), offset)),
-            _ => Err(Error::IncorrectType(
-                "Untagged Boolean".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Untagged Boolean", (&marker).into())),
         }
     }
 }

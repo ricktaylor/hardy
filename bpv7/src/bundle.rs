@@ -386,9 +386,7 @@ impl Id {
             }
             decode::Marker::Array(_) => {}
             _ => {
-                return Err(
-                    decode::Error::IncorrectType("array".to_string(), head.to_string()).into(),
-                );
+                return Err(decode::Error::IncorrectType("array", (&head).into()).into());
             }
         }
         decode::parse::<PrimaryBlock>(&data[offset..]).map(|primary| primary.id)

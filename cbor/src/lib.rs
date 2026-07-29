@@ -26,11 +26,7 @@ The crate is split into two main modules:
 #![no_std]
 extern crate alloc;
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::String, vec::Vec};
 
 pub mod decode;
 pub mod encode;
