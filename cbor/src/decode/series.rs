@@ -245,10 +245,7 @@ impl<'a, const D: usize> Series<'a, D> {
                 let r = f(&mut a, shortest, &marker.tags)?;
                 a.complete(r)
             }
-            _ => Err(Error::IncorrectType(
-                "Array".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Array", (&marker).into())),
         }?;
 
         self.parsed += 1;
@@ -279,7 +276,7 @@ impl<'a, const D: usize> Series<'a, D> {
                 let r = f(&mut m, shortest, &marker.tags)?;
                 m.complete(r)
             }
-            _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string())),
+            _ => Err(Error::IncorrectType("Map", (&marker).into())),
         }?;
 
         self.parsed += 1;

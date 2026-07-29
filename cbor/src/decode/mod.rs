@@ -146,9 +146,12 @@ pub enum Error {
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
 
-    /// The CBOR item's type does not match the expected type.
+    /// The CBOR item's type does not match the expected type. Carries the
+    /// caller's static description of what was expected and the [`ItemType`]
+    /// found; formatting is deferred to `Display`, so constructing the error
+    /// never allocates.
     #[error("Incorrect type, expecting {0}, found {1}")]
-    IncorrectType(String, String),
+    IncorrectType(&'static str, ItemType),
 
     /// An indefinite-length string contains an invalid chunk (e.g., not a string type).
     #[error("Chunked string contains an invalid chunk")]
@@ -218,7 +221,7 @@ pub type Array<'a> = series::Series<'a, 1>;
 /// A type alias for a [`Series`] that represents a CBOR map.
 pub type Map<'a> = series::Series<'a, 2>;
 /// The head of a single CBOR data item.
-pub use head::{Head, Marker};
+pub use head::{Head, ItemKind, ItemType, Marker};
 /// A stateful iterator for decoding a sequence of CBOR items (e.g., an array or map).
 pub use series::Series;
 
@@ -255,27 +258,29 @@ pub enum Value<'a, 'b: 'a> {
 }
 
 impl<'a, 'b: 'a> Value<'a, 'b> {
-    /// Returns a human-readable string describing the type of the CBOR value.
-    pub fn type_name(&self, tagged: bool) -> String {
-        let prefix = if tagged { "Tagged" } else { "Untagged" };
-        match self {
-            Value::UnsignedInteger(_) => format!("{prefix} Unsigned Integer"),
-            Value::NegativeInteger(_) => format!("{prefix} Negative Integer"),
-            Value::Bytes(_) => format!("{prefix} Definite-length Byte String"),
-            Value::ByteStream(_) => format!("{prefix} Indefinite-length Byte String"),
-            Value::Text(_) => format!("{prefix} Definite-length Text String"),
-            Value::TextStream(_) => format!("{prefix} Indefinite-length Text String"),
-            Value::Array(a) if a.is_definite() => format!("{prefix} Definite-length Array"),
-            Value::Array(_) => format!("{prefix} Indefinite-length Array"),
-            Value::Map(m) if m.is_definite() => format!("{prefix} Definite-length Map"),
-            Value::Map(_) => format!("{prefix} Indefinite-length Map"),
-            Value::False => format!("{prefix} False"),
-            Value::True => format!("{prefix} True"),
-            Value::Null => format!("{prefix} Null"),
-            Value::Undefined => format!("{prefix} Undefined"),
-            Value::Simple(v) => format!("{prefix} Simple Value {v}"),
-            Value::Float(_) => format!("{prefix} Float"),
-        }
+    /// The wire-level [`ItemType`] of this value, for building
+    /// [`Error::IncorrectType`] without allocating. Tag status is supplied
+    /// by the caller — a `Value` does not carry its preceding tags.
+    pub fn item_type(&self, tagged: bool) -> ItemType {
+        let kind = match self {
+            Value::UnsignedInteger(_) => ItemKind::UnsignedInteger,
+            Value::NegativeInteger(_) => ItemKind::NegativeInteger,
+            Value::Bytes(_) => ItemKind::DefiniteBytes,
+            Value::ByteStream(_) => ItemKind::IndefiniteBytes,
+            Value::Text(_) => ItemKind::DefiniteText,
+            Value::TextStream(_) => ItemKind::IndefiniteText,
+            Value::Array(a) if a.is_definite() => ItemKind::DefiniteArray,
+            Value::Array(_) => ItemKind::IndefiniteArray,
+            Value::Map(m) if m.is_definite() => ItemKind::DefiniteMap,
+            Value::Map(_) => ItemKind::IndefiniteMap,
+            Value::False => ItemKind::False,
+            Value::True => ItemKind::True,
+            Value::Null => ItemKind::Null,
+            Value::Undefined => ItemKind::Undefined,
+            Value::Simple(v) => ItemKind::Simple(*v),
+            Value::Float(_) => ItemKind::Float,
+        };
+        ItemType { tagged, kind }
     }
 
     /// Finishes consuming this value, advancing the cursor past any nested
@@ -576,7 +581,7 @@ where
             let r = f(&mut a, shortest, &marker.tags)?;
             a.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Array".to_string(), marker.to_string()).into()),
+        _ => Err(Error::IncorrectType("Array", (&marker).into()).into()),
     }
 }
 
@@ -597,7 +602,7 @@ where
             let r = f(&mut m, shortest, &marker.tags)?;
             m.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string()).into()),
+        _ => Err(Error::IncorrectType("Map", (&marker).into()).into()),
     }
 }
 

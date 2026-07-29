@@ -147,8 +147,8 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                         Ok(crc.start + crc_start..crc.end + crc_start)
                     } else {
                         Err(Error::InvalidCBOR(CborError::IncorrectType(
-                            "Definite-length Byte String".to_string(),
-                            value.type_name(!tags.is_empty()),
+                            "Definite-length Byte String",
+                            value.item_type(!tags.is_empty()),
                         )))
                     }
                 })?;

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `decode::ItemType` and `decode::ItemKind` (both `Copy`): the wire-level classification of an item — tag status plus payload-free marker shape — with `From<&Head>`/`From<&Marker>` conversions. `Display` output matches the strings `Head`'s `Display` (unchanged) has always produced.
+
+### Changed
+- **BREAKING:** `decode::Error::IncorrectType` carries `(&'static str, ItemType)` instead of `(String, String)`, so constructing a type-mismatch error never heap-allocates; message formatting is deferred to `Display` and the rendered text is unchanged.
+- **BREAKING:** `decode::Value::type_name(tagged) -> String` is replaced by `decode::Value::item_type(tagged) -> ItemType`.
+
 ## [2.0.0]
 
 ### Added

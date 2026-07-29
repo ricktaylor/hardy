@@ -743,6 +743,7 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "base64 0.23.0",
+ "bytes",
  "crc",
  "hardy-cbor",
  "hashbrown 0.17.1",
@@ -805,6 +806,7 @@ dependencies = [
 name = "hardy-proto"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",

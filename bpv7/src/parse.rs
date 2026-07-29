@@ -102,8 +102,8 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
             Marker::Bytes(None) => return Err(Error::NotCanonical),
             _ => {
                 return Err(Error::InvalidCBOR(CborError::IncorrectType(
-                    "Definite-length Byte String".to_string(),
-                    marker.to_string(),
+                    "Definite-length Byte String",
+                    (&marker).into(),
                 )))
                 .map_field_err::<Error>("block data");
             }
@@ -1278,8 +1278,8 @@ fn slow_block_array_error(data: &[u8]) -> Error {
             Marker::Array(Some(7..)) => Error::InvalidCBOR(CborError::AdditionalItems),
             Marker::Array(Some(_)) => Error::InvalidCBOR(CborError::NoMoreItems),
             _ => Error::InvalidCBOR(CborError::IncorrectType(
-                "Definite length array".to_string(),
-                marker.to_string(),
+                "Definite length array",
+                (&marker).into(),
             )),
         },
         Err(e) => Error::InvalidCBOR(e),

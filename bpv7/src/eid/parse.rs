@@ -329,8 +329,8 @@ impl hardy_cbor::decode::FromCbor for Eid {
                                     .map_err(|e| Error::ParseError(e.to_string()))
                             }
                             value => Err(hardy_cbor::decode::Error::IncorrectType(
-                                "Untagged Text String or Unsigned Integer 0".to_string(),
-                                value.type_name(false),
+                                "Untagged Text String or Unsigned Integer 0",
+                                value.item_type(false),
                             )
                             .into()),
                         }
@@ -344,8 +344,8 @@ impl hardy_cbor::decode::FromCbor for Eid {
                         ipn_from_cbor(arr, canonical && arr.is_definite())
                     }
                     value => Err(hardy_cbor::decode::Error::IncorrectType(
-                        "Untagged Array".to_string(),
-                        value.type_name(!tags.is_empty()),
+                        "Untagged Array",
+                        value.item_type(!tags.is_empty()),
                     )
                     .into()),
                 }) {

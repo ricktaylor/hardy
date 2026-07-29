@@ -261,8 +261,8 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
             Err(Error::NotCanonical)
         }
         value => Err(hardy_cbor::decode::Error::IncorrectType(
-            "Untagged definite-length byte string".to_string(),
-            value.type_name(!tags.is_empty()),
+            "Untagged definite-length byte string",
+            value.item_type(!tags.is_empty()),
         )
         .into()),
     })

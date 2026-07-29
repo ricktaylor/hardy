@@ -59,8 +59,8 @@ impl DecapService {
                 a.parse_value(|value, _shortest, _tags| match value {
                     hardy_cbor::decode::Value::Bytes(range) => Ok(range),
                     _ => Err(hardy_cbor::decode::Error::IncorrectType(
-                        "Byte String".into(),
-                        value.type_name(false),
+                        "Byte String",
+                        value.item_type(false),
                     )),
                 })
             },
