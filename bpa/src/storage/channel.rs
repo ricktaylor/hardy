@@ -435,16 +435,18 @@ mod tests {
                 },
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
         }
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
         b.bundle.primary.lifetime = core::time::Duration::from_secs(0);
-        // Set received_at in the past so expiry is already passed
-        b.metadata.read_only.received_at =
-            time::OffsetDateTime::now_utc() - time::Duration::seconds(10);
+        // received_at in the past so expiry has already passed
+        b.metadata = crate::bundle::BundleMetadata::new(
+            time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
+            crate::bundle::Origin::Originated,
+        );
         b
     }
 

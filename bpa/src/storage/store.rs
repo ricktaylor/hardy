@@ -270,7 +270,7 @@ mod tests {
                 },
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
         }
     }
 

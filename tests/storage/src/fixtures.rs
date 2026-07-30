@@ -25,7 +25,7 @@ pub fn random_bundle() -> bundle::Bundle {
         ..Default::default()
     };
 
-    let mut meta = BundleMetadata::default();
+    let mut meta = BundleMetadata::originated();
     meta.status = BundleStatus::Waiting;
 
     bundle::Bundle {
@@ -55,9 +55,8 @@ pub fn bundle_with_status(
         ..Default::default()
     };
 
-    let mut meta = BundleMetadata::default();
+    let mut meta = BundleMetadata::new(received_at, hardy_bpa::bundle::Origin::Originated);
     meta.status = status;
-    meta.read_only.received_at = received_at;
 
     bundle::Bundle {
         bundle: bpv7,
@@ -93,7 +92,7 @@ pub fn bundle_with_expiry(
         ..Default::default()
     };
 
-    let mut meta = BundleMetadata::default();
+    let mut meta = BundleMetadata::originated();
     meta.status = status;
 
     bundle::Bundle {
@@ -127,7 +126,7 @@ pub fn bundle_with_fragment(
         ..Default::default()
     };
 
-    let mut meta = BundleMetadata::default();
+    let mut meta = BundleMetadata::originated();
     meta.status = status;
 
     bundle::Bundle {

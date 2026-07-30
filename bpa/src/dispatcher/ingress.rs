@@ -81,17 +81,11 @@ impl Dispatcher {
     ) -> cla::Result<()> {
         metrics::counter!("bpa.bundle.received").increment(1);
 
-        let metadata = bundle::BundleMetadata {
-            status: bundle::BundleStatus::New,
-            read_only: bundle::ReadOnlyMetadata {
-                received_at: time::OffsetDateTime::now_utc(),
-                ingress_peer_node: ingress_peer_node.cloned(),
-                ingress_peer_addr: ingress_peer_addr.cloned(),
-                ingress_cla: Some(ingress_cla),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let metadata = bundle::BundleMetadata::ingress(
+            ingress_cla,
+            ingress_peer_node.cloned(),
+            ingress_peer_addr.cloned(),
+        );
 
         let stream = CountingReceiver { stream };
         // Drop sites inside `process_received_bundle` count themselves under
@@ -147,7 +141,7 @@ impl Dispatcher {
         // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
         // re-checks lifetime post-store in the ingress filter — a cheap, harmless
         // overlap.)
-        if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
+        if let Some(reason) = hv.gate_reason(metadata.received_at()) {
             metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
@@ -159,9 +153,9 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return None;
             }
-            metadata.read_only.previous_node = hv.extracted.previous_node;
-            metadata.read_only.age = hv.extracted.age;
-            metadata.read_only.hop_count = hv.extracted.hop_count;
+            metadata.wire.previous_node = hv.extracted.previous_node;
+            metadata.wire.age = hv.extracted.age;
+            metadata.wire.hop_count = hv.extracted.hop_count;
             let bundle = bundle::Bundle {
                 metadata,
                 bundle: hv.bundle,
@@ -188,9 +182,9 @@ impl Dispatcher {
         // §E rewrites. The decoded extension fields were captured at header time
         // and the §E rewrite only removes blocks, so move `hv.extracted` into the
         // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
-        metadata.read_only.previous_node = hv.extracted.previous_node.take();
-        metadata.read_only.age = hv.extracted.age.take();
-        metadata.read_only.hop_count = hv.extracted.hop_count.take();
+        metadata.wire.previous_node = hv.extracted.previous_node.take();
+        metadata.wire.age = hv.extracted.age.take();
+        metadata.wire.hop_count = hv.extracted.hop_count.take();
         let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
             &whole,
             hv,

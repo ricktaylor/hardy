@@ -157,7 +157,7 @@ impl Rib {
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
             LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
             LookupResult::Forward(peer, next_hop) => {
-                bundle.metadata.read_only.next_hop = Some(next_hop.clone());
+                bundle.metadata.next_hop = Some(next_hop.clone());
                 Some(DispatchAction::Forward(peer))
             }
             LookupResult::ForwardEcmp(peers) => {
@@ -198,7 +198,7 @@ impl Rib {
             0
         };
         let (peer, next_hop) = peers.swap_remove(idx);
-        metadata.read_only.next_hop = Some(next_hop.clone());
+        metadata.next_hop = Some(next_hop.clone());
         Some(DispatchAction::Forward(peer))
     }
 
@@ -538,7 +538,7 @@ mod tests {
                 },
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
         }
     }
 
@@ -604,10 +604,7 @@ mod tests {
 
         // The next-hop handed to egress filters must be the adjacent neighbour
         // (ipn:0.3.0), not the first intermediate gateway (ipn:0.40.0).
-        assert_eq!(
-            bundle.metadata.read_only.next_hop,
-            Some("ipn:0.3.0".parse().unwrap()),
-        );
+        assert_eq!(bundle.metadata.next_hop, Some("ipn:0.3.0".parse().unwrap()),);
     }
 
     #[test]
@@ -657,7 +654,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(4), 77);
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.read_only.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.wire.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(matches!(result, Some(DispatchAction::Forward(77))));
     }
@@ -681,7 +678,7 @@ mod tests {
         );
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.read_only.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.wire.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(result.is_none());
     }

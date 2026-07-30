@@ -126,7 +126,7 @@ impl ReadFilter for Rfc9171ValidityFilter {
         // RFC9171 §4.4.2: Bundle Age required when no clock
         if self.config.bundle_age_required
             && !bundle.bundle.primary.id.timestamp.is_clocked()
-            && bundle.metadata.read_only.age.is_none()
+            && bundle.metadata.wire.age.is_none()
         {
             debug!(
                 bundle_id = %bundle.bundle.primary.id,

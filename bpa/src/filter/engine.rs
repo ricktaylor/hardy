@@ -192,7 +192,7 @@ mod tests {
                 hardy_async::spawn!(caller_pool, "outer_task", async move {
                     let bundle = Bundle {
                         bundle: Default::default(),
-                        metadata: Default::default(),
+                        metadata: crate::bundle::BundleMetadata::originated(),
                     };
                     let result = engine
                         .exec(

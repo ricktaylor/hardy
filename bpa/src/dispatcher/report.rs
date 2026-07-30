@@ -26,7 +26,7 @@ impl Dispatcher {
                         bundle_id: bundle.bundle.primary.id.clone(),
                         received: Some(StatusAssertion(
                             if bundle.bundle.primary.flags.report_status_time {
-                                Some(bundle.metadata.read_only.received_at)
+                                Some(bundle.metadata.received_at())
                             } else {
                                 None
                             },
@@ -169,13 +169,11 @@ impl Dispatcher {
             // Wrap in bundle::Bundle with Dispatching status — status reports
             // are internally generated, so they skip both the Originate and
             // Ingress filters and go directly to routing.
-            let mut metadata = bundle::BundleMetadata {
-                status: bundle::BundleStatus::Dispatching,
-                ..Default::default()
-            };
-            metadata.read_only.previous_node = extracted.previous_node;
-            metadata.read_only.age = extracted.age;
-            metadata.read_only.hop_count = extracted.hop_count;
+            let mut metadata = bundle::BundleMetadata::originated();
+            metadata.status = bundle::BundleStatus::Dispatching;
+            metadata.wire.previous_node = extracted.previous_node;
+            metadata.wire.age = extracted.age;
+            metadata.wire.hop_count = extracted.hop_count;
             let mut bundle = bundle::Bundle { metadata, bundle };
 
             // Store (no Originate filter - not user-originated)

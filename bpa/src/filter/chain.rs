@@ -268,9 +268,9 @@ impl Level {
                         bundle.bundle = raw;
                         // The rewrite changed the bytes, so refresh the cached
                         // extension fields from the re-parse.
-                        bundle.metadata.read_only.previous_node = extracted.previous_node;
-                        bundle.metadata.read_only.age = extracted.age;
-                        bundle.metadata.read_only.hop_count = extracted.hop_count;
+                        bundle.metadata.wire.previous_node = extracted.previous_node;
+                        bundle.metadata.wire.age = extracted.age;
+                        bundle.metadata.wire.hop_count = extracted.hop_count;
                         *data = new_data;
                     }
                 }
@@ -537,7 +537,7 @@ mod tests {
         let pool = hardy_async::TaskPool::new();
         let bundle = Bundle {
             bundle: Default::default(),
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
         };
         chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)

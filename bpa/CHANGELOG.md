@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING:** `BundleMetadata` is partitioned by write discipline. Arrival facts are a write-once provenance group read via `received_at()` / `origin()`, with the new `Origin` enum (`Ingress { peer_node, peer_addr, cla }` / `Originated` / `Recovered`); the decoded extension-field cache moves to the public `wire: WireCache` group (was `read_only: ReadOnlyMetadata`); `ReadOnlyMetadata` is removed. `Default` is removed — construct records via `ingress()` / `originated()` / `new(received_at, origin)`.
+- **BREAKING:** the persisted metadata serde shape changes: `origin` is a new (tagged) required key replacing the flattened `ingress_peer_node` / `ingress_peer_addr` keys, and the ingress CLA name is now persisted inside it — fixing restart recovery, which previously mis-read every recovered bundle as locally originated because the CLA name was transient. Metadata stores written by earlier versions do not deserialize.
+- A reassembled ADU now carries the provenance of its earliest-arriving fragment (previously it had no ingress context at all).
+
 ## [0.2.0]
 
 ### Added
