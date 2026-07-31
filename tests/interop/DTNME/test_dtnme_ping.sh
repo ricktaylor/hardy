@@ -227,7 +227,7 @@ for _ in 1; do
     # Note: --no-payload-crc is needed because DTNME has a bug where it doesn't validate
     #       payload block CRC but rejects bundles when CRC validation fails.
     # Capture output to check actual received count
-    PING_OUTPUT=$("$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 40))s "$BP_BIN" ping "ipn:$DTNME_NODE_NUM.7" "127.0.0.1:$TCPCLV4_PORT" \
         --source "ipn:$HARDY_NODE_NUM.12345" \
         --count "$PING_COUNT" \
         --timeout "$((PING_COUNT * 2 + 10))s" \

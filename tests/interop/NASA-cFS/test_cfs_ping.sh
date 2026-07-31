@@ -212,7 +212,7 @@ EOF
     echo ""
 
     # Exit codes: 0=success (replies received), 1=no replies (100% loss), 2=error
-    PING_OUTPUT=$("$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
+    PING_OUTPUT=$(timeout $((PING_COUNT * 2 + 40))s "$BP_BIN" ping "ipn:$CFS_NODE_NUM.7" \
         --cla "$MTCP_CLA_BIN" \
         --cla-args "--config $TEST_DIR/stcp_cla.toml" \
         --grpc-listen "[::1]:$HARDY_GRPC_PORT" \
