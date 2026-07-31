@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::*;
 use hardy_bpa::bpa::BpaRegistration;
 
@@ -316,7 +314,7 @@ async fn exec_inner(
     args: &Command,
     bpa: &dyn BpaRegistration,
     cancel_token: &tokio_util::sync::CancellationToken,
-    service: Arc<service::Service>,
+    service: std::sync::Arc<service::Service>,
 ) -> anyhow::Result<()> {
     if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
         bpa.register_service(service_id, service.clone()).await
