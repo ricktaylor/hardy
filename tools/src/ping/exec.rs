@@ -293,8 +293,8 @@ async fn run_ping(
 
     exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
 
-    service.print_summary();
     let stats = service.statistics();
+    service.print_summary(&stats);
     tasks.shutdown().await;
 
     bpa.shutdown().await;
