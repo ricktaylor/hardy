@@ -282,6 +282,11 @@ async fn run_ping(
 
     let service = std::sync::Arc::new(service::Service::new(args));
 
+    // Set by the deadline task alone, so an expired deadline can be told apart
+    // from an operator's Ctrl+C when choosing the exit code — both cancel the
+    // same token, but only the former is a failure.
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // A session deadline is a scheduled Ctrl+C, so drive it through the same
     // cancellation token the session already observes. Racing the session future
     // against a sleep would instead drop it wherever it was suspended, leaving a
@@ -290,8 +295,10 @@ async fn run_ping(
     // after a normal run.
     if let Some(t) = args.timeout {
         let cancel = tasks.cancel_token().clone();
+        let timed_out = timed_out.clone();
         hardy_async::spawn!(tasks, "ping_deadline", async move {
             if tokio::time::timeout(*t, cancel.cancelled()).await.is_err() {
+                timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
                 cancel.cancel();
             }
         });
@@ -305,7 +312,13 @@ async fn run_ping(
 
     bpa.shutdown().await;
 
-    if stats.received > 0 {
+    // iputils `ping -c N -w D` exits 1 when the deadline arrives having received
+    // fewer than N replies, so a run the deadline truncated is a failure even
+    // when everything it managed to send was answered.
+    let truncated = timed_out.load(std::sync::atomic::Ordering::Relaxed)
+        && args.count.is_some_and(|count| stats.received < count);
+
+    if stats.received > 0 && !truncated {
         Ok(ExitCode::Success)
     } else {
         Ok(ExitCode::NoResponse)
