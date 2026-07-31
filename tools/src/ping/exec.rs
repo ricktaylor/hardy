@@ -268,17 +268,23 @@ async fn run_ping(
     hardy_async::signal::listen_for_cancel(&tasks);
 
     let service = std::sync::Arc::new(service::Service::new(args));
-    let exec_res = exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone());
 
-    match args.timeout {
-        Some(t) => tokio::select! {
-            r = exec_res => Some(r?),
-            _ = tokio::time::sleep(*t) => { tasks.cancel_token().cancel();
-                None
-                 }
-        },
-        None => Some(exec_res.await?),
-    };
+    // A session deadline is a scheduled Ctrl+C, so drive it through the same
+    // cancellation token the session already observes. Racing the session future
+    // against a sleep would instead drop it wherever it was suspended, leaving a
+    // bundle on the wire but never recorded. Waiting on the token rather than
+    // sleeping bare also lets this task exit as soon as the pool shuts down
+    // after a normal run.
+    if let Some(t) = args.timeout {
+        let cancel = tasks.cancel_token().clone();
+        hardy_async::spawn!(tasks, "ping_deadline", async move {
+            if tokio::time::timeout(*t, cancel.cancelled()).await.is_err() {
+                cancel.cancel();
+            }
+        });
+    }
+
+    exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
 
     service.print_summary();
     let stats = service.statistics();
