@@ -36,14 +36,19 @@ impl Default for SessionConfig {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
 pub struct TlsConfig {
-    /// Path to the local certificate file (PEM). Required for the TLS server role.
+    /// Path to the local certificate file (PEM). Enables the TLS server
+    /// role; must be configured together with `key-file`.
     pub cert_file: Option<PathBuf>,
 
-    /// Path to the local private key file (PEM). Required for the TLS server role.
-    pub private_key_file: Option<PathBuf>,
+    /// Path to the local private key file (PEM: PKCS#8, PKCS#1, or SEC1).
+    /// Enables the TLS server role; must be configured together with
+    /// `cert-file`.
+    #[cfg_attr(feature = "serde", serde(alias = "private-key-file"))]
+    pub key_file: Option<PathBuf>,
 
     /// Path to a directory of CA certificates (`.crt`/`.pem`). Used to verify
-    /// the peer's certificate when connecting as a TLS client.
+    /// the peer's certificate when connecting as a TLS client. Mutually
+    /// exclusive with `insecure`.
     pub ca_certs: Option<PathBuf>,
 
     /// Override the TLS SNI server name (useful when connecting by IP address
@@ -53,17 +58,10 @@ pub struct TlsConfig {
     // TODO(mTLS): Client certificate and key for mutual TLS authentication
     // pub client_cert_file: Option<PathBuf>,
     // pub client_key_file: Option<PathBuf>,
-    /// Debug/development TLS options. Default: all disabled.
-    pub debug: TlsDebugConfig,
-}
-
-/// Debug-only TLS options. Not intended for production use.
-#[derive(Default, Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct TlsDebugConfig {
-    /// Accept self-signed certificates when no CA is configured. Default: `false`.
-    pub accept_self_signed: bool,
+    /// Accept any peer certificate chain, self-signed included, with no
+    /// trust validation (INSECURE; testing only). Mutually exclusive with
+    /// `ca-certs`. Default: `false`.
+    pub insecure: bool,
 }
 
 /// Top-level configuration for the TCPCLv4 CLA.

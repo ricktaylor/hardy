@@ -327,7 +327,7 @@ log-level = "warn"
 require-tls: true
 tls:
   cert-file: "/etc/hardy/certs/server.crt"
-  private-key-file: "/etc/hardy/private/server.key"
+  key-file: "/etc/hardy/private/server.key"
 "#,
         );
         assert!(config.tcpcl.session_defaults.require_tls);
@@ -337,7 +337,7 @@ tls:
             PathBuf::from("/etc/hardy/certs/server.crt")
         );
         assert_eq!(
-            tls.private_key_file.unwrap(),
+            tls.key_file.unwrap(),
             PathBuf::from("/etc/hardy/private/server.key")
         );
         assert!(tls.ca_certs.is_none());

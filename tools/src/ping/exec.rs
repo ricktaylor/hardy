@@ -101,7 +101,7 @@ async fn exec_builtin_cla(
     if args.tls_insecure || args.tls_ca.is_some() {
         let mut tls_config = hardy_tcpclv4::config::TlsConfig::default();
         if args.tls_insecure {
-            tls_config.debug.accept_self_signed = true;
+            tls_config.insecure = true;
         }
         if let Some(ca_dir) = &args.tls_ca {
             if !ca_dir.exists() {

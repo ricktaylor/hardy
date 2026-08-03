@@ -9,8 +9,7 @@ impl Cla {
                 || self
                     .tls_config
                     .as_ref()
-                    .and_then(|c| c.server_config.as_ref())
-                    .is_some()
+                    .is_some_and(|c| c.acceptor().is_some())
             {
                 let ctx = self
                     .connection_context()
