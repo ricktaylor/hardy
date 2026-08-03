@@ -492,7 +492,17 @@ where
                         // every outstanding expectation for it.
                         self.acks.retain(|a| a.transfer_id != msg.transfer_id);
 
-                        metrics::counter!("tcpclv4.transfers.refused", "reason" => format!("{:?}", msg.reason_code)).increment(1);
+                        metrics::counter!("tcpclv4.transfers.refused", "reason" => match msg.reason_code {
+                            codec::TransferRefuseReasonCode::Unknown => "unknown",
+                            codec::TransferRefuseReasonCode::Completed => "completed",
+                            codec::TransferRefuseReasonCode::NoResources => "no_resources",
+                            codec::TransferRefuseReasonCode::Retransmit => "retransmit",
+                            codec::TransferRefuseReasonCode::NotAcceptable => "not_acceptable",
+                            codec::TransferRefuseReasonCode::ExtensionFailure => "extension_failure",
+                            codec::TransferRefuseReasonCode::SessionTerminating => "session_terminating",
+                            codec::TransferRefuseReasonCode::Unassigned(_) => "unassigned",
+                            codec::TransferRefuseReasonCode::Private(_) => "private",
+                        }).increment(1);
                         return Ok(SendState::Refused(msg.reason_code));
                     }
                     debug!(
