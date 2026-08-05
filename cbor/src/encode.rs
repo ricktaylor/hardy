@@ -113,6 +113,17 @@ impl Encoder {
         Self { data: Vec::new() }
     }
 
+    /// Creates a new `Encoder` with pre-allocated capacity.
+    ///
+    /// Use this when the approximate output size is known to avoid
+    /// reallocations during encoding.
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(capacity),
+        }
+    }
+
     /// Consumes the encoder and returns the generated CBOR byte vector.
     #[inline]
     pub fn build(self) -> Vec<u8> {
@@ -775,6 +786,18 @@ where
     T: ToCbor + ?Sized,
 {
     let mut e = Encoder::new();
+    let r = e.emit(value);
+    (e.build(), r)
+}
+
+/// Like [`emit`], but pre-allocates the output buffer with the given capacity.
+///
+/// Use when the approximate encoded size is known to avoid reallocations.
+pub fn emit_with_capacity<T>(capacity: usize, value: &T) -> (Vec<u8>, T::Result)
+where
+    T: ToCbor + ?Sized,
+{
+    let mut e = Encoder::with_capacity(capacity);
     let r = e.emit(value);
     (e.build(), r)
 }
