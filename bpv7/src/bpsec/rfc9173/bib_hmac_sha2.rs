@@ -1,5 +1,5 @@
 use super::*;
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use hmac::{KeyInit, Mac};
 
 #[allow(clippy::upper_case_acronyms)]
@@ -244,7 +244,7 @@ fn as_variant(alg: Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
 
 #[derive(Debug)]
 pub struct Operation {
-    pub parameters: Rc<Parameters>,
+    pub parameters: Arc<Parameters>,
     pub results: Results,
 }
 
@@ -337,7 +337,7 @@ impl Operation {
         };
 
         Ok(Self {
-            parameters: Rc::new(Parameters {
+            parameters: Arc::new(Parameters {
                 variant,
                 key,
                 flags: scope_flags,
@@ -448,7 +448,7 @@ pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bib::Operation>), Error> {
-    let parameters = Rc::from(
+    let parameters = Arc::from(
         Parameters::from_cbor(asb.parameters, data)
             .map_field_err::<Error>("RFC9173 HMAC-SHA2 parameters")?,
     );
