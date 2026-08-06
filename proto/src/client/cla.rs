@@ -244,10 +244,11 @@ pub async fn register_cla(
         }
     };
 
+    let node_id_count = response.node_ids.len();
     let node_ids = response
         .node_ids
         .into_iter()
-        .try_fold(Vec::new(), |mut v, node_id| {
+        .try_fold(Vec::with_capacity(node_id_count), |mut v, node_id| {
             v.push(node_id.parse::<hardy_bpv7::eid::NodeId>()?);
             Ok::<_, hardy_bpv7::eid::Error>(v)
         })
