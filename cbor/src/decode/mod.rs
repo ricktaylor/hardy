@@ -195,6 +195,19 @@ pub trait FromCbor: Sized {
     /// - The decoded value.
     /// - A boolean indicating if the value was encoded in its shortest, canonical form.
     /// - The number of bytes consumed from the slice.
+    ///
+    /// Decoding reads a single item from the **front** of `data` and stops; the
+    /// slice is not required to contain exactly one item, and the returned length
+    /// is how many bytes that item occupied. Anything after it is left untouched.
+    /// This is what makes decoders composable — an enclosing array, map or
+    /// sequence decodes a field, then advances by the returned length to the next.
+    ///
+    /// A consequence is that `from_cbor` is **not**, on its own, a guard against
+    /// trailing data: only implementations that consume to the end of the slice
+    /// (those built on [`parse_sequence`]) reject it; implementations built on a
+    /// single value, array or map silently ignore any bytes past their item. When
+    /// `data` is a standalone slice that must hold exactly one item, compare the
+    /// returned length against `data.len()` yourself, or use [`parse_exact`].
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error>;
 }
 
@@ -593,6 +606,10 @@ where
 /// This function is a shorthand for `T::from_cbor(data).map(|v| v.0)`. It
 /// decodes the value and discards the `shortest` and `len` information,
 /// returning only the decoded object.
+///
+/// Because `len` is discarded, any bytes after the first item are ignored. Use
+/// [`parse_exact`] instead when `data` must hold exactly one item, so that
+/// trailing bytes can't be smuggled past the decoder.
 #[inline]
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
@@ -600,4 +617,25 @@ where
     T::Error: From<self::Error>,
 {
     T::from_cbor(data).map(|v| v.0)
+}
+
+/// Decode a single value of type `T`, requiring it to consume the **whole**
+/// slice: any trailing bytes after the item are rejected as
+/// [`Error::AdditionalItems`].
+///
+/// Use this — rather than [`parse`], which ignores trailing data — when `data`
+/// must hold exactly one item (e.g. the body of a bundle block), so that extra
+/// bytes can't be smuggled past the decoder.
+#[inline]
+pub fn parse_exact<T>(data: &[u8]) -> Result<T, T::Error>
+where
+    T: FromCbor,
+    T::Error: From<self::Error>,
+{
+    let (value, _, len) = T::from_cbor(data)?;
+    if len == data.len() {
+        Ok(value)
+    } else {
+        Err(self::Error::AdditionalItems.into())
+    }
 }

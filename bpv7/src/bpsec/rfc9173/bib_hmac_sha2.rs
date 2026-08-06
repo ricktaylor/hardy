@@ -30,11 +30,7 @@ impl hardy_cbor::decode::FromCbor for ShaVariant {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (value, shortest, len) =
-            hardy_cbor::decode::parse::<(u64, bool, usize)>(data).map_err(Error::InvalidCBOR)?;
-        if !shortest {
-            return Err(Error::NotCanonical);
-        }
+        let (value, len) = crate::error::parse_canonical::<u64, _>(data, Error::NotCanonical)?;
         Ok((
             match value {
                 5 => Self::HMAC_256_256,
@@ -60,9 +56,11 @@ impl Parameters {
         let mut result = Self::default();
         for (id, range) in parameters {
             match id {
-                1 => result.variant = hardy_cbor::decode::parse(&data[range])?,
+                1 => {
+                    result.variant = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?
+                }
                 2 => result.key = Some(parse::decode_box(range, data)?),
-                3 => result.flags = hardy_cbor::decode::parse(&data[range])?,
+                3 => result.flags = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?,
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
