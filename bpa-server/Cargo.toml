@@ -66,4 +66,4 @@ arc-swap = "1"
 [dev-dependencies]
 hex-literal = "1"
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"

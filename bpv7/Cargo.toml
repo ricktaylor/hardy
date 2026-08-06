@@ -40,7 +40,7 @@ bpsec = []
 hardy-cbor = { version = "2", path = "../cbor" }
 thiserror = { version = "2", default-features = false }
 time = { version = "0.3", default-features = false, features = ["macros"] }
-base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 percent-encoding = { version = "2", default-features = false, features = ["alloc"] }
 crc = "3"
 sha2 = { version = "0.11", default-features = false, optional = true }

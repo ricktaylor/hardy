@@ -41,4 +41,4 @@ tokio = { version = "1", features = ["rt", "macros"] }
 [build-dependencies]
 regex = "1"
 sha1 = "0.11"
-base64 = "0.22"
+base64 = "0.23"
