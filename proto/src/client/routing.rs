@@ -133,10 +133,11 @@ pub async fn register_routing_agent(
         }
     };
 
-    let node_ids = response
-        .node_ids
+    let node_ids_vec = response.node_ids;
+    let count = node_ids_vec.len();
+    let node_ids = node_ids_vec
         .into_iter()
-        .try_fold(Vec::new(), |mut v, node_id| {
+        .try_fold(Vec::with_capacity(count), |mut v, node_id| {
             v.push(node_id.parse::<hardy_bpv7::eid::NodeId>()?);
             Ok::<_, hardy_bpv7::eid::Error>(v)
         })
