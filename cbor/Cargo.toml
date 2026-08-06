@@ -23,3 +23,8 @@ smallvec = "1"
 
 [dev-dependencies]
 hex-literal = "1"
+criterion = "0.5"
+
+[[bench]]
+name = "encode_bench"
+harness = false
