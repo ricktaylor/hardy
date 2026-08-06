@@ -12,11 +12,12 @@ conversion to/from exact EIDs.
 
 extern crate alloc;
 
+#[cfg(test)]
+use alloc::vec;
 use alloc::{
     borrow::Cow,
     boxed::Box,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 

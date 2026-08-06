@@ -22,18 +22,12 @@ pub const ANY: IpnPatternItem = IpnPatternItem {
 impl IpnPatternItem {
     pub(crate) fn new(allocator_id: u32, node_number: u32, service_number: Option<u32>) -> Self {
         Self {
-            allocator_id: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
-                allocator_id,
-            )]),
-            node_number: ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
-                node_number,
-            )]),
+            allocator_id: IpnPattern::Single(allocator_id),
+            node_number: IpnPattern::Single(node_number),
             service_number: if let Some(service_number) = service_number {
-                ipn_pattern::IpnPattern::Range(vec![ipn_pattern::IpnInterval::Number(
-                    service_number,
-                )])
+                IpnPattern::Single(service_number)
             } else {
-                ipn_pattern::IpnPattern::Wildcard
+                IpnPattern::Wildcard
             },
         }
     }
@@ -82,12 +76,12 @@ impl IpnPatternItem {
     }
 
     pub(super) fn expand_local_node(&self, node_id: &IpnNodeId) -> Option<Self> {
-        if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)])
-            && self.node_number == IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)])
+        if self.allocator_id == IpnPattern::Single(0)
+            && self.node_number == IpnPattern::Single(u32::MAX)
         {
             Some(Self {
-                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(node_id.allocator_id)]),
-                node_number: IpnPattern::Range(vec![IpnInterval::Number(node_id.node_number)]),
+                allocator_id: IpnPattern::Single(node_id.allocator_id),
+                node_number: IpnPattern::Single(node_id.node_number),
                 service_number: self.service_number.clone(),
             })
         } else {
@@ -135,7 +129,7 @@ impl core::fmt::Display for IpnPatternItem {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self == &ANY {
             write!(f, "**")
-        } else if self.allocator_id == IpnPattern::Range(vec![IpnInterval::Number(0)]) {
+        } else if self.allocator_id == IpnPattern::Single(0) {
             // Old style without allocator ID
             write!(f, "{}.{}", self.node_number, self.service_number)
         } else {
@@ -152,22 +146,32 @@ impl core::fmt::Display for IpnPatternItem {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IpnPattern {
     Wildcard,
+    /// A single exact value — the overwhelmingly common case for concrete
+    /// routes (e.g. `ipn:0.2.*` stores node_number as `Single(2)`).
+    /// Avoids the Vec heap allocation and pointer indirection of `Range`.
+    Single(u32),
     Range(Vec<IpnInterval>),
 }
 
 impl IpnPattern {
     #[inline]
     fn matches(&self, v: u32) -> bool {
-        let IpnPattern::Range(r) = self else {
-            return true;
-        };
-        r.iter().any(|r| r.matches(v))
+        match self {
+            IpnPattern::Wildcard => true,
+            IpnPattern::Single(n) => *n == v,
+            IpnPattern::Range(r) => r.iter().any(|r| r.matches(v)),
+        }
     }
 
     fn is_subset(&self, other: &Self) -> bool {
         match (self, other) {
             (_, IpnPattern::Wildcard) => true,
-            (IpnPattern::Wildcard, IpnPattern::Range(_)) => false,
+            (IpnPattern::Wildcard, _) => false,
+            (IpnPattern::Single(lhs), IpnPattern::Single(rhs)) => lhs == rhs,
+            (IpnPattern::Single(lhs), IpnPattern::Range(rhs)) => {
+                rhs.iter().any(|r| r.matches(*lhs))
+            }
+            (IpnPattern::Range(_), IpnPattern::Single(_)) => false,
             (IpnPattern::Range(lhs), IpnPattern::Range(rhs)) => {
                 // Every member of lhs must be a subset of at least one member in rhs
                 lhs.iter().all(|l| rhs.iter().any(|r| l.is_subset(r)))
@@ -177,6 +181,7 @@ impl IpnPattern {
 
     fn try_to_eid(&self) -> Option<u32> {
         match self {
+            IpnPattern::Single(n) => Some(*n),
             IpnPattern::Range(r) if r.len() == 1 => r[0].try_to_u32(),
             _ => None,
         }
@@ -184,7 +189,11 @@ impl IpnPattern {
 
     /// True if this component is a single specific value.
     pub(crate) fn is_exact(&self) -> bool {
-        matches!(self, IpnPattern::Range(r) if r.len() == 1 && matches!(r[0], IpnInterval::Number(_)))
+        match self {
+            IpnPattern::Single(_) => true,
+            IpnPattern::Range(r) => r.len() == 1 && matches!(r[0], IpnInterval::Number(_)),
+            IpnPattern::Wildcard => false,
+        }
     }
 
     /// Effective bit depth for specificity scoring.
@@ -196,6 +205,7 @@ impl IpnPattern {
     pub(crate) fn literal_bits(&self) -> u32 {
         match self {
             IpnPattern::Wildcard => 0,
+            IpnPattern::Single(_) => 32,
             IpnPattern::Range(intervals) => {
                 let total_count: u64 = intervals.iter().map(|i| i.count()).sum();
                 if total_count <= 1 {
@@ -212,6 +222,8 @@ impl IpnPattern {
 impl core::fmt::Display for IpnPattern {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            IpnPattern::Wildcard => write!(f, "*"),
+            IpnPattern::Single(n) => write!(f, "{n}"),
             IpnPattern::Range(r) if r.len() == 1 => match r[0] {
                 IpnInterval::Number(n) => write!(f, "{n}"),
                 IpnInterval::Range(_) => write!(f, "[{}]", r[0]),
@@ -226,7 +238,6 @@ impl core::fmt::Display for IpnPattern {
                 }
                 write!(f, "]")
             }
-            IpnPattern::Wildcard => write!(f, "*"),
         }
     }
 }
@@ -318,8 +329,8 @@ pub(crate) fn parse_ipn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
         alt((
             "**".map(|_| ipn_pattern::ANY),
             preceded("!.", parse_ipn_part_pat).map(|c| IpnPatternItem {
-                allocator_id: IpnPattern::Range(vec![IpnInterval::Number(0)]),
-                node_number: IpnPattern::Range(vec![IpnInterval::Number(u32::MAX)]),
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(u32::MAX),
                 service_number: c,
             }),
             (
@@ -331,7 +342,7 @@ pub(crate) fn parse_ipn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
                     let (a, b, c) = if let Some(c) = c {
                         (a, b, c)
                     } else {
-                        (IpnPattern::Range(vec![IpnInterval::Number(0)]), a, b)
+                        (IpnPattern::Single(0), a, b)
                     };
                     IpnPatternItem {
                         allocator_id: a,
@@ -349,7 +360,7 @@ pub(crate) fn parse_ipn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem
 fn parse_ipn_part_pat(input: &mut &str) -> ModalResult<IpnPattern> {
     alt((
         "*".map(|_| IpnPattern::Wildcard),
-        dec_uint.map(|v| IpnPattern::Range(vec![IpnInterval::Number(v)])),
+        dec_uint.map(IpnPattern::Single),
         parse_ipn_range,
     ))
     .parse_next(input)
