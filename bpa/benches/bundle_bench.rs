@@ -40,6 +40,7 @@ impl cla::Cla for BenchCla {
         &self,
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _bundle: Bytes,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(std::time::Instant::now());

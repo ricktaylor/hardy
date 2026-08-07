@@ -7,7 +7,7 @@ use hardy_bpa::{
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::*;
 
@@ -327,6 +327,57 @@ impl storage::MetadataStorage for Storage {
         Ok(())
     }
 
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
+    async fn swap_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let bundle_key = bundle_id.to_key();
+        let expected = status::StatusFields::try_from(expected)?;
+        let sf = status::StatusFields::try_from(status)?;
+
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status      = $2,
+                 peer_id     = $3,
+                 queue_id    = $4,
+                 adu_source  = $5,
+                 adu_ts_ms   = $6,
+                 adu_ts_seq  = $7,
+                 service_eid = $8
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
+               AND status = $9
+               AND peer_id     IS NOT DISTINCT FROM $10
+               AND queue_id    IS NOT DISTINCT FROM $11
+               AND adu_source  IS NOT DISTINCT FROM $12
+               AND adu_ts_ms   IS NOT DISTINCT FROM $13
+               AND adu_ts_seq  IS NOT DISTINCT FROM $14
+               AND service_eid IS NOT DISTINCT FROM $15",
+        )
+        .bind(bundle_key)
+        .bind(sf.status)
+        .bind(sf.peer_id)
+        .bind(sf.queue_id)
+        .bind(sf.adu_source)
+        .bind(sf.adu_ts_ms)
+        .bind(sf.adu_ts_seq)
+        .bind(sf.service_eid)
+        .bind(expected.status)
+        .bind(expected.peer_id)
+        .bind(expected.queue_id)
+        .bind(expected.adu_source)
+        .bind(expected.adu_ts_ms)
+        .bind(expected.adu_ts_seq)
+        .bind(expected.service_eid)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows == 1)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.id)))]
     async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.bundle.id.to_key();
@@ -356,10 +407,47 @@ impl storage::MetadataStorage for Storage {
         .rows_affected();
 
         if rows == 0 {
-            return Err(sqlx::Error::RowNotFound.into());
+            // Delete is terminal: the bundle was removed between the
+            // caller's read and this write, and the update quietly loses
+            debug!("Status update for a deleted bundle, ignored");
         }
 
         Ok(())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
+    async fn tombstone_if(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let bundle_key = bundle_id.to_key();
+        let expected = status::StatusFields::try_from(expected)?;
+
+        let rows = sqlx::query(
+            "DELETE FROM metadata
+             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
+               AND status = $2
+               AND peer_id     IS NOT DISTINCT FROM $3
+               AND queue_id    IS NOT DISTINCT FROM $4
+               AND adu_source  IS NOT DISTINCT FROM $5
+               AND adu_ts_ms   IS NOT DISTINCT FROM $6
+               AND adu_ts_seq  IS NOT DISTINCT FROM $7
+               AND service_eid IS NOT DISTINCT FROM $8",
+        )
+        .bind(bundle_key)
+        .bind(expected.status)
+        .bind(expected.peer_id)
+        .bind(expected.queue_id)
+        .bind(expected.adu_source)
+        .bind(expected.adu_ts_ms)
+        .bind(expected.adu_ts_seq)
+        .bind(expected.service_eid)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows == 1)
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
@@ -495,6 +583,25 @@ impl storage::MetadataStorage for Storage {
         .bind(i32::try_from(peer)?)
         .bind(status::BundleStatusKind::Waiting)
         .bind(status::BundleStatusKind::ForwardPending)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows)
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status  = $2,
+                 peer_id = NULL
+             WHERE status = $3
+               AND peer_id = $1",
+        )
+        .bind(i32::try_from(peer)?)
+        .bind(status::BundleStatusKind::Waiting)
+        .bind(status::BundleStatusKind::ForwardAckPending)
         .execute(&self.pool)
         .await?
         .rows_affected();

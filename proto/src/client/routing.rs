@@ -216,6 +216,19 @@ mod tests {
         NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
     }
 
+    // The loopback host for test servers: IPv6 when available, IPv4 as a
+    // fallback (some sandboxes have no ::1)
+    fn loopback_host() -> &'static str {
+        static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        HOST.get_or_init(|| {
+            if std::net::TcpListener::bind(("::1", 0)).is_ok() {
+                "[::1]"
+            } else {
+                "127.0.0.1"
+            }
+        })
+    }
+
     // ── Custom mock servers ──────────────────────────────────────────
 
     async fn start_bad_server<S>(service: S) -> (String, tokio::task::JoinHandle<()>)
@@ -223,8 +236,9 @@ mod tests {
         S: routing_agent_server::RoutingAgent,
     {
         let port = test_port();
-        let addr: std::net::SocketAddr = format!("[::1]:{port}").parse().unwrap();
-        let grpc_addr = format!("http://[::1]:{port}");
+        let host = loopback_host();
+        let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
+        let grpc_addr = format!("http://{host}:{port}");
 
         let handle = tokio::spawn(async move {
             tonic::transport::Server::builder()

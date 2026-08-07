@@ -284,10 +284,15 @@ impl Rib {
                     self.poll_waiting_notify.notify_one();
                 }
             }
-            Action::Internal(InternalAction::Forward(peer))
-                if self.store.reset_peer_queue(peer).await =>
-            {
-                self.poll_waiting_notify.notify_one();
+            Action::Internal(InternalAction::Forward(peer)) => {
+                // The peer adjacency itself is going: queued bundles re-route,
+                // and transfers already accepted by the CLA resolve as
+                // outcome-unknown and re-route too.
+                let queued = self.store.reset_peer_queue(peer).await;
+                let in_flight = self.store.reset_peer_ack_pending(peer).await;
+                if queued || in_flight {
+                    self.poll_waiting_notify.notify_one();
+                }
             }
             Action::Internal(InternalAction::Local(_)) => {
                 self.poll_waiting_notify.notify_one();
@@ -323,6 +328,9 @@ impl Rib {
         }
         for peer in forward_peers {
             if self.store.reset_peer_queue(peer).await {
+                changed = true;
+            }
+            if self.store.reset_peer_ack_pending(peer).await {
                 changed = true;
             }
         }

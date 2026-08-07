@@ -205,6 +205,41 @@ impl Store {
         }
     }
 
+    // Compare-and-swap from the caller's snapshot status: the arbiter for
+    // writers racing the peer sweeps, the expiry reaper, and each other.
+    // Gauges move only when the swap wins.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn swap_status(&self, bundle: &mut Bundle, status: &BundleStatus) -> bool {
+        let swapped = self
+            .metadata_storage
+            .swap_status(&bundle.bundle.id, &bundle.metadata.status, status)
+            .await
+            .trace_expect("Failed to swap bundle status");
+
+        if swapped {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
+
+            bundle.metadata.status = status.clone();
+        }
+
+        swapped
+    }
+
+    // Conditional, terminal form of swap_status: tombstones the bundle's
+    // metadata only if its status still matches the caller's snapshot. The
+    // arbiter for resolutions whose action is the deletion itself — the
+    // bundle never transits a status another queue's poller could recover.
+    // The caller owns the follow-up data deletion and gauge accounting
+    // (delete_bundle tolerates the already-present tombstone).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    pub async fn tombstone_if(&self, bundle: &Bundle) -> bool {
+        self.metadata_storage
+            .tombstone_if(&bundle.bundle.id, &bundle.metadata.status)
+            .await
+            .trace_expect("Failed to tombstone bundle metadata")
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) {
         self.metadata_storage
@@ -231,6 +266,24 @@ impl Store {
 
         if reset > 0 {
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: None }))
+                .decrement(reset as f64);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
+                .increment(reset as f64);
+        }
+
+        reset != 0
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    pub async fn reset_peer_ack_pending(&self, peer: u32) -> bool {
+        let reset = self
+            .metadata_storage
+            .reset_peer_ack_pending(peer)
+            .await
+            .trace_expect("Failed to reset peer ack-pending transfers");
+
+        if reset > 0 {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardAckPending { peer }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);

@@ -59,13 +59,49 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Cheaper than `replace` because the bundle blob is not written. Use this
     /// for pure state-machine transitions where no other metadata has changed.
+    ///
+    /// A bundle deleted concurrently is not an error: delete is terminal, and
+    /// the update quietly loses. Backends must neither resurrect the bundle
+    /// nor fail the call.
     async fn update_status(&self, bundle: &Bundle) -> Result<()>;
+
+    /// Updates the status of the bundle with the given `bundle_id` only if
+    /// its current status equals `expected`, returning whether the swap was
+    /// applied.
+    ///
+    /// The compare-and-swap must be atomic with respect to concurrent status
+    /// writes and `tombstone`: callers use it to arbitrate between an
+    /// out-of-band event (a CLA transfer outcome), the peer-loss sweeps, and
+    /// bundle expiry. A missing or tombstoned bundle swaps nothing and
+    /// returns `false`.
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> Result<bool>;
+
+    /// Removes the metadata for the bundle with the given `bundle_id` and
+    /// leaves a tombstone, only if its current status equals `expected`,
+    /// returning whether the bundle was tombstoned.
+    ///
+    /// The conditional, terminal form of `swap_status`, with the same
+    /// atomicity requirement: callers use it when the resolution of a race is
+    /// the deletion itself, so the bundle never transits an intermediate
+    /// status that another queue's poller could recover.
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> Result<bool>;
 
     /// Removes any metadata for the given `bundle_id` and leaves a "tombstone".
     ///
     /// A tombstone marks the bundle as deleted, preventing it from being
     /// re-inserted or processed further. Does not error if the bundle does
     /// not exist.
+    ///
+    /// Unconditional — delete wins every race. Use for deletions whose
+    /// authority does not depend on the bundle's current state: expiry,
+    /// operator drop, or completing a bundle the caller has already claimed.
+    /// Use [`Self::tombstone_if`] when the authority to delete derives from
+    /// the bundle still being in an expected state.
     async fn tombstone(&self, bundle_id: &Id) -> Result<()>;
 
     /// Begins the startup recovery protocol by marking all existing metadata
@@ -103,6 +139,12 @@ pub trait MetadataStorage: Send + Sync {
     /// to `Waiting`, so the dispatcher re-evaluates their forwarding decision.
     /// Returns the number of bundles reset.
     async fn reset_peer_queue(&self, peer: u32) -> Result<u64>;
+
+    /// Resets all bundles with status `BundleStatus::ForwardAckPending { peer }`
+    /// to `Waiting`: the peer is gone, so the outcome of each accepted transfer
+    /// can never arrive and is resolved as outcome-unknown. Returns the number
+    /// of bundles reset.
+    async fn reset_peer_ack_pending(&self, peer: u32) -> Result<u64>;
 
     /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
     /// and ordered by expiry, to `stream`. Stops early if `stream.send`

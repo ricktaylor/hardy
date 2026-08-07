@@ -244,6 +244,7 @@ pub fn status_label(status: &crate::bundle::BundleStatus) -> &'static str {
         crate::bundle::BundleStatus::New => "received",
         crate::bundle::BundleStatus::Dispatching => "dispatching",
         crate::bundle::BundleStatus::ForwardPending { .. } => "forward_pending",
+        crate::bundle::BundleStatus::ForwardAckPending { .. } => "forward_ack_pending",
         crate::bundle::BundleStatus::AduFragment { .. } => "fragment",
         crate::bundle::BundleStatus::Waiting => "waiting",
         crate::bundle::BundleStatus::WaitingForService { .. } => "waiting_for_service",

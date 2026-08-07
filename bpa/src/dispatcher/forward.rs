@@ -15,10 +15,35 @@ impl Dispatcher {
             return;
         };
 
+        // Claim the bundle out of its peer queue before the in-memory rewrite
+        // below and before offering it. The claim must be a conditional swap:
+        // the egress channel delivers at-least-once, so a duplicate copy
+        // recovered by the storage poller must lose here rather than produce
+        // a second offer. It must happen first: a deferred outcome can arrive
+        // on another task the instant the CLA accepts, and transfer_outcome()
+        // only honours bundles already in ForwardAckPending, while the
+        // persist needs the metadata still indexing the stored (un-rewritten)
+        // data. The new status also distinguishes an in-flight transfer from
+        // a queued one, so reset_peer_queue() no longer races the offer.
+        if !self
+            .store
+            .swap_status(
+                &mut bundle,
+                &bundle::BundleStatus::ForwardAckPending { peer },
+            )
+            .await
+        {
+            debug!("Bundle already claimed for forwarding or swept, skipping offer");
+            return;
+        }
+
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
-        // pair, so the updated Bundle must replace the pre-rewrite one.
-        let data = match self.update_extension_blocks(&bundle, data) {
+        // pair, so the updated Bundle must replace the pre-rewrite one. The
+        // pre-rewrite Bundle is kept: the rewrite is in-memory only, and a
+        // bundle parked back to Waiting must persist metadata that indexes
+        // the stored (un-rewritten) data.
+        let (pre_rewrite, data) = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
                 self.store
@@ -26,10 +51,7 @@ impl Dispatcher {
                     .await;
                 return self.store.watch_bundle(bundle).await;
             }
-            Ok((new_bundle, data)) => {
-                bundle.bundle = new_bundle;
-                data
-            }
+            Ok((new_bundle, data)) => (core::mem::replace(&mut bundle.bundle, new_bundle), data),
         };
 
         // - Runs after dequeue from ForwardPending, just before CLA send
@@ -38,7 +60,12 @@ impl Dispatcher {
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         // - On Drop result: call drop_bundle() and return early
-        let (bundle, data) = match self
+        //
+        // Every exit below this point must resolve the claim taken above:
+        // ForwardAckPending has no storage poller, so a bundle left there is
+        // invisible until peer removal, restart, or expiry.
+        let bundle_id = bundle.bundle.id.clone();
+        let (mut bundle, data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
             .await
@@ -53,12 +80,26 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!("Egress filter execution failed: {e}");
+
+                // The filter consumed the claimed bundle, so re-fetch it and
+                // conditionally return the claim to Waiting for a fresh
+                // routing decision. Losing the swap means a sweep or the
+                // reaper resolved the bundle first.
+                if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
+                    && bundle.metadata.status == (bundle::BundleStatus::ForwardAckPending { peer })
+                    && self
+                        .store
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                        .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
                 return;
             }
         };
 
         // And pass to CLA
-        match cla.forward(queue, cla_addr, data).await {
+        match cla.forward(queue, cla_addr, &bundle.bundle.id, data).await {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
@@ -67,6 +108,12 @@ impl Dispatcher {
                 self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
                     .await;
                 return self.delete_bundle(bundle).await;
+            }
+            Ok(cla::ForwardBundleResult::Accepted) => {
+                // The CLA owns the transfer; the bundle stays in
+                // ForwardAckPending until the outcome arrives, the peer is
+                // removed, or the bundle's lifetime expires.
+                return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
                 // The neighbour has gone, kill the queue
@@ -80,7 +127,97 @@ impl Dispatcher {
             }
         }
 
+        // Synchronous failure: this bundle never entered the channel. Restore
+        // the pre-rewrite Bundle (the stored data is the un-rewritten
+        // original) and return it to Waiting for a fresh routing decision
+        // along with the rest of the peer's queue.
+        bundle.bundle = pre_rewrite;
+        self.store
+            .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+            .await;
+        self.store.watch_bundle(bundle).await;
         self.store.reset_peer_queue(peer).await;
+    }
+
+    // Resolves a deferred transfer outcome reported by `cla` for a bundle it
+    // previously answered `Accepted`. The status check is the stale-outcome
+    // guard: anything not currently ForwardAckPending via a peer of the
+    // reporting CLA — already resolved, expired, another CLA's transfer — is
+    // logged and dropped. The snapshot checks only filter; the
+    // status-conditioned swap below is the authoritative arbiter.
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
+    pub async fn transfer_outcome(
+        &self,
+        cla: &cla::registry::Cla,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: cla::TransferOutcome,
+    ) {
+        let Some(mut bundle) = self.store.get_metadata(bundle_id).await else {
+            debug!("Transfer outcome for unknown bundle {bundle_id}, ignored");
+            return;
+        };
+
+        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.metadata.status else {
+            debug!(
+                "Transfer outcome for bundle {bundle_id} that is not awaiting one ({:?}), ignored",
+                bundle.metadata.status
+            );
+            return;
+        };
+
+        if !cla.owns_peer(peer) {
+            // Also fires for a legitimate CLA whose outcome raced the peer's
+            // removal, so this is unremarkable rather than a warning
+            debug!("Transfer outcome for peer {peer} from a CLA that does not own it, ignored");
+            return;
+        }
+
+        // Claim the bundle: the snapshot checks above race the peer sweep,
+        // the expiry reaper, and duplicate outcomes, and losing the claim
+        // means one of them resolved the bundle first.
+        match outcome {
+            cla::TransferOutcome::Completed => {
+                // The terminal claim is a conditional tombstone: a status hop
+                // through Dispatching here is recoverable by the dispatch
+                // queue's storage poller mid-resolution, driving a duplicate
+                // transmission after delivery.
+                if !self.store.tombstone_if(&bundle).await {
+                    debug!(
+                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
+                    );
+                    return;
+                }
+
+                metrics::counter!("bpa.bundle.forwarded").increment(1);
+                self.report_bundle_forwarded(&bundle).await;
+
+                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
+                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
+                    .await;
+                self.delete_bundle(bundle).await
+            }
+            cla::TransferOutcome::Failed => {
+                if !self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!(
+                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
+                    );
+                    return;
+                }
+
+                metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
+
+                // Bundle-scoped evidence about a single transfer: re-run the
+                // routing decision now, rather than parking in Waiting (whose
+                // semantic is "nowhere to go") or resetting the whole peer
+                // queue (link-scoped evidence). Dispatch parks the bundle in
+                // Waiting itself if no route remains.
+                self.dispatch_bundle(bundle).await
+            }
+        }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]

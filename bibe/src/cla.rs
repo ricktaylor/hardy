@@ -97,6 +97,7 @@ impl Cla for BibeCla {
         &self,
         _queue: Option<u32>,
         cla_addr: &ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         bundle: Bytes,
     ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
         // Decode destination EID from CBOR in ClaAddress

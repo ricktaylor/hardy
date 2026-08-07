@@ -10,12 +10,18 @@ async fn forward(
         .ok_or(tonic::Status::invalid_argument("Missing address"))?
         .try_into()?;
 
+    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
     let result = match cla
-        .forward(request.queue, &cla_addr, request.bundle)
+        .forward(request.queue, &cla_addr, &bundle_id, request.bundle)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
         hardy_bpa::cla::ForwardBundleResult::Sent => forward_bundle_response::Result::Sent(()),
+        hardy_bpa::cla::ForwardBundleResult::Accepted => {
+            forward_bundle_response::Result::Accepted(())
+        }
         hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
             forward_bundle_response::Result::NoNeighbour(())
         }
@@ -105,6 +111,34 @@ impl hardy_bpa::cla::Sink for Sink {
             .await?
         {
             bpa_to_cla::Msg::RemovePeer(response) => Ok(response.removed),
+            msg => Err(hardy_bpa::cla::Error::Internal(
+                tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
+            )),
+        }
+    }
+
+    async fn transfer_outcome(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: hardy_bpa::cla::TransferOutcome,
+    ) -> hardy_bpa::cla::Result<()> {
+        let outcome = match outcome {
+            hardy_bpa::cla::TransferOutcome::Completed => {
+                transfer_outcome_request::Outcome::Completed(())
+            }
+            hardy_bpa::cla::TransferOutcome::Failed => transfer_outcome_request::Outcome::Failed(
+                tonic::Status::aborted("Transfer failed").into(),
+            ),
+        };
+
+        match self
+            .call(cla_to_bpa::Msg::TransferOutcome(TransferOutcomeRequest {
+                bundle_id: bundle_id.to_key(),
+                outcome: Some(outcome),
+            }))
+            .await?
+        {
+            bpa_to_cla::Msg::TransferOutcome(_) => Ok(()),
             msg => Err(hardy_bpa::cla::Error::Internal(
                 tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
             )),
@@ -210,10 +244,11 @@ pub async fn register_cla(
         }
     };
 
+    let node_id_count = response.node_ids.len();
     let node_ids = response
         .node_ids
         .into_iter()
-        .try_fold(Vec::new(), |mut v, node_id| {
+        .try_fold(Vec::with_capacity(node_id_count), |mut v, node_id| {
             v.push(node_id.parse::<hardy_bpv7::eid::NodeId>()?);
             Ok::<_, hardy_bpv7::eid::Error>(v)
         })

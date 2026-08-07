@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Deferred CLA transfer outcomes (see [Deferred CLA Transfer Outcomes](docs/design.md#deferred-cla-transfer-outcomes)): `ForwardBundleResult::Accepted` lets a CLA take ownership of a transfer and report `Completed`/`Failed` later via the new `Sink::transfer_outcome`, keyed by bundle ID. Accepted bundles are retained in the new `BundleStatus::ForwardAckPending` state until the outcome arrives, the peer is removed (outcome-unknown, back to `Waiting`), or the bundle expires. A deferred `Failed` re-enters dispatch per-bundle rather than resetting the whole peer queue. Outcome resolution is arbitrated by the new status-conditioned `MetadataStorage::swap_status` and its terminal form `tombstone_if` (a completed transfer resolves straight to its tombstone, never transiting a status the dispatch poller could recover), so an outcome racing the peer-loss sweep, bundle expiry, or a duplicate of itself is ignored; the in-memory metadata backend additionally never replaces a tombstone with a live entry.
+- `MetadataStorage::reset_peer_ack_pending` — the outcome-unknown sweep, mirroring `reset_peer_queue`.
+
+### Changed
+- **BREAKING:** `Cla::forward` takes the bundle ID alongside the bundle bytes, so a deferring CLA can echo it back without parsing the bundle. `ForwardBundleResult` and `BundleStatus` have new variants; `Sink` has a new required method.
+- The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.
+
+### Fixed
+- Overlapping service-registration polls (a re-registering service, or a poll racing an application cancel) can no longer dispatch — and potentially deliver — the same bundle twice: the poll claims each bundle out of `WaitingForService` with a status-conditioned swap.
+- A duplicate bundle copy delivered by the hybrid channels' at-least-once storage recovery can no longer re-enter circulation or produce a second CLA offer: a queue move (`storage::channel::Sender::send`) is now a status-conditioned swap from the sender's snapshot, and forwarding claims the bundle out of its peer queue the same way before offering it — a duplicate dispatch copy could previously stomp an in-flight `ForwardAckPending` back to `ForwardPending`, re-arming the peer queue mid-transfer, and a duplicate egress copy could offer the same bundle twice.
+
 ## [0.2.0]
 
 ### Added

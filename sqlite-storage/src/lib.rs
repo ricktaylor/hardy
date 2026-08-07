@@ -19,7 +19,7 @@ mod storage;
 pub use config::Config;
 
 use trace_err::*;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
