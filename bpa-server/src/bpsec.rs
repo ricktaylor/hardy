@@ -123,12 +123,9 @@ impl KeySource for PatternKeySource {
     fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
         let binding = self.bindings.iter().find(|b| b.pattern.matches(source))?;
 
-        // Gate the requested operations by the binding's role
-        let served: Vec<&Operation> = operations
-            .iter()
-            .filter(|op| binding.role.serves(op))
-            .collect();
-        if served.is_empty() {
+        // Gate the requested operations by the binding's role — iterator
+        // based, no allocation.
+        if !operations.iter().any(|op| binding.role.serves(op)) {
             debug!(
                 "Role {:?} for {source} withholds keys for {operations:?}",
                 binding.role
@@ -140,7 +137,9 @@ impl KeySource for PatternKeySource {
         for kid in &binding.kids {
             if let Some(key) = self.keys.get(kid)
                 && let Some(key_ops) = &key.operations
-                && served.iter().any(|op| key_ops.contains(op))
+                && operations
+                    .iter()
+                    .any(|op| binding.role.serves(op) && key_ops.contains(op))
             {
                 return Some(key);
             }
