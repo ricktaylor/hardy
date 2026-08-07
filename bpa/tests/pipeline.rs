@@ -1085,14 +1085,14 @@ async fn deferred_outcome_failed_redispatches() {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-08: deferred outcome — Delivered completes the transfer
+// INT-BPA-08: deferred outcome — Completed resolves the transfer
 // ---------------------------------------------------------------------------
 
-/// A transfer answered `Accepted` whose outcome is reported `Delivered` is
+/// A transfer answered `Accepted` whose outcome is reported `Completed` is
 /// complete: no re-offer, a late duplicate outcome is ignored, and the
 /// tombstone dedups a re-arrival of the same bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_outcome_delivered_completes() {
+async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
     let data = build_bundle(
@@ -1104,7 +1104,7 @@ async fn deferred_outcome_delivered_completes() {
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Delivered)
+        .transfer_outcome(&id, cla::TransferOutcome::Completed)
         .await
         .unwrap();
 
@@ -1115,7 +1115,7 @@ async fn deferred_outcome_delivered_completes() {
         .unwrap();
     expect_no_offer(&offers_rx).await;
 
-    // The delivered bundle was deleted with a tombstone: a re-arrival of the
+    // The completed bundle was deleted with a tombstone: a re-arrival of the
     // same bundle is dropped as a duplicate rather than re-forwarded.
     cla.sink().dispatch(data, None, None).await.unwrap();
     expect_no_offer(&offers_rx).await;
@@ -1222,14 +1222,14 @@ async fn deferred_outcome_ignores_wrong_cla() {
     };
     cla_b
         .sink()
-        .transfer_outcome(&unknown, cla::TransferOutcome::Delivered)
+        .transfer_outcome(&unknown, cla::TransferOutcome::Completed)
         .await
         .unwrap();
 
     // CLA B does not own the transfer's peer: its outcome is ignored.
     cla_b
         .sink()
-        .transfer_outcome(&id, cla::TransferOutcome::Delivered)
+        .transfer_outcome(&id, cla::TransferOutcome::Completed)
         .await
         .unwrap();
     expect_no_offer(&offers_a).await;
@@ -1243,6 +1243,88 @@ async fn deferred_outcome_ignores_wrong_cla() {
     let id2 = expect_offer(&offers_a).await;
     assert_eq!(id, id2, "Re-offer must be the same bundle");
     expect_no_offer(&offers_b).await;
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// INT-BPA-11: deferred outcome — expiry wins, the late outcome is dropped
+// ---------------------------------------------------------------------------
+
+/// The reaper's tombstone resolves a transfer whose bundle expires while
+/// awaiting its outcome; the outcome arriving afterwards is ignored rather
+/// than re-entering the expired bundle into dispatch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_outcome_loses_to_expiry() {
+    use hardy_bpa::storage::MetadataStorage;
+
+    let metadata_store = Arc::new(hardy_bpa::storage::MetadataMemStorage::new(
+        &Default::default(),
+    ));
+
+    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .metadata_storage(metadata_store.clone())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    let (cla, offers_rx) = DeferringCla::new(1);
+    bpa.register_cla("deferring-2".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink()
+        .add_peer(
+            cla::ClaAddress::Private("peer-2".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+
+    // A short-lived bundle is offered and accepted, then expires unresolved
+    let (_, data) = hardy_bpv7::builder::Builder::new(
+        "ipn:0.3.1".parse().unwrap(),
+        "ipn:0.2.99".parse().unwrap(),
+    )
+    .with_payload(std::borrow::Cow::Borrowed(b"expires-in-flight".as_slice()))
+    .with_lifetime(core::time::Duration::from_secs(2))
+    .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+    .expect("Failed to build bundle");
+    cla.sink()
+        .dispatch(Bytes::from(data), None, None)
+        .await
+        .unwrap();
+    let id = expect_offer(&offers_rx).await;
+
+    // The reaper tombstones the bundle at expiry
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    while metadata_store.get(&id).await.unwrap().is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Timeout waiting for the reaper to expire the transfer"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // The late outcome loses the race and is dropped: a Failed outcome that
+    // was wrongly honoured would re-dispatch and re-offer the bundle
+    cla.sink()
+        .transfer_outcome(&id, cla::TransferOutcome::Failed)
+        .await
+        .unwrap();
+    expect_no_offer(&offers_rx).await;
 
     bpa.shutdown().await;
 }

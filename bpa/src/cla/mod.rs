@@ -141,7 +141,7 @@ pub enum ForwardBundleResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferOutcome {
     /// The bundle was handed to the far bundle node.
-    Delivered,
+    Completed,
     /// The convergence layer gave up on the transfer.
     ///
     /// Not proof of non-delivery: the far end may already hold the bundle
@@ -319,7 +319,7 @@ pub trait Sink: Send + Sync {
     /// Reports the final outcome of a transfer previously answered
     /// [`ForwardBundleResult::Accepted`].
     ///
-    /// Every accepted transfer resolves exactly once: `Delivered`, `Failed`,
+    /// Every accepted transfer resolves exactly once: `Completed`, `Failed`,
     /// or implicitly outcome-unknown when the CLA unregisters or the peer is
     /// removed. An outcome is honoured only while the named bundle is still
     /// awaiting one via a peer of the reporting CLA; anything else — already

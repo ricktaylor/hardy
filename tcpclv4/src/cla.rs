@@ -106,7 +106,7 @@ impl hardy_bpa::cla::Cla for Cla {
 
             let outcome = match transmit(tasks, &ctx, remote_addr, bundle).await {
                 hardy_bpa::cla::ForwardBundleResult::Sent => {
-                    hardy_bpa::cla::TransferOutcome::Delivered
+                    hardy_bpa::cla::TransferOutcome::Completed
                 }
                 hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
                     hardy_bpa::cla::TransferOutcome::Failed

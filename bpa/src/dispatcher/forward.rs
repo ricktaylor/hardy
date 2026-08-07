@@ -60,6 +60,11 @@ impl Dispatcher {
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
         // - On Drop result: call drop_bundle() and return early
+        //
+        // Every exit below this point must resolve the claim taken above:
+        // ForwardAckPending has no storage poller, so a bundle left there is
+        // invisible until peer removal, restart, or expiry.
+        let bundle_id = bundle.bundle.id.clone();
         let (mut bundle, data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
@@ -75,6 +80,20 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!("Egress filter execution failed: {e}");
+
+                // The filter consumed the claimed bundle, so re-fetch it and
+                // conditionally return the claim to Waiting for a fresh
+                // routing decision. Losing the swap means a sweep or the
+                // reaper resolved the bundle first.
+                if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
+                    && bundle.metadata.status == (bundle::BundleStatus::ForwardAckPending { peer })
+                    && self
+                        .store
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                        .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
                 return;
             }
         };
@@ -126,7 +145,7 @@ impl Dispatcher {
     // reporting CLA — already resolved, expired, another CLA's transfer — is
     // logged and dropped. The snapshot checks only filter; the
     // status-conditioned swap below is the authoritative arbiter.
-    #[cfg_attr(feature = "instrument", instrument(skip(self, cla), fields(bundle.id = %bundle_id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     pub async fn transfer_outcome(
         &self,
         cla: &cla::registry::Cla,
@@ -147,7 +166,9 @@ impl Dispatcher {
         };
 
         if !cla.owns_peer(peer) {
-            warn!("Transfer outcome for peer {peer} from a CLA that does not own it, ignored");
+            // Also fires for a legitimate CLA whose outcome raced the peer's
+            // removal, so this is unremarkable rather than a warning
+            debug!("Transfer outcome for peer {peer} from a CLA that does not own it, ignored");
             return;
         }
 
@@ -155,7 +176,7 @@ impl Dispatcher {
         // the expiry reaper, and duplicate outcomes, and losing the claim
         // means one of them resolved the bundle first.
         match outcome {
-            cla::TransferOutcome::Delivered => {
+            cla::TransferOutcome::Completed => {
                 // The terminal claim is a conditional tombstone: a status hop
                 // through Dispatching here is recoverable by the dispatch
                 // queue's storage poller mid-resolution, driving a duplicate

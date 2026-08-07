@@ -158,6 +158,8 @@ message ForwardBundleRequest {
   optional uint32 queue     = 3;
   // The unique bundle identifier, formatted as specified in RFC 9171.
   // Identifies the transfer for correlation; the CLA treats it as opaque.
+  // Required: the CLA client rejects a request without it, so a CLA built
+  // on this contract requires a BPA that sends it.
   string          bundle_id = 4;
 }
 
@@ -185,7 +187,7 @@ message TransferOutcomeRequest {
   // The outcome of the transfer.
   oneof outcome {
     // The bundle was handed to the far bundle node.
-    google.protobuf.Empty delivered = 2;
+    google.protobuf.Empty completed = 2;
     // The convergence layer gave up on the transfer. The status carries an
     // opaque diagnostic reason; it does not assert non-delivery.
     google.rpc.Status     failed    = 3;

@@ -1,5 +1,4 @@
 use core::num::NonZeroUsize;
-
 use std::path::PathBuf;
 
 /// Per-session parameters for TCPCLv4 connections (RFC 9174 Section 4).

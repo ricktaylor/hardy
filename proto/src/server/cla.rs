@@ -99,8 +99,8 @@ impl Cla {
             .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
         let outcome = match request.outcome {
-            Some(transfer_outcome_request::Outcome::Delivered(_)) => {
-                hardy_bpa::cla::TransferOutcome::Delivered
+            Some(transfer_outcome_request::Outcome::Completed(_)) => {
+                hardy_bpa::cla::TransferOutcome::Completed
             }
             Some(transfer_outcome_request::Outcome::Failed(status)) => {
                 debug!("CLA reports transfer of {bundle_id} failed: {status:?}");

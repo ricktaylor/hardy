@@ -230,6 +230,19 @@ fn test_port() -> u16 {
     NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
 }
 
+/// The loopback host for test servers: IPv6 when available, IPv4 as a
+/// fallback (some sandboxes have no `::1`).
+fn loopback_host() -> &'static str {
+    static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        if std::net::TcpListener::bind(("::1", 0)).is_ok() {
+            "[::1]"
+        } else {
+            "127.0.0.1"
+        }
+    })
+}
+
 /// Start a gRPC server with the specified services.
 /// Returns the gRPC address string and the task pool (cancel to stop).
 pub async fn start_server(
@@ -237,8 +250,9 @@ pub async fn start_server(
     service_names: &[&str],
 ) -> (String, hardy_async::TaskPool) {
     let port = test_port();
-    let addr: std::net::SocketAddr = format!("[::1]:{port}").parse().unwrap();
-    let grpc_addr = format!("http://[::1]:{port}");
+    let host = loopback_host();
+    let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
+    let grpc_addr = format!("http://{host}:{port}");
 
     let tasks = hardy_async::TaskPool::new();
     let config = hardy_proto::server::Config {

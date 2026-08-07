@@ -295,13 +295,13 @@ async fn cla_cli_06_deferred_outcome() {
     // recorded by the time it returns.
     let client_sink = cla.take_sink().expect("CLA should have a sink");
     client_sink
-        .transfer_outcome(&bundle_id, cla::TransferOutcome::Delivered)
+        .transfer_outcome(&bundle_id, cla::TransferOutcome::Completed)
         .await
         .expect("transfer_outcome should succeed");
 
     assert_eq!(
         sink.outcomes(),
-        vec![(bundle_id, cla::TransferOutcome::Delivered)],
+        vec![(bundle_id, cla::TransferOutcome::Completed)],
         "The BPA should have received the outcome"
     );
 

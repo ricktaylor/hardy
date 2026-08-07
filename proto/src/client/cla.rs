@@ -123,8 +123,8 @@ impl hardy_bpa::cla::Sink for Sink {
         outcome: hardy_bpa::cla::TransferOutcome,
     ) -> hardy_bpa::cla::Result<()> {
         let outcome = match outcome {
-            hardy_bpa::cla::TransferOutcome::Delivered => {
-                transfer_outcome_request::Outcome::Delivered(())
+            hardy_bpa::cla::TransferOutcome::Completed => {
+                transfer_outcome_request::Outcome::Completed(())
             }
             hardy_bpa::cla::TransferOutcome::Failed => transfer_outcome_request::Outcome::Failed(
                 tonic::Status::aborted("Transfer failed").into(),
