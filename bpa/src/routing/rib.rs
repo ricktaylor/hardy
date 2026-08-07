@@ -411,7 +411,12 @@ impl Rib {
     }
 
     pub(crate) async fn shutdown_agents(&self) {
-        let agents = self.agents.lock().drain().collect::<Vec<_>>();
+        let agents = {
+            let mut locked = self.agents.lock();
+            let mut v = Vec::with_capacity(locked.len());
+            v.extend(locked.drain());
+            v
+        };
 
         if !agents.is_empty() {
             metrics::gauge!("bpa.rib.agents").decrement(agents.len() as f64);

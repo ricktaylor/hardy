@@ -209,7 +209,7 @@ impl<'de> serde::Deserialize<'de> for NodeIds {
             where
                 A: serde::de::SeqAccess<'de>,
             {
-                let mut endpoints = Vec::new();
+                let mut endpoints = Vec::with_capacity(seq.size_hint().unwrap_or(0));
                 while let Some(eid) = seq.next_element::<String>()? {
                     endpoints.push(eid.parse().map_err(serde::de::Error::custom)?);
                 }
