@@ -1,10 +1,12 @@
+use std::path::PathBuf;
+
+use clap::Parser;
 use hardy_async::TaskPool;
 use tracing::info;
 
 use self::server::BpaServer;
 
 mod bpsec;
-mod cli;
 mod config;
 mod error;
 mod server;
@@ -12,6 +14,22 @@ mod static_routes;
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Use a custom configuration file
+    #[arg(short = 'c', long = "config", value_name = "FILE")]
+    config_file: Option<PathBuf>,
+
+    /// Upgrade the bundle store to the current format
+    #[arg(short = 'u', long = "upgrade-store")]
+    upgrade_storage: bool,
+
+    /// Attempt to recover any damaged records in the store
+    #[arg(short = 'r', long = "recover-store")]
+    recover_storage: bool,
+}
 
 #[cfg(feature = "otel")]
 fn configure_tracing(log_level: tracing::Level) -> hardy_otel::OtelGuard {
@@ -33,9 +51,7 @@ fn configure_tracing(log_level: tracing::Level) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let Some(args) = cli::parse() else {
-        return Ok(());
-    };
+    let args = Args::parse();
 
     let config = config::Config::load(args.config_file)?;
     let _guard = configure_tracing(config.log_level);

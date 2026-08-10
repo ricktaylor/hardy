@@ -53,7 +53,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
 serde = { version = "1", features = ["derive"] }
 directories = "6"
-getopts = "0.2"
+clap = { version = "4", features = ["derive"] }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trace-err = "1"
