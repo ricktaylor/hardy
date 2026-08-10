@@ -1,4 +1,4 @@
-// The deliberately insecure trust policy behind `tls.insecure`:
+// The deliberately insecure trust policy behind `insecure_skip_verify`:
 // accepts any certificate chain (no trust validation) while still
 // verifying handshake signatures through the crypto provider. For testing
 // against self-signed peers only. rustls deliberately ships no such

@@ -39,7 +39,7 @@ impl tower::Service<()> for ListenerService {
 }
 
 pub struct Listener {
-    pub connection_rate_limit: u32,
+    pub connection_rate_limit: core::num::NonZeroU32,
     pub ctx: context::ConnectionContext,
 }
 
@@ -53,24 +53,28 @@ impl std::fmt::Debug for Listener {
 }
 
 impl Listener {
-    #[cfg_attr(feature = "instrument", instrument(skip(tasks)))]
-    pub async fn listen(self, tasks: Arc<hardy_async::TaskPool>, address: std::net::SocketAddr) {
-        let Ok(listener) = TcpListener::bind(address)
-            .await
-            .inspect_err(|e| error!("Failed to bind TCP listener: {e:?}"))
+    // The socket arrives already bound (and non-blocking) from the
+    // builder; this task registers it with the runtime and accepts.
+    #[cfg_attr(feature = "instrument", instrument(skip(tasks, listener)))]
+    pub async fn listen(self, tasks: Arc<hardy_async::TaskPool>, listener: std::net::TcpListener) {
+        let Ok(listener) = TcpListener::from_std(listener)
+            .inspect_err(|e| error!("Failed to register the TCP listener with the runtime: {e:?}"))
         else {
             return;
         };
 
+        match listener.local_addr() {
+            Ok(address) => info!("TCP server listening on {address}"),
+            Err(_) => info!("TCP server listening"),
+        }
+
         // We can layer services here
         let mut svc = tower::ServiceBuilder::new()
             .rate_limit(
-                self.connection_rate_limit as u64,
+                u64::from(self.connection_rate_limit.get()),
                 std::time::Duration::from_secs(1),
             )
             .service(ListenerService::new(listener));
-
-        info!("TCP server listening on {address}");
 
         loop {
             tokio::select! {

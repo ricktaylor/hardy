@@ -49,7 +49,7 @@ impl Connector {
 
         // Send contact header
         stream
-            .write_all(&self.ctx.contact_header())
+            .write_all(&self.ctx.dialing_contact_header())
             .await
             .inspect_err(
                 |e| debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}"),
@@ -90,7 +90,7 @@ impl Connector {
                 transport::terminate(
                     codec::MessageCodec::new_framed(stream),
                     codec::SessionTermReasonCode::VersionMismatch,
-                    self.ctx.session.contact_timeout,
+                    self.ctx.contact_timeout.get(),
                     &self.ctx.task_cancel_token,
                 )
                 .await;
@@ -103,7 +103,7 @@ impl Connector {
         }
 
         if buffer[5] & 1 != 0 {
-            if let Some(tls_config) = self.ctx.tls_config.clone() {
+            if let Some(tls_config) = self.ctx.tls.clone() {
                 debug!(%local_addr, %remote_addr, "Initiating TLS handshake");
                 return self
                     .tls_handshake(stream, remote_addr, local_addr, tls_config)
@@ -113,12 +113,12 @@ impl Connector {
                     });
             }
             debug!(%local_addr, %remote_addr, "TLS requested by peer but no TLS configuration provided");
-        } else if self.ctx.session.require_tls {
+        } else if self.ctx.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             debug!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
-                self.ctx.session.contact_timeout,
+                self.ctx.contact_timeout.get(),
                 &self.ctx.task_cancel_token,
             )
             .await;
@@ -168,7 +168,8 @@ impl Connector {
             transport::Error::InvalidProtocol
         })?;
 
-        // TODO(mTLS): Verify that server accepted our client certificate if mTLS is enabled
+        // A configured identity was presented if the peer requested client
+        // authentication; a rejected certificate fails the handshake above
         debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
 
         self.new_active(
@@ -200,9 +201,12 @@ impl Connector {
         // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self.ctx.keepalive_interval_secs(),
-                segment_mru: self.ctx.segment_mru,
-                transfer_mru: self.ctx.transfer_mru,
+                keepalive_interval: self
+                    .ctx
+                    .keepalive_interval
+                    .map_or(0, KeepaliveInterval::get),
+                segment_mru: self.ctx.segment_mru.get(),
+                transfer_mru: self.ctx.transfer_mru.get(),
                 node_id: self.ctx.first_node_id(),
                 ..Default::default()
             }))
@@ -217,7 +221,7 @@ impl Connector {
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
-                self.ctx.session.contact_timeout,
+                self.ctx.contact_timeout.get(),
                 &self.ctx.task_cancel_token,
             )
             .await
@@ -245,7 +249,8 @@ impl Connector {
         debug!(%local_addr, %remote_addr, "Received SESS_INIT {peer_init:?}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval = self.ctx.negotiate_keepalive(peer_init.keepalive_interval);
+        let keepalive_interval =
+            KeepaliveInterval::negotiate(self.ctx.keepalive_interval, peer_init.keepalive_interval);
 
         // Check peer init
         for i in &peer_init.session_extensions {
@@ -286,7 +291,7 @@ impl Connector {
             peer_addr,
             keepalive_duration,
             context::negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
-            usize::try_from(self.ctx.transfer_mru).unwrap_or(usize::MAX),
+            usize::try_from(self.ctx.transfer_mru.get()).unwrap_or(usize::MAX),
             rx,
             cancel_token,
         );

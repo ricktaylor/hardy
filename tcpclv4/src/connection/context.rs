@@ -1,10 +1,13 @@
-use super::*;
+use core::num::NonZeroU64;
 use std::net::SocketAddr;
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::*,
 };
+
+use super::*;
 
 /// Data needed to handle a connection, without the TaskPool to avoid circular references.
 ///
@@ -13,13 +16,14 @@ use tokio::{
 /// but excludes the TaskPool to prevent Arc cycles when spawning tasks.
 #[derive(Clone)]
 pub struct ConnectionContext {
-    pub session: config::SessionConfig,
-    pub segment_mru: u64,
-    pub transfer_mru: u64,
+    pub contact_timeout: ContactTimeout,
+    pub keepalive_interval: Option<KeepaliveInterval>,
+    pub segment_mru: NonZeroU64,
+    pub transfer_mru: NonZeroU64,
     pub node_ids: Arc<[NodeId]>,
     pub sink: Arc<dyn hardy_bpa::cla::Sink>,
     pub registry: Arc<connection::ConnectionRegistry>,
-    pub tls_config: Option<Arc<tls::Tls>>,
+    pub tls: Option<Arc<tls::Tls>>,
     pub session_cancel_token: tokio_util::sync::CancellationToken,
     pub task_cancel_token: hardy_async::CancellationToken,
 }
@@ -27,11 +31,12 @@ pub struct ConnectionContext {
 impl std::fmt::Debug for ConnectionContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionContext")
-            .field("session", &self.session)
+            .field("contact_timeout", &self.contact_timeout)
+            .field("keepalive_interval", &self.keepalive_interval)
             .field("segment_mru", &self.segment_mru)
             .field("transfer_mru", &self.transfer_mru)
             .field("node_ids", &self.node_ids)
-            .field("tls_config", &self.tls_config)
+            .field("tls", &self.tls)
             .finish_non_exhaustive()
     }
 }
@@ -39,33 +44,30 @@ impl std::fmt::Debug for ConnectionContext {
 impl ConnectionContext {
     /// Returns the contact timeout as a Duration.
     pub fn contact_timeout_duration(&self) -> tokio::time::Duration {
-        tokio::time::Duration::from_secs(self.session.contact_timeout as u64)
+        tokio::time::Duration::from_secs(u64::from(self.contact_timeout.get()))
     }
 
-    /// Returns the TLS flag byte for the contact header (1 if TLS configured, 0 otherwise).
-    pub fn tls_contact_flag(&self) -> u8 {
-        if self.tls_config.is_some() { 1 } else { 0 }
+    // The CAN_TLS flag must be honest per role (RFC 9174 Section 4.2:
+    // TLS is used only when both peers set it): the dialing side can
+    // always play the TLS client when material is configured, but the
+    // accepting side can only serve TLS with an identity.
+    fn contact_header(can_tls: bool) -> [u8; 6] {
+        [b'd', b't', b'n', b'!', 4, u8::from(can_tls)]
     }
 
-    /// Build the 6-byte contact header per RFC 9174 Section 4.2.
-    pub fn contact_header(&self) -> [u8; 6] {
-        [b'd', b't', b'n', b'!', 4, self.tls_contact_flag()]
+    /// The 6-byte contact header sent when dialing (RFC 9174 Section 4.2).
+    pub fn dialing_contact_header(&self) -> [u8; 6] {
+        Self::contact_header(self.tls.is_some())
     }
 
-    /// Returns the keepalive interval in seconds, defaulting to 0 if not configured.
-    pub fn keepalive_interval_secs(&self) -> u16 {
-        self.session.keepalive_interval.unwrap_or(0)
+    /// The 6-byte contact header sent when accepting (RFC 9174 Section 4.2).
+    pub fn accepting_contact_header(&self) -> [u8; 6] {
+        Self::contact_header(self.tls.as_ref().is_some_and(|tls| tls.has_identity()))
     }
 
     /// Get the first configured node ID.
     pub fn first_node_id(&self) -> Option<NodeId> {
         self.node_ids.first().cloned()
-    }
-
-    /// Negotiate keepalive interval with peer per RFC9174 Section 5.1.1.
-    /// Returns the minimum of our interval and peer's interval, or 0 if we have none configured.
-    pub fn negotiate_keepalive(&self, peer_keepalive: u16) -> u16 {
-        negotiate_keepalive(self.session.keepalive_interval, peer_keepalive)
     }
 
     /// Convert a keepalive interval (in seconds) to an Option<Duration>.
@@ -120,7 +122,7 @@ impl ConnectionContext {
         debug!(%local_addr, %remote_addr, "Contact header received");
 
         // Always send our contact header in reply!
-        if let Err(e) = stream.write_all(&self.contact_header()).await {
+        if let Err(e) = stream.write_all(&self.accepting_contact_header()).await {
             debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}");
             return;
         }
@@ -132,7 +134,7 @@ impl ConnectionContext {
             return transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::VersionMismatch,
-                self.session.contact_timeout,
+                self.contact_timeout.get(),
                 &self.task_cancel_token,
             )
             .await;
@@ -143,19 +145,24 @@ impl ConnectionContext {
         }
 
         if buffer[5] & 1 != 0 {
-            if let Some(tls_config) = self.tls_config.clone() {
+            if let Some(tls_config) = self.tls.clone()
+                && tls_config.has_identity()
+            {
                 debug!(%local_addr, %remote_addr, "TLS connection received");
                 return self
                     .tls_accept(stream, remote_addr, local_addr, tls_config)
                     .await;
             }
-            debug!(%local_addr, %remote_addr, "TLS requested but no TLS configuration provided");
-        } else if self.session.require_tls {
+            // Our accepting header did not advertise TLS, so a peer flag
+            // here does not commit the session to it (RFC 9174 Section
+            // 4.2: TLS is used only when both peers set the flag)
+            debug!(%local_addr, %remote_addr, "TLS requested by peer, but this listener cannot serve TLS (no identity configured)");
+        } else if self.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             warn!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             return transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
-                self.session.contact_timeout,
+                self.contact_timeout.get(),
                 &self.task_cancel_token,
             )
             .await;
@@ -190,7 +197,7 @@ impl ConnectionContext {
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
-                self.session.contact_timeout,
+                self.contact_timeout.get(),
                 &self.task_cancel_token,
             )
             .await
@@ -236,9 +243,9 @@ impl ConnectionContext {
         // Send our SESS_INIT message
         if let Err(e) = transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self.keepalive_interval_secs(),
-                segment_mru: self.segment_mru,
-                transfer_mru: self.transfer_mru,
+                keepalive_interval: self.keepalive_interval.map_or(0, KeepaliveInterval::get),
+                segment_mru: self.segment_mru.get(),
+                transfer_mru: self.transfer_mru.get(),
                 node_id: node_id.cloned(),
                 ..Default::default()
             }))
@@ -249,7 +256,8 @@ impl ConnectionContext {
         }
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval = self.negotiate_keepalive(peer_init.keepalive_interval);
+        let keepalive_interval =
+            KeepaliveInterval::negotiate(self.keepalive_interval, peer_init.keepalive_interval);
 
         // Check peer init
         for i in &peer_init.session_extensions {
@@ -301,7 +309,7 @@ impl ConnectionContext {
             peer_addr,
             keepalive_duration,
             negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
-            usize::try_from(self.transfer_mru).unwrap_or(usize::MAX),
+            usize::try_from(self.transfer_mru.get()).unwrap_or(usize::MAX),
             rx,
             cancel_token,
         );
@@ -337,14 +345,17 @@ impl ConnectionContext {
         local_addr: SocketAddr,
         tls_config: Arc<tls::Tls>,
     ) {
-        // This expect should be guarded by listeners not starting without TLS server config
+        // Guarded by the has_identity() check before tls_accept is called
         let acceptor = tls_config
             .acceptor()
             .trace_expect("TLS server config not available");
 
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
-                // TODO(mTLS): Verify client certificate if mTLS is enabled
+                // Client certificates are requested and verified inside the
+                // handshake, per the configured verify-clients policy.
+                // Node-ID authentication (RFC 9174 Section 4.4.4.3) is not
+                // yet implemented.
                 debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
                 self.new_passive(
                     local_addr,
@@ -359,14 +370,6 @@ impl ConnectionContext {
             }
         }
     }
-}
-
-// Negotiate the keepalive interval per RFC 9174 Section 5.1.1: the minimum
-// of the two proposals, or 0 (disabled) when we have none configured.
-pub fn negotiate_keepalive(local: Option<u16>, peer_keepalive: u16) -> u16 {
-    local
-        .map(|our_keepalive| peer_keepalive.min(our_keepalive))
-        .unwrap_or(0)
 }
 
 // Negotiate the outbound segment MTU: our configured MTU capped by the
@@ -384,17 +387,6 @@ pub fn negotiate_segment_mtu(local_mtu: Option<usize>, peer_segment_mru: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // UT-TCP-03: keepalive negotiation (RFC 9174 Section 5.1.1), exercising
-    // the production function rather than a re-implementation.
-    #[test]
-    fn negotiate_keepalive_cases() {
-        assert_eq!(negotiate_keepalive(Some(30), 60), 30);
-        assert_eq!(negotiate_keepalive(Some(60), 30), 30);
-        assert_eq!(negotiate_keepalive(Some(45), 45), 45);
-        assert_eq!(negotiate_keepalive(None, 60), 0);
-        assert_eq!(negotiate_keepalive(Some(60), 0), 0);
-    }
 
     // UT-TCP-03: segment MTU negotiation, including the 32-bit clamp.
     #[test]
