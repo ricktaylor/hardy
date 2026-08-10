@@ -14,6 +14,8 @@ pub mod cla;
 pub mod policy;
 pub mod static_routes;
 pub mod storage;
+#[cfg(feature = "tcpclv4")]
+pub mod tcpclv4;
 
 /// File watch configuration for config files.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -425,6 +427,43 @@ clas:
         assert_eq!(config.clas.len(), 2);
         assert_eq!(config.clas[0].name, "tcp-cla-1");
         assert_eq!(config.clas[1].name, "tcp-cla-2");
+    }
+
+    // A full tls block, including client-auth and the private-key-file
+    // alias, parses through the tagged clas entry.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn cla_tls_block_parsing() {
+        let config = write_and_load(
+            "cla_tls.yaml",
+            r#"
+clas:
+  - name: "tcp-tls"
+    type: tcpclv4
+    tls:
+      required: true
+      ca-certs: "/etc/hardy/ca"
+      identity:
+        cert-file: "/etc/hardy/certs/server.crt"
+        private-key-file: "/etc/hardy/private/server.key"
+      client-auth: "required"
+"#,
+        );
+        let cla::ClaType::TcpClv4(tcpcl) = &config.clas[0].cla_type else {
+            panic!("expected a tcpclv4 CLA entry");
+        };
+        let tls = tcpcl.tls.as_ref().unwrap();
+        assert!(tls.required);
+        assert_eq!(
+            tls.identity.as_ref().unwrap().key_file,
+            std::path::PathBuf::from("/etc/hardy/private/server.key")
+        );
+        assert_eq!(tls.client_auth, tcpclv4::ClientAuth::Required);
+        assert_eq!(
+            tls.ca_certs.as_deref(),
+            Some(std::path::Path::new("/etc/hardy/ca"))
+        );
     }
 
     // Empty CLA list is valid.

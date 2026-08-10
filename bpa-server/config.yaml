@@ -54,8 +54,7 @@ clas:
     type: tcpclv4
     address: "[::]:4556"
     segment-mru: 16384
-    transfer-mru: 562949953421312
+    transfer-mru: 1073741824
     max-idle-connections: 6
     contact-timeout: 15
     keepalive-interval: 60
-    require-tls: false

@@ -3,8 +3,6 @@ use std::sync::Arc;
 use hardy_bpa::cla::Cla;
 #[cfg(feature = "file-cla")]
 use hardy_file_cla::Cla as FileCla;
-#[cfg(feature = "tcpclv4")]
-use hardy_tcpclv4::Cla as TcpClv4Cla;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -22,7 +20,7 @@ pub struct Config {
 pub enum ClaType {
     #[cfg(feature = "tcpclv4")]
     #[serde(rename = "tcpclv4")]
-    TcpClv4(hardy_tcpclv4::config::Config),
+    TcpClv4(super::tcpclv4::Config),
 
     #[cfg(feature = "file-cla")]
     #[serde(rename = "file-cla")]
@@ -43,7 +41,7 @@ impl Config {
             #[cfg(feature = "tcpclv4")]
             ClaType::TcpClv4(config) => {
                 let cla =
-                    Arc::new(TcpClv4Cla::new(config).map_err(|e| {
+                    Arc::new(config.build().map_err(|e| {
                         anyhow::anyhow!("Failed to create CLA '{}': {e}", self.name)
                     })?);
                 Ok(Some(cla))

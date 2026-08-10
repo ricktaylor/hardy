@@ -2216,7 +2216,6 @@ dependencies = [
  "metrics",
  "rand 0.10.2",
  "rustls",
- "serde",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -2245,6 +2244,7 @@ dependencies = [
  "anyhow",
  "clap",
  "config",
+ "directories",
  "hardy-async",
  "hardy-bpa",
  "hardy-otel",
@@ -2254,7 +2254,6 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
- "trace-err",
  "tracing",
  "tracing-subscriber",
 ]
