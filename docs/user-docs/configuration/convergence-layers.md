@@ -37,33 +37,40 @@ reliable bundle transfer over TCP connections.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `address` | IP:port string | `[::]:4556` | Listen address and port. Use `[::]:4556` for all interfaces or `127.0.0.1:4556` for localhost only. |
-| `segment-mru` | Positive integer (bytes) | `16384` | Maximum Receive Unit for a single TCP segment payload. Increase to `65536` for high-bandwidth links. |
-| `transfer-mru` | Positive integer (bytes) | `562949953421312` (2^49) | Maximum bundle size that can be received. Set to `1073741824` (1 GB) for large file transfers. |
-| `max-idle-connections` | Non-negative integer | `6` | Maximum idle incoming connections per remote IP address. Increase for high-fan-in topologies. |
+| `address` | IP:port string | `[::]:4556` | Listen address and port. Use `[::]:4556` for all interfaces or `127.0.0.1:4556` for localhost only; absent defaults to the IANA-registered `[::]:4556`. |
+| `segment-mru` | Positive integer (bytes) | `16384` | Maximum Receive Unit for a single TCP segment payload. Increase to `65536` for high-bandwidth links. Zero is a startup error. |
+| `transfer-mru` | Positive integer (bytes) | `1073741824` (1 GiB) | Maximum bundle size that can be received. Zero is a startup error. |
+| `max-idle-connections` | Non-negative integer | `6` | Maximum idle incoming connections per remote IP address. Increase for high-fan-in topologies; `0` disables pooling. |
+| `connection-rate-limit` | Positive integer (per second) | `64` | Maximum incoming connections accepted per second; the listener delays accepts beyond this rate. Zero is a startup error. |
 
 ### Session Parameters
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `contact-timeout` | Positive integer (seconds) | `15` | Time to wait for a CONTACT header from a connecting peer. Increase to `30` for high-latency links. |
-| `keepalive-interval` | Non-negative integer (seconds) | `60` | Interval for keepalive signals on idle connections. `0` disables. Use `120` for satellite links. |
-| `require-tls` | `true`, `false` | `false` | Require TLS. Reject peers that do not offer TLS. Requires a `tls` block. |
+| `contact-timeout` | `1` to `60` (seconds) | `15` | Time to wait for a CONTACT header from a connecting peer. Increase to `30` for high-latency links. RFC 9174 caps the recommendation at 60 seconds; values outside the range are a startup error. |
+| `keepalive-interval` | Non-negative integer (seconds), or `null` | `60` | Interval for keepalive signals on idle connections. `0` or `null` disables. Use `120` for satellite links. |
 
 ### `tls` — TLS Configuration
 
-When a `tls` block is present on a CLA entry, TLS is offered to peers.
-When `require-tls: true`, plaintext connections are rejected.
+When a `tls` block is present on a CLA entry, TLS is offered to peers; a
+trust anchor must be configured inside the block. With `required: true`,
+sessions that do not negotiate TLS are refused.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `cert-file` | File path | *(optional)* | Certificate presented to peers, in PEM format. Enables accepting TLS connections; must be set together with `key-file`. |
-| `key-file` | File path | *(optional)* | Private key matching `cert-file`, in PEM format (PKCS#8, PKCS#1, or SEC1). Must be set together with `cert-file`. |
-| `ca-certs` | Directory path | *(one of these two)* | Directory of PEM CA certificates used to verify peers when connecting out. Mutually exclusive with `insecure`. |
-| `insecure` | `true`, `false` | `false` | Accept any peer certificate without validation. **Testing only; must not be used in production.** Mutually exclusive with `ca-certs`. |
-| `server-name` | Hostname string | *(optional)* | Expected server name for SNI verification. |
+| `required` | `true`, `false` | `false` | Refuse sessions that do not negotiate TLS (RFC 9174 "Contact Failure"). |
+| `ca-certs` | Directory path | *(see below)* | Directory of PEM CA certificates used to verify peers' certificates: the standing trust anchor for normal operation. |
+| `insecure-skip-verify` | `true`, `false` | `false` | Accept any peer certificate without validation. **Testing only; must not be used in production.** Overrides `ca-certs` when both are set: a startup warning names both keys, and the ignored certificates are never loaded, so a debug session is one line to flip. |
+| `identity.cert-file` | File path | *(optional)* | The node's certificate, in PEM format. Presented to dialers when accepting TLS connections, and to dialed peers as the client certificate when one is requested (mutual TLS). |
+| `identity.key-file` | File path | *(optional)* | Private key matching `identity.cert-file`, in PEM format (PKCS#8, PKCS#1, or SEC1). The pre-rename key `private-key-file` is still accepted as an alias. |
+| `client-auth` | `off`, `optional`, `required` | `off` | Mutual TLS for incoming connections. `required` refuses dialers without a certificate chaining to `ca-certs`; `optional` verifies a certificate when one is presented but accepts dialers without one (useful while migrating a fleet); `off` never requests one. Requires `identity` and `ca-certs`. |
+| `server-name` | Hostname string | *(optional)* | Expected server name for SNI verification, presented when dialing. |
 
-Exactly one of `ca-certs` or `insecure` must be configured: it determines how peers' certificates are judged when connecting out. `cert-file`/`key-file` are only needed on nodes that accept incoming TLS connections.
+A trust anchor is mandatory: `ca-certs`, or `insecure-skip-verify` for
+testing. The `identity` object holds the certificate and key as a pair
+(a lone half is a configuration error); listeners offer TLS only when an
+identity is configured, and dialing needs no identity unless the peer
+enforces mutual TLS.
 
 Example:
 
@@ -71,11 +78,12 @@ Example:
 clas:
   - name: secure-link
     type: tcpclv4
-    require-tls: true
     tls:
-      cert-file: /etc/hardy/certs/server.crt
-      key-file: /etc/hardy/private/server.key
+      required: true
       ca-certs: /etc/hardy/ca
+      identity:
+        cert-file: /etc/hardy/certs/server.crt
+        key-file: /etc/hardy/private/server.key
       server-name: ground-station.example.com
 ```
 
@@ -136,11 +144,12 @@ cla-name: remote-tcpclv4
 log-level: info
 address: "[::]:4556"
 keepalive-interval: 120
-require-tls: true
 tls:
-  cert-file: /etc/hardy/certs/server.crt
-  key-file: /etc/hardy/private/server.key
+  required: true
   ca-certs: /etc/hardy/ca
+  identity:
+    cert-file: /etc/hardy/certs/server.crt
+    key-file: /etc/hardy/private/server.key
 ```
 
 See also:
