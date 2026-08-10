@@ -88,42 +88,32 @@ async fn exec_builtin_cla(
         other => return Err(anyhow::anyhow!("Unknown built-in CLA: '{other}'")),
     }
 
-    let mut tcpclv4_config = hardy_tcpclv4::config::Config {
-        address: None,
-        session_defaults: hardy_tcpclv4::config::SessionConfig {
-            require_tls: false,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    // ping only dials; never claim the registered listening port
+    let mut builder = hardy_tcpclv4::Tcpclv4::builder();
 
-    // Configure TLS if --tls-insecure or --tls-ca is specified
-    if args.tls_insecure || args.tls_ca.is_some() {
-        let mut tls_config = hardy_tcpclv4::config::TlsConfig::default();
-        if args.tls_insecure {
-            tls_config.insecure = true;
-        }
-        if let Some(ca_dir) = &args.tls_ca {
-            if !ca_dir.exists() {
-                return Err(anyhow::anyhow!(
-                    "CA bundle directory not found: {}",
-                    ca_dir.display()
-                ));
-            }
-            if !ca_dir.is_dir() {
-                return Err(anyhow::anyhow!(
-                    "CA bundle must be a directory, not a file: {}",
-                    ca_dir.display()
-                ));
-            }
-            tls_config.ca_certs = Some(ca_dir.clone());
-        }
-        tcpclv4_config.tls = Some(tls_config);
-        tcpclv4_config.session_defaults.require_tls = true;
+    // TLS is required as soon as --tls-insecure or --tls-ca asks for it;
+    // the two flags conflict at argument parsing, so at most one is set.
+    // Directory problems surface from build() with pathful messages
+    if args.tls_insecure {
+        builder = builder.tls(
+            hardy_tcpclv4::tls::Tls::builder()
+                .dangerous()
+                .insecure_skip_verify()
+                .required(true)
+                .build()?,
+        );
+    } else if let Some(ca_dir) = &args.tls_ca {
+        builder = builder.tls(
+            hardy_tcpclv4::tls::Tls::builder()
+                .ca_certs(ca_dir.clone())
+                .required(true)
+                .build()?,
+        );
     }
 
     let cla = std::sync::Arc::new(
-        hardy_tcpclv4::Cla::new(&tcpclv4_config)
+        builder
+            .build()
             .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
     );
 

@@ -130,10 +130,10 @@ pub struct Command {
     grpc_listen: std::net::SocketAddr,
 
     /// Accept self-signed TLS certificates (TCPCLv4 only)
-    #[arg(long = "tls-insecure")]
+    #[arg(long = "tls-insecure", conflicts_with = "tls_ca")]
     tls_insecure: bool,
 
-    /// CA bundle directory for TLS (TCPCLv4 only)
+    /// CA certificate directory for TLS (TCPCLv4 only)
     #[arg(long = "tls-ca")]
     tls_ca: Option<std::path::PathBuf>,
 }

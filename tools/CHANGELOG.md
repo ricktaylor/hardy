@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- `bp ping --tls-insecure` and `--tls-ca` now conflict at argument parsing (previously both were accepted and rejected later at CLA startup), and problems with the CA directory are reported through the TCPCLv4 TLS loader's messages.
+
 ## [0.2.0]
 
 ### Changed
