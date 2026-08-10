@@ -353,9 +353,12 @@ impl ConnectionContext {
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
                 // Client certificates are requested and verified inside the
-                // handshake, per the configured verify-clients policy.
-                // Node-ID authentication (RFC 9174 Section 4.4.4.3) is not
-                // yet implemented.
+                // handshake, per the configured client-auth policy, so a
+                // verified peer holds a certificate from a trusted CA.
+                // TODO(RFC 9174 Section 4.4.4.3): bind the certificate to
+                // the peer's Node ID (match the SESS_INIT NODE-ID against
+                // the certificate), so a verified peer is the node it
+                // claims to be, not merely a member of the PKI.
                 debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
                 self.new_passive(
                     local_addr,

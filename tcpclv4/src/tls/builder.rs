@@ -214,6 +214,10 @@ impl TlsBuilder {
                 // Guarded by the cross-input rules above.
                 return Err(Error::ClientAuthWithoutAnchors);
             };
+            // TODO(revocation): the verifier is built without CRLs
+            // (`with_crls`), so a compromised-but-unexpired client
+            // certificate stays valid until it expires or the CA
+            // directory is edited.
             let mut verifier = WebPkiClientVerifier::builder(store.clone());
             if self.client_auth == ClientAuth::Optional {
                 verifier = verifier.allow_unauthenticated();

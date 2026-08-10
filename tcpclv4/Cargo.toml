@@ -37,3 +37,5 @@ tokio-rustls = "0.26"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+rcgen = "0.14"
+tempfile = "3"
