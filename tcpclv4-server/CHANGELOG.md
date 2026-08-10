@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: the TCPCLv4 config-file schema is owned by this crate (previously deserialized through `hardy-tcpclv4`'s serde types) and mapped onto the library's `Tcpclv4::builder()`; the library's example configuration files (`example_config.toml`/`.yaml`) now live here, and the `HARDY_TCPCLV4_*` environment overrides are unchanged. Absent keys defer to the library's defaults instead of restating them: an absent `address` listens on the IANA-registered `[::]:4556`. Out-of-range values are startup errors instead of warnings: `contact-timeout` must be 1 to 60 seconds (RFC 9174 Section 4.2), and `segment-mru`, `transfer-mru`, and `connection-rate-limit` must be greater than zero.
+- **BREAKING**: the `tls` section is restructured. `required` replaces the top-level `require-tls`, so requiring TLS without configuring it cannot be written. The certificate and key move into an `identity` object (`identity.cert-file`/`identity.key-file`; a lone half is a parse error, and `private-key-file` remains an alias for `key-file`). `verify-clients` is renamed `client-auth`. The trust anchor is mandatory and spelled directly in the section: `ca-certs`, or the deliberately loud `insecure-skip-verify` (replacing `insecure`), which overrides `ca-certs` with a startup warning naming both keys rather than conflicting with it, so a debug session is one line to flip. The TLS rules are judged by the library, with errors in the config's own vocabulary.
+
 ## [0.2.0]
 
 ### Added

@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::PathBuf;
+
+use hardy_tcpclv4::tls;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 mod log_level_serde {
@@ -58,11 +61,102 @@ fn default_cla_name() -> String {
     env!("CARGO_PKG_NAME").to_string()
 }
 
+// A certificate and the private key that proves it: only representable as
+// a pair.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub struct Identity {
+    // The node's certificate (PEM).
+    pub cert_file: PathBuf,
+
+    // The private key (PEM: PKCS#8, PKCS#1, or SEC1) matching `cert-file`.
+    #[serde(alias = "private-key-file")]
+    pub key_file: PathBuf,
+}
+
+// Client-certificate verification policy for inbound TLS connections
+// (mutual TLS): `required` refuses dialers without a certificate chaining
+// to `ca-certs`; `optional` verifies a certificate when one is presented
+// but accepts dialers without one; `off` never requests one.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientAuth {
+    #[default]
+    Off,
+    Optional,
+    Required,
+}
+
+// The config schema's client-auth policy is a mirror of the library's;
+// this conversion is the one place the two are stitched together.
+impl From<ClientAuth> for tls::ClientAuth {
+    fn from(policy: ClientAuth) -> Self {
+        match policy {
+            ClientAuth::Off => Self::Off,
+            ClientAuth::Optional => Self::Optional,
+            ClientAuth::Required => Self::Required,
+        }
+    }
+}
+
+// The `tls` section of the config file. The serde layer stays permissive
+// and flat, mirroring what the operator types; `identity` is one object
+// with two required fields, so a lone certificate or key cannot be
+// written, and `required` lives inside the section, so "require TLS
+// without configuring TLS" cannot be written. The trust-anchor rules are
+// judged by `Tcpclv4Server::new`, which names the keys in its errors; the
+// honest make-invalid-unrepresentable types live behind it, in
+// `hardy_tcpclv4::tls`.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub struct TlsConfig {
+    // Refuse sessions that do not negotiate TLS. Default: `false`.
+    #[serde(default)]
+    pub required: bool,
+
+    // Directory of PEM CA certificates used to verify peers'
+    // certificates: the standing trust anchor for normal operation.
+    #[serde(default)]
+    pub ca_certs: Option<PathBuf>,
+
+    // Accept any peer certificate chain with no trust validation
+    // (INSECURE; testing only). The key is deliberately loud and has no
+    // shorter alias: the danger must be visible in the file. Overrides
+    // `ca-certs` when both are set, so a debug session is one line to
+    // flip; the override is named in a startup warning, and the ignored
+    // bundle is never loaded.
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
+
+    // The node's own certificate and private key. Required to accept TLS
+    // connections (the listener's TLS server role), and presented to
+    // dialed peers under mutual TLS.
+    #[serde(default)]
+    pub identity: Option<Identity>,
+
+    // Client-certificate verification for inbound connections (mutual
+    // TLS). Requires `identity` and a `ca-certs` trust anchor.
+    #[serde(default)]
+    pub client_auth: ClientAuth,
+
+    // SNI override presented when dialing (for certificates issued to
+    // domain names).
+    #[serde(default)]
+    pub server_name: Option<String>,
+}
+
 // Configuration for the standalone TCPCLv4 CLA server.
 //
 // Loaded from a TOML/YAML/JSON config file and/or environment variables
 // prefixed with `HARDY_TCPCLV4_`. Uses kebab-case field names in config files
 // and `__` as the nested-field separator for environment variables.
+//
+// The transport fields mirror the `hardy_tcpclv4` builder inputs (kept in
+// sync with the `clas:` entry mirror in bpa-server/src/config/tcpclv4.rs).
+// Absent keys stay `None` and leave the corresponding builder default in
+// force, so no default value is restated here; `Tcpclv4Server::new`
+// (src/server.rs) maps the file surface onto the builder, naming config
+// keys in every error.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -89,9 +183,41 @@ pub struct Config {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    // TCPCLv4 transport-layer configuration (flattened into the top level).
-    #[serde(flatten)]
-    pub tcpcl: hardy_tcpclv4::config::Config,
+    // The local address to listen on for incoming connections; absent
+    // listens on the IANA-registered `[::]:4556`.
+    #[serde(default)]
+    pub address: Option<SocketAddr>,
+
+    // Largest acceptable single-segment payload, in bytes; must be
+    // greater than zero.
+    #[serde(default)]
+    pub segment_mru: Option<u64>,
+
+    // Largest acceptable total bundle transfer, in bytes; must be greater
+    // than zero.
+    #[serde(default)]
+    pub transfer_mru: Option<u64>,
+
+    // Idle connections retained per remote address; 0 disables pooling.
+    #[serde(default)]
+    pub max_idle_connections: Option<usize>,
+
+    // Inbound connections accepted per second; must be greater than zero.
+    #[serde(default)]
+    pub connection_rate_limit: Option<u32>,
+
+    // Seconds to wait for a peer's contact header: 1 to 60 (RFC 9174
+    // Section 4.2).
+    #[serde(default)]
+    pub contact_timeout: Option<u16>,
+
+    // Keepalive interval in seconds; 0 disables keepalives.
+    #[serde(default)]
+    pub keepalive_interval: Option<u16>,
+
+    // TLS configuration; absent means plaintext.
+    #[serde(default)]
+    pub tls: Option<TlsConfig>,
 }
 
 impl Config {
@@ -134,6 +260,8 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::Tcpclv4Server;
+    use hardy_async::TaskPool;
     use serial_test::serial;
     use std::io::Write;
 
@@ -153,12 +281,18 @@ mod tests {
         assert_eq!(config.bpa_address, "http://[::1]:50051");
         assert_eq!(config.cla_name, env!("CARGO_PKG_NAME"));
         assert_eq!(config.log_level, Level::INFO);
-        assert_eq!(
-            config.tcpcl.address.unwrap(),
-            std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], 4556))
+        assert!(
+            config.address.is_none(),
+            "absent maps to the registered default listener"
         );
-        assert_eq!(config.tcpcl.segment_mru, 16384);
-        assert!(!config.tcpcl.session_defaults.require_tls);
+        assert!(
+            config.segment_mru.is_none(),
+            "absent keys defer to the builder defaults"
+        );
+        assert!(config.tls.is_none(), "plaintext by default");
+        // Not built here: the all-defaults build would bind the real
+        // IANA-registered [::]:4556. The build path is covered by the
+        // tests below, which listen on an ephemeral loopback port.
     }
 
     // TOML config file overrides defaults.
@@ -180,11 +314,11 @@ keepalive-interval = 30
         assert_eq!(config.cla_name, "test-cla");
         assert_eq!(config.log_level, Level::DEBUG);
         assert_eq!(
-            config.tcpcl.address.unwrap(),
+            config.address.unwrap(),
             std::net::SocketAddr::from(([0, 0, 0, 0], 9999))
         );
-        assert_eq!(config.tcpcl.segment_mru, 8192);
-        assert_eq!(config.tcpcl.session_defaults.keepalive_interval, Some(30));
+        assert_eq!(config.segment_mru, Some(8192));
+        assert_eq!(config.keepalive_interval, Some(30));
     }
 
     // YAML config file works identically to TOML.
@@ -203,7 +337,7 @@ segment-mru: 4096
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
         assert_eq!(config.cla_name, "yaml-cla");
         assert_eq!(config.log_level, Level::WARN);
-        assert_eq!(config.tcpcl.segment_mru, 4096);
+        assert_eq!(config.segment_mru, Some(4096));
     }
 
     // JSON config file works identically to TOML.
@@ -261,7 +395,7 @@ log-level = "warn"
         );
     }
 
-    // Nested env vars with __ separator override flattened tcpclv4 fields.
+    // Env vars override the top-level transport fields.
     #[test]
     #[serial]
     fn env_overrides_nested_fields() {
@@ -273,7 +407,7 @@ log-level = "warn"
         let config = Config::load(Some(path)).unwrap();
         unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
 
-        assert_eq!(config.tcpcl.segment_mru, 32768);
+        assert_eq!(config.segment_mru, Some(32768));
     }
 
     // Missing config file returns an error.
@@ -317,30 +451,76 @@ log-level = "warn"
         assert!(result.is_err());
     }
 
-    // TLS config with partial fields parses (cert without key is valid at config level).
+    // A full TLS section parses into its structured form.
     #[test]
     #[serial]
-    fn tls_partial_config() {
+    fn tls_full_config() {
         let config = write_and_load(
             "tls.yaml",
             r#"
-require-tls: true
 tls:
-  cert-file: "/etc/hardy/certs/server.crt"
-  key-file: "/etc/hardy/private/server.key"
+  required: true
+  ca-certs: "/etc/hardy/ca"
+  identity:
+    cert-file: "/etc/hardy/certs/server.crt"
+    key-file: "/etc/hardy/private/server.key"
+  client-auth: "required"
 "#,
         );
-        assert!(config.tcpcl.session_defaults.require_tls);
-        let tls = config.tcpcl.tls.unwrap();
+        let tls = config.tls.unwrap();
+        assert!(tls.required);
+        assert_eq!(tls.ca_certs, Some(PathBuf::from("/etc/hardy/ca")));
+        assert!(!tls.insecure_skip_verify);
+        let identity = tls.identity.unwrap();
         assert_eq!(
-            tls.cert_file.unwrap(),
+            identity.cert_file,
             PathBuf::from("/etc/hardy/certs/server.crt")
         );
         assert_eq!(
-            tls.key_file.unwrap(),
+            identity.key_file,
             PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert!(tls.ca_certs.is_none());
+        assert_eq!(tls.client_auth, ClientAuth::Required);
+    }
+
+    // The pre-rename key `private-key-file` is still accepted as an alias
+    // for `key-file`.
+    #[test]
+    #[serial]
+    fn private_key_file_alias() {
+        let config = write_and_load(
+            "alias.yaml",
+            r#"
+tls:
+  insecure-skip-verify: true
+  identity:
+    cert-file: "/etc/hardy/certs/server.crt"
+    private-key-file: "/etc/hardy/private/server.key"
+"#,
+        );
+        assert_eq!(
+            config.tls.unwrap().identity.unwrap().key_file,
+            PathBuf::from("/etc/hardy/private/server.key")
+        );
+    }
+
+    // The identity's shape rejects a lone certificate or key at parse
+    // time: both fields of `tls.identity` are required, so half a pair
+    // never reaches the builder mapping.
+    #[test]
+    #[serial]
+    fn lone_identity_half_rejected_at_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lone-cert-half.toml");
+        std::fs::write(
+            &path,
+            "[tls]\ninsecure-skip-verify = true\n\n[tls.identity]\ncert-file = \"c.pem\"\n",
+        )
+        .unwrap();
+        assert!(
+            Config::load(Some(path)).is_err(),
+            "expected a parse error for an identity missing its key-file"
+        );
     }
 
     // Malformed TOML returns an error.
@@ -384,14 +564,107 @@ this-does-not-exist = 42
     #[serial]
     fn large_segment_mru() {
         let config = write_and_load("large.toml", "segment-mru = 1073741824\n");
-        assert_eq!(config.tcpcl.segment_mru, 1073741824);
+        assert_eq!(config.segment_mru, Some(1073741824));
     }
 
-    // Keepalive interval of 0 disables keepalives.
+    // An explicit null address disables the listener (dial-only).
+    #[test]
+    #[serial]
+    fn null_address_disables_the_listener() {
+        let config = write_and_load("null_address.yaml", "address: null\n");
+        assert!(config.address.is_none());
+    }
+
+    // Keepalive interval of 0 disables keepalives, and still builds.
     #[test]
     #[serial]
     fn keepalive_zero() {
-        let config = write_and_load("keepalive.toml", "keepalive-interval = 0\n");
-        assert_eq!(config.tcpcl.session_defaults.keepalive_interval, Some(0));
+        let config = write_and_load(
+            "keepalive.toml",
+            "address = \"127.0.0.1:0\"\nkeepalive-interval = 0\n",
+        );
+        assert_eq!(config.keepalive_interval, Some(0));
+        Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
+    }
+
+    // The mapping onto the builder rejects each config contradiction with
+    // a message naming the offending keys, before any file is touched.
+    #[test]
+    #[serial]
+    fn mapping_rejects_contradictions() {
+        for (name, content, message) in [
+            ("no-anchor.toml", "[tls]\nrequired = true\n", "trust anchor"),
+            (
+                "insecure-off-is-no-anchor.toml",
+                "[tls]\ninsecure-skip-verify = false\n",
+                "trust anchor",
+            ),
+            // The quiet spellings of earlier schemas buy nothing: an
+            // unknown key is ignored, leaving no trust anchor configured.
+            (
+                "bare-insecure.toml",
+                "[tls]\ninsecure = true\n",
+                "trust anchor",
+            ),
+            (
+                "auth-without-identity.toml",
+                "[tls]\nca-certs = \"/etc/hardy/ca\"\nclient-auth = \"required\"\n",
+                "identity",
+            ),
+            (
+                "auth-insecure.toml",
+                "[tls]\ninsecure-skip-verify = true\nclient-auth = \"optional\"\n\n[tls.identity]\ncert-file = \"c.pem\"\nkey-file = \"k.pem\"\n",
+                "insecure-skip-verify",
+            ),
+            ("zero-segment-mru.toml", "segment-mru = 0\n", "segment-mru"),
+            (
+                "zero-transfer-mru.toml",
+                "transfer-mru = 0\n",
+                "transfer-mru",
+            ),
+            (
+                "zero-rate-limit.toml",
+                "connection-rate-limit = 0\n",
+                "connection-rate-limit",
+            ),
+            (
+                "contact-timeout-oob.toml",
+                "contact-timeout = 61\n",
+                "contact-timeout",
+            ),
+        ] {
+            let Err(err) = Tcpclv4Server::new(write_and_load(name, content), TaskPool::new())
+            else {
+                panic!("{name}: expected a mapping error");
+            };
+            let err = err.to_string();
+            assert!(err.contains(message), "{name}: {err}");
+        }
+    }
+
+    // An insecure-only TLS config builds without touching any file.
+    #[test]
+    #[serial]
+    fn insecure_only_builds() {
+        let config = write_and_load(
+            "insecure.toml",
+            "address = \"127.0.0.1:0\"\n\n[tls]\ninsecure-skip-verify = true\n",
+        );
+        Tcpclv4Server::new(config, TaskPool::new()).expect("no file IO on this path");
+    }
+
+    // insecure-skip-verify overrides ca-certs rather than conflicting with
+    // it, so a debug session is one line to flip. The ca-certs path is
+    // bogus on purpose: the build succeeding proves the ignored bundle is
+    // never loaded.
+    #[test]
+    #[serial]
+    fn insecure_overrides_ca_certs() {
+        let config = write_and_load(
+            "override.toml",
+            "address = \"127.0.0.1:0\"\n\n[tls]\nca-certs = \"/nonexistent/ca\"\ninsecure-skip-verify = true\n",
+        );
+        Tcpclv4Server::new(config, TaskPool::new())
+            .expect("insecure-skip-verify wins; ca-certs is not loaded");
     }
 }
