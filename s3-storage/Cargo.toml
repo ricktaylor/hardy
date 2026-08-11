@@ -14,13 +14,11 @@ exclude = ["docs/"]
 [features]
 default = []
 instrument = ["tracing/attributes"]
-serde = ["dep:serde"]
 
 [dependencies]
 hardy-bpa = { version = "0.2", path = "../bpa" }
 aws-config = "1"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
-serde = { version = "1", features = ["derive"], optional = true }
 thiserror = "2"
 time = { version = "0.3", features = ["std"] }
 tracing = { version = "0.1", default-features = false }

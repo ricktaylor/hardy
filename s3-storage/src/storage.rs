@@ -1,20 +1,26 @@
 use std::sync::Arc;
 
 use aws_sdk_s3::{
+    Client,
     primitives::ByteStream,
     types::{CompletedMultipartUpload, CompletedPart},
 };
 use hardy_bpa::{
     Bytes, async_trait,
-    storage::{self, RecoveryResponse},
+    storage::{self, BundleStorage, RecoveryResponse},
     stream::Sender,
 };
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+use super::{PartSize, S3StorageBuilder};
+
+/// S3-backed implementation of
+/// [`BundleStorage`](hardy_bpa::storage::BundleStorage), constructed via
+/// [`S3Storage::builder()`].
 #[derive(Debug)]
-pub(super) struct Storage {
-    client: aws_sdk_s3::Client,
+pub struct S3Storage {
+    client: Client,
     bucket: String,
     /// Key prefix with trailing slash, or empty string if no prefix is configured.
     /// Pre-computed at construction to avoid re-allocating on every key operation.
@@ -22,16 +28,22 @@ pub(super) struct Storage {
     /// Bundle size threshold above which multipart upload is used.
     multipart_threshold: usize,
     /// Size of each part (except the last) in a multipart upload.
-    part_size: usize,
+    part_size: PartSize,
 }
 
-impl Storage {
+impl S3Storage {
+    /// Start building an `S3Storage` for `bucket`: chain the options, then
+    /// [`build`](crate::S3StorageBuilder::build).
+    pub fn builder(bucket: impl Into<String>) -> S3StorageBuilder {
+        S3StorageBuilder::new(bucket.into())
+    }
+
     pub(super) fn new(
-        client: aws_sdk_s3::Client,
+        client: Client,
         bucket: String,
         prefix: &str,
         multipart_threshold: usize,
-        part_size: usize,
+        part_size: PartSize,
     ) -> Self {
         Self {
             client,
@@ -118,7 +130,7 @@ impl Storage {
         let mut part_number = 1i32;
 
         while offset < data.len() {
-            let end = (offset + self.part_size).min(data.len());
+            let end = (offset + self.part_size.get()).min(data.len());
             let chunk = data.slice(offset..end);
 
             let resp = self
@@ -148,7 +160,7 @@ impl Storage {
 }
 
 #[async_trait]
-impl storage::BundleStorage for Storage {
+impl BundleStorage for S3Storage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
         let mut continuation_token: Option<String> = None;
