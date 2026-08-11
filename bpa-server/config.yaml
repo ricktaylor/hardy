@@ -56,5 +56,6 @@ clas:
     segment-mru: 16384
     transfer-mru: 1073741824
     max-idle-connections: 6
+    max-outstanding-transfers: 16
     contact-timeout: 15
     keepalive-interval: 60

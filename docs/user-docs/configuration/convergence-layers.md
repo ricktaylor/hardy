@@ -41,6 +41,7 @@ reliable bundle transfer over TCP connections.
 | `segment-mru` | Positive integer (bytes) | `16384` | Maximum Receive Unit for a single TCP segment payload. Increase to `65536` for high-bandwidth links. Zero is a startup error. |
 | `transfer-mru` | Positive integer (bytes) | `1073741824` (1 GiB) | Maximum bundle size that can be received. Zero is a startup error. |
 | `max-idle-connections` | Non-negative integer | `6` | Maximum idle incoming connections per remote IP address. Increase for high-fan-in topologies; `0` disables pooling. |
+| `max-outstanding-transfers` | Positive integer | `16` | Maximum transfers accepted but not yet resolved with an outcome, per peer. Bounds the bundles held in memory by in-flight and queued transfers to each peer; when reached, further forwards to that peer are held unanswered, which is the flow control back to the BPA. Zero is a configuration error. |
 | `connection-rate-limit` | Positive integer (per second) | `64` | Maximum incoming connections accepted per second; the listener delays accepts beyond this rate. Zero is a startup error. |
 
 ### Session Parameters

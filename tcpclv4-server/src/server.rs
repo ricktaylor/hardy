@@ -3,14 +3,13 @@
 // runs until cancelled. The config-to-builder mapping lives here too (kept
 // in sync with the `clas:` entry mirror in bpa-server/src/config/tcpclv4.rs).
 
-use core::num::{NonZeroU32, NonZeroU64};
 use core::time::Duration;
 use std::sync::Arc;
 
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_proto::client::RemoteBpa;
-use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval, Tcpclv4, tls};
+use hardy_tcpclv4::{KeepaliveInterval, Tcpclv4, tls};
 use tokio::net::lookup_host;
 use tracing::{info, warn};
 
@@ -50,32 +49,22 @@ impl Tcpclv4Server {
             None => builder.listen_default(),
         };
         if let Some(mru) = config.segment_mru {
-            builder = builder.segment_mru(
-                NonZeroU64::new(mru)
-                    .ok_or_else(|| anyhow::anyhow!("segment-mru must be greater than zero"))?,
-            );
+            builder = builder.segment_mru(mru);
         }
         if let Some(mru) = config.transfer_mru {
-            builder =
-                builder
-                    .transfer_mru(NonZeroU64::new(mru).ok_or_else(|| {
-                        anyhow::anyhow!("transfer-mru must be greater than zero")
-                    })?);
+            builder = builder.transfer_mru(mru);
         }
         if let Some(limit) = config.max_idle_connections {
             builder = builder.max_idle_connections(limit);
         }
-        if let Some(rate) = config.connection_rate_limit {
-            builder = builder.connection_rate_limit(NonZeroU32::new(rate).ok_or_else(|| {
-                anyhow::anyhow!("connection-rate-limit must be greater than zero")
-            })?);
+        if let Some(limit) = config.max_outstanding_transfers {
+            builder = builder.max_outstanding_transfers(limit);
         }
-        if let Some(seconds) = config.contact_timeout {
-            builder = builder.contact_timeout(ContactTimeout::new(seconds).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "contact-timeout must be between 1 and 60 seconds (RFC 9174 Section 4.2)"
-                )
-            })?);
+        if let Some(rate) = config.connection_rate_limit {
+            builder = builder.connection_rate_limit(rate);
+        }
+        if let Some(timeout) = config.contact_timeout {
+            builder = builder.contact_timeout(timeout);
         }
         // An explicit 0 disables keepalives
         builder = match config.keepalive_interval.map(KeepaliveInterval::new) {

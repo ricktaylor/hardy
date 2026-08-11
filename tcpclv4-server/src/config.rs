@@ -1,7 +1,8 @@
+use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use hardy_tcpclv4::tls;
+use hardy_tcpclv4::{ContactTimeout, tls};
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -23,6 +24,40 @@ mod log_level_serde {
     {
         let s = String::deserialize(deserializer)?;
         Level::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+// The library's `ContactTimeout` carries the RFC 9174 Section 4.2 range as
+// its invariant but no serde impls (the library does not parse
+// configuration), so this adapter is where an out-of-range value is
+// rejected at parse.
+mod contact_timeout_serde {
+    use hardy_tcpclv4::ContactTimeout;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(timeout: &Option<ContactTimeout>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match timeout {
+            Some(timeout) => serializer.serialize_some(&timeout.get()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ContactTimeout>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<u16>::deserialize(deserializer)?
+            .map(|seconds| {
+                ContactTimeout::new(seconds).ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "contact-timeout must be between 1 and 60 seconds (RFC 9174 Section 4.2)",
+                    )
+                })
+            })
+            .transpose()
     }
 }
 
@@ -154,9 +189,11 @@ pub struct TlsConfig {
 // The transport fields mirror the `hardy_tcpclv4` builder inputs (kept in
 // sync with the `clas:` entry mirror in bpa-server/src/config/tcpclv4.rs).
 // Absent keys stay `None` and leave the corresponding builder default in
-// force, so no default value is restated here; `Tcpclv4Server::new`
-// (src/server.rs) maps the file surface onto the builder, naming config
-// keys in every error.
+// force, so no default value is restated here. Scalar invariants are
+// carried by the schema types (`NonZero` integers, the `contact-timeout`
+// adapter) and rejected at parse; `Tcpclv4Server::new` (src/server.rs)
+// maps the file surface onto the builder, naming config keys in the
+// errors that remain.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
@@ -188,28 +225,34 @@ pub struct Config {
     #[serde(default)]
     pub address: Option<SocketAddr>,
 
-    // Largest acceptable single-segment payload, in bytes; must be
-    // greater than zero.
+    // Largest acceptable single-segment payload, in bytes; zero is
+    // rejected at parse.
     #[serde(default)]
-    pub segment_mru: Option<u64>,
+    pub segment_mru: Option<NonZeroU64>,
 
-    // Largest acceptable total bundle transfer, in bytes; must be greater
-    // than zero.
+    // Largest acceptable total bundle transfer, in bytes; zero is
+    // rejected at parse.
     #[serde(default)]
-    pub transfer_mru: Option<u64>,
+    pub transfer_mru: Option<NonZeroU64>,
 
     // Idle connections retained per remote address; 0 disables pooling.
     #[serde(default)]
     pub max_idle_connections: Option<usize>,
 
-    // Inbound connections accepted per second; must be greater than zero.
+    // Transfers accepted but not yet resolved with an outcome, per peer;
+    // zero is rejected at parse. Bounds the bundles held in memory by
+    // in-flight and queued transfers to each peer.
     #[serde(default)]
-    pub connection_rate_limit: Option<u32>,
+    pub max_outstanding_transfers: Option<NonZeroUsize>,
+
+    // Inbound connections accepted per second; zero is rejected at parse.
+    #[serde(default)]
+    pub connection_rate_limit: Option<NonZeroU32>,
 
     // Seconds to wait for a peer's contact header: 1 to 60 (RFC 9174
-    // Section 4.2).
-    #[serde(default)]
-    pub contact_timeout: Option<u16>,
+    // Section 4.2); out-of-range values are rejected at parse.
+    #[serde(default, with = "contact_timeout_serde")]
+    pub contact_timeout: Option<ContactTimeout>,
 
     // Keepalive interval in seconds; 0 disables keepalives.
     #[serde(default)]
@@ -317,7 +360,7 @@ keepalive-interval = 30
             config.address.unwrap(),
             std::net::SocketAddr::from(([0, 0, 0, 0], 9999))
         );
-        assert_eq!(config.segment_mru, Some(8192));
+        assert_eq!(config.segment_mru, Some(NonZeroU64::new(8192).unwrap()));
         assert_eq!(config.keepalive_interval, Some(30));
     }
 
@@ -337,7 +380,7 @@ segment-mru: 4096
         assert_eq!(config.bpa_address, "http://10.0.0.2:50051");
         assert_eq!(config.cla_name, "yaml-cla");
         assert_eq!(config.log_level, Level::WARN);
-        assert_eq!(config.segment_mru, Some(4096));
+        assert_eq!(config.segment_mru, Some(NonZeroU64::new(4096).unwrap()));
     }
 
     // JSON config file works identically to TOML.
@@ -407,7 +450,7 @@ log-level = "warn"
         let config = Config::load(Some(path)).unwrap();
         unsafe { std::env::remove_var("HARDY_TCPCLV4_SEGMENT_MRU") };
 
-        assert_eq!(config.segment_mru, Some(32768));
+        assert_eq!(config.segment_mru, Some(NonZeroU64::new(32768).unwrap()));
     }
 
     // Missing config file returns an error.
@@ -438,6 +481,47 @@ log-level = "warn"
         std::fs::write(&path, "segment-mru = -1").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
+    }
+
+    // Zero and out-of-range scalars are rejected when the file is parsed,
+    // before any mapping onto the builder runs: the schema carries the
+    // invariants as `NonZero` types and the `ContactTimeout` adapter.
+    #[test]
+    #[serial]
+    fn parse_rejects_invalid_scalars() {
+        for (name, content, message) in [
+            ("zero-segment-mru.toml", "segment-mru = 0\n", "nonzero"),
+            ("zero-transfer-mru.toml", "transfer-mru = 0\n", "nonzero"),
+            (
+                "zero-rate-limit.toml",
+                "connection-rate-limit = 0\n",
+                "nonzero",
+            ),
+            (
+                "zero-outstanding-transfers.toml",
+                "max-outstanding-transfers = 0\n",
+                "nonzero",
+            ),
+            (
+                "contact-timeout-zero.toml",
+                "contact-timeout = 0\n",
+                "between 1 and 60",
+            ),
+            (
+                "contact-timeout-oob.toml",
+                "contact-timeout = 61\n",
+                "between 1 and 60",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            let Err(err) = Config::load(Some(path)) else {
+                panic!("{name}: expected a parse error");
+            };
+            let err = err.to_string();
+            assert!(err.contains(message), "{name}: {err}");
+        }
     }
 
     // Invalid address format is rejected.
@@ -564,7 +648,10 @@ this-does-not-exist = 42
     #[serial]
     fn large_segment_mru() {
         let config = write_and_load("large.toml", "segment-mru = 1073741824\n");
-        assert_eq!(config.segment_mru, Some(1073741824));
+        assert_eq!(
+            config.segment_mru,
+            Some(NonZeroU64::new(1073741824).unwrap())
+        );
     }
 
     // An explicit null address disables the listener (dial-only).
@@ -615,22 +702,6 @@ this-does-not-exist = 42
                 "auth-insecure.toml",
                 "[tls]\ninsecure-skip-verify = true\nclient-auth = \"optional\"\n\n[tls.identity]\ncert-file = \"c.pem\"\nkey-file = \"k.pem\"\n",
                 "insecure-skip-verify",
-            ),
-            ("zero-segment-mru.toml", "segment-mru = 0\n", "segment-mru"),
-            (
-                "zero-transfer-mru.toml",
-                "transfer-mru = 0\n",
-                "transfer-mru",
-            ),
-            (
-                "zero-rate-limit.toml",
-                "connection-rate-limit = 0\n",
-                "connection-rate-limit",
-            ),
-            (
-                "contact-timeout-oob.toml",
-                "contact-timeout = 61\n",
-                "contact-timeout",
             ),
         ] {
             let Err(err) = Tcpclv4Server::new(write_and_load(name, content), TaskPool::new())

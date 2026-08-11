@@ -1,9 +1,43 @@
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval, tls};
 use serde::{Deserialize, Serialize};
+
+// The library's `ContactTimeout` carries the RFC 9174 Section 4.2 range as
+// its invariant but no serde impls (the library does not parse
+// configuration), so this adapter is where an out-of-range value is
+// rejected at parse.
+mod contact_timeout_serde {
+    use hardy_tcpclv4::ContactTimeout;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(timeout: &Option<ContactTimeout>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match timeout {
+            Some(timeout) => serializer.serialize_some(&timeout.get()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ContactTimeout>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<u16>::deserialize(deserializer)?
+            .map(|seconds| {
+                ContactTimeout::new(seconds).ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "contact-timeout must be between 1 and 60 seconds (RFC 9174 Section 4.2)",
+                    )
+                })
+            })
+            .transpose()
+    }
+}
 
 // A certificate and the private key that proves it: only representable as
 // a pair.
@@ -86,8 +120,10 @@ pub struct TlsConfig {
 // payload of a `type: "tcpclv4"` entry in the `clas` list (kept in sync
 // with the flattened mirror in tcpclv4-server/src/config.rs). Absent keys
 // stay `None` and leave the corresponding builder default in force, so no
-// default value is restated here; `build` maps the file surface onto the
-// builder, naming config keys in every error.
+// default value is restated here. Scalar invariants are carried by the
+// schema types (`NonZero` integers, the `contact-timeout` adapter) and
+// rejected at parse; `build` maps the file surface onto the builder,
+// naming config keys in the errors that remain.
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
@@ -95,23 +131,29 @@ pub struct Config {
     // listens on the IANA-registered `[::]:4556`.
     pub address: Option<SocketAddr>,
 
-    // Largest acceptable single-segment payload, in bytes; must be
-    // greater than zero.
-    pub segment_mru: Option<u64>,
+    // Largest acceptable single-segment payload, in bytes; zero is
+    // rejected at parse.
+    pub segment_mru: Option<NonZeroU64>,
 
-    // Largest acceptable total bundle transfer, in bytes; must be greater
-    // than zero.
-    pub transfer_mru: Option<u64>,
+    // Largest acceptable total bundle transfer, in bytes; zero is
+    // rejected at parse.
+    pub transfer_mru: Option<NonZeroU64>,
 
     // Idle connections retained per remote address; 0 disables pooling.
     pub max_idle_connections: Option<usize>,
 
-    // Inbound connections accepted per second; must be greater than zero.
-    pub connection_rate_limit: Option<u32>,
+    // Transfers accepted but not yet resolved with an outcome, per peer;
+    // zero is rejected at parse. Bounds the bundles held in memory by
+    // in-flight and queued transfers to each peer.
+    pub max_outstanding_transfers: Option<NonZeroUsize>,
+
+    // Inbound connections accepted per second; zero is rejected at parse.
+    pub connection_rate_limit: Option<NonZeroU32>,
 
     // Seconds to wait for a peer's contact header: 1 to 60 (RFC 9174
-    // Section 4.2).
-    pub contact_timeout: Option<u16>,
+    // Section 4.2); out-of-range values are rejected at parse.
+    #[serde(with = "contact_timeout_serde")]
+    pub contact_timeout: Option<ContactTimeout>,
 
     // Keepalive interval in seconds; 0 disables keepalives.
     pub keepalive_interval: Option<u16>,
@@ -134,32 +176,22 @@ impl Config {
             None => builder.listen_default(),
         };
         if let Some(mru) = self.segment_mru {
-            builder = builder.segment_mru(
-                NonZeroU64::new(mru)
-                    .ok_or_else(|| anyhow::anyhow!("segment-mru must be greater than zero"))?,
-            );
+            builder = builder.segment_mru(mru);
         }
         if let Some(mru) = self.transfer_mru {
-            builder =
-                builder
-                    .transfer_mru(NonZeroU64::new(mru).ok_or_else(|| {
-                        anyhow::anyhow!("transfer-mru must be greater than zero")
-                    })?);
+            builder = builder.transfer_mru(mru);
         }
         if let Some(limit) = self.max_idle_connections {
             builder = builder.max_idle_connections(limit);
         }
-        if let Some(rate) = self.connection_rate_limit {
-            builder = builder.connection_rate_limit(NonZeroU32::new(rate).ok_or_else(|| {
-                anyhow::anyhow!("connection-rate-limit must be greater than zero")
-            })?);
+        if let Some(limit) = self.max_outstanding_transfers {
+            builder = builder.max_outstanding_transfers(limit);
         }
-        if let Some(seconds) = self.contact_timeout {
-            builder = builder.contact_timeout(ContactTimeout::new(seconds).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "contact-timeout must be between 1 and 60 seconds (RFC 9174 Section 4.2)"
-                )
-            })?);
+        if let Some(rate) = self.connection_rate_limit {
+            builder = builder.connection_rate_limit(rate);
+        }
+        if let Some(timeout) = self.contact_timeout {
+            builder = builder.contact_timeout(timeout);
         }
         // An explicit 0 disables keepalives
         builder = match self.keepalive_interval.map(KeepaliveInterval::new) {
