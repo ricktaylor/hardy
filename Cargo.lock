@@ -2156,7 +2156,6 @@ dependencies = [
  "libc",
  "memmap2",
  "rand 0.10.2",
- "serde",
  "tempfile",
  "time",
  "tokio",

@@ -9,41 +9,31 @@ use sqlx::{FromRow, PgPool, migrate::Migrate};
 use tracing::instrument;
 use tracing::{debug, error, warn};
 
-use super::*;
+use super::status;
+use crate::PostgresStorageBuilder;
 
-pub struct Storage {
+/// PostgreSQL-backed implementation of
+/// [`MetadataStorage`](hardy_bpa::storage::MetadataStorage), constructed
+/// via [`PostgresStorage::builder()`].
+pub struct PostgresStorage {
     pool: PgPool,
     poll_page_size: i64,
 }
 
-impl Storage {
-    pub async fn new(config: &Config, upgrade: bool) -> Result<Self, super::Error> {
-        let database_url = if config.database_url.is_empty() {
-            std::env::var("DATABASE_URL").unwrap_or_default()
-        } else {
-            config.database_url.clone()
-        };
-        if database_url.is_empty() {
-            return Err(super::Error::Config(
-                "database_url is required; set it in config or via DATABASE_URL env var".into(),
-            ));
-        }
-        if config.poll_page_size == 0 {
-            return Err(super::Error::Config("poll_page_size must be >= 1".into()));
-        }
+impl PostgresStorage {
+    /// Start building a `PostgresStorage`: chain the connection and pool
+    /// options, then [`build`](PostgresStorageBuilder::build).
+    pub fn builder() -> PostgresStorageBuilder {
+        PostgresStorageBuilder::new()
+    }
 
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .min_connections(config.min_connections)
-            .acquire_timeout(std::time::Duration::from_secs(config.connect_timeout_secs))
-            .idle_timeout(std::time::Duration::from_secs(
-                config.idle_timeout_mins * 60,
-            ))
-            .max_lifetime(std::time::Duration::from_secs(
-                config.max_lifetime_mins * 60,
-            ))
-            .connect(&database_url)
-            .await?;
+    pub(crate) async fn new(
+        pool_options: sqlx::postgres::PgPoolOptions,
+        database_url: &str,
+        poll_page_size: core::num::NonZeroU32,
+        upgrade: bool,
+    ) -> Result<Self, super::Error> {
+        let pool = pool_options.connect(database_url).await?;
 
         if upgrade {
             sqlx::migrate!("./migrations").run(&pool).await?;
@@ -90,7 +80,7 @@ impl Storage {
 
         Ok(Self {
             pool,
-            poll_page_size: config.poll_page_size as i64,
+            poll_page_size: i64::from(poll_page_size.get()),
         })
     }
 }
@@ -222,7 +212,7 @@ fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<
 }
 
 #[async_trait]
-impl storage::MetadataStorage for Storage {
+impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let bundle_key = bundle_id.to_key();

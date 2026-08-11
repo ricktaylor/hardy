@@ -407,7 +407,7 @@ Implements `MetadataStorage`. The BPA receives this as its metadata backend. The
 
 ### With `hardy-bpa-server`
 
-The server instantiates `Storage::new(config).await?` and injects it into the BPA as the metadata backend.
+The server instantiates the storage via `PostgresStorage::builder()` and injects it into the BPA as the metadata backend.
 
 ## Dependencies
 
