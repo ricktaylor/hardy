@@ -2,7 +2,7 @@
 
 **Status:** Draft for iteration
 
-A backward-compatible extension to the BPA↔CLA contract letting a reliable CLA acknowledge a forward when it takes *ownership* of the bundle, and report the transfer's real outcome — delivered or failed — later, out-of-band. Motivated by `hardy-test-cla` (`docs/test-cla-design.md` §4.3) but a core interface capability: `tcpclv4` has the same problem today, and any reliable convergence layer will.
+A backward-compatible extension to the BPA↔CLA contract letting a reliable CLA acknowledge a forward when it takes *ownership* of the bundle, and report the transfer's real outcome — completed or failed — later, out-of-band. Motivated by `hardy-test-cla` (`docs/test-cla-design.md` §4.3) but a core interface capability: `tcpclv4` has the same problem today, and any reliable convergence layer will.
 
 ## Problem
 
@@ -25,8 +25,8 @@ sequenceDiagram
     CLA-->>BPA: Accepted
     Note over BPA: bundle retained,<br/>status ForwardAckPending
     Note over CLA: transfer proceeds<br/>(segments, acks, retries…)
-    CLA->>BPA: TransferOutcome(bundle_id, delivered | failed)
-    Note over BPA: delivered → report + delete<br/>failed → Waiting + re-dispatch
+    CLA->>BPA: TransferOutcome(bundle_id, completed | failed)
+    Note over BPA: completed → report + delete<br/>failed → Waiting + re-dispatch
 ```
 
 - `ForwardBundleResult` gains an `Accepted` variant: the CLA has taken ownership of the bundle; the outcome follows. `Sent` and `NoNeighbour` keep today's terminal semantics — fire-and-forget CLAs (`file-cla`, unreliable links) are untouched, and deferral is a per-transfer choice made by the CLA.
@@ -68,7 +68,7 @@ In `cla.proto`:
 
 - `ForwardBundleRequest` gains `string bundle_id`, formatted as in `service.proto` (the RFC 9171 key form, `bundle::Id::to_key()`); the CLA treats it as opaque.
 - `ForwardBundleResponse.result` gains `google.protobuf.Empty accepted = 3;`.
-- A new CLA→BPA request, `TransferOutcomeRequest { string bundle_id; oneof outcome { google.protobuf.Empty delivered; google.rpc.Status failed; } }`, with an empty response. The `failed` arm carries a `google.rpc.Status` so a reason travels opaquely; a structured reason vocabulary is deliberately deferred until there is evidence it is needed (see the TestCla discoverables log, Q7).
+- A new CLA→BPA request, `TransferOutcomeRequest { string bundle_id; oneof outcome { google.protobuf.Empty completed; google.rpc.Status failed; } }`, with an empty response. The `failed` arm carries a `google.rpc.Status` so a reason travels opaquely; a structured reason vocabulary is deliberately deferred until there is evidence it is needed (see the TestCla discoverables log, Q7).
 - **No capability negotiation.** Deferral is a per-bundle feature: whether to answer `accepted` or `sent` is the CLA's choice on each forward, so there is no registration-level flag and the proxy layers carry no negotiation state. Version skew degrades safely without it: a BPA that predates the extension maps the unknown `accepted` variant to a call error and re-queues the bundle, and any duplicate transmission is absorbed by receiver dedup. Skew in the other direction is a hard floor: the proto CLA client rejects a forward without a `bundle_id`, so a CLA built against the extension requires a BPA that sends it.
 
 ## Rejected alternatives

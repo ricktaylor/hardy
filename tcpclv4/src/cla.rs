@@ -83,16 +83,7 @@ impl hardy_bpa::cla::Cla for Cla {
         // permit bounds accepted-but-unresolved transfers per peer; awaiting
         // it withholds the verdict, which is the flow control back to the
         // BPA.
-        let permits = self
-            .transfer_permits
-            .lock()
-            .entry(*remote_addr)
-            .or_insert_with(|| {
-                Arc::new(tokio::sync::Semaphore::new(
-                    self.max_outstanding_transfers.get(),
-                ))
-            })
-            .clone();
+        let permits = ctx.registry.transfer_permits(*remote_addr);
         let permit = permits
             .acquire_owned()
             .await
@@ -104,20 +95,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.spawn(async move {
             let _permit = permit;
 
-            let outcome = match transmit(tasks, &ctx, remote_addr, bundle).await {
-                hardy_bpa::cla::ForwardBundleResult::Sent => {
-                    hardy_bpa::cla::TransferOutcome::Completed
-                }
-                hardy_bpa::cla::ForwardBundleResult::NoNeighbour => {
-                    hardy_bpa::cla::TransferOutcome::Failed
-                }
-                hardy_bpa::cla::ForwardBundleResult::Accepted => {
-                    // Sessions resolve transfers terminally
-                    warn!("Pooled session deferred a transfer; treating as failed");
-                    hardy_bpa::cla::TransferOutcome::Failed
-                }
-            };
-
+            let outcome = transmit(tasks, &ctx, remote_addr, bundle).await;
             if let Err(e) = ctx.sink.transfer_outcome(&bundle_id, outcome).await {
                 debug!("Failed to report transfer outcome: {e}");
             }
@@ -127,17 +105,20 @@ impl hardy_bpa::cla::Cla for Cla {
     }
 }
 
+// Peers can close at random times, so a transfer is retried this many
+// times before falling back to a last try on a busy session.
+const DIAL_ATTEMPTS: usize = 5;
+
 // Transmit a bundle to `remote_addr` over a pooled session, dialing new
-// connections as the pool allows, and return the terminal result of the
-// transfer: `Sent` only once the peer has fully acknowledged it.
+// connections as the pool allows, and return the terminal outcome of the
+// transfer: `Completed` only once the peer has fully acknowledged it.
 async fn transmit(
     tasks: Arc<hardy_async::TaskPool>,
     ctx: &context::ConnectionContext,
     remote_addr: std::net::SocketAddr,
     mut bundle: hardy_bpa::Bytes,
-) -> hardy_bpa::cla::ForwardBundleResult {
-    // We try this 5 times, because peers can close at random times
-    for _ in 0..5 {
+) -> hardy_bpa::cla::TransferOutcome {
+    for _ in 0..DIAL_ATTEMPTS {
         // Use a pooled session, dialing a new connection when the
         // pool has capacity and no session is free
         bundle = match ctx
@@ -192,15 +173,15 @@ async fn transmit(
                     .registry
                     .forward(&remote_addr, bundle, connection::OnBusy::Queue)
                     .await
-                    .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+                    .unwrap_or(hardy_bpa::cla::TransferOutcome::Failed);
             }
         }
     }
 
     // Repeated dial timeouts: last try on a busy session before
-    // reporting the neighbour gone
+    // giving up on the transfer
     ctx.registry
         .forward(&remote_addr, bundle, connection::OnBusy::Queue)
         .await
-        .unwrap_or(hardy_bpa::cla::ForwardBundleResult::NoNeighbour)
+        .unwrap_or(hardy_bpa::cla::TransferOutcome::Failed)
 }

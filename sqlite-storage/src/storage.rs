@@ -226,7 +226,7 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
         ),
         BundleStatus::Dispatching => (4, None, None, None),
         BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
-        BundleStatus::ForwardAckPending { peer } => (6, Some(*peer as i64), None, None),
+        BundleStatus::ForwardAckPending { peer } => (6, Some(i64::from(*peer)), None, None),
     }
 }
 

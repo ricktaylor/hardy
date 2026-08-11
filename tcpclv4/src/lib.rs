@@ -31,7 +31,6 @@ pub mod config;
 
 use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use trace_err::*;
@@ -79,17 +78,6 @@ pub struct Cla {
     tls_config: Option<Arc<tls::TlsConfig>>,
     registry: Arc<connection::ConnectionRegistry>,
     session_cancel_token: tokio_util::sync::CancellationToken,
-    // Bounds transfers accepted but not yet resolved with an outcome, per
-    // peer: a forward holds a permit from acceptance until its outcome is
-    // reported, and an exhausted semaphore withholds further forward
-    // verdicts — the flow control back to the BPA's per-peer egress poller.
-    // Per-peer scoping keeps one unreachable peer's stalled dials from
-    // starving admission for healthy peers. Entries are never removed: the
-    // map is bounded by the deployment's peer-address cardinality and each
-    // entry is a single semaphore.
-    transfer_permits:
-        hardy_async::sync::spin::Mutex<HashMap<SocketAddr, Arc<tokio::sync::Semaphore>>>,
-    max_outstanding_transfers: core::num::NonZeroUsize,
 
     // Late-init from registration (single atomic)
     inner: Once<Inner>,
@@ -160,10 +148,9 @@ impl Cla {
             tls_config,
             registry: Arc::new(connection::ConnectionRegistry::new(
                 config.max_idle_connections,
+                config.max_outstanding_transfers,
             )),
             session_cancel_token: tokio_util::sync::CancellationToken::new(),
-            transfer_permits: hardy_async::sync::spin::Mutex::new(HashMap::new()),
-            max_outstanding_transfers: config.max_outstanding_transfers,
 
             // Late-init
             inner: Once::new(),

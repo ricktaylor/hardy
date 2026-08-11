@@ -1,4 +1,5 @@
 use super::*;
+use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
 pub(crate) mod peers;
@@ -245,7 +246,7 @@ pub trait Cla: Send + Sync {
         &self,
         queue: Option<u32>,
         cla_addr: &ClaAddress,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         bundle: Bytes,
     ) -> Result<ForwardBundleResult>;
 }
@@ -324,11 +325,7 @@ pub trait Sink: Send + Sync {
     /// removed. An outcome is honoured only while the named bundle is still
     /// awaiting one via a peer of the reporting CLA; anything else — already
     /// resolved, expired, another CLA's transfer — is logged and dropped.
-    async fn transfer_outcome(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        outcome: TransferOutcome,
-    ) -> Result<()>;
+    async fn transfer_outcome(&self, bundle_id: &Id, outcome: TransferOutcome) -> Result<()>;
 }
 
 #[cfg(test)]
