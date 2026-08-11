@@ -100,7 +100,7 @@ No persistence — bundle data is lost on restart, and the server logs a warning
 |-----|-------------|---------|-------------|
 | `type` | `memory` | - | Selects the in-memory backend. |
 | `capacity` | Positive integer (bytes) | `268435456` (256 MiB) | Total bytes held before least-recently-used bundles are evicted. |
-| `min-bundles` | Positive integer | `32` | Bundle count never evicted below, even when over the byte capacity. Values below 1 are treated as 1. |
+| `min-bundles` | Positive integer | `32` | Bundle count never evicted below, even when over the byte capacity. Must be at least 1. |
 
 ```yaml
 storage:
@@ -150,8 +150,12 @@ file.
 |-----|-------------|---------|-------------|
 | `type` | `s3` | - | Selects the S3 backend. |
 | `bucket` | Bucket name | *Required* | S3 bucket for bundle storage. |
-| `endpoint` | URL | AWS default | S3 endpoint URL. Set for non-AWS S3-compatible stores (MinIO, GCS, etc.). |
-| `region` | AWS region string | *Required* | AWS region for the bucket. |
+| `prefix` | Key prefix | (none) | Key prefix for all objects (no leading or trailing slash), for buckets shared with other applications. |
+| `endpoint-url` | URL | AWS default | S3 endpoint URL. Set for non-AWS S3-compatible stores (MinIO, GCS, etc.). |
+| `region` | AWS region string | `AWS_DEFAULT_REGION` / `AWS_REGION` env vars | AWS region for the bucket. |
+| `force-path-style` | `true`, `false` | `false` | Path-style addressing (`http://host/bucket/key`), required for MinIO and some S3-compatible stores. |
+| `multipart-threshold` | Positive integer (bytes) | `8388608` (8 MiB) | Bundle size above which multipart upload is used. Must be at least the part size. |
+| `multipart-part-size` | Positive integer (bytes) | `8388608` (8 MiB) | Size of each multipart part. Must be at least 5 MiB (the S3 minimum). |
 
 Example (AWS S3):
 
