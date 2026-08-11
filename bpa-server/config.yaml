@@ -3,7 +3,6 @@ node-ids:
   - "ipn:1.0"
   - "dtn://my-node/"
 status-reports: true
-poll-channel-depth: 16
 processing-pool-size: 16
 
 grpc:
@@ -14,8 +13,6 @@ grpc:
     - service
 
 storage:
-  lru-capacity: 1024
-  max-cached-bundle-size: 16384
   metadata:
     type: postgres
     database-url: "postgresql://hardy:hardy@postgres/hardy"

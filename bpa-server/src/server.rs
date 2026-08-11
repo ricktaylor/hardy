@@ -1,22 +1,49 @@
 // The BPA server: builds a `hardy_bpa::Bpa` from the loaded configuration
 // and runs it, optionally alongside a gRPC front end, until cancelled.
+//
+// The `config` module is pure data; turning that data into running
+// subsystems is this module's job, inline in `BpaServer::new`. Crate-local
+// runtime types construct themselves from config (`PatternKeySource::load`,
+// `StaticRoutesAgent`).
 
-use std::{collections::HashMap, sync::Arc};
+#[cfg(feature = "tcpclv4")]
+#[cfg(feature = "postgres-storage")]
+use std::time::Duration;
+use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
+    cla::Cla,
     filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
+    policy::EgressPolicy,
+    routing::RoutingAgent,
+    storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
+#[cfg(feature = "echo")]
+use hardy_echo_service::EchoService;
+#[cfg(feature = "file-cla")]
+use hardy_file_cla::Cla as FileCla;
 #[cfg(feature = "ipn-legacy-filter")]
 use hardy_ipn_legacy_filter::IpnLegacyFilter;
+#[cfg(feature = "localdisk-storage")]
+use hardy_localdisk_storage::LocalDiskStorage;
+#[cfg(feature = "postgres-storage")]
+use hardy_postgres_storage::PostgresStorage;
 #[cfg(feature = "grpc")]
 use hardy_proto::server::GrpcServer;
+#[cfg(feature = "s3-storage")]
+use hardy_s3_storage::{PartSize, S3Storage};
+#[cfg(feature = "sqlite-storage")]
+use hardy_sqlite_storage::SqliteStorage;
+#[cfg(feature = "tcpclv4")]
+use hardy_tcpclv4::{Tcpclv4, tls};
 use tracing::{info, warn};
 
-use crate::bpsec::{self, PatternKeyProvider};
-use crate::config::Config;
+use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
+use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
+use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
 // running it needs, with everything between "constructed" and "stopped"
@@ -39,20 +66,95 @@ impl BpaServer {
     // composition root, which owns process policy (wiring SIGINT/SIGTERM
     // to the pool's cancellation token via `signal::listen_for_cancel`).
     pub async fn new(
-        mut config: Config,
+        config: Config,
         tasks: TaskPool,
-        upgrade_storage: bool,
+        #[allow(unused_variables)] upgrade_storage: bool,
         recover_storage: bool,
     ) -> anyhow::Result<Self> {
         #[cfg(feature = "grpc")]
-        let grpc_config = config.grpc.take();
+        let grpc_config = config.grpc;
 
-        let (metadata_storage, bundle_storage) = config.storage.build(upgrade_storage).await?;
+        // The upgrade flag is consumed only by persistent backends, so a
+        // memory-only build leaves it unused.
+        let metadata_storage: Arc<dyn MetadataStorage> = match &config.storage.metadata {
+            storage::MetadataStorageConfig::Memory(cfg) => {
+                Arc::new(MetadataMemStorage::new(cfg.max_bundles))
+            }
+            #[cfg(feature = "sqlite-storage")]
+            storage::MetadataStorageConfig::Sqlite(cfg) => Arc::new(SqliteStorage::new(
+                cfg.db_dir.clone(),
+                cfg.db_name.clone(),
+                upgrade_storage,
+            )),
+            #[cfg(feature = "postgres-storage")]
+            storage::MetadataStorageConfig::Postgres(cfg) => {
+                let mut storage = PostgresStorage::builder();
+                if let Some(url) = &cfg.database_url {
+                    storage = storage.database_url(url);
+                }
+                if let Some(limit) = cfg.max_connections {
+                    storage = storage.max_connections(limit);
+                }
+                if let Some(limit) = cfg.min_connections {
+                    storage = storage.min_connections(limit);
+                }
+                if let Some(seconds) = cfg.connect_timeout_secs {
+                    storage = storage.connect_timeout(Duration::from_secs(seconds));
+                }
+                if let Some(minutes) = cfg.idle_timeout_mins {
+                    storage = storage.idle_timeout(Duration::from_secs(minutes.saturating_mul(60)));
+                }
+                if let Some(minutes) = cfg.max_lifetime_mins {
+                    storage = storage.max_lifetime(Duration::from_secs(minutes.saturating_mul(60)));
+                }
+                if let Some(size) = cfg.poll_page_size {
+                    storage = storage.poll_page_size(size);
+                }
+                Arc::new(storage.build(upgrade_storage).await?)
+            }
+        };
+
+        let bundle_storage: Arc<dyn BundleStorage> = match &config.storage.bundle {
+            storage::BundleStorageConfig::Memory(cfg) => {
+                Arc::new(BundleMemStorage::new(cfg.capacity, cfg.min_bundles))
+            }
+            #[cfg(feature = "localdisk-storage")]
+            storage::BundleStorageConfig::LocalDisk(cfg) => Arc::new(LocalDiskStorage::new(
+                cfg.store_dir.clone(),
+                cfg.fsync,
+                upgrade_storage,
+            )),
+            #[cfg(feature = "s3-storage")]
+            storage::BundleStorageConfig::S3(cfg) => {
+                let mut storage = S3Storage::builder(cfg.bucket.clone());
+                if let Some(prefix) = &cfg.prefix {
+                    storage = storage.prefix(prefix);
+                }
+                if let Some(region) = &cfg.region {
+                    storage = storage.region(region);
+                }
+                if let Some(endpoint) = &cfg.endpoint_url {
+                    storage = storage.endpoint_url(endpoint);
+                }
+                if cfg.force_path_style {
+                    storage = storage.force_path_style();
+                }
+                if let Some(bytes) = cfg.multipart_threshold {
+                    storage = storage.multipart_threshold(bytes);
+                }
+                if let Some(bytes) = cfg.multipart_part_size {
+                    storage =
+                        storage.multipart_part_size(PartSize::new(bytes).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "multipart-part-size must be at least 5 MiB (the S3 minimum)"
+                            )
+                        })?);
+                }
+                Arc::new(storage.build().await?)
+            }
+        };
 
         let mut builder = Bpa::builder()
-            .status_reports(config.status_reports)
-            .poll_channel_depth(config.poll_channel_depth)
-            .processing_pool_size(config.processing_pool_size)
             .node_ids(config.node_ids)
             .metadata_storage(metadata_storage)
             .bundle_storage(bundle_storage)
@@ -60,18 +162,33 @@ impl BpaServer {
                 Hook::Ingress,
                 "rfc9171-validity",
                 &[],
-                Filter::Read(Arc::new(Rfc9171ValidityFilter::new(
-                    &config.rfc9171_validity,
-                ))),
+                Filter::Read(Arc::new({
+                    let mut filter = Rfc9171ValidityFilter::new();
+                    if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
+                        filter = filter.primary_block_integrity(enabled);
+                    }
+                    if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
+                        filter = filter.bundle_age_required(enabled);
+                    }
+                    filter
+                })),
             );
 
+        if let Some(status_reports) = config.status_reports {
+            builder = builder.status_reports(status_reports);
+        }
+        if let Some(depth) = config.poll_channel_depth {
+            builder = builder.poll_channel_depth(depth);
+        }
+        if let Some(pool_size) = config.processing_pool_size {
+            builder = builder.processing_pool_size(pool_size);
+        }
         if let Some(service_priority) = config.service_priority {
             builder = builder.service_priority(service_priority);
         }
 
-        if let Some(bpsec_config) = config.bpsec.take() {
-            let source = bpsec_config
-                .build()
+        if let Some(bpsec_config) = config.bpsec {
+            let source = PatternKeySource::load(&bpsec_config)
                 .context("Failed to load BPSec configuration")?;
             let provider = Arc::new(PatternKeyProvider::new(source));
             builder = builder.key_provider(provider.clone());
@@ -79,9 +196,12 @@ impl BpaServer {
         }
 
         if config.storage.uses_cache() {
-            builder = builder
-                .lru_capacity(config.storage.lru_capacity)
-                .max_cached_bundle_size(config.storage.max_cached_bundle_size);
+            if let Some(capacity) = config.storage.lru_capacity {
+                builder = builder.lru_capacity(capacity);
+            }
+            if let Some(size) = config.storage.max_cached_bundle_size {
+                builder = builder.max_cached_bundle_size(size);
+            }
         } else {
             builder = builder.no_cache();
         }
@@ -98,8 +218,33 @@ impl BpaServer {
         }
 
         if let Some(sr_config) = config.static_routes {
-            let agent = sr_config.build()?;
-            builder = builder.routing_agent(sr_config.protocol_id, agent);
+            let routes_file = sr_config
+                .routes_file
+                .map(|file| {
+                    let file = std::env::current_dir()
+                        .context("Failed to get current directory")?
+                        .join(file);
+                    match file.canonicalize() {
+                        Ok(path) => Ok(path),
+                        Err(e) if e.kind() == ErrorKind::NotFound => Ok(file),
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Failed to canonicalise routes_file '{}': {e}",
+                            file.display()
+                        )),
+                    }
+                })
+                .transpose()?;
+            let agent: Arc<dyn RoutingAgent> = Arc::new(StaticRoutesAgent::new(
+                routes_file,
+                sr_config.priority,
+                sr_config.watch.into(),
+            ));
+            builder = builder.routing_agent(
+                sr_config
+                    .protocol_id
+                    .unwrap_or_else(|| StaticRoutesAgent::DEFAULT_PROTOCOL_ID.to_string()),
+                agent,
+            );
         }
 
         cfg_select! {
@@ -110,7 +255,7 @@ impl BpaServer {
                     } else {
                         for service_id in services {
                             builder = builder
-                                .service(Arc::new(hardy_echo_service::EchoService::new()), service_id);
+                                .service(Arc::new(EchoService::new()), service_id);
                         }
                     }
                 }
@@ -122,13 +267,100 @@ impl BpaServer {
             }
         }
 
-        let mut policies = HashMap::new();
-        for (name, policy_config) in config.policies {
-            policies.insert(name, policy_config.build()?);
-        }
+        // No egress policy types exist yet: the enum's only variant is the
+        // serde catch-all, so every arm fails and a real variant slots in
+        // as an `Ok` arm here.
+        let policies: HashMap<String, Arc<dyn EgressPolicy>> = config
+            .policies
+            .into_iter()
+            .map(|(name, policy_config)| match policy_config {
+                EgressPolicyConfig::Unknown => {
+                    Err(anyhow::anyhow!("Policy '{name}': unknown policy type"))
+                }
+            })
+            .collect::<anyhow::Result<_>>()?;
 
         for cla_config in config.clas {
-            let Some(cla) = cla_config.build()? else {
+            let cla: Option<Arc<dyn Cla>> = match &cla_config.cla_type {
+                #[cfg(feature = "tcpclv4")]
+                ClaType::TcpClv4(tcpcl) => {
+                    let name = &cla_config.name;
+                    let mut cla_builder = Tcpclv4::builder();
+
+                    cla_builder = match &tcpcl.listeners {
+                        Some(listeners) => {
+                            listeners.iter().fold(cla_builder, |cla_builder, address| {
+                                cla_builder.listen(*address)
+                            })
+                        }
+                        None => cla_builder.listen_default(),
+                    };
+                    if let Some(mru) = tcpcl.segment_mru {
+                        cla_builder = cla_builder.segment_mru(mru);
+                    }
+                    if let Some(mru) = tcpcl.transfer_mru {
+                        cla_builder = cla_builder.transfer_mru(mru);
+                    }
+                    if let Some(limit) = tcpcl.max_idle_connections {
+                        cla_builder = cla_builder.max_idle_connections(limit);
+                    }
+                    if let Some(limit) = tcpcl.max_outstanding_transfers {
+                        cla_builder = cla_builder.max_outstanding_transfers(limit);
+                    }
+                    if let Some(rate) = tcpcl.connection_rate_limit {
+                        cla_builder = cla_builder.connection_rate_limit(rate);
+                    }
+                    if let Some(timeout) = tcpcl.contact_timeout {
+                        cla_builder = cla_builder.contact_timeout(timeout);
+                    }
+                    if let Some(interval) = tcpcl.keepalive_interval {
+                        cla_builder = cla_builder.keepalive_interval(interval);
+                    }
+
+                    if let Some(tls_config) = &tcpcl.tls {
+                        let mut tls_builder = tls::Tls::builder().required(tls_config.required);
+
+                        if let Some(dir) = &tls_config.ca_certs {
+                            tls_builder = tls_builder.ca_certs(dir.clone());
+                        }
+                        if tls_config.insecure_skip_verify {
+                            tls_builder = tls_builder.dangerous().insecure_skip_verify();
+                        }
+                        if let Some(identity) = &tls_config.identity {
+                            tls_builder = tls_builder
+                                .identity(identity.cert_file.clone(), identity.key_file.clone());
+                        }
+                        tls_builder = tls_builder.client_auth(tls_config.client_auth.into());
+                        if let Some(server_name) = &tls_config.server_name {
+                            tls_builder = tls_builder.server_name(server_name.clone());
+                        }
+
+                        cla_builder = cla_builder.tls(
+                            tls_builder
+                                .build()
+                                .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                        );
+                    }
+
+                    Some(Arc::new(
+                        cla_builder
+                            .build()
+                            .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                    ))
+                }
+                #[cfg(feature = "file-cla")]
+                ClaType::File(file) => Some(Arc::new(FileCla::new(file).map_err(|e| {
+                    anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
+                })?)),
+                ClaType::Other { cla_type, .. } => {
+                    warn!(
+                        "Ignoring CLA '{}' with unknown type '{cla_type}'",
+                        cla_config.name
+                    );
+                    None
+                }
+            };
+            let Some(cla) = cla else {
                 continue;
             };
 
@@ -145,11 +377,10 @@ impl BpaServer {
                 })
                 .transpose()?;
 
-            let name = cla_config.name;
-            builder = builder.cla(name, cla, egress_policy);
+            builder = builder.cla(cla_config.name, cla, egress_policy);
         }
 
-        let bpa = Arc::new(builder.build().await.map_err(|e| anyhow::anyhow!("{e}"))?);
+        let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
 
         Ok(Self {
             bpa,

@@ -42,8 +42,8 @@ hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", features = ["s
 hardy-proto = { version = "0.2", path = "../proto", features = ["serde"], optional = true }
 hardy-sqlite-storage = { version = "0.6", path = "../sqlite-storage", optional = true }
 hardy-postgres-storage = { version = "0.2", path = "../postgres-storage", optional = true }
-hardy-localdisk-storage = { version = "0.6", path = "../localdisk-storage", features = ["serde"], optional = true }
-hardy-s3-storage = { version = "0.2", path = "../s3-storage", features = ["serde"], optional = true }
+hardy-localdisk-storage = { version = "0.6", path = "../localdisk-storage", optional = true }
+hardy-s3-storage = { version = "0.2", path = "../s3-storage", optional = true }
 hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", optional = true }
 hardy-file-cla = { version = "0.2", path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { version = "0.2", path = "../otel", optional = true }
