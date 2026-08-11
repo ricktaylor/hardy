@@ -1,4 +1,4 @@
-use core::num::{NonZero, NonZeroUsize};
+use core::num::NonZeroUsize;
 
 use hardy_async::{async_trait, sync::Mutex};
 use lru::LruCache;
@@ -13,29 +13,13 @@ use tracing::{info, warn};
 use super::{BundleStorage, RecoveryResponse, Result};
 use crate::{Arc, Bytes, stream::Sender};
 
-/// Configuration for [`BundleMemStorage`].
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct Config {
-    /// Maximum total bytes of bundle data held before least-recently-used
-    /// bundles are evicted. Default: 256 MiB.
-    pub capacity: NonZeroUsize,
+// Default maximum total bytes of bundle data held before
+// least-recently-used bundles are evicted: 256 MiB.
+const DEFAULT_CAPACITY: NonZeroUsize = NonZeroUsize::new(256 * 1_048_576).unwrap();
 
-    /// Minimum number of bundles retained regardless of the byte capacity.
-    /// Values below 1 are treated as 1, so a save can never evict the bundle
-    /// it has just stored. Default: `32`.
-    pub min_bundles: usize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            capacity: NonZero::new(256 * 1_048_576).unwrap(),
-            min_bundles: 32,
-        }
-    }
-}
+// Default minimum number of bundles retained regardless of the byte
+// capacity.
+const DEFAULT_MIN_BUNDLES: NonZeroUsize = NonZeroUsize::new(32).unwrap();
 
 // A watermark transition detected under the lock, logged after release.
 enum Edge {
@@ -114,11 +98,15 @@ pub struct BundleMemStorage {
 }
 
 impl BundleMemStorage {
-    /// Creates a store holding at most [`Config::capacity`] bytes.
-    pub fn new(config: &Config) -> Self {
+    /// Creates a store holding at most `capacity_bytes` of bundle data,
+    /// retaining at least `min_bundles` bundles regardless of the byte
+    /// capacity (the floor of one entry guarantees a save can never evict
+    /// the bundle it has just stored). `None` applies the store's own
+    /// default for either knob.
+    pub fn new(capacity_bytes: Option<NonZeroUsize>, min_bundles: Option<NonZeroUsize>) -> Self {
+        let capacity = capacity_bytes.unwrap_or(DEFAULT_CAPACITY);
         warn!(
-            "Using in-memory bundle storage (capacity {} bytes): stored bundles will NOT survive a restart",
-            config.capacity
+            "Using in-memory bundle storage (capacity {capacity} bytes): stored bundles will NOT survive a restart",
         );
 
         let inner = Mutex::new(Inner {
@@ -130,15 +118,13 @@ impl BundleMemStorage {
             evicted_count: 0,
             evicted_bytes: 0,
         });
-        let max_capacity = config.capacity;
+        let max_capacity = capacity;
         let max = max_capacity.get();
 
         Self {
             inner,
             max_capacity,
-            // A floor of one entry guarantees the eviction loop can never
-            // discard the bundle a save has just stored.
-            min_bundles: config.min_bundles.max(1),
+            min_bundles: min_bundles.unwrap_or(DEFAULT_MIN_BUNDLES).get(),
             // 95% and 90%, computed subtractively so the arithmetic cannot
             // overflow usize on 32-bit targets.
             high_watermark: max - max / 20,
@@ -305,11 +291,8 @@ impl BundleStorage for BundleMemStorage {
 mod tests {
     use super::*;
 
-    fn small_config(capacity: usize, min_bundles: usize) -> Config {
-        Config {
-            capacity: NonZeroUsize::new(capacity).unwrap(),
-            min_bundles,
-        }
+    fn small(capacity: usize, min_bundles: usize) -> BundleMemStorage {
+        BundleMemStorage::new(NonZeroUsize::new(capacity), NonZeroUsize::new(min_bundles))
     }
 
     // When capacity is exceeded, the least-recently-used bundle is evicted.
@@ -318,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn test_eviction_policy_lru() {
         // 100 bytes capacity, min 0 bundles (so eviction is purely capacity-driven)
-        let storage = BundleMemStorage::new(&small_config(100, 0));
+        let storage = small(100, 1);
 
         // Insert 3 bundles of 50 bytes each — total 150 > 100, so eviction should occur
         let name1 = storage.save(Bytes::from(vec![1u8; 50])).await.unwrap();
@@ -340,7 +323,7 @@ mod tests {
     // outlives a later-inserted but never-read one.
     #[tokio::test]
     async fn load_promotes_against_eviction() {
-        let storage = BundleMemStorage::new(&small_config(100, 0));
+        let storage = small(100, 1);
 
         // Insert two bundles (50 bytes each, total 100 = at capacity)
         let name1 = storage.save(Bytes::from(vec![0xFFu8; 50])).await.unwrap();
@@ -368,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn test_min_bundles_protection() {
         // 100 bytes capacity, but min 3 bundles — count protection overrides byte quota
-        let storage = BundleMemStorage::new(&small_config(100, 3));
+        let storage = small(100, 3);
 
         let name1 = storage.save(Bytes::from(vec![1u8; 50])).await.unwrap();
         let name2 = storage.save(Bytes::from(vec![2u8; 50])).await.unwrap();
@@ -388,11 +371,7 @@ mod tests {
     #[test]
     fn test_large_quota_config() {
         let two_tb: usize = 2_000_000_000_000;
-        let config = Config {
-            capacity: NonZeroUsize::new(two_tb).unwrap(),
-            min_bundles: 0,
-        };
-        let storage = BundleMemStorage::new(&config);
+        let storage = BundleMemStorage::new(NonZeroUsize::new(two_tb), NonZeroUsize::new(1));
         assert_eq!(storage.max_capacity.get(), two_tb);
     }
 
@@ -400,7 +379,7 @@ mod tests {
     // bundle alone exceeds the whole byte capacity (min_bundles clamps to 1).
     #[tokio::test]
     async fn save_survives_its_own_eviction_pass() {
-        let storage = BundleMemStorage::new(&small_config(100, 0));
+        let storage = small(100, 1);
 
         let name1 = storage.save(Bytes::from(vec![1u8; 50])).await.unwrap();
         let name2 = storage.save(Bytes::from(vec![2u8; 150])).await.unwrap();
@@ -415,7 +394,7 @@ mod tests {
     // replace() must enforce the byte capacity, not just account for it.
     #[tokio::test]
     async fn replace_evicts_over_capacity() {
-        let storage = BundleMemStorage::new(&small_config(100, 0));
+        let storage = small(100, 1);
 
         let name1 = storage.save(Bytes::from(vec![1u8; 50])).await.unwrap();
         let name2 = storage.save(Bytes::from(vec![2u8; 50])).await.unwrap();
@@ -435,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn watermark_edges_are_hysteretic() {
         // capacity 1000: high watermark = 950 bytes, low watermark = 900
-        let storage = BundleMemStorage::new(&small_config(1000, 1));
+        let storage = small(1000, 1);
 
         let _name1 = storage.save(Bytes::from(vec![1u8; 500])).await.unwrap();
         let name2 = storage.save(Bytes::from(vec![2u8; 440])).await.unwrap();
@@ -457,7 +436,7 @@ mod tests {
     // Evictions during an episode are tallied and reset when it ends.
     #[tokio::test]
     async fn exit_resets_episode_eviction_tally() {
-        let storage = BundleMemStorage::new(&small_config(1000, 1));
+        let storage = small(1000, 1);
 
         let _name1 = storage.save(Bytes::from(vec![1u8; 320])).await.unwrap();
         let _name2 = storage.save(Bytes::from(vec![2u8; 320])).await.unwrap();
@@ -480,7 +459,7 @@ mod tests {
     // within the one call, and the tally is reported and reset by the exit.
     #[tokio::test]
     async fn overshoot_enters_and_exits_in_one_save() {
-        let storage = BundleMemStorage::new(&small_config(1000, 1));
+        let storage = small(1000, 1);
 
         let _name1 = storage.save(Bytes::from(vec![1u8; 600])).await.unwrap();
         // 1200 bytes crosses 95%, then evicting name1 drops usage to 600,

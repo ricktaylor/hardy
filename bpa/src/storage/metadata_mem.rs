@@ -1,4 +1,4 @@
-use core::num::{NonZero, NonZeroUsize};
+use core::num::NonZeroUsize;
 
 use hardy_async::{async_trait, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
@@ -12,23 +12,9 @@ use crate::{
     stream::Sender,
 };
 
-/// Configuration for [`MetadataMemStorage`].
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, rename_all = "kebab-case"))]
-pub struct Config {
-    /// Maximum number of entries (live bundles plus tombstones) held before
-    /// the store evicts old entries to make room. Default: `1_048_576`.
-    pub max_bundles: NonZeroUsize,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            max_bundles: NonZero::new(1_048_576).unwrap(),
-        }
-    }
-}
+// Default maximum number of entries (live bundles plus tombstones) held
+// before the store evicts old entries to make room.
+const DEFAULT_MAX_BUNDLES: NonZeroUsize = NonZeroUsize::new(1_048_576).unwrap();
 
 // A watermark transition detected under the lock, logged after release.
 enum Edge {
@@ -169,24 +155,25 @@ pub struct MetadataMemStorage {
 }
 
 impl MetadataMemStorage {
-    /// Creates a store holding at most [`Config::max_bundles`] entries.
-    pub fn new(config: &Config) -> Self {
+    /// Creates a store holding at most `max_bundles` entries (live bundles
+    /// plus tombstones); `None` applies the store's own default.
+    pub fn new(max_bundles: Option<NonZeroUsize>) -> Self {
+        let max_bundles = max_bundles.unwrap_or(DEFAULT_MAX_BUNDLES);
         warn!(
-            "Using in-memory metadata storage (max {} bundles): bundle metadata will NOT survive a restart",
-            config.max_bundles
+            "Using in-memory metadata storage (max {max_bundles} bundles): bundle metadata will NOT survive a restart",
         );
 
-        let max = config.max_bundles.get();
+        let max = max_bundles.get();
 
         Self {
             inner: Mutex::new(Inner {
-                entries: LruCache::new(config.max_bundles),
+                entries: LruCache::new(max_bundles),
                 live: 0,
                 tombstones: 0,
                 near_capacity: false,
                 evicted_live: 0,
             }),
-            max_bundles: config.max_bundles,
+            max_bundles,
             // 95% and 90%, computed subtractively so the arithmetic cannot
             // overflow usize on 32-bit targets.
             high_watermark: max - max / 20,
@@ -501,10 +488,8 @@ impl MetadataStorage for MetadataMemStorage {
 mod tests {
     use super::*;
 
-    fn small_config(max_bundles: usize) -> Config {
-        Config {
-            max_bundles: NonZeroUsize::new(max_bundles).unwrap(),
-        }
+    fn small(max_bundles: usize) -> MetadataMemStorage {
+        MetadataMemStorage::new(NonZeroUsize::new(max_bundles))
     }
 
     fn make_bundle(n: u32) -> Bundle {
@@ -533,7 +518,7 @@ mod tests {
     // bundle, even though the tombstone was written most recently.
     #[tokio::test]
     async fn expired_tombstone_evicted_before_live() {
-        let storage = MetadataMemStorage::new(&small_config(3));
+        let storage = small(3);
         let (a, b, c, d) = (
             make_expired_bundle(1),
             make_bundle(2),
@@ -561,7 +546,7 @@ mod tests {
     // burst of duplicates of the deleted bundle.
     #[tokio::test]
     async fn fresh_tombstone_shields_duplicates_over_live() {
-        let storage = MetadataMemStorage::new(&small_config(3));
+        let storage = small(3);
         let (a, b, c, d) = (
             make_bundle(1),
             make_bundle(2),
@@ -589,7 +574,7 @@ mod tests {
     // least-recently-used live bundle.
     #[tokio::test]
     async fn oldest_live_evicted_when_no_tombstones() {
-        let storage = MetadataMemStorage::new(&small_config(2));
+        let storage = small(2);
         let (a, b, c) = (make_bundle(1), make_bundle(2), make_bundle(3));
 
         assert!(storage.insert(&a).await.unwrap());
@@ -605,7 +590,7 @@ mod tests {
     // not promote an expired tombstone off the LRU tail.
     #[tokio::test]
     async fn reinsert_of_tombstoned_id_refused_without_promotion() {
-        let storage = MetadataMemStorage::new(&small_config(3));
+        let storage = small(3);
         let (a, b, c, d) = (
             make_expired_bundle(1),
             make_bundle(2),
@@ -632,7 +617,7 @@ mod tests {
     // tombstone into the full cache and evict a live bundle with it.
     #[tokio::test]
     async fn tombstone_of_absent_id_does_not_evict_live() {
-        let storage = MetadataMemStorage::new(&small_config(2));
+        let storage = small(2);
         let (a, b, c) = (make_bundle(1), make_bundle(2), make_bundle(3));
 
         assert!(storage.insert(&a).await.unwrap());
@@ -663,7 +648,7 @@ mod tests {
     // loss: it must not count towards the episode's evicted-live tally.
     #[tokio::test]
     async fn expired_eviction_is_not_data_loss() {
-        let storage = MetadataMemStorage::new(&small_config(2));
+        let storage = small(2);
         let (a, b, c, d) = (
             make_expired_bundle(1),
             make_bundle(2),
@@ -688,7 +673,7 @@ mod tests {
     #[tokio::test]
     async fn watermark_edges_are_hysteretic() {
         // max 20: high watermark = 19 live, low watermark = 18 live
-        let storage = MetadataMemStorage::new(&small_config(20));
+        let storage = small(20);
         let bundles: Vec<Bundle> = (1..=19).map(make_bundle).collect();
 
         for b in &bundles[..18] {
@@ -712,7 +697,7 @@ mod tests {
     // resolution racing the peer sweeps and the expiry reaper.
     #[tokio::test]
     async fn swap_status_is_conditional() {
-        let storage = MetadataMemStorage::new(&Config::default());
+        let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
@@ -782,7 +767,7 @@ mod tests {
     // the deletion itself.
     #[tokio::test]
     async fn tombstone_if_is_conditional() {
-        let storage = MetadataMemStorage::new(&Config::default());
+        let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
@@ -824,7 +809,7 @@ mod tests {
     // must not resurrect the bundle over its tombstone.
     #[tokio::test]
     async fn tombstone_is_never_downgraded() {
-        let storage = MetadataMemStorage::new(&Config::default());
+        let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(&bundle.bundle.id).await.unwrap();

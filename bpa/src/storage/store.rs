@@ -25,7 +25,7 @@ pub struct Store {
 impl Store {
     /// Create a new Store with the configured storage backends.
     ///
-    /// The `bundle_storage` may be wrapped in a [`CachedBundleStorage`](super::cached::CachedBundleStorage)
+    /// The `bundle_storage` may be wrapped in a [`CachedBundleStorage`](super::bundle_cache::CachedBundleStorage)
     /// decorator before being passed here.
     pub fn new(
         reaper_cache_size: NonZeroUsize,
@@ -301,8 +301,8 @@ mod tests {
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
             core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(metadata_mem::MetadataMemStorage::new(&Default::default())),
-            Arc::new(bundle_mem::BundleMemStorage::new(&Default::default())),
+            Arc::new(metadata_mem::MetadataMemStorage::new(None)),
+            Arc::new(bundle_mem::BundleMemStorage::new(None, None)),
         ))
     }
 

@@ -364,4 +364,4 @@ Each storage component is configured separately:
 | **SQLite** | Database directory and name |
 | **In-memory** | Bundle: byte capacity, minimum bundle count; metadata: maximum entry count |
 
-See rustdoc for `Config` structs and the respective storage backend design docs for configuration details.
+See the rustdoc for each backend's constructor or builder, and the respective storage backend design docs, for configuration details.

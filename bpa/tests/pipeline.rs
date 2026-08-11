@@ -1258,9 +1258,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
 async fn deferred_outcome_loses_to_expiry() {
     use hardy_bpa::storage::MetadataStorage;
 
-    let metadata_store = Arc::new(hardy_bpa::storage::MetadataMemStorage::new(
-        &Default::default(),
-    ));
+    let metadata_store = Arc::new(hardy_bpa::storage::MetadataMemStorage::new(None));
 
     let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {

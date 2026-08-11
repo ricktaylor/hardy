@@ -425,8 +425,8 @@ mod tests {
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
             core::num::NonZeroUsize::new(16).unwrap(),
-            Arc::new(MetadataMemStorage::new(&Default::default())),
-            Arc::new(BundleMemStorage::new(&Default::default())),
+            Arc::new(MetadataMemStorage::new(None)),
+            Arc::new(BundleMemStorage::new(None, None)),
         ))
     }
 

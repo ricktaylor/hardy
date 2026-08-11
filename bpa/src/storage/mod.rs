@@ -9,8 +9,8 @@
 
 pub mod backend;
 
+mod bundle_cache;
 mod bundle_mem;
-mod cached;
 mod metadata_mem;
 mod reaper;
 
@@ -22,10 +22,10 @@ pub(crate) mod store;
 // Re-exports
 
 /// In-memory [`BundleStorage`] backend, suitable for testing and ephemeral deployments.
-pub use self::bundle_mem::{BundleMemStorage, Config as BundleMemStorageConfig};
+pub use self::bundle_mem::BundleMemStorage;
 /// In-memory [`MetadataStorage`] backend, suitable for testing and ephemeral deployments.
-pub use self::metadata_mem::{Config as MetadataMemStorageConfig, MetadataMemStorage};
+pub use self::metadata_mem::MetadataMemStorage;
 
-pub use self::cached::{CachedBundleStorage, DEFAULT_LRU_CAPACITY, DEFAULT_MAX_CACHED_BUNDLE_SIZE};
+pub use self::bundle_cache::CachedBundleStorage;
 
 pub use self::backend::*;

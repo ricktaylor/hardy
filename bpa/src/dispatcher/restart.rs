@@ -258,8 +258,8 @@ mod tests {
     // re-offered once a route to its destination reappears.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_resets_ack_pending_transfer() {
-        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(&Default::default())));
-        let data_store = Arc::new(BundleMemStorage::new(&Default::default()));
+        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
 
         // Seed the stores as an unclean stop would leave them: bundle data
         // present, metadata parked in ForwardAckPending via a now-stale peer

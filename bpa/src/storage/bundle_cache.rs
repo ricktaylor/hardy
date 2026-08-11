@@ -8,11 +8,11 @@ use lru::LruCache;
 use super::{BundleStorage, RecoveryResponse, Result};
 use crate::{Arc, Bytes, stream::Sender};
 
-/// Default LRU cache capacity (number of entries).
-pub const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
+// Default LRU cache capacity (number of entries).
+const DEFAULT_LRU_CAPACITY: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
-/// Default maximum bundle size (in bytes) eligible for caching.
-pub const DEFAULT_MAX_CACHED_BUNDLE_SIZE: NonZeroUsize = NonZeroUsize::new(16 * 1024).unwrap();
+// Default maximum bundle size (in bytes) eligible for caching.
+const DEFAULT_MAX_CACHED_BUNDLE_SIZE: NonZeroUsize = NonZeroUsize::new(16 * 1024).unwrap();
 
 /// Wraps a `BundleStorage` backend with an in-memory LRU cache.
 ///
@@ -25,15 +25,20 @@ pub struct CachedBundleStorage {
 }
 
 impl CachedBundleStorage {
+    /// Wraps `inner` with an LRU cache holding at most `lru_capacity`
+    /// entries, caching bundles up to `max_bundle_size` bytes. `None` for
+    /// either knob applies the cache's own default.
     pub fn new(
         inner: Arc<dyn BundleStorage>,
-        capacity: NonZeroUsize,
-        max_bundle_size: NonZeroUsize,
+        lru_capacity: Option<NonZeroUsize>,
+        max_bundle_size: Option<NonZeroUsize>,
     ) -> Self {
         Self {
             inner,
-            lru: Mutex::new(LruCache::new(capacity)),
-            max_bundle_size: max_bundle_size.into(),
+            lru: Mutex::new(LruCache::new(lru_capacity.unwrap_or(DEFAULT_LRU_CAPACITY))),
+            max_bundle_size: max_bundle_size
+                .unwrap_or(DEFAULT_MAX_CACHED_BUNDLE_SIZE)
+                .into(),
         }
     }
 

@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - **BREAKING:** `Cla::forward` takes the bundle ID alongside the bundle bytes, so a deferring CLA can echo it back without parsing the bundle. `ForwardBundleResult` and `BundleStatus` have new variants; `Sink` has a new required method.
 - The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.
+- **BREAKING**: the library no longer exposes config-file structs; config schemas belong to the server crates. `MetadataMemStorage::new` and `BundleMemStorage::new` take `Option<NonZeroUsize>` knobs with dimension-named parameters (the zero floor is unrepresentable instead of silently clamped), `Rfc9171ValidityFilter` is configured through fluent setters, and defaults are owned privately at the point of use; the `MetadataMemStorageConfig`/`BundleMemStorageConfig` re-exports and `filter::rfc9171::Config` are removed.
+- **BREAKING**: the bundle-cache defaults are owned by `CachedBundleStorage`: its `new` takes `Option` knobs and applies its own defaults, and the `DEFAULT_LRU_CAPACITY`/`DEFAULT_MAX_CACHED_BUNDLE_SIZE` constants are no longer public. `BpaBuilder` carries unset knobs as `None` instead of materialising defaults, and `build` caches any configured bundle storage unless `no_cache()` was called; the default in-memory storage is never cached.
 
 ### Fixed
 - Overlapping service-registration polls (a re-registering service, or a poll racing an application cancel) can no longer dispatch — and potentially deliver — the same bundle twice: the poll claims each bundle out of `WaitingForService` with a status-conditioned swap.
