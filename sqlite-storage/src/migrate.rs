@@ -1,5 +1,8 @@
-use super::*;
+use rusqlite::OptionalExtension;
 use thiserror::Error;
+
+#[cfg(feature = "instrument")]
+use tracing::instrument;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -141,7 +144,7 @@ pub fn migrate(conn: &mut rusqlite::Connection, upgrade: bool) -> Result<(), Err
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Error, migrate};
 
     fn open_memory_db() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().unwrap()

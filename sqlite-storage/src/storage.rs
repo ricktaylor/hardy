@@ -1,95 +1,38 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hardy_bpa::{
     async_trait,
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    storage,
+    storage::{self, MetadataStorage},
     stream::Sender,
 };
 
-use super::*;
+use rusqlite::OptionalExtension;
+use trace_err::*;
+use tracing::{debug, error, info, warn};
 
-struct ConnectionPool {
-    path: PathBuf,
-    connections: Mutex<Vec<rusqlite::Connection>>,
-    write_lock: tokio::sync::Mutex<()>,
-}
+#[cfg(feature = "instrument")]
+use tracing::instrument;
 
-impl ConnectionPool {
-    fn new(path: PathBuf, connection: rusqlite::Connection) -> Self {
-        Self {
-            path,
-            connections: Mutex::new(vec![connection]),
-            write_lock: tokio::sync::Mutex::new(()),
-        }
-    }
+use super::{migrate, pool::ConnectionPool};
 
-    async fn new_connection<'a>(
-        &'a self,
-        guard: Option<&tokio::sync::MutexGuard<'a, ()>>,
-    ) -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_with_flags(
-            &self.path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .trace_expect("Failed to open connection");
+// Filename of the SQLite database.
+const DEFAULT_DB_NAME: &str = "metadata.db";
 
-        // conn.busy_timeout(std::time::Duration::ZERO)
-        //     .trace_expect("Failed to set timeout");
-
-        // We need a guard here, if we don't already have one, because we are writing to the DB
-        let guard = if guard.is_none() {
-            Some(self.write_lock.lock().await)
-        } else {
-            None
-        };
-
-        // journal_mode cannot be changed inside a transaction (migrations run
-        // in one), so WAL is applied per connection here, not in the schema.
-        // synchronous is a per-connection pragma; NORMAL under WAL fsyncs at
-        // checkpoint rather than per commit. A crash loses at most the
-        // un-checkpointed tail of commits, never consistency — and bundle data
-        // storage is ground truth: restart replay re-ingests anything whose
-        // metadata the tail forgot.
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA foreign_keys = ON;
-            PRAGMA optimize = 0x10002;",
-        )
-        .trace_expect("Failed to optimize");
-
-        rusqlite::vtab::array::load_module(&conn).trace_expect("Failed to load array module");
-
-        drop(guard);
-        conn
-    }
-
-    async fn get<'a>(
-        &'a self,
-        guard: Option<&tokio::sync::MutexGuard<'a, ()>>,
-    ) -> rusqlite::Connection {
-        if let Some(conn) = self
-            .connections
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .pop()
-        {
-            conn
-        } else {
-            self.new_connection(guard).await
-        }
-    }
-
-    fn put(&self, conn: rusqlite::Connection) {
-        self.connections
-            .lock()
-            .trace_expect("Failed to lock mutex")
-            .push(conn)
-    }
+// Directory in which the database file is stored: the platform-specific
+// cache directory for the project (e.g. `~/.cache/hardy-sqlite-storage` on
+// Linux), or `/var/spool/<pkg>` on Unix when no project directory can be
+// determined.
+fn default_db_dir() -> PathBuf {
+    directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
+        || cfg_select! {
+            unix => Path::new("/var/spool").join(env!("CARGO_PKG_NAME")),
+            windows => std::env::current_exe().expect("Failed to get current executable path").join(env!("CARGO_PKG_NAME")),
+            _ => compile_error!("No idea how to determine default sqlite metadata store directory for target platform"),
+        },
+        |project_dirs| project_dirs.cache_dir().into(),
+    )
 }
 
 /// SQLite-backed implementation of [`MetadataStorage`](storage::MetadataStorage).
@@ -97,25 +40,29 @@ impl ConnectionPool {
 /// Manages a pool of read connections and a single serialized write lock to
 /// avoid SQLite busy errors. Bundle metadata is stored as JSON blobs alongside
 /// typed status columns for efficient status-based queries.
-pub struct Storage {
+pub struct SqliteStorage {
     pool: Arc<ConnectionPool>,
 }
 
-impl Storage {
+impl SqliteStorage {
     /// Opens or creates the SQLite database and runs schema migrations.
     ///
-    /// If the database file does not exist it is created and `upgrade` is
-    /// forced to `true`. When `upgrade` is `true`, pending schema migrations
-    /// are applied.
-    pub fn new(config: &Config, mut upgrade: bool) -> Self {
+    /// `None` applies the backend's own default: the platform cache
+    /// directory, and `metadata.db`. If the database file does not exist it
+    /// is created and `upgrade` is forced to `true`. When `upgrade` is
+    /// `true`, pending schema migrations are applied.
+    pub fn new(db_dir: Option<PathBuf>, db_name: Option<String>, mut upgrade: bool) -> Self {
+        let db_dir = db_dir.unwrap_or_else(default_db_dir);
+        let db_name = db_name.as_deref().unwrap_or(DEFAULT_DB_NAME);
+
         // Ensure directory exists
-        std::fs::create_dir_all(&config.db_dir).trace_expect(&format!(
+        std::fs::create_dir_all(&db_dir).trace_expect(&format!(
             "Failed to create metadata store directory {}",
-            config.db_dir.display()
+            db_dir.display()
         ));
 
         // Compose DB name
-        let path = config.db_dir.join(&config.db_name);
+        let path = db_dir.join(db_name);
 
         info!("Using database: {}", path.display());
 
@@ -267,7 +214,7 @@ fn to_status(
 }
 
 #[async_trait]
-impl storage::MetadataStorage for Storage {
+impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
@@ -867,11 +814,15 @@ impl storage::MetadataStorage for Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
+
     use hardy_bpa::{
+        bundle::BundleStatus,
         storage::MetadataStorage,
         stream::{SendError, Sender},
     };
+
+    use super::SqliteStorage;
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -891,13 +842,6 @@ mod tests {
         async fn send(&self, item: T) -> Result<(), SendError<T>> {
             self.0.lock().unwrap().push(item);
             Ok(())
-        }
-    }
-
-    fn make_config(dir: &std::path::Path) -> crate::Config {
-        crate::Config {
-            db_dir: dir.to_path_buf(),
-            db_name: "test.db".into(),
         }
     }
 
@@ -925,8 +869,8 @@ mod tests {
     #[test]
     fn test_journal_mode_is_wal() {
         let dir = tempfile::tempdir().unwrap();
-        let config = make_config(dir.path());
-        let _storage = Storage::new(&config, true);
+        let _storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
         let mode: String = conn
@@ -941,7 +885,8 @@ mod tests {
     #[tokio::test]
     async fn test_forward_ack_pending_roundtrip_and_reset() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::new(&make_config(dir.path()), true);
+        let storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
@@ -974,7 +919,8 @@ mod tests {
     #[tokio::test]
     async fn test_swap_status_is_conditional() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::new(&make_config(dir.path()), true);
+        let storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
@@ -1045,7 +991,8 @@ mod tests {
     #[tokio::test]
     async fn test_tombstone_if_is_conditional() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::new(&make_config(dir.path()), true);
+        let storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
@@ -1094,7 +1041,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_status_does_not_resurrect_tombstone() {
         let dir = tempfile::tempdir().unwrap();
-        let storage = Storage::new(&make_config(dir.path()), true);
+        let storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
         bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
@@ -1122,8 +1070,8 @@ mod tests {
     #[tokio::test]
     async fn test_configuration_custom_db_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let config = make_config(dir.path());
-        let _store = Storage::new(&config, true);
+        let _store =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let db_path = dir.path().join("test.db");
         assert!(
@@ -1136,8 +1084,11 @@ mod tests {
     #[tokio::test]
     async fn test_concurrency_no_sqlite_busy() {
         let dir = tempfile::tempdir().unwrap();
-        let config = make_config(dir.path());
-        let store = Arc::new(Storage::new(&config, true));
+        let store = Arc::new(SqliteStorage::new(
+            Some(dir.path().to_path_buf()),
+            Some("test.db".into()),
+            true,
+        ));
 
         // Create all bundles upfront so we can capture their IDs for verification
         let bundles: Vec<_> = (0..10).map(make_bundle).collect();
@@ -1169,8 +1120,8 @@ mod tests {
     #[tokio::test]
     async fn test_corrupt_data_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
-        let config = make_config(dir.path());
-        let store = Storage::new(&config, true);
+        let store =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         // Insert a valid bundle
         let bundle = make_bundle(0);
@@ -1209,8 +1160,8 @@ mod tests {
     #[tokio::test]
     async fn test_waiting_queue_invalidation() {
         let dir = tempfile::tempdir().unwrap();
-        let config = make_config(dir.path());
-        let store = Storage::new(&config, true);
+        let store =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         // Insert a bundle with Waiting status
         let mut bundle = make_bundle(0);
