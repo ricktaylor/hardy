@@ -17,19 +17,57 @@ use hardy_bpa::{
     stream::Sender,
 };
 use rand::prelude::*;
+use trace_err::*;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+use tracing::{error, info, warn};
 
-use super::*;
+// Whether to use fsync for crash-safe atomic writes.
+const DEFAULT_FSYNC: bool = true;
 
-pub struct Storage {
+// Directory where bundle files are stored: a platform-specific cache
+// directory resolved via the `directories` crate (e.g.
+// `~/.cache/hardy-localdisk-storage` on Linux), falling back to
+// `/var/spool/hardy-localdisk-storage` on Unix or the executable directory
+// on Windows.
+fn default_store_dir() -> PathBuf {
+    directories::ProjectDirs::from("dtn", "Hardy", env!("CARGO_PKG_NAME")).map_or_else(
+        || cfg_select! {
+            unix => Path::new("/var/spool").join(env!("CARGO_PKG_NAME")),
+            windows => std::env::current_exe().expect("Failed to get current exe").join(env!("CARGO_PKG_NAME")),
+            _ => compile_error!("No idea how to determine default localdisk bundle store directory for target platform"),
+        },
+        |project_dirs| project_dirs.cache_dir().into(),
+    )
+}
+
+/// Local-filesystem implementation of
+/// [`BundleStorage`](hardy_bpa::storage::BundleStorage): bundles are
+/// stored as individual files in a two-level hash directory layout.
+pub struct LocalDiskStorage {
     store_root: PathBuf,
     fsync: bool,
 }
 
-impl Storage {
-    pub fn new(config: &Config, _upgrade: bool) -> Self {
+impl LocalDiskStorage {
+    /// Creates the store, ensuring the store directory exists (creating it
+    /// if necessary). `None` applies the backend's own default: the
+    /// platform cache directory, and fsync enabled (each save writes to a
+    /// `.tmp` file with `O_SYNC` / `FILE_FLAG_WRITE_THROUGH`, syncs data,
+    /// renames to the final name, and syncs the parent directory;
+    /// `Some(false)` uses plain `tokio::fs::write` instead).
+    pub fn new(store_dir: Option<PathBuf>, fsync: Option<bool>, _upgrade: bool) -> Self {
+        let store_root = store_dir.unwrap_or_else(default_store_dir);
+        info!("Using bundle store directory: {}", store_root.display());
+
+        std::fs::create_dir_all(&store_root).trace_expect(&format!(
+            "Failed to create bundle store directory {}",
+            store_root.display()
+        ));
+
         Self {
-            store_root: config.store_dir.clone(),
-            fsync: config.fsync,
+            store_root,
+            fsync: fsync.unwrap_or(DEFAULT_FSYNC),
         }
     }
 }
@@ -156,7 +194,7 @@ fn walk_dirs(
 }
 
 #[async_trait]
-impl BundleStorage for Storage {
+impl BundleStorage for LocalDiskStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn recover(&self, stream: &dyn Sender<RecoveryResponse>) -> storage::Result<()> {
         // Internal flume channel: walk_dirs uses blocking send + is_disconnected
@@ -419,11 +457,15 @@ impl BundleStorage for Storage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::{Path, PathBuf};
+
     use hardy_bpa::{
+        Bytes,
         storage::BundleStorage,
         stream::{SendError, Sender},
     };
+
+    use super::LocalDiskStorage;
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -446,18 +488,11 @@ mod tests {
         }
     }
 
-    fn make_config(dir: &std::path::Path, fsync: bool) -> crate::Config {
-        crate::Config {
-            store_dir: dir.to_path_buf(),
-            fsync,
-        }
-    }
-
     // LD-01: Files are created under the configured store_dir.
     #[tokio::test]
     async fn test_configuration_custom_store_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Storage::new(&make_config(dir.path(), false), false);
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(false), false);
 
         let name = store.save(Bytes::from_static(b"hello")).await.unwrap();
         let full_path = dir.path().join(&*name);
@@ -471,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_cleanup() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Storage::new(&make_config(dir.path(), false), false);
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(false), false);
 
         // Save a valid bundle
         let valid_name = store.save(Bytes::from_static(b"valid")).await.unwrap();
@@ -518,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn test_filesystem_structure() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Storage::new(&make_config(dir.path(), false), false);
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(false), false);
 
         // Save several bundles
         let mut names = Vec::new();
@@ -561,7 +596,7 @@ mod tests {
     #[tokio::test]
     async fn test_atomic_save_no_tmp_residue() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Storage::new(&make_config(dir.path(), true), false);
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(true), false);
 
         let name = store.save(Bytes::from_static(b"atomic")).await.unwrap();
 
@@ -584,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_to_readonly_dir_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Storage::new(&make_config(dir.path(), false), false);
+        let store = LocalDiskStorage::new(Some(dir.path().to_path_buf()), Some(false), false);
 
         // Make the store directory read-only
         let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
