@@ -35,10 +35,9 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // filter is disabled via the `no-rfc9171-autoregister` feature; register a
     // configured instance here, relaxed by --lax-rfc9171. The reflected payload
     // is still compared byte-for-byte by the client.
-    let rfc9171_config = hardy_bpa::filter::rfc9171::Config {
-        primary_block_integrity: !args.lax_rfc9171,
-        bundle_age_required: !args.lax_rfc9171,
-    };
+    let rfc9171_filter = hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter::new()
+        .primary_block_integrity(!args.lax_rfc9171)
+        .bundle_age_required(!args.lax_rfc9171);
     let bpa = std::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
@@ -47,9 +46,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
                 hardy_bpa::filter::Hook::Ingress,
                 "rfc9171-validity",
                 &[],
-                hardy_bpa::filter::Filter::Read(std::sync::Arc::new(
-                    hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter::new(&rfc9171_config),
-                )),
+                hardy_bpa::filter::Filter::Read(std::sync::Arc::new(rfc9171_filter)),
             )
             .build()
             .await
