@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** `bundle::Bundle`'s wire-bundle field is renamed `bundle` → `bpv7`, ending the `bundle.bundle.…` stutter; the common reads are now accessors (`Bundle::id()`, `Bundle::primary()`) and `Bundle::new(bpv7, metadata)` constructs a record in the initial `New` status.
 - **BREAKING:** `MetadataStorage::confirm_exists` returns `Option<(BundleMetadata, BundleStatus)>` — the record halves recovery actually consumes — instead of a full `Bundle` whose re-materialized wire half every caller discarded.
 - A reassembled ADU now carries the provenance of its earliest-arriving fragment (previously it had no ingress context at all).
+- **BREAKING:** registering a service at the administrative endpoint's service id (ipn service 0, or a zero-length dtn demux) is rejected with the new `services::Error::AdministrativeEndpoint`, instead of being silently shadowed by the admin route's precedence (RFC 9758 Section 5.7).
+- **BREAKING:** `NodeIds` is documented as what it stores: the node's administrative endpoints, at most one per scheme, from which every other node ID is derived. The unconfigured default's random allocator id is tied to the Experimental Use range by name (RFC 9758 Section 9.1), and two unreachable `node_ids::Error` variants (`NullEndpoint`, `DtnWithDemux`) are removed.
 
 ### Fixed
 - Overlapping service-registration polls (a re-registering service, or a poll racing an application cancel) can no longer dispatch — and potentially deliver — the same bundle twice: the poll claims each bundle out of `WaitingForService` with a status-conditioned swap.

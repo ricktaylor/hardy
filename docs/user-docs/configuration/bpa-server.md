@@ -45,13 +45,13 @@ and dots. For example:
 | Config key | Environment variable |
 |------------|---------------------|
 | `log-level` | `HARDY_BPA_SERVER_LOG_LEVEL` |
-| `node-ids` | `HARDY_BPA_SERVER_NODE_IDS` |
+| `admin-endpoints` | `HARDY_BPA_SERVER_ADMIN_ENDPOINTS` (the former `HARDY_BPA_SERVER_NODE_IDS` still works via the `node-ids` alias) |
 
 ## Top-Level Options
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `node-ids` | String or list of EID strings | Random IPN EID | Endpoint IDs that identify this node. Supports `ipn:` and `dtn:` schemes. |
+| `admin-endpoints` | String or list of EID strings | Random IPN EID | The node's administrative endpoints, at most one per scheme (`ipn:[A.]B.0` or `dtn://node/`); all other node IDs derive from these. `node-ids` is accepted as an alias. |
 | `log-level` | `trace`, `debug`, `info`, `warn`, `error` | `info` | Logging verbosity. Also settable via `--log-level` CLI argument. |
 | `status-reports` | `true`, `false` | `false` | Whether to generate and dispatch bundle status reports. See warning below. |
 | `processing-pool-size` | Positive integer | 4 &times; CPU cores | Maximum concurrent bundle processing tasks. |
@@ -69,13 +69,13 @@ and dots. For example:
 Example (single EID):
 
 ```yaml
-node-ids: "ipn:1.0"
+admin-endpoints: "ipn:1.0"
 ```
 
 Example (multiple EIDs across both schemes):
 
 ```yaml
-node-ids:
+admin-endpoints:
   - "ipn:1.0"
   - "dtn://my-node/"
 ```

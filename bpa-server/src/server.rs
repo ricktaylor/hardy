@@ -147,7 +147,7 @@ impl BpaServer {
         };
 
         let mut builder = Bpa::builder()
-            .node_ids(config.node_ids)
+            .node_ids(config.admin_endpoints)
             .metadata_storage(metadata_storage)
             .bundle_storage(bundle_storage)
             .filter(
