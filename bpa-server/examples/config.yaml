@@ -17,8 +17,10 @@ grpc:
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
 # If not provided, a random IPN-formatted node ID will be generated.
-# node-ids: "ipn:1.0"
-# node-ids: ["ipn:1.0", "dtn://my-node/"]
+# The node's administrative endpoints, at most one per scheme
+# (`node-ids` is accepted as an alias for this key).
+# admin-endpoints: "ipn:1.0"
+# admin-endpoints: ["ipn:1.0", "dtn://my-node/"]
 
 # Whether this node should generate and dispatch bundle status reports.
 # status-reports: false

@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
+use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId, Service};
 use rand::{
     RngExt, SeedableRng,
     rngs::{SmallRng, SysRng},
@@ -9,12 +9,6 @@ use thiserror::Error;
 pub enum Error {
     #[error("Node Ids must not be LocalNode")]
     LocalNode,
-
-    #[error("Node Ids must not be the Null Endpoint")]
-    NullEndpoint,
-
-    #[error("Administrative endpoints must not have a dtn demux part")]
-    DtnWithDemux,
 
     #[error("Multiple ipn scheme Node Ids")]
     MultipleIpnNodeIds,
@@ -32,14 +26,30 @@ pub enum Error {
     InvalidEid(#[from] hardy_bpv7::eid::Error),
 }
 
-/// The BPA's configured node identifiers.
+// The Experimental Use allocator identifier range (RFC 9758 Section 9.1):
+// the right home for an unconfigured node's random identity, which must
+// not collide with Expert Review assignments.
+const EXPERIMENTAL_USE_ALLOCATORS: core::ops::Range<u32> = 0x40000000..0x80000000;
+
+/// Whether `service_id` denotes a node's administrative endpoint: ipn
+/// service 0 (RFC 9758 Section 5.7) or the zero-length dtn demux (RFC 9171
+/// Section 4.2.5.1.1). The admin endpoint is structurally registered, so
+/// these ids can never be claimed by a service registration.
+pub(crate) fn service_is_admin_endpoint(service_id: &Service) -> bool {
+    matches!(service_id, Service::Ipn(0))
+        || matches!(service_id, Service::Dtn(name) if name.is_empty())
+}
+
+/// The BPA's administrative endpoints: at most one per scheme, `ipn`
+/// (`ipn:[A.]B.0`, RFC 9758 Section 5.7), `dtn` (`dtn://node/`, RFC 9171
+/// Section 4.2.5.1.1), or both. At least one must be present.
 ///
-/// A BPA may operate with an `ipn`-scheme node ID, a `dtn`-scheme node ID,
-/// or both. At least one must be present. These are used to derive
-/// administrative endpoints and to identify the local node in routing.
+/// These are the node's configured identity (RFC 9171 Section 3.2); every
+/// other EID identifying the node, service EIDs and the node-ID set of
+/// RFC 9171 Section 4.2.5.2, is derived from them, never stored.
 ///
 /// When no explicit identifiers are provided, [`Default`] generates a
-/// random IPN node ID in the private allocator range.
+/// random IPN node ID in the Experimental Use allocator range.
 #[derive(Debug, Clone)]
 pub struct NodeIds {
     pub(crate) ipn: Option<IpnNodeId>,
@@ -109,7 +119,7 @@ impl Default for NodeIds {
             .expect("OS RNG must be available to seed the node-id PRNG");
         Self {
             ipn: Some(IpnNodeId {
-                allocator_id: rng.random_range(0x40000000..0x80000000),
+                allocator_id: rng.random_range(EXPERIMENTAL_USE_ALLOCATORS),
                 node_number: rng.random_range(1..=u32::MAX),
             }),
             dtn: None,

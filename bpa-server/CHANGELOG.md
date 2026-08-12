@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- The `node-ids` configuration key is renamed `admin-endpoints`, naming what it always stored: the node's administrative endpoints, at most one per scheme (`ipn:[A.]B.0` or `dtn://node/`). `node-ids` remains accepted as an alias.
+
 ## [0.2.0]
 
 ### Added

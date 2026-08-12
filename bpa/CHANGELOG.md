@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+- Registering a service at the administrative endpoint's service id (ipn service 0, or a zero-length dtn demux) is rejected with the new `services::Error::AdministrativeEndpoint`, instead of being silently shadowed by the admin route's precedence (RFC 9758 Section 5.7).
+- `NodeIds` is documented as what it stores: the node's administrative endpoints, at most one per scheme, from which every other node ID is derived. The unconfigured default's random allocator id is tied to the Experimental Use range by name (RFC 9758 Section 9.1), and two unreachable error variants are removed.
+
 ## [0.2.0]
 
 ### Added
