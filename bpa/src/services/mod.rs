@@ -18,6 +18,12 @@ pub enum Error {
     #[error("Invalid dtn service name {0}")]
     DtnInvalidServiceName(String),
 
+    /// The service id denotes the node's administrative endpoint, which is
+    /// structurally registered and cannot be claimed by a service
+    /// (RFC 9758 Section 5.7).
+    #[error("Service id {0} identifies the administrative endpoint (RFC 9758 Section 5.7)")]
+    AdministrativeEndpoint(String),
+
     /// No IPN node ID is configured on this BPA, so IPN services cannot register.
     #[error("There is no ipn node id configured")]
     NoIpnNodeId,

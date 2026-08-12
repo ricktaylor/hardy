@@ -100,7 +100,7 @@ async fn build(
         .status_reports(config.status_reports)
         .poll_channel_depth(config.poll_channel_depth)
         .processing_pool_size(config.processing_pool_size)
-        .node_ids(config.node_ids)
+        .node_ids(config.admin_endpoints)
         .metadata_storage(metadata_storage)
         .bundle_storage(bundle_storage)
         .filter(

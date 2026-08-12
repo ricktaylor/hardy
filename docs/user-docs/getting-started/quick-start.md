@@ -56,7 +56,7 @@ available options.
 
 Key settings you'll want to change for a real deployment:
 
-- **`node-ids`** -- set your node's EID (e.g. `"ipn:42.0"`)
+- **`admin-endpoints`** -- set your node's administrative endpoint (e.g. `"ipn:42.0"`)
 - **`storage.metadata.type`** -- `"postgres"`, `"sqlite"`, or `"memory"`
 - **`storage.bundle.type`** -- `"s3"`, `"localdisk"`, or `"memory"`
 

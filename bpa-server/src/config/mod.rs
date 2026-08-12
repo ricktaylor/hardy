@@ -122,9 +122,11 @@ pub struct Config {
     #[serde(default = "default_processing_pool_size")]
     pub processing_pool_size: NonZeroUsize,
 
-    // Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
-    #[serde(default)]
-    pub node_ids: NodeIds,
+    // The node's administrative endpoints, at most one per scheme
+    // (e.g. "ipn:1.0", "dtn://my-node/"); every other EID identifying the
+    // node is derived from these. `node-ids` is accepted as an alias.
+    #[serde(default, alias = "node-ids")]
+    pub admin_endpoints: NodeIds,
 
     // The routing priority of services (default 1)
     #[serde(default)]
@@ -268,7 +270,7 @@ mod tests {
 log-level: debug
 status-reports: true
 poll-channel-depth: 32
-node-ids:
+admin-endpoints:
   - "ipn:42.0"
 "#,
         );
@@ -526,23 +528,25 @@ another-unknown:
         assert_eq!(config.log_level, Level::WARN);
     }
 
-    // Node IDs can be a single string.
+    // Admin endpoints can be a single string, and the legacy `node-ids`
+    // key is accepted as an alias.
     #[test]
     #[serial]
-    fn single_node_id() {
+    fn single_admin_endpoint_via_alias() {
         // Parsing succeeds without error.
         write_and_load("node.yaml", "node-ids: \"ipn:1.0\"\n");
     }
 
-    // Node IDs can be a list with both schemes.
+    // Admin endpoints can be a list with both schemes, at most one per
+    // scheme.
     #[test]
     #[serial]
-    fn multiple_node_ids() {
+    fn admin_endpoint_per_scheme() {
         // Parsing succeeds without error.
         write_and_load(
             "nodes.yaml",
             r#"
-node-ids:
+admin-endpoints:
   - "ipn:1.0"
   - "dtn://my-node/"
 "#,

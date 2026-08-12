@@ -186,6 +186,11 @@ impl ServiceRegistryBuilder {
         service_id: hardy_bpv7::eid::Service,
         service: ServiceImpl,
     ) -> services::Result<()> {
+        if node_ids::service_is_admin_endpoint(&service_id) {
+            return Err(services::Error::AdministrativeEndpoint(
+                service_id.to_string(),
+            ));
+        }
         if self.services.contains_key(&service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
@@ -313,6 +318,11 @@ impl ServiceRegistry {
         service_id: hardy_bpv7::eid::Service,
         service: ServiceImpl,
     ) -> services::Result<()> {
+        if node_ids::service_is_admin_endpoint(&service_id) {
+            return Err(services::Error::AdministrativeEndpoint(
+                service_id.to_string(),
+            ));
+        }
         let mut services = self.services.lock();
         if services.contains_key(&service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
@@ -493,5 +503,71 @@ mod tests {
         );
 
         bpa.shutdown().await;
+    }
+    // A minimal low-level service: registration-shape tests never exercise
+    // delivery.
+    struct TestService;
+
+    #[async_trait]
+    impl services::Service for TestService {
+        async fn on_register(
+            &self,
+            _endpoint: &hardy_bpv7::eid::Eid,
+            _sink: Box<dyn services::ServiceSink>,
+        ) {
+        }
+
+        async fn on_unregister(&self) {}
+
+        async fn on_receive(
+            &self,
+            _data: Bytes,
+            _expiry: time::OffsetDateTime,
+        ) -> services::Result<()> {
+            Ok(())
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _from: &hardy_bpv7::eid::Eid,
+            _kind: services::StatusNotify,
+            _reason: hardy_bpv7::status_report::ReasonCode,
+            _timestamp: Option<time::OffsetDateTime>,
+        ) {
+        }
+    }
+
+    // The admin endpoint's service ids cannot be claimed: ipn service 0 and
+    // the zero-length dtn demux are rejected at registration instead of
+    // being silently shadowed by the admin route's precedence
+    // (RFC 9758 Section 5.7).
+    #[test]
+    fn admin_endpoint_service_ids_are_rejected() {
+        let mut builder = ServiceRegistryBuilder::new();
+        assert!(matches!(
+            builder.insert(
+                hardy_bpv7::eid::Service::Ipn(0),
+                ServiceImpl::LowLevel(Arc::new(TestService)),
+            ),
+            Err(services::Error::AdministrativeEndpoint(_))
+        ));
+        assert!(matches!(
+            builder.insert(
+                hardy_bpv7::eid::Service::Dtn("".into()),
+                ServiceImpl::LowLevel(Arc::new(TestService)),
+            ),
+            Err(services::Error::AdministrativeEndpoint(_))
+        ));
+
+        // The neighbouring non-zero / non-empty ids remain registrable.
+        assert!(
+            builder
+                .insert(
+                    hardy_bpv7::eid::Service::Ipn(1),
+                    ServiceImpl::LowLevel(Arc::new(TestService)),
+                )
+                .is_ok()
+        );
     }
 }

@@ -1,5 +1,5 @@
 log-level: info
-node-ids:
+admin-endpoints:
   - "ipn:1.0"
   - "dtn://my-node/"
 status-reports: true
