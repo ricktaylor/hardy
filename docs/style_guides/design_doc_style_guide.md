@@ -68,7 +68,7 @@ Link to test plans (don't duplicate their content).
 
 When writing or updating design documents:
 
-- **Consult the RFC references** in `/workspace/references/` to ensure accurate terminology and correct descriptions of standards compliance. Use the precise language from specifications when describing protocol behaviour, message formats, or compliance requirements.
+- **Consult the RFC references** in `references/ietf/` at the workspace root (the directory containing this repository's checkout) to ensure accurate terminology and correct descriptions of standards compliance. Use the precise language from specifications when describing protocol behaviour, message formats, or compliance requirements.
 - **Ask clarifying questions** if the design intent is unclear from examining the code. It is better to ask the maintainer for clarification than to guess or document assumptions that may be incorrect.
 
 ## Writing Style

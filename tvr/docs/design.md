@@ -8,7 +8,7 @@ Clock-driven Time-Variant Routing agent for Hardy DTN.
 > [Proactive Scheduling design](../../../dtn/docs/hardy/proactive_scheduling_design.md) |
 > [DPP spec](../../../dpp/draft-taylor-dtn-dpp.md) |
 > [Static Routes design](../../bpa-server/docs/static_routes_design.md) |
-> [TVR Schedule YANG](../../references/draft-ietf-tvr-schedule-yang-08.txt)
+> [TVR Schedule YANG](https://datatracker.ietf.org/doc/html/draft-ietf-tvr-schedule-yang-08)
 
 ## Design Goals
 
