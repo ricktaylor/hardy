@@ -17,7 +17,7 @@ use super::*;
 #[derive(Clone)]
 pub struct ConnectionContext {
     pub contact_timeout: ContactTimeout,
-    pub keepalive_interval: Option<KeepaliveInterval>,
+    pub keepalive_interval: KeepaliveInterval,
     pub segment_mru: NonZeroU64,
     pub transfer_mru: NonZeroU64,
     pub node_ids: Arc<[NodeId]>,
@@ -243,7 +243,7 @@ impl ConnectionContext {
         // Send our SESS_INIT message
         if let Err(e) = transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self.keepalive_interval.map_or(0, KeepaliveInterval::get),
+                keepalive_interval: self.keepalive_interval.get(),
                 segment_mru: self.segment_mru.get(),
                 transfer_mru: self.transfer_mru.get(),
                 node_id: node_id.cloned(),
@@ -256,8 +256,9 @@ impl ConnectionContext {
         }
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval =
-            KeepaliveInterval::negotiate(self.keepalive_interval, peer_init.keepalive_interval);
+        let keepalive_interval = self
+            .keepalive_interval
+            .negotiate(peer_init.keepalive_interval);
 
         // Check peer init
         for i in &peer_init.session_extensions {

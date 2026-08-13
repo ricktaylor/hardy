@@ -9,7 +9,7 @@ use std::sync::Arc;
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_proto::client::RemoteBpa;
-use hardy_tcpclv4::{KeepaliveInterval, Tcpclv4, tls};
+use hardy_tcpclv4::{Tcpclv4, tls};
 use tokio::net::lookup_host;
 use tracing::{info, warn};
 
@@ -66,12 +66,9 @@ impl Tcpclv4Server {
         if let Some(timeout) = config.contact_timeout {
             builder = builder.contact_timeout(timeout);
         }
-        // An explicit 0 disables keepalives
-        builder = match config.keepalive_interval.map(KeepaliveInterval::new) {
-            None => builder,
-            Some(None) => builder.no_keepalive(),
-            Some(Some(interval)) => builder.keepalive_interval(interval),
-        };
+        if let Some(interval) = config.keepalive_interval {
+            builder = builder.keepalive_interval(interval);
+        }
 
         if let Some(tls_config) = &config.tls {
             let mut tls_builder = tls::Tls::builder().required(tls_config.required);

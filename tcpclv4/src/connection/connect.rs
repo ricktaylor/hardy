@@ -201,10 +201,7 @@ impl Connector {
         // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self
-                    .ctx
-                    .keepalive_interval
-                    .map_or(0, KeepaliveInterval::get),
+                keepalive_interval: self.ctx.keepalive_interval.get(),
                 segment_mru: self.ctx.segment_mru.get(),
                 transfer_mru: self.ctx.transfer_mru.get(),
                 node_id: self.ctx.first_node_id(),
@@ -249,8 +246,10 @@ impl Connector {
         debug!(%local_addr, %remote_addr, "Received SESS_INIT {peer_init:?}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval =
-            KeepaliveInterval::negotiate(self.ctx.keepalive_interval, peer_init.keepalive_interval);
+        let keepalive_interval = self
+            .ctx
+            .keepalive_interval
+            .negotiate(peer_init.keepalive_interval);
 
         // Check peer init
         for i in &peer_init.session_extensions {

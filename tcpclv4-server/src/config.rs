@@ -2,7 +2,7 @@ use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use hardy_tcpclv4::{ContactTimeout, tls};
+use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval, tls};
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
@@ -58,6 +58,34 @@ mod contact_timeout_serde {
                 })
             })
             .transpose()
+    }
+}
+
+// `KeepaliveInterval` carries the wire's zero-is-disabled encoding (every
+// u16 is a valid value) but has no serde impls (the library does not
+// parse configuration), so this adapter is the conversion.
+mod keepalive_interval_serde {
+    use hardy_tcpclv4::KeepaliveInterval;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        interval: &Option<KeepaliveInterval>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match interval {
+            Some(interval) => serializer.serialize_some(&interval.get()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<u16>::deserialize(deserializer)?.map(KeepaliveInterval::new))
     }
 }
 
@@ -254,9 +282,10 @@ pub struct Config {
     #[serde(default, with = "contact_timeout_serde")]
     pub contact_timeout: Option<ContactTimeout>,
 
-    // Keepalive interval in seconds; 0 disables keepalives.
-    #[serde(default)]
-    pub keepalive_interval: Option<u16>,
+    // Keepalive interval in seconds (RFC 9174 Section 4.7); 0 disables
+    // keepalives.
+    #[serde(default, with = "keepalive_interval_serde")]
+    pub keepalive_interval: Option<KeepaliveInterval>,
 
     // TLS configuration; absent means plaintext.
     #[serde(default)]
@@ -361,7 +390,7 @@ keepalive-interval = 30
             std::net::SocketAddr::from(([0, 0, 0, 0], 9999))
         );
         assert_eq!(config.segment_mru, Some(NonZeroU64::new(8192).unwrap()));
-        assert_eq!(config.keepalive_interval, Some(30));
+        assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::new(30)));
     }
 
     // YAML config file works identically to TOML.
@@ -670,7 +699,7 @@ this-does-not-exist = 42
             "keepalive.toml",
             "address = \"127.0.0.1:0\"\nkeepalive-interval = 0\n",
         );
-        assert_eq!(config.keepalive_interval, Some(0));
+        assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::DISABLED));
         Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
     }
 

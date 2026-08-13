@@ -43,7 +43,7 @@ pub struct Tcpclv4Builder {
     max_outstanding_transfers: NonZeroUsize,
     connection_rate_limit: NonZeroU32,
     contact_timeout: ContactTimeout,
-    keepalive_interval: Option<KeepaliveInterval>,
+    keepalive_interval: KeepaliveInterval,
     tls: Option<Tls>,
 }
 
@@ -60,7 +60,7 @@ impl Tcpclv4Builder {
     const DEFAULT_MAX_OUTSTANDING_TRANSFERS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
     const DEFAULT_CONNECTION_RATE_LIMIT: NonZeroU32 = NonZeroU32::new(64).unwrap();
     const DEFAULT_CONTACT_TIMEOUT: ContactTimeout = ContactTimeout::new(15).unwrap();
-    const DEFAULT_KEEPALIVE_INTERVAL: KeepaliveInterval = KeepaliveInterval::new(60).unwrap();
+    const DEFAULT_KEEPALIVE_INTERVAL: KeepaliveInterval = KeepaliveInterval::new(60);
 
     pub(crate) fn new() -> Self {
         Self {
@@ -71,7 +71,7 @@ impl Tcpclv4Builder {
             max_outstanding_transfers: Self::DEFAULT_MAX_OUTSTANDING_TRANSFERS,
             connection_rate_limit: Self::DEFAULT_CONNECTION_RATE_LIMIT,
             contact_timeout: Self::DEFAULT_CONTACT_TIMEOUT,
-            keepalive_interval: Some(Self::DEFAULT_KEEPALIVE_INTERVAL),
+            keepalive_interval: Self::DEFAULT_KEEPALIVE_INTERVAL,
             tls: None,
         }
     }
@@ -139,24 +139,24 @@ impl Tcpclv4Builder {
 
     /// Keepalive interval proposed during session negotiation (RFC 9174 Section 5.1.1).
     ///
-    /// The negotiated value is the minimum of both peers' proposals. RFC 9174 recommends 30 to 600 seconds on shared networks, and values outside that range are accepted with a warning. Default: 60 seconds. Undoes an earlier [`no_keepalive`](Self::no_keepalive).
+    /// The negotiated value is the minimum of both peers' proposals. RFC 9174 recommends 30 to 600 seconds on shared networks, and values outside that range are accepted with a warning; zero ([`KeepaliveInterval::DISABLED`]) disables keepalives. Default: 60 seconds.
     pub fn keepalive_interval(mut self, interval: KeepaliveInterval) -> Self {
-        if interval.get() < 30 {
+        if interval.is_disabled() {
+            debug!("Session keepalive disabled");
+        } else if interval.get() < 30 {
             warn!(
                 "RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
             );
         } else if interval.get() > 600 {
             warn!("RFC9174 specifies keepalive SHOULD be a maximum of 600 seconds");
         }
-        self.keepalive_interval = Some(interval);
+        self.keepalive_interval = interval;
         self
     }
 
     /// Disables session keepalives: the SESS_INIT proposal is the wire zero.
-    pub fn no_keepalive(mut self) -> Self {
-        debug!("Session keepalive disabled");
-        self.keepalive_interval = None;
-        self
+    pub fn no_keepalive(self) -> Self {
+        self.keepalive_interval(KeepaliveInterval::DISABLED)
     }
 
     /// Enables TLS with this material (RFC 9174 Section 4.4): sessions negotiate TLS when the peer also advertises it, and plaintext peers are still accepted unless the material was built with [`TlsBuilder::required`](crate::tls::TlsBuilder::required).
@@ -245,7 +245,7 @@ mod tests {
         );
         assert_eq!(
             builder.keepalive_interval,
-            Some(Tcpclv4Builder::DEFAULT_KEEPALIVE_INTERVAL)
+            Tcpclv4Builder::DEFAULT_KEEPALIVE_INTERVAL
         );
 
         builder
@@ -268,22 +268,10 @@ mod tests {
     // the two proposals; disabled from either side wins.
     #[test]
     fn keepalive_negotiation_is_a_minimum_where_disabled_wins() {
-        assert_eq!(
-            KeepaliveInterval::negotiate(KeepaliveInterval::new(30), 60),
-            30
-        );
-        assert_eq!(
-            KeepaliveInterval::negotiate(KeepaliveInterval::new(60), 30),
-            30
-        );
-        assert_eq!(
-            KeepaliveInterval::negotiate(KeepaliveInterval::new(45), 45),
-            45
-        );
-        assert_eq!(KeepaliveInterval::negotiate(None, 60), 0);
-        assert_eq!(
-            KeepaliveInterval::negotiate(KeepaliveInterval::new(60), 0),
-            0
-        );
+        assert_eq!(KeepaliveInterval::new(30).negotiate(60), 30);
+        assert_eq!(KeepaliveInterval::new(60).negotiate(30), 30);
+        assert_eq!(KeepaliveInterval::new(45).negotiate(45), 45);
+        assert_eq!(KeepaliveInterval::DISABLED.negotiate(60), 0);
+        assert_eq!(KeepaliveInterval::new(60).negotiate(0), 0);
     }
 }

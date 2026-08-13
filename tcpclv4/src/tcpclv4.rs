@@ -1,6 +1,5 @@
 //! [`Tcpclv4`]: the TCPCL entity — the CLA that registers with a BPA.
 
-use core::num::NonZeroU16;
 use std::net::TcpListener;
 use std::sync::Mutex;
 
@@ -34,35 +33,38 @@ impl ContactTimeout {
     }
 }
 
-/// Keepalive interval proposed during session negotiation, in seconds; an
-/// interval that exists is never zero, so "disabled" is `None` at rest.
+/// Keepalive interval proposed during session negotiation, in seconds.
 ///
-/// `Option<KeepaliveInterval>` is still one `u16` wide: `None` occupies
-/// the zero niche, which is exactly the wire encoding RFC 9174 Section
-/// 4.7 gives to "KEEPALIVEs are disabled".
+/// Zero is a first-class value ([`DISABLED`](Self::DISABLED)): RFC 9174
+/// Section 4.7 encodes "KEEPALIVEs are disabled" as a zero interval on
+/// the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeepaliveInterval(NonZeroU16);
+pub struct KeepaliveInterval(u16);
 
 impl KeepaliveInterval {
-    /// Creates a keepalive interval; `None` when `seconds` is zero (the
-    /// wire encoding for disabled keepalives).
-    pub const fn new(seconds: u16) -> Option<Self> {
-        match NonZeroU16::new(seconds) {
-            Some(seconds) => Some(Self(seconds)),
-            None => None,
-        }
+    /// Keepalives disabled: the wire's zero encoding (RFC 9174 Section 4.7).
+    pub const DISABLED: KeepaliveInterval = KeepaliveInterval(0);
+
+    /// Creates a keepalive interval; `0` is [`DISABLED`](Self::DISABLED).
+    pub const fn new(seconds: u16) -> Self {
+        Self(seconds)
     }
 
-    /// The interval in whole seconds.
+    /// The interval in whole seconds; `0` means keepalives are disabled.
     pub const fn get(self) -> u16 {
-        self.0.get()
+        self.0
+    }
+
+    /// Whether keepalives are disabled.
+    pub const fn is_disabled(self) -> bool {
+        self.0 == 0
     }
 
     /// Negotiates the session keepalive against the peer's SESS_INIT
     /// proposal: the minimum of the two (RFC 9174 Section 4.7), where
-    /// disabled (`None` locally, zero from the peer) wins.
-    pub fn negotiate(local: Option<Self>, peer_keepalive: u16) -> u16 {
-        local.map_or(0, |interval| interval.get().min(peer_keepalive))
+    /// disabled (zero, on either side) wins.
+    pub fn negotiate(self, peer_keepalive: u16) -> u16 {
+        self.0.min(peer_keepalive)
     }
 }
 
@@ -80,7 +82,7 @@ struct Inner {
 pub struct Tcpclv4 {
     // Builder inputs
     contact_timeout: ContactTimeout,
-    keepalive_interval: Option<KeepaliveInterval>,
+    keepalive_interval: KeepaliveInterval,
     listeners: Mutex<Vec<TcpListener>>,
     connection_rate_limit: NonZeroU32,
     segment_mru: NonZeroU64,
@@ -110,7 +112,7 @@ impl Tcpclv4 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         contact_timeout: ContactTimeout,
-        keepalive_interval: Option<KeepaliveInterval>,
+        keepalive_interval: KeepaliveInterval,
         listeners: Vec<std::net::TcpListener>,
         connection_rate_limit: NonZeroU32,
         segment_mru: NonZeroU64,
@@ -434,7 +436,7 @@ mod tests {
     #[test]
     fn no_keepalive_disables_keepalives() {
         let cla = Tcpclv4::builder().no_keepalive().build().unwrap();
-        assert!(cla.keepalive_interval.is_none());
+        assert!(cla.keepalive_interval.is_disabled());
     }
 
     // The insecure stage needs no files, so the Required policy is

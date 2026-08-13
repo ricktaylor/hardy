@@ -39,6 +39,34 @@ mod contact_timeout_serde {
     }
 }
 
+// `KeepaliveInterval` carries the wire's zero-is-disabled encoding (every
+// u16 is a valid value) but has no serde impls (the library does not
+// parse configuration), so this adapter is the conversion.
+mod keepalive_interval_serde {
+    use hardy_tcpclv4::KeepaliveInterval;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        interval: &Option<KeepaliveInterval>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match interval {
+            Some(interval) => serializer.serialize_some(&interval.get()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<u16>::deserialize(deserializer)?.map(KeepaliveInterval::new))
+    }
+}
+
 // A certificate and the private key that proves it: only representable as
 // a pair.
 #[derive(Serialize, Deserialize, Debug)]
@@ -155,8 +183,10 @@ pub struct Config {
     #[serde(with = "contact_timeout_serde")]
     pub contact_timeout: Option<ContactTimeout>,
 
-    // Keepalive interval in seconds; 0 disables keepalives.
-    pub keepalive_interval: Option<u16>,
+    // Keepalive interval in seconds (RFC 9174 Section 4.7); 0 disables
+    // keepalives.
+    #[serde(with = "keepalive_interval_serde")]
+    pub keepalive_interval: Option<KeepaliveInterval>,
 
     // TLS configuration; absent means plaintext.
     pub tls: Option<TlsConfig>,
@@ -193,12 +223,9 @@ impl Config {
         if let Some(timeout) = self.contact_timeout {
             builder = builder.contact_timeout(timeout);
         }
-        // An explicit 0 disables keepalives
-        builder = match self.keepalive_interval.map(KeepaliveInterval::new) {
-            None => builder,
-            Some(None) => builder.no_keepalive(),
-            Some(Some(interval)) => builder.keepalive_interval(interval),
-        };
+        if let Some(interval) = self.keepalive_interval {
+            builder = builder.keepalive_interval(interval);
+        }
 
         if let Some(tls_config) = &self.tls {
             let mut tls_builder = tls::Tls::builder().required(tls_config.required);
