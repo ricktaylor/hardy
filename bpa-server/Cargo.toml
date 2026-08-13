@@ -12,7 +12,7 @@ publish = false
 default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
-postgres-storage = ["dep:hardy-postgres-storage"]
+postgres-storage = ["dep:hardy-postgres-storage", "dep:humantime"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = ["dep:hardy-s3-storage"]
 grpc = ["dep:hardy-proto"]
@@ -43,14 +43,15 @@ hardy-proto = { version = "0.2", path = "../proto", features = ["serde"], option
 hardy-sqlite-storage = { version = "0.6", path = "../sqlite-storage", optional = true }
 hardy-postgres-storage = { version = "0.2", path = "../postgres-storage", optional = true }
 hardy-localdisk-storage = { version = "0.6", path = "../localdisk-storage", optional = true }
-hardy-s3-storage = { version = "0.2", path = "../s3-storage", optional = true }
-hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", optional = true }
+hardy-s3-storage = { version = "0.2", path = "../s3-storage", features = ["serde"], optional = true }
+hardy-tcpclv4 = { version = "0.4", path = "../tcpclv4", features = ["serde"], optional = true }
 hardy-file-cla = { version = "0.2", path = "../file-cla", features = ["serde"], optional = true }
 hardy-otel = { version = "0.2", path = "../otel", optional = true }
 hardy-ipn-legacy-filter = { version = "0.2", path = "../ipn-legacy-filter", features = ["serde"], optional = true }
 hardy-echo-service = { version = "0.2", path = "../echo-service", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
+humantime = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 directories = "6"
 clap = { version = "4", features = ["derive"] }

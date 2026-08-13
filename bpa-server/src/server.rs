@@ -6,9 +6,6 @@
 // runtime types construct themselves from config (`PatternKeySource::load`,
 // `StaticRoutesAgent`).
 
-#[cfg(feature = "tcpclv4")]
-#[cfg(feature = "postgres-storage")]
-use std::time::Duration;
 use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
@@ -34,7 +31,7 @@ use hardy_postgres_storage::PostgresStorage;
 #[cfg(feature = "grpc")]
 use hardy_proto::server::GrpcServer;
 #[cfg(feature = "s3-storage")]
-use hardy_s3_storage::{PartSize, S3Storage};
+use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
@@ -98,14 +95,14 @@ impl BpaServer {
                 if let Some(limit) = cfg.min_connections {
                     storage = storage.min_connections(limit);
                 }
-                if let Some(seconds) = cfg.connect_timeout_secs {
-                    storage = storage.connect_timeout(Duration::from_secs(seconds));
+                if let Some(timeout) = cfg.connect_timeout {
+                    storage = storage.connect_timeout(timeout.get());
                 }
-                if let Some(minutes) = cfg.idle_timeout_mins {
-                    storage = storage.idle_timeout(Duration::from_secs(minutes.saturating_mul(60)));
+                if let Some(timeout) = cfg.idle_timeout {
+                    storage = storage.idle_timeout(timeout.get());
                 }
-                if let Some(minutes) = cfg.max_lifetime_mins {
-                    storage = storage.max_lifetime(Duration::from_secs(minutes.saturating_mul(60)));
+                if let Some(lifetime) = cfg.max_lifetime {
+                    storage = storage.max_lifetime(lifetime.get());
                 }
                 if let Some(size) = cfg.poll_page_size {
                     storage = storage.poll_page_size(size);
@@ -142,13 +139,8 @@ impl BpaServer {
                 if let Some(bytes) = cfg.multipart_threshold {
                     storage = storage.multipart_threshold(bytes);
                 }
-                if let Some(bytes) = cfg.multipart_part_size {
-                    storage =
-                        storage.multipart_part_size(PartSize::new(bytes).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "multipart-part-size must be at least 5 MiB (the S3 minimum)"
-                            )
-                        })?);
+                if let Some(size) = cfg.multipart_part_size {
+                    storage = storage.multipart_part_size(size);
                 }
                 Arc::new(storage.build().await?)
             }

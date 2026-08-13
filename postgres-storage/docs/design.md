@@ -354,10 +354,12 @@ The three-phase recovery protocol follows the BPA's `MetadataStorage` contract. 
 | Option              | Default                    | Purpose                                     |
 |---------------------|----------------------------|---------------------------------------------|
 | `database_url`      | `$DATABASE_URL` env var    | PostgreSQL connection string                |
-| `max_connections`   | `10`                       | Maximum pool size                           |
-| `min_connections`   | `1`                        | Minimum idle connections                    |
+| `max_connections`   | `20`                       | Maximum pool size                           |
+| `min_connections`   | `2`                        | Minimum idle connections                    |
 | `connect_timeout`   | `30s`                      | Maximum time to acquire a connection        |
 | `idle_timeout`      | `10m`                      | Time before idle connections are closed     |
+| `max_lifetime`      | `30m`                      | Maximum lifetime of a pooled connection     |
+| `poll_page_size`    | `64`                       | Rows fetched per page in poll queries       |
 | `upgrade`           | `false`                    | Run pending migrations on startup           |
 
 Connection strings follow the standard PostgreSQL URI format:

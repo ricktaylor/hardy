@@ -118,6 +118,8 @@ access and must be redesigned separately).
 | `multipart_threshold` | 8 MiB | Bundle size above which multipart upload is used |
 | `multipart_part_size` | 8 MiB | Size of each part in a multipart upload (minimum 5 MiB) |
 
+The part size is the `PartSize` newtype, which makes values below the 5 MiB S3 protocol minimum unrepresentable; the optional `serde` cargo feature adds `Serialize`/`Deserialize` impls to it so consumer config schemas reject sub-minimum values at deserialization.
+
 AWS credentials are not stored in configuration. Use the standard credential chain:
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, an IAM instance role, or
 `~/.aws/credentials`.

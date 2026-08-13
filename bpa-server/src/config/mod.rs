@@ -61,6 +61,47 @@ mod log_level_serde {
     }
 }
 
+// A positive duration, written as a humantime string (e.g. `30s`, `10m`,
+// `1h 30m`).
+#[cfg(feature = "postgres-storage")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NonZeroDuration(std::time::Duration);
+
+#[cfg(feature = "postgres-storage")]
+impl NonZeroDuration {
+    pub fn new(duration: std::time::Duration) -> Option<Self> {
+        (!duration.is_zero()).then_some(Self(duration))
+    }
+
+    pub fn get(&self) -> std::time::Duration {
+        self.0
+    }
+}
+
+#[cfg(feature = "postgres-storage")]
+impl<'de> Deserialize<'de> for NonZeroDuration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        let duration = humantime::parse_duration(&text)
+            .map_err(|e| serde::de::Error::custom(format_args!("invalid duration: {e}")))?;
+        NonZeroDuration::new(duration)
+            .ok_or_else(|| serde::de::Error::custom("a duration must be greater than zero"))
+    }
+}
+
+#[cfg(feature = "postgres-storage")]
+impl Serialize for NonZeroDuration {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&humantime::format_duration(self.0))
+    }
+}
+
 /// File watch configuration for config files.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -710,5 +751,24 @@ node-ids:
             panic!("expected a tcpclv4 CLA entry");
         };
         assert_eq!(tcpclv4.listeners, Some(vec![]));
+    }
+
+    // Durations are humantime strings; zero and garbage are refused.
+    #[test]
+    #[cfg(feature = "postgres-storage")]
+    fn non_zero_duration_round_trips() {
+        let duration: NonZeroDuration = serde_json::from_str("\"1m 30s\"").unwrap();
+        assert_eq!(duration.get(), std::time::Duration::from_secs(90));
+        assert_eq!(serde_json::to_string(&duration).unwrap(), "\"1m 30s\"");
+
+        let err = serde_json::from_str::<NonZeroDuration>("\"0s\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("greater than zero"), "{err}");
+
+        let err = serde_json::from_str::<NonZeroDuration>("\"ten minutes\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid duration"), "{err}");
     }
 }

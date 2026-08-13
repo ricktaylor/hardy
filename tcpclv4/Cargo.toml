@@ -18,8 +18,10 @@ crate-type = ["rlib"]
 [features]
 default = []
 instrument = ["tracing/attributes"]
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1", optional = true }
 hardy-async = { version = "0.2", path = "../async" }
 hardy-bpa = { version = "0.2", path = "../bpa" }
 hardy-bpv7 = { version = "0.6", path = "../bpv7" }

@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
-- **BREAKING**: the serde `Config` struct (and the `serde` feature that gated it) and the free `new()` function are replaced by `S3Storage::builder(bucket)`, with the multipart defaults owned privately by the builder; config-file schemas belong to the server crates. The part size is the `PartSize` newtype, making the S3 5 MiB minimum unrepresentable, and a multipart threshold below the part size is rejected at build (previously an unenforced doc claim). The construction errors are the dedicated `EmptyBucket` and `ThresholdBelowPartSize` variants.
+- **BREAKING**: the serde `Config` struct and the free `new()` function are replaced by `S3Storage::builder(bucket)`, with the multipart defaults owned privately by the builder; config-file schemas belong to the server crates. The `serde` feature now gates only `Serialize`/`Deserialize` impls on the `PartSize` newtype, which makes the S3 5 MiB minimum unrepresentable, and a multipart threshold below the part size is rejected at build (previously an unenforced doc claim). The construction errors are the dedicated `EmptyBucket` and `ThresholdBelowPartSize` variants.
 
 ## [0.2.0]
 

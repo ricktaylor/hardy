@@ -29,6 +29,7 @@ The `Tcpclv4` type registers with any `BpaRegistration` implementation (local or
 - **Connection registry**: Idle connection pooling per remote address
 - **Metrics**: 11 OpenTelemetry metrics for sessions, transfers, segments, throughput, and pool utilisation
 - Feature flag: `instrument` -- enables `tracing` span instrumentation
+- Feature flag: `serde` -- `Serialize`/`Deserialize` impls on the invariant newtypes (`ContactTimeout`, `KeepaliveInterval`) for consumer config schemas
 
 ## Usage
 

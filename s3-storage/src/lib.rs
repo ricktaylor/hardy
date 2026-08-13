@@ -6,26 +6,70 @@ using any S3-compatible object store (AWS S3, MinIO, LocalStack, etc.).
 Bundles are stored as individual objects keyed by UUID, with optional key
 prefixing for shared buckets. Large bundles are uploaded via the S3
 multipart upload API to bypass the 5 GiB single-object limit.
+
+# Feature flags
+
+- `instrument` — adds `tracing` spans to the async internals.
+- `serde` — adds `Serialize`/`Deserialize` impls to [`PartSize`], so
+  consumer config schemas reject sub-minimum part sizes at
+  deserialization.
 */
 
 mod builder;
+mod error;
 mod storage;
 
-pub use self::builder::{PartSize, S3StorageBuilder};
+pub use self::builder::S3StorageBuilder;
+pub use self::error::Error;
 pub use self::storage::S3Storage;
 
-/// Errors returned during S3 storage construction.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The bucket name is empty.
-    #[error("bucket must not be empty")]
-    EmptyBucket,
+/// The size, in bytes, of each part in a multipart upload (all parts
+/// except the last): at least [`PartSize::MIN`], the S3 protocol minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartSize(usize);
 
-    /// The multipart threshold is below the part size, so mid-sized
-    /// bundles would pay the multipart round trips for a single part.
-    #[error("multipart threshold {multipart_threshold} is below the part size {part_size}")]
-    ThresholdBelowPartSize {
-        multipart_threshold: usize,
-        part_size: usize,
-    },
+impl PartSize {
+    /// The S3 protocol minimum part size: 5 MiB.
+    pub const MIN: PartSize = PartSize(5 * 1024 * 1024);
+
+    /// A part size of `bytes`, or `None` below the S3 minimum.
+    pub const fn new(bytes: usize) -> Option<Self> {
+        if bytes >= Self::MIN.0 {
+            Some(Self(bytes))
+        } else {
+            None
+        }
+    }
+
+    /// The size in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for PartSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.get().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PartSize {
+    /// Deserializes from bytes, rejecting values below the S3 protocol
+    /// minimum, so an undersized part size fails at parse.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = usize::deserialize(deserializer)?;
+        PartSize::new(bytes).ok_or_else(|| {
+            serde::de::Error::custom(
+                "a multipart part size must be at least 5 MiB (the S3 protocol minimum)",
+            )
+        })
+    }
 }

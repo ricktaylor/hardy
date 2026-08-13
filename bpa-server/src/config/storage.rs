@@ -4,7 +4,12 @@ use core::num::NonZeroUsize;
 #[cfg(any(feature = "sqlite-storage", feature = "localdisk-storage"))]
 use std::path::PathBuf;
 
+#[cfg(feature = "s3-storage")]
+use hardy_s3_storage::PartSize;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "postgres-storage")]
+use super::NonZeroDuration;
 
 // The `type: "sqlite"` metadata backend schema: absent keys defer to the
 // backend's own defaults (the platform cache directory, `metadata.db`).
@@ -37,16 +42,17 @@ pub struct PostgresConfig {
     // Minimum number of idle connections kept alive in the pool.
     pub min_connections: Option<u32>,
 
-    // Seconds to wait when acquiring a connection before returning an
-    // error.
-    pub connect_timeout_secs: Option<u64>,
+    // How long to wait when acquiring a connection before returning an
+    // error; a humantime string (e.g. `30s`), greater than zero.
+    pub connect_timeout: Option<NonZeroDuration>,
 
-    // Minutes before an idle connection is closed and removed from the
-    // pool.
-    pub idle_timeout_mins: Option<u64>,
+    // How long a connection may sit idle before it is closed and removed
+    // from the pool; a humantime string (e.g. `10m`), greater than zero.
+    pub idle_timeout: Option<NonZeroDuration>,
 
-    // Maximum lifetime of a pooled connection in minutes.
-    pub max_lifetime_mins: Option<u64>,
+    // Maximum lifetime of a pooled connection; a humantime string (e.g.
+    // `30m`), greater than zero.
+    pub max_lifetime: Option<NonZeroDuration>,
 
     // Rows fetched per page in keyset-paginated poll queries; must be
     // greater than zero.
@@ -106,9 +112,10 @@ pub struct S3Config {
     pub multipart_threshold: Option<usize>,
 
     // Size, in bytes, of each part in a multipart upload (all parts
-    // except the last); S3 requires a minimum of 5 MiB per part.
+    // except the last); below the S3 protocol minimum of 5 MiB is
+    // rejected at parse.
     #[serde(default)]
-    pub multipart_part_size: Option<usize>,
+    pub multipart_part_size: Option<PartSize>,
 }
 
 // The `type: "memory"` metadata backend schema: absent keys defer to the

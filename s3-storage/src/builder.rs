@@ -2,7 +2,10 @@
 
 use tracing::info;
 
-use super::{Error, S3Storage};
+use super::{
+    PartSize, S3Storage,
+    error::{Error, Result},
+};
 
 // Bundle size threshold above which multipart upload is used instead of a
 // single `PutObject`: S3 enforces a 5 GiB hard limit on `PutObject`, and
@@ -10,31 +13,7 @@ use super::{Error, S3Storage};
 const DEFAULT_MULTIPART_THRESHOLD: usize = 8 * 1024 * 1024;
 
 // Size of each part in a multipart upload (all parts except the last).
-const DEFAULT_PART_SIZE: PartSize = PartSize(8 * 1024 * 1024);
-
-/// The size, in bytes, of each part in a multipart upload (all parts
-/// except the last): at least [`PartSize::MIN`], the S3 protocol minimum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PartSize(usize);
-
-impl PartSize {
-    /// The S3 protocol minimum part size: 5 MiB.
-    pub const MIN: PartSize = PartSize(5 * 1024 * 1024);
-
-    /// A part size of `bytes`, or `None` below the S3 minimum.
-    pub const fn new(bytes: usize) -> Option<Self> {
-        if bytes >= Self::MIN.0 {
-            Some(Self(bytes))
-        } else {
-            None
-        }
-    }
-
-    /// The size in bytes.
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+const DEFAULT_PART_SIZE: PartSize = PartSize::new(8 * 1024 * 1024).unwrap();
 
 /// Builder for [`S3Storage`], obtained from [`S3Storage::builder()`].
 /// Unset knobs apply the backend's own defaults.
@@ -118,7 +97,7 @@ impl S3StorageBuilder {
     /// Fails if the bucket name is empty, or if the multipart threshold is
     /// below the part size (bundles in between would pay the multipart
     /// round trips for a single part).
-    pub async fn build(self) -> Result<S3Storage, Error> {
+    pub async fn build(self) -> Result<S3Storage> {
         if self.bucket.is_empty() {
             return Err(Error::EmptyBucket);
         }
