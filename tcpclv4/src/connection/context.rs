@@ -258,7 +258,8 @@ impl ConnectionContext {
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
         let keepalive_interval = self
             .keepalive_interval
-            .negotiate(peer_init.keepalive_interval);
+            .negotiate(peer_init.keepalive_interval)
+            .get();
 
         // Check peer init
         for i in &peer_init.session_extensions {

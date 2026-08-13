@@ -63,7 +63,14 @@ mod keepalive_interval_serde {
     where
         D: Deserializer<'de>,
     {
-        Ok(Option::<u16>::deserialize(deserializer)?.map(KeepaliveInterval::new))
+        match Option::<u16>::deserialize(deserializer)? {
+            // An explicit `null` was an earlier schema's disabled spelling;
+            // refuse it rather than silently re-enable keepalives.
+            None => Err(serde::de::Error::custom(
+                "keepalive-interval does not accept null: use 0 to disable keepalives, or omit the key for the default",
+            )),
+            Some(seconds) => Ok(Some(KeepaliveInterval::new(seconds))),
+        }
     }
 }
 
@@ -155,9 +162,10 @@ pub struct TlsConfig {
 #[derive(Default, Serialize, Deserialize, Debug)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
-    // The local address to listen on for incoming connections; absent
-    // listens on the IANA-registered `[::]:4556`.
-    pub address: Option<SocketAddr>,
+    // The passive listening elements, one address per listener; absent
+    // listens on the IANA-registered `[::]:4556`, and an empty list
+    // disables listening (dial-only).
+    pub listeners: Option<Vec<SocketAddr>>,
 
     // Largest acceptable single-segment payload, in bytes; zero is
     // rejected at parse.
@@ -201,8 +209,10 @@ impl Config {
     pub fn build(&self) -> anyhow::Result<hardy_tcpclv4::Tcpclv4> {
         let mut builder = hardy_tcpclv4::Tcpclv4::builder();
 
-        builder = match self.address {
-            Some(address) => builder.listen(address),
+        builder = match &self.listeners {
+            Some(listeners) => listeners
+                .iter()
+                .fold(builder, |builder, address| builder.listen(*address)),
             None => builder.listen_default(),
         };
         if let Some(mru) = self.segment_mru {

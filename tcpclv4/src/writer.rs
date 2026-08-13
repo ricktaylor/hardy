@@ -4,15 +4,15 @@ use futures::SinkExt;
 
 use super::*;
 
-// Failure modes of [`WriterHandle::send`]. Two variants instead of a
-// tri-state `Result<bool, E>`: a closed writer cannot be mistaken for
-// success by a caller that only propagates the error case.
+/// Failure modes of [`WriterHandle::send`]. Two variants instead of a
+/// tri-state `Result<bool, E>`: a closed writer cannot be mistaken for
+/// success by a caller that only propagates the error case.
 #[derive(Debug, thiserror::Error)]
 pub enum SendError<E> {
-    // The writer has closed; the message was not sent.
+    /// The writer has closed; the message was not sent.
     #[error("The writer has closed")]
     Closed,
-    // The transport write failed.
+    /// The transport write failed.
     #[error("Transport write failed")]
     Transport(E),
 }
@@ -373,7 +373,7 @@ mod tests {
     // send() reports Closed, not success, when the writer task is gone.
     #[tokio::test]
     async fn send_reports_closed_writer() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<WriteCommand<codec::Error>>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<WriteCommand<crate::codec::Error>>(1);
         drop(rx);
         let handle = WriterHandle::new(tx);
         assert!(matches!(

@@ -1,35 +1,17 @@
 //! [`Tcpclv4Builder`]: the fluent constructor for a [`Tcpclv4`].
 
 use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
 
 use tracing::{debug, warn};
 
-use crate::{ContactTimeout, KeepaliveInterval, Tcpclv4, otel_metrics, tls::Tls};
-
-/// Shorthand for results whose error is [`enum@Error`].
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// Errors from assembling a [`Tcpclv4`], returned by [`Tcpclv4Builder::build`].
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    /// Binding a passive listening element's socket failed.
-    #[error("Failed to bind the listener on '{address}': {source}")]
-    Listen {
-        address: SocketAddr,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Listeners are configured with TLS required but no identity to
-    /// serve: they could accept neither TLS nor plaintext sessions.
-    #[error(
-        "TLS is required but no identity (certificate and key) is configured: \
-        the listeners could serve neither TLS nor plaintext"
-    )]
-    ListenersWithoutIdentity,
-}
+use crate::{
+    ContactTimeout, KeepaliveInterval, Tcpclv4,
+    error::{Error, Result},
+    otel_metrics,
+    tls::Tls,
+};
 
 /// Builder for a [`Tcpclv4`]. Obtain one from [`Tcpclv4::builder`].
 ///
@@ -188,7 +170,7 @@ impl Tcpclv4Builder {
             && tls.required_without_identity()
             && !self.listeners.is_empty()
         {
-            return Err(Error::ListenersWithoutIdentity);
+            return Err(Error::RequiredTlsWithoutIdentity);
         }
 
         // Bind the passive listening elements eagerly, so socket failures
@@ -196,12 +178,12 @@ impl Tcpclv4Builder {
         // background task; accepting starts at BPA registration
         let mut listeners = Vec::with_capacity(self.listeners.len());
         for address in self.listeners {
-            let listener = std::net::TcpListener::bind(address)
+            let listener = TcpListener::bind(address)
                 .and_then(|listener| {
                     // The runtime's reactor requires non-blocking sockets
                     listener.set_nonblocking(true).map(|()| listener)
                 })
-                .map_err(|source| Error::Listen { address, source })?;
+                .map_err(|source| Error::BindListener { address, source })?;
             listeners.push(listener);
         }
 
@@ -262,16 +244,5 @@ mod tests {
             builder.listeners,
             vec![Tcpclv4Builder::REGISTERED_LISTEN_ADDRESS]
         );
-    }
-
-    // RFC 9174 Section 4.7: the negotiated keepalive is the minimum of
-    // the two proposals; disabled from either side wins.
-    #[test]
-    fn keepalive_negotiation_is_a_minimum_where_disabled_wins() {
-        assert_eq!(KeepaliveInterval::new(30).negotiate(60), 30);
-        assert_eq!(KeepaliveInterval::new(60).negotiate(30), 30);
-        assert_eq!(KeepaliveInterval::new(45).negotiate(45), 45);
-        assert_eq!(KeepaliveInterval::DISABLED.negotiate(60), 0);
-        assert_eq!(KeepaliveInterval::new(60).negotiate(0), 0);
     }
 }

@@ -3,9 +3,15 @@
 use std::net::TcpListener;
 use std::sync::Mutex;
 
-use hardy_bpa::async_trait;
+use hardy_bpa::{
+    async_trait,
+    cla::{self, Cla, ClaAddress, ClaAddressType, ForwardBundleResult, Sink, TransferOutcome},
+};
+use hardy_bpv7::bundle::Id;
 
 use super::*;
+
+use crate::error::Error;
 
 /// Seconds to wait for a peer's contact header, bounded so that a value
 /// outside RFC 9174 Section 4.2's recommendation (at most 60 seconds, and
@@ -63,14 +69,14 @@ impl KeepaliveInterval {
     /// Negotiates the session keepalive against the peer's SESS_INIT
     /// proposal: the minimum of the two (RFC 9174 Section 4.7), where
     /// disabled (zero, on either side) wins.
-    pub fn negotiate(self, peer_keepalive: u16) -> u16 {
-        self.0.min(peer_keepalive)
+    pub fn negotiate(self, peer_keepalive: u16) -> KeepaliveInterval {
+        KeepaliveInterval(self.0.min(peer_keepalive))
     }
 }
 
 /// Registration-time state from BPA.
 struct Inner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
+    sink: Arc<dyn Sink>,
     node_ids: Arc<[NodeId]>,
 }
 
@@ -113,7 +119,7 @@ impl Tcpclv4 {
     pub(crate) fn new(
         contact_timeout: ContactTimeout,
         keepalive_interval: KeepaliveInterval,
-        listeners: Vec<std::net::TcpListener>,
+        listeners: Vec<TcpListener>,
         connection_rate_limit: NonZeroU32,
         segment_mru: NonZeroU64,
         transfer_mru: NonZeroU64,
@@ -124,7 +130,7 @@ impl Tcpclv4 {
         Self {
             contact_timeout,
             keepalive_interval,
-            listeners: std::sync::Mutex::new(listeners),
+            listeners: Mutex::new(listeners),
             connection_rate_limit,
             segment_mru,
             transfer_mru,
@@ -149,10 +155,10 @@ impl Tcpclv4 {
     /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
     ///
     /// Retries up to 5 times on timeout before returning an error.
-    pub async fn connect(&self, remote_addr: &SocketAddr) -> hardy_bpa::cla::Result<()> {
+    pub async fn connect(&self, remote_addr: &SocketAddr) -> cla::Result<()> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("connect called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
+            cla::Error::Disconnected
         })?;
 
         for _ in 0..5 {
@@ -162,14 +168,14 @@ impl Tcpclv4 {
             };
             match conn.connect(remote_addr).await {
                 Ok(()) => return Ok(()),
-                Err(transport::Error::Timeout) => {}
+                Err(session::Error::PeerTimeout) => {}
                 Err(e) => {
-                    return Err(hardy_bpa::cla::Error::Internal(e.into()));
+                    return Err(cla::Error::Internal(Error::from(e).into()));
                 }
             }
         }
-        Err(hardy_bpa::cla::Error::Internal(
-            transport::Error::Timeout.into(),
+        Err(cla::Error::Internal(
+            Error::from(session::Error::PeerTimeout).into(),
         ))
     }
 
@@ -191,9 +197,9 @@ impl Tcpclv4 {
         })
     }
 
+    // Registration consumes the entity's sink slot and its bound listener
+    // sockets, so it succeeds exactly once.
     fn start_listeners(&self) {
-        // The sockets were bound by the builder; take them and start
-        // accepting. A second registration finds the vector empty
         let listeners = std::mem::take(
             &mut *self
                 .listeners
@@ -216,20 +222,28 @@ impl Tcpclv4 {
 }
 
 #[async_trait]
-impl hardy_bpa::cla::Cla for Tcpclv4 {
-    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
-        Some(hardy_bpa::cla::ClaAddressType::Tcp)
+impl Cla for Tcpclv4 {
+    fn address_type(&self) -> Option<ClaAddressType> {
+        Some(ClaAddressType::Tcp)
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, node_ids: &[NodeId]) {
-        // Store sink and node_ids in single atomic operation
-        self.inner.call_once(|| Inner {
-            sink: sink.into(),
-            node_ids: node_ids.into(),
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+        // Registration consumes the entity's sink slot and its bound
+        // listener sockets, so it succeeds exactly once
+        let mut first_registration = false;
+        self.inner.call_once(|| {
+            first_registration = true;
+            Inner {
+                sink: sink.into(),
+                node_ids: node_ids.into(),
+            }
         });
+        if !first_registration {
+            warn!("Registration refused: {}", Error::AlreadyRegistered);
+            return;
+        }
 
-        // Start listeners now that we have a sink
         self.start_listeners();
     }
 
@@ -249,17 +263,17 @@ impl hardy_bpa::cla::Cla for Tcpclv4 {
     async fn forward(
         &self,
         _queue: Option<u32>,
-        cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        cla_addr: &ClaAddress,
+        bundle_id: &Id,
         bundle: hardy_bpa::Bytes,
-    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+    ) -> cla::Result<ForwardBundleResult> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("forward called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
+            cla::Error::Disconnected
         })?;
 
-        let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
-            return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
+        let ClaAddress::Tcp(remote_addr) = cla_addr else {
+            return Ok(ForwardBundleResult::NoNeighbour);
         };
 
         debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
@@ -289,7 +303,7 @@ impl hardy_bpa::cla::Cla for Tcpclv4 {
             }
         });
 
-        Ok(hardy_bpa::cla::ForwardBundleResult::Accepted)
+        Ok(ForwardBundleResult::Accepted)
     }
 }
 
@@ -305,7 +319,7 @@ async fn transmit(
     ctx: &connection::context::ConnectionContext,
     remote_addr: SocketAddr,
     mut bundle: hardy_bpa::Bytes,
-) -> hardy_bpa::cla::TransferOutcome {
+) -> TransferOutcome {
     for _ in 0..DIAL_ATTEMPTS {
         // Use a pooled session, dialing a new connection when the
         // pool has capacity and no session is free
@@ -346,7 +360,7 @@ async fn transmit(
         };
         match conn.connect(&remote_addr).await {
             Ok(()) => {}
-            Err(transport::Error::Timeout) if !ctx.registry.has_sessions(&remote_addr) => {
+            Err(session::Error::PeerTimeout) if !ctx.registry.has_sessions(&remote_addr) => {
                 // Nothing to fall back to: keep dialing
             }
             Err(e) => {
@@ -361,7 +375,7 @@ async fn transmit(
                     .registry
                     .forward(&remote_addr, bundle, connection::OnBusy::Queue)
                     .await
-                    .unwrap_or(hardy_bpa::cla::TransferOutcome::Failed);
+                    .unwrap_or(TransferOutcome::Failed);
             }
         }
     }
@@ -371,7 +385,7 @@ async fn transmit(
     ctx.registry
         .forward(&remote_addr, bundle, connection::OnBusy::Queue)
         .await
-        .unwrap_or(hardy_bpa::cla::TransferOutcome::Failed)
+        .unwrap_or(TransferOutcome::Failed)
 }
 
 #[cfg(test)]
@@ -409,7 +423,7 @@ mod tests {
         let Err(err) = Tcpclv4::builder().listen(address).build() else {
             panic!("binding an occupied port must fail");
         };
-        assert!(matches!(err, builder::Error::Listen { .. }));
+        assert!(matches!(err, error::Error::BindListener { .. }));
     }
 
     // Requiring TLS without an identity leaves listeners nothing they
@@ -430,13 +444,24 @@ mod tests {
         else {
             panic!("listeners under identity-less required TLS must fail");
         };
-        assert!(matches!(err, builder::Error::ListenersWithoutIdentity));
+        assert!(matches!(err, error::Error::RequiredTlsWithoutIdentity));
     }
 
     #[test]
     fn no_keepalive_disables_keepalives() {
         let cla = Tcpclv4::builder().no_keepalive().build().unwrap();
         assert!(cla.keepalive_interval.is_disabled());
+    }
+
+    // RFC 9174 Section 4.7: the negotiated keepalive is the minimum of
+    // the two proposals; disabled from either side wins.
+    #[test]
+    fn keepalive_negotiation_is_a_minimum_where_disabled_wins() {
+        assert_eq!(KeepaliveInterval::new(30).negotiate(60).get(), 30);
+        assert_eq!(KeepaliveInterval::new(60).negotiate(30).get(), 30);
+        assert_eq!(KeepaliveInterval::new(45).negotiate(45).get(), 45);
+        assert!(KeepaliveInterval::DISABLED.negotiate(60).is_disabled());
+        assert!(KeepaliveInterval::new(60).negotiate(0).is_disabled());
     }
 
     // The insecure stage needs no files, so the Required policy is

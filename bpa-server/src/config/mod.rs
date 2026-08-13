@@ -417,11 +417,11 @@ poll-channel-depth = 64
 clas:
   - name: "tcp-cla-1"
     type: tcpclv4
-    address: "[::]:4556"
+    listeners: ["[::]:4556"]
     segment-mru: 8192
   - name: "tcp-cla-2"
     type: tcpclv4
-    address: "[::]:4557"
+    listeners: ["[::]:4557"]
 "#,
         );
         assert_eq!(config.clas.len(), 2);

@@ -20,11 +20,11 @@ downlink interfaces):
 clas:
   - name: uplink
     type: tcpclv4
-    address: "[::]:4556"
+    listeners: ["[::]:4556"]
 
   - name: downlink
     type: tcpclv4
-    address: "[::]:4557"
+    listeners: ["[::]:4557"]
 ```
 
 ## TCPCLv4
@@ -37,7 +37,7 @@ reliable bundle transfer over TCP connections.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `address` | IP:port string | `[::]:4556` | Listen address and port. Use `[::]:4556` for all interfaces or `127.0.0.1:4556` for localhost only; absent defaults to the IANA-registered `[::]:4556`. |
+| `listeners` | List of IP:port strings | `["[::]:4556"]` | The listening addresses, one entry per listener. Use `["[::]:4556"]` for all interfaces or `["127.0.0.1:4556"]` for localhost only; absent defaults to the IANA-registered `[::]:4556`, and an empty list (`[]`) disables listening for a dial-only node. |
 | `segment-mru` | Positive integer (bytes) | `16384` | Maximum Receive Unit for a single TCP segment payload. Increase to `65536` for high-bandwidth links. Zero is a startup error. |
 | `transfer-mru` | Positive integer (bytes) | `1073741824` (1 GiB) | Maximum bundle size that can be received. Zero is a startup error. |
 | `max-idle-connections` | Non-negative integer | `6` | Maximum idle incoming connections per remote IP address. Increase for high-fan-in topologies; `0` disables pooling. |
@@ -49,7 +49,7 @@ reliable bundle transfer over TCP connections.
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `contact-timeout` | `1` to `60` (seconds) | `15` | Time to wait for a CONTACT header from a connecting peer. Increase to `30` for high-latency links. RFC 9174 caps the recommendation at 60 seconds; values outside the range are a startup error. |
-| `keepalive-interval` | Non-negative integer (seconds), or `null` | `60` | Interval for keepalive signals on idle connections. `0` or `null` disables. Use `120` for satellite links. |
+| `keepalive-interval` | Non-negative integer (seconds) | `60` | Interval for keepalive signals on idle connections. `0` disables; `null` is not accepted. Use `120` for satellite links. |
 
 ### `tls` — TLS Configuration
 
@@ -143,7 +143,7 @@ Example:
 bpa-address: "http://[::1]:50051"
 cla-name: remote-tcpclv4
 log-level: info
-address: "[::]:4556"
+listeners: ["[::]:4556"]
 keepalive-interval: 120
 tls:
   required: true

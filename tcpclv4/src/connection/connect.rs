@@ -1,4 +1,6 @@
 use super::*;
+
+use crate::session::Error;
 use std::net::SocketAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -21,7 +23,7 @@ impl std::fmt::Debug for Connector {
 
 impl Connector {
     #[cfg_attr(feature = "instrument", instrument)]
-    pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
+    pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), Error> {
         // Bound the connect itself: a silently dropped SYN otherwise hangs
         // for the OS connect timeout (minutes at Linux defaults), and the
         // dial-before-queueing preference makes that stall a forward
@@ -32,7 +34,7 @@ impl Connector {
         .await
         .map_err(|_| {
             debug!("Timed out TCP connecting to {remote_addr}");
-            transport::Error::Timeout
+            Error::PeerTimeout
         })?
         .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
@@ -62,14 +64,14 @@ impl Connector {
             stream.read_exact(&mut buffer),
         )
         .await
-        .map_err(|_| transport::Error::Timeout)
+        .map_err(|_| Error::PeerTimeout)
         .inspect_err(|_| debug!(%local_addr, %remote_addr, "Connection timed out"))?
         .inspect_err(|e| debug!(%local_addr, %remote_addr, "Read failed: {e}"))?;
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
             debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         debug!(%local_addr, %remote_addr, "Contact header received");
@@ -95,7 +97,7 @@ impl Connector {
                 )
                 .await;
             }
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         if buffer[5] & 0xFE != 0 {
@@ -123,7 +125,7 @@ impl Connector {
             )
             .await;
 
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection connected");
@@ -143,19 +145,19 @@ impl Connector {
         remote_addr: &SocketAddr,
         local_addr: SocketAddr,
         tls_config: Arc<tls::Tls>,
-    ) -> Result<(), transport::Error> {
+    ) -> Result<(), Error> {
         // Priority: configured name > localhost (loopback) > IP address
         let server_name = if let Some(configured_name) = tls_config.server_name() {
             // Use the configured server name (for certificates issued to domain names)
             rustls::pki_types::ServerName::try_from(configured_name.to_string()).map_err(|e| {
                 error!("Invalid configured server name for TLS: {e}");
-                transport::Error::InvalidProtocol
+                Error::InvalidProtocol
             })?
         } else if remote_addr.ip().is_loopback() {
             // Fallback: localhost for loopback connections
             rustls::pki_types::ServerName::try_from("localhost").map_err(|e| {
                 error!("Invalid server name for TLS: {e}");
-                transport::Error::InvalidProtocol
+                Error::InvalidProtocol
             })?
         } else {
             // Fallback: IP address (may fail if certificate is for a domain name)
@@ -165,7 +167,7 @@ impl Connector {
         let connector = tls_config.connector();
         let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
             debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
-            transport::Error::InvalidProtocol
+            Error::InvalidProtocol
         })?;
 
         // A configured identity was presented if the peer requested client
@@ -188,7 +190,7 @@ impl Connector {
         remote_addr: &SocketAddr,
         segment_mtu: Option<usize>,
         mut transport: T,
-    ) -> Result<(), transport::Error>
+    ) -> Result<(), Error>
     where
         T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
             + futures::SinkExt<codec::Message, Error = codec::Error>
@@ -249,7 +251,8 @@ impl Connector {
         let keepalive_interval = self
             .ctx
             .keepalive_interval
-            .negotiate(peer_init.keepalive_interval);
+            .negotiate(peer_init.keepalive_interval)
+            .get();
 
         // Check peer init
         for i in &peer_init.session_extensions {
@@ -262,7 +265,7 @@ impl Connector {
                     &self.ctx.task_cancel_token,
                 )
                 .await;
-                return Err(transport::Error::InvalidProtocol);
+                return Err(Error::InvalidProtocol);
             }
         }
 

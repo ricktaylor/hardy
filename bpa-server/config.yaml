@@ -52,7 +52,7 @@ built-in-services:
 clas:
   - name: tcp-cla-1
     type: tcpclv4
-    address: "[::]:4556"
+    listeners: ["[::]:4556"]
     segment-mru: 16384
     transfer-mru: 1073741824
     max-idle-connections: 6

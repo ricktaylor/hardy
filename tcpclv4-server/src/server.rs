@@ -44,8 +44,10 @@ impl Tcpclv4Server {
     pub fn new(config: Config, tasks: TaskPool) -> anyhow::Result<Self> {
         let mut builder = Tcpclv4::builder();
 
-        builder = match config.address {
-            Some(address) => builder.listen(address),
+        builder = match config.listeners {
+            Some(listeners) => listeners
+                .into_iter()
+                .fold(builder, |builder, address| builder.listen(address)),
             None => builder.listen_default(),
         };
         if let Some(mru) = config.segment_mru {

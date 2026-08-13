@@ -4,7 +4,7 @@ clas:
   - name: "uplink"                     # Logical name for the CLA
     type: tcpclv4                      # Convergence Layer Type
     config:
-      address: "[::]:4556"             # Port to listen on for TCP connections
+      listeners: ["[::]:4556"]         # Addresses to listen on for TCP connections
       # Whether to use TLS for encrypting the connection.
       # use_tls: true
 

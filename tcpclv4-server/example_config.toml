@@ -1,6 +1,7 @@
-# The local IP address and port for the CLA to listen on for incoming
-# connections. Default: [::]:4556, the IANA-registered TCPCL address.
-#address = "[::]:4556"
+# The local addresses to listen on for incoming connections, one entry per
+# listener. Default: ["[::]:4556"], the IANA-registered TCPCL address.
+# An empty list disables listening (dial-only).
+#listeners = ["[::]:4556"]
 
 # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
 # This defines the largest single block of data that can be received in one go.

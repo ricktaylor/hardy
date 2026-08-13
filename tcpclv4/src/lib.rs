@@ -16,9 +16,9 @@ over TCP connections, with optional TLS encryption.
 - [`tls::Tls`] — TLS material (trust anchor, node identity, mutual-TLS
   policy), chained from [`tls::Tls::builder`] and loaded by
   [`builder::Tcpclv4Builder::build`].
-- [`builder::Error`] — errors from assembling the entity (socket binding
-  and TLS loading), the only ways [`builder::Tcpclv4Builder::build`] can
-  fail.
+- [`enum@Error`] — the generic error for everything TCPCLv4: assembling
+  and registering the entity, with each sub-concept's error wrapped as a
+  variant (`Tls`, `Session`).
 
 # Feature flags
 
@@ -27,6 +27,7 @@ over TCP connections, with optional TLS encryption.
 
 mod codec;
 mod connection;
+mod error;
 mod otel_metrics;
 mod session;
 mod tcpclv4;
@@ -36,6 +37,7 @@ mod writer;
 pub mod builder;
 pub mod tls;
 
+pub use self::error::Error;
 pub use self::tcpclv4::{ContactTimeout, KeepaliveInterval, Tcpclv4};
 
 use core::num::{NonZeroU32, NonZeroU64};

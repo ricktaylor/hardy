@@ -85,7 +85,14 @@ mod keepalive_interval_serde {
     where
         D: Deserializer<'de>,
     {
-        Ok(Option::<u16>::deserialize(deserializer)?.map(KeepaliveInterval::new))
+        match Option::<u16>::deserialize(deserializer)? {
+            // An explicit `null` was an earlier schema's disabled spelling;
+            // refuse it rather than silently re-enable keepalives.
+            None => Err(serde::de::Error::custom(
+                "keepalive-interval does not accept null: use 0 to disable keepalives, or omit the key for the default",
+            )),
+            Some(seconds) => Ok(Some(KeepaliveInterval::new(seconds))),
+        }
     }
 }
 
@@ -248,10 +255,11 @@ pub struct Config {
     #[serde(default)]
     pub peers: Vec<String>,
 
-    // The local address to listen on for incoming connections; absent
-    // listens on the IANA-registered `[::]:4556`.
+    // The passive listening elements, one address per listener; absent
+    // listens on the IANA-registered `[::]:4556`, and an empty list
+    // disables listening (dial-only).
     #[serde(default)]
-    pub address: Option<SocketAddr>,
+    pub listeners: Option<Vec<SocketAddr>>,
 
     // Largest acceptable single-segment payload, in bytes; zero is
     // rejected at parse.
@@ -354,7 +362,7 @@ mod tests {
         assert_eq!(config.cla_name, env!("CARGO_PKG_NAME"));
         assert_eq!(config.log_level, Level::INFO);
         assert!(
-            config.address.is_none(),
+            config.listeners.is_none(),
             "absent maps to the registered default listener"
         );
         assert!(
@@ -377,7 +385,7 @@ mod tests {
 bpa-address = "http://10.0.0.1:50051"
 cla-name = "test-cla"
 log-level = "debug"
-address = "0.0.0.0:9999"
+listeners = ["0.0.0.0:9999"]
 segment-mru = 8192
 keepalive-interval = 30
 "#,
@@ -386,8 +394,8 @@ keepalive-interval = 30
         assert_eq!(config.cla_name, "test-cla");
         assert_eq!(config.log_level, Level::DEBUG);
         assert_eq!(
-            config.address.unwrap(),
-            std::net::SocketAddr::from(([0, 0, 0, 0], 9999))
+            config.listeners.unwrap(),
+            vec![std::net::SocketAddr::from(([0, 0, 0, 0], 9999))]
         );
         assert_eq!(config.segment_mru, Some(NonZeroU64::new(8192).unwrap()));
         assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::new(30)));
@@ -553,13 +561,13 @@ log-level = "warn"
         }
     }
 
-    // Invalid address format is rejected.
+    // An invalid listener address is rejected.
     #[test]
     #[serial]
-    fn invalid_address_errors() {
+    fn invalid_listener_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.toml");
-        std::fs::write(&path, "address = \"not-an-address\"").unwrap();
+        std::fs::write(&path, "listeners = [\"not-an-address\"]").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
     }
@@ -683,12 +691,29 @@ this-does-not-exist = 42
         );
     }
 
-    // An explicit null address disables the listener (dial-only).
+    // The dial-only spelling is an empty listener list: nothing is bound.
     #[test]
     #[serial]
-    fn null_address_disables_the_listener() {
-        let config = write_and_load("null_address.yaml", "address: null\n");
-        assert!(config.address.is_none());
+    fn empty_listeners_is_dial_only() {
+        let config = write_and_load("dial_only.yaml", "listeners: []\n");
+        assert_eq!(config.listeners, Some(vec![]));
+        Tcpclv4Server::new(config, TaskPool::new()).expect("a dial-only build binds nothing");
+    }
+
+    // `null` is not a spelling in this schema: an earlier schema used it to
+    // disable keepalives, so it is refused with the replacement named
+    // rather than silently mapped to the default.
+    #[test]
+    #[serial]
+    fn keepalive_null_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("null-keepalive.yaml");
+        std::fs::write(&path, "keepalive-interval: null\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("keepalive"), "{err}");
     }
 
     // Keepalive interval of 0 disables keepalives, and still builds.
@@ -697,7 +722,7 @@ this-does-not-exist = 42
     fn keepalive_zero() {
         let config = write_and_load(
             "keepalive.toml",
-            "address = \"127.0.0.1:0\"\nkeepalive-interval = 0\n",
+            "listeners = [\"127.0.0.1:0\"]\nkeepalive-interval = 0\n",
         );
         assert_eq!(config.keepalive_interval, Some(KeepaliveInterval::DISABLED));
         Tcpclv4Server::new(config, TaskPool::new()).expect("0 disables keepalives");
@@ -748,7 +773,7 @@ this-does-not-exist = 42
     fn insecure_only_builds() {
         let config = write_and_load(
             "insecure.toml",
-            "address = \"127.0.0.1:0\"\n\n[tls]\ninsecure-skip-verify = true\n",
+            "listeners = [\"127.0.0.1:0\"]\n\n[tls]\ninsecure-skip-verify = true\n",
         );
         Tcpclv4Server::new(config, TaskPool::new()).expect("no file IO on this path");
     }
@@ -762,7 +787,7 @@ this-does-not-exist = 42
     fn insecure_overrides_ca_certs() {
         let config = write_and_load(
             "override.toml",
-            "address = \"127.0.0.1:0\"\n\n[tls]\nca-certs = \"/nonexistent/ca\"\ninsecure-skip-verify = true\n",
+            "listeners = [\"127.0.0.1:0\"]\n\n[tls]\nca-certs = \"/nonexistent/ca\"\ninsecure-skip-verify = true\n",
         );
         Tcpclv4Server::new(config, TaskPool::new())
             .expect("insecure-skip-verify wins; ca-certs is not loaded");
