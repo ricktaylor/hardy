@@ -30,7 +30,7 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 
 | Test Function | Scope |
 | :--- | :--- |
-| `empty_config_has_defaults` | Empty file → valid defaults (bpa_address, cla_name, port 4556) |
+| `empty_config_has_defaults` | Empty file → valid defaults (bpa_address, cla_name, registered listener) |
 | `toml_overrides_defaults` | TOML overrides all fields |
 | `yaml_config` | YAML file works identically |
 | `json_config` | JSON file works identically |
@@ -39,13 +39,21 @@ The tcpclv4-server wraps the `hardy-tcpclv4` library. Protocol-level verificatio
 | `missing_config_file_errors` | Non-existent file → error |
 | `invalid_log_level_errors` | Bad log level → error |
 | `negative_segment_mru_errors` | Negative MRU → error |
-| `invalid_address_errors` | Bad listen address → error |
-| `tls_partial_config` | TLS cert + key without CA |
+| `parse_rejects_invalid_scalars` | Zero MRUs/rate/outstanding-transfers, out-of-range contact-timeout → parse error |
+| `invalid_listener_errors` | Bad listener address → error |
+| `empty_listeners_is_dial_only` | `listeners: []` parses and builds a dial-only entity |
+| `keepalive_zero` | Zero keepalive = disabled |
+| `keepalive_null_is_refused` | `keepalive-interval: null` → parse error naming `0` |
+| `tls_full_config` | A full TLS section parses into its structured form |
+| `private_key_file_alias` | `private-key-file` accepted as `key-file` alias |
+| `lone_identity_half_rejected_at_parse` | A cert or key alone → parse error |
+| `mapping_rejects_contradictions` | TLS contradictions named at build (trust anchor, identity, insecure) |
+| `insecure_only_builds` | `insecure-skip-verify` alone builds without file I/O |
+| `insecure_overrides_ca_certs` | `insecure-skip-verify` wins over `ca-certs`; the bundle is never loaded |
 | `malformed_toml_errors` | Invalid TOML → error |
 | `malformed_yaml_errors` | Invalid YAML → error |
 | `unknown_fields_ignored` | Extra fields accepted |
 | `large_segment_mru` | Large MRU value accepted |
-| `keepalive_zero` | Zero keepalive = disabled |
 
 ### Cross-Coverage from Other Test Suites
 
@@ -58,7 +66,7 @@ Lifecycle scenarios (startup, registration, shutdown) are exercised by:
 
 | Source | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (16 tests) |
+| Configuration (CFG-01..03) | Defaults, multi-format parsing, env overrides, validation | 3 | 3 | Complete (24 tests) |
 | Server lifecycle (SYS-01..03) | Startup, registration, shutdown | 3 | 3 | Exercised by interop + CI (implicit) |
 | Performance (PERF-SRV-01) | Throughput | 1 | 0 | Full Activity scope |
 | Packaging (PKG-OCI-01, PKG-HELM-01) | OCI image, Helm chart | 2 | 0 | Full Activity scope |
