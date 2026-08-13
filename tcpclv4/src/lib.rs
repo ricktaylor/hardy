@@ -148,6 +148,7 @@ impl Cla {
             tls_config,
             registry: Arc::new(connection::ConnectionRegistry::new(
                 config.max_idle_connections,
+                config.max_outstanding_transfers,
             )),
             session_cancel_token: tokio_util::sync::CancellationToken::new(),
 

@@ -19,7 +19,7 @@ pub enum OnBusy {
 
 pub type ConnectionTx = tokio::sync::mpsc::Sender<(
     hardy_bpa::Bytes,
-    tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+    tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
 )>;
 
 pub struct Connection {
@@ -133,7 +133,7 @@ impl ConnectionPool {
         &self,
         bundle: hardy_bpa::Bytes,
         on_busy: OnBusy,
-    ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
+    ) -> Result<hardy_bpa::cla::TransferOutcome, hardy_bpa::Bytes> {
         // We repeatedly search as this function is async, so changes can happen
         // while running. Cap the retries so a peer whose sessions repeatedly
         // accept-then-fail (while the pool stays above max_idle) can't wedge the
@@ -233,15 +233,27 @@ pub struct ConnectionRegistry {
     // past the capacity bound. Entries are never removed; the map is bounded
     // by the deployment's peer-address cardinality.
     dial_locks: Mutex<HashMap<SocketAddr, Arc<tokio::sync::Mutex<()>>>>,
+    // Bounds transfers accepted but not yet resolved with an outcome, per
+    // peer: a forward holds a permit from acceptance until its outcome is
+    // reported, and an exhausted semaphore withholds further forward
+    // verdicts — the flow control back to the BPA's per-peer egress poller.
+    // Per-peer scoping keeps one unreachable peer's stalled dials from
+    // starving admission for healthy peers. Entries are evicted with the
+    // peer's session pool; the `Arc` held by any in-flight transfer keeps
+    // its semaphore (and permit accounting) alive across eviction.
+    transfer_permits: Mutex<HashMap<SocketAddr, Arc<tokio::sync::Semaphore>>>,
     max_idle: usize,
+    max_outstanding_transfers: core::num::NonZeroUsize,
 }
 
 impl ConnectionRegistry {
-    pub fn new(max_idle: usize) -> Self {
+    pub fn new(max_idle: usize, max_outstanding_transfers: core::num::NonZeroUsize) -> Self {
         Self {
             pools: Mutex::new(HashMap::new()),
             dial_locks: Mutex::new(HashMap::new()),
+            transfer_permits: Mutex::new(HashMap::new()),
             max_idle,
+            max_outstanding_transfers,
         }
     }
 
@@ -268,6 +280,20 @@ impl ConnectionRegistry {
             .clone()
     }
 
+    // The per-address transfer-permit semaphore, created on first use.
+    pub fn transfer_permits(&self, remote_addr: SocketAddr) -> Arc<tokio::sync::Semaphore> {
+        self.transfer_permits
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .entry(remote_addr)
+            .or_insert_with(|| {
+                Arc::new(tokio::sync::Semaphore::new(
+                    self.max_outstanding_transfers.get(),
+                ))
+            })
+            .clone()
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub fn shutdown(&self) {
         let mut pools = self.pools.lock().trace_expect("Failed to lock mutex");
@@ -280,6 +306,11 @@ impl ConnectionRegistry {
 
         // Closing tx channels causes session::run tasks to exit
         pools.clear();
+
+        self.transfer_permits
+            .lock()
+            .trace_expect("Failed to lock mutex")
+            .clear();
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink, conn)))]
@@ -333,6 +364,16 @@ impl ConnectionRegistry {
                 && Arc::ptr_eq(current, &pool)
             {
                 pools.remove(remote_addr);
+
+                // The peer's session pool is gone: evict its permit
+                // semaphore so the map tracks peer churn instead of growing
+                // monotonically. In-flight transfers keep the semaphore
+                // alive through their own `Arc`s, and their bundles are
+                // swept back to Waiting by the peer removal anyway.
+                self.transfer_permits
+                    .lock()
+                    .trace_expect("Failed to lock mutex")
+                    .remove(remote_addr);
             }
         }
     }
@@ -349,7 +390,7 @@ impl ConnectionRegistry {
         remote_addr: &SocketAddr,
         mut bundle: hardy_bpa::Bytes,
         on_busy: OnBusy,
-    ) -> Result<hardy_bpa::cla::ForwardBundleResult, hardy_bpa::Bytes> {
+    ) -> Result<hardy_bpa::cla::TransferOutcome, hardy_bpa::Bytes> {
         let pool = self
             .pools
             .lock()
@@ -377,7 +418,7 @@ mod tests {
 
     type ConnectionRx = tokio::sync::mpsc::Receiver<(
         hardy_bpa::Bytes,
-        tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+        tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
     )>;
 
     struct MockSink;
@@ -409,6 +450,14 @@ mod tests {
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
         }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _outcome: hardy_bpa::cla::TransferOutcome,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
+        }
     }
 
     fn addr(port: u16) -> SocketAddr {
@@ -426,11 +475,11 @@ mod tests {
         )
     }
 
-    // A stand-in session that accepts every bundle and reports it sent
-    fn serve_sent(mut rx: ConnectionRx) {
+    // A stand-in session that accepts every bundle and reports it completed
+    fn serve_completed(mut rx: ConnectionRx) {
         tokio::spawn(async move {
             while let Some((_bundle, result)) = rx.recv().await {
-                _ = result.send(hardy_bpa::cla::ForwardBundleResult::Sent);
+                _ = result.send(hardy_bpa::cla::TransferOutcome::Completed);
             }
         });
     }
@@ -462,8 +511,8 @@ mod tests {
     async fn queues_on_busy_session_at_capacity() {
         let (conn1, rx1) = conn(1);
         let (conn2, rx2) = conn(2);
-        serve_sent(rx1);
-        serve_sent(rx2);
+        serve_completed(rx1);
+        serve_completed(rx2);
 
         // A max_idle of 1 with two busy connections puts the pool over
         // capacity, so the forward queues rather than dialling
@@ -478,13 +527,13 @@ mod tests {
         let r = pool
             .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
-        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
     }
 
     #[tokio::test]
     async fn no_dial_forward_queues_on_busy_session() {
         let (conn, rx) = conn(1);
-        serve_sent(rx);
+        serve_completed(rx);
 
         let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
         make_busy(&pool);
@@ -493,19 +542,19 @@ mod tests {
         let r = pool
             .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Queue)
             .await;
-        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
     }
 
     #[tokio::test]
     async fn idle_session_is_used_and_returned() {
         let (conn, rx) = conn(1);
-        serve_sent(rx);
+        serve_completed(rx);
 
         let pool = ConnectionPool::new(conn, Arc::new(MockSink), addr(4556), 6);
         let r = pool
             .try_send(hardy_bpa::Bytes::from_static(b"bundle"), OnBusy::Dial)
             .await;
-        assert!(matches!(r, Ok(hardy_bpa::cla::ForwardBundleResult::Sent)));
+        assert!(matches!(r, Ok(hardy_bpa::cla::TransferOutcome::Completed)));
 
         let inner = pool.inner.lock().unwrap();
         assert_eq!(inner.idle.len(), 1);

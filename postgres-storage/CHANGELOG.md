@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `forward_ack_pending` bundle status (migration 0002), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
+
+### Fixed
+- `update_status` no longer errors when the bundle was deleted concurrently: delete is terminal and the update quietly loses. Previously the error propagated into the BPA's fail-stop storage wrapper, turning a benign race with the expiry reaper into a panic.
+
 ## [0.2.0]
 
 ### Changed

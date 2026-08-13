@@ -40,6 +40,14 @@ impl cla::Sink for MockSink {
     async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
         Ok(true)
     }
+
+    async fn transfer_outcome(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _outcome: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        Ok(())
+    }
 }
 
 // A mock BPA that registers CLAs by immediately calling `on_register` with a

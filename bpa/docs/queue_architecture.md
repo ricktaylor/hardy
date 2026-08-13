@@ -91,12 +91,15 @@ trait MetadataStorage {
     // --- Queue operations (queue ID is u32) ---
     async fn enqueue(&self, id: &Bundle::Id, queue: u32, priority: u32);
     async fn dequeue(&self, queue: u32) -> Option<Bundle>;
+    async fn requeue(&self, id: &Bundle::Id, from: u32, to: u32) -> bool;
     async fn move_queue(&self, from: u32, to: u32) -> u64;
     async fn drain(&self, queue: u32, tx: Sender<Bundle>);
 }
 ```
 
 Bundle CRUD owns the data, keyed by `Bundle::Id`. Queue operations own the ordering and assignment, keyed by a `u32` queue ID. The queue ID is opaque to the storage implementation — all semantics (which queue is Dispatch, which are ephemeral, the durability threshold) live in the BPA layer above. `dequeue` returns the full `Bundle` (which contains its own ID) to avoid a separate round-trip. This replaces the current per-status query methods with generic queue primitives.
+
+`requeue` is the per-bundle conditional form of `move_queue`: it moves `id` from `from` to `to` only if the bundle is still assigned to `from`, returning whether it moved. It is the arbiter for resolutions that race the sweeps and the reaper — a deferred transfer outcome claims its bundle out of the parking queue with it, and a lost claim means the bundle was already swept, expired, or resolved by a duplicate. Today's status-based `MetadataStorage::swap_status` is this primitive expressed against the current status-as-queue model and maps onto `requeue` directly.
 
 The pull-based `dequeue` also subsumes the interim poller in `storage::channel`. Today the hybrid channel bridges the push-based `poll_pending(&dyn Sender)` to its in-memory buffer with an intermediate channel and a forwarding task spawned per drain cycle, plus a cancel-token race so a send parked on a full buffer cannot stall shutdown. Under `dequeue` the poller becomes a plain pull loop — `while let Some(bundle) = dequeue(queue).await { ... }` — where each await is a clean cancellation point, eliminating the per-cycle channel allocation, the spawned task, and the cancel race together. This scaffolding is intentionally left in place until the redesign lands rather than optimised in the interim.
 
@@ -107,6 +110,8 @@ The `MetadataStorage` implementation is exclusive to a single BPA instance — t
 - **`dequeue` does not remove the queue assignment.** The bundle remains associated with its current queue in storage while the processing block works on it. If the process crashes mid-processing, the bundle is still in the original queue and gets reprocessed on recovery
 - **`enqueue` atomically replaces the queue assignment.** This is the commit point — the bundle moves from one queue to the next in a single storage operation
 - **`delete` is the terminal operation.** After successful forwarding or delivery, the bundle is removed from storage entirely (or moved to the Tombstone queue for deduplication)
+- **A write against a deleted bundle is a no-op.** `delete` wins every race: an `enqueue` or status update that loses to the reaper or a concurrent resolution quietly does nothing — the storage layer must neither resurrect the bundle (the in-memory backend refuses to replace a tombstone with a live entry) nor surface an error. Deletions themselves come in two forms: unconditional `delete` where the authority is independent of queue state (expiry, operator drop, an owner completing a claimed bundle), and the conditional move into the Tombstone queue (`requeue`) where the authority derives from the bundle still being where the deleter believes it is
+- **A bundle in circulation only moves conditionally.** Every queue move for a bundle past ingress is a conditional swap from the mover's own snapshot (`swap_status`/`requeue`, or its terminal form `tombstone_if`): the channels deliver at-least-once, so a stale duplicate copy must lose the swap and be dropped rather than stomp the live copy's assignment. The remaining unconditional writes are terminal `delete` (above), pre-circulation initialisation at the ingress checkpoint, and the forward path's error restores — releases of a claim the restoring task itself won, where the claim swap was the arbiter
 
 This provides **at-least-once** delivery semantics: a bundle may be processed more than once after a crash, but it is never lost. Processing blocks must be idempotent — re-dispatching re-runs the RIB lookup, re-forwarding checks for duplicates, re-delivery is handled by the service layer.
 
@@ -167,6 +172,7 @@ Created at BPA construction time via `QueueFactory::create(DurableQueue)`, which
 **Ephemeral queues** (ID >= threshold) — allocated dynamically:
 
 - Per-peer egress queues, active, priority-ordered. Created when a peer connects on a CLA, destroyed when the peer disconnects
+- Per-peer transfer-ack parking queues ([design.md](design.md#deferred-cla-transfer-outcomes)) — bundles accepted by a deferred-outcome CLA, held until the out-of-band outcome arrives. No receiver: resolved by a conditional move out of the parking queue (delivered → into the Tombstone queue; failed → `requeue` to Dispatch), so an outcome racing the peer-loss sweep or the reaper loses the claim; swept to Waiting on peer loss and restart like any ephemeral queue
 
 Allocated via `QueueFactory::allocate()`, which returns `(Sender, Receiver, u32)` — the `u32` is the assigned queue ID. The factory manages IDs above the durable threshold:
 

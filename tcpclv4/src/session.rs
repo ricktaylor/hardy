@@ -247,7 +247,7 @@ where
     transfer_mru: usize,
     from_sink: tokio::sync::mpsc::Receiver<(
         hardy_bpa::Bytes,
-        tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+        tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
     )>,
     transfer_id: u64,
     acks: VecDeque<XferAck>,
@@ -280,7 +280,7 @@ where
         transfer_mru: usize,
         from_sink: tokio::sync::mpsc::Receiver<(
             hardy_bpa::Bytes,
-            tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+            tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
         )>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> (Self, tokio::sync::mpsc::Receiver<Ingest>) {
@@ -673,7 +673,7 @@ where
     async fn forward_to_peer(
         &mut self,
         bundle: Bytes,
-        result: tokio::sync::oneshot::Sender<hardy_bpa::cla::ForwardBundleResult>,
+        result: tokio::sync::oneshot::Sender<hardy_bpa::cla::TransferOutcome>,
     ) -> Result<(), Error> {
         // Check we can allocate a transfer id without rollover (RFC 9174 Section 5.2.1)
         if self.transfer_id == u64::MAX {
@@ -687,7 +687,7 @@ where
             match self.send_once(bundle.clone()).await? {
                 None | Some(codec::TransferRefuseReasonCode::Completed) => {
                     metrics::counter!("tcpclv4.transfers.sent").increment(1);
-                    _ = result.send(hardy_bpa::cla::ForwardBundleResult::Sent);
+                    _ = result.send(hardy_bpa::cla::TransferOutcome::Completed);
                     return Ok(());
                 }
                 Some(codec::TransferRefuseReasonCode::Retransmit) => {
@@ -1019,6 +1019,13 @@ mod tests {
             _cla_addr: &hardy_bpa::cla::ClaAddress,
         ) -> hardy_bpa::cla::Result<bool> {
             Ok(true)
+        }
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _outcome: hardy_bpa::cla::TransferOutcome,
+        ) -> hardy_bpa::cla::Result<()> {
+            Ok(())
         }
     }
 

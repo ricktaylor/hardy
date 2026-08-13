@@ -89,22 +89,37 @@ impl Dispatcher {
                     // The peer vanished between the RIB lookup and the forward:
                     // return the bundle to Waiting so the next route event
                     // re-dispatches it, rather than leaving it stranded in
-                    // Dispatching/ForwardPending until lifetime expiry
+                    // Dispatching/ForwardPending until lifetime expiry. The
+                    // move is conditional on this copy's snapshot: a stale
+                    // duplicate loses to wherever the live copy has moved on
+                    // to and is dropped.
                     debug!("CLA forward failed, returning bundle to Waiting");
-                    self.store
-                        .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                        .await;
-                    self.store.watch_bundle(bundle).await;
+                    if self
+                        .store
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                        .await
+                    {
+                        self.store.watch_bundle(bundle).await;
+                    } else {
+                        debug!("Bundle already moved on, dropping duplicate copy");
+                    }
                 }
             }
             None => {
-                // No route available - wait for one
+                // No route available - wait for one. Conditional on this
+                // copy's snapshot, as above: a stale duplicate must not stomp
+                // a live in-flight transfer back to Waiting.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                self.store.watch_bundle(bundle).await
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await
+                } else {
+                    debug!("Bundle already moved on, dropping duplicate copy");
+                }
             }
         }
     }

@@ -25,6 +25,7 @@ pub struct MockBpa {
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
+    pub last_cla_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockClaSink>>>,
     pub last_service: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Service>>>,
     pub last_application: hardy_async::sync::spin::Mutex<Option<Arc<dyn services::Application>>>,
 }
@@ -36,6 +37,7 @@ impl MockBpa {
             last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
+            last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
             last_application: hardy_async::sync::spin::Mutex::new(None),
         }
@@ -63,6 +65,7 @@ impl BpaRegistration for MockBpa {
     ) -> cla::Result<Vec<NodeId>> {
         let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());
+        *self.last_cla_sink.lock() = Some(sink.clone());
         cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
             .await;
         Ok(self.node_ids.clone())
@@ -178,6 +181,13 @@ impl cla::Sink for ClaSinkWrapper {
     async fn remove_peer(&self, a: &cla::ClaAddress) -> cla::Result<bool> {
         self.0.remove_peer(a).await
     }
+    async fn transfer_outcome(
+        &self,
+        id: &hardy_bpv7::bundle::Id,
+        o: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        self.0.transfer_outcome(id, o).await
+    }
 }
 
 #[async_trait]
@@ -220,6 +230,19 @@ fn test_port() -> u16 {
     NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
 }
 
+/// The loopback host for test servers: IPv6 when available, IPv4 as a
+/// fallback (some sandboxes have no `::1`).
+fn loopback_host() -> &'static str {
+    static HOST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        if std::net::TcpListener::bind(("::1", 0)).is_ok() {
+            "[::1]"
+        } else {
+            "127.0.0.1"
+        }
+    })
+}
+
 /// Start a gRPC server with the specified services.
 /// Returns the gRPC address string and the task pool (cancel to stop).
 pub async fn start_server(
@@ -227,8 +250,9 @@ pub async fn start_server(
     service_names: &[&str],
 ) -> (String, hardy_async::TaskPool) {
     let port = test_port();
-    let addr: std::net::SocketAddr = format!("[::1]:{port}").parse().unwrap();
-    let grpc_addr = format!("http://[::1]:{port}");
+    let host = loopback_host();
+    let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
+    let grpc_addr = format!("http://{host}:{port}");
 
     let tasks = hardy_async::TaskPool::new();
     let config = hardy_proto::server::Config {

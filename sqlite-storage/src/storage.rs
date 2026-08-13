@@ -206,6 +206,7 @@ impl Storage {
 // 3 = AduFragment(timestamp, seq, source)
 // 4 = Dispatching
 // 5 = WaitingForService(source)
+// 6 = ForwardAckPending(peer)
 fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<String>) {
     match status {
         BundleStatus::New => (0, None, None, None),
@@ -225,6 +226,7 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
         ),
         BundleStatus::Dispatching => (4, None, None, None),
         BundleStatus::WaitingForService { service } => (5, None, None, Some(service.to_string())),
+        BundleStatus::ForwardAckPending { peer } => (6, Some(i64::from(*peer)), None, None),
     }
 }
 
@@ -256,6 +258,9 @@ fn to_status(
         4 => Some(BundleStatus::Dispatching),
         5 => Some(BundleStatus::WaitingForService {
             service: param3?.parse().ok()?,
+        }),
+        6 => Some(BundleStatus::ForwardAckPending {
+            peer: u32::try_from(param1?).ok()?,
         }),
         _ => None,
     }
@@ -351,7 +356,7 @@ impl storage::MetadataStorage for Storage {
         if self
             .write(move |conn| {
                 conn.prepare_cached(
-                    "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 WHERE bundle_id = ?1",
+                    "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 WHERE bundle_id = ?1 AND bundle IS NOT NULL",
                 )?
                 .execute((id, status_code, status_param1, status_param2, status_param3))
                 .map_err(Into::into)
@@ -359,9 +364,71 @@ impl storage::MetadataStorage for Storage {
             .await?
             != 1
         {
-            error!("Failed to update bundle status!");
+            // Delete is terminal: the bundle was removed between the
+            // caller's read and this write, and the update quietly loses
+            debug!("Status update for a deleted bundle, ignored");
         }
         Ok(())
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    async fn swap_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let (expected_code, expected_param1, expected_param2, expected_param3) =
+            from_status(expected);
+        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let id = serde_json::to_vec(bundle_id)?;
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 \
+                 WHERE bundle_id = ?1 AND status_code = ?6 AND status_param1 IS ?7 AND status_param2 IS ?8 AND status_param3 IS ?9",
+            )?
+            .execute((
+                id,
+                status_code,
+                status_param1,
+                status_param2,
+                status_param3,
+                expected_code,
+                expected_param1,
+                expected_param2,
+                expected_param3,
+            ))
+            .map_err(Into::into)
+        })
+        .await
+        .map(|rows| rows == 1)
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    async fn tombstone_if(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expected: &BundleStatus,
+    ) -> storage::Result<bool> {
+        let (expected_code, expected_param1, expected_param2, expected_param3) =
+            from_status(expected);
+        let id = serde_json::to_vec(bundle_id)?;
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET bundle = NULL, status_code = NULL, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL \
+                 WHERE bundle_id = ?1 AND status_code = ?2 AND status_param1 IS ?3 AND status_param2 IS ?4 AND status_param3 IS ?5",
+            )?
+            .execute((
+                id,
+                expected_code,
+                expected_param1,
+                expected_param2,
+                expected_param3,
+            ))
+            .map_err(Into::into)
+        })
+        .await
+        .map(|rows| rows == 1)
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
@@ -378,7 +445,7 @@ impl storage::MetadataStorage for Storage {
             .await?
             != 1
         {
-            error!("Failed to tombstone bundle!");
+            debug!("Tombstone for a missing bundle, ignored");
         }
         Ok(())
     }
@@ -521,6 +588,30 @@ impl storage::MetadataStorage for Storage {
         self.write(move |conn| {
             conn.prepare_cached(
                 "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
+            )?
+            .execute((Some(peer),))
+            .map(|c| c as u64)
+            .map_err(Into::into)
+        })
+        .await
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        // Ensure status codes match
+        debug_assert!(
+            from_status(&BundleStatus::Waiting).0 == 1,
+            "Status code mismatch"
+        );
+        debug_assert!(
+            from_status(&BundleStatus::ForwardAckPending { peer })
+                == (6, Some(peer as i64), None, None),
+            "Status code mismatch"
+        );
+
+        self.write(move |conn| {
+            conn.prepare_cached(
+                "UPDATE bundles SET status_code = 1, status_param1 = NULL WHERE status_code = 6 AND status_param1 = ?1",
             )?
             .execute((Some(peer),))
             .map(|c| c as u64)
@@ -842,6 +933,189 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    // ForwardAckPending round-trips through the status columns, and
+    // reset_peer_ack_pending flips exactly the matching peer's transfers to
+    // Waiting.
+    #[tokio::test]
+    async fn test_forward_ack_pending_roundtrip_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        assert_eq!(
+            got.metadata.status,
+            BundleStatus::ForwardAckPending { peer: 7 }
+        );
+
+        // A different peer's transfer is untouched by the reset
+        let mut other = make_bundle(2);
+        other.metadata.status = BundleStatus::ForwardAckPending { peer: 8 };
+        assert!(storage.insert(&other).await.unwrap());
+
+        assert_eq!(storage.reset_peer_ack_pending(7).await.unwrap(), 1);
+
+        let got = storage.get(&bundle.bundle.id).await.unwrap().unwrap();
+        assert_eq!(got.metadata.status, BundleStatus::Waiting);
+        let got = storage.get(&other.bundle.id).await.unwrap().unwrap();
+        assert_eq!(
+            got.metadata.status,
+            BundleStatus::ForwardAckPending { peer: 8 }
+        );
+    }
+
+    // swap_status applies only when every status column matches the expected
+    // status, making it the arbiter for outcome-resolution races.
+    #[tokio::test]
+    async fn test_swap_status_is_conditional() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong peer in the expectation: no swap
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 8 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // Matching expectation: swap applies
+        assert!(
+            storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .get(&bundle.bundle.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .metadata
+                .status,
+            BundleStatus::Dispatching
+        );
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 },
+                    &BundleStatus::Dispatching,
+                )
+                .await
+                .unwrap()
+        );
+
+        // A deleted bundle swaps nothing
+        storage.tombstone(&bundle.bundle.id).await.unwrap();
+        assert!(
+            !storage
+                .swap_status(
+                    &bundle.bundle.id,
+                    &BundleStatus::Dispatching,
+                    &BundleStatus::Waiting,
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    // tombstone_if removes the bundle only when every status column matches
+    // the expected status: the terminal arbiter for outcome-resolution races.
+    #[tokio::test]
+    async fn test_tombstone_if_is_conditional() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+
+        // Wrong peer in the expectation: not tombstoned
+        assert!(
+            !storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 8 }
+                )
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_some());
+
+        // Matching expectation: tombstoned
+        assert!(
+            storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 }
+                )
+                .await
+                .unwrap()
+        );
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+
+        // A duplicate resolution loses
+        assert!(
+            !storage
+                .tombstone_if(
+                    &bundle.bundle.id,
+                    &BundleStatus::ForwardAckPending { peer: 7 }
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    // A status write against a tombstone quietly loses: the tombstone's
+    // status columns stay NULL rather than being written back. Checked
+    // against the raw row, because get() shields readers by filtering on
+    // live bundles.
+    #[tokio::test]
+    async fn test_update_status_does_not_resurrect_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(&make_config(dir.path()), true);
+
+        let mut bundle = make_bundle(1);
+        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        assert!(storage.insert(&bundle).await.unwrap());
+        storage.tombstone(&bundle.bundle.id).await.unwrap();
+
+        bundle.metadata.status = BundleStatus::Waiting;
+        storage.update_status(&bundle).await.unwrap();
+
+        assert!(storage.get(&bundle.bundle.id).await.unwrap().is_none());
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        let (bundle_col, status_code): (Option<Vec<u8>>, Option<i64>) = conn
+            .query_row(
+                "SELECT bundle, status_code FROM bundles WHERE bundle_id = ?1",
+                [serde_json::to_vec(&bundle.bundle.id).unwrap()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(bundle_col.is_none(), "tombstone must keep bundle NULL");
+        assert!(status_code.is_none(), "tombstone must keep status NULL");
     }
 
     // SQL-01: Database is created at the configured path.
