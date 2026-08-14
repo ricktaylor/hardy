@@ -262,15 +262,24 @@ impl BpaServer {
         // No egress policy types exist yet: the enum's only variant is the
         // serde catch-all, so every arm fails and a real variant slots in
         // as an `Ok` arm here.
+        // Unknown policy types are an extension point, like unknown CLA
+        // types: tolerated with a warning so a config can name policies
+        // this build was not compiled with. A CLA that references one
+        // fails below with the "references unknown policy" error.
         let policies: HashMap<String, Arc<dyn EgressPolicy>> = config
             .policies
             .into_iter()
-            .map(|(name, policy_config)| match policy_config {
-                EgressPolicyConfig::Unknown => {
-                    Err(anyhow::anyhow!("Policy '{name}': unknown policy type"))
-                }
-            })
-            .collect::<anyhow::Result<_>>()?;
+            .filter_map(
+                |(name, policy_config)| -> Option<(String, Arc<dyn EgressPolicy>)> {
+                    match policy_config {
+                        EgressPolicyConfig::Unknown => {
+                            warn!("Ignoring policy '{name}' with unknown type");
+                            None
+                        }
+                    }
+                },
+            )
+            .collect();
 
         for cla_config in config.clas {
             let cla: Option<Arc<dyn Cla>> = match &cla_config.cla_type {
