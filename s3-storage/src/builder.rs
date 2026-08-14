@@ -3,14 +3,15 @@
 use tracing::info;
 
 use super::{
-    PartSize, S3Storage,
+    MultipartThreshold, PartSize, S3Storage,
     error::{Error, Result},
 };
 
 // Bundle size threshold above which multipart upload is used instead of a
 // single `PutObject`: S3 enforces a 5 GiB hard limit on `PutObject`, and
 // larger bundles benefit from parallel part uploads.
-const DEFAULT_MULTIPART_THRESHOLD: usize = 8 * 1024 * 1024;
+const DEFAULT_MULTIPART_THRESHOLD: MultipartThreshold =
+    MultipartThreshold::new(8 * 1024 * 1024).unwrap();
 
 // Size of each part in a multipart upload (all parts except the last).
 const DEFAULT_PART_SIZE: PartSize = PartSize::new(8 * 1024 * 1024).unwrap();
@@ -28,7 +29,7 @@ pub struct S3StorageBuilder {
     region: Option<String>,
     endpoint_url: Option<String>,
     force_path_style: bool,
-    multipart_threshold: Option<usize>,
+    multipart_threshold: Option<MultipartThreshold>,
     multipart_part_size: Option<PartSize>,
 }
 
@@ -75,11 +76,11 @@ impl S3StorageBuilder {
         self
     }
 
-    /// Sets the bundle size threshold, in bytes, above which multipart
-    /// upload is used instead of a single `PutObject`. Must be at least
-    /// the part size.
-    pub fn multipart_threshold(mut self, bytes: usize) -> Self {
-        self.multipart_threshold = Some(bytes);
+    /// Sets the bundle size threshold above which multipart upload is
+    /// used instead of a single `PutObject`. Must be at least the part
+    /// size.
+    pub fn multipart_threshold(mut self, threshold: MultipartThreshold) -> Self {
+        self.multipart_threshold = Some(threshold);
         self
     }
 
@@ -106,7 +107,8 @@ impl S3StorageBuilder {
 
         let multipart_threshold = self
             .multipart_threshold
-            .unwrap_or(DEFAULT_MULTIPART_THRESHOLD);
+            .unwrap_or(DEFAULT_MULTIPART_THRESHOLD)
+            .get();
         if multipart_threshold < part_size.get() {
             return Err(Error::ThresholdBelowPartSize {
                 multipart_threshold,
@@ -137,5 +139,29 @@ impl S3StorageBuilder {
             multipart_threshold,
             part_size,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn empty_bucket_is_refused() {
+        assert!(matches!(
+            S3Storage::builder(String::new()).build().await,
+            Err(Error::EmptyBucket)
+        ));
+    }
+
+    #[tokio::test]
+    async fn threshold_below_part_size_is_refused() {
+        assert!(matches!(
+            S3Storage::builder("bucket")
+                .multipart_threshold(MultipartThreshold::new(1024).unwrap())
+                .build()
+                .await,
+            Err(Error::ThresholdBelowPartSize { .. })
+        ));
     }
 }

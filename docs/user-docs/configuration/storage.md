@@ -160,8 +160,8 @@ file.
 | `endpoint-url` | URL | AWS default | S3 endpoint URL. Set for non-AWS S3-compatible stores (MinIO, GCS, etc.). |
 | `region` | AWS region string | `AWS_DEFAULT_REGION` / `AWS_REGION` env vars | AWS region for the bucket. |
 | `force-path-style` | `true`, `false` | `false` | Path-style addressing (`http://host/bucket/key`), required for MinIO and some S3-compatible stores. |
-| `multipart-threshold` | Positive integer (bytes) | `8388608` (8 MiB) | Bundle size above which multipart upload is used. Must be at least the part size. |
-| `multipart-part-size` | Positive integer (bytes) | `8388608` (8 MiB) | Size of each multipart part. Must be at least 5 MiB (the S3 minimum). |
+| `multipart-threshold` | Non-negative integer (bytes) | `8388608` (8 MiB) | Bundle size above which multipart upload is used. Must be at least the part size, and at most 5 GiB (the S3 `PutObject` limit). |
+| `multipart-part-size` | Positive integer (bytes) | `8388608` (8 MiB) | Size of each multipart part. Must be between 5 MiB and 5 GiB (the S3 part bounds). |
 
 Example (AWS S3):
 

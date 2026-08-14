@@ -2228,6 +2228,7 @@ dependencies = [
  "serde",
  "thiserror",
  "time",
+ "tokio",
  "tracing",
  "uuid",
 ]

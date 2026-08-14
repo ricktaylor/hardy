@@ -26,23 +26,23 @@ const DEFAULT_BUNDLE_AGE_REQUIRED: bool = true;
 
 /// RFC9171 validity filter that enforces bundle policy requirements.
 ///
-/// This filter is auto-registered at the Ingress hook when the `rfc9171-filter`
-/// feature is enabled (default). The auto-registered instance enables all
-/// checks.
+/// This filter is auto-registered at the Ingress hook unless the
+/// `no-rfc9171-autoregister` feature is enabled; the auto-registered
+/// instance enables all checks.
 ///
 /// To customize the checks, chain the setter for each check to override:
 ///
 /// ```ignore
-/// use hardy_bpa::filters::rfc9171::Rfc9171ValidityFilter;
+/// use hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter;
 ///
 /// // Disable the Bundle Age check for RFC9173 test vectors.
 /// let filter = Rfc9171ValidityFilter::new().bundle_age_required(false);
 ///
 /// bpa.register_filter(
-///     filters::Hook::Ingress,
+///     filter::Hook::Ingress,
 ///     "rfc9171-validity",
 ///     &[],
-///     filters::Filter::Read(Arc::new(filter)),
+///     filter::Filter::Read(Arc::new(filter)),
 /// )?;
 /// ```
 #[derive(Debug, Clone)]

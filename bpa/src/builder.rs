@@ -131,14 +131,16 @@ impl BpaBuilder {
     }
 
     /// Sets the LRU cache capacity, in entries; unset applies the cache's
-    /// own default.
+    /// own default. Has no effect when no bundle storage is configured:
+    /// the default memory store is never cached.
     pub fn lru_capacity(mut self, v: NonZeroUsize) -> Self {
         self.lru_capacity = Some(v);
         self
     }
 
     /// Sets the largest bundle size eligible for caching, in bytes; unset
-    /// applies the cache's own default.
+    /// applies the cache's own default. Has no effect when no bundle
+    /// storage is configured: the default memory store is never cached.
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_cached_bundle_size = Some(v);
         self

@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `forward_ack_pending` bundle status (migration 0002), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
 
 ### Changed
-- **BREAKING**: the serde `Config` struct and the free `new()` function are replaced by `PostgresStorage::builder()`, with the pool defaults owned privately by the builder; config-file schemas belong to the server crates. Timeouts are `Duration`s, `poll_page_size` and `max_connections` are `NonZeroU32` (a zero-connection pool is unrepresentable), and a missing database URL is the dedicated `Error::NoDatabaseUrl`.
+- **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `PostgresStorage::builder()`, with the pool defaults owned privately by the builder; config-file schemas belong to the server crates. Timeouts are `Duration`s, `poll_page_size` and `max_connections` are `NonZeroU32` (a zero-connection pool is unrepresentable), and a missing database URL is the dedicated `Error::NoDatabaseUrl`.
 
 ### Fixed
 - `update_status` no longer errors when the bundle was deleted concurrently: delete is terminal and the update quietly loses. Previously the error propagated into the BPA's fail-stop storage wrapper, turning a benign race with the expiry reaper into a panic.

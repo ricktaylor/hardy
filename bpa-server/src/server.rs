@@ -136,8 +136,8 @@ impl BpaServer {
                 if cfg.force_path_style {
                     storage = storage.force_path_style();
                 }
-                if let Some(bytes) = cfg.multipart_threshold {
-                    storage = storage.multipart_threshold(bytes);
+                if let Some(threshold) = cfg.multipart_threshold {
+                    storage = storage.multipart_threshold(threshold);
                 }
                 if let Some(size) = cfg.multipart_part_size {
                     storage = storage.multipart_part_size(size);

@@ -50,7 +50,9 @@ impl PostgresStorageBuilder {
 
     /// Sets the PostgreSQL connection string (e.g.
     /// `postgres://user:pass@host/db`); unset falls back to the
-    /// `DATABASE_URL` environment variable.
+    /// `DATABASE_URL` environment variable. An empty URL counts as
+    /// missing and does not fall back further: it fails `build()` like an
+    /// unset one.
     pub fn database_url(mut self, url: impl Into<String>) -> Self {
         self.database_url = Some(url.into());
         self

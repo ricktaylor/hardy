@@ -5,7 +5,7 @@ use core::num::NonZeroUsize;
 use std::path::PathBuf;
 
 #[cfg(feature = "s3-storage")]
-use hardy_s3_storage::PartSize;
+use hardy_s3_storage::{MultipartThreshold, PartSize};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "postgres-storage")]
@@ -106,10 +106,10 @@ pub struct S3Config {
     pub force_path_style: bool,
 
     // Bundle size threshold, in bytes, above which multipart upload is
-    // used instead of a single `PutObject`; must be at least the part
-    // size.
+    // used instead of a single `PutObject`; above the S3 5 GiB `PutObject`
+    // limit is rejected at parse, and below the part size at startup.
     #[serde(default)]
-    pub multipart_threshold: Option<usize>,
+    pub multipart_threshold: Option<MultipartThreshold>,
 
     // Size, in bytes, of each part in a multipart upload (all parts
     // except the last); below the S3 protocol minimum of 5 MiB is

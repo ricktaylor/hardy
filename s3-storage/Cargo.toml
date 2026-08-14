@@ -25,3 +25,6 @@ thiserror = "2"
 time = { version = "0.3", features = ["std"] }
 tracing = { version = "0.1", default-features = false }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

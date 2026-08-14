@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
-- **BREAKING**: the serde `Config` struct (and the `serde` feature that gated it) and the free `new()` function are replaced by `LocalDiskStorage::new(store_dir, fsync, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates.
+- **BREAKING:** the serde `Config` struct (and the `serde` feature that gated it) and the free `new()` function are replaced by `LocalDiskStorage::new(store_dir, fsync, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates.
 
 ## [0.6.0]
 
