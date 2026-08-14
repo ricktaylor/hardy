@@ -158,7 +158,7 @@ type = "memory"
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$NODE1_PORT"
+listeners = ["[::]:$NODE1_PORT"]
 EOF
 
 # Create Node 2 config
@@ -179,7 +179,7 @@ type = "memory"
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$NODE2_PORT"
+listeners = ["[::]:$NODE2_PORT"]
 EOF
 
 # Start Node 1
