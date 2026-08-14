@@ -320,7 +320,7 @@ static-routes:
 clas:
   - name: uplink
     type: tcpclv4
-    address: "[::]:4556"
+    listeners: ["[::]:4556"]
 ```
 
 See also:

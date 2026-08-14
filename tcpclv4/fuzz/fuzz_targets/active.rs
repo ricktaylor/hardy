@@ -17,7 +17,7 @@ static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 // fuzz data to contain a valid SESS_INIT — rare) leaves an entry in its
 // connection registry between runs; accepted state drift, negligible against
 // the cost of recreating the CLA per iteration.
-static CLA: OnceLock<std::sync::Arc<hardy_tcpclv4::Cla>> = OnceLock::new();
+static CLA: OnceLock<std::sync::Arc<hardy_tcpclv4::Tcpclv4>> = OnceLock::new();
 static LISTENER: OnceLock<TcpListener> = OnceLock::new();
 static LOCAL_ADDR: OnceLock<std::net::SocketAddr> = OnceLock::new();
 
@@ -30,7 +30,7 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-fn get_cla() -> &'static std::sync::Arc<hardy_tcpclv4::Cla> {
+fn get_cla() -> &'static std::sync::Arc<hardy_tcpclv4::Tcpclv4> {
     CLA.get_or_init(|| get_runtime().block_on(setup_connector()))
 }
 
@@ -94,7 +94,7 @@ fuzz_target!(|data: &[u8]| {
 
 async fn run_iteration(
     data: &[u8],
-    cla: &std::sync::Arc<hardy_tcpclv4::Cla>,
+    cla: &std::sync::Arc<hardy_tcpclv4::Tcpclv4>,
     listener: &TcpListener,
     local_addr: &std::net::SocketAddr,
 ) {

@@ -17,7 +17,6 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-serde = ["dep:serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
@@ -33,10 +32,10 @@ trace-err = "1"
 thiserror = "2"
 futures = "0.3"
 rand = "0.10"
-serde = { version = "1", features = ["derive"], optional = true }
 rustls = "0.23"
 tokio-rustls = "0.26"
-rustls-pemfile = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+rcgen = "0.14"
+tempfile = "3"

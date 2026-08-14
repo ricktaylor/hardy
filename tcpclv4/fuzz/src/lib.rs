@@ -126,27 +126,26 @@ pub fn fuzz_addr() -> SocketAddr {
         )))
 }
 
-// Session config tuned for fuzzing — the shortest timeouts the config allows,
-// to keep corpus replay (coverage) fast. `contact_timeout` is in whole seconds,
-// so 1 is the floor.
-fn fuzz_session_config() -> hardy_tcpclv4::config::SessionConfig {
-    hardy_tcpclv4::config::SessionConfig {
-        contact_timeout: 1,
-        keepalive_interval: None,
-        require_tls: false,
-    }
+// Builder tuned for fuzzing — the shortest timeouts the builder accepts,
+// to keep corpus replay (coverage) fast. `contact_timeout` is in whole
+// seconds, so 1 is the floor.
+fn fuzz_builder() -> hardy_tcpclv4::builder::Tcpclv4Builder {
+    hardy_tcpclv4::Tcpclv4::builder()
+        .contact_timeout(
+            hardy_tcpclv4::ContactTimeout::new(1).expect("1 second is a valid timeout"),
+        )
+        .no_keepalive()
 }
 
-// Create a TCPCLv4 CLA with default config, registered against a mock BPA,
-// listening on `fuzz_addr()`.
-pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
-    let config = hardy_tcpclv4::config::Config {
-        address: Some(fuzz_addr()),
-        session_defaults: fuzz_session_config(),
-        ..Default::default()
-    };
-
-    let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
+// Create a TCPCLv4 CLA with default settings, registered against a mock
+// BPA, listening on `fuzz_addr()`.
+pub async fn setup_listener() -> Arc<hardy_tcpclv4::Tcpclv4> {
+    let cla = Arc::new(
+        fuzz_builder()
+            .listen(fuzz_addr())
+            .build()
+            .expect("failed to bind the fuzz listener"),
+    );
 
     MockBpa
         .register_cla("fuzz-tcpclv4".to_string(), cla.clone(), None)
@@ -158,14 +157,12 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Cla> {
 
 // Create a TCPCLv4 CLA with no listener (for active/connect fuzzing).
 // The CLA is registered against a mock BPA and ready to `connect()`.
-pub async fn setup_connector() -> Arc<hardy_tcpclv4::Cla> {
-    let config = hardy_tcpclv4::config::Config {
-        address: None,
-        session_defaults: fuzz_session_config(),
-        ..Default::default()
-    };
-
-    let cla = Arc::new(hardy_tcpclv4::Cla::new(&config).expect("CLA construction should not fail"));
+pub async fn setup_connector() -> Arc<hardy_tcpclv4::Tcpclv4> {
+    let cla = Arc::new(
+        fuzz_builder()
+            .build()
+            .expect("a plaintext build cannot fail"),
+    );
 
     MockBpa
         .register_cla("fuzz-tcpclv4-active".to_string(), cla.clone(), None)

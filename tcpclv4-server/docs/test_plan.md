@@ -41,7 +41,7 @@ The following requirements from **[requirements.md](../../docs/requirements.md)*
 | **Multi-Format Parsing (CFG-02)** | Verify that TOML, YAML, and JSON config files all override defaults correctly. | `src/config.rs` | Valid config in each format. | Config struct matches file values. |
 | **Env Override (CFG-03)** | Verify environment variables take precedence over config file values, including nested TCPCLv4 fields via `__` separator. | `src/config.rs` | File + env `HARDY_TCPCLV4_BPA_ADDRESS`. | Env var wins. |
 
-Additional validation tests cover: missing config file → error, invalid log level, negative MRU, invalid address, TLS partial config, malformed TOML/YAML, unknown fields ignored, large MRU values, and keepalive zero (disabled).
+Additional validation tests cover: missing config file → error, invalid log level, negative or zero MRU, invalid listener address, an empty listener list (dial-only), keepalive zero (disabled) and `null` refused, the TLS section (full parse, key-file alias, lone identity half, contradictions named at build, insecure-skip-verify precedence), malformed TOML/YAML, unknown fields ignored, and large MRU values.
 
 ## 4. System Test Cases (Black-Box Execution)
 

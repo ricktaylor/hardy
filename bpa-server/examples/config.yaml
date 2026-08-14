@@ -114,8 +114,9 @@ clas:
     type: "tcpclv4"
 
     # --- TCPCLv4 Configuration (`type: "tcpclv4"`) ---
-    # The local IP address and port for the CLA to listen on for incoming connections.
-    # address: "[::]:4556"
+    # The local addresses to listen on for incoming connections, one entry
+    # per listener; an empty list disables listening (dial-only).
+    # listeners: ["[::]:4556"]
 
     # The Maximum Receive Unit (MRU) for a single TCP segment payload, in bytes.
     # This defines the largest single block of data that can be received in one go.
@@ -123,10 +124,13 @@ clas:
 
     # The MRU for a total bundle transfer, in bytes. This is the largest
     # bundle that can be received over this CLA.
-    # transfer-mru: 562949953421312 # (2^49)
+    # transfer-mru: 1073741824 # 1 GiB (the default)
 
     # The maximum number of idle incoming connections to keep open per remote IP address.
     # max-idle-connections: 6
+
+    # The maximum number of transfers accepted but not yet resolved with an outcome, per peer (zero is rejected).
+    # max-outstanding-transfers: 16
 
     # --- Default Session Parameters for TCPCLv4 ---
     # These settings apply to all sessions unless overridden by a specific peer configuration.
@@ -135,20 +139,35 @@ clas:
     # contact-timeout: 15
 
     # The interval in seconds for sending keepalive signals on an idle connection.
-    # A value of `null` or `0` disables keepalives.
+    # A value of `0` disables keepalives.
     # keepalive-interval: 60
 
-    # Whether to enforce TLS for encrypting the connection.
-    # When true, connections from peers that do not offer TLS will be rejected.
-    # Requires a tls: block to be configured.
-    # require-tls: false
-
-    # TLS configuration (optional, TLS disabled if not set)
+    # --- TLS (optional, plaintext if the tls: block is absent) ---
+    # A trust anchor must be configured in this block.
     # tls:
-    #   cert-file: "/etc/hardy/certs/server.crt"
-    #   private-key-file: "/etc/hardy/private/server.key"
+    #   # Refuse sessions that do not negotiate TLS.
+    #   required: false
+    #
+    #   # Trust anchor: a directory of PEM CA certificates.
     #   ca-certs: "/etc/hardy/ca"
+    #
+    #   # Accept any certificate without validation (testing only, INSECURE).
+    #   # Overrides ca-certs when both are set (a startup warning names both
+    #   # keys), so a debug session is one line to flip.
+    #   # insecure-skip-verify: true
+    #
+    #   # The node's own certificate and key, only ever configured together:
+    #   # required to accept TLS connections, presented to dialed peers under
+    #   # mutual TLS.
+    #   identity:
+    #     cert-file: "/etc/hardy/certs/server.crt"
+    #     key-file: "/etc/hardy/private/server.key"
+    #
+    #   # Require dialers to present a certificate chaining to the ca-certs
+    #   # trust anchor (mutual TLS): "off", "optional" (verify a certificate
+    #   # when presented, accept dialers without one), or "required".
+    #   client-auth: "off"
+    #
+    #   # SNI override presented when dialing (for certificates issued to
+    #   # domain names).
     #   server-name: "dtn.example.com"
-    #   # Debug options for TLS (testing only, INSECURE)
-    #   debug:
-    #     accept-self-signed: false

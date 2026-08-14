@@ -1,3 +1,12 @@
+// Connection lifecycle, grouped in one place: the shared bring-up context
+// (`context`), the active dialer (`connect`), the passive listener
+// (`listen`), and — in this file — the pooled registry of established
+// sessions.
+
+pub mod connect;
+pub mod context;
+pub mod listen;
+
 use super::*;
 use rand::seq::IteratorRandom;
 use std::{

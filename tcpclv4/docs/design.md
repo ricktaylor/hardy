@@ -10,7 +10,7 @@ TCP Convergence Layer Protocol Version 4 implementation for DTN bundle transport
 
 - **Connection reuse.** TCP, TLS, and TCPCLv4 handshakes are expensive. The implementation maintains a pool of idle connections per peer address, reusing established sessions when forwarding bundles to known peers.
 
-- **TLS by default.** RFC 9174 Section 7.11 mandates TLS as mandatory-to-implement. The implementation requires TLS unless explicitly disabled by configuration.
+- **TLS by default.** RFC 9174 Section 7.11 mandates TLS as mandatory-to-implement. TLS material is built from `tls::Tls::builder()` and attached to the entity builder, and `required(true)` on the TLS builder refuses sessions that do not negotiate TLS.
 
 ## Architecture
 
@@ -18,12 +18,12 @@ The implementation follows the RFC's conceptual separation between TCPCL entitie
 
 ```mermaid
 graph TD
-    entity["TCPCL Entity (Cla struct)"]
-    entity --> listener["Passive Listener (listen.rs)"]
+    entity["TCPCL Entity (Tcpclv4 struct)"]
+    entity --> listener["Passive Listener (connection/listen.rs)"]
     listener --> accepts["Accepts incoming TCP connections"]
-    entity --> connector["Active Connector (connect.rs)"]
+    entity --> connector["Active Connector (connection/connect.rs)"]
     connector --> initiates["Initiates outbound TCP connections"]
-    entity --> registry["Connection Registry (connection.rs)"]
+    entity --> registry["Connection Registry (connection/mod.rs)"]
     registry --> pool["Connection Pool (per peer address)"]
     pool --> sessions["Session Tasks (session.rs)"]
     sessions --> transfers["Transfer Streams (bidirectional)"]
@@ -33,11 +33,11 @@ graph TD
 
 The code separates concerns across four layers:
 
-**CLA Interface Layer** (`lib.rs`, `cla.rs`): Implements the `hardy_bpa::cla::Cla` trait. Receives forwarding requests from the BPA and manages the overall CLA lifecycle.
+**CLA Interface Layer** (`lib.rs`, `tcpclv4.rs`): Implements the `hardy_bpa::cla::Cla` trait. Receives forwarding requests from the BPA and manages the overall CLA lifecycle.
 
-**Connection Management Layer** (`connection.rs`): Maps peer addresses to connection pools. Handles connection reuse decisions and peer registration with the BPA.
+**Connection Management Layer** (`connection/mod.rs`): Maps peer addresses to connection pools. Handles connection reuse decisions and peer registration with the BPA.
 
-**Session Layer** (`session.rs`, `connect.rs`, `listen.rs`, `transport.rs`): Manages the TCPCLv4 session lifecycle from contact exchange through termination. Each session runs as an isolated async task.
+**Session Layer** (`session.rs`, `connection/{context,connect,listen}.rs`, `transport.rs`): Manages the TCPCLv4 session lifecycle from contact exchange through termination. Each session runs as an isolated async task.
 
 **Codec Layer** (`codec.rs`): Encodes and decodes TCPCLv4 messages using tokio-util's framed I/O.
 
@@ -83,7 +83,7 @@ Server certificate validation supports three modes for the server name:
 2. "localhost" for loopback connections
 3. IP address (may fail if certificate is domain-issued)
 
-A debug option allows accepting self-signed certificates for testing, with prominent warnings.
+The deliberately insecure trust policy (`Tls::builder().dangerous().insecure_skip_verify()`) accepts self-signed certificates for testing, with prominent warnings and the hazard spelled out at every call site.
 
 ### TCPCLv3 Interoperability
 
@@ -142,7 +142,7 @@ At session teardown, every terminal path converges on one epilogue: the ingest q
 
 `Cla::forward` answers `Accepted` once the transfer passes admission, and the transfer runs to its terminal state on a spawned task: pooled-session transmit, dialing new connections as the pool allows. The outcome is reported out-of-band via `Sink::transfer_outcome` — `Completed` once the peer has fully acknowledged the transfer, `Failed` otherwise, after which the BPA re-routes the bundle. This is what lets transfers overlap: the per-transfer acknowledgment round trip no longer holds the BPA's forward call, so throughput scales with the connection pool rather than being paced at one transfer per round trip.
 
-Admission is a per-peer semaphore (`max-outstanding-transfers`) bounding accepted-but-unresolved transfers, which caps the bundle bytes held by in-flight and queued transfers to each peer. When exhausted, `forward` is held unanswered — withholding the verdict is the designed flow control back to the BPA's per-peer egress poller. The scope matters: dial attempts to an unreachable peer can pin a transfer for the full connect-timeout cycle, and a shared bound would let one such peer starve admission for every other. Transfers to the same peer may complete out of order across pooled connections, and the pool's retry of a failed session is at-least-once: both are absorbed by DTN semantics and receiver-side deduplication. An unreachable-but-routed peer is re-probed per bundle — each accepted transfer spends a dial cycle before its deferred `Failed`, and the BPA re-dispatches until the bundle's lifetime expires; see [Deferred CLA Transfer Outcomes](../../bpa/docs/design.md#deferred-cla-transfer-outcomes) for why that loop is deliberately un-damped. A non-TCP address is still refused synchronously with `NoNeighbour`: that is the wrong-queue signal, while dial exhaustion is a probe result reported out-of-band.
+Admission is a per-peer semaphore (`Tcpclv4Builder::max_outstanding_transfers`) bounding accepted-but-unresolved transfers, which caps the bundle bytes held by in-flight and queued transfers to each peer. When exhausted, `forward` is held unanswered — withholding the verdict is the designed flow control back to the BPA's per-peer egress poller. The scope matters: dial attempts to an unreachable peer can pin a transfer for the full connect-timeout cycle, and a shared bound would let one such peer starve admission for every other. Transfers to the same peer may complete out of order across pooled connections, and the pool's retry of a failed session is at-least-once: both are absorbed by DTN semantics and receiver-side deduplication. An unreachable-but-routed peer is re-probed per bundle — each accepted transfer spends a dial cycle before its deferred `Failed`, and the BPA re-dispatches until the bundle's lifetime expires; see [Deferred CLA Transfer Outcomes](../../bpa/docs/design.md#deferred-cla-transfer-outcomes) for why that loop is deliberately un-damped. A non-TCP address is still refused synchronously with `NoNeighbour`: that is the wrong-queue signal, while dial exhaustion is a probe result reported out-of-band.
 
 ## Session Lifecycle
 
@@ -164,20 +164,20 @@ Peers may refuse transfers (XFER_REFUSE) for reasons including: already received
 
 ## Configuration
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `address` | `[::]:4556` | Listen address (RFC 9174 Section 8.1 assigns port 4556) |
-| `segment_mru` | 16384 | Maximum segment payload size to receive |
-| `transfer_mru` | 1GB | Maximum total bundle size to receive (assembled in memory) |
-| `max_idle_connections` | 6 | Maximum idle connections per peer address |
-| `connection_rate_limit` | 64 | Maximum incoming connections per second |
-| `contact_timeout` | 15 | Seconds to wait for contact header |
-| `keepalive_interval` | 60 | Keepalive interval in seconds (None to disable) |
-| `must_use_tls` | true | Require TLS for all connections |
+The library parses no configuration files: `Tcpclv4::builder()` is the construction surface, and the consuming applications (`hardy-bpa-server`, `hardy-tcpclv4-server`) own the config-file schema that maps onto it. Defaults are private to the builder and documented on each method, and invariants are carried by the input types rather than checked at build. `build()` is where construction happens: listener sockets are bound (bind failures are construction errors; accepting starts at BPA registration), TLS material is loaded, and the runtime skeleton is assembled.
 
-RFC 9174 timing recommendations are enforced via warnings:
-- Contact timeout SHOULD NOT exceed 60 seconds (Section 4.3)
-- Keepalive interval SHOULD NOT exceed 600 seconds (Section 5.1.1)
+| Builder input | Default | Description |
+|--------|---------|-------------|
+| `listen(SocketAddr)` / `listen_default()` | no listeners | Adds a passive listening element, zero or more per RFC 9174 Section 2.1, bound eagerly by `build()`; `listen_default()` is the IANA-registered `[::]:4556` (Section 8.1) |
+| `segment_mru(NonZeroU64)` | 16384 | Maximum segment payload size to receive |
+| `transfer_mru(NonZeroU64)` | 1 GiB | Maximum total bundle size to receive (assembled in memory) |
+| `max_idle_connections(usize)` | 6 | Maximum idle connections per peer address; 0 disables pooling |
+| `connection_rate_limit(NonZeroU32)` | 64 | Maximum incoming connections per second |
+| `contact_timeout(ContactTimeout)` | 15 s | Wait for the contact header; the type bounds it to 1..=60 seconds (Section 4.2) |
+| `keepalive_interval(KeepaliveInterval)` / `no_keepalive()` | 60 s | Keepalive proposal; disabled is the wire zero (Section 4.7) |
+| `tls(Tls)` | plaintext | TLS material built from `tls::Tls::builder()`; `required(true)` on the TLS builder refuses sessions that do not negotiate TLS |
+
+The keepalive SHOULD range of 30 to 600 seconds (Section 5.1.1) is advisory, so out-of-range intervals are accepted with a warning at the setter.
 
 ## Integration
 
@@ -200,12 +200,11 @@ A standalone application linking this library with hardy-proto for gRPC connecti
 | hardy-bpa | CLA trait definition |
 | tokio, tokio-rustls | Async runtime and TLS |
 | tokio-util | Framed codec I/O |
-| rustls, rustls-pemfile | TLS implementation and certificate parsing |
+| rustls | TLS implementation; PEM certificates and keys parsed via its `pki_types` re-export |
 | tower | Service pattern for listener middleware |
 
 ## Future Work
 
-- **Mutual TLS (mTLS)**: Client certificate authentication is not yet implemented
 - **Session Extensions**: Currently rejects all critical extensions per RFC 9174 Section 4.8
 - **Transfer Extensions**: No transfer extensions have been published as of RFC 9174; support can be added when specifications emerge
 - **Outbound transfer pipelining**: A session completes each outbound transfer (fully acknowledged) before accepting the next, so per-peer goodput is bounded by one bundle per round trip. RFC 9174 Section 3.7 explicitly permits pipelining transfers without waiting for acknowledgments. A transfer window is blocked on the BPA egress-policy work supplying more than one in-flight forward per peer; the strict-FIFO ack matcher and ingest ordering already generalise across concurrent transfers

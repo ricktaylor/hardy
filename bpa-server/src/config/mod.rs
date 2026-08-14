@@ -14,6 +14,8 @@ pub mod cla;
 pub mod policy;
 pub mod static_routes;
 pub mod storage;
+#[cfg(feature = "tcpclv4")]
+pub mod tcpclv4;
 
 /// File watch configuration for config files.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -415,16 +417,53 @@ poll-channel-depth = 64
 clas:
   - name: "tcp-cla-1"
     type: tcpclv4
-    address: "[::]:4556"
+    listeners: ["[::]:4556"]
     segment-mru: 8192
   - name: "tcp-cla-2"
     type: tcpclv4
-    address: "[::]:4557"
+    listeners: ["[::]:4557"]
 "#,
         );
         assert_eq!(config.clas.len(), 2);
         assert_eq!(config.clas[0].name, "tcp-cla-1");
         assert_eq!(config.clas[1].name, "tcp-cla-2");
+    }
+
+    // A full tls block, including client-auth and the private-key-file
+    // alias, parses through the tagged clas entry.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn cla_tls_block_parsing() {
+        let config = write_and_load(
+            "cla_tls.yaml",
+            r#"
+clas:
+  - name: "tcp-tls"
+    type: tcpclv4
+    tls:
+      required: true
+      ca-certs: "/etc/hardy/ca"
+      identity:
+        cert-file: "/etc/hardy/certs/server.crt"
+        private-key-file: "/etc/hardy/private/server.key"
+      client-auth: "required"
+"#,
+        );
+        let cla::ClaType::TcpClv4(tcpcl) = &config.clas[0].cla_type else {
+            panic!("expected a tcpclv4 CLA entry");
+        };
+        let tls = tcpcl.tls.as_ref().unwrap();
+        assert!(tls.required);
+        assert_eq!(
+            tls.identity.as_ref().unwrap().key_file,
+            std::path::PathBuf::from("/etc/hardy/private/server.key")
+        );
+        assert_eq!(tls.client_auth, tcpclv4::ClientAuth::Required);
+        assert_eq!(
+            tls.ca_certs.as_deref(),
+            Some(std::path::Path::new("/etc/hardy/ca"))
+        );
     }
 
     // Empty CLA list is valid.
@@ -588,5 +627,64 @@ node-ids:
     fn no_bpsec_config() {
         let config = write_and_load("no-bpsec.yaml", "");
         assert!(config.bpsec.is_none());
+    }
+
+    // The removed `address` key of a tcpclv4 CLA entry is refused with the
+    // replacement named: unknown keys are otherwise ignored, and a
+    // deliberately loopback-only `address` must not silently escalate to
+    // the default wildcard listener.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_address_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("address.yaml");
+        std::fs::write(
+            &path,
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    address: \"127.0.0.1:4556\"\n",
+        )
+        .unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("listeners"), "{err}");
+    }
+
+    // `null` is not a spelling in this schema: an earlier schema used it
+    // to disable keepalives, so it is refused with the replacement named
+    // rather than silently mapped to the default.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_keepalive_null_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("null-keepalive.yaml");
+        std::fs::write(
+            &path,
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    keepalive-interval: null\n",
+        )
+        .unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("keepalive"), "{err}");
+    }
+
+    // The dial-only spelling is an empty listener list: nothing is bound.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_empty_listeners_is_dial_only() {
+        let config = write_and_load(
+            "dial_only.yaml",
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    listeners: []\n",
+        );
+        let cla::ClaType::TcpClv4(tcpclv4) = &config.clas[0].cla_type else {
+            panic!("expected a tcpclv4 CLA entry");
+        };
+        assert_eq!(tcpclv4.listeners, Some(vec![]));
+        tcpclv4.build().expect("a dial-only build binds nothing");
     }
 }

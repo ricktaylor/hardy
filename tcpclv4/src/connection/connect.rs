@@ -1,11 +1,12 @@
 use super::*;
+
+use crate::session::Error;
 use std::net::SocketAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::*,
 };
-use tokio_rustls::TlsConnector;
 
 pub struct Connector {
     pub tasks: Arc<hardy_async::TaskPool>,
@@ -22,7 +23,7 @@ impl std::fmt::Debug for Connector {
 
 impl Connector {
     #[cfg_attr(feature = "instrument", instrument)]
-    pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), transport::Error> {
+    pub async fn connect(self, remote_addr: &SocketAddr) -> Result<(), Error> {
         // Bound the connect itself: a silently dropped SYN otherwise hangs
         // for the OS connect timeout (minutes at Linux defaults), and the
         // dial-before-queueing preference makes that stall a forward
@@ -33,7 +34,7 @@ impl Connector {
         .await
         .map_err(|_| {
             debug!("Timed out TCP connecting to {remote_addr}");
-            transport::Error::Timeout
+            Error::PeerTimeout
         })?
         .inspect_err(|e| debug!("Failed to TCP connect to {remote_addr}: {e}"))?;
 
@@ -50,7 +51,7 @@ impl Connector {
 
         // Send contact header
         stream
-            .write_all(&self.ctx.contact_header())
+            .write_all(&self.ctx.dialing_contact_header())
             .await
             .inspect_err(
                 |e| debug!(%local_addr, %remote_addr, "Failed to send contact header: {e}"),
@@ -63,14 +64,14 @@ impl Connector {
             stream.read_exact(&mut buffer),
         )
         .await
-        .map_err(|_| transport::Error::Timeout)
+        .map_err(|_| Error::PeerTimeout)
         .inspect_err(|_| debug!(%local_addr, %remote_addr, "Connection timed out"))?
         .inspect_err(|e| debug!(%local_addr, %remote_addr, "Read failed: {e}"))?;
 
         // Parse contact header
         if buffer[0..4] != *b"dtn!" {
             debug!(%local_addr, %remote_addr, "Contact header isn't: 'dtn!'");
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         debug!(%local_addr, %remote_addr, "Contact header received");
@@ -91,12 +92,12 @@ impl Connector {
                 transport::terminate(
                     codec::MessageCodec::new_framed(stream),
                     codec::SessionTermReasonCode::VersionMismatch,
-                    self.ctx.session.contact_timeout,
+                    self.ctx.contact_timeout.get(),
                     &self.ctx.task_cancel_token,
                 )
                 .await;
             }
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         if buffer[5] & 0xFE != 0 {
@@ -104,7 +105,7 @@ impl Connector {
         }
 
         if buffer[5] & 1 != 0 {
-            if let Some(tls_config) = self.ctx.tls_config.clone() {
+            if let Some(tls_config) = self.ctx.tls.clone() {
                 debug!(%local_addr, %remote_addr, "Initiating TLS handshake");
                 return self
                     .tls_handshake(stream, remote_addr, local_addr, tls_config)
@@ -114,17 +115,17 @@ impl Connector {
                     });
             }
             debug!(%local_addr, %remote_addr, "TLS requested by peer but no TLS configuration provided");
-        } else if self.ctx.session.require_tls {
+        } else if self.ctx.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             debug!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
                 codec::MessageCodec::new_framed(stream),
                 codec::SessionTermReasonCode::ContactFailure,
-                self.ctx.session.contact_timeout,
+                self.ctx.contact_timeout.get(),
                 &self.ctx.task_cancel_token,
             )
             .await;
 
-            return Err(transport::Error::InvalidProtocol);
+            return Err(Error::InvalidProtocol);
         }
 
         debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection connected");
@@ -143,34 +144,34 @@ impl Connector {
         stream: TcpStream,
         remote_addr: &SocketAddr,
         local_addr: SocketAddr,
-        tls_config: Arc<tls::TlsConfig>,
-    ) -> Result<(), transport::Error> {
+        tls_config: Arc<tls::Tls>,
+    ) -> Result<(), Error> {
         // Priority: configured name > localhost (loopback) > IP address
-        let server_name = if let Some(configured_name) = &tls_config.server_name {
+        let server_name = if let Some(configured_name) = tls_config.server_name() {
             // Use the configured server name (for certificates issued to domain names)
-            rustls::pki_types::ServerName::try_from(configured_name.clone()).map_err(|e| {
+            rustls::pki_types::ServerName::try_from(configured_name.to_string()).map_err(|e| {
                 error!("Invalid configured server name for TLS: {e}");
-                transport::Error::InvalidProtocol
+                Error::InvalidProtocol
             })?
         } else if remote_addr.ip().is_loopback() {
             // Fallback: localhost for loopback connections
             rustls::pki_types::ServerName::try_from("localhost").map_err(|e| {
                 error!("Invalid server name for TLS: {e}");
-                transport::Error::InvalidProtocol
+                Error::InvalidProtocol
             })?
         } else {
             // Fallback: IP address (may fail if certificate is for a domain name)
             rustls::pki_types::ServerName::from(remote_addr.ip())
         };
 
-        // Use tokio-rustls::TlsConnector - simple wrapper around rustls for async I/O
-        let connector = TlsConnector::from(tls_config.client_config.clone());
+        let connector = tls_config.connector();
         let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
             debug!(%local_addr, %remote_addr, "TLS session key negotiation failed: {e}");
-            transport::Error::InvalidProtocol
+            Error::InvalidProtocol
         })?;
 
-        // TODO(mTLS): Verify that server accepted our client certificate if mTLS is enabled
+        // A configured identity was presented if the peer requested client
+        // authentication; a rejected certificate fails the handshake above
         debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
 
         self.new_active(
@@ -189,7 +190,7 @@ impl Connector {
         remote_addr: &SocketAddr,
         segment_mtu: Option<usize>,
         mut transport: T,
-    ) -> Result<(), transport::Error>
+    ) -> Result<(), Error>
     where
         T: futures::StreamExt<Item = Result<codec::Message, codec::Error>>
             + futures::SinkExt<codec::Message, Error = codec::Error>
@@ -202,9 +203,9 @@ impl Connector {
         // Send our SESS_INIT message
         transport
             .send(codec::Message::SessionInit(codec::SessionInitMessage {
-                keepalive_interval: self.ctx.keepalive_interval_secs(),
-                segment_mru: self.ctx.segment_mru,
-                transfer_mru: self.ctx.transfer_mru,
+                keepalive_interval: self.ctx.keepalive_interval.get(),
+                segment_mru: self.ctx.segment_mru.get(),
+                transfer_mru: self.ctx.transfer_mru.get(),
                 node_id: self.ctx.first_node_id(),
                 ..Default::default()
             }))
@@ -219,7 +220,7 @@ impl Connector {
         let peer_init = loop {
             match transport::next_with_timeout(
                 &mut transport,
-                self.ctx.session.contact_timeout,
+                self.ctx.contact_timeout.get(),
                 &self.ctx.task_cancel_token,
             )
             .await
@@ -247,7 +248,11 @@ impl Connector {
         debug!(%local_addr, %remote_addr, "Received SESS_INIT {peer_init:?}");
 
         // Negotiated KeepAlive - See RFC9174 Section 5.1.1
-        let keepalive_interval = self.ctx.negotiate_keepalive(peer_init.keepalive_interval);
+        let keepalive_interval = self
+            .ctx
+            .keepalive_interval
+            .negotiate(peer_init.keepalive_interval)
+            .get();
 
         // Check peer init
         for i in &peer_init.session_extensions {
@@ -260,7 +265,7 @@ impl Connector {
                     &self.ctx.task_cancel_token,
                 )
                 .await;
-                return Err(transport::Error::InvalidProtocol);
+                return Err(Error::InvalidProtocol);
             }
         }
 
@@ -288,7 +293,7 @@ impl Connector {
             peer_addr,
             keepalive_duration,
             context::negotiate_segment_mtu(segment_mtu, peer_init.segment_mru),
-            usize::try_from(self.ctx.transfer_mru).unwrap_or(usize::MAX),
+            usize::try_from(self.ctx.transfer_mru.get()).unwrap_or(usize::MAX),
             rx,
             cancel_token,
         );

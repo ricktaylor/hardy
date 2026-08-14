@@ -1,25 +1,32 @@
 use super::*;
-use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::{
     bytes::{Buf, BufMut, Bytes, BytesMut},
     codec::Decoder,
 };
 
-#[derive(Error, Debug)]
+/// The TCPCLv4 message codec's failures: bytes that do not decode as the
+/// RFC 9174 wire dialect, and the I/O errors of the framed stream.
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// The message type octet is not one defined by RFC 9174 Section 4.6.
     #[error("Invalid message type {0}")]
     InvalidMessageType(u8),
 
+    /// The framed stream's underlying I/O failed; `From<codec::Error>` for
+    /// the session error reclassifies this as transport, not dialect.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// A SESS_INIT node ID is not valid UTF-8.
     #[error("Invalid Node Id string: {0}")]
     InvalidNodeIdUtf8(#[from] std::string::FromUtf8Error),
 
+    /// A SESS_INIT node ID does not parse as a BPv7 EID.
     #[error("Invalid Node Id: {0}")]
     InvalidNodeId(#[from] hardy_bpv7::eid::Error),
 
+    /// A session extension item claims more bytes than its message holds.
     #[error("Extension item exceeds remaining length")]
     InvalidExtensionLength,
 }

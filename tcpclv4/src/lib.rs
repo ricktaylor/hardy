@@ -3,32 +3,44 @@ TCPCLv4 Convergence Layer Adapter for the Bundle Protocol.
 
 This crate implements the TCP Convergence-Layer Protocol Version 4 (TCPCLv4)
 as defined in [RFC 9174](https://www.rfc-editor.org/rfc/rfc9174). It provides
-a [`Cla`] that registers with the BPA to send and receive bundles over TCP
-connections, with optional TLS encryption.
+a [`Tcpclv4`] CLA that registers with the BPA to send and receive bundles
+over TCP connections, with optional TLS encryption.
 
 # Key types
 
-- [`Cla`] — the convergence layer adapter, created via [`Cla::new`] and
-  registered with a BPA instance via [`Cla::register`].
-- [`config::Config`] — top-level configuration (listen address, MRUs, TLS, session defaults).
-- [`Error`] — errors returned during CLA construction and registration.
+- [`Tcpclv4`] — the convergence layer adapter, created via
+  [`Tcpclv4::builder`] and registered with a BPA instance through
+  `hardy_bpa`'s CLA registration.
+- [`builder::Tcpclv4Builder`] — the fluent constructor; every setting has a
+  default documented on its method.
+- [`tls::Tls`] — TLS material (trust anchor, node identity, mutual-TLS
+  policy), chained from [`tls::Tls::builder`] and loaded by
+  [`builder::Tcpclv4Builder::build`].
+- [`enum@Error`] — the generic error for everything TCPCLv4: assembling
+  and registering the entity, with each sub-concept's error wrapped as a
+  variant (`Tls`, `Session`).
+
+# Feature flags
+
+- `instrument` — adds `tracing` spans to the async internals.
 */
 
-mod cla;
 mod codec;
-mod connect;
 mod connection;
-mod context;
-mod listen;
+mod error;
 mod otel_metrics;
 mod session;
-mod tls;
+mod tcpclv4;
 mod transport;
 mod writer;
 
-/// Configuration types for the TCPCLv4 CLA.
-pub mod config;
+pub mod builder;
+pub mod tls;
 
+pub use self::error::Error;
+pub use self::tcpclv4::{ContactTimeout, KeepaliveInterval, Tcpclv4};
+
+use core::num::{NonZeroU32, NonZeroU64};
 use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;
@@ -38,176 +50,3 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-
-/// Errors that can occur during CLA construction or registration.
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    /// TLS is required by session configuration but no TLS config was provided.
-    #[error("TLS is required but no TLS configuration has been provided")]
-    TlsRequired,
-
-    /// Failed to load or validate TLS configuration (certificates, keys).
-    #[error("TLS configuration error: {0}")]
-    Tls(#[from] tls::TlsError),
-
-    /// BPA rejected the CLA registration.
-    #[error("Registration failed: {0}")]
-    Registration(#[from] hardy_bpa::cla::Error),
-}
-
-/// Registration-time state from BPA.
-struct Inner {
-    sink: Arc<dyn hardy_bpa::cla::Sink>,
-    node_ids: Arc<[NodeId]>,
-}
-
-/// TCPCLv4 Convergence Layer Adapter (RFC 9174).
-///
-/// Manages TCP connections to peer nodes, including listener and connector
-/// roles, optional TLS, keepalive, and transfer segmentation. Implements
-/// the BPA CLA trait so it can be registered with a BPA instance.
-pub struct Cla {
-    // Config values
-    session_config: config::SessionConfig,
-    address: Option<SocketAddr>,
-    connection_rate_limit: u32,
-    segment_mru: u64,
-    transfer_mru: u64,
-
-    // Computed at construction
-    tls_config: Option<Arc<tls::TlsConfig>>,
-    registry: Arc<connection::ConnectionRegistry>,
-    session_cancel_token: tokio_util::sync::CancellationToken,
-
-    // Late-init from registration (single atomic)
-    inner: Once<Inner>,
-
-    // Task management
-    tasks: Arc<hardy_async::TaskPool>,
-}
-
-impl Cla {
-    /// Creates a new TCPCLv4 CLA instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - The configuration for this CLA.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS is required but not configured, or if TLS
-    /// configuration files cannot be loaded.
-    pub fn new(config: &config::Config) -> Result<Self, Error> {
-        // Register metric descriptions with the global recorder
-        otel_metrics::init();
-
-        // Validate TLS requirement
-        if config.session_defaults.require_tls && config.tls.is_none() {
-            return Err(Error::TlsRequired);
-        }
-
-        // Warn about RFC compliance
-        if config.session_defaults.contact_timeout > 60 {
-            warn!("RFC9174 specifies contact timeout SHOULD be a maximum of 60 seconds");
-        }
-
-        match config.session_defaults.keepalive_interval {
-            None | Some(0) => debug!("Session keepalive disabled"),
-            Some(x) if x < 30 => {
-                warn!(
-                    "RFC9174 Section 5.1.1 specifies keepalive SHOULD be a minimum of 30 seconds for shared networks"
-                )
-            }
-            Some(x) if x > 600 => {
-                warn!("RFC9174 specifies keepalive SHOULD be a maximum of 600 seconds")
-            }
-            _ => {}
-        }
-
-        // Load TLS configuration eagerly
-        let tls_config = if let Some(tls_cfg) = &config.tls {
-            let cfg = tls::TlsConfig::new(tls_cfg)?;
-            info!("TLS configuration loaded successfully");
-            Some(Arc::new(cfg))
-        } else {
-            warn!(
-                "No TLS configuration provided - connections will be unencrypted and TLS-requiring peers will refuse connection"
-            );
-            None
-        };
-
-        Ok(Self {
-            // Config values
-            session_config: config.session_defaults.clone(),
-            address: config.address,
-            connection_rate_limit: config.connection_rate_limit,
-            segment_mru: config.segment_mru,
-            transfer_mru: config.transfer_mru,
-
-            // Computed state
-            tls_config,
-            registry: Arc::new(connection::ConnectionRegistry::new(
-                config.max_idle_connections,
-                config.max_outstanding_transfers,
-            )),
-            session_cancel_token: tokio_util::sync::CancellationToken::new(),
-
-            // Late-init
-            inner: Once::new(),
-
-            // Tasks
-            tasks: Arc::new(hardy_async::TaskPool::new()),
-        })
-    }
-
-    /// Unregisters this CLA from the BPA.
-    pub async fn unregister(&self) {
-        if let Some(inner) = self.inner.get() {
-            inner.sink.unregister().await;
-        }
-    }
-
-    /// Creates a ConnectionContext for use in connect/forward operations.
-    fn connection_context(&self) -> Option<context::ConnectionContext> {
-        let inner = self.inner.get()?;
-
-        Some(context::ConnectionContext {
-            session: self.session_config.clone(),
-            segment_mru: self.segment_mru,
-            transfer_mru: self.transfer_mru,
-            node_ids: inner.node_ids.clone(),
-            sink: inner.sink.clone(),
-            registry: self.registry.clone(),
-            tls_config: self.tls_config.clone(),
-            session_cancel_token: self.session_cancel_token.clone(),
-            task_cancel_token: self.tasks.cancel_token().clone(),
-        })
-    }
-
-    /// Initiates a TCP connection to a remote peer (RFC 9174 Section 3).
-    ///
-    /// Retries up to 5 times on timeout before returning an error.
-    pub async fn connect(&self, remote_addr: &SocketAddr) -> hardy_bpa::cla::Result<()> {
-        let ctx = self.connection_context().ok_or_else(|| {
-            error!("connect called before on_register!");
-            hardy_bpa::cla::Error::Disconnected
-        })?;
-
-        for _ in 0..5 {
-            let conn = connect::Connector {
-                tasks: self.tasks.clone(),
-                ctx: ctx.clone(),
-            };
-            match conn.connect(remote_addr).await {
-                Ok(()) => return Ok(()),
-                Err(transport::Error::Timeout) => {}
-                Err(e) => {
-                    return Err(hardy_bpa::cla::Error::Internal(e.into()));
-                }
-            }
-        }
-        Err(hardy_bpa::cla::Error::Internal(
-            transport::Error::Timeout.into(),
-        ))
-    }
-}

@@ -1,26 +1,6 @@
 use super::*;
-use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Peer closed the connection")]
-    Hangup,
-
-    #[error("Timed out waiting for message from peer")]
-    Timeout,
-
-    #[error("Cancelled")]
-    Cancelled,
-
-    #[error("The peer is not a TCPCLv4 speaker")]
-    InvalidProtocol,
-
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-
-    #[error(transparent)]
-    Codec(#[from] codec::Error),
-}
+use crate::session::Error;
 
 #[cfg_attr(feature = "instrument", instrument(skip(transport, cancel_token)))]
 pub async fn terminate<T>(
@@ -119,9 +99,9 @@ where
             Ok(Some(Err(e))) => {
                 Err(e.into())
             }
-            Ok(None) => Err(Error::Hangup),
-            Err(_) => Err(Error::Timeout)
+            Ok(None) => Err(Error::PeerHangup),
+            Err(_) => Err(Error::PeerTimeout)
         },
-        _ = cancel_token.cancelled() => Err(Error::Cancelled)
+        _ = cancel_token.cancelled() => Err(Error::ShuttingDown)
     }
 }

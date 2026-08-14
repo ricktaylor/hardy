@@ -13,7 +13,7 @@ cargo run -p hardy-tcpclv4-server -- --help
 ```
 
 ```bash
-hardy-tcpclv4-server --listen-address 0.0.0.0:4556
+hardy-tcpclv4-server --config /etc/hardy/tcpclv4.yaml
 ```
 
 ## Container Image

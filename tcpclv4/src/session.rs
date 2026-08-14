@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 
 use futures::StreamExt;
-use thiserror::Error;
 use tokio_util::bytes::{Bytes, BytesMut};
 
 use super::*;
@@ -19,67 +18,84 @@ const INGEST_QUEUE_DEPTH: usize = 128;
 // practice by peers' actual bundle sizes.
 const INGEST_MAX_PENDING_DISPATCH: usize = 2;
 
-// The terminal outcome of a session, riding the error channel: `run`'s
-// epilogue is the single consumer and dispatches teardown on the variant.
-#[derive(Error, Debug)]
+/// How a session, or the establishment of one, ended. The terminal
+/// outcome rides the error channel: the run loop's epilogue is the single
+/// consumer and dispatches teardown on the variant.
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
-    // The peer closed the transport cleanly (EOF between messages).
-    // Teardown without a SESS_TERM exchange: no one is left to talk to.
+    /// The peer closed the transport cleanly (EOF between messages).
+    /// Teardown without a SESS_TERM exchange: no one is left to talk to.
     #[error("Peer closed the connection")]
-    Hangup,
+    PeerHangup,
 
-    // The peer sent SESS_TERM. Teardown completes in-flight transfers and
-    // replies per RFC 9174 Section 6.1.
+    /// Timed out waiting for a message from the peer, bounded by the
+    /// contact timeout during establishment and the negotiated keepalive
+    /// interval mid-session.
+    #[error("Timed out waiting for message from peer")]
+    PeerTimeout,
+
+    /// The exchange was abandoned because the local entity is shutting
+    /// down.
+    #[error("The local entity is shutting down")]
+    ShuttingDown,
+
+    /// The peer's contact header is not TCPCLv4 (bad magic, or an
+    /// unsupported protocol version).
+    #[error("The peer is not a TCPCLv4 speaker")]
+    InvalidProtocol,
+
+    /// The peer sent SESS_TERM. Teardown completes in-flight transfers and
+    /// replies per RFC 9174 Section 6.1.
     #[error("Peer has started to end the session: {0:?}")]
-    Terminate(codec::SessionTermMessage),
+    PeerTerminated(codec::SessionTermMessage),
 
-    // This side is ending the session. Teardown sends SESS_TERM with the
-    // carried reason and drains the peer's remaining messages.
+    /// This side is ending the session. Teardown sends SESS_TERM with the
+    /// carried reason and drains the peer's remaining messages.
     #[error("Shutdown connection: {0:?}")]
-    Shutdown(codec::SessionTermReasonCode),
+    LocalShutdown(codec::SessionTermReasonCode),
 
-    // The writer task has already closed (transport write failure seen
-    // there first, or cancellation). Teardown skips the SESS_TERM exchange:
-    // nothing can be written any more.
+    /// The writer task has already closed (transport write failure seen
+    /// there first, or cancellation). Teardown skips the SESS_TERM
+    /// exchange: nothing can be written any more.
     #[error("The writer has closed")]
     WriterClosed,
 
-    // The ingest task has stopped: a received bundle could not be
-    // dispatched. The unacknowledged transfer stays with the peer for
-    // retransmission; teardown sends SESS_TERM (Resource Exhaustion).
+    /// The ingest task has stopped: a received bundle could not be
+    /// dispatched. The unacknowledged transfer stays with the peer for
+    /// retransmission; teardown sends SESS_TERM (Resource Exhaustion).
     #[error("The ingest task has stopped")]
     IngestStopped,
 
-    // Transport I/O failed mid-session. UnexpectedEof is a peer that
-    // vanished without a TLS close_notify: handled as a hangup.
-    #[error(transparent)]
-    Io(std::io::Error),
+    /// Transport I/O failed. An `UnexpectedEof` is a peer that vanished
+    /// without a TLS close_notify: handled as a hangup.
+    #[error("Transport I/O failed: {0}")]
+    Io(#[from] std::io::Error),
 
-    // The peer sent bytes that do not decode as TCPCLv4. The transport is
-    // alive, the dialect is not: teardown sends SESS_TERM (Unknown).
-    #[error(transparent)]
+    /// The peer sent bytes that do not decode as TCPCLv4. The transport is
+    /// alive, the dialect is not: teardown sends SESS_TERM (Unknown).
+    #[error("Codec error: {0}")]
     Codec(codec::Error),
 }
 
 impl Error {
-    // Label for the `tcpclv4.session.terminated` metric.
-    fn reason(&self) -> String {
+    /// Label for the `tcpclv4.session.terminated` metric.
+    pub fn reason(&self) -> String {
         match self {
-            Error::Terminate(msg) => format!("{:?}", msg.reason_code),
-            Error::Shutdown(code) => format!("{code:?}"),
+            Error::PeerTerminated(msg) => format!("{:?}", msg.reason_code),
+            Error::LocalShutdown(code) => format!("{code:?}"),
             Error::WriterClosed => "writer_closed".to_string(),
             Error::IngestStopped => "ingest_stopped".to_string(),
-            Error::Hangup => "hangup".to_string(),
+            Error::PeerHangup => "hangup".to_string(),
             Error::Io(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => "hangup".to_string(),
             Error::Io(_) => "io_error".to_string(),
             Error::Codec(_) => "codec_error".to_string(),
+            Error::PeerTimeout => "peer_timeout".to_string(),
+            Error::ShuttingDown => "shutting_down".to_string(),
+            Error::InvalidProtocol => "invalid_protocol".to_string(),
         }
     }
 }
 
-// codec::Error::Io is a transport failure, not a dialect problem: split it
-// out here so every `?` site classifies uniformly and the epilogue never
-// digs inside the Codec variant.
 impl From<codec::Error> for Error {
     fn from(e: codec::Error) -> Self {
         match e {
@@ -208,7 +224,9 @@ where
             // If we don't receive anything in this time, peer is probably dead
             match tokio::time::timeout(keepalive_interval.saturating_mul(2), reader.next()).await {
                 Err(_) => {
-                    return Err(Error::Shutdown(codec::SessionTermReasonCode::IdleTimeout));
+                    return Err(Error::LocalShutdown(
+                        codec::SessionTermReasonCode::IdleTimeout,
+                    ));
                 }
                 Ok(Some(Ok(codec::Message::Keepalive))) => continue,
                 Ok(msg) => msg,
@@ -218,7 +236,7 @@ where
         };
 
         return match msg {
-            None => Err(Error::Hangup),
+            None => Err(Error::PeerHangup),
             Some(Err(e)) => Err(e.into()),
             Some(Ok(msg)) => Ok(msg),
         };
@@ -445,7 +463,7 @@ where
         match msg {
             codec::Message::SessionTerm(msg) => {
                 debug!("Peer has started to end the session: {msg:?}");
-                Err(Error::Terminate(msg))
+                Err(Error::PeerTerminated(msg))
             }
             codec::Message::TransferSegment(msg) => {
                 self.on_transfer(msg).await?;
@@ -482,7 +500,7 @@ where
                 .await?;
 
                 // It's all gone very wrong
-                Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
+                Err(Error::LocalShutdown(codec::SessionTermReasonCode::Unknown))
             }
             codec::Message::TransferRefuse(msg) => {
                 if let Some(ack) = self.acks.front() {
@@ -520,7 +538,7 @@ where
                 .await?;
 
                 // It's all gone very wrong
-                Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
+                Err(Error::LocalShutdown(codec::SessionTermReasonCode::Unknown))
             }
             msg => {
                 self.unexpected_msg(msg.message_type()).await?;
@@ -678,7 +696,7 @@ where
         // Check we can allocate a transfer id without rollover (RFC 9174 Section 5.2.1)
         if self.transfer_id == u64::MAX {
             debug!("Out of Transfer Ids, closing session");
-            return Err(Error::Shutdown(
+            return Err(Error::LocalShutdown(
                 codec::SessionTermReasonCode::ResourceExhaustion,
             ));
         }
@@ -695,12 +713,12 @@ where
                     continue;
                 }
                 Some(codec::TransferRefuseReasonCode::NoResources) => {
-                    return Err(Error::Shutdown(
+                    return Err(Error::LocalShutdown(
                         codec::SessionTermReasonCode::ResourceExhaustion,
                     ));
                 }
                 _ => {
-                    return Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown));
+                    return Err(Error::LocalShutdown(codec::SessionTermReasonCode::Unknown));
                 }
             }
         }
@@ -870,7 +888,7 @@ where
             let msg = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     if self.cla_cancel_token.is_cancelled() {
-                        Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown))
+                        Err(Error::LocalShutdown(codec::SessionTermReasonCode::Unknown))
                     } else {
                         // Only the ingest task cancels the session's own token
                         Err(Error::IngestStopped)
@@ -883,7 +901,7 @@ where
                         };
                         Err(e)
                     }
-                    None => Err(Error::Shutdown(codec::SessionTermReasonCode::Unknown)),
+                    None => Err(Error::LocalShutdown(codec::SessionTermReasonCode::Unknown)),
                 },
                 r = next_msg(&mut self.reader, self.keepalive_interval) => r,
             };
@@ -892,7 +910,7 @@ where
                 Ok(codec::Message::TransferSegment(msg)) => self.on_transfer(msg).await,
                 Ok(codec::Message::SessionTerm(msg)) => {
                     debug!("Peer has started to end the session: {msg:?}");
-                    Err(Error::Terminate(msg))
+                    Err(Error::PeerTerminated(msg))
                 }
                 Ok(msg) => self.unexpected_msg(msg.message_type()).await,
                 Err(Error::Codec(codec::Error::InvalidMessageType(rejected_message))) => {
@@ -915,10 +933,10 @@ where
         metrics::counter!("tcpclv4.session.terminated", "reason" => e.reason()).increment(1);
 
         match e {
-            Error::Terminate(session_term_message) => {
+            Error::PeerTerminated(session_term_message) => {
                 self.on_terminate(session_term_message).await;
             }
-            Error::Shutdown(session_term_reason_code) => {
+            Error::LocalShutdown(session_term_reason_code) => {
                 self.shutdown(session_term_reason_code).await;
             }
             Error::WriterClosed => {
@@ -942,9 +960,16 @@ where
                 debug!("Peer sent invalid data: {e:?}, shutting down session");
                 self.shutdown(codec::SessionTermReasonCode::Unknown).await;
             }
-            Error::Hangup => {
+            Error::PeerHangup => {
                 // The remote end has died completely
                 debug!("Peer hung up, ending session");
+            }
+            e @ (Error::PeerTimeout | Error::ShuttingDown | Error::InvalidProtocol) => {
+                // Establishment-phase terminations: the taxonomy is shared
+                // with the handshake, but the session loop maps its own
+                // timeouts and cancellation before reaching here
+                debug!("Session failed: {e:?}, shutting down session");
+                self.shutdown(codec::SessionTermReasonCode::Unknown).await;
             }
         }
 
@@ -1211,7 +1236,7 @@ mod tests {
     fn reason_labels() {
         assert_eq!(Error::WriterClosed.reason(), "writer_closed");
         assert_eq!(Error::IngestStopped.reason(), "ingest_stopped");
-        assert_eq!(Error::Hangup.reason(), "hangup");
+        assert_eq!(Error::PeerHangup.reason(), "hangup");
         assert_eq!(
             Error::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)).reason(),
             "hangup"
