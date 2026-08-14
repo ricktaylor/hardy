@@ -75,7 +75,13 @@ automatically on first connection.
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `type` | `postgres` | - | Selects the PostgreSQL backend. |
-| `database-url` | PostgreSQL connection string | *Required* | Standard `postgresql://user:pass@host:port/db` connection URL. |
+| `database-url` | PostgreSQL connection string | `DATABASE_URL` env var | Standard `postgresql://user:pass@host:port/db` connection URL; absent falls back to the `DATABASE_URL` environment variable, and startup fails if neither is set. |
+| `max-connections` | Positive integer | `20` | Maximum pooled connections. Scale deployments should size this to `worker_threads * 2` or higher. |
+| `min-connections` | Non-negative integer | `2` | Idle connections kept alive in the pool. |
+| `connect-timeout` | Duration string (e.g. `30s`) | `30s` | How long to wait when acquiring a connection before erroring; must be greater than zero. |
+| `idle-timeout` | Duration string (e.g. `10m`) | `10m` | How long a connection may sit idle before it is closed; must be greater than zero. |
+| `max-lifetime` | Duration string (e.g. `30m`) | `30m` | Maximum lifetime of a pooled connection; must be greater than zero. |
+| `poll-page-size` | Positive integer | `64` | Rows fetched per page in keyset-paginated poll queries. |
 
 Example:
 
@@ -174,8 +180,9 @@ storage:
   bundle:
     type: s3
     bucket: hardy-bundles
-    endpoint: "http://minio:9000"
+    endpoint-url: "http://minio:9000"
     region: us-east-1
+    force-path-style: true
 ```
 
 !!! tip
