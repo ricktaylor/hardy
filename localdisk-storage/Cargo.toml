@@ -18,7 +18,6 @@ crate-type = ["rlib"]
 [features]
 default = []
 mmap = ["dep:memmap2"]
-serde = ["dep:serde","hardy-bpa/serde"]
 instrument = ["tracing/attributes"]
 
 [dependencies]
@@ -32,7 +31,6 @@ trace-err = "1"
 flume = "0.12"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 memmap2 = { version = "0.9", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

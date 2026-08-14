@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `SqliteStorage::new(db_dir, db_name, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates. The connection pool moves into its own module.
 - Run all connections at `PRAGMA synchronous = NORMAL` (previously the SQLite default, `FULL`). Under WAL this stops fsyncing the log on every commit — a significant win on fsync-expensive storage, since the metadata store commits on each bundle status transition. Consistency across a crash is unaffected; at most the un-checkpointed tail of commits is lost, which restart recovery already tolerates (bundle data storage is ground truth, and data whose metadata is missing is re-ingested at startup).
 
 ### Added

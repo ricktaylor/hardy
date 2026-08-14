@@ -164,7 +164,7 @@ Peers may refuse transfers (XFER_REFUSE) for reasons including: already received
 
 ## Configuration
 
-The library parses no configuration files: `Tcpclv4::builder()` is the construction surface, and the consuming applications (`hardy-bpa-server`, `hardy-tcpclv4-server`) own the config-file schema that maps onto it. Defaults are private to the builder and documented on each method, and invariants are carried by the input types rather than checked at build. `build()` is where construction happens: listener sockets are bound (bind failures are construction errors; accepting starts at BPA registration), TLS material is loaded, and the runtime skeleton is assembled.
+The library parses no configuration files: `Tcpclv4::builder()` is the construction surface, and the consuming applications (`hardy-bpa-server`, `hardy-tcpclv4-server`) own the config-file schema that maps onto it. The optional `serde` cargo feature adds `Serialize`/`Deserialize` impls to the invariant newtypes (`ContactTimeout`, `KeepaliveInterval`), so those schemas reject invalid values at deserialization without the crate owning a schema. Defaults are private to the builder and documented on each method, and invariants are carried by the input types rather than checked at build. `build()` is where construction happens: listener sockets are bound (bind failures are construction errors; accepting starts at BPA registration), TLS material is loaded, and the runtime skeleton is assembled.
 
 | Builder input | Default | Description |
 |--------|---------|-------------|

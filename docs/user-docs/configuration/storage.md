@@ -75,7 +75,13 @@ automatically on first connection.
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
 | `type` | `postgres` | - | Selects the PostgreSQL backend. |
-| `database-url` | PostgreSQL connection string | *Required* | Standard `postgresql://user:pass@host:port/db` connection URL. |
+| `database-url` | PostgreSQL connection string | `DATABASE_URL` env var | Standard `postgresql://user:pass@host:port/db` connection URL; absent falls back to the `DATABASE_URL` environment variable, and startup fails if neither is set. |
+| `max-connections` | Positive integer | `20` | Maximum pooled connections. Scale deployments should size this to `worker_threads * 2` or higher. |
+| `min-connections` | Non-negative integer | `2` | Idle connections kept alive in the pool. |
+| `connect-timeout` | Duration string (e.g. `30s`) | `30s` | How long to wait when acquiring a connection before erroring; must be greater than zero. |
+| `idle-timeout` | Duration string (e.g. `10m`) | `10m` | How long a connection may sit idle before it is closed; must be greater than zero. |
+| `max-lifetime` | Duration string (e.g. `30m`) | `30m` | Maximum lifetime of a pooled connection; must be greater than zero. |
+| `poll-page-size` | Positive integer | `64` | Rows fetched per page in keyset-paginated poll queries. |
 
 Example:
 
@@ -100,7 +106,7 @@ No persistence — bundle data is lost on restart, and the server logs a warning
 |-----|-------------|---------|-------------|
 | `type` | `memory` | - | Selects the in-memory backend. |
 | `capacity` | Positive integer (bytes) | `268435456` (256 MiB) | Total bytes held before least-recently-used bundles are evicted. |
-| `min-bundles` | Positive integer | `32` | Bundle count never evicted below, even when over the byte capacity. Values below 1 are treated as 1. |
+| `min-bundles` | Positive integer | `32` | Bundle count never evicted below, even when over the byte capacity. Must be at least 1. |
 
 ```yaml
 storage:
@@ -150,8 +156,12 @@ file.
 |-----|-------------|---------|-------------|
 | `type` | `s3` | - | Selects the S3 backend. |
 | `bucket` | Bucket name | *Required* | S3 bucket for bundle storage. |
-| `endpoint` | URL | AWS default | S3 endpoint URL. Set for non-AWS S3-compatible stores (MinIO, GCS, etc.). |
-| `region` | AWS region string | *Required* | AWS region for the bucket. |
+| `prefix` | Key prefix | (none) | Key prefix for all objects (no leading or trailing slash), for buckets shared with other applications. |
+| `endpoint-url` | URL | AWS default | S3 endpoint URL. Set for non-AWS S3-compatible stores (MinIO, GCS, etc.). |
+| `region` | AWS region string | `AWS_DEFAULT_REGION` / `AWS_REGION` env vars | AWS region for the bucket. |
+| `force-path-style` | `true`, `false` | `false` | Path-style addressing (`http://host/bucket/key`), required for MinIO and some S3-compatible stores. |
+| `multipart-threshold` | Non-negative integer (bytes) | `8388608` (8 MiB) | Bundle size above which multipart upload is used. Must be at least the part size, and at most 5 GiB (the S3 `PutObject` limit). |
+| `multipart-part-size` | Positive integer (bytes) | `8388608` (8 MiB) | Size of each multipart part. Must be between 5 MiB and 5 GiB (the S3 part bounds). |
 
 Example (AWS S3):
 
@@ -170,8 +180,9 @@ storage:
   bundle:
     type: s3
     bucket: hardy-bundles
-    endpoint: "http://minio:9000"
+    endpoint-url: "http://minio:9000"
     region: us-east-1
+    force-path-style: true
 ```
 
 !!! tip

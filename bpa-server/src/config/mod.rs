@@ -1,8 +1,8 @@
 use core::num::NonZeroUsize;
 use std::{collections::HashMap, path::PathBuf};
 
-use hardy_async::{available_parallelism, watcher::WatchMode};
-use hardy_bpa::{filter::rfc9171, node_ids::NodeIds};
+use hardy_async::watcher::WatchMode;
+use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
@@ -11,11 +11,96 @@ use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
-pub mod policy;
-pub mod static_routes;
 pub mod storage;
-#[cfg(feature = "tcpclv4")]
-pub mod tcpclv4;
+
+// Returns the default config directory, platform-specific:
+// - Linux: /etc/hardy/
+// - macOS: /etc/hardy/
+// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
+pub(crate) fn default_config_dir() -> std::path::PathBuf {
+    #[cfg(unix)]
+    return std::path::PathBuf::from("/etc/hardy");
+
+    #[cfg(windows)]
+    return directories::BaseDirs::new()
+        .map(|dirs| dirs.data_local_dir().join("hardy"))
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+        });
+}
+
+fn default_config_path() -> std::path::PathBuf {
+    default_config_dir().join("bpa")
+}
+
+fn default_log_level() -> Level {
+    Level::INFO
+}
+
+mod log_level_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::str::FromStr;
+    use tracing::Level;
+
+    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(level.as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+// A positive duration, written as a humantime string (e.g. `30s`, `10m`,
+// `1h 30m`).
+#[cfg(feature = "postgres-storage")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NonZeroDuration(std::time::Duration);
+
+#[cfg(feature = "postgres-storage")]
+impl NonZeroDuration {
+    pub fn new(duration: std::time::Duration) -> Option<Self> {
+        (!duration.is_zero()).then_some(Self(duration))
+    }
+
+    pub fn get(&self) -> std::time::Duration {
+        self.0
+    }
+}
+
+#[cfg(feature = "postgres-storage")]
+impl<'de> Deserialize<'de> for NonZeroDuration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        let duration = humantime::parse_duration(&text)
+            .map_err(|e| serde::de::Error::custom(format_args!("invalid duration: {e}")))?;
+        NonZeroDuration::new(duration)
+            .ok_or_else(|| serde::de::Error::custom("a duration must be greater than zero"))
+    }
+}
+
+#[cfg(feature = "postgres-storage")]
+impl Serialize for NonZeroDuration {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&humantime::format_duration(self.0))
+    }
+}
 
 /// File watch configuration for config files.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -40,65 +125,45 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// Returns the default config directory, platform-specific:
-// - Linux: /etc/hardy/
-// - macOS: /etc/hardy/
-// - Windows: %ProgramData%\hardy\ (via `directories` crate), or exe directory as fallback
-pub fn default_config_dir() -> std::path::PathBuf {
-    #[cfg(unix)]
-    return std::path::PathBuf::from("/etc/hardy");
-
-    #[cfg(windows)]
-    return directories::BaseDirs::new()
-        .map(|dirs| dirs.data_local_dir().join("hardy"))
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-        });
-}
-
-fn default_config_path() -> std::path::PathBuf {
-    default_config_dir().join("bpa")
-}
-
-fn default_log_level() -> Level {
-    Level::INFO
-}
-
-fn default_poll_channel_depth() -> NonZeroUsize {
-    NonZeroUsize::new(16).unwrap()
-}
-
-fn default_processing_pool_size() -> NonZeroUsize {
-    NonZeroUsize::new(available_parallelism().get() * 4).unwrap()
-}
-
-mod log_level_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-    use tracing::Level;
-
-    pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(level.as_str())
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
 // Configuration for built-in application services.
+// The RFC9171 validity checks: absent keys defer to the filter's own
+// defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct Rfc9171ValidityConfig {
+    // Require CRC or BIB on the primary block; disable for
+    // interoperability with implementations that don't add a CRC.
+    pub primary_block_integrity: Option<bool>,
+
+    // Require a Bundle Age block when the creation time has no clock.
+    pub bundle_age_required: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type", content = "config")]
+pub enum EgressPolicyConfig {
+    #[serde(other)]
+    Unknown,
+}
+
+// Absent keys defer to the agent's own defaults.
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+pub struct StaticRoutesConfig {
+    /// Path to the routes file (default: the `static_routes` file in the
+    /// platform config directory, e.g. `/etc/hardy/static_routes`).
+    pub routes_file: Option<PathBuf>,
+    /// Default route priority when not specified per-route (default: `100`).
+    pub priority: Option<u32>,
+    /// Watch the routes file for changes and reload automatically.
+    /// Values: "native" (default), "poll" (works in Docker), "none" to disable.
+    pub watch: WatchConfig,
+    /// Protocol identifier used when registering with the BPA (default: `"static_routes"`).
+    pub protocol_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct BuiltInServicesConfig {
     // Echo service: list of service identifiers (int = IPN, string = DTN).
     // Absent = service disabled.
@@ -106,23 +171,26 @@ pub struct BuiltInServicesConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // Logging level (default: INFO)
     #[serde(default = "default_log_level", with = "log_level_serde")]
     pub log_level: Level,
 
-    // Whether to generate and dispatch bundle status reports (default: false)
+    // Whether to generate and dispatch bundle status reports; absent
+    // defers to the BPA default.
     #[serde(default)]
-    pub status_reports: bool,
+    pub status_reports: Option<bool>,
 
-    // Depth of the channel used for polling new bundles (default: 16)
-    #[serde(default = "default_poll_channel_depth")]
-    pub poll_channel_depth: NonZeroUsize,
+    // Depth of the channel used for polling new bundles; absent defers to
+    // the BPA default.
+    #[serde(default)]
+    pub poll_channel_depth: Option<NonZeroUsize>,
 
-    // Maximum number of concurrent bundle processing tasks (default: 4 * CPU cores)
-    #[serde(default = "default_processing_pool_size")]
-    pub processing_pool_size: NonZeroUsize,
+    // Maximum number of concurrent bundle processing tasks; absent defers
+    // to the BPA default.
+    #[serde(default)]
+    pub processing_pool_size: Option<NonZeroUsize>,
 
     // Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
     #[serde(default)]
@@ -134,7 +202,7 @@ pub struct Config {
 
     // Static Routes Configuration
     #[serde(default)]
-    pub static_routes: Option<crate::config::static_routes::Config>,
+    pub static_routes: Option<StaticRoutesConfig>,
 
     // gRPC options
     #[serde(default)]
@@ -143,23 +211,16 @@ pub struct Config {
 
     // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
-    pub storage: storage::Config,
+    pub storage: storage::StorageConfig,
 
     // IPN legacy node patterns for the egress rewriting filter.
     #[cfg(feature = "ipn-legacy-filter")]
     #[serde(default)]
     pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
 
-    // RFC9171 validity filter configuration.
-    //
-    // Controls the RFC9171 bundle validity checks that are auto-registered
-    // when the `rfc9171-filter` feature is enabled on the BPA.
-    //
-    // Set individual fields to `false` to disable specific checks:
-    // - `primary_block_integrity`: Require CRC or BIB on primary block
-    // - `bundle_age_required`: Require Bundle Age when creation time has no clock
+    // RFC9171 bundle validity checks.
     #[serde(default)]
-    pub rfc9171_validity: rfc9171::Config,
+    pub rfc9171_validity: Rfc9171ValidityConfig,
 
     // Built-in application services to register.
     // Each service key maps to a list of service identifiers to register on.
@@ -171,15 +232,15 @@ pub struct Config {
     // BPSec configuration: keys and key bindings (RFC 9172).
     // Absent = no keys loaded, BPSec blocks will fail with NoKey.
     #[serde(default)]
-    pub bpsec: Option<bpsec::Config>,
+    pub bpsec: Option<bpsec::BPSecConfig>,
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
-    pub policies: HashMap<String, policy::EgressPolicyConfig>,
+    pub policies: HashMap<String, EgressPolicyConfig>,
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
-    pub clas: Vec<cla::Config>,
+    pub clas: Vec<cla::ClaConfig>,
 }
 
 impl Config {
@@ -189,20 +250,27 @@ impl Config {
     // env var, then the platform default (`/etc/hardy/bpa` on Unix).
     // Environment variables prefixed with `HARDY_BPA_SERVER_` override file values.
     pub fn load(config_file: Option<PathBuf>) -> Result<Config, Error> {
+        const CONFIG_FILE_VAR: &str = "HARDY_BPA_SERVER_CONFIG_FILE";
+
         let config_file = config_file
-            .or_else(|| {
-                std::env::var("HARDY_BPA_SERVER_CONFIG_FILE")
-                    .ok()
-                    .map(PathBuf::from)
-            })
+            .or_else(|| std::env::var(CONFIG_FILE_VAR).ok().map(PathBuf::from))
             .unwrap_or_else(default_config_path);
 
         let source_file = ::config::File::with_name(&config_file.to_string_lossy());
+        // `CONFIG_FILE_VAR` is consumed above to locate the file; exclude
+        // it from the override source so the strict schema does not refuse
+        // it as an unknown `config-file` key. Iterating the OS environment
+        // skips non-Unicode variables instead of panicking on them.
+        let overrides: ::config::Map<String, String> = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .filter(|(key, _)| key != CONFIG_FILE_VAR)
+            .collect();
         let source_env = ::config::Environment::with_prefix("HARDY_BPA_SERVER")
             .prefix_separator("_")
             .separator("__")
             .convert_case(::config::Case::Kebab)
-            .try_parsing(true);
+            .try_parsing(true)
+            .source(Some(overrides));
 
         let config = ::config::Config::builder()
             .add_source(source_file)
@@ -240,8 +308,10 @@ mod tests {
     fn empty_config_has_defaults() {
         let config = write_and_load("empty.yaml", "");
         assert_eq!(config.log_level, Level::INFO);
-        assert!(!config.status_reports);
-        assert_eq!(config.poll_channel_depth.get(), 16);
+        // Absent knobs stay unset, deferring to the BPA builder defaults.
+        assert!(config.status_reports.is_none());
+        assert!(config.poll_channel_depth.is_none());
+        assert!(config.processing_pool_size.is_none());
         #[cfg(feature = "grpc")]
         assert!(config.grpc.is_none());
         assert!(config.static_routes.is_none());
@@ -275,8 +345,8 @@ node-ids:
 "#,
         );
         assert_eq!(config.log_level, Level::DEBUG);
-        assert!(config.status_reports);
-        assert_eq!(config.poll_channel_depth.get(), 32);
+        assert_eq!(config.status_reports, Some(true));
+        assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(32));
     }
 
     // TOML config file works identically to YAML.
@@ -292,8 +362,8 @@ poll-channel-depth = 64
 "#,
         );
         assert_eq!(config.log_level, Level::WARN);
-        assert!(config.status_reports);
-        assert_eq!(config.poll_channel_depth.get(), 64);
+        assert_eq!(config.status_reports, Some(true));
+        assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(64));
     }
 
     // JSON config file works identically to YAML.
@@ -308,7 +378,7 @@ poll-channel-depth = 64
 }"#,
         );
         assert_eq!(config.log_level, Level::ERROR);
-        assert!(config.status_reports);
+        assert_eq!(config.status_reports, Some(true));
     }
 
     // Environment variables override config file values.
@@ -330,8 +400,9 @@ poll-channel-depth = 64
             Level::DEBUG,
             "env var should override log level"
         );
-        assert!(
+        assert_eq!(
             config.status_reports,
+            Some(true),
             "env var should override status-reports"
         );
     }
@@ -352,7 +423,7 @@ poll-channel-depth = 64
         let config = Config::load(Some(path)).unwrap();
         unsafe { std::env::remove_var("HARDY_BPA_SERVER_POLL_CHANNEL_DEPTH") };
 
-        assert_eq!(config.poll_channel_depth.get(), 128);
+        assert_eq!(config.poll_channel_depth.map(|v| v.get()), Some(128));
     }
 
     // Missing config file returns an error.
@@ -459,7 +530,7 @@ clas:
             tls.identity.as_ref().unwrap().key_file,
             std::path::PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert_eq!(tls.client_auth, tcpclv4::ClientAuth::Required);
+        assert_eq!(tls.client_auth, cla::ClientAuth::Required);
         assert_eq!(
             tls.ca_certs.as_deref(),
             Some(std::path::Path::new("/etc/hardy/ca"))
@@ -549,20 +620,64 @@ storage:
         assert!(result.is_err());
     }
 
-    // Unknown fields are silently ignored (config-rs behavior).
+    // `HARDY_BPA_SERVER_CONFIG_FILE` is the loader's own interface,
+    // consumed to locate the file; the strict schema must not refuse it as
+    // an unknown `config-file` key.
     #[test]
     #[serial]
-    fn unknown_fields_ignored() {
-        let config = write_and_load(
-            "extra.yaml",
-            r#"
-log-level: warn
-this-field-does-not-exist: 42
-another-unknown:
-  nested: true
-"#,
-        );
+    fn config_file_env_var_is_not_a_schema_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("via-env.yaml");
+        std::fs::write(&path, "log-level: warn\n").unwrap();
+
+        unsafe { std::env::set_var("HARDY_BPA_SERVER_CONFIG_FILE", &path) };
+        let result = Config::load(None);
+        unsafe { std::env::remove_var("HARDY_BPA_SERVER_CONFIG_FILE") };
+
+        let config = result.expect("the loader's own env var must not be a schema error");
         assert_eq!(config.log_level, Level::WARN);
+    }
+
+    // Unknown keys are refused with the known keys listed, at the top
+    // level and inside each section, so a removed key or a typo cannot
+    // silently leave a default in force.
+    #[test]
+    #[serial]
+    fn unknown_fields_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let path = dir.path().join("extra.yaml");
+        std::fs::write(&path, "log-level: warn\nthis-field-does-not-exist: 42\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("this-field-does-not-exist"), "{err}");
+
+        // Sections are strict too: a typo'd storage knob is refused, not
+        // silently left at the default.
+        let path = dir.path().join("nested.yaml");
+        std::fs::write(&path, "storage:\n  lru-capactiy: 16\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("lru-capactiy"), "{err}");
+    }
+
+    // The shipped example config parses under the strict schema, so its
+    // keys cannot drift from the real ones.
+    #[test]
+    #[serial]
+    #[cfg(all(
+        feature = "grpc",
+        feature = "postgres-storage",
+        feature = "s3-storage",
+        feature = "tcpclv4"
+    ))]
+    fn example_config_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
+        Config::load(Some(path)).expect("the shipped config.yaml must parse");
     }
 
     // Node IDs can be a single string.
@@ -672,7 +787,9 @@ node-ids:
         assert!(err.contains("keepalive"), "{err}");
     }
 
-    // The dial-only spelling is an empty listener list: nothing is bound.
+    // The dial-only spelling is an empty listener list, distinct from the
+    // absent key (the default listener); the assembly folds each entry
+    // into `Tcpclv4Builder::listen`, so an empty list binds nothing.
     #[test]
     #[serial]
     #[cfg(feature = "tcpclv4")]
@@ -685,6 +802,24 @@ node-ids:
             panic!("expected a tcpclv4 CLA entry");
         };
         assert_eq!(tcpclv4.listeners, Some(vec![]));
-        tcpclv4.build().expect("a dial-only build binds nothing");
+    }
+
+    // Durations are humantime strings; zero and garbage are refused.
+    #[test]
+    #[cfg(feature = "postgres-storage")]
+    fn non_zero_duration_round_trips() {
+        let duration: NonZeroDuration = serde_json::from_str("\"1m 30s\"").unwrap();
+        assert_eq!(duration.get(), std::time::Duration::from_secs(90));
+        assert_eq!(serde_json::to_string(&duration).unwrap(), "\"1m 30s\"");
+
+        let err = serde_json::from_str::<NonZeroDuration>("\"0s\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("greater than zero"), "{err}");
+
+        let err = serde_json::from_str::<NonZeroDuration>("\"ten minutes\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid duration"), "{err}");
     }
 }

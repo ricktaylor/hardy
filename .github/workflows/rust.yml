@@ -175,11 +175,24 @@ jobs:
       - name: Run ping tests
         env:
           BP_BIN: ./target/debug/bp
-          HARDY_BPA_SERVER_CONFIG_FILE: ./bpa-server/config.yaml
-          HARDY_BPA_SERVER_BPSEC__KEYS_FILE: ./bpa-server/examples/keys.jwks
-          HARDY_BPA_SERVER_STORAGE__METADATA__TYPE: memory
-          HARDY_BPA_SERVER_STORAGE__BUNDLE__TYPE: memory
+          HARDY_BPA_SERVER_CONFIG_FILE: ${{ runner.temp }}/hardy-ping.yaml
         run: |
+          cat > "$HARDY_BPA_SERVER_CONFIG_FILE" <<'EOF'
+          log-level: info
+          node-ids: ["ipn:1.0"]
+          status-reports: true
+          built-in-services:
+            echo: [7]
+          storage:
+            metadata:
+              type: memory
+            bundle:
+              type: memory
+          clas:
+            - name: cl0
+              type: tcpclv4
+              listeners: ["[::]:4556"]
+          EOF
           ./target/debug/hardy-bpa-server &
           bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5
 

@@ -502,8 +502,8 @@ mod tests {
 
         let store = Arc::new(Store::new(
             NonZeroUsize::new(16).unwrap(),
-            Arc::new(MetadataMemStorage::new(&Default::default())),
-            Arc::new(BundleMemStorage::new(&Default::default())),
+            Arc::new(MetadataMemStorage::new(None)),
+            Arc::new(BundleMemStorage::new(None, None)),
         ));
 
         Arc::new(Rib::new(node_ids, store, 1))

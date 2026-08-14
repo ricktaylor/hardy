@@ -51,38 +51,34 @@ impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
 pub fn memory_meta_setup() -> ((), Arc<dyn MetadataStorage>) {
     (
         (),
-        Arc::new(hardy_bpa::storage::MetadataMemStorage::new(
-            &Default::default(),
-        )),
+        Arc::new(hardy_bpa::storage::MetadataMemStorage::new(None)),
     )
 }
 
 pub fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
     let dir = tempfile::tempdir().unwrap();
-    let config = hardy_sqlite_storage::Config {
-        db_dir: dir.path().into(),
-        ..Default::default()
-    };
-    let store = hardy_sqlite_storage::new(&config, true);
+    let store = Arc::new(hardy_sqlite_storage::SqliteStorage::new(
+        Some(dir.path().into()),
+        None,
+        true,
+    ));
     (dir, store)
 }
 
 pub fn memory_blob_setup() -> ((), Arc<dyn BundleStorage>) {
     (
         (),
-        Arc::new(hardy_bpa::storage::BundleMemStorage::new(
-            &Default::default(),
-        )),
+        Arc::new(hardy_bpa::storage::BundleMemStorage::new(None, None)),
     )
 }
 
 pub fn localdisk_blob_setup() -> (tempfile::TempDir, Arc<dyn BundleStorage>) {
     let dir = tempfile::tempdir().unwrap();
-    let config = hardy_localdisk_storage::Config {
-        store_dir: dir.path().into(),
-        ..Default::default()
-    };
-    let store = hardy_localdisk_storage::new(&config, false);
+    let store = Arc::new(hardy_localdisk_storage::LocalDiskStorage::new(
+        Some(dir.path().into()),
+        None,
+        false,
+    ));
     (dir, store)
 }
 
@@ -161,16 +157,16 @@ pub async fn postgres_meta_setup() -> (PostgresTestGuard, Arc<dyn MetadataStorag
         conn.close().await.expect("close maintenance connection");
     }
 
-    let config = hardy_postgres_storage::Config {
-        database_url: format!("{base_url}/{db_name}"),
-        max_connections: 5,
-        min_connections: 1,
-        connect_timeout_secs: 10,
-        ..Default::default()
-    };
-    let store = hardy_postgres_storage::new(&config, true)
-        .await
-        .unwrap_or_else(|e| panic!("open test database ({base_url}/{db_name}): {e}"));
+    let store = Arc::new(
+        hardy_postgres_storage::PostgresStorage::builder()
+            .database_url(format!("{base_url}/{db_name}"))
+            .max_connections(core::num::NonZeroU32::new(5).unwrap())
+            .min_connections(1)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build(true)
+            .await
+            .unwrap_or_else(|e| panic!("open test database ({base_url}/{db_name}): {e}")),
+    );
 
     (
         PostgresTestGuard {
@@ -206,21 +202,19 @@ pub async fn s3_blob_setup() -> ((), Arc<dyn BundleStorage>) {
         .ok()
         .or_else(|| endpoint.as_ref().map(|_| "us-east-1".to_string()));
 
-    let config = hardy_s3_storage::Config {
-        bucket,
-        prefix,
-        region,
-        endpoint_url: endpoint,
-        force_path_style: true,
-        ..Default::default()
-    };
-    let store = hardy_s3_storage::new(&config).await.unwrap_or_else(|e| {
-        let endpoint = config.endpoint_url.as_deref().unwrap_or("(AWS default)");
-        panic!(
-            "connect to S3/MinIO (bucket={}, endpoint={endpoint}): {e}",
-            config.bucket
-        )
-    });
+    let mut builder = hardy_s3_storage::S3Storage::builder(bucket.clone())
+        .prefix(prefix)
+        .force_path_style();
+    if let Some(region) = region {
+        builder = builder.region(region);
+    }
+    if let Some(endpoint) = &endpoint {
+        builder = builder.endpoint_url(endpoint);
+    }
+    let store = Arc::new(builder.build().await.unwrap_or_else(|e| {
+        let endpoint = endpoint.as_deref().unwrap_or("(AWS default)");
+        panic!("connect to S3/MinIO (bucket={bucket}, endpoint={endpoint}): {e}")
+    }));
     ((), store)
 }
 

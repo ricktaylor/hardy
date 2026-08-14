@@ -27,72 +27,19 @@ mod log_level_serde {
     }
 }
 
-// The library's `ContactTimeout` carries the RFC 9174 Section 4.2 range as
-// its invariant but no serde impls (the library does not parse
-// configuration), so this adapter is where an out-of-range value is
-// rejected at parse.
-mod contact_timeout_serde {
-    use hardy_tcpclv4::ContactTimeout;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(timeout: &Option<ContactTimeout>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match timeout {
-            Some(timeout) => serializer.serialize_some(&timeout.get()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ContactTimeout>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Option::<u16>::deserialize(deserializer)?
-            .map(|seconds| {
-                ContactTimeout::new(seconds).ok_or_else(|| {
-                    serde::de::Error::custom(
-                        "contact-timeout must be between 1 and 60 seconds (RFC 9174 Section 4.2)",
-                    )
-                })
-            })
-            .transpose()
-    }
-}
-
-// `KeepaliveInterval` carries the wire's zero-is-disabled encoding (every
-// u16 is a valid value) but has no serde impls (the library does not
-// parse configuration), so this adapter is the conversion.
-mod keepalive_interval_serde {
-    use hardy_tcpclv4::KeepaliveInterval;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(
-        interval: &Option<KeepaliveInterval>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match interval {
-            Some(interval) => serializer.serialize_some(&interval.get()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match Option::<u16>::deserialize(deserializer)? {
-            // An explicit `null` was an earlier schema's disabled spelling;
-            // refuse it rather than silently re-enable keepalives.
-            None => Err(serde::de::Error::custom(
-                "keepalive-interval does not accept null: use 0 to disable keepalives, or omit the key for the default",
-            )),
-            Some(seconds) => Ok(Some(KeepaliveInterval::new(seconds))),
-        }
+// `null` was an earlier schema's disabled spelling for the keepalive
+// interval; refuse it rather than silently re-enable keepalives. Delete
+// after the migration window: the library's serde impl then applies
+// (absent means the builder default, `0` disables).
+fn keepalive_refusing_null<'de, D>(deserializer: D) -> Result<Option<KeepaliveInterval>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<KeepaliveInterval>::deserialize(deserializer)? {
+        None => Err(serde::de::Error::custom(
+            "keepalive-interval does not accept null: use 0 to disable keepalives, or omit the key for the default",
+        )),
+        some => Ok(some),
     }
 }
 
@@ -287,12 +234,12 @@ pub struct Config {
 
     // Seconds to wait for a peer's contact header: 1 to 60 (RFC 9174
     // Section 4.2); out-of-range values are rejected at parse.
-    #[serde(default, with = "contact_timeout_serde")]
+    #[serde(default)]
     pub contact_timeout: Option<ContactTimeout>,
 
     // Keepalive interval in seconds (RFC 9174 Section 4.7); 0 disables
     // keepalives.
-    #[serde(default, with = "keepalive_interval_serde")]
+    #[serde(default, deserialize_with = "keepalive_refusing_null")]
     pub keepalive_interval: Option<KeepaliveInterval>,
 
     // TLS configuration; absent means plaintext.

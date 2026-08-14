@@ -59,21 +59,19 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     // Bundle storage
     cfg_select! {
         feature = "localdisk-storage" => {
-            builder = builder.bundle_storage(hardy_localdisk_storage::new(
-                &hardy_localdisk_storage::Config {
-                    store_dir: path.join("localdisk"),
-                    fsync: false,
-                },
-                true,
+            builder = builder.bundle_storage(std::sync::Arc::new(
+                hardy_localdisk_storage::LocalDiskStorage::new(
+                    Some(path.join("localdisk")),
+                    Some(false),
+                    true,
+                ),
             ));
         }
         _ => {
             builder = builder.bundle_storage(std::sync::Arc::new(
                 hardy_bpa::storage::BundleMemStorage::new(
-                    &hardy_bpa::storage::BundleMemStorageConfig {
-                        capacity: core::num::NonZero::new(1_048_576).unwrap(), // 1 MB
-                        min_bundles: 4,
-                    },
+                    core::num::NonZero::new(1_048_576), // 1 MB
+                    core::num::NonZero::new(4),
                 ),
             ));
         }
@@ -82,35 +80,26 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     // Metadata storage
     cfg_select! {
         feature = "sqlite-storage" => {
-            builder = builder.metadata_storage(hardy_sqlite_storage::new(
-                &hardy_sqlite_storage::Config {
-                    db_dir: path.clone(),
-                    db_name: "sqlite-storage.db".to_string(),
-                },
-                true,
+            builder = builder.metadata_storage(std::sync::Arc::new(
+                hardy_sqlite_storage::SqliteStorage::new(
+                    Some(path.clone()),
+                    Some("sqlite-storage.db".to_string()),
+                    true,
+                ),
             ));
         }
         feature = "postgres-storage" => {
-            builder = builder.metadata_storage(
-                hardy_postgres_storage::new(
-                    &hardy_postgres_storage::Config {
-                        database_url: "postgres://hardy:hardy@localhost:5432/hardy".to_string(),
-                        ..Default::default()
-                    },
-                    true,
-                )
-                .await
-                .expect("Failed to create postgres metadata storage"),
-            );
+            builder = builder.metadata_storage(std::sync::Arc::new(
+                hardy_postgres_storage::PostgresStorage::builder()
+                    .database_url("postgres://hardy:hardy@localhost:5432/hardy")
+                    .build(true)
+                    .await
+                    .expect("Failed to create postgres metadata storage"),
+            ));
         }
         _ => {
             builder = builder.metadata_storage(std::sync::Arc::new(
-                hardy_bpa::storage::MetadataMemStorage::new(
-                    &hardy_bpa::storage::MetadataMemStorageConfig {
-                        max_bundles: core::num::NonZero::new(256).unwrap(),
-
-                    },
-                ),
+                hardy_bpa::storage::MetadataMemStorage::new(core::num::NonZero::new(256)),
             ));
         }
     }

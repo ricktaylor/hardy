@@ -13,67 +13,6 @@ use super::*;
 
 use crate::error::Error;
 
-/// Seconds to wait for a peer's contact header, bounded so that a value
-/// outside RFC 9174 Section 4.2's recommendation (at most 60 seconds, and
-/// never the instant timeout of zero) is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContactTimeout(u16);
-
-impl ContactTimeout {
-    /// The RFC 9174 Section 4.2 recommended maximum: 60 seconds.
-    pub const MAX: ContactTimeout = ContactTimeout(60);
-
-    /// Creates a contact timeout; `None` when `seconds` is zero or above
-    /// [`MAX`](Self::MAX).
-    pub const fn new(seconds: u16) -> Option<Self> {
-        if seconds == 0 || seconds > Self::MAX.0 {
-            None
-        } else {
-            Some(Self(seconds))
-        }
-    }
-
-    /// The timeout in whole seconds.
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-}
-
-/// Keepalive interval proposed during session negotiation, in seconds.
-///
-/// Zero is a first-class value ([`DISABLED`](Self::DISABLED)): RFC 9174
-/// Section 4.7 encodes "KEEPALIVEs are disabled" as a zero interval on
-/// the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeepaliveInterval(u16);
-
-impl KeepaliveInterval {
-    /// Keepalives disabled: the wire's zero encoding (RFC 9174 Section 4.7).
-    pub const DISABLED: KeepaliveInterval = KeepaliveInterval(0);
-
-    /// Creates a keepalive interval; `0` is [`DISABLED`](Self::DISABLED).
-    pub const fn new(seconds: u16) -> Self {
-        Self(seconds)
-    }
-
-    /// The interval in whole seconds; `0` means keepalives are disabled.
-    pub const fn get(self) -> u16 {
-        self.0
-    }
-
-    /// Whether keepalives are disabled.
-    pub const fn is_disabled(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Negotiates the session keepalive against the peer's SESS_INIT
-    /// proposal: the minimum of the two (RFC 9174 Section 4.7), where
-    /// disabled (zero, on either side) wins.
-    pub fn negotiate(self, peer_keepalive: u16) -> KeepaliveInterval {
-        KeepaliveInterval(self.0.min(peer_keepalive))
-    }
-}
-
 /// Registration-time state from BPA.
 struct Inner {
     sink: Arc<dyn Sink>,

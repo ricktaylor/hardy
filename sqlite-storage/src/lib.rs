@@ -8,31 +8,11 @@ startup recovery protocol (mark-unconfirmed / confirm / sweep).
 
 # Key types
 
-- [`Config`] -- database directory and filename settings (serde-deserializable).
-- [`new()`] -- constructs an `Arc<dyn MetadataStorage>` ready for use by the BPA.
+- [`SqliteStorage`] -- the [`MetadataStorage`](hardy_bpa::storage::MetadataStorage) implementation.
 */
 
-mod config;
 mod migrate;
+mod pool;
 mod storage;
 
-pub use config::Config;
-
-use trace_err::*;
-use tracing::{debug, error, info, warn};
-
-#[cfg(feature = "instrument")]
-use tracing::instrument;
-
-use rusqlite::OptionalExtension;
-
-/// Creates a new SQLite metadata storage instance.
-///
-/// Opens (or creates) the database specified by `config`, runs schema migrations
-/// when `upgrade` is `true`, and returns the storage behind an `Arc<dyn MetadataStorage>`.
-pub fn new(
-    config: &config::Config,
-    upgrade: bool,
-) -> std::sync::Arc<dyn hardy_bpa::storage::MetadataStorage> {
-    std::sync::Arc::new(storage::Storage::new(config, upgrade))
-}
+pub use self::storage::SqliteStorage;

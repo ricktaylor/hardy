@@ -12,25 +12,27 @@ use crate::{
     routing::{RibBuilder, RoutingAgent},
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
-        BundleMemStorage, BundleStorage, CachedBundleStorage, DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-        MetadataMemStorage, MetadataStorage, store::Store,
+        BundleMemStorage, BundleStorage, CachedBundleStorage, MetadataMemStorage, MetadataStorage,
+        store::Store,
     },
 };
 
-/// Builder for constructing a [`Bpa`] with custom configuration.
+/// Builder for constructing a [`Bpa`] with custom configuration, obtained
+/// from [`Bpa::builder()`](crate::bpa::Bpa::builder).
 ///
 /// Provides fluent setters for storage backends, processing pool size,
 /// node identifiers, bundle cache parameters, and status report generation.
 /// Call [`build()`](BpaBuilder::build) to produce the final [`Bpa`].
 ///
-/// Defaults: in-memory storage, no LRU cache, status reports disabled,
-/// processing pool = 4x available parallelism.
+/// Defaults: in-memory storage (never cached), status reports disabled,
+/// processing pool = 4x available parallelism. A configured bundle storage
+/// is cached unless [`no_cache()`](BpaBuilder::no_cache) is called.
 pub struct BpaBuilder {
     status_reports: bool,
     poll_channel_depth: NonZeroUsize,
     processing_pool_size: NonZeroUsize,
     lru_capacity: Option<NonZeroUsize>,
-    max_cached_bundle_size: NonZeroUsize,
+    max_cached_bundle_size: Option<NonZeroUsize>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -43,18 +45,68 @@ pub struct BpaBuilder {
 }
 
 impl BpaBuilder {
-    pub fn new() -> Self {
-        Self::default()
+    // The one constructor: reachable only through Bpa::builder().
+    pub(crate) fn new() -> Self {
+        let filter_engine = Arc::new(FilterEngine::new());
+
+        // Auto-register bundle validity filter (lifetime, hop-count)
+        let validity = Arc::new(BundleValidityFilter);
+        filter_engine
+            .register(
+                Hook::Ingress,
+                "bundle-validity",
+                &[],
+                Filter::Read(validity.clone()),
+            )
+            .expect("Failed to register bundle validity filter");
+        filter_engine
+            .register(
+                Hook::Originate,
+                "bundle-validity",
+                &[],
+                Filter::Read(validity),
+            )
+            .expect("Failed to register bundle validity filter");
+
+        // Auto-register RFC9171 validity filter unless disabled
+        #[cfg(not(feature = "no-rfc9171-autoregister"))]
+        {
+            use crate::filter::rfc9171::Rfc9171ValidityFilter;
+
+            filter_engine
+                .register(
+                    Hook::Ingress,
+                    "rfc9171-validity",
+                    &[],
+                    Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
+                )
+                .expect("Failed to register RFC9171 validity filter");
+        }
+
+        let poll_channel_depth = NonZeroUsize::new(16).unwrap();
+        let processing_pool_size =
+            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
+
+        Self {
+            poll_channel_depth,
+            processing_pool_size,
+            filter_engine,
+            key_provider: Arc::new(crate::keys::NullKeyProvider),
+            status_reports: false,
+            lru_capacity: None,
+            max_cached_bundle_size: None,
+            cache_disabled: false,
+            node_ids: NodeIds::default(),
+            metadata_storage: None,
+            bundle_storage: None,
+            service_registry_builder: ServiceRegistryBuilder::new(),
+            cla_registry_builder: ClaRegistryBuilder::new(),
+            rib_builder: RibBuilder::new(),
+        }
     }
 
     pub fn bundle_storage(mut self, bundle_storage: Arc<dyn BundleStorage>) -> Self {
         self.bundle_storage = Some(bundle_storage);
-        // Auto-enable cache for non-default (presumably persistent) storage,
-        // unless the caller has explicitly disabled caching.
-        if !self.cache_disabled {
-            self.lru_capacity
-                .get_or_insert(crate::storage::DEFAULT_LRU_CAPACITY);
-        }
         self
     }
 
@@ -78,18 +130,24 @@ impl BpaBuilder {
         self
     }
 
+    /// Sets the LRU cache capacity, in entries; unset applies the cache's
+    /// own default. Has no effect when no bundle storage is configured:
+    /// the default memory store is never cached.
     pub fn lru_capacity(mut self, v: NonZeroUsize) -> Self {
         self.lru_capacity = Some(v);
         self
     }
 
+    /// Sets the largest bundle size eligible for caching, in bytes; unset
+    /// applies the cache's own default. Has no effect when no bundle
+    /// storage is configured: the default memory store is never cached.
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
-        self.max_cached_bundle_size = v;
+        self.max_cached_bundle_size = Some(v);
         self
     }
 
+    /// Disables the bundle storage cache entirely.
     pub fn no_cache(mut self) -> Self {
-        self.lru_capacity = None;
         self.cache_disabled = true;
         self
     }
@@ -162,20 +220,16 @@ impl BpaBuilder {
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
         let metadata_storage = self
             .metadata_storage
-            .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(&Default::default())));
+            .unwrap_or_else(|| Arc::new(MetadataMemStorage::new(None)));
 
-        let bundle_storage = {
-            let raw = self
-                .bundle_storage
-                .unwrap_or_else(|| Arc::new(BundleMemStorage::new(&Default::default())));
-            match self.lru_capacity {
-                Some(capacity) => Arc::new(CachedBundleStorage::new(
-                    raw,
-                    capacity,
-                    self.max_cached_bundle_size,
-                )),
-                None => raw,
-            }
+        let bundle_storage: Arc<dyn BundleStorage> = match self.bundle_storage {
+            Some(raw) if !self.cache_disabled => Arc::new(CachedBundleStorage::new(
+                raw,
+                self.lru_capacity,
+                self.max_cached_bundle_size,
+            )),
+            Some(raw) => raw,
+            None => Arc::new(BundleMemStorage::new(None, None)),
         };
 
         let store = Arc::new(Store::new(
@@ -228,66 +282,5 @@ impl BpaBuilder {
             filter_engine,
             dispatcher,
         ))
-    }
-}
-
-impl Default for BpaBuilder {
-    fn default() -> Self {
-        let filter_engine = Arc::new(FilterEngine::new());
-
-        // Auto-register bundle validity filter (lifetime, hop-count)
-        let validity = Arc::new(BundleValidityFilter);
-        filter_engine
-            .register(
-                Hook::Ingress,
-                "bundle-validity",
-                &[],
-                Filter::Read(validity.clone()),
-            )
-            .expect("Failed to register bundle validity filter");
-        filter_engine
-            .register(
-                Hook::Originate,
-                "bundle-validity",
-                &[],
-                Filter::Read(validity),
-            )
-            .expect("Failed to register bundle validity filter");
-
-        // Auto-register RFC9171 validity filter unless disabled
-        #[cfg(not(feature = "no-rfc9171-autoregister"))]
-        {
-            use crate::filter::rfc9171::Rfc9171ValidityFilter;
-
-            filter_engine
-                .register(
-                    Hook::Ingress,
-                    "rfc9171-validity",
-                    &[],
-                    Filter::Read(Arc::new(Rfc9171ValidityFilter::default())),
-                )
-                .expect("Failed to register RFC9171 validity filter");
-        }
-
-        let poll_channel_depth = NonZeroUsize::new(16).unwrap();
-        let processing_pool_size =
-            NonZeroUsize::new(hardy_async::available_parallelism().get() * 4).unwrap();
-
-        Self {
-            poll_channel_depth,
-            processing_pool_size,
-            filter_engine,
-            key_provider: Arc::new(crate::keys::NullKeyProvider),
-            status_reports: false,
-            lru_capacity: None,
-            max_cached_bundle_size: DEFAULT_MAX_CACHED_BUNDLE_SIZE,
-            cache_disabled: false,
-            node_ids: NodeIds::default(),
-            metadata_storage: None,
-            bundle_storage: None,
-            service_registry_builder: ServiceRegistryBuilder::new(),
-            cla_registry_builder: ClaRegistryBuilder::new(),
-            rib_builder: RibBuilder::new(),
-        }
     }
 }

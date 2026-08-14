@@ -15,6 +15,9 @@ use tracing::{error, info, warn};
 
 use super::loader;
 
+// Default route priority when not specified per-route.
+const DEFAULT_PRIORITY: u32 = 100;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct StaticRoute {
     pub(super) pattern: EidPattern,
@@ -32,10 +35,22 @@ pub struct StaticRoutesAgent {
 }
 
 impl StaticRoutesAgent {
-    pub fn new(routes_file: PathBuf, priority: u32, watch: Option<WatchMode>) -> Self {
+    /// The protocol identifier the agent registers under when none is
+    /// configured.
+    pub const DEFAULT_PROTOCOL_ID: &str = "static_routes";
+
+    /// Creates the agent. `None` applies the agent's own defaults: the
+    /// `static_routes` file in the platform config directory, and priority
+    /// `100`. `watch` is `None` to disable watching the routes file.
+    pub fn new(
+        routes_file: Option<PathBuf>,
+        priority: Option<u32>,
+        watch: Option<WatchMode>,
+    ) -> Self {
         Self {
-            routes_file,
-            priority,
+            routes_file: routes_file
+                .unwrap_or_else(|| crate::config::default_config_dir().join("static_routes")),
+            priority: priority.unwrap_or(DEFAULT_PRIORITY),
             watch,
             sink: Once::new(),
             routes: Arc::new(Mutex::new(Vec::new())),

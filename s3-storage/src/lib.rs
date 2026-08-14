@@ -6,74 +6,168 @@ using any S3-compatible object store (AWS S3, MinIO, LocalStack, etc.).
 Bundles are stored as individual objects keyed by UUID, with optional key
 prefixing for shared buckets. Large bundles are uploaded via the S3
 multipart upload API to bypass the 5 GiB single-object limit.
+
+# Feature flags
+
+- `instrument` — adds `tracing` spans to the async internals.
+- `serde` — adds `Serialize`/`Deserialize` impls to [`PartSize`], so
+  consumer config schemas reject sub-minimum part sizes at
+  deserialization.
 */
 
-mod config;
+mod builder;
+mod error;
 mod storage;
 
-pub use config::Config;
+pub use self::builder::S3StorageBuilder;
+pub use self::error::Error;
+pub use self::storage::S3Storage;
 
-use std::sync::Arc;
-use tracing::info;
+/// The size, in bytes, of each part in a multipart upload (all parts
+/// except the last): within the S3 protocol bounds of [`PartSize::MIN`]
+/// and [`PartSize::MAX_BYTES`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartSize(usize);
 
-const DEFAULT_MULTIPART_THRESHOLD: usize = 8 * 1024 * 1024;
-const DEFAULT_PART_SIZE: usize = 8 * 1024 * 1024;
-const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+impl PartSize {
+    /// The S3 protocol minimum part size: 5 MiB.
+    pub const MIN: PartSize = PartSize(5 * 1024 * 1024);
 
-/// Errors returned during S3 storage construction.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The supplied [`Config`] is invalid (e.g. empty bucket name or part size
-    /// below the S3 minimum).
-    #[error("invalid configuration: {0}")]
-    Config(String),
+    /// The S3 protocol maximum part size (and single `PutObject` size):
+    /// 5 GiB. In bytes rather than a `PartSize`, as the value exceeds
+    /// `usize` on 32-bit targets.
+    pub const MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+    /// A part size of `bytes`, or `None` outside the S3 bounds.
+    pub const fn new(bytes: usize) -> Option<Self> {
+        if bytes >= Self::MIN.0 && bytes as u64 <= Self::MAX_BYTES {
+            Some(Self(bytes))
+        } else {
+            None
+        }
+    }
+
+    /// The size in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
 }
 
-/// Construct an S3 bundle storage backend from `config`.
-///
-/// AWS credentials are resolved via the standard credential chain
-/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role,
-/// `~/.aws/credentials`). Do not store credentials in the config file.
-pub async fn new(config: &Config) -> Result<Arc<dyn hardy_bpa::storage::BundleStorage>, Error> {
-    if config.bucket.is_empty() {
-        return Err(Error::Config("bucket must not be empty".into()));
+/// The bundle size threshold, in bytes, above which multipart upload is
+/// used instead of a single `PutObject`: at most
+/// [`MultipartThreshold::MAX_BYTES`], the S3 `PutObject` limit. It must
+/// also be at least the part size, which is judged at build, where both
+/// values are known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultipartThreshold(usize);
+
+impl MultipartThreshold {
+    /// The S3 single `PutObject` limit: 5 GiB. In bytes rather than a
+    /// `MultipartThreshold`, as the value exceeds `usize` on 32-bit
+    /// targets.
+    pub const MAX_BYTES: u64 = PartSize::MAX_BYTES;
+
+    /// A threshold of `bytes`, or `None` above the S3 `PutObject` limit.
+    pub const fn new(bytes: usize) -> Option<Self> {
+        if bytes as u64 <= Self::MAX_BYTES {
+            Some(Self(bytes))
+        } else {
+            None
+        }
     }
 
-    let part_size = config.multipart_part_size.unwrap_or(DEFAULT_PART_SIZE);
-    if part_size < MIN_PART_SIZE {
-        return Err(Error::Config(format!(
-            "multipart-part-size must be at least {MIN_PART_SIZE} bytes (5 MiB)"
-        )));
+    /// The size in bytes.
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for PartSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.get().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for MultipartThreshold {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = usize::deserialize(deserializer)?;
+        MultipartThreshold::new(bytes).ok_or_else(|| {
+            serde::de::Error::custom(
+                "a multipart threshold must be at most 5 GiB (the S3 PutObject limit)",
+            )
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for MultipartThreshold {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.get().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for PartSize {
+    /// Deserializes from bytes, rejecting values below the S3 protocol
+    /// minimum, so an undersized part size fails at parse.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = usize::deserialize(deserializer)?;
+        PartSize::new(bytes).ok_or_else(|| {
+            serde::de::Error::custom(
+                "a multipart part size must be between 5 MiB and 5 GiB (the S3 protocol bounds)",
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PartSize;
+
+    #[test]
+    fn multipart_threshold_holds_the_s3_bound() {
+        use super::MultipartThreshold;
+
+        assert_eq!(
+            MultipartThreshold::new(0).map(MultipartThreshold::get),
+            Some(0)
+        );
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert!(
+                MultipartThreshold::new((MultipartThreshold::MAX_BYTES as usize) + 1).is_none()
+            );
+            assert!(MultipartThreshold::new(MultipartThreshold::MAX_BYTES as usize).is_some());
+        }
     }
 
-    let multipart_threshold = config
-        .multipart_threshold
-        .unwrap_or(DEFAULT_MULTIPART_THRESHOLD);
+    #[test]
+    fn part_size_holds_the_s3_bounds() {
+        assert!(PartSize::new(5 * 1024 * 1024 - 1).is_none());
+        assert_eq!(
+            PartSize::new(5 * 1024 * 1024).map(PartSize::get),
+            Some(5 * 1024 * 1024)
+        );
 
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-    if let Some(region) = &config.region {
-        loader = loader.region(aws_sdk_s3::config::Region::new(region.clone()));
+        #[cfg(target_pointer_width = "64")]
+        {
+            assert!(PartSize::new((PartSize::MAX_BYTES as usize) + 1).is_none());
+            assert!(PartSize::new(PartSize::MAX_BYTES as usize).is_some());
+        }
     }
-    let aws_cfg = loader.load().await;
-
-    let mut s3_builder = aws_sdk_s3::config::Builder::from(&aws_cfg);
-    if let Some(endpoint) = &config.endpoint_url {
-        s3_builder = s3_builder.endpoint_url(endpoint);
-    }
-    s3_builder = s3_builder.force_path_style(config.force_path_style);
-    let client = aws_sdk_s3::Client::from_conf(s3_builder.build());
-
-    info!(
-        bucket = %config.bucket,
-        prefix = %config.prefix,
-        "Using S3 bundle storage"
-    );
-
-    Ok(Arc::new(storage::Storage::new(
-        client,
-        config.bucket.clone(),
-        &config.prefix,
-        multipart_threshold,
-        part_size,
-    )))
 }
