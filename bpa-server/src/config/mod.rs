@@ -259,8 +259,10 @@ impl Config {
         let source_file = ::config::File::with_name(&config_file.to_string_lossy());
         // `CONFIG_FILE_VAR` is consumed above to locate the file; exclude
         // it from the override source so the strict schema does not refuse
-        // it as an unknown `config-file` key.
-        let overrides: ::config::Map<String, String> = std::env::vars()
+        // it as an unknown `config-file` key. Iterating the OS environment
+        // skips non-Unicode variables instead of panicking on them.
+        let overrides: ::config::Map<String, String> = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
             .filter(|(key, _)| key != CONFIG_FILE_VAR)
             .collect();
         let source_env = ::config::Environment::with_prefix("HARDY_BPA_SERVER")
