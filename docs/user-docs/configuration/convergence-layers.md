@@ -33,6 +33,8 @@ The TCP Convergence Layer Protocol Version 4
 ([RFC 9174](https://datatracker.ietf.org/doc/html/rfc9174)) provides
 reliable bundle transfer over TCP connections.
 
+The schema is strict: an unknown key in a TCPCLv4 section (including its `tls` block) is a startup error naming the known keys, so the removed `address` key of earlier releases, or a typo, cannot silently leave a default in force. Use `listeners` in place of `address`.
+
 ### Connection Options
 
 | Key | Valid Values | Default | Description |

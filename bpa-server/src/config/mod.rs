@@ -628,4 +628,63 @@ node-ids:
         let config = write_and_load("no-bpsec.yaml", "");
         assert!(config.bpsec.is_none());
     }
+
+    // The removed `address` key of a tcpclv4 CLA entry is refused with the
+    // replacement named: unknown keys are otherwise ignored, and a
+    // deliberately loopback-only `address` must not silently escalate to
+    // the default wildcard listener.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_address_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("address.yaml");
+        std::fs::write(
+            &path,
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    address: \"127.0.0.1:4556\"\n",
+        )
+        .unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("listeners"), "{err}");
+    }
+
+    // `null` is not a spelling in this schema: an earlier schema used it
+    // to disable keepalives, so it is refused with the replacement named
+    // rather than silently mapped to the default.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_keepalive_null_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("null-keepalive.yaml");
+        std::fs::write(
+            &path,
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    keepalive-interval: null\n",
+        )
+        .unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("keepalive"), "{err}");
+    }
+
+    // The dial-only spelling is an empty listener list: nothing is bound.
+    #[test]
+    #[serial]
+    #[cfg(feature = "tcpclv4")]
+    fn tcpclv4_empty_listeners_is_dial_only() {
+        let config = write_and_load(
+            "dial_only.yaml",
+            "clas:\n  - name: tcp\n    type: tcpclv4\n    listeners: []\n",
+        );
+        let cla::ClaType::TcpClv4(tcpclv4) = &config.clas[0].cla_type else {
+            panic!("expected a tcpclv4 CLA entry");
+        };
+        assert_eq!(tcpclv4.listeners, Some(vec![]));
+        tcpclv4.build().expect("a dial-only build binds nothing");
+    }
 }

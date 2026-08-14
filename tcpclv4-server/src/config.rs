@@ -134,7 +134,7 @@ fn default_cla_name() -> String {
 // A certificate and the private key that proves it: only representable as
 // a pair.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Identity {
     // The node's certificate (PEM).
     pub cert_file: PathBuf,
@@ -178,7 +178,7 @@ impl From<ClientAuth> for tls::ClientAuth {
 // honest make-invalid-unrepresentable types live behind it, in
 // `hardy_tcpclv4::tls`.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TlsConfig {
     // Refuse sessions that do not negotiate TLS. Default: `false`.
     #[serde(default)]
@@ -230,7 +230,7 @@ pub struct TlsConfig {
 // maps the file surface onto the builder, naming config keys in the
 // errors that remain.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // Logging level for the tracing subscriber.
     //
@@ -666,18 +666,30 @@ tls:
         assert!(result.is_err());
     }
 
-    // Unknown fields are silently ignored.
+    // Unknown keys are refused with the known keys listed, so a removed
+    // key or a typo cannot silently leave a default in force.
     #[test]
     #[serial]
-    fn unknown_fields_ignored() {
-        let config = write_and_load(
-            "extra.toml",
-            r#"
-log-level = "warn"
-this-does-not-exist = 42
-"#,
-        );
-        assert_eq!(config.log_level, Level::WARN);
+    fn unknown_fields_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extra.toml");
+        std::fs::write(&path, "log-level = \"warn\"\nthis-does-not-exist = 42\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("this-does-not-exist"), "{err}");
+
+        // The quiet spellings of earlier schemas buy nothing: `tls.insecure`
+        // is refused with the deliberately loud key named in the known list,
+        // not silently ignored.
+        let path = dir.path().join("bare-insecure.toml");
+        std::fs::write(&path, "[tls]\ninsecure = true\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("insecure-skip-verify"), "{err}");
     }
 
     // Large segment-mru value is accepted.
@@ -738,13 +750,6 @@ this-does-not-exist = 42
             (
                 "insecure-off-is-no-anchor.toml",
                 "[tls]\ninsecure-skip-verify = false\n",
-                "trust anchor",
-            ),
-            // The quiet spellings of earlier schemas buy nothing: an
-            // unknown key is ignored, leaving no trust anchor configured.
-            (
-                "bare-insecure.toml",
-                "[tls]\ninsecure = true\n",
                 "trust anchor",
             ),
             (

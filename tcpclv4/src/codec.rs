@@ -14,7 +14,7 @@ pub enum Error {
     InvalidMessageType(u8),
 
     /// The framed stream's underlying I/O failed; `From<codec::Error>` for
-    /// the crate error reclassifies this as transport, not dialect.
+    /// the session error reclassifies this as transport, not dialect.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

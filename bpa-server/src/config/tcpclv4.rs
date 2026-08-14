@@ -77,7 +77,7 @@ mod keepalive_interval_serde {
 // A certificate and the private key that proves it: only representable as
 // a pair.
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Identity {
     // The node's certificate (PEM).
     pub cert_file: PathBuf,
@@ -112,15 +112,15 @@ impl From<ClientAuth> for tls::ClientAuth {
     }
 }
 
-// The `tls` section of a tcpclv4 CLA entry. The serde layer stays
-// permissive and flat, mirroring what the operator types; `identity` is
+// The `tls` section of a tcpclv4 CLA entry. The serde layer is strict
+// and flat, mirroring what the operator types; `identity` is
 // one object with two required fields, so a lone certificate or key
 // cannot be written, and `required` lives inside the section, so "require
 // TLS without configuring TLS" cannot be written. The trust-anchor rules
 // are judged by the library at build time, with errors in the config's
 // own vocabulary.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TlsConfig {
     // Refuse sessions that do not negotiate TLS. Default: `false`.
     pub required: bool,
@@ -158,9 +158,12 @@ pub struct TlsConfig {
 // default value is restated here. Scalar invariants are carried by the
 // schema types (`NonZero` integers, the `contact-timeout` adapter) and
 // rejected at parse; `build` maps the file surface onto the builder,
-// naming config keys in the errors that remain.
+// naming config keys in the errors that remain. Unknown keys are
+// refused (`deny_unknown_fields`) with the known keys listed, so a
+// removed key (the old single-listener `address`) or a typo cannot
+// silently leave a default listener in force.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // The passive listening elements, one address per listener; absent
     // listens on the IANA-registered `[::]:4556`, and an empty list

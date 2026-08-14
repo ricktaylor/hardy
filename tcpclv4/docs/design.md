@@ -200,12 +200,11 @@ A standalone application linking this library with hardy-proto for gRPC connecti
 | hardy-bpa | CLA trait definition |
 | tokio, tokio-rustls | Async runtime and TLS |
 | tokio-util | Framed codec I/O |
-| rustls, rustls-pemfile | TLS implementation and certificate parsing |
+| rustls | TLS implementation; PEM certificates and keys parsed via its `pki_types` re-export |
 | tower | Service pattern for listener middleware |
 
 ## Future Work
 
-- **Mutual TLS (mTLS)**: Client certificate authentication is not yet implemented
 - **Session Extensions**: Currently rejects all critical extensions per RFC 9174 Section 4.8
 - **Transfer Extensions**: No transfer extensions have been published as of RFC 9174; support can be added when specifications emerge
 - **Outbound transfer pipelining**: A session completes each outbound transfer (fully acknowledged) before accepting the next, so per-peer goodput is bounded by one bundle per round trip. RFC 9174 Section 3.7 explicitly permits pipelining transfers without waiting for acknowledgments. A transfer window is blocked on the BPA egress-policy work supplying more than one in-flight forward per peer; the strict-FIFO ack matcher and ingest ordering already generalise across concurrent transfers
