@@ -250,20 +250,25 @@ impl Config {
     // env var, then the platform default (`/etc/hardy/bpa` on Unix).
     // Environment variables prefixed with `HARDY_BPA_SERVER_` override file values.
     pub fn load(config_file: Option<PathBuf>) -> Result<Config, Error> {
+        const CONFIG_FILE_VAR: &str = "HARDY_BPA_SERVER_CONFIG_FILE";
+
         let config_file = config_file
-            .or_else(|| {
-                std::env::var("HARDY_BPA_SERVER_CONFIG_FILE")
-                    .ok()
-                    .map(PathBuf::from)
-            })
+            .or_else(|| std::env::var(CONFIG_FILE_VAR).ok().map(PathBuf::from))
             .unwrap_or_else(default_config_path);
 
         let source_file = ::config::File::with_name(&config_file.to_string_lossy());
+        // `CONFIG_FILE_VAR` is consumed above to locate the file; exclude
+        // it from the override source so the strict schema does not refuse
+        // it as an unknown `config-file` key.
+        let overrides: ::config::Map<String, String> = std::env::vars()
+            .filter(|(key, _)| key != CONFIG_FILE_VAR)
+            .collect();
         let source_env = ::config::Environment::with_prefix("HARDY_BPA_SERVER")
             .prefix_separator("_")
             .separator("__")
             .convert_case(::config::Case::Kebab)
-            .try_parsing(true);
+            .try_parsing(true)
+            .source(Some(overrides));
 
         let config = ::config::Config::builder()
             .add_source(source_file)
@@ -611,6 +616,24 @@ storage:
         std::fs::write(&path, "{\"log-level\":}").unwrap();
         let result = Config::load(Some(path));
         assert!(result.is_err());
+    }
+
+    // `HARDY_BPA_SERVER_CONFIG_FILE` is the loader's own interface,
+    // consumed to locate the file; the strict schema must not refuse it as
+    // an unknown `config-file` key.
+    #[test]
+    #[serial]
+    fn config_file_env_var_is_not_a_schema_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("via-env.yaml");
+        std::fs::write(&path, "log-level: warn\n").unwrap();
+
+        unsafe { std::env::set_var("HARDY_BPA_SERVER_CONFIG_FILE", &path) };
+        let result = Config::load(None);
+        unsafe { std::env::remove_var("HARDY_BPA_SERVER_CONFIG_FILE") };
+
+        let config = result.expect("the loader's own env var must not be a schema error");
+        assert_eq!(config.log_level, Level::WARN);
     }
 
     // Unknown keys are refused with the known keys listed, at the top
