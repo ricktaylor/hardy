@@ -22,7 +22,7 @@ fn to_timestamp(t: time::OffsetDateTime) -> prost_types::Timestamp {
 /// Configuration for the gRPC server.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
 pub struct Config {
     /// Address to bind the gRPC server to.
     pub address: std::net::SocketAddr,

@@ -129,7 +129,7 @@ impl From<WatchConfig> for Option<WatchMode> {
 // The RFC9171 validity checks: absent keys defer to the filter's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct Rfc9171ValidityConfig {
     // Require CRC or BIB on the primary block; disable for
     // interoperability with implementations that don't add a CRC.
@@ -148,7 +148,7 @@ pub enum EgressPolicyConfig {
 
 // Absent keys defer to the agent's own defaults.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct StaticRoutesConfig {
     /// Path to the routes file (default: the `static_routes` file in the
     /// platform config directory, e.g. `/etc/hardy/static_routes`).
@@ -163,7 +163,7 @@ pub struct StaticRoutesConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct BuiltInServicesConfig {
     // Echo service: list of service identifiers (int = IPN, string = DTN).
     // Absent = service disabled.
@@ -171,7 +171,7 @@ pub struct BuiltInServicesConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     // Logging level (default: INFO)
     #[serde(default = "default_log_level", with = "log_level_serde")]
@@ -613,20 +613,46 @@ storage:
         assert!(result.is_err());
     }
 
-    // Unknown fields are silently ignored (config-rs behavior).
+    // Unknown keys are refused with the known keys listed, at the top
+    // level and inside each section, so a removed key or a typo cannot
+    // silently leave a default in force.
     #[test]
     #[serial]
-    fn unknown_fields_ignored() {
-        let config = write_and_load(
-            "extra.yaml",
-            r#"
-log-level: warn
-this-field-does-not-exist: 42
-another-unknown:
-  nested: true
-"#,
-        );
-        assert_eq!(config.log_level, Level::WARN);
+    fn unknown_fields_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let path = dir.path().join("extra.yaml");
+        std::fs::write(&path, "log-level: warn\nthis-field-does-not-exist: 42\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("this-field-does-not-exist"), "{err}");
+
+        // Sections are strict too: a typo'd storage knob is refused, not
+        // silently left at the default.
+        let path = dir.path().join("nested.yaml");
+        std::fs::write(&path, "storage:\n  lru-capactiy: 16\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("lru-capactiy"), "{err}");
+    }
+
+    // The shipped example config parses under the strict schema, so its
+    // keys cannot drift from the real ones.
+    #[test]
+    #[serial]
+    #[cfg(all(
+        feature = "grpc",
+        feature = "postgres-storage",
+        feature = "s3-storage",
+        feature = "tcpclv4"
+    ))]
+    fn example_config_parses() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
+        Config::load(Some(path)).expect("the shipped config.yaml must parse");
     }
 
     // Node IDs can be a single string.

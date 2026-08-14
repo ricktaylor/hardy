@@ -28,6 +28,8 @@ platform-dependent directory:
     the format — `.yaml`, `.toml`, and `.json` are all supported. All
     examples in this guide use YAML.
 
+The schema is strict: an unknown key anywhere in the file is a startup error naming the known keys, so a key from an earlier release, or a typo, cannot silently leave a default in force. The exceptions are the extension points: `clas` entries of unknown `type` and unknown `policies` types are ignored with a warning, so a config can name extensions this build was not compiled with.
+
 Example:
 
 ```bash

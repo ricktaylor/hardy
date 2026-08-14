@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use hardy_tcpclv4::{ContactTimeout, KeepaliveInterval, tls};
 use serde::{Deserialize, Serialize};
 
+// `deny_unknown_fields` does not compose with `flatten`, but strictness
+// holds anyway: every key that is not `name` or `policy` is forwarded to
+// the flattened `ClaType`, whose payloads are strict for known types.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaConfig {
     pub name: String,

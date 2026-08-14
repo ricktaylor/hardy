@@ -8,7 +8,7 @@ use crate::bpsec::SecurityRole;
 
 /// BPSec configuration: the JWKS key file and its EID-pattern key bindings.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct BPSecConfig {
     /// Path to a JWK Set file (RFC 7517 Section 5).
     /// The file SHOULD have restrictive permissions (0600 on Unix).
@@ -27,7 +27,7 @@ pub struct BPSecConfig {
 
 /// A single key binding: an EID pattern, a security role, and the bound key ids.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct KeyBindingConfig {
     /// EID pattern to match against the security source EID.
     #[serde(rename = "match")]

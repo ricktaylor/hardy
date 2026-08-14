@@ -15,7 +15,7 @@ use super::NonZeroDuration;
 // backend's own defaults (the platform cache directory, `metadata.db`).
 #[cfg(feature = "sqlite-storage")]
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct SqliteConfig {
     // Directory in which the database file is stored.
     pub db_dir: Option<PathBuf>,
@@ -28,7 +28,7 @@ pub struct SqliteConfig {
 // backend's own defaults.
 #[cfg(feature = "postgres-storage")]
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct PostgresConfig {
     // PostgreSQL connection string (e.g. `postgres://user:pass@host/db`);
     // absent falls back to the `DATABASE_URL` environment variable.
@@ -63,7 +63,7 @@ pub struct PostgresConfig {
 // backend's own defaults (the platform cache directory, fsync enabled).
 #[cfg(feature = "localdisk-storage")]
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct LocalDiskConfig {
     // Directory where bundle files are stored.
     pub store_dir: Option<PathBuf>,
@@ -79,7 +79,7 @@ pub struct LocalDiskConfig {
 // defaults.
 #[cfg(feature = "s3-storage")]
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct S3Config {
     // S3 bucket name.
     pub bucket: String,
@@ -121,7 +121,7 @@ pub struct S3Config {
 // The `type: "memory"` metadata backend schema: absent keys defer to the
 // store's own defaults.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct MetadataMemConfig {
     // Maximum number of entries (live bundles plus tombstones) held before
     // the store evicts old entries to make room.
@@ -131,7 +131,7 @@ pub struct MetadataMemConfig {
 // The `type: "memory"` bundle backend schema: absent keys defer to the
 // store's own defaults.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct BundleMemConfig {
     // Maximum total bytes of bundle data held before least-recently-used
     // bundles are evicted.
@@ -216,7 +216,7 @@ impl Default for BundleStorageConfig {
 // keys leave the cache's own defaults in force, so no default value is
 // restated here.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
 pub struct StorageConfig {
     // LRU bundle cache capacity, in entries; must be greater than zero.
     pub lru_capacity: Option<NonZeroUsize>,
