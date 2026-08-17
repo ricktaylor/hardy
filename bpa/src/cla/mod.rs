@@ -323,6 +323,10 @@ pub trait Sink: Send + Sync {
     /// surface an error (never a silent `Ok`), so the CLA withholds its
     /// transfer acknowledgement and the peer can retransmit.
     ///
+    /// An implementation of this method must not call the provided
+    /// [`dispatch`](Self::dispatch) unless it also overrides it — the
+    /// provided `dispatch` delegates here, so the pair would recurse.
+    ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
     ///   (e.g., learned during TCPCLv4 session establishment).

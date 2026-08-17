@@ -144,11 +144,17 @@ pub enum ConcatError {
 /// real streaming producer lands. An empty stream (a bare
 /// `Final(Bytes::new())`) yields empty bytes — the caller's parser rejects
 /// those as it would any non-bundle.
-pub async fn concat_stream(
-    stream: &dyn Receiver<Segment>,
+pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
+    stream: &R,
     max_size: usize,
 ) -> core::result::Result<crate::Bytes, ConcatError> {
+    // The first segment is held as-is until a second arrives, so a
+    // single-`Final` stream (the whole-buffer convenience methods) is
+    // returned untouched — unconditionally zero-copy, even when the caller
+    // retains a clone of the `Bytes`.
+    let mut first: Option<crate::Bytes> = None;
     let mut concat: Option<bytes::BytesMut> = None;
+    let mut total = 0usize;
     loop {
         let (data, last) = match stream.recv().await {
             Ok(Segment::Next(data)) => (data, false),
@@ -156,35 +162,42 @@ pub async fn concat_stream(
             Err(_) => return Err(ConcatError::Cancelled),
         };
 
-        let size = concat
-            .as_ref()
-            .map_or(0, bytes::BytesMut::len)
-            .saturating_add(data.len());
-        if size > max_size {
+        total = total.saturating_add(data.len());
+        if total > max_size {
             return Err(ConcatError::TooLarge {
-                size,
+                size: total,
                 max: max_size,
             });
         }
 
         if let Some(current) = concat.as_mut() {
             current.extend_from_slice(&data);
-        } else {
-            match data.try_into_mut() {
-                Ok(data) => concat = Some(data),
-                Err(data) => {
-                    let mut current = bytes::BytesMut::with_capacity(data.len());
-                    current.extend_from_slice(&data);
-                    concat = Some(current);
+        } else if let Some(head) = first.take() {
+            let mut current = match head.try_into_mut() {
+                Ok(head) => head,
+                Err(head) => {
+                    let mut current = bytes::BytesMut::with_capacity(head.len() + data.len());
+                    current.extend_from_slice(&head);
+                    current
                 }
-            }
+            };
+            current.extend_from_slice(&data);
+            concat = Some(current);
+        } else {
+            first = Some(data);
         }
 
         if last {
             break;
         }
     }
-    Ok(concat.map(Into::into).unwrap_or_default())
+    match (first, concat) {
+        (Some(data), None) => Ok(data),
+        (None, Some(buffer)) => Ok(buffer.into()),
+        // The loop only breaks after storing a processed `Final`, so exactly
+        // one accumulator is populated.
+        _ => unreachable!("the loop exits only via a processed Final"),
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +252,29 @@ mod tests {
             concat_stream(&rx, usize::MAX).await,
             Err(ConcatError::Cancelled)
         ));
+    }
+
+    // A bounded(1) channel with a spawned producer: `recv` consuming is
+    // what lets the producer make progress, pinning the pull-driven
+    // backpressure contract.
+    #[tokio::test]
+    async fn concat_backpressures_a_bounded_producer() {
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        let producer = tokio::spawn(async move {
+            for chunk in [&b"aa"[..], &b"bb"[..]] {
+                hardy_async::channel::Sender::send(&tx, Segment::Next(crate::Bytes::from(chunk)))
+                    .await
+                    .unwrap();
+            }
+            hardy_async::channel::Sender::send(&tx, Segment::Final(crate::Bytes::from(&b"cc"[..])))
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            concat_stream(&rx, usize::MAX).await.unwrap().as_ref(),
+            b"aabbcc"
+        );
+        producer.await.unwrap();
     }
 
     #[tokio::test]

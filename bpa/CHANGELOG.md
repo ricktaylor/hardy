@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `BpaBuilder::max_bundle_size` — bounds streamed reassembly at the shared concat chokepoint (private 64 MiB default); truncated streams now surface `cla::Error::StreamCancelled` so a CLA can withhold its transfer acknowledgement.
 - Deferred CLA transfer outcomes (see [Deferred CLA Transfer Outcomes](docs/design.md#deferred-cla-transfer-outcomes)): `ForwardBundleResult::Accepted` lets a CLA take ownership of a transfer and report `Completed`/`Failed` later via the new `Sink::transfer_outcome`, keyed by bundle ID. Accepted bundles are retained in the new `BundleStatus::ForwardAckPending` state until the outcome arrives, the peer is removed (outcome-unknown, back to `Waiting`), or the bundle expires. A deferred `Failed` re-enters dispatch per-bundle rather than resetting the whole peer queue. Outcome resolution is arbitrated by the new status-conditioned `MetadataStorage::swap_status` and its terminal form `tombstone_if` (a completed transfer resolves straight to its tombstone, never transiting a status the dispatch poller could recover), so an outcome racing the peer-loss sweep, bundle expiry, or a duplicate of itself is ignored; the in-memory metadata backend additionally never replaces a tombstone with a live entry.
 - `MetadataStorage::reset_peer_ack_pending` — the outcome-unknown sweep, mirroring `reset_peer_queue`.
 

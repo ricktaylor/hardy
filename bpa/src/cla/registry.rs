@@ -71,6 +71,25 @@ struct Sink {
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
+// Per-segment registration liveness: a CLA that unregisters mid-stream must
+// not land its bundle. Failing the pull surfaces as a cancelled transfer at
+// the segment where the registration died — sink-side, so the dispatcher's
+// stream consumers stay registration-agnostic.
+struct LiveReceiver<'a> {
+    stream: &'a dyn crate::stream::Receiver<Segment>,
+    cla: &'a Weak<Cla>,
+}
+
+#[async_trait]
+impl crate::stream::Receiver<Segment> for LiveReceiver<'_> {
+    async fn recv(&self) -> core::result::Result<Segment, crate::stream::RecvError> {
+        if self.cla.upgrade().is_none() {
+            return Err(crate::stream::RecvError);
+        }
+        self.stream.recv().await
+    }
+}
+
 #[async_trait]
 impl cla::Sink for Sink {
     async fn unregister(&self) {
@@ -92,8 +111,12 @@ impl cla::Sink for Sink {
             .name
             .clone();
 
+        let stream = LiveReceiver {
+            stream,
+            cla: &self.cla,
+        };
         self.dispatcher
-            .receive_bundle(stream, cla_name, peer_node, peer_addr)
+            .receive_bundle(&stream, cla_name, peer_node, peer_addr)
             .await
     }
 
