@@ -3,6 +3,7 @@ use rand::{
     RngExt, SeedableRng,
     rngs::{SmallRng, SysRng},
 };
+use smallvec::SmallVec;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -117,9 +118,9 @@ impl Default for NodeIds {
     }
 }
 
-impl From<&NodeIds> for Vec<NodeId> {
+impl From<&NodeIds> for SmallVec<[NodeId; 2]> {
     fn from(value: &NodeIds) -> Self {
-        let mut v = Vec::with_capacity(2);
+        let mut v = SmallVec::new();
         if let Some(node_id) = &value.ipn {
             v.push(NodeId::Ipn(*node_id));
         }
@@ -127,6 +128,13 @@ impl From<&NodeIds> for Vec<NodeId> {
             v.push(NodeId::Dtn(node_id.clone()));
         }
         v
+    }
+}
+
+impl From<&NodeIds> for Vec<NodeId> {
+    fn from(value: &NodeIds) -> Self {
+        let small_vec: SmallVec<[NodeId; 2]> = value.into();
+        small_vec.into_vec()
     }
 }
 
@@ -264,6 +272,47 @@ mod tests {
         NodeId::Dtn(DtnNodeId {
             node_name: name.into(),
         })
+    }
+
+    #[test]
+    fn test_smallvec_conversion() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: Some(DtnNodeId {
+                node_name: "mynode".into(),
+            }),
+        };
+
+        // Test SmallVec conversion
+        let small_vec: SmallVec<[NodeId; 2]> = (&node_ids).into();
+        assert_eq!(small_vec.len(), 2);
+
+        // Test Vec conversion (should use SmallVec internally)
+        let vec: Vec<NodeId> = (&node_ids).into();
+        assert_eq!(vec.len(), 2);
+
+        // Both should contain the same data
+        assert_eq!(small_vec.as_slice(), vec.as_slice());
+    }
+
+    #[test]
+    fn test_single_node_smallvec() {
+        let node_ids = NodeIds {
+            ipn: Some(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            }),
+            dtn: None,
+        };
+
+        let small_vec: SmallVec<[NodeId; 2]> = (&node_ids).into();
+        assert_eq!(small_vec.len(), 1);
+
+        // Verify it doesn't allocate on heap for 1-2 items
+        assert!(!small_vec.spilled());
     }
 
     // Two different IPN node IDs should be rejected.

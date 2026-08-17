@@ -23,7 +23,7 @@ use super::{
     Error, Result, RoutingAgent,
     action::{Action, InternalAction, RouteAction},
     agent::sink::Sink,
-    table::{Entry, LookupResult, RouteTable},
+    table::{Entry, LookupResult, RecursionTrail, RouteTable},
 };
 use crate::{
     Arc, HashMap, HashSet,
@@ -139,7 +139,8 @@ impl Rib {
         let table = self.snapshot.load();
 
         // First lookup for the destination
-        let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        let result =
+            table.find_recurse(&bundle.bundle.destination, true, &mut RecursionTrail::new())?;
 
         // Handle reflection case by doing a separate lookup to avoid lifetime issues
         if matches!(result, LookupResult::Reflect) {
@@ -149,7 +150,7 @@ impl Rib {
 
             // Do the reflected lookup and immediately convert to DispatchAction
             if let Some(reflected_result) =
-                table.find_recurse(&previous, false, &mut HashSet::new())
+                table.find_recurse(&previous, false, &mut RecursionTrail::new())
             {
                 match reflected_result {
                     LookupResult::AdminEndpoint => return Some(DispatchAction::AdminEndpoint),
@@ -224,7 +225,7 @@ impl Rib {
     pub(crate) async fn add(
         &self,
         pattern: EidPattern,
-        source: String,
+        source: &str,
         action: Action,
         priority: u32,
     ) -> Result<bool> {
@@ -239,7 +240,7 @@ impl Rib {
 
             let entry = Entry {
                 action: action.clone(),
-                source: source.clone(),
+                source: source.to_string(),
             };
             if !table.insert(pattern.clone(), entry, priority)? {
                 return Ok(false);
@@ -249,7 +250,7 @@ impl Rib {
             self.snapshot.store(Arc::new(table.clone()));
 
             debug!("Adding route {pattern} => {action}, priority {priority}, source '{source}'");
-            metrics::gauge!("bpa.rib.entries", "source" => source).increment(1.0);
+            metrics::gauge!("bpa.rib.entries", "source" => source.to_string()).increment(1.0);
 
             vias
         };
@@ -273,12 +274,12 @@ impl Rib {
 
     pub(crate) async fn remove(
         &self,
-        pattern: &EidPattern,
+        pattern: EidPattern,
         source: &str,
         action: Action,
         priority: u32,
     ) -> bool {
-        let pattern = self.expand_pattern(pattern.clone());
+        let pattern = self.expand_pattern(pattern);
         let action = self.expand_action(action);
 
         {
@@ -365,7 +366,7 @@ impl Rib {
         let pattern: EidPattern = node_id.into();
         self.add(
             pattern,
-            Self::FORWARDS_NAME.into(),
+            Self::FORWARDS_NAME,
             Action::Internal(InternalAction::Forward(peer)),
             0,
         )
@@ -375,7 +376,7 @@ impl Rib {
     pub async fn remove_forward(&self, node_id: NodeId, peer: u32) -> bool {
         let pattern: EidPattern = node_id.into();
         self.remove(
-            &pattern,
+            pattern,
             Self::FORWARDS_NAME,
             Action::Internal(InternalAction::Forward(peer)),
             0,
@@ -386,7 +387,7 @@ impl Rib {
     pub async fn add_service(&self, eid: Eid, service: Arc<Service>) -> Result<bool> {
         self.add(
             eid.into(),
-            Self::SERVICES_NAME.into(),
+            Self::SERVICES_NAME,
             Action::Internal(InternalAction::Local(service)),
             self.service_priority,
         )
@@ -396,7 +397,7 @@ impl Rib {
     pub async fn remove_service(&self, eid: &Eid, service: Arc<Service>) -> bool {
         let pattern: EidPattern = eid.clone().into();
         self.remove(
-            &pattern,
+            pattern,
             Self::SERVICES_NAME,
             Action::Internal(InternalAction::Local(service)),
             self.service_priority,
@@ -420,13 +421,13 @@ impl Rib {
         info!("Registered new routing agent: {name}");
         metrics::gauge!("bpa.rib.agents").increment(1.0);
 
-        let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+        let node_ids: SmallVec<[NodeId; 2]> = (&*self.node_ids).into();
 
         agent
             .on_register(Box::new(Sink::new(name, self.clone())), &node_ids)
             .await;
 
-        Ok(node_ids)
+        Ok(node_ids.into_vec())
     }
 
     pub(crate) async fn unregister_agent(&self, name: &str) {
@@ -905,7 +906,7 @@ mod tests {
         let result = rib
             .add(
                 "ipn:0.2.*".parse().unwrap(),
-                "test".into(),
+                "test",
                 Action::Route(RouteAction::Via(Eid::Null)),
                 10,
             )
@@ -922,7 +923,7 @@ mod tests {
         let result = rib
             .add(
                 "ipn:0.99.*".parse().unwrap(),
-                "test".into(),
+                "test",
                 Action::Route(RouteAction::Via("ipn:0.1.0".parse().unwrap())),
                 10,
             )
@@ -939,7 +940,7 @@ mod tests {
         let result = rib
             .add(
                 "*:**".parse().unwrap(),
-                "test".into(),
+                "test",
                 Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
                 10,
             )
@@ -963,7 +964,7 @@ mod tests {
 
         rib.add(
             "ipn:0.7.*".parse().unwrap(),
-            "test".into(),
+            "test",
             Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
             10,
         )

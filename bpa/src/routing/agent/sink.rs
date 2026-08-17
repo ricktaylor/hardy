@@ -39,7 +39,7 @@ impl RoutingSink for Sink {
     ) -> Result<bool> {
         self.check_connected()?;
         self.rib
-            .add(pattern, self.name.clone(), action.into(), priority)
+            .add(pattern, &self.name, action.into(), priority)
             .await
     }
 
@@ -52,7 +52,7 @@ impl RoutingSink for Sink {
         self.check_connected()?;
         Ok(self
             .rib
-            .remove(pattern, &self.name, action.clone().into(), priority)
+            .remove(pattern.clone(), &self.name, action.clone().into(), priority)
             .await)
     }
 }

@@ -14,6 +14,58 @@ use crate::{
     Arc, BTreeMap, BTreeSet, HashSet, btree_map, node_ids::NodeIds, services::registry::Service,
 };
 
+/// Recursion tracking that optimizes for the common case of shallow recursion.
+/// Uses a small stack-allocated vector for up to 4 entries, only allocating
+/// a HashSet when recursion depth exceeds this limit.
+///
+/// This optimization eliminates HashSet allocations in the typical case where
+/// routing recursion is shallow (0-4 levels deep), which is the common scenario.
+/// Only when recursion exceeds 4 levels does it fall back to HashSet allocation.
+pub enum RecursionTrail<'a> {
+    Small(SmallVec<[&'a Eid; 4]>),
+    Large(HashSet<&'a Eid>),
+}
+
+impl<'a> RecursionTrail<'a> {
+    pub fn new() -> Self {
+        Self::Small(SmallVec::new())
+    }
+
+    pub fn insert(&mut self, eid: &'a Eid) -> bool {
+        match self {
+            Self::Small(vec) => {
+                if vec.contains(&eid) {
+                    false
+                } else if vec.len() < 4 {
+                    vec.push(eid);
+                    true
+                } else {
+                    // Convert to HashSet when capacity exceeded
+                    let mut set: HashSet<&'a Eid> = vec.iter().copied().collect();
+                    let result = set.insert(eid);
+                    *self = Self::Large(set);
+                    result
+                }
+            }
+            Self::Large(set) => set.insert(eid),
+        }
+    }
+
+    pub fn remove(&mut self, eid: &Eid) -> bool {
+        match self {
+            Self::Small(vec) => {
+                if let Some(pos) = vec.iter().position(|&x| x == eid) {
+                    vec.swap_remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::Large(set) => set.remove(eid),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub action: Action,
@@ -191,7 +243,7 @@ impl RouteTable {
         &'a self,
         to: &'a Eid,
         reflect: bool,
-        trail: &mut HashSet<&'a Eid>,
+        trail: &mut RecursionTrail<'a>,
     ) -> Option<LookupResult<'a>> {
         trace!("Looking for route for {to}");
 
@@ -218,7 +270,7 @@ impl RouteTable {
                                 }
 
                                 let sub_result = self.find_recurse(via, reflect, trail);
-                                trail.remove(&to);
+                                trail.remove(to);
 
                                 // Carry each peer's resolved next-hop up unchanged: it is the
                                 // adjacent neighbour EID recorded at the Forward base case, which
@@ -265,7 +317,7 @@ impl RouteTable {
     }
 
     pub(super) fn find_peers(&self, to: &Eid) -> Option<HashSet<u32>> {
-        match self.find_recurse(to, false, &mut HashSet::new()) {
+        match self.find_recurse(to, false, &mut RecursionTrail::new()) {
             Some(LookupResult::Forward(peer, _)) => Some([peer].into()),
             Some(LookupResult::ForwardEcmp(peers)) => {
                 Some(peers.into_iter().map(|(peer, _)| peer).collect())
@@ -506,14 +558,14 @@ mod tests {
         // ipn:0.2.5 matches both routes; the union's matching member is the
         // most specific pattern in the table and must win.
         let to: Eid = "ipn:0.2.5".parse().unwrap();
-        match table.find_recurse(&to, false, &mut HashSet::new()) {
+        match table.find_recurse(&to, false, &mut RecursionTrail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
 
         // The union's broad member routes independently.
         let elsewhere: Eid = "ipn:7.7.7".parse().unwrap();
-        match table.find_recurse(&elsewhere, false, &mut HashSet::new()) {
+        match table.find_recurse(&elsewhere, false, &mut RecursionTrail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 1),
             other => panic!("unexpected lookup result: {other:?}"),
         }
@@ -522,10 +574,10 @@ mod tests {
         assert!(table.remove(&union, &union_entry, 10));
         assert!(
             table
-                .find_recurse(&elsewhere, false, &mut HashSet::new())
+                .find_recurse(&elsewhere, false, &mut RecursionTrail::new())
                 .is_none()
         );
-        match table.find_recurse(&to, false, &mut HashSet::new()) {
+        match table.find_recurse(&to, false, &mut RecursionTrail::new()) {
             Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 2),
             other => panic!("unexpected lookup result: {other:?}"),
         }
