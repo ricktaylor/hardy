@@ -2,6 +2,7 @@ use core::cmp::Ordering;
 
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
+use smallvec::SmallVec;
 use tracing::trace;
 
 #[cfg(feature = "instrument")]
@@ -38,7 +39,7 @@ pub(super) enum LookupResult<'a> {
     AdminEndpoint,
     Deliver(Arc<Service>),
     Forward(u32, &'a Eid),
-    ForwardEcmp(Vec<(u32, &'a Eid)>),
+    ForwardEcmp(SmallVec<[(u32, &'a Eid); 4]>),
     Drop(Option<ReasonCode>),
     Reflect,
 }
@@ -194,7 +195,7 @@ impl RouteTable {
     ) -> Option<LookupResult<'a>> {
         trace!("Looking for route for {to}");
 
-        let mut peers: Vec<(u32, &'a Eid)> = Vec::new();
+        let mut peers: SmallVec<[(u32, &'a Eid); 4]> = SmallVec::new();
         for entries in self.routes.values() {
             for (pattern, actions) in entries {
                 if pattern.matches(to) {
@@ -289,7 +290,7 @@ impl RouteTable {
     }
 }
 
-fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
+fn sorted_insert<'a>(peers: &mut SmallVec<[(u32, &'a Eid); 4]>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
     }

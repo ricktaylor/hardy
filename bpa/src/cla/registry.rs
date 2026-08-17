@@ -57,9 +57,14 @@ impl core::fmt::Debug for Cla {
 
 impl Cla {
     // Whether `peer_id` is one of this CLA's peers — the ownership check for
-    // deferred transfer outcomes.
+    // deferred transfer outcomes. Uses early exit for better performance.
     pub fn owns_peer(&self, peer_id: u32) -> bool {
-        self.peers.lock().values().any(|(_, id)| *id == peer_id)
+        let peers = self.peers.lock();
+        // Early exit on empty peer list
+        if peers.is_empty() {
+            return false;
+        }
+        peers.values().any(|(_, id)| *id == peer_id)
     }
 }
 

@@ -13,6 +13,7 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+use smallvec::SmallVec;
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -137,18 +138,39 @@ impl Rib {
     pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
+        // First lookup for the destination
         let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
 
-        let previous;
-        let result = if matches!(result, LookupResult::Reflect) {
-            previous = bundle
+        // Handle reflection case by doing a separate lookup to avoid lifetime issues
+        if matches!(result, LookupResult::Reflect) {
+            let previous = bundle
                 .previous_node()
                 .unwrap_or_else(|| bundle.bundle.id.source.clone());
-            table.find_recurse(&previous, false, &mut HashSet::new())?
-        } else {
-            result
-        };
 
+            // Do the reflected lookup and immediately convert to DispatchAction
+            if let Some(reflected_result) =
+                table.find_recurse(&previous, false, &mut HashSet::new())
+            {
+                match reflected_result {
+                    LookupResult::AdminEndpoint => return Some(DispatchAction::AdminEndpoint),
+                    LookupResult::Deliver(service) => {
+                        return Some(DispatchAction::Deliver(service));
+                    }
+                    LookupResult::Drop(reason) => return Some(DispatchAction::Drop(reason)),
+                    LookupResult::Forward(peer, next_hop) => {
+                        bundle.metadata.read_only.next_hop = Some(next_hop.clone());
+                        return Some(DispatchAction::Forward(peer));
+                    }
+                    LookupResult::ForwardEcmp(peers) => {
+                        return self.select_peer(peers, &bundle.bundle, &mut bundle.metadata);
+                    }
+                    LookupResult::Reflect => return None,
+                }
+            }
+            return None;
+        }
+
+        // Handle non-reflection cases
         match result {
             LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
@@ -160,7 +182,7 @@ impl Rib {
             LookupResult::ForwardEcmp(peers) => {
                 self.select_peer(peers, &bundle.bundle, &mut bundle.metadata)
             }
-            LookupResult::Reflect => None,
+            LookupResult::Reflect => None, // This should never happen due to the check above
         }
     }
 
@@ -174,7 +196,7 @@ impl Rib {
 
     fn select_peer(
         &self,
-        mut peers: Vec<(u32, &Eid)>,
+        mut peers: SmallVec<[(u32, &Eid); 4]>,
         bundle: &Bpv7Bundle,
         metadata: &mut BundleMetadata,
     ) -> Option<DispatchAction> {

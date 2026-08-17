@@ -1936,6 +1936,7 @@ dependencies = [
  "metrics",
  "rand 0.10.2",
  "serde",
+ "smallvec",
  "thiserror",
  "time",
  "tokio",

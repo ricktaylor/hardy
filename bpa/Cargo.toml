@@ -44,6 +44,7 @@ hardy-cbor = { version = "2", path = "../cbor" }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item"] }
 time = { version = "0.3", default-features = false, features = ["serde-human-readable"] }
 bytes = "1"
+smallvec = "1.13"
 tracing = { version = "0.1", default-features = false }
 metrics = "0.24"
 trace-err = "1"
