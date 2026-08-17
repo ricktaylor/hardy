@@ -56,7 +56,7 @@ and dots. For example:
 | `status-reports` | `true`, `false` | `false` | Whether to generate and dispatch bundle status reports. See warning below. |
 | `processing-pool-size` | Positive integer | 4 &times; CPU cores | Maximum concurrent bundle processing tasks. |
 | `poll-channel-depth` | Positive integer | `16` | Depth of the internal channel used for polling for new bundles. |
-| `max-bundle-size` | Positive integer | `67108864` (64 MiB) | Maximum size in bytes of a single reassembled bundle, enforced where streamed ingress and origination accumulate segments. Streams exceeding it are rejected. Raise this when peers transfer large ADUs. |
+| `max-bundle-size` | Positive integer | `67108864` (64 MiB) | Maximum size in bytes of a single reassembled bundle, enforced where streamed ingress and origination accumulate segments. Streams exceeding it are rejected. Raise this when peers transfer large ADUs. The default is sized for the current in-memory accumulation and will be revisited when storage spooling lands; treat it as a custody-admission bound, not a protocol limit. |
 | `service-priority` | Non-negative integer | `1` | Routing priority for service registration routes. See [Route Selection Order](#route-selection-order) for how priority interacts with pattern specificity. |
 
 !!! warning
