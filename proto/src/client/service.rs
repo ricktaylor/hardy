@@ -111,6 +111,25 @@ impl hardy_bpa::services::ServiceSink for Sink {
         }
     }
 
+    async fn send_streamed(
+        &self,
+        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
+        // Accumulate then delegate to the unary send: the wire has no
+        // streamed Send message yet, and its transport cap is the bound.
+        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
+            .await
+            .map_err(|e| match e {
+                hardy_bpa::stream::ConcatError::Cancelled => {
+                    hardy_bpa::services::Error::StreamCancelled
+                }
+                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
+                    hardy_bpa::services::Error::PayloadTooLarge { size, max }
+                }
+            })?;
+        self.send(data).await
+    }
+
     async fn cancel(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,

@@ -435,6 +435,163 @@ async fn echo_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// INT-BPA-12: Streamed service originate
+// ---------------------------------------------------------------------------
+
+// Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
+// channel, service EID) drive ServiceSink::send_streamed directly.
+async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    // The service only captures its sink here; the test drives the sink itself.
+    let svc = EchoService::new();
+    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    (bpa, svc, forwarded_rx, "ipn:0.1.7".parse().unwrap())
+}
+
+/// A bundle streamed through `ServiceSink::send_streamed` in several segments
+/// originates identically to a whole-buffer `send`: the returned id matches
+/// the built bundle, and the bundle is forwarded to the CLA peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_originate_forwards() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"streamed-originate");
+
+    // Split into two Next segments and a Final; the channel is sized to hold
+    // them all so the producer side completes before the sink pulls.
+    let third = data.len() / 3;
+    let (tx, rx) = hardy_async::channel::bounded(4);
+    tx.send(hardy_bpa::stream::Segment::Next(data.slice(..third)))
+        .await
+        .unwrap();
+    tx.send(hardy_bpa::stream::Segment::Next(
+        data.slice(third..2 * third),
+    ))
+    .await
+    .unwrap();
+    tx.send(hardy_bpa::stream::Segment::Final(data.slice(2 * third..)))
+        .await
+        .unwrap();
+    drop(tx);
+
+    let id = svc
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(&rx)
+        .await
+        .expect("streamed send failed");
+    assert_eq!(id.source, source_eid);
+
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
+        .expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.id, id);
+    assert_eq!(parsed.bundle.destination, dest);
+
+    bpa.shutdown().await;
+}
+
+/// Dropping the producer before `Final` cancels the send: the caller gets
+/// `StreamCancelled` and nothing enters custody (nothing is forwarded).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_cancel_stores_nothing() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"cancelled");
+
+    let (tx, rx) = hardy_async::channel::bounded(4);
+    tx.send(hardy_bpa::stream::Segment::Next(
+        data.slice(..data.len() / 2),
+    ))
+    .await
+    .unwrap();
+    drop(tx); // no Final — the producer aborts
+
+    let result = svc.sink.get().unwrap().send_streamed(&rx).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::StreamCancelled)
+    ));
+
+    // Nothing was originated: no forward may arrive.
+    assert!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .is_err(),
+        "cancelled stream must not originate a bundle"
+    );
+
+    bpa.shutdown().await;
+}
+
+/// The source-spoof check holds on the streamed path: a bundle whose source
+/// is not the registered service endpoint is rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_streamed_send_rejects_spoofed_source() {
+    let (bpa, svc, _forwarded_rx, _source_eid) = streamed_originate_setup().await;
+
+    let spoofed: Eid = "ipn:0.1.99".parse().unwrap();
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&spoofed, &dest, b"spoofed");
+
+    let (tx, rx) = hardy_async::channel::bounded(1);
+    tx.send(hardy_bpa::stream::Segment::Final(data))
+        .await
+        .unwrap();
+    drop(tx);
+
+    let result = svc.sink.get().unwrap().send_streamed(&rx).await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::InvalidDestination(_))
+    ));
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // INT-BPA-03: Local Delivery
 // ---------------------------------------------------------------------------
 

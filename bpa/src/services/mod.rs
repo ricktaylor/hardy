@@ -45,6 +45,11 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle stream was cancelled: the producer dropped its sender
+    /// before delivering the final segment, so no complete bundle arrived.
+    #[error("The bundle stream was cancelled before completion")]
+    StreamCancelled,
+
     /// The bundle was dropped by a processing filter, with an optional reason code.
     #[error("Bundle dropped by filter: {0:?}")]
     Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
@@ -285,9 +290,33 @@ pub trait ServiceSink: Send + Sync {
 
     /// Sends a bundle as raw bytes.
     ///
-    /// The service constructs the bundle using `bpv7::Builder`. The BPA parses
-    /// and validates the bundle (security boundary - services are not trusted).
-    async fn send(&self, data: Bytes) -> Result<hardy_bpv7::bundle::Id>;
+    /// The whole-buffer convenience over
+    /// [`send_streamed`](Self::send_streamed), which is the primitive: the
+    /// provided implementation delivers `data` as a single
+    /// [`Segment::Final`](crate::stream::Segment::Final) through the streamed
+    /// path. The service constructs the bundle using `bpv7::Builder`; the BPA
+    /// parses and validates it (security boundary - services are not trusted).
+    async fn send(&self, data: Bytes) -> Result<hardy_bpv7::bundle::Id> {
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        crate::stream::Sender::send(&tx, crate::stream::Segment::Final(data))
+            .await
+            .map_err(|_| Error::Disconnected)?;
+        self.send_streamed(&rx).await
+    }
+
+    /// Sends a bundle as a stream of [`Segment`](crate::stream::Segment)s.
+    ///
+    /// The primitive send method — [`send`](Self::send) is a provided
+    /// convenience over it. The service delivers `bpv7::Builder`-constructed
+    /// bundle bytes segment by segment, and the BPA parses and validates the
+    /// assembled bundle (security boundary - services are not trusted).
+    /// Dropping the sender before a
+    /// [`Segment::Final`](crate::stream::Segment::Final) cancels the send and
+    /// returns [`Error::StreamCancelled`].
+    async fn send_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> Result<hardy_bpv7::bundle::Id>;
 
     /// Cancels a pending bundle that hasn't been forwarded yet.
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;

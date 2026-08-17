@@ -113,12 +113,17 @@ impl services::ServiceSink for Sink {
         self.unregister_inner().await
     }
 
-    async fn send(&self, data: Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
+    async fn send_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
         self.service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
-        self.dispatcher.local_dispatch_raw(&self.eid, data).await
+        self.dispatcher
+            .local_dispatch_raw_streamed(&self.eid, stream)
+            .await
     }
 
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
