@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `MetadataStorage::reset_peer_ack_pending` — the outcome-unknown sweep, mirroring `reset_peer_queue`.
 
 ### Changed
+- **BREAKING:** `cla::Sink::dispatch_streamed` is the required dispatch primitive; `dispatch` becomes a provided whole-buffer convenience that delivers its buffer as a single `Segment::Final` through the streamed path. Implementors provide only `dispatch_streamed` (and must not call the provided `dispatch` from it without overriding it).
 - **BREAKING:** `BpaBuilder` is obtained only from `Bpa::builder()`: `BpaBuilder::new` is no longer public and the `Default` impl is removed. The cache setters (`lru_capacity`, `max_cached_bundle_size`) have no effect when no bundle storage is configured, as the default memory store is never cached.
 - **BREAKING:** `Cla::forward` takes the bundle ID alongside the bundle bytes, so a deferring CLA can echo it back without parsing the bundle. `ForwardBundleResult` and `BundleStatus` have new variants; `Sink` has a new required method.
 - The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.
