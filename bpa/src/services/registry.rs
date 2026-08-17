@@ -76,6 +76,25 @@ impl core::fmt::Debug for Service {
     }
 }
 
+// Per-segment registration liveness: a service that unregisters mid-stream
+// must not land its bundle. Failing the pull surfaces as a cancelled send at
+// the segment where the registration died — sink-side, so the dispatcher's
+// stream consumers stay registration-agnostic.
+struct LiveReceiver<'a> {
+    stream: &'a dyn crate::stream::Receiver<crate::stream::Segment>,
+    service: &'a Weak<Service>,
+}
+
+#[async_trait]
+impl crate::stream::Receiver<crate::stream::Segment> for LiveReceiver<'_> {
+    async fn recv(&self) -> core::result::Result<crate::stream::Segment, crate::stream::RecvError> {
+        if self.service.upgrade().is_none() {
+            return Err(crate::stream::RecvError);
+        }
+        self.stream.recv().await
+    }
+}
+
 /// Sink implementation for both Service and Application traits
 struct Sink {
     service: Weak<Service>,
@@ -121,8 +140,12 @@ impl services::ServiceSink for Sink {
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
+        let stream = LiveReceiver {
+            stream,
+            service: &self.service,
+        };
         self.dispatcher
-            .local_dispatch_raw_streamed(&self.eid, stream)
+            .local_dispatch_raw_streamed(&self.eid, &stream)
             .await
     }
 

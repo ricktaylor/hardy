@@ -300,7 +300,7 @@ pub trait ServiceSink: Send + Sync {
         let (tx, rx) = hardy_async::channel::bounded(1);
         crate::stream::Sender::send(&tx, crate::stream::Segment::Final(data))
             .await
-            .map_err(|_| Error::Disconnected)?;
+            .trace_expect("bounded(1) send with live receiver cannot fail");
         self.send_streamed(&rx).await
     }
 
@@ -313,6 +313,10 @@ pub trait ServiceSink: Send + Sync {
     /// Dropping the sender before a
     /// [`Segment::Final`](crate::stream::Segment::Final) cancels the send and
     /// returns [`Error::StreamCancelled`].
+    ///
+    /// An implementation of this method must not call the provided
+    /// [`send`](Self::send) unless it also overrides it — the provided
+    /// `send` delegates here, so the pair would recurse.
     async fn send_streamed(
         &self,
         stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
