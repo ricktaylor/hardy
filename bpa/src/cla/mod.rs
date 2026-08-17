@@ -2,6 +2,8 @@ use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+pub use crate::stream::Segment;
+
 pub(crate) mod peers;
 pub(crate) mod registry;
 
@@ -20,6 +22,12 @@ pub enum Error {
     /// The connection to the BPA has been lost.
     #[error("The sink is disconnected")]
     Disconnected,
+
+    /// The bundle stream ended before its final segment: the producer went
+    /// away mid-bundle, the partial bytes are discarded, and the transfer
+    /// must not be acknowledged to the peer.
+    #[error("The bundle stream was cancelled before completion")]
+    StreamCancelled,
 
     /// The bundle exceeds the transport's maximum message size and was
     /// rejected before being sent. Returned by transport-backed sinks
@@ -149,21 +157,6 @@ pub enum TransferOutcome {
     /// (acknowledgement loss), and receiving-side deduplication absorbs the
     /// re-forward.
     Failed,
-}
-
-/// A bundle segment delivered via [`crate::stream::Receiver<Segment>`] in
-/// [`Sink::dispatch_streamed`].
-///
-/// `Final` marks the last segment of the bundle. The payload may be empty
-/// (`Final(Bytes::new())`) to signal end-of-stream without additional data.
-/// After `Final`, the producer is expected to drop its sender; a subsequent
-/// `recv` then returns `Err(crate::stream::RecvError)`.
-#[derive(Debug)]
-pub enum Segment {
-    /// The next segment of the bundle
-    Next(Bytes),
-    /// The last segment (may be empty)
-    Final(Bytes),
 }
 
 /// The primary trait for a Convergence Layer Adapter (CLA).

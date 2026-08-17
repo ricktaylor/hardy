@@ -1,52 +1,7 @@
 use hardy_bpv7::status_report::ReasonCode;
 
 use super::*;
-use crate::{cla::Segment, stream::Receiver};
-
-async fn concat_stream(stream: &dyn Receiver<Segment>) -> Option<crate::Bytes> {
-    let mut concat: Option<bytes::BytesMut> = None;
-    loop {
-        let (data, last) = match stream.recv().await {
-            Ok(Segment::Next(data)) => (data, false),
-            Ok(Segment::Final(data)) => (data, true),
-            Err(_) => return None,
-        };
-
-        if let Some(current) = concat.as_mut() {
-            current.extend(data);
-        } else {
-            match data.try_into_mut() {
-                Ok(data) => concat = Some(data),
-                Err(data) => {
-                    let mut current = bytes::BytesMut::with_capacity(data.len());
-                    current.extend(data);
-                    concat = Some(current);
-                }
-            }
-        }
-
-        if last {
-            break;
-        }
-    }
-    concat.map(Into::into)
-}
-
-struct CountingReceiver<'a> {
-    stream: &'a dyn Receiver<Segment>,
-}
-
-#[async_trait]
-impl Receiver<Segment> for CountingReceiver<'_> {
-    async fn recv(&self) -> Result<Segment, crate::stream::RecvError> {
-        let seg = self.stream.recv().await?;
-        let len = match &seg {
-            Segment::Next(b) | Segment::Final(b) => b.len(),
-        };
-        metrics::counter!("bpa.bundle.received.bytes").increment(len as u64);
-        Ok(seg)
-    }
-}
+use crate::stream::{Receiver, Segment};
 
 impl Dispatcher {
     // Entry point for bundles received from CLAs.
@@ -69,8 +24,6 @@ impl Dispatcher {
         ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
     ) -> cla::Result<()> {
-        metrics::counter!("bpa.bundle.received").increment(1);
-
         let metadata = bundle::BundleMetadata {
             status: bundle::BundleStatus::New,
             read_only: bundle::ReadOnlyMetadata {
@@ -83,8 +36,24 @@ impl Dispatcher {
             ..Default::default()
         };
 
-        let stream = CountingReceiver { stream };
-        if let Some((bundle, data)) = self.process_received_bundle(&stream, metadata).await {
+        // A truncated or oversized stream is the CLA's error to hear about:
+        // the transfer must not be acknowledged to the peer, so it can
+        // retransmit. Only a completely assembled bundle counts as received.
+        let data = match crate::stream::concat_stream(stream, self.max_bundle_size).await {
+            Ok(data) => data,
+            Err(crate::stream::ConcatError::Cancelled) => {
+                debug!("Stream cancelled");
+                return Err(cla::Error::StreamCancelled);
+            }
+            Err(crate::stream::ConcatError::TooLarge { size, max }) => {
+                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                return Err(cla::Error::PayloadTooLarge { size, max });
+            }
+        };
+        metrics::counter!("bpa.bundle.received").increment(1);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
+
+        if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
             self.ingress_bundle(bundle, data).await;
         }
         Ok(())
@@ -92,10 +61,10 @@ impl Dispatcher {
 
     // Shared bundle processing: parse, validate, store, and report.
     //
-    // Called from both the CLA ingress path (`receive_bundle`) and the ADU
-    // reassembly path (`reassemble`). Handles all bundle validation internally
-    // — invalid bundles are logged, counted, and dropped with status reports
-    // where possible.
+    // Called with a fully assembled buffer from the CLA ingress path
+    // (`receive_bundle`), the ADU reassembly path (`reassemble`), and restart
+    // recovery. Handles all bundle validation internally — invalid bundles
+    // are logged, counted, and dropped with status reports where possible.
     //
     // Returns `Some((bundle, data))` for valid bundles ready for ingress,
     // or `None` if the bundle was dropped (invalid, duplicate, etc.).
@@ -105,15 +74,9 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub(super) async fn process_received_bundle(
         &self,
-        stream: &dyn Receiver<Segment>,
+        mut data: Bytes,
         mut metadata: bundle::BundleMetadata,
     ) -> Option<(bundle::Bundle, Bytes)> {
-        // TODO:  For now, we just concatenate in a dumb way
-        let Some(mut data) = concat_stream(stream).await else {
-            debug!("Stream cancelled");
-            return None;
-        };
-
         // Fast pre-check: reject empty, BPv6, and non-CBOR-array data
         if let Err(e) = crate::cbor::precheck(&data) {
             debug!("Bundle rejected by CBOR precheck: {e}");

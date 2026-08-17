@@ -12,6 +12,12 @@ mod reassemble;
 mod report;
 mod restart;
 
+// The default bound on a single reassembled bundle. Streaming producers
+// dissolved the transport-level caps that used to bound ingress implicitly,
+// so the concat chokepoint enforces one; sized generously above the old
+// 16 MiB wire cap to leave room for large ADUs.
+const DEFAULT_MAX_BUNDLE_SIZE: usize = 64 * 1024 * 1024;
+
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
@@ -28,6 +34,7 @@ pub(crate) struct Dispatcher {
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
+    max_bundle_size: usize,
 }
 
 impl Dispatcher {
@@ -36,6 +43,7 @@ impl Dispatcher {
         status_reports: bool,
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
+        max_bundle_size: Option<core::num::NonZeroUsize>,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
@@ -46,6 +54,7 @@ impl Dispatcher {
             status_reports,
             poll_channel_depth,
             processing_pool_size,
+            max_bundle_size,
             node_ids,
             store,
             rib,
@@ -61,6 +70,7 @@ impl Dispatcher {
         status_reports: bool,
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
+        max_bundle_size: Option<core::num::NonZeroUsize>,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
@@ -89,6 +99,7 @@ impl Dispatcher {
             status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
+            max_bundle_size: max_bundle_size.map_or(DEFAULT_MAX_BUNDLE_SIZE, Into::into),
         });
 
         (dispatcher, |d| {

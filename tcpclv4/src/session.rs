@@ -1033,22 +1033,14 @@ mod tests {
 
         async fn dispatch_streamed(
             &self,
-            stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+            stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
             peer_node: Option<&hardy_bpv7::eid::NodeId>,
             peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
         ) -> hardy_bpa::cla::Result<()> {
-            let mut bundle = Vec::new();
-            loop {
-                match stream.recv().await {
-                    Ok(hardy_bpa::cla::Segment::Next(b)) => bundle.extend_from_slice(&b),
-                    Ok(hardy_bpa::cla::Segment::Final(b)) => {
-                        bundle.extend_from_slice(&b);
-                        break;
-                    }
-                    Err(_) => return Err(hardy_bpa::cla::Error::Disconnected),
-                }
-            }
-            self.dispatch(bundle.into(), peer_node, peer_addr).await
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+                .await
+                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
+            self.dispatch(bundle, peer_node, peer_addr).await
         }
 
         async fn add_peer(

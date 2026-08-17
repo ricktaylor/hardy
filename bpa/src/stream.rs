@@ -11,7 +11,7 @@
 //!   conformance tests.
 //! - **Pull side** ([`Receiver<T>`]): the callee hands a source to a caller,
 //!   which pulls items by calling [`Receiver::recv`]. CLAs use it to stream
-//!   bundle segments into the BPA's ingress path.
+//!   bundle [`Segment`]s into the BPA's ingress path.
 
 use hardy_async::async_trait;
 
@@ -101,5 +101,156 @@ impl<T: Send + 'static> Receiver<T> for hardy_async::channel::Receiver<T> {
         hardy_async::channel::Receiver::recv(self)
             .await
             .map_err(|_| RecvError)
+    }
+}
+
+/// A segment of a bundle's encoded bytes in transit through a streaming
+/// trait method such as
+/// [`Sink::dispatch_streamed`](crate::cla::Sink::dispatch_streamed).
+///
+/// `Final` marks the last segment of the bundle. The payload may be empty
+/// (`Final(Bytes::new())`) to signal end-of-stream without additional data.
+/// After `Final`, the producer is expected to drop its sender; a subsequent
+/// `recv` then returns `Err(`[`RecvError`]`)`. A producer that goes away
+/// *before* delivering `Final` has truncated the bundle — consumers treat
+/// that as an error, never a completion.
+#[derive(Debug)]
+pub enum Segment {
+    /// The next segment of the bundle
+    Next(crate::Bytes),
+    /// The last segment (may be empty)
+    Final(crate::Bytes),
+}
+
+/// Errors from [`concat_stream`].
+#[derive(Debug, thiserror::Error)]
+pub enum ConcatError {
+    /// The producer went away before delivering [`Segment::Final`]: the
+    /// bundle was truncated, and the partial bytes are discarded.
+    #[error("the stream ended before its final segment")]
+    Cancelled,
+
+    /// The accumulated segments exceeded the caller's limit.
+    #[error("streamed bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
+    TooLarge { size: usize, max: usize },
+}
+
+/// Accumulates a complete bundle from a segment stream, refusing to grow
+/// beyond `max_size` bytes.
+///
+/// This is the interim consumer both ends of a segment stream share until
+/// bundle storage can spool a stream directly; a capacity hint (e.g. from a
+/// wire schema that announces sizes up front) is a natural extension when a
+/// real streaming producer lands. An empty stream (a bare
+/// `Final(Bytes::new())`) yields empty bytes — the caller's parser rejects
+/// those as it would any non-bundle.
+pub async fn concat_stream(
+    stream: &dyn Receiver<Segment>,
+    max_size: usize,
+) -> core::result::Result<crate::Bytes, ConcatError> {
+    let mut concat: Option<bytes::BytesMut> = None;
+    loop {
+        let (data, last) = match stream.recv().await {
+            Ok(Segment::Next(data)) => (data, false),
+            Ok(Segment::Final(data)) => (data, true),
+            Err(_) => return Err(ConcatError::Cancelled),
+        };
+
+        let size = concat
+            .as_ref()
+            .map_or(0, bytes::BytesMut::len)
+            .saturating_add(data.len());
+        if size > max_size {
+            return Err(ConcatError::TooLarge {
+                size,
+                max: max_size,
+            });
+        }
+
+        if let Some(current) = concat.as_mut() {
+            current.extend_from_slice(&data);
+        } else {
+            match data.try_into_mut() {
+                Ok(data) => concat = Some(data),
+                Err(data) => {
+                    let mut current = bytes::BytesMut::with_capacity(data.len());
+                    current.extend_from_slice(&data);
+                    concat = Some(current);
+                }
+            }
+        }
+
+        if last {
+            break;
+        }
+    }
+    Ok(concat.map(Into::into).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
+        let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
+        for segment in segments {
+            hardy_async::channel::Sender::send(&tx, segment)
+                .await
+                .unwrap();
+        }
+        rx
+    }
+
+    #[tokio::test]
+    async fn concat_reassembles_multi_segment_streams() {
+        let rx = feed(vec![
+            Segment::Next(crate::Bytes::from_static(b"he")),
+            Segment::Next(crate::Bytes::from_static(b"ll")),
+            Segment::Final(crate::Bytes::from_static(b"o")),
+        ])
+        .await;
+        assert_eq!(
+            concat_stream(&rx, usize::MAX).await.unwrap().as_ref(),
+            b"hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn concat_accepts_a_trailing_empty_final() {
+        let rx = feed(vec![
+            Segment::Next(crate::Bytes::from_static(b"data")),
+            Segment::Final(crate::Bytes::new()),
+        ])
+        .await;
+        assert_eq!(
+            concat_stream(&rx, usize::MAX).await.unwrap().as_ref(),
+            b"data"
+        );
+    }
+
+    #[tokio::test]
+    async fn concat_fails_a_truncated_stream() {
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        hardy_async::channel::Sender::send(&tx, Segment::Next(crate::Bytes::from_static(b"part")))
+            .await
+            .unwrap();
+        drop(tx); // no Final: the producer died mid-bundle
+        assert!(matches!(
+            concat_stream(&rx, usize::MAX).await,
+            Err(ConcatError::Cancelled)
+        ));
+    }
+
+    #[tokio::test]
+    async fn concat_enforces_the_size_limit() {
+        let rx = feed(vec![
+            Segment::Next(crate::Bytes::from_static(b"0123456789")),
+            Segment::Final(crate::Bytes::from_static(b"0123456789")),
+        ])
+        .await;
+        assert!(matches!(
+            concat_stream(&rx, 15).await,
+            Err(ConcatError::TooLarge { size: 20, max: 15 })
+        ));
     }
 }
