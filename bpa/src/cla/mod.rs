@@ -309,7 +309,7 @@ pub trait Sink: Send + Sync {
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()> {
         let (tx, rx) = hardy_async::channel::bounded(1);
-        hardy_async::channel::Sender::send(&tx, Segment::Final(bundle))
+        crate::stream::Sender::send(&tx, Segment::Final(bundle))
             .await
             .trace_expect("bounded(1) send with live receiver cannot fail");
         self.dispatch_streamed(&rx, peer_node, peer_addr).await
@@ -326,6 +326,10 @@ pub trait Sink: Send + Sync {
     /// An implementation of this method must not call the provided
     /// [`dispatch`](Self::dispatch) unless it also overrides it — the
     /// provided `dispatch` delegates here, so the pair would recurse.
+    ///
+    /// Producers: a failed send into the stream means the consumer has given
+    /// up on the transfer (size cap, dead registration, shutdown); stop
+    /// streaming and discard.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
