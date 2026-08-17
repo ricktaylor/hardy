@@ -78,15 +78,6 @@ impl cla::Sink for MockClaSink {
         self.unregistered.store(true, Ordering::Relaxed);
     }
 
-    async fn dispatch(
-        &self,
-        _bundle: hardy_bpa::Bytes,
-        _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        Ok(())
-    }
-
     async fn dispatch_streamed(
         &self,
         _stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,

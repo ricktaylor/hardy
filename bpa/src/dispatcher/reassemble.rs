@@ -1,4 +1,3 @@
-use trace_err::TraceErrResult;
 use tracing::debug;
 
 use super::Dispatcher;

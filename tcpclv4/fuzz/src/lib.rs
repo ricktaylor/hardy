@@ -5,7 +5,6 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use bytes::Bytes;
 use hardy_bpa::{async_trait, bpa::BpaRegistration, cla};
 use hardy_bpv7::eid::NodeId;
 
@@ -17,15 +16,6 @@ pub struct MockSink;
 #[async_trait]
 impl cla::Sink for MockSink {
     async fn unregister(&self) {}
-
-    async fn dispatch(
-        &self,
-        _bundle: Bytes,
-        _peer_node: Option<&NodeId>,
-        _peer_addr: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        Ok(())
-    }
 
     async fn dispatch_streamed(
         &self,

@@ -290,6 +290,10 @@ pub trait Sink: Send + Sync {
 
     /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.
     ///
+    /// The whole-buffer convenience over [`dispatch_streamed`](Self::dispatch_streamed),
+    /// which is the primitive: the provided implementation delivers `bundle`
+    /// as a single [`Segment::Final`] through the streamed path.
+    ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
     ///   (e.g., learned during TCPCLv4 session establishment).
@@ -303,9 +307,21 @@ pub trait Sink: Send + Sync {
         bundle: Bytes,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        hardy_async::channel::Sender::send(&tx, Segment::Final(bundle))
+            .await
+            .trace_expect("bounded(1) send with live receiver cannot fail");
+        self.dispatch_streamed(&rx, peer_node, peer_addr).await
+    }
 
     /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
+    ///
+    /// The primitive dispatch method — [`dispatch`](Self::dispatch) is a
+    /// provided convenience over it. A producer that drops its sender before
+    /// [`Segment::Final`] has truncated the bundle; the implementation must
+    /// surface an error (never a silent `Ok`), so the CLA withholds its
+    /// transfer acknowledgement and the peer can retransmit.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known

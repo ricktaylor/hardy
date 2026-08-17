@@ -79,30 +79,6 @@ impl cla::Sink for Sink {
         }
     }
 
-    async fn dispatch(
-        &self,
-        bundle: Bytes,
-        peer_node: Option<&NodeId>,
-        peer_addr: Option<&ClaAddress>,
-    ) -> cla::Result<()> {
-        let cla_name = self
-            .cla
-            .upgrade()
-            .ok_or(cla::Error::Disconnected)?
-            .name
-            .clone();
-
-        // TODO: Just push the entire bundle into the stream
-        let (tx, rx) = hardy_async::channel::bounded(1);
-        tx.send(Segment::Final(bundle))
-            .await
-            .trace_expect("New stream push failed?!?");
-
-        self.dispatcher
-            .receive_bundle(&rx, cla_name, peer_node, peer_addr)
-            .await
-    }
-
     async fn dispatch_streamed(
         &self,
         stream: &dyn crate::stream::Receiver<Segment>,
