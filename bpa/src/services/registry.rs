@@ -421,7 +421,7 @@ mod tests {
             _source: hardy_bpv7::eid::Eid,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
-            _payload: bytes::Bytes,
+            _payload: crate::Bytes,
         ) -> services::Result<()> {
             Ok(())
         }

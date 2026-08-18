@@ -175,7 +175,7 @@ pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
     // returned untouched — unconditionally zero-copy, even when the caller
     // retains a clone of the `Bytes`.
     let mut first: Option<crate::Bytes> = None;
-    let mut concat: Option<bytes::BytesMut> = None;
+    let mut concat: Option<crate::BytesMut> = None;
     let mut total = 0usize;
     loop {
         let (data, last) = match stream.recv().await {
@@ -198,7 +198,7 @@ pub async fn concat_stream<R: Receiver<Segment> + ?Sized>(
             let mut current = match head.try_into_mut() {
                 Ok(head) => head,
                 Err(head) => {
-                    let mut current = bytes::BytesMut::with_capacity(head.len() + data.len());
+                    let mut current = crate::BytesMut::with_capacity(head.len() + data.len());
                     current.extend_from_slice(&head);
                     current
                 }

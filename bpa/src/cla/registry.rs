@@ -435,7 +435,7 @@ mod tests {
             _queue: Option<u32>,
             _cla_addr: &ClaAddress,
             _bundle_id: &hardy_bpv7::bundle::Id,
-            _bundle: bytes::Bytes,
+            _bundle: crate::Bytes,
         ) -> cla::Result<cla::ForwardBundleResult> {
             Ok(cla::ForwardBundleResult::Sent)
         }
