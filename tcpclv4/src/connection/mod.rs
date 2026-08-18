@@ -436,9 +436,9 @@ mod tests {
     impl hardy_bpa::cla::Sink for MockSink {
         async fn unregister(&self) {}
 
-        async fn dispatch(
+        async fn dispatch_streamed(
             &self,
-            _bundle: hardy_bpa::Bytes,
+            _stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
             _peer_node: Option<&NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
         ) -> hardy_bpa::cla::Result<()> {

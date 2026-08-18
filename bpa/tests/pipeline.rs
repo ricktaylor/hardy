@@ -495,6 +495,195 @@ async fn local_delivery() {
 }
 
 // ---------------------------------------------------------------------------
+// INT-BPA-12: Streamed CLA ingress
+// ---------------------------------------------------------------------------
+
+/// A bundle dispatched through `Sink::dispatch_streamed` in several segments
+/// ingresses identically to the whole-buffer `dispatch`: the reassembled
+/// bundle reaches its local application.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_streamed_ingress_delivers() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, b"streamed ingress");
+
+    // Three segments through a bounded channel with a spawned producer, so
+    // the pull side is genuinely driving.
+    let third = inbound.len() / 3;
+    let (tx, rx) = hardy_async::channel::bounded(1);
+    let segments = vec![
+        hardy_bpa::stream::Segment::Next(inbound.slice(..third)),
+        hardy_bpa::stream::Segment::Next(inbound.slice(third..2 * third)),
+        hardy_bpa::stream::Segment::Final(inbound.slice(2 * third..)),
+    ];
+    let producer = tokio::spawn(async move {
+        for segment in segments {
+            hardy_async::channel::Sender::send(&tx, segment)
+                .await
+                .unwrap();
+        }
+    });
+
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch_streamed(&rx, None, None)
+        .await
+        .unwrap();
+    producer.await.unwrap();
+
+    let (source, payload) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for streamed delivery")
+            .expect("Channel closed");
+    assert_eq!(source, remote_source);
+    assert_eq!(payload.as_ref(), b"streamed ingress");
+
+    bpa.shutdown().await;
+}
+
+/// Unregistering a CLA wakes its in-flight streams immediately: a consumer
+/// parked behind a stalled producer fails with `StreamCancelled` the moment
+/// the registration dies, without waiting for the producer's next segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_unregister_cancels_parked_stream() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    // A producer that sends one segment then stalls — the sender stays
+    // alive throughout, so only registration teardown can end the stream.
+    let (tx, rx) = hardy_async::channel::bounded(2);
+    hardy_async::channel::Sender::send(
+        &tx,
+        hardy_bpa::stream::Segment::Next(Bytes::from_static(b"partial")),
+    )
+    .await
+    .unwrap();
+
+    let parked = {
+        let cla = cla.clone();
+        tokio::spawn(async move {
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch_streamed(&rx, None, None)
+                .await
+        })
+    };
+
+    // Let the consumer enter the stream and park on the second pull.
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    cla.sink.get().unwrap().unregister().await;
+
+    // The parked pull must fail promptly — the assertion is event-driven;
+    // the timeout only bounds a regression.
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
+        .await
+        .expect("parked stream was not woken by unregistration")
+        .expect("task panicked");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::cla::Error::StreamCancelled)
+    ));
+    drop(tx);
+
+    bpa.shutdown().await;
+}
+
+/// A producer that dies before `Final` is a truncation: the sink surfaces
+/// `StreamCancelled` (so a CLA withholds its transfer ack) and nothing is
+/// delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_streamed_ingress_truncation_is_an_error() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, b"truncated");
+
+    let (tx, rx) = hardy_async::channel::bounded(4);
+    hardy_async::channel::Sender::send(
+        &tx,
+        hardy_bpa::stream::Segment::Next(inbound.slice(..inbound.len() / 2)),
+    )
+    .await
+    .unwrap();
+    drop(tx); // no Final
+
+    let result = cla
+        .sink
+        .get()
+        .unwrap()
+        .dispatch_streamed(&rx, None, None)
+        .await;
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::cla::Error::StreamCancelled)
+    ));
+
+    assert!(
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), app_rx.recv_async())
+            .await
+            .is_err(),
+        "truncated stream must not deliver"
+    );
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
 

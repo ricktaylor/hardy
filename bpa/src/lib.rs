@@ -79,5 +79,5 @@ use hashbrown::{HashMap, HashSet, hash_map};
 use alloc::collections::{BTreeMap, BTreeSet, btree_map};
 
 // Re-export for consistency
-pub use bytes::Bytes;
+pub use bytes::{Bytes, BytesMut};
 pub use hardy_async::async_trait;

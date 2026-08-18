@@ -81,6 +81,25 @@ impl hardy_bpa::cla::Sink for Sink {
         }
     }
 
+    async fn dispatch_streamed(
+        &self,
+        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+    ) -> hardy_bpa::cla::Result<()> {
+        // Accumulate then delegate to the unary dispatch: the wire has no
+        // streamed Dispatch message yet, and its transport cap is the bound.
+        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
+            .await
+            .map_err(|e| match e {
+                hardy_bpa::stream::ConcatError::Cancelled => hardy_bpa::cla::Error::StreamCancelled,
+                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
+                    hardy_bpa::cla::Error::PayloadTooLarge { size, max }
+                }
+            })?;
+        self.dispatch(data, peer_node, peer_addr).await
+    }
+
     async fn add_peer(
         &self,
         cla_addr: hardy_bpa::cla::ClaAddress,

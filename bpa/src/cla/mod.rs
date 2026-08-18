@@ -2,6 +2,8 @@ use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+pub use crate::stream::Segment;
+
 pub(crate) mod peers;
 pub(crate) mod registry;
 
@@ -20,6 +22,12 @@ pub enum Error {
     /// The connection to the BPA has been lost.
     #[error("The sink is disconnected")]
     Disconnected,
+
+    /// The bundle stream ended before its final segment: the producer went
+    /// away mid-bundle, the partial bytes are discarded, and the transfer
+    /// must not be acknowledged to the peer.
+    #[error("The bundle stream was cancelled before completion")]
+    StreamCancelled,
 
     /// The bundle exceeds the transport's maximum message size and was
     /// rejected before being sent. Returned by transport-backed sinks
@@ -282,6 +290,10 @@ pub trait Sink: Send + Sync {
 
     /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.
     ///
+    /// The whole-buffer convenience over [`dispatch_streamed`](Self::dispatch_streamed),
+    /// which is the primitive: the provided implementation delivers `bundle`
+    /// as a single [`Segment::Final`] through the streamed path.
+    ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
     ///   (e.g., learned during TCPCLv4 session establishment).
@@ -293,6 +305,43 @@ pub trait Sink: Send + Sync {
     async fn dispatch(
         &self,
         bundle: Bytes,
+        peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        peer_addr: Option<&ClaAddress>,
+    ) -> Result<()> {
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        crate::stream::Sender::send(&tx, Segment::Final(bundle))
+            .await
+            .trace_expect("bounded(1) send with live receiver cannot fail");
+        self.dispatch_streamed(&rx, peer_node, peer_addr).await
+    }
+
+    /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
+    ///
+    /// The primitive dispatch method — [`dispatch`](Self::dispatch) is a
+    /// provided convenience over it. A producer that drops its sender before
+    /// [`Segment::Final`] has truncated the bundle; the implementation must
+    /// surface an error (never a silent `Ok`), so the CLA withholds its
+    /// transfer acknowledgement and the peer can retransmit.
+    ///
+    /// An implementation of this method must not call the provided
+    /// [`dispatch`](Self::dispatch) unless it also overrides it — the
+    /// provided `dispatch` delegates here, so the pair would recurse.
+    ///
+    /// Producers: a failed send into the stream means the consumer has given
+    /// up on the transfer (size cap, dead registration, shutdown); stop
+    /// streaming and discard.
+    ///
+    /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
+    /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
+    ///   (e.g., learned during TCPCLv4 session establishment).
+    /// - `peer_addr`: The convergence layer address of the peer, if applicable
+    ///   (e.g., remote socket address for TCP-based CLAs).
+    ///
+    /// These may be `None` for CLAs without peer concepts (e.g., file-based) or
+    /// unidirectional links.
+    async fn dispatch_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<Segment>,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()>;

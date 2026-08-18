@@ -167,6 +167,8 @@ The second case is the hot forward path optimisation: a small bundle tee'd durin
 
 ## 4. Stream Traits: Sender and Receiver
 
+> **Landed state (2026-08, `refactor/cla-streaming` / `refactor/service-streaming`).** The pull-side foundations of this section are now real, with the landed shape diverging from the sketch below in naming and location, not substance: `Receiver<T>`, `RecvError` (a unit struct), `Segment`, and the interim `concat_stream` (size-capped, truncation-as-error) live in `bpa::stream` rather than `hardy-async`, with blanket impls on the `hardy_async` channel endpoints in place of adapter types. The trait seams are `cla::Sink::dispatch_streamed` and `services::ServiceSink::send_streamed` (required primitives; the whole-buffer `dispatch`/`send` are provided single-`Final` conveniences), not the `write()` naming sketched in this section. A producer death before `Segment::Final` is a truncation error surfaced to the door (`StreamCancelled` — a CLA withholds its transfer ack), reassembly is bounded by `BpaBuilder::max_bundle_size` (`max-bundle-size` in bpa-server config), and registration liveness is enforced per segment by sink-side receiver wrappers. The forward design below is otherwise unchanged and still governs the remaining work.
+
 The pipeline streams items between components without coupling the trait surface to a specific channel implementation. The storage subsystem already establishes the **`Sender<T>` pattern** for this — see [storage_subsystem_design.md](storage_subsystem_design.md) §"Streaming results via `Sender<T>`" for the canonical definition and rationale. This section reuses that pattern across the BPA's storage, CLA, and filter trait surfaces.
 
 The push-side trait is `Sender<T>`, already in storage:
@@ -1011,6 +1013,8 @@ pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parse::parse
 Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets); the rich decoded view — extension-block field values — is assembled at the call site (today: `bpa::Bpv7Bundle`), not returned by `bpv7`. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.
 
 ## 10. Implementation Phasing
+
+> **Landed state (2026-08).** Phase 1's pull-side foundations and the door seams from Phase 3 item 2 (as `dispatch_streamed`) plus the service-door twin (`send_streamed`) are landed on the seam branches, with the interim whole-buffer accumulation in `bpa::stream::concat_stream` standing in until Phase 2's storage streaming. The remaining items below are unstarted.
 
 ### Phase 0: Transformer Prototype
 

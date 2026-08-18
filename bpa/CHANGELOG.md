@@ -7,10 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `BpaBuilder::max_bundle_size` — bounds streamed reassembly at the shared concat chokepoint (private 64 MiB default); truncated streams now surface `cla::Error::StreamCancelled` so a CLA can withhold its transfer acknowledgement.
 - Deferred CLA transfer outcomes (see [Deferred CLA Transfer Outcomes](docs/design.md#deferred-cla-transfer-outcomes)): `ForwardBundleResult::Accepted` lets a CLA take ownership of a transfer and report `Completed`/`Failed` later via the new `Sink::transfer_outcome`, keyed by bundle ID. Accepted bundles are retained in the new `BundleStatus::ForwardAckPending` state until the outcome arrives, the peer is removed (outcome-unknown, back to `Waiting`), or the bundle expires. A deferred `Failed` re-enters dispatch per-bundle rather than resetting the whole peer queue. Outcome resolution is arbitrated by the new status-conditioned `MetadataStorage::swap_status` and its terminal form `tombstone_if` (a completed transfer resolves straight to its tombstone, never transiting a status the dispatch poller could recover), so an outcome racing the peer-loss sweep, bundle expiry, or a duplicate of itself is ignored; the in-memory metadata backend additionally never replaces a tombstone with a live entry.
 - `MetadataStorage::reset_peer_ack_pending` — the outcome-unknown sweep, mirroring `reset_peer_queue`.
 
 ### Changed
+- **BREAKING:** `cla::Sink::dispatch_streamed` is the required dispatch primitive; `dispatch` becomes a provided whole-buffer convenience that delivers its buffer as a single `Segment::Final` through the streamed path. Implementors provide only `dispatch_streamed` (and must not call the provided `dispatch` from it without overriding it).
 - **BREAKING:** `BpaBuilder` is obtained only from `Bpa::builder()`: `BpaBuilder::new` is no longer public and the `Default` impl is removed. The cache setters (`lru_capacity`, `max_cached_bundle_size`) have no effect when no bundle storage is configured, as the default memory store is never cached.
 - **BREAKING:** `Cla::forward` takes the bundle ID alongside the bundle bytes, so a deferring CLA can echo it back without parsing the bundle. `ForwardBundleResult` and `BundleStatus` have new variants; `Sink` has a new required method.
 - The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.

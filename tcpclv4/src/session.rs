@@ -1031,6 +1031,18 @@ mod tests {
             Ok(())
         }
 
+        async fn dispatch_streamed(
+            &self,
+            stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+            peer_node: Option<&hardy_bpv7::eid::NodeId>,
+            peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+        ) -> hardy_bpa::cla::Result<()> {
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+                .await
+                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
+            self.dispatch(bundle, peer_node, peer_addr).await
+        }
+
         async fn add_peer(
             &self,
             _cla_addr: hardy_bpa::cla::ClaAddress,
