@@ -335,6 +335,9 @@ mod tests {
     }
 
     #[test]
+    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
+    // cancellation token's interior mutability never participates.
+    #[allow(clippy::mutable_key_type)]
     fn test_admin_endpoint_at_construction() {
         let table = make_table();
         let entries = table.routes.get(&0).unwrap();
@@ -395,6 +398,9 @@ mod tests {
     }
 
     #[test]
+    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
+    // cancellation token's interior mutability never participates.
+    #[allow(clippy::mutable_key_type)]
     fn test_local_action_sort() {
         let admin = Action::Internal(InternalAction::AdminEndpoint);
         let forward_1 = Action::Internal(InternalAction::Forward(1));
@@ -429,6 +435,9 @@ mod tests {
     }
 
     #[test]
+    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
+    // cancellation token's interior mutability never participates.
+    #[allow(clippy::mutable_key_type)]
     fn test_route_entry_sort() {
         let mut set = BTreeSet::new();
 
@@ -470,6 +479,9 @@ mod tests {
     }
 
     #[test]
+    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
+    // cancellation token's interior mutability never participates.
+    #[allow(clippy::mutable_key_type)]
     fn test_entry_dedup() {
         let mut set = BTreeSet::new();
         let e1 = entry(Action::Route(RouteAction::Reflect), "src");

@@ -566,6 +566,49 @@ async fn service_streamed_cancel_stores_nothing() {
     bpa.shutdown().await;
 }
 
+/// Unregistering a service wakes its in-flight sends immediately: a consumer
+/// parked behind a stalled producer fails with `StreamCancelled` the moment
+/// the registration dies, without waiting for the producer's next segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_unregister_cancels_parked_send() {
+    let (bpa, svc, _forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"parked");
+
+    // One segment then a stall — the sender stays alive throughout, so only
+    // registration teardown can end the stream.
+    let (tx, rx) = hardy_async::channel::bounded(2);
+    hardy_async::channel::Sender::send(
+        &tx,
+        hardy_bpa::stream::Segment::Next(data.slice(..data.len() / 2)),
+    )
+    .await
+    .unwrap();
+
+    let parked = {
+        let svc = svc.clone();
+        tokio::spawn(async move { svc.sink.get().unwrap().send_streamed(&rx).await })
+    };
+
+    // Let the consumer enter the stream and park on the second pull.
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    svc.sink.get().unwrap().unregister().await;
+
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
+        .await
+        .expect("parked send was not woken by unregistration")
+        .expect("task panicked");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::services::Error::StreamCancelled)
+    ));
+    drop(tx);
+
+    bpa.shutdown().await;
+}
+
 /// The source-spoof check holds on the streamed path: a bundle whose source
 /// is not the registered service endpoint is rejected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
