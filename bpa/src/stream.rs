@@ -104,6 +104,28 @@ impl<T: Send + 'static> Receiver<T> for hardy_async::channel::Receiver<T> {
     }
 }
 
+// A racing decorator over a [`Receiver`]: fails the pull the moment `token`
+// fires, even while parked awaiting the inner stream. Registration teardown
+// cancels the token, giving `unregister` one broadcast point that wakes
+// every in-flight stream of the registration at once — the consumer-side
+// twin of a producer dropping its sender, and downstream indistinguishable
+// from it (`RecvError`, surfaced by the doors as a cancelled transfer).
+pub(crate) struct CancellableReceiver<'a, T> {
+    pub(crate) inner: &'a dyn Receiver<T>,
+    pub(crate) token: hardy_async::CancellationToken,
+}
+
+#[async_trait]
+impl<T: Send> Receiver<T> for CancellableReceiver<'_, T> {
+    async fn recv(&self) -> core::result::Result<T, RecvError> {
+        use futures::FutureExt;
+        futures::select_biased! {
+            _ = self.token.cancelled().fuse() => Err(RecvError),
+            r = self.inner.recv().fuse() => r,
+        }
+    }
+}
+
 /// A segment of a bundle's encoded bytes in transit through a streaming
 /// trait method such as
 /// [`Sink::dispatch_streamed`](crate::cla::Sink::dispatch_streamed).

@@ -563,6 +563,67 @@ async fn cla_streamed_ingress_delivers() {
     bpa.shutdown().await;
 }
 
+/// Unregistering a CLA wakes its in-flight streams immediately: a consumer
+/// parked behind a stalled producer fails with `StreamCancelled` the moment
+/// the registration dies, without waiting for the producer's next segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_unregister_cancels_parked_stream() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids =
+        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    // A producer that sends one segment then stalls — the sender stays
+    // alive throughout, so only registration teardown can end the stream.
+    let (tx, rx) = hardy_async::channel::bounded(2);
+    hardy_async::channel::Sender::send(
+        &tx,
+        hardy_bpa::stream::Segment::Next(Bytes::from_static(b"partial")),
+    )
+    .await
+    .unwrap();
+
+    let parked = {
+        let cla = cla.clone();
+        tokio::spawn(async move {
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch_streamed(&rx, None, None)
+                .await
+        })
+    };
+
+    // Let the consumer enter the stream and park on the second pull.
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    cla.sink.get().unwrap().unregister().await;
+
+    // The parked pull must fail promptly — the assertion is event-driven;
+    // the timeout only bounds a regression.
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
+        .await
+        .expect("parked stream was not woken by unregistration")
+        .expect("task panicked");
+    assert!(matches!(
+        result,
+        Err(hardy_bpa::cla::Error::StreamCancelled)
+    ));
+    drop(tx);
+
+    bpa.shutdown().await;
+}
+
 /// A producer that dies before `Final` is a truncation: the sink surfaces
 /// `StreamCancelled` (so a CLA withholds its transfer ack) and nothing is
 /// delivered.

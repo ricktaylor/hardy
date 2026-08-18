@@ -13,6 +13,9 @@ pub struct Cla {
     pub(super) policy: Arc<dyn policy::EgressPolicy>,
 
     name: Arc<str>,
+    // Cancelled at unregistration; every in-flight stream of this
+    // registration races it and fails immediately.
+    cancel: hardy_async::CancellationToken,
     // sync::spin::Mutex for O(1) peer HashMap operations
     // Key: ClaAddress (primary key for a link-layer adjacency)
     // Value: (known EIDs for the peer, peer_id in PeerTable)
@@ -71,25 +74,6 @@ struct Sink {
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
 
-// Per-segment registration liveness: a CLA that unregisters mid-stream must
-// not land its bundle. Failing the pull surfaces as a cancelled transfer at
-// the segment where the registration died — sink-side, so the dispatcher's
-// stream consumers stay registration-agnostic.
-struct LiveReceiver<'a> {
-    stream: &'a dyn crate::stream::Receiver<Segment>,
-    cla: &'a Weak<Cla>,
-}
-
-#[async_trait]
-impl crate::stream::Receiver<Segment> for LiveReceiver<'_> {
-    async fn recv(&self) -> core::result::Result<Segment, crate::stream::RecvError> {
-        if self.cla.upgrade().is_none() {
-            return Err(crate::stream::RecvError);
-        }
-        self.stream.recv().await
-    }
-}
-
 #[async_trait]
 impl cla::Sink for Sink {
     async fn unregister(&self) {
@@ -104,19 +88,19 @@ impl cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
     ) -> Result<()> {
-        let cla_name = self
-            .cla
-            .upgrade()
-            .ok_or(cla::Error::Disconnected)?
-            .name
-            .clone();
+        let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
-        let stream = LiveReceiver {
-            stream,
-            cla: &self.cla,
+        // A CLA that unregisters mid-stream must not land its bundle: the
+        // registration's token races every pull, so teardown wakes this
+        // stream immediately — even parked behind a stalled producer — and
+        // the transfer surfaces as cancelled. Sink-side, so the dispatcher's
+        // stream consumers stay registration-agnostic.
+        let stream = crate::stream::CancellableReceiver {
+            inner: stream,
+            token: cla.cancel.clone(),
         };
         self.dispatcher
-            .receive_bundle(&stream, cla_name, peer_node, peer_addr)
+            .receive_bundle(&stream, cla.name.clone(), peer_node, peer_addr)
             .await
     }
 
@@ -185,6 +169,7 @@ impl ClaRegistryBuilder {
         };
         info!("Inserted CLA: {name}");
         e.insert(Arc::new(Cla {
+            cancel: hardy_async::CancellationToken::new(),
             cla,
             peers: Default::default(),
             name: Arc::from(name.as_str()),
@@ -277,6 +262,7 @@ impl ClaRegistry {
                 return Err(cla::Error::AlreadyExists(name));
             };
             e.insert(Arc::new(Cla {
+                cancel: hardy_async::CancellationToken::new(),
                 cla,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
@@ -320,6 +306,9 @@ impl ClaRegistry {
     }
 
     async fn unregister_cla(&self, cla: Arc<Cla>) {
+        // First: wake every in-flight stream of this registration.
+        cla.cancel.cancel();
+
         cla.cla.on_unregister().await;
 
         if let Some(address_type) = cla.cla.address_type() {
