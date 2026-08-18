@@ -801,13 +801,20 @@ impl BundleParser {
             // each appear at most once per bundle. (Payload uniqueness
             // is enforced indirectly: it must be block number 1, so a
             // second payload would trip `DuplicateBlockNumber` below.)
+            // Checked here but recorded only after the block's last
+            // fallible step: a `NeedMore` below re-parses this block from
+            // `block_start` on the next push, so bookkeeping written before
+            // that point would read as a duplicate on the retry.
             match header.block_type {
                 block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
-                    if !self.unique_blocks.insert(header.block_type) =>
+                    if self.unique_blocks.contains(&header.block_type) =>
                 {
                     return Err(Error::DuplicateBlocks(header.block_type));
                 }
                 _ => {}
+            }
+            if bundle.blocks.contains_key(&header.number) {
+                return Err(Error::DuplicateBlockNumber(header.number));
             }
 
             // RFC 9171 §4.2.3-4 / §4.2.3-5: an admin-record or null-source
@@ -884,59 +891,9 @@ impl BundleParser {
                 }
             }
 
-            if bundle
-                .blocks
-                .insert(
-                    header.number,
-                    block::Block {
-                        block_type: header.block_type,
-                        flags: header.flags,
-                        crc_type: header.crc_type,
-                        bib: block::BibCoverage::None,
-                        bcb: None,
-                        extent: block_start_u64..extent_end,
-                        data: header.data_start..header.data_end,
-                    },
-                )
-                .is_some()
-            {
-                return Err(Error::DuplicateBlockNumber(header.number));
-            }
-
-            // BPSec block handling. Non-payload blocks always reach
-            // the body-fits branch above, so `data` covers the block-
-            // type-specific data byte string body in full.
-            //
-            // BCBs are decoded inline: BCB bodies are always plaintext
-            // (the OperationSet describes what the BCB encrypts; the
-            // OperationSet itself is never encrypted).
-            //
-            // BIBs are deferred: a BIB may itself be the target of a
-            // BCB, in which case its body is ciphertext and decoding
-            // it as an OperationSet here would fail (or produce garbage
-            // on a chance CBOR shape match). We stash the body range
-            // and let `finish()` decide after BCBs have been processed
-            // and BCB-coverage on each block is known.
-            match header.block_type {
-                block::Type::BlockIntegrity => {
-                    // Body range is recoverable from bundle.blocks[n]
-                    // (extent + data) at finalize time — no need to
-                    // duplicate it here.
-                    self.pending_bibs.push(header.number);
-                }
-                block::Type::BlockSecurity => {
-                    let mut o = block_start + header.data_start as usize;
-                    let body_end = block_start + header.data_end as usize;
-                    // See the BIB call in `finish()` for the slice-bound
-                    // rationale — `parse_sequence` requires consuming the
-                    // whole input.
-                    let ops: bpsec::bcb::OperationSet =
-                        parse_canonical(&data[..body_end], &mut o, "BCB operation set")?;
-                    self.bcbs.insert(header.number, ops);
-                }
-                _ => {}
-            }
-
+            // The payload block's terminal steps are fallible, so run them
+            // before the bookkeeping below (retry safety, as above).
+            let mut payload_tail = None;
             if is_payload {
                 if offset as u64 == extent_end {
                     // Inline payload (body fit in the buffer): consume the
@@ -950,7 +907,6 @@ impl BundleParser {
                     if offset != data.len() {
                         return Err(Error::AdditionalData);
                     }
-                    self.state = State::Done;
                 } else {
                     // Streaming-fallback fired above: the payload body exceeds
                     // the buffer, so `offset` still sits at the post-header
@@ -973,14 +929,85 @@ impl BundleParser {
                     let remaining = extent_end
                         .saturating_add(1)
                         .saturating_sub(data.len() as u64);
-                    self.deferred = Some(PayloadTail::new(
+                    payload_tail = Some(PayloadTail::new(
                         digest,
                         header.crc_type,
                         header.is_indefinite,
                         body_remaining,
                         remaining,
                     ));
-                    self.state = State::Partial;
+                }
+            }
+
+            // BPSec block handling. Non-payload blocks always reach
+            // the body-fits branch above, so `data` covers the block-
+            // type-specific data byte string body in full.
+            //
+            // BCBs are decoded inline: BCB bodies are always plaintext
+            // (the OperationSet describes what the BCB encrypts; the
+            // OperationSet itself is never encrypted).
+            //
+            // BIBs are deferred: a BIB may itself be the target of a
+            // BCB, in which case its body is ciphertext and decoding
+            // it as an OperationSet here would fail (or produce garbage
+            // on a chance CBOR shape match). We stash the body range
+            // and let `finish()` decide after BCBs have been processed
+            // and BCB-coverage on each block is known.
+            let bcb_ops = match header.block_type {
+                block::Type::BlockSecurity => {
+                    let mut o = block_start + header.data_start as usize;
+                    let body_end = block_start + header.data_end as usize;
+                    // See the BIB call in `finish()` for the slice-bound
+                    // rationale — `parse_sequence` requires consuming the
+                    // whole input.
+                    Some(parse_canonical::<bpsec::bcb::OperationSet>(
+                        &data[..body_end],
+                        &mut o,
+                        "BCB operation set",
+                    )?)
+                }
+                _ => None,
+            };
+
+            // Past every fallible step for this block — record it.
+            match header.block_type {
+                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount => {
+                    self.unique_blocks.insert(header.block_type);
+                }
+                block::Type::BlockIntegrity => {
+                    // Body range is recoverable from bundle.blocks[n]
+                    // (extent + data) at finalize time — no need to
+                    // duplicate it here.
+                    self.pending_bibs.push(header.number);
+                }
+                block::Type::BlockSecurity => {
+                    self.bcbs.insert(
+                        header.number,
+                        bcb_ops.expect("BlockSecurity always decodes ops above"),
+                    );
+                }
+                _ => {}
+            }
+            bundle.blocks.insert(
+                header.number,
+                block::Block {
+                    block_type: header.block_type,
+                    flags: header.flags,
+                    crc_type: header.crc_type,
+                    bib: block::BibCoverage::None,
+                    bcb: None,
+                    extent: block_start_u64..extent_end,
+                    data: header.data_start..header.data_end,
+                },
+            );
+
+            if is_payload {
+                match payload_tail {
+                    None => self.state = State::Done,
+                    Some(tail) => {
+                        self.deferred = Some(tail);
+                        self.state = State::Partial;
+                    }
                 }
                 return Ok(offset);
             }

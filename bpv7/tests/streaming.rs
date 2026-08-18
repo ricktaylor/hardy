@@ -331,3 +331,43 @@ fn hostile_claimed_block_length_bounds_reserve() {
         Ok(_) => panic!("hostile length should not parse as a complete bundle"),
     }
 }
+
+// Push a small whole bundle one byte at a time: every possible chunk boundary
+// lands inside some field, so a `NeedMoreData` surfacing anywhere in the
+// field-error chain that is mis-read as a structural reject (instead of being
+// buffered as `NeedMore`) fails here.
+#[test]
+fn byte_by_byte_push_reaches_ready() {
+    let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"tiny".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap()
+        .1;
+
+    let mut parser = BundleParser::default();
+    let mut ready = None;
+    for (i, b) in full.iter().enumerate() {
+        match parser.push(Bytes::copy_from_slice(&[*b])).unwrap() {
+            ParserProgress::NeedMore(_) => {
+                assert!(
+                    i + 1 < full.len(),
+                    "parser still hungry after the last byte"
+                )
+            }
+            ParserProgress::Ready(whole) => {
+                ready = Some(whole);
+                break;
+            }
+            ParserProgress::Partial { .. } => panic!("small payload must not go Partial"),
+        }
+    }
+
+    let whole = ready.expect("parser should reach Ready at the final byte");
+    assert_eq!(
+        whole.as_ref(),
+        &full[..],
+        "Ready hands back the whole bundle"
+    );
+    let parsed = parser.finish(whole).unwrap();
+    assert_eq!(parsed.bundle.primary.id.source, "ipn:1.0".parse().unwrap());
+}
