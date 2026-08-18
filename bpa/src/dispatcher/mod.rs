@@ -16,7 +16,8 @@ mod restart;
 // dissolved the transport-level caps that used to bound ingress implicitly,
 // so the concat chokepoint enforces one; sized generously above the old
 // 16 MiB wire cap to leave room for large ADUs.
-const DEFAULT_MAX_BUNDLE_SIZE: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
+    core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
 
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
@@ -99,7 +100,7 @@ impl Dispatcher {
             status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
-            max_bundle_size: max_bundle_size.map_or(DEFAULT_MAX_BUNDLE_SIZE, Into::into),
+            max_bundle_size: max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE).get(),
         });
 
         (dispatcher, |d| {
