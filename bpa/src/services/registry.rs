@@ -18,6 +18,9 @@ pub enum ServiceImpl {
 pub struct Service {
     pub service: ServiceImpl,
     pub service_id: hardy_bpv7::eid::Service,
+    // Cancelled at unregistration; every in-flight stream of this
+    // registration races it and fails immediately.
+    pub(crate) cancel: hardy_async::CancellationToken,
 }
 
 impl Service {
@@ -113,12 +116,27 @@ impl services::ServiceSink for Sink {
         self.unregister_inner().await
     }
 
-    async fn send(&self, data: Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
+    async fn send_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
+        let service = self
+            .service
             .upgrade()
             .ok_or(services::Error::Disconnected)?;
 
-        self.dispatcher.local_dispatch_raw(&self.eid, data).await
+        // A service that unregisters mid-send must not originate its bundle:
+        // the registration's token races every pull, so teardown wakes this
+        // stream immediately — even parked behind a stalled producer — and
+        // the send surfaces as cancelled. Sink-side, so the dispatcher's
+        // stream consumers stay registration-agnostic.
+        let stream = crate::stream::CancellableReceiver {
+            inner: stream,
+            token: service.cancel.clone(),
+        };
+        self.dispatcher
+            .local_dispatch_raw_streamed(&self.eid, &stream)
+            .await
     }
 
     async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
@@ -192,6 +210,7 @@ impl ServiceRegistryBuilder {
         let service = Arc::new(Service {
             service,
             service_id: service_id.clone(),
+            cancel: hardy_async::CancellationToken::new(),
         });
         self.services.insert(service_id.clone(), service);
         info!("Inserted service: {service_id}");
@@ -320,6 +339,7 @@ impl ServiceRegistry {
         let service = Arc::new(Service {
             service,
             service_id: service_id.clone(),
+            cancel: hardy_async::CancellationToken::new(),
         });
         services.insert(service_id.clone(), service);
         Ok(())
@@ -375,6 +395,9 @@ impl ServiceRegistry {
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
+        // First: wake every in-flight stream of this registration.
+        service.cancel.cancel();
+
         let eid = node_ids.resolve_eid(&service.service_id)?;
         rib.remove_service(&eid, service.clone()).await;
 

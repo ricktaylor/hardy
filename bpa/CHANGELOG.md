@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - **BREAKING:** `cla::Sink::dispatch_streamed` is the required dispatch primitive; `dispatch` becomes a provided whole-buffer convenience that delivers its buffer as a single `Segment::Final` through the streamed path. Implementors provide only `dispatch_streamed` (and must not call the provided `dispatch` from it without overriding it).
+- **BREAKING:** `ServiceSink` gains `send_streamed` as its required primitive — the bundle delivered as `stream::Segment`s, bounded by `max_bundle_size` like CLA ingress — and `send` becomes a provided convenience that funnels a single `Final` segment through the same originate path. `services::Error` gains `StreamCancelled` for a producer that drops its sender before the final segment.
 - **BREAKING:** `BpaBuilder` is obtained only from `Bpa::builder()`: `BpaBuilder::new` is no longer public and the `Default` impl is removed. The cache setters (`lru_capacity`, `max_cached_bundle_size`) have no effect when no bundle storage is configured, as the default memory store is never cached.
 - **BREAKING:** `Cla::forward` takes the bundle ID alongside the bundle bytes, so a deferring CLA can echo it back without parsing the bundle. `ForwardBundleResult` and `BundleStatus` have new variants; `Sink` has a new required method.
 - The dispatcher records `ForwardAckPending` before offering a bundle to the CLA, so an in-flight transfer is distinguishable from a queued one and a deferred outcome cannot race the offer.

@@ -132,9 +132,12 @@ impl services::ServiceSink for MockServiceSink {
         self.unregistered.store(true, Ordering::Relaxed);
     }
 
-    async fn send(&self, _data: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
+    async fn send_streamed(
+        &self,
+        _stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
         Err(services::Error::Internal(
-            "mock sink: send not implemented".into(),
+            "mock sink: send_streamed not implemented".into(),
         ))
     }
 

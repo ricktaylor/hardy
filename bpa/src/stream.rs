@@ -10,8 +10,9 @@
 //!   storage channel in production, or a `Vec`-collecting sink in the
 //!   conformance tests.
 //! - **Pull side** ([`Receiver<T>`]): the callee hands a source to a caller,
-//!   which pulls items by calling [`Receiver::recv`]. CLAs use it to stream
-//!   bundle [`Segment`]s into the BPA's ingress path.
+//!   which pulls items by calling [`Receiver::recv`]. The input doors use it
+//!   to stream bundle [`Segment`]s into the BPA — CLAs through the ingress
+//!   path, services through the originate path.
 
 use hardy_async::async_trait;
 
@@ -127,8 +128,10 @@ impl<T: Send> Receiver<T> for CancellableReceiver<'_, T> {
 }
 
 /// A segment of a bundle's encoded bytes in transit through a streaming
-/// trait method such as
-/// [`Sink::dispatch_streamed`](crate::cla::Sink::dispatch_streamed).
+/// trait method — [`Sink::dispatch_streamed`](crate::cla::Sink::dispatch_streamed)
+/// on the CLA ingress door,
+/// [`ServiceSink::send_streamed`](crate::services::ServiceSink::send_streamed)
+/// on the service originate door.
 ///
 /// `Final` marks the last segment of the bundle. The payload may be empty
 /// (`Final(Bytes::new())`) to signal end-of-stream without additional data.

@@ -145,10 +145,11 @@ impl BpaBuilder {
     /// storage is configured: the default memory store is never cached.
     /// Sets the maximum size of a single reassembled bundle at ingress.
     ///
-    /// Streamed dispatch accumulates segments until the bundle is complete;
-    /// this bound stops a runaway or hostile producer growing BPA memory
-    /// without limit. Streams exceeding it are rejected with an error to the
-    /// CLA. Defaults privately at the point of use.
+    /// Streamed dispatch and streamed service origination accumulate
+    /// segments until the bundle is complete; this bound stops a runaway or
+    /// hostile producer growing BPA memory without limit. Streams exceeding
+    /// it are rejected with an error to the producer. Defaults privately at
+    /// the point of use.
     pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_bundle_size = Some(v);
         self

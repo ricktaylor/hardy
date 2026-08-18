@@ -77,6 +77,31 @@ impl Dispatcher {
         }
     }
 
+    /// Dispatch a bundle from a segment stream (for low-level Service trait)
+    ///
+    /// Accumulates the stream (bounded by `max_bundle_size`, like CLA
+    /// ingress), then parses and validates the assembled bundle exactly as
+    /// [`local_dispatch_raw`](Self::local_dispatch_raw) does. A producer that
+    /// goes away before the final segment cancels the send: nothing has been
+    /// stored, and the caller gets
+    /// [`StreamCancelled`](services::Error::StreamCancelled).
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
+    pub async fn local_dispatch_raw_streamed(
+        self: &Arc<Self>,
+        expected_source: &Eid,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
+        let data = crate::stream::concat_stream(stream, self.max_bundle_size)
+            .await
+            .map_err(|e| match e {
+                crate::stream::ConcatError::Cancelled => services::Error::StreamCancelled,
+                crate::stream::ConcatError::TooLarge { size, max } => {
+                    services::Error::PayloadTooLarge { size, max }
+                }
+            })?;
+        self.local_dispatch_raw(expected_source, data).await
+    }
+
     /// Dispatch a bundle from raw bytes (for low-level Service trait)
     /// Parses and validates the bundle (security boundary)
     #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
