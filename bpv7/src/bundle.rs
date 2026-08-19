@@ -38,6 +38,15 @@ impl Bundle {
     /// round-trip and conformance tests need; the `bundle compare` CLI in
     /// `hardy-bpv7-tools` layers a human-readable diff on top of the same
     /// rules.
+    ///
+    /// Security-block comparison is exact only for contexts this build
+    /// recognises: operations with an unrecognised context id — including
+    /// every BIB/BCB operation when the `rfc9173` feature is disabled —
+    /// compare as *not* equal, so byte-identical bundles carrying such
+    /// blocks report as semantically different. This is deliberate:
+    /// without the context's semantics, parameter/result equivalence
+    /// cannot be judged, and a false "equal" is the worse failure mode
+    /// for the round-trip tests this serves.
     pub fn semantic_eq(&self, self_data: &[u8], other: &Bundle, other_data: &[u8]) -> bool {
         // Primary block — semantic fields only; CRC is a transport choice.
         let (pa, pb) = (&self.primary, &other.primary);

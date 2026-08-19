@@ -23,14 +23,6 @@ pub enum Error {
     #[error("Bundle has no payload block")]
     MissingPayload,
 
-    /// Indicates that the bundle payload block has an invalid block number (must be 1).
-    #[error("Bundle payload block must be block number 1")]
-    InvalidPayloadBlockNumber,
-
-    /// Indicates that the final block of a bundle is not a payload block.
-    #[error("Final block of bundle is not a payload block")]
-    PayloadNotFinal,
-
     /// Indicates that a bundle has more than one block with the same block number.
     #[error("Bundle has more than one block with block number {0}")]
     DuplicateBlockNumber(u64),

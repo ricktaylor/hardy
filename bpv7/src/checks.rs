@@ -101,6 +101,13 @@ pub struct Classification {
 /// BCB-encrypted BIBs aren't visible here — their bodies are ciphertext;
 /// they surface in §B after decryption. Pure classification: the caller
 /// decides whether to honour the `*_deletable` lists.
+///
+/// # Panics
+///
+/// Panics if `bcb_ops` / `bib_ops` name a block number absent from
+/// `blocks`. The three arguments are companion outputs of a single
+/// [`parse`](crate::parse::parse) over the same bundle; mixing outputs
+/// from different parses is a caller error, not a recoverable state.
 pub fn classify_unsupported(
     blocks: &HashMap<u64, block::Block>,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,

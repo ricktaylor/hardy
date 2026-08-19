@@ -194,6 +194,12 @@ impl OperationSet {
     /// Shared by the structural parser ([`crate::parse`]) and the keyed
     /// [`crate::checks::verify`] pass as the single source of truth for
     /// the per-OperationSet BCB rules.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bcb_block_number` is not in `blocks`. The caller looked
+    /// the BCB up in `blocks` to obtain this OperationSet; passing a
+    /// different block set is a caller error, not a recoverable state.
     pub fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
     where
         B: BlockSet<'a> + ?Sized,
