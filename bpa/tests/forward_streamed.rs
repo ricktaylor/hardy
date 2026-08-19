@@ -483,6 +483,28 @@ async fn default_body_truncated_stream_is_cancelled() {
     assert!(events_rx.is_empty());
 }
 
+/// A stream completing with fewer bytes than the declared `total_len` is
+/// rejected before delegation — no short transfer reaches the transport.
+#[tokio::test]
+async fn default_body_rejects_under_delivering_stream() {
+    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let short = data.slice(..data.len() - 1);
+    let rx = feed(vec![Segment::Final(short.clone())]).await;
+
+    let Err(err) = cla
+        .forward_streamed(None, &addr, &bundle.id, &rx, data.len() as u64)
+        .await
+    else {
+        panic!("Expected an under-delivering stream to fail");
+    };
+    assert!(matches!(
+        err,
+        cla::Error::PayloadUnderrun { size, expected }
+            if size == short.len() && expected == data.len()
+    ));
+    assert!(events_rx.is_empty());
+}
+
 /// A stream exceeding the declared `total_len` is rejected before delegation.
 #[tokio::test]
 async fn default_body_rejects_stream_exceeding_total_len() {

@@ -36,6 +36,13 @@ pub enum Error {
     #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
+    /// A bundle stream completed with fewer bytes than its declared
+    /// `total_len`. A transport may frame the wire transfer from the
+    /// declared length before pulling the first segment, so a short
+    /// delivery is rejected rather than shorting the transfer on the wire.
+    #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
+    PayloadUnderrun { size: usize, expected: usize },
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
@@ -289,7 +296,8 @@ pub trait Cla: Send + Sync {
     /// it also overrides this method, or the pair would recurse. A truncated
     /// stream yields [`Error::StreamCancelled`]; a stream exceeding
     /// `total_len`, or a `total_len` that cannot fit in addressable memory,
-    /// yields [`Error::PayloadTooLarge`].
+    /// yields [`Error::PayloadTooLarge`]; a stream completing with fewer
+    /// bytes than `total_len` yields [`Error::PayloadUnderrun`].
     async fn forward_streamed(
         &self,
         queue: Option<u32>,
@@ -316,6 +324,15 @@ pub trait Cla: Send + Sync {
                     Error::PayloadTooLarge { size, max }
                 }
             })?;
+        // Producers must deliver exactly total_len bytes: a transport may
+        // have framed the wire transfer from it, so an under-delivering
+        // producer fails here instead of shorting the transfer on the wire.
+        if data.len() != max_size {
+            return Err(Error::PayloadUnderrun {
+                size: data.len(),
+                expected: max_size,
+            });
+        }
         self.forward(queue, cla_addr, bundle_id, data).await
     }
 }
