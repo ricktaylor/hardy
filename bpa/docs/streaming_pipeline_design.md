@@ -785,6 +785,8 @@ Each step is a `mac.update()` or AAD accumulation call. The filter provides thes
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
+> **Landed state (2026-08, `feat/cla-forward-streamed`).** The streaming variant landed as `Cla::forward_streamed`, following the `dispatch_streamed`/`send_streamed` naming rather than the `write()` naming sketched below, and it keeps `forward`'s `bundle_id` correlation parameter, which the sketch predates. The non-streaming adapter is the trait's provided default body: it buffers the stream via `concat_stream`, capped at `total_len` (with a `usize` pre-flight for 32-bit targets), maps truncation to `StreamCancelled` and overrun to `PayloadTooLarge`, then delegates to `forward()`. The dispatcher now always forwards through the streamed door, wrapping the loaded bundle as a single `Final` segment with `total_len = data.len()`. The egress executor, streamed storage `load`, and the Transformer-derived `total_len` below remain pending.
+
 The existing `Cla::forward(Bytes)` method is retained for CLAs that expect a complete bundle in memory. A new streaming variant takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring `Sink::write` from §5.1:
 
 ```rust

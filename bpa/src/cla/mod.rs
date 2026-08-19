@@ -36,6 +36,13 @@ pub enum Error {
     #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
+    /// A bundle stream completed with fewer bytes than its declared
+    /// `total_len`. A transport may frame the wire transfer from the
+    /// declared length before pulling the first segment, so a short
+    /// delivery is rejected rather than shorting the transfer on the wire.
+    #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
+    PayloadUnderrun { size: usize, expected: usize },
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
@@ -165,8 +172,8 @@ pub enum TransferOutcome {
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs are often wrapped by an [`EgressPolicy`] to add more complex behaviors like
-/// rate limiting or prioritization.
+/// CLAs are often wrapped by an [`EgressPolicy`](crate::policy::EgressPolicy)
+/// to add more complex behaviors like rate limiting or prioritization.
 ///
 /// # Sink Lifecycle
 ///
@@ -257,6 +264,77 @@ pub trait Cla: Send + Sync {
         bundle_id: &Id,
         bundle: Bytes,
     ) -> Result<ForwardBundleResult>;
+
+    /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
+    /// address over a given queue.
+    ///
+    /// The streaming counterpart of [`forward`](Self::forward), mirroring
+    /// [`Sink::dispatch_streamed`] on the egress side: the implementation
+    /// pulls [`Segment::Next`] items from `stream` until [`Segment::Final`]
+    /// (which may carry empty bytes) completes the transfer.
+    ///
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the transfer: the CLA must
+    /// tear down without delivering a partial bundle to the peer, and must
+    /// not return `Ok` — a truncated transfer surfaced as success would let
+    /// the peer treat delivery as complete.
+    ///
+    /// `total_len` is the exact number of bundle bytes the stream will
+    /// deliver — the sum of all segment payload lengths. It is a framing
+    /// hint for transports that must announce a length up front (e.g. a
+    /// TCPCLv4 XFER_SEGMENT length), carried as `u64` so it remains valid on
+    /// 32-bit targets. Producers must be exact: an implementation may frame
+    /// the wire transfer from it before pulling the first segment.
+    ///
+    /// `bundle_id` plays the same role as in [`forward`](Self::forward): the
+    /// correlation key echoed via [`Sink::transfer_outcome`] when the CLA
+    /// answers [`ForwardBundleResult::Accepted`].
+    ///
+    /// The provided implementation buffers the stream — capped at
+    /// `total_len` — and delegates to [`forward`](Self::forward). An
+    /// implementation of `forward` must therefore not delegate here unless
+    /// it also overrides this method, or the pair would recurse. A truncated
+    /// stream yields [`Error::StreamCancelled`]; a stream exceeding
+    /// `total_len`, or a `total_len` that cannot fit in addressable memory,
+    /// yields [`Error::PayloadTooLarge`]; a stream completing with fewer
+    /// bytes than `total_len` yields [`Error::PayloadUnderrun`].
+    async fn forward_streamed(
+        &self,
+        queue: Option<u32>,
+        cla_addr: &ClaAddress,
+        bundle_id: &Id,
+        stream: &dyn crate::stream::Receiver<Segment>,
+        total_len: u64,
+    ) -> Result<ForwardBundleResult> {
+        // The buffered adapter's transport limit is a contiguous in-memory
+        // buffer: a total_len that is not indexable as usize (32-bit
+        // targets) cannot be assembled, and is rejected before pulling a
+        // segment. Both fields saturate to the representable maximum.
+        let Ok(max_size) = usize::try_from(total_len) else {
+            return Err(Error::PayloadTooLarge {
+                size: usize::MAX,
+                max: usize::MAX,
+            });
+        };
+        let data = crate::stream::concat_stream(stream, max_size)
+            .await
+            .map_err(|e| match e {
+                crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
+                crate::stream::ConcatError::TooLarge { size, max } => {
+                    Error::PayloadTooLarge { size, max }
+                }
+            })?;
+        // Producers must deliver exactly total_len bytes: a transport may
+        // have framed the wire transfer from it, so an under-delivering
+        // producer fails here instead of shorting the transfer on the wire.
+        if data.len() != max_size {
+            return Err(Error::PayloadUnderrun {
+                size: data.len(),
+                expected: max_size,
+            });
+        }
+        self.forward(queue, cla_addr, bundle_id, data).await
+    }
 }
 
 /// A communication channel from a CLA back to the main BPA components.
