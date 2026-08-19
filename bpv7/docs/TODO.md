@@ -385,3 +385,27 @@ Do this on `refactor/parse` rather than as a standalone cleanup off main. Milest
 RFC 9173 §3.8.2 is explicit: the HMAC key is derived from the single wrapped-key parameter *of the BIB* (one per block) and compared against the per-target results — i.e. one shared key, N per-target results. So the fix is **not** a per-target split (that is the encryptor's BCB-AES-GCM rule, driven by unique IVs). BIB-HMAC-SHA2 legitimately shares: generate one CEK per `(source, context)` group, wrap it once into the single emitted parameter set, and (direct mode) enforce one key per group. `can_share()` for BIB-HMAC-SHA2 should be `true`.
 
 Latent, not a runtime bug: the BPA never signs, and the `bundle sign` CLI signs a single block per invocation, so no multi-target BIB is produced by shipped paths. Fix on the bpsec-editor work rather than as a standalone patch.
+
+## bpv7-parse review triage (2026-08-19)
+
+Open items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-parse-review.md`, per-finding dispositions inline there) that are fixed nowhere in the refactor train. Most-severe first.
+
+**Dangling BIB coverage after wholesale BIB removal (E3, bpa-side B7).** `remove_block_inner` on a BIB block never clears its surviving targets' `bib = Some(removed_bib)`; `bib_overrides` is written only by the per-target `remove_from_bib_targets` path. Reached in-tree by the `bib_deletable` path (unsupported plaintext BIB flagged `delete_block_on_failure`), so the rebuilt bundle the BPA stores advertises coverage by a nonexistent block, contradicting `rebuild_bundle`'s "coverage correct by construction" doc. Fix: on removing a BIB, stamp its targets' coverage `None` (mirroring `remove_from_bib_targets`) and apply the CRC restoration `remove_integrity` performs on now-unprotected targets.
+
+**`remove_blocks` guards (E2 residual, E5).** A `BibCoverage::Maybe` target in `to_remove` is still removed with no cascade — the encrypted BIB retains a stale target entry for downstream key-holders (`remove_block_inner` matches only `Some(_)`), violating the design doc's "a `Maybe` block must not be removed before resolution" rule. And `remove_blocks({0})`/`({1})` run unguarded into the rebuild `.expect`s while `remove_blocks({bcb_num})` removes a BCB outright, stranding ciphertext targets — the exact hazards public `remove_block` refuses. Add the Maybe guard and the 0/1/security-block screen; these should be `Err`, not panic/corruption.
+
+**`remove_from_bcb_targets` lacks its BIB twin's override-clearing (E4).** `remove_from_bib_targets` inserts a clearing override for the target; the BCB analogue has none, so `remove_encryption` + `rebuild_bundle()` can yield a now-plaintext block still claiming `bcb = Some(n)`. Latent in-tree (the BPA never calls `remove_encryption`; tools reparse) but a public-API invariant break.
+
+**`Chunk::flatten` release-mode bounds (E10 residual).** `flatten` guards `extent` against `source.len()` with a `debug_assert!` only — in release a bad (bundle, source) pairing is a slice-index panic. `Block` is serde-deserializable and `Editor::new` accepts any pairing, so make it panic-free by construction (`source.get(..)` / compare in u64), per the 32-bit rule.
+
+**Pub fact-producer panic posture (E9).** `checks::classify_unsupported` `expect`s that `bcb_ops`/`bib_ops` keys exist in `blocks`, and `OperationSet::check` (bib.rs/bcb.rs) `expect`s `block_header`. Fine for in-tree callers fed by `parse::parse`, but these are advertised `pub` composition APIs. Either document the contract as for `apply_rewrites` (E7's resolution) or return `Err` on inconsistent input.
+
+**Dead error variants (core #2).** `Error::InvalidPayloadBlockNumber` and `Error::PayloadNotFinal` have zero construction sites since the parser split (the conditions surface as `InvalidBlockNumber`, `MissingPayload`, `AdditionalData`). Remove or wire up.
+
+**`semantic_eq` cliff without `rfc9173` (core #3).** `operation_eq`'s only substantive arms are `#[cfg(feature = "rfc9173")]`; with the feature off (or any unrecognised context) byte-identical BIB/BCB blocks compare non-equal, so `semantic_eq` reports identical bundles as different. Document the cliff or fall back to raw-bytes equality for the unknown-context case.
+
+**Idiomatics (E11 a/b/d/e).** `BibCoverage` derives `Clone` but not `Copy` (forcing `.clone()` noise); `bcb_overrides: HashMap<u64, Option<u64>>` only ever inserts `Some` (dead `Option` layer); staged BIB plaintext is copied out of `Zeroizing` into a plain `Vec` in `bpsec::edit` step 3 (contrast `remove_encryption`'s `mem::take`); the `remove_blocks` "removed" return set is `to_remove` post-pull-back and can include block numbers that never existed, letting `apply_rewrites` report `Rewritten` for a byte-identical bundle.
+
+**`insert_block` Keep-reuse bypasses the cascade (E12, pre-existing).** Reusing an existing same-type block builds a fresh template with neither the security cascade nor the `bib`/`bcb` metadata `update_block_inner` preserves — replacing a signed PreviousNode via `insert_block` leaves a stale BIB signature over the new body. Pre-dates the parse refactor; fold into the next editor-cascade pass.
+
+**Release note: canonical-only framing (E8).** `bundle validate`/`bundle rewrite` deliberately lost the "non-canonical but semantically valid" diagnostic/repair for framing (strict `parse_canonical`; block-body repair remains for PreviousNode/HopCount). Needs a release-note entry when the train ships.
