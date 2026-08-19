@@ -98,8 +98,17 @@ impl Dispatcher {
             }
         };
 
-        // And pass to CLA
-        match cla.forward(queue, cla_addr, &bundle.bundle.id, data).await {
+        // And pass to CLA, always through the streamed door: the whole
+        // bundle is in hand, so it travels as a single Final segment.
+        let total_len = data.len() as u64;
+        let (tx, rx) = hardy_async::channel::bounded(1);
+        crate::stream::Sender::send(&tx, cla::Segment::Final(data))
+            .await
+            .trace_expect("bounded(1) send with live receiver cannot fail");
+        match cla
+            .forward_streamed(queue, cla_addr, &bundle.bundle.id, &rx, total_len)
+            .await
+        {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
