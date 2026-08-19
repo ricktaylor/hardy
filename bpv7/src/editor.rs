@@ -67,6 +67,13 @@ impl Chunk {
 
     /// Flatten chunks into a contiguous byte buffer, wrapping in a CBOR
     /// indefinite-length array (0x9F prefix, 0xFF suffix).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an `Unchanged` extent lies outside `source`. Chunk plans
+    /// from [`Editor::rebuild`] / [`Editor::rebuild_bundle`] over the same
+    /// source buffer always satisfy this; pairing a plan with a different
+    /// (or truncated) source is a caller error.
     pub fn flatten(chunks: Vec<Self>, source: &[u8]) -> Box<[u8]> {
         let total_len = 2 + chunks.iter().map(|c| c.len()).sum::<usize>();
         let mut result = Vec::with_capacity(total_len);
@@ -74,8 +81,11 @@ impl Chunk {
         for c in chunks {
             match c {
                 Chunk::Unchanged(extent) => {
-                    debug_assert!(extent.end <= source.len());
-                    result.extend_from_slice(&source[extent]);
+                    result.extend_from_slice(
+                        source
+                            .get(extent)
+                            .expect("Chunk::Unchanged extent out of bounds of the source buffer"),
+                    );
                 }
                 Chunk::New(items) => {
                     result.extend(items);
@@ -114,6 +124,11 @@ impl Chunk {
     /// position are left untouched; New chunks overwrite the gaps.
     /// The buffer is resized (truncated or extended) if the total output
     /// length differs from the source.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an `Unchanged` extent lies outside `source` (same
+    /// precondition as [`Chunk::flatten`]).
     pub fn flatten_inplace(chunks: Vec<Self>, source: &mut Vec<u8>) {
         // Single pass: compute total length and the required copy direction. An
         // Unchanged range shifts right if its destination is past its source
@@ -802,6 +817,32 @@ impl<'a> Editor<'a> {
             (block::BibCoverage::None, None)
         };
 
+        // Removing a BIB outright orphans its targets' coverage stamps —
+        // `remove_from_bib_targets` only handles the target-removed
+        // direction. Enumerate the OperationSet (readable only when the
+        // body is plaintext) and clear each target still marked as covered
+        // by this BIB. Targets of an *encrypted* BIB carry
+        // `BibCoverage::Maybe` and keep it: another encrypted BIB may
+        // cover them, so `Maybe` remains the accurate answer.
+        let mut bib_targets: Vec<u64> = Vec::new();
+        if let Some((block, Some(payload))) = self.block(block_number)
+            && matches!(block.block_type, block::Type::BlockIntegrity)
+            && let Ok(opset) = hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(payload)
+        {
+            bib_targets.extend(opset.operations.keys().copied());
+        }
+        for target in bib_targets {
+            let covered_by_this = match self.bib_overrides.get(&target) {
+                Some(cov) => matches!(cov, block::BibCoverage::Some(n) if *n == block_number),
+                None => self.block(target).is_some_and(
+                    |(b, _)| matches!(b.bib, block::BibCoverage::Some(n) if n == block_number),
+                ),
+            };
+            if covered_by_this {
+                self.bib_overrides.insert(target, block::BibCoverage::None);
+            }
+        }
+
         // Now remove the block from the templates
         if self.blocks.remove(&block_number).is_some() {
             // If there is a BIB, remove the block from the list of targets
@@ -906,6 +947,11 @@ impl<'a> Editor<'a> {
                         .with_data(hardy_cbor::encode::emit(&opset).0.into())
                         .rebuild();
                 }
+
+                // The target is no longer covered by this BCB. Clear its
+                // coverage so `rebuild_bundle()` does not report a dangling
+                // reference (mirrors `remove_from_bib_targets`).
+                self.bcb_overrides.insert(target_block, None);
             }
         }
         Ok(self)

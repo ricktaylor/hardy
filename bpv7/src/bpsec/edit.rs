@@ -48,7 +48,7 @@ pub trait BPSecEditor: Sized {
     /// For cascade-aware single-block removal, call this with a
     /// 1-element set and inspect the returned set.
     ///
-    /// Lenient on two fronts: (a) when the cascade would partially shrink
+    /// Lenient on three fronts: (a) when the cascade would partially shrink
     /// a BCB-encrypted BIB and no Encrypt-capable key is available, the
     /// affected BIB's covered targets are silently retained — a dangling
     /// BIB reference would be worse; (b) a BCB-encrypted BIB that cannot
@@ -56,7 +56,22 @@ pub trait BPSecEditor: Sized {
     /// and skipped during staging. If such a BIB is in `blocks` it is
     /// removed wholesale in the cascade step via `remove_block_inner`,
     /// which strips it from its BCB's plaintext OperationSet without
-    /// needing to read the BIB body.
+    /// needing to read the BIB body; (c) a target whose encrypted-BIB
+    /// coverage is unresolved ([`block::BibCoverage::Maybe`]) is silently
+    /// retained while any undecryptable BIB survives — removing it would
+    /// leave that BIB's ciphertext OperationSet listing a nonexistent
+    /// block for downstream key-holders.
+    ///
+    /// Strict on the rest: requests naming the primary block, the payload
+    /// block, or a BCB whose targets are not all also in `blocks` (which
+    /// would strand ciphertext that reparses as plaintext) are errors.
+    ///
+    /// The returned set contains the requested blocks that were actually
+    /// removed: never phantom numbers the bundle doesn't hold, and not the
+    /// blocks the leniency rules above pulled back — so an entirely
+    /// pulled-back request reports an empty set, which
+    /// [`rewrite::apply_rewrites`](crate::rewrite::apply_rewrites) maps to
+    /// "no rewrite".
     ///
     /// All-dead shrinks (every target of a covering BIB is in `blocks`)
     /// need no Encrypt key: the cascade empties the OperationSet and
@@ -92,6 +107,35 @@ impl<'a> BPSecEditor for Editor<'a> {
     where
         K: key::KeySource + ?Sized,
     {
+        // 0. Screen the request. The primary and payload blocks are never
+        //    removable, and a BCB may only be removed together with all of
+        //    its targets — removing it alone would strand ciphertext that
+        //    reparses as plaintext downstream. (BIBs in the request are
+        //    fine: removing a BIB wholesale is the RFC 9172 §5.1.1
+        //    failure-drop.)
+        if to_remove.contains(&0) {
+            return Err((self, EditorError::PrimaryBlock));
+        }
+        if to_remove.contains(&1) {
+            return Err((self, EditorError::PayloadBlock));
+        }
+        for &n in &to_remove {
+            if !self
+                .block(n)
+                .is_some_and(|(b, _)| matches!(b.block_type, block::Type::BlockSecurity))
+            {
+                continue;
+            }
+            let strands = match decode_bcb_opset(&self, n) {
+                Ok(Some(opset)) => opset.operations.keys().any(|t| !to_remove.contains(t)),
+                Ok(None) => false,
+                Err(e) => return Err((self, e)),
+            };
+            if strands {
+                return Err((self, Error::StrandsCiphertext(n).into()));
+            }
+        }
+
         // 1. Enumerate the BCB-encrypted BIBs the cascade might touch.
         let encrypted_bibs: Vec<(u64, u64)> = self
             .block_numbers()
@@ -108,6 +152,11 @@ impl<'a> BPSecEditor for Editor<'a> {
         // 2. For each, decrypt the body, decide stage / reencrypt / pull-back.
         let mut staging = CascadeStaging::default();
         let mut decrypted_plaintexts: HashMap<u64, zeroize::Zeroizing<Box<[u8]>>> = HashMap::new();
+        // Targets whose encrypted-BIB coverage got resolved by a successful
+        // decrypt, and the BIBs that stayed opaque — both feed the
+        // `Maybe`-target pull-back below.
+        let mut resolved_targets: HashSet<u64> = HashSet::new();
+        let mut undecrypted_bibs: SmallVec<[u64; 4]> = SmallVec::new();
 
         for (bib_num, bcb_num) in encrypted_bibs {
             let bcb_opset = match decode_bcb_opset(&self, bcb_num) {
@@ -122,19 +171,21 @@ impl<'a> BPSecEditor for Editor<'a> {
             self = editor;
             let (plaintext, bib_opset) = match outcome {
                 CoveredBib::NotCovered => continue,
-                // NoKey: leave the BIB encrypted. Caller's `to_remove`
-                // entries that this BIB protects will hit
-                // remove_from_bib_targets failing to parse the ciphertext
-                // OpSet and surface as an error.
                 // NoKey or DecryptionFailed: leave the BIB encrypted and
                 // skip staging. A corrupt (undecryptable) BIB is handled
                 // the same as NoKey — it is leniently retained here and
                 // removed wholesale in step 4 if the caller included it
-                // in `to_remove` (RFC 9172 §5.1.1 failure-drop).
-                CoveredBib::DecryptFailed => continue,
+                // in `to_remove` (RFC 9172 §5.1.1 failure-drop). Its
+                // targets, if requested, are pulled back below unless the
+                // BIB itself is going too.
+                CoveredBib::DecryptFailed => {
+                    undecrypted_bibs.push(bib_num);
+                    continue;
+                }
                 CoveredBib::ParseFailed(e) => return Err((self, e)),
                 CoveredBib::Decrypted(plaintext, opset) => (plaintext, opset),
             };
+            resolved_targets.extend(bib_opset.operations.keys().copied());
 
             let dead_count = bib_opset
                 .operations
@@ -169,6 +220,24 @@ impl<'a> BPSecEditor for Editor<'a> {
             decrypted_plaintexts.insert(bib_num, plaintext);
         }
 
+        // 2b. A `Maybe`-covered target must not be removed before its
+        //     coverage is resolved: if an encrypted BIB survives
+        //     undecrypted, dropping the target could leave that BIB's
+        //     ciphertext OperationSet listing a nonexistent block for
+        //     downstream key-holders. Pull such targets back out of
+        //     `to_remove` — the same trade as the partial-shrink rule
+        //     above, consistency over delete flags. When every
+        //     undecryptable BIB is itself being removed, no stale listing
+        //     can survive and the targets may go.
+        if undecrypted_bibs.iter().any(|n| !to_remove.contains(n)) {
+            to_remove.retain(|&n| {
+                resolved_targets.contains(&n)
+                    || !self
+                        .block(n)
+                        .is_some_and(|(b, _)| matches!(b.bib, block::BibCoverage::Maybe))
+            });
+        }
+
         // 3. Stage plaintext into Editor templates so
         //    remove_from_bib_targets reads plaintext instead of tripping
         //    on ciphertext.
@@ -184,7 +253,14 @@ impl<'a> BPSecEditor for Editor<'a> {
 
         // 4. Cascade. HashSet iteration order is non-deterministic but
         //    the cascade is order-independent: BIB/BCB shrinkage commutes.
-        let removed: HashSet<u64> = to_remove.iter().copied().collect();
+        //    Report only the requested blocks the bundle actually holds:
+        //    phantom numbers must not read as removals (a caller like
+        //    `apply_rewrites` treats a non-empty set as "rewritten").
+        let removed: HashSet<u64> = to_remove
+            .iter()
+            .copied()
+            .filter(|&n| self.block(n).is_some())
+            .collect();
         for block_number in to_remove {
             self = self.remove_block_inner(block_number)?;
         }

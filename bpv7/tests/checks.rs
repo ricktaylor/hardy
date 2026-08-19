@@ -853,6 +853,185 @@ mod cascade_reencryption_tests {
         assert!(bundle.blocks.contains_key(&1), "payload must survive");
     }
 
+    use hardy_bpv7::bpsec::edit::BPSecEditor;
+    use hardy_bpv7::editor::Editor;
+
+    // Removing a plaintext BIB outright must clear its surviving targets'
+    // coverage stamps: the rebuilt Bundle must not report coverage by a
+    // block that no longer exists (parse-review finding E3).
+    #[test]
+    fn removing_bib_outright_clears_target_coverage() {
+        let sign_k = sign_key();
+        let base = build_with_unknown_block();
+        let signed = sign(&base, &[1, 2], &sign_k);
+
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&signed)).unwrap();
+        let bib_num = find_bib(&raw).expect("BIB present");
+        assert!(matches!(raw.blocks[&1].bib, block::BibCoverage::Some(n) if n == bib_num));
+        assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Some(n) if n == bib_num));
+
+        let (editor, removed) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([bib_num]), &empty_keys())
+            .map_err(|(_, e)| e)
+            .unwrap();
+        assert_eq!(removed, HashSet::from([bib_num]));
+
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
+        assert!(!bundle.blocks.contains_key(&bib_num), "BIB removed");
+        assert!(
+            matches!(bundle.blocks[&1].bib, block::BibCoverage::None),
+            "target 1 coverage cleared"
+        );
+        assert!(
+            matches!(bundle.blocks[&2].bib, block::BibCoverage::None),
+            "target 2 coverage cleared"
+        );
+    }
+
+    // remove_blocks screens its request: primary/payload are never
+    // removable, and a BCB may only go together with all of its targets
+    // (parse-review finding E5).
+    #[test]
+    fn remove_blocks_screens_request() {
+        let sign_k = sign_key();
+        let enc_k = enc_key();
+        let base = build_with_unknown_block();
+
+        // Plain bundle: primary and payload are refused outright.
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).unwrap();
+        let (_, err) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([0u64]), &empty_keys())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(err, editor::Error::PrimaryBlock), "{err}");
+        let (_, err) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([1u64]), &empty_keys())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(matches!(err, editor::Error::PayloadBlock), "{err}");
+
+        // Encrypted bundle: removing the BCB alone would strand block 2's
+        // ciphertext — refused. (Together with its target it succeeds, as
+        // the failure-drop test above shows.)
+        let signed = sign(&base, &[2], &sign_k);
+        let encrypted = encrypt(&signed, 2, &enc_k);
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
+        let bcb_over_2 = raw.blocks[&2].bcb.expect("block 2 is BCB-encrypted");
+        let (_, err) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([bcb_over_2]), &empty_keys())
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("without also removing all of its targets"),
+            "{err}"
+        );
+    }
+
+    // A `Maybe`-covered target must not be removed while its covering
+    // encrypted BIB survives undecrypted: the request is pulled back and
+    // the bundle left untouched (parse-review finding E2 residual).
+    #[test]
+    fn maybe_covered_target_pulled_back_without_keys() {
+        let sign_k = sign_key();
+        let enc_k = enc_key();
+        let base = build_with_unknown_block();
+        let signed = sign(&base, &[2], &sign_k);
+        let encrypted = encrypt(&signed, 2, &enc_k);
+
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
+        let bib_num = find_bib(&raw).expect("BIB present");
+        assert!(matches!(raw.blocks[&2].bib, block::BibCoverage::Maybe));
+
+        // No keys: the BIB stays opaque, and block 2 must be retained.
+        let (editor, removed) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([2u64]), &empty_keys())
+            .map_err(|(_, e)| e)
+            .unwrap();
+        assert!(removed.is_empty(), "pulled-back request removes nothing");
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
+        assert!(
+            bundle.blocks.contains_key(&2),
+            "Maybe-covered target retained"
+        );
+        assert!(
+            bundle.blocks.contains_key(&bib_num),
+            "encrypted BIB retained"
+        );
+
+        // And apply_rewrites maps the all-pulled-back request to "no
+        // rewrite" (was: Rewritten with a byte-identical bundle).
+        let result = rewrite::apply_rewrites(
+            &bytes,
+            &raw,
+            &empty_keys(),
+            HashMap::new(),
+            HashSet::from([2u64]),
+        )
+        .expect("apply_rewrites");
+        assert!(
+            result.is_none(),
+            "no rewrite for a fully pulled-back request"
+        );
+    }
+
+    // Phantom block numbers in the request are not reported as removals
+    // and produce no rewrite (parse-review finding E11e).
+    #[test]
+    fn phantom_removals_are_not_reported() {
+        let base = build_with_unknown_block();
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).unwrap();
+
+        let (_, removed) = Editor::new(&raw, &bytes)
+            .remove_blocks(HashSet::from([99u64]), &empty_keys())
+            .map_err(|(_, e)| e)
+            .unwrap();
+        assert!(removed.is_empty());
+
+        let result = rewrite::apply_rewrites(
+            &bytes,
+            &raw,
+            &empty_keys(),
+            HashMap::new(),
+            HashSet::from([99u64]),
+        )
+        .expect("apply_rewrites");
+        assert!(
+            result.is_none(),
+            "phantom request must not read as Rewritten"
+        );
+    }
+
+    // remove_encryption must clear the decrypted target's BCB coverage in
+    // the rebuilt Bundle (parse-review finding E4).
+    #[test]
+    fn remove_encryption_clears_bcb_coverage() {
+        let enc_k = enc_key();
+        let keys = bpsec::key::KeySet::new(vec![enc_k.clone()]);
+
+        let (_, base) =
+            builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_payload(b"payload data".as_slice().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let encrypted = encrypt(&base, 1, &enc_k);
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&encrypted)).unwrap();
+        let bcb_num = raw.blocks[&1].bcb.expect("payload is BCB-encrypted");
+
+        let editor = bpsec::edit::remove_encryption(Editor::new(&raw, &bytes), 1, &keys)
+            .map_err(|(_, e)| e)
+            .unwrap();
+        let (bundle, _) = editor.rebuild_bundle().unwrap();
+        assert!(
+            !bundle.blocks.contains_key(&bcb_num),
+            "single-target BCB dropped"
+        );
+        assert!(
+            bundle.blocks[&1].bcb.is_none(),
+            "target's BCB coverage cleared"
+        );
+    }
+
     // The producers (Signer/Encryptor) must only ever emit bundles that the
     // validator's structural rules (`bib`/`bcb::OperationSet::check`, run inside
     // `parse::parse`) accept. This is currently guaranteed by construction; this
