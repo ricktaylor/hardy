@@ -457,12 +457,28 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
 
     failing_svc.sink.get().unwrap().unregister().await;
 
-    let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+    // The failed delivery parks the bundle *after* the service reports the
+    // failure, so a single registration can race the park; each fresh
+    // registration re-triggers the WaitingForService poll.
+    let mut redelivery = None;
+    for i in 0.. {
+        let (svc, events_rx) = StreamingService::new(false);
+        bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+            .await
+            .unwrap();
+        if let Ok(Ok(event)) = tokio::time::timeout(
+            tokio::time::Duration::from_millis(500),
+            events_rx.recv_async(),
+        )
         .await
-        .unwrap();
-
-    let Event::Streamed { segments, .. } = recv_event(&events_rx, 10).await else {
+        {
+            redelivery = Some(event);
+            break;
+        }
+        assert!(i < 20, "Timed out waiting for the re-delivery");
+        svc.sink.get().unwrap().unregister().await;
+    }
+    let Some(Event::Streamed { segments, .. }) = redelivery else {
         panic!("Expected re-delivery through the streamed door");
     };
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
