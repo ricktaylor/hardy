@@ -37,6 +37,13 @@ pub enum Error {
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
+    /// A bundle stream completed with fewer bytes than its declared
+    /// `total_len`. An implementation may size buffers — or frame a
+    /// transfer — from the declared length before pulling the first
+    /// segment, so an under-delivering producer is rejected at the seam.
+    #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
+    PayloadUnderrun { size: usize, expected: usize },
+
     /// The node ID configuration doesn't support the requested service scheme.
     #[error(transparent)]
     NodeId(#[from] crate::node_ids::Error),
@@ -255,6 +262,71 @@ pub trait Service: Send + Sync {
     /// Returning `Err` parks the bundle as `WaitingForService`; a
     /// subsequent registration on the same EID re-delivers it.
     async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime) -> Result<()>;
+
+    /// Called when a bundle arrives, delivered as a stream of segments.
+    ///
+    /// The streaming counterpart of [`on_receive`](Self::on_receive): the
+    /// implementation pulls [`Segment::Next`](crate::stream::Segment::Next)
+    /// items from `stream` until
+    /// [`Segment::Final`](crate::stream::Segment::Final) (which may carry
+    /// empty bytes) completes the delivery.
+    ///
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the delivery: the
+    /// implementation must not act on the partial bundle and must not
+    /// return `Ok` — returning `Err` leaves the bundle parked as
+    /// `WaitingForService` for re-delivery, exactly as for
+    /// [`on_receive`](Self::on_receive).
+    ///
+    /// `total_len` is the exact number of bundle bytes the stream will
+    /// deliver — the sum of all segment payload lengths — carried as `u64`
+    /// so it remains valid on 32-bit targets. An implementation may size
+    /// buffers from it before pulling the first segment.
+    ///
+    /// The provided implementation buffers the stream — capped at
+    /// `total_len` — and delegates to [`on_receive`](Self::on_receive). An
+    /// implementation of `on_receive` must therefore not delegate here
+    /// unless it also overrides this method, or the pair would recurse. A
+    /// truncated stream yields [`Error::StreamCancelled`]; a stream
+    /// exceeding `total_len`, or a `total_len` that cannot fit in
+    /// addressable memory, yields [`Error::PayloadTooLarge`]; a stream
+    /// completing with fewer bytes than `total_len` yields
+    /// [`Error::PayloadUnderrun`].
+    async fn on_receive_streamed(
+        &self,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+        expiry: time::OffsetDateTime,
+        total_len: u64,
+    ) -> Result<()> {
+        // The buffered adapter's limit is a contiguous in-memory buffer: a
+        // total_len that is not indexable as usize (32-bit targets) cannot
+        // be assembled, and is rejected before pulling a segment. Both
+        // fields saturate to the representable maximum.
+        let Ok(max_size) = usize::try_from(total_len) else {
+            return Err(Error::PayloadTooLarge {
+                size: usize::MAX,
+                max: usize::MAX,
+            });
+        };
+        let data = crate::stream::concat_stream(stream, max_size)
+            .await
+            .map_err(|e| match e {
+                crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
+                crate::stream::ConcatError::TooLarge { size, max } => {
+                    Error::PayloadTooLarge { size, max }
+                }
+            })?;
+        // Producers must deliver exactly total_len bytes: an implementation
+        // may have sized buffers or framed a transfer from it, so an
+        // under-delivering producer fails here at the seam.
+        if data.len() != max_size {
+            return Err(Error::PayloadUnderrun {
+                size: data.len(),
+                expected: max_size,
+            });
+        }
+        self.on_receive(data, expiry).await
+    }
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
