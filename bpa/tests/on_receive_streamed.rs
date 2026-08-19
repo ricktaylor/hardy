@@ -442,6 +442,32 @@ async fn default_body_truncated_stream_is_cancelled() {
     assert!(events_rx.is_empty());
 }
 
+/// A stream completing with fewer bytes than the declared `total_len` is
+/// rejected before delegation — no short bundle reaches the service.
+#[tokio::test]
+async fn default_body_rejects_under_delivering_stream() {
+    let (svc, events_rx) = BufferedService::new();
+    let data = build_bundle(
+        &"ipn:0.1.1".parse().unwrap(),
+        &"ipn:0.2.99".parse().unwrap(),
+        b"payload",
+    );
+    let short = data.slice(..data.len() - 1);
+    let rx = feed(vec![Segment::Final(short.clone())]).await;
+
+    let Err(err) =
+        services::Service::on_receive_streamed(&*svc, &rx, expiry(), data.len() as u64).await
+    else {
+        panic!("Expected an under-delivering stream to fail");
+    };
+    assert!(matches!(
+        err,
+        services::Error::PayloadUnderrun { size, expected }
+            if size == short.len() && expected == data.len()
+    ));
+    assert!(events_rx.is_empty());
+}
+
 /// A stream exceeding the declared `total_len` is rejected before
 /// delegation.
 #[tokio::test]

@@ -37,6 +37,13 @@ pub enum Error {
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
+    /// A bundle stream completed with fewer bytes than its declared
+    /// `total_len`. An implementation may size buffers — or frame a
+    /// transfer — from the declared length before pulling the first
+    /// segment, so an under-delivering producer is rejected at the seam.
+    #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
+    PayloadUnderrun { size: usize, expected: usize },
+
     /// The node ID configuration doesn't support the requested service scheme.
     #[error(transparent)]
     NodeId(#[from] crate::node_ids::Error),
@@ -282,7 +289,9 @@ pub trait Service: Send + Sync {
     /// unless it also overrides this method, or the pair would recurse. A
     /// truncated stream yields [`Error::StreamCancelled`]; a stream
     /// exceeding `total_len`, or a `total_len` that cannot fit in
-    /// addressable memory, yields [`Error::PayloadTooLarge`].
+    /// addressable memory, yields [`Error::PayloadTooLarge`]; a stream
+    /// completing with fewer bytes than `total_len` yields
+    /// [`Error::PayloadUnderrun`].
     async fn on_receive_streamed(
         &self,
         stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -307,6 +316,15 @@ pub trait Service: Send + Sync {
                     Error::PayloadTooLarge { size, max }
                 }
             })?;
+        // Producers must deliver exactly total_len bytes: an implementation
+        // may have sized buffers or framed a transfer from it, so an
+        // under-delivering producer fails here at the seam.
+        if data.len() != max_size {
+            return Err(Error::PayloadUnderrun {
+                size: data.len(),
+                expected: max_size,
+            });
+        }
         self.on_receive(data, expiry).await
     }
 
