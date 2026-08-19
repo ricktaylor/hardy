@@ -220,8 +220,16 @@ impl Dispatcher {
 
         let delivery_result = match &service.service {
             services::registry::ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services
-                svc.on_receive(data, bundle.expiry()).await
+                // Pass raw bundle bytes to low-level services, always
+                // through the streamed door: the whole bundle is in hand,
+                // so it travels as a single Final segment.
+                let total_len = data.len() as u64;
+                let (tx, rx) = hardy_async::channel::bounded(1);
+                crate::stream::Sender::send(&tx, crate::stream::Segment::Final(data))
+                    .await
+                    .trace_expect("bounded(1) send with live receiver cannot fail");
+                svc.on_receive_streamed(&rx, bundle.expiry(), total_len)
+                    .await
             }
             services::registry::ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application
