@@ -831,6 +831,8 @@ No header segment caching is needed — the Transformer model does not require r
 
 Every backend handles the trait natively without adaptation layers.
 
+Backends differ in preferred **concurrency**, not just I/O pattern: S3 benefits from parallel streams, a single spinning disk wants few and sequential (N concurrent sequential streams degrade to seek thrash), and NOR flash is read-fast/write-slow. Concurrent stream count is therefore a scheduling input, not a backend-internal detail — the backend supplies **directional lane counts** (read lanes / write lanes, each `Option<NonZeroUsize>` with `None` = no preferred limit; in the policy doc's vocabulary a lane is one bounded-quantum service channel, and a resource's lane count is its honest parallelism) to the scheduling layer (`policy_subsystem_redesign.md`, the storage seat).
+
 ## 9. Crate Structure
 
 ### 9.1. Crate Responsibilities
@@ -958,7 +960,7 @@ Result: the payload-never-in-RAM property (§2.5) on ingress.
 
 ### Queue integration
 
-Wiring Ingest and ClaSend into the queue model (class-driven FlowControllers) belongs to the queue/policy tranche — see `policy_subsystem_redesign.md`.
+Wiring Ingest and ClaSend into the queue model (class-driven FlowControllers) belongs to the queue/policy tranche — see `policy_subsystem_redesign.md`. Two couplings created by this design land there rather than here. **Storage bandwidth becomes a scheduled resource**: once `store()`/`load()` stream (Phases A/B), ingress spooling, egress streaming, generational rewrites, and reassembly contend for disk bandwidth — egress drain rate becomes min(link rate, storage read rate) — and the split, most acutely receive-versus-transmit during a bidirectional contact, is a discipline decision, not an accident of task scheduling (the policy doc's "second link" section; the pre-drain gate's ability to decline the payload drain, pushing queueing back into link-layer flow control, is one of that discipline's levers). **The log-jam invariant**: a small high-priority bundle must never wait behind a giant low-priority one, so every shared resource serves at bounded quantum — chunks for byte resources, items for count resources. The per-call channels of §5.1.1 and the sequential spool are what make chunk-quantum service *possible*; the policy tranche's disciplines (and, where a convergence layer cannot interleave an in-flight transfer, per-peer lanes via the `queue` parameter — the lane index, in the policy doc's queue/lane vocabulary) are what make it *hold* end to end.
 
 ## 11. Type Safety and Bundle Ownership
 
