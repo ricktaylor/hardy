@@ -228,7 +228,7 @@ impl Dispatcher {
                 crate::stream::Sender::send(&tx, crate::stream::Segment::Final(data))
                     .await
                     .trace_expect("bounded(1) send with live receiver cannot fail");
-                svc.on_receive_streamed(&rx, bundle.expiry(), total_len)
+                svc.on_deliver_streamed(&bundle.bundle.id, &rx, bundle.expiry(), total_len)
                     .await
             }
             services::registry::ServiceImpl::Application(app) => {
@@ -264,11 +264,21 @@ impl Dispatcher {
                     }
                 };
 
-                app.on_receive(
-                    bundle.bundle.id.source.clone(),
+                // As for low-level services, delivery always goes through
+                // the streamed door: the whole payload is in hand, so it
+                // travels as a single Final segment.
+                let total_len = payload.len() as u64;
+                let (tx, rx) = hardy_async::channel::bounded(1);
+                crate::stream::Sender::send(&tx, crate::stream::Segment::Final(payload))
+                    .await
+                    .trace_expect("bounded(1) send with live receiver cannot fail");
+                app.on_deliver_streamed(
+                    &bundle.bundle.id,
+                    &bundle.bundle.id.source,
                     bundle.expiry(),
                     bundle.bundle.flags.app_ack_requested,
-                    payload,
+                    &rx,
+                    total_len,
                 )
                 .await
             }

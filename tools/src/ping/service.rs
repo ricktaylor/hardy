@@ -588,8 +588,9 @@ impl hardy_bpa::services::Service for Service {
         // Nothing to do
     }
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
@@ -707,6 +708,6 @@ impl hardy_bpa::services::Service for Service {
         _reason: hardy_bpv7::status_report::ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Status reports arrive via on_receive when report_to = service EID
+        // Status reports arrive via on_deliver when report_to = service EID
     }
 }

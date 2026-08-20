@@ -85,8 +85,9 @@ impl hardy_bpa::services::Service for LowLevelService {
         }
     }
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
         data: hardy_bpa::Bytes,
         expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
@@ -94,6 +95,7 @@ impl hardy_bpa::services::Service for LowLevelService {
             .call(bpa_to_service::Msg::Receive(ServiceReceiveRequest {
                 data,
                 expiry: Some(to_timestamp(expiry)),
+                bundle_id: bundle_id.to_key(),
             }))
             .await?
         {

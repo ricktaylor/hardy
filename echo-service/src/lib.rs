@@ -153,9 +153,10 @@ impl hardy_bpa::services::Service for EchoService {
         // Do nothing
     }
 
-    /// Called when a bundle arrives
-    async fn on_receive(
+    /// Called when a bundle is delivered
+    async fn on_deliver(
         &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {

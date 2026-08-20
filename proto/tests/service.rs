@@ -46,8 +46,9 @@ impl Service for MockService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
@@ -140,9 +141,10 @@ async fn svc_cli_03_receive_bundle() {
         .expect("BPA should have the server-side service");
 
     let data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
+    let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     server_svc
-        .on_receive(data, expiry)
+        .on_deliver(&bundle_id, data, expiry)
         .await
         .expect("Delivery should succeed");
 
@@ -241,7 +243,7 @@ async fn svc_cli_05_cancel() {
     server_tasks.shutdown().await;
 }
 
-// A service that replies from inside `on_receive`, the shape echo-service
+// A service that replies from inside `on_deliver`, the shape echo-service
 // and any request/reply service uses.
 struct ReplyingService {
     sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn ServiceSink>>>,
@@ -256,8 +258,9 @@ impl Service for ReplyingService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {
@@ -283,12 +286,12 @@ impl Service for ReplyingService {
 }
 
 // SVC-CLI-06 (regression): concurrent deliveries to a service that replies
-// from within `on_receive` must not wedge. The two ends of the proxy draw
+// from within `on_deliver` must not wedge. The two ends of the proxy draw
 // request ids from disjoint parities (proxy::Side), so a reply Send can never
 // collide with the BPA's outstanding Receive. Before the fix this deadlocked
 // deterministically on the first bundle.
 #[tokio::test]
-async fn svc_cli_06_concurrent_reply_from_on_receive() {
+async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
@@ -317,7 +320,11 @@ async fn svc_cli_06_concurrent_reply_from_on_receive() {
         let server_svc = server_svc.clone();
         tokio::spawn(async move {
             let _ = server_svc
-                .on_receive(hardy_bpa::Bytes::from_static(b"payload"), expiry)
+                .on_deliver(
+                    &hardy_bpv7::bundle::Id::default(),
+                    hardy_bpa::Bytes::from_static(b"payload"),
+                    expiry,
+                )
                 .await;
         })
     });

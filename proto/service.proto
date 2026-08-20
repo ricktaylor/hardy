@@ -349,6 +349,10 @@ message AppReceiveRequest {
 
   // The application payload extracted from the bundle.
   bytes payload = 4;
+
+  // The unique bundle identifier of the delivered bundle, formatted as
+  // specified in RFC 9171. Can be used for status correlation.
+  string bundle_id = 5;
 }
 
 // =============================================================================
@@ -378,4 +382,9 @@ message ServiceReceiveRequest {
   // Computed from the bundle's creation timestamp plus lifetime.
   // Provided as a convenience; also available in the parsed bundle.
   google.protobuf.Timestamp expiry = 2;
+
+  // The unique bundle identifier of the delivered bundle, formatted as
+  // specified in RFC 9171. Provided as a convenience; also available in
+  // the parsed bundle. Can be used for status correlation.
+  string bundle_id = 3;
 }

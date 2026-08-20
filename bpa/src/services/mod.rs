@@ -89,6 +89,44 @@ pub enum StatusNotify {
     Deleted,
 }
 
+/// Buffers a segment stream into contiguous bytes, enforcing the declared `total_len` exactly.
+///
+/// The shared body of the provided `on_deliver_streamed` implementations on
+/// [`Application`] and [`Service`].
+async fn buffer_stream(
+    stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+    total_len: u64,
+) -> Result<Bytes> {
+    // The buffered adapter's limit is a contiguous in-memory buffer: a
+    // total_len that is not indexable as usize (32-bit targets) cannot
+    // be assembled, and is rejected before pulling a segment. Both
+    // fields saturate to the representable maximum.
+    let Ok(max_size) = usize::try_from(total_len) else {
+        return Err(Error::PayloadTooLarge {
+            size: usize::MAX,
+            max: usize::MAX,
+        });
+    };
+    let data = crate::stream::concat_stream(stream, max_size)
+        .await
+        .map_err(|e| match e {
+            crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
+            crate::stream::ConcatError::TooLarge { size, max } => {
+                Error::PayloadTooLarge { size, max }
+            }
+        })?;
+    // Producers must deliver exactly total_len bytes: an implementation
+    // may have sized buffers or framed a transfer from it, so an
+    // under-delivering producer fails here at the seam.
+    if data.len() != max_size {
+        return Err(Error::PayloadUnderrun {
+            size: data.len(),
+            expected: max_size,
+        });
+    }
+    Ok(data)
+}
+
 /// High-level application trait for services that work with payloads only.
 ///
 /// Applications receive decoded payloads and send data that the BPA wraps in bundles.
@@ -131,13 +169,57 @@ pub trait Application: Send + Sync {
     /// Called when a bundle payload is delivered to this application.
     /// Returning `Err` parks the bundle as `WaitingForService`; a
     /// subsequent registration on the same EID re-delivers it.
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        source: Eid,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        source: &Eid,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         payload: Bytes,
     ) -> Result<()>;
+
+    /// Called when a bundle payload is delivered to this application as a stream of segments.
+    ///
+    /// The streaming counterpart of [`on_deliver`](Self::on_deliver): the
+    /// implementation pulls [`Segment::Next`](crate::stream::Segment::Next)
+    /// items from `stream` until
+    /// [`Segment::Final`](crate::stream::Segment::Final) (which may carry
+    /// empty bytes) completes the delivery.
+    ///
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the delivery: the
+    /// implementation must not act on the partial payload and must not
+    /// return `Ok` — returning `Err` leaves the bundle parked as
+    /// `WaitingForService` for re-delivery, exactly as for
+    /// [`on_deliver`](Self::on_deliver).
+    ///
+    /// `total_len` is the exact number of payload bytes the stream will
+    /// deliver — the sum of all segment payload lengths — carried as `u64`
+    /// so it remains valid on 32-bit targets. An implementation may size
+    /// buffers from it before pulling the first segment.
+    ///
+    /// The provided implementation buffers the stream — capped at
+    /// `total_len` — and delegates to [`on_deliver`](Self::on_deliver). An
+    /// implementation of `on_deliver` must therefore not delegate here
+    /// unless it also overrides this method, or the pair would recurse. A
+    /// truncated stream yields [`Error::StreamCancelled`]; a stream
+    /// exceeding `total_len`, or a `total_len` that cannot fit in
+    /// addressable memory, yields [`Error::PayloadTooLarge`]; a stream
+    /// completing with fewer bytes than `total_len` yields
+    /// [`Error::PayloadUnderrun`].
+    async fn on_deliver_streamed(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        source: &Eid,
+        expiry: time::OffsetDateTime,
+        ack_requested: bool,
+        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+        total_len: u64,
+    ) -> Result<()> {
+        let data = buffer_stream(stream, total_len).await?;
+        self.on_deliver(bundle_id, source, expiry, ack_requested, data)
+            .await
+    }
 
     /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
@@ -255,17 +337,23 @@ pub trait Service: Send + Sync {
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     async fn on_unregister(&self);
 
-    /// Called when a bundle arrives.
+    /// Called when a bundle is delivered to this service.
+    /// - `bundle_id`: the identity of the delivered bundle
     /// - `data`: raw bundle bytes (service can parse if needed)
     /// - `expiry`: calculated from bundle metadata by dispatcher
     ///
     /// Returning `Err` parks the bundle as `WaitingForService`; a
     /// subsequent registration on the same EID re-delivers it.
-    async fn on_receive(&self, data: Bytes, expiry: time::OffsetDateTime) -> Result<()>;
+    async fn on_deliver(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        data: Bytes,
+        expiry: time::OffsetDateTime,
+    ) -> Result<()>;
 
-    /// Called when a bundle arrives, delivered as a stream of segments.
+    /// Called when a bundle is delivered to this service as a stream of segments.
     ///
-    /// The streaming counterpart of [`on_receive`](Self::on_receive): the
+    /// The streaming counterpart of [`on_deliver`](Self::on_deliver): the
     /// implementation pulls [`Segment::Next`](crate::stream::Segment::Next)
     /// items from `stream` until
     /// [`Segment::Final`](crate::stream::Segment::Final) (which may carry
@@ -276,7 +364,7 @@ pub trait Service: Send + Sync {
     /// implementation must not act on the partial bundle and must not
     /// return `Ok` — returning `Err` leaves the bundle parked as
     /// `WaitingForService` for re-delivery, exactly as for
-    /// [`on_receive`](Self::on_receive).
+    /// [`on_deliver`](Self::on_deliver).
     ///
     /// `total_len` is the exact number of bundle bytes the stream will
     /// deliver — the sum of all segment payload lengths — carried as `u64`
@@ -284,48 +372,23 @@ pub trait Service: Send + Sync {
     /// buffers from it before pulling the first segment.
     ///
     /// The provided implementation buffers the stream — capped at
-    /// `total_len` — and delegates to [`on_receive`](Self::on_receive). An
-    /// implementation of `on_receive` must therefore not delegate here
+    /// `total_len` — and delegates to [`on_deliver`](Self::on_deliver). An
+    /// implementation of `on_deliver` must therefore not delegate here
     /// unless it also overrides this method, or the pair would recurse. A
     /// truncated stream yields [`Error::StreamCancelled`]; a stream
     /// exceeding `total_len`, or a `total_len` that cannot fit in
     /// addressable memory, yields [`Error::PayloadTooLarge`]; a stream
     /// completing with fewer bytes than `total_len` yields
     /// [`Error::PayloadUnderrun`].
-    async fn on_receive_streamed(
+    async fn on_deliver_streamed(
         &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
         stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
         expiry: time::OffsetDateTime,
         total_len: u64,
     ) -> Result<()> {
-        // The buffered adapter's limit is a contiguous in-memory buffer: a
-        // total_len that is not indexable as usize (32-bit targets) cannot
-        // be assembled, and is rejected before pulling a segment. Both
-        // fields saturate to the representable maximum.
-        let Ok(max_size) = usize::try_from(total_len) else {
-            return Err(Error::PayloadTooLarge {
-                size: usize::MAX,
-                max: usize::MAX,
-            });
-        };
-        let data = crate::stream::concat_stream(stream, max_size)
-            .await
-            .map_err(|e| match e {
-                crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
-                crate::stream::ConcatError::TooLarge { size, max } => {
-                    Error::PayloadTooLarge { size, max }
-                }
-            })?;
-        // Producers must deliver exactly total_len bytes: an implementation
-        // may have sized buffers or framed a transfer from it, so an
-        // under-delivering producer fails here at the seam.
-        if data.len() != max_size {
-            return Err(Error::PayloadUnderrun {
-                size: data.len(),
-                expected: max_size,
-            });
-        }
-        self.on_receive(data, expiry).await
+        let data = buffer_stream(stream, total_len).await?;
+        self.on_deliver(bundle_id, data, expiry).await
     }
 
     /// Called when status report received for a sent bundle
@@ -408,7 +471,12 @@ pub(crate) mod tests {
     impl Service for NullService {
         async fn on_register(&self, _: &Eid, _: Box<dyn ServiceSink>) {}
         async fn on_unregister(&self) {}
-        async fn on_receive(&self, _: Bytes, _: time::OffsetDateTime) -> Result<()> {
+        async fn on_deliver(
+            &self,
+            _: &hardy_bpv7::bundle::Id,
+            _: Bytes,
+            _: time::OffsetDateTime,
+        ) -> Result<()> {
             Ok(())
         }
         async fn on_status_notify(

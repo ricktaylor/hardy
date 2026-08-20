@@ -82,15 +82,16 @@ impl services::Application for TestApp {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        source: Eid,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         payload: Bytes,
     ) -> services::Result<()> {
         self.received_tx
-            .send((source, payload))
+            .send((source.clone(), payload))
             .map_err(|e| services::Error::Internal(e.into()))
     }
 
@@ -129,7 +130,12 @@ impl services::Service for EchoService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(&self, data: Bytes, _expiry: time::OffsetDateTime) -> services::Result<()> {
+    async fn on_deliver(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        data: Bytes,
+        _expiry: time::OffsetDateTime,
+    ) -> services::Result<()> {
         if let Some(sink) = self.sink.get()
             && let Ok(parsed) =
                 hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
@@ -639,7 +645,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
 // ---------------------------------------------------------------------------
 
 /// A bundle dispatched via CLA addressed to a local application is
-/// delivered to that application's on_receive callback.
+/// delivered to that application's on_deliver callback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -1193,12 +1199,12 @@ async fn egress_filter_sees_consistent_extents() {
 }
 
 // ---------------------------------------------------------------------------
-// Failing Application — always returns Err from on_receive
+// Failing Application — always returns Err from on_deliver
 // ---------------------------------------------------------------------------
 
 struct FailingApp {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
-    /// Fires once on_receive completes (after constructing the Err), so a
+    /// Fires once on_deliver completes (after constructing the Err), so a
     /// waiter observes the point at which the dispatcher's Err-handling
     /// branch is about to run rather than the point at which it started.
     completed_tx: flume::Sender<()>,
@@ -1225,9 +1231,10 @@ impl services::Application for FailingApp {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        _source: Eid,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _payload: Bytes,
@@ -1249,17 +1256,17 @@ impl services::Application for FailingApp {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-05: dispatcher tolerates on_receive returning Err
+// INT-BPA-05: dispatcher tolerates on_deliver returning Err
 // ---------------------------------------------------------------------------
 
-/// When `on_receive` returns `Err`, the dispatcher must preserve the bundle
+/// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
 /// as `WaitingForService`, not report it delivered and delete it. Proven
 /// end-to-end: after the failing receiver rejects the bundle, a fresh working
 /// receiver registered on the same service id must have it re-delivered. A
 /// regression to the old drop-on-error behaviour makes the re-delivery time
 /// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatcher_handles_on_receive_err() {
+async fn dispatcher_handles_on_deliver_err() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false);
 
@@ -1287,13 +1294,13 @@ async fn dispatcher_handles_on_receive_err() {
         .await
         .unwrap();
 
-    // The failing receiver rejects the bundle from within on_receive.
+    // The failing receiver rejects the bundle from within on_deliver.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         completed_rx.recv_async(),
     )
     .await
-    .expect("dispatcher must call on_receive")
+    .expect("dispatcher must call on_deliver")
     .unwrap();
 
     // Let the dispatcher's Err branch finish parking the bundle before the

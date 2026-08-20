@@ -76,9 +76,10 @@ impl hardy_bpa::services::Application for PipeService {
         }
     }
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        _source: Eid,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _payload: hardy_bpa::Bytes,

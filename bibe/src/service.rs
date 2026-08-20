@@ -80,8 +80,9 @@ impl Service for DecapService {
         debug!("BIBE DecapService unregistered");
     }
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         data: Bytes,
         _expiry: time::OffsetDateTime,
     ) -> hardy_bpa::services::Result<()> {

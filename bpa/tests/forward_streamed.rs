@@ -175,9 +175,10 @@ impl services::Application for SendOnlyApp {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        _source: Eid,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _payload: Bytes,

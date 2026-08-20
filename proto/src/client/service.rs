@@ -10,8 +10,11 @@ async fn receive(
         .map(from_timestamp)
         .ok_or(tonic::Status::invalid_argument("Missing expiry"))??;
 
+    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
     service
-        .on_receive(request.data, expiry)
+        .on_deliver(&bundle_id, request.data, expiry)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 

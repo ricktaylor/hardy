@@ -110,9 +110,10 @@ impl hardy_bpa::services::Application for Application {
         }
     }
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        source: hardy_bpv7::eid::Eid,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        source: &hardy_bpv7::eid::Eid,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         payload: hardy_bpa::Bytes,
@@ -123,6 +124,7 @@ impl hardy_bpa::services::Application for Application {
                 ack_requested,
                 expiry: Some(to_timestamp(expiry)),
                 payload,
+                bundle_id: bundle_id.to_key(),
             }))
             .await?
         {

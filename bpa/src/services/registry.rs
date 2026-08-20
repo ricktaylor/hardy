@@ -439,9 +439,10 @@ mod tests {
             self.sink.call_once(|| sink);
         }
         async fn on_unregister(&self) {}
-        async fn on_receive(
+        async fn on_deliver(
             &self,
-            _source: hardy_bpv7::eid::Eid,
+            _bundle_id: &hardy_bpv7::bundle::Id,
+            _source: &hardy_bpv7::eid::Eid,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
             _payload: crate::Bytes,
