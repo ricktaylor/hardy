@@ -148,32 +148,40 @@ impl Dispatcher {
                 return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
+                // Link-scoped evidence: the neighbour is gone. Restore the
+                // pre-rewrite blocks (the stored data is the un-rewritten
+                // original), return the bundle to Waiting, and reset the
+                // whole peer queue so its bundles await a fresh routing
+                // decision alongside it.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
+                bundle.bundle.blocks = pre_rewrite;
+                self.store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await;
+                self.store.watch_bundle(bundle).await;
+                self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
+
+                // Bundle-scoped evidence about a single transfer: park only
+                // this bundle, leaving the rest of the peer's queue alone —
+                // resetting the queue is the response to link-scoped
+                // evidence, above. Unlike the deferred `Failed` outcome,
+                // which is paced by a network round trip, a synchronous
+                // failure can be deterministic and instantaneous, so
+                // re-running dispatch inline here could spin; the retry
+                // waits in Waiting for the next routing or link event.
+                bundle.bundle.blocks = pre_rewrite;
+                self.store
+                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await;
+                self.store.watch_bundle(bundle).await;
             }
         }
-
-        // Synchronous failure: this bundle never entered the channel. Restore
-        // the pre-rewrite Bundle (the stored data is the un-rewritten
-        // original) and return it to Waiting for a fresh routing decision
-        // along with the rest of the peer's queue.
-        bundle.bundle.blocks = pre_rewrite;
-        // Conditional for the same reason: losing the swap means the reaper
-        // or a sweep resolved the bundle while the CLA held the call.
-        if self
-            .store
-            .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-            .await
-        {
-            self.store.watch_bundle(bundle).await;
-        }
-        self.store.reset_peer_queue(peer).await;
     }
 
     // Resolves a deferred transfer outcome reported by `cla` for a bundle it
