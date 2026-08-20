@@ -150,6 +150,50 @@ impl cla::Cla for BufferedCla {
     }
 }
 
+/// Fails every `forward` call synchronously, without pulling.
+struct FailingCla {
+    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    events_tx: flume::Sender<Event>,
+}
+
+impl FailingCla {
+    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
+        let (tx, rx) = flume::bounded(16);
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                events_tx: tx,
+            }),
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl cla::Cla for FailingCla {
+    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
+    async fn forward(
+        &self,
+        _lane: Option<u32>,
+        _cla_addr: &cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _total_len: u64,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> cla::Result<cla::ForwardBundleResult> {
+        let _ = self.events_tx.send(Event::Failed);
+        Err(cla::Error::StreamCancelled)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal application to originate bundles
 // ---------------------------------------------------------------------------
@@ -406,6 +450,48 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
 
     bpa.shutdown().await;
+}
+
+/// A synchronous per-transfer failure parks only that bundle, with no inline
+/// retry: a deterministic failure must not spin dispatch → forward → fail,
+/// so exactly one attempt occurs until the next routing or link event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_streamed_forward_does_not_retry_inline() {
+    let bpa = Bpa::builder().build().await.unwrap();
+    bpa.start(false);
+
+    let (cla, events_rx) = FailingCla::new();
+    bpa.register_cla("failing".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            &[remote_node(2)],
+        )
+        .await
+        .unwrap();
+
+    let app = SendOnlyApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    originate(&app, b"One shot").await;
+
+    assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
+
+    // The bundle is back in Waiting; with no routing or link event, no
+    // further attempt may occur. shutdown() is the barrier: it joins the
+    // pools, and the CLA mock records every attempt synchronously inside
+    // forward(), so any wrong re-attempt is in events_rx by the time it
+    // returns. No quiet window is involved.
+    bpa.shutdown().await;
+    assert!(
+        events_rx.is_empty(),
+        "A synchronous failure must not re-attempt without a routing event"
+    );
 }
 
 // ---------------------------------------------------------------------------
