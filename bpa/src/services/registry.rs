@@ -101,13 +101,6 @@ impl Sink {
             error!("Failed to unregister service: {e}");
         }
     }
-
-    async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        if bundle_id.source != self.eid {
-            return Ok(false);
-        }
-        Ok(self.dispatcher.cancel_local_dispatch(bundle_id).await)
-    }
 }
 
 #[async_trait]
@@ -116,9 +109,9 @@ impl services::ServiceSink for Sink {
         self.unregister_inner().await
     }
 
-    async fn send_streamed(
+    async fn send(
         &self,
-        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         let service = self
             .service
@@ -130,17 +123,13 @@ impl services::ServiceSink for Sink {
         // stream immediately — even parked behind a stalled producer — and
         // the send surfaces as cancelled. Sink-side, so the dispatcher's
         // stream consumers stay registration-agnostic.
-        let stream = crate::stream::CancellableReceiver {
+        let mut stream = crate::stream::CancellableReceiver {
             inner: stream,
             token: service.cancel.clone(),
         };
         self.dispatcher
-            .local_dispatch_raw_streamed(&self.eid, &stream)
+            .local_dispatch_raw_streamed(&self.eid, &mut stream)
             .await
-    }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
     }
 }
 
@@ -164,10 +153,6 @@ impl services::ApplicationSink for Sink {
         self.dispatcher
             .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
             .await
-    }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
     }
 }
 
@@ -439,12 +424,13 @@ mod tests {
             self.sink.call_once(|| sink);
         }
         async fn on_unregister(&self) {}
-        async fn on_receive(
+        async fn on_deliver(
             &self,
-            _source: hardy_bpv7::eid::Eid,
+            _bundle_id: &hardy_bpv7::bundle::Id,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
-            _payload: crate::Bytes,
+            _total_len: u64,
+            _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> services::Result<()> {
             Ok(())
         }

@@ -101,7 +101,7 @@ All LLRs assigned to this module pass (7 pass, 3 pass via bpv7, 1 N/A).
 | :--- | :--- | :--- |
 | `app_to_cla_routing` | INT-BPA-01 | Application sends bundle via `ApplicationSink`, BPA routes to CLA peer |
 | `echo_round_trip` | INT-BPA-02 | CLA dispatches to echo service, reply forwarded back with swapped endpoints |
-| `local_delivery` | — | CLA dispatches to local application, payload delivered via `on_receive` |
+| `local_delivery` | — | CLA dispatches to local application, payload delivered via `on_deliver` |
 | `throughput` | PERF-01 | 1000 bundles, concurrent dispatch+receive, asserts >1000 bundles/sec |
 | `forwarding_latency` | PERF-LAT-01 | 100 bundles, per-bundle latency via `TimedCla`, reports P50/P95/P99 |
 

@@ -60,9 +60,12 @@ async fn receive_loop<S>(
     loop {
         tokio::select! {
             result = framed.next() => match result {
-                Some(Ok(bundle)) => {
+                Some(Ok(mut bundle)) => {
                     debug!(%remote_addr, len = bundle.len(), "Received bundle");
-                    if let Err(e) = sink.dispatch(bundle, None, peer_addr.as_ref()).await {
+                    if let Err(e) = sink
+                        .dispatch(None, peer_addr.as_ref(), &mut bundle)
+                        .await
+                    {
                         warn!(%remote_addr, "Dispatch failed: {e:?}");
                         return;
                     }

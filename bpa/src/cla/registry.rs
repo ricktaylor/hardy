@@ -82,11 +82,11 @@ impl cla::Sink for Sink {
         }
     }
 
-    async fn dispatch_streamed(
+    async fn dispatch(
         &self,
-        stream: &dyn crate::stream::Receiver<Segment>,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
+        stream: &mut dyn crate::stream::Receiver<Segment>,
     ) -> Result<()> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
@@ -95,12 +95,12 @@ impl cla::Sink for Sink {
         // stream immediately — even parked behind a stalled producer — and
         // the transfer surfaces as cancelled. Sink-side, so the dispatcher's
         // stream consumers stay registration-agnostic.
-        let stream = crate::stream::CancellableReceiver {
+        let mut stream = crate::stream::CancellableReceiver {
             inner: stream,
             token: cla.cancel.clone(),
         };
         self.dispatcher
-            .receive_bundle(&stream, cla.name.clone(), peer_node, peer_addr)
+            .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
             .await
     }
 
@@ -422,6 +422,10 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for TestCla {
+        fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+            None
+        }
+
         async fn on_register(
             &self,
             sink: Box<dyn cla::Sink>,
@@ -435,7 +439,8 @@ mod tests {
             _queue: Option<u32>,
             _cla_addr: &ClaAddress,
             _bundle_id: &hardy_bpv7::bundle::Id,
-            _bundle: crate::Bytes,
+            _total_len: u64,
+            _stream: &mut dyn crate::stream::Receiver<Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
             Ok(cla::ForwardBundleResult::Sent)
         }

@@ -108,7 +108,7 @@ See the storage backend packages for production implementations:
 
 ### Streamed Bundle Ingestion (interim accumulation)
 
-Both input doors accept a bundle as a pull-driven stream of `stream::Segment`s as their primitive: `cla::Sink::dispatch_streamed` (CLA ingress) and `services::ServiceSink::send_streamed` (service origination). The whole-buffer `dispatch`/`send` are provided conveniences that deliver a single `Segment::Final` through the same path, so each door has one pipeline.
+Both input doors accept a bundle as a pull-driven stream of `stream::Segment`s: `cla::Sink::dispatch` (CLA ingress) and `services::ServiceSink::send` (service origination). A caller holding a whole buffer passes it directly — `Bytes` implements `stream::Receiver`, draining as a single `Segment::Final` through the same path — so each door has one pipeline.
 
 Completion is explicit: `Final` marks a clean end, and a producer that drops its sender earlier has truncated the bundle — the door surfaces `StreamCancelled` rather than success, so a CLA withholds its transfer acknowledgement and the peer retransmits. Reassembly currently accumulates in memory (`stream::concat_stream`) bounded by `BpaBuilder::max_bundle_size` (default 64 MiB, `max-bundle-size` in bpa-server configuration) — a custody-admission bound sized for the in-memory interim. Registration liveness is enforced per segment: a CLA or service that unregisters mid-stream fails the next pull and never lands its bundle.
 
@@ -159,7 +159,6 @@ The Sink pattern provides **structural authorization enforcement**. Each compone
 
 2. **Scoped operations**: Sink methods operate only on the bound resources:
    - `ServiceSink::unregister()` unregisters only the service it was created for
-   - `ServiceSink::cancel()` validates `bundle_id.source == service.service_id`
    - `cla::Sink::remove_peer()` operates on the CLA's own peer map
 
 3. **No cross-access possible**: A component cannot affect another component's resources because it has no reference to them.
@@ -188,7 +187,7 @@ sequenceDiagram
 
 `Sent` and `NoNeighbour` keep their terminal semantics: deferral is a per-transfer choice made by the CLA on each forward — fire-and-forget CLAs like `file-cla` are untouched, and there is no registration-level capability flag or proxy negotiation state. A BPA that predates the extension maps the unknown `accepted` variant to a call error and re-queues the bundle, so version skew degrades safely. The reverse direction is a version floor, not a degradation: the proto CLA client requires `bundle_id` on every forward and rejects requests without one, so a CLA built against the extension requires a BPA that sends it.
 
-**The correlation key is the bundle ID** — the same `hardy_bpv7::bundle::Id` the Application trait already uses for status notifications and `cancel`, with the same key encoding on the wire. RFC 9171 bundle IDs are globally unique (fragments included), and a bundle in `ForwardAckPending` is not eligible for re-dispatch until its outcome resolves, so the BPA never has more than one transfer of a bundle outstanding. `forward` passes the ID alongside the bundle bytes for the CLA to echo back opaquely; a CLA-minted transfer ID would only add mint-and-map bookkeeping on both sides that a store lookup replaces.
+**The correlation key is the bundle ID** — the same `hardy_bpv7::bundle::Id` the Application trait already uses for status notifications, with the same key encoding on the wire. RFC 9171 bundle IDs are globally unique (fragments included), and a bundle in `ForwardAckPending` is not eligible for re-dispatch until its outcome resolves, so the BPA never has more than one transfer of a bundle outstanding. `forward` passes the ID alongside the bundle bytes for the CLA to echo back opaquely; a CLA-minted transfer ID would only add mint-and-map bookkeeping on both sides that a store lookup replaces.
 
 Every `Accepted` resolves in exactly one of four ways:
 

@@ -180,12 +180,18 @@ async fn run_ingest(
         let ack = match item {
             Ingest::Ack(ack) => ack,
             Ingest::Dispatch {
-                bundle,
+                mut bundle,
                 ack,
                 _permit,
             } => {
+                // INTERIM BUFFERING: the session reassembles XFER_SEGMENT
+                // frames into a complete bundle before dispatching it as a
+                // one-segment stream (`Bytes` is a `stream::Receiver`). This is a deliberate
+                // stepping stone toward the full streaming pipeline (a native
+                // implementation would dispatch segments as they arrive); see
+                // bpa/docs/streaming_pipeline_design.md.
                 if let Err(e) = sink
-                    .dispatch(bundle, peer_node.as_ref(), peer_addr.as_ref())
+                    .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut bundle)
                     .await
                 {
                     warn!("CLA dispatch failed: {e:?}");
@@ -1017,10 +1023,13 @@ mod tests {
 
         async fn dispatch(
             &self,
-            bundle: hardy_bpa::Bytes,
             _peer_node: Option<&hardy_bpv7::eid::NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
         ) -> hardy_bpa::cla::Result<()> {
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+                .await
+                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
@@ -1029,18 +1038,6 @@ mod tests {
             }
             self.dispatched.lock().unwrap().push(bundle);
             Ok(())
-        }
-
-        async fn dispatch_streamed(
-            &self,
-            stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-            peer_node: Option<&hardy_bpv7::eid::NodeId>,
-            peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
-        ) -> hardy_bpa::cla::Result<()> {
-            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
-                .await
-                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
-            self.dispatch(bundle, peer_node, peer_addr).await
         }
 
         async fn add_peer(

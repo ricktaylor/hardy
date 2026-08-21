@@ -222,7 +222,7 @@ The `.proto` files define the wire format for each interface:
 
 - **`cla.proto`** - CLA registration, bundle dispatch/forwarding, peer management, and unregistration. Maps to the `Cla` and `cla::Sink` traits.
 
-- **`service.proto`** - Endpoint registration, send/receive, status notifications, cancellation, and unregistration. Defines separate message types for Application API (payload-only) and Service API (full bundle). Maps to the `Application`, `Service`, and corresponding Sink traits.
+- **`service.proto`** - Endpoint registration, send/receive, status notifications, and unregistration. Defines separate message types for Application API (payload-only) and Service API (full bundle). Maps to the `Application`, `Service`, and corresponding Sink traits.
 
 - **`routing.proto`** - Routing agent registration, route add/remove, and unregistration. Maps to the `RoutingAgent` and `RoutingSink` traits.
 

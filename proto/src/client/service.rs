@@ -3,15 +3,21 @@ use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Service,
-    request: ServiceReceiveRequest,
+    mut request: ServiceReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
         .expiry
         .map(from_timestamp)
         .ok_or(tonic::Status::invalid_argument("Missing expiry"))??;
 
+    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
+    // The unary wire message already delivered the whole bundle, so it
+    // reaches the service as a one-segment stream.
+    let total_len = request.data.len() as u64;
     service
-        .on_receive(request.data, expiry)
+        .on_deliver(&bundle_id, expiry, total_len, &mut request.data)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
@@ -81,42 +87,19 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::services::ServiceSink for Sink {
+    // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
+    // segment stream is accumulated (bounded by the transport cap) and sent
+    // as one unary ServiceSendRequest. This is a deliberate stepping stone
+    // toward the full streaming pipeline (chunked wire messages are the
+    // blocker); see bpa/docs/streaming_pipeline_design.md.
     async fn send(
         &self,
-        data: hardy_bpa::Bytes,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        // See `client::application::Sink::send` for why this pre-check
-        // exists: oversized messages break the gRPC stream, which would
-        // cascade into `on_close` and unregister this service.
-        if data.len() > crate::MAX_PAYLOAD_SIZE {
-            return Err(hardy_bpa::services::Error::PayloadTooLarge {
-                size: data.len(),
-                max: crate::MAX_PAYLOAD_SIZE,
-            });
-        }
-        match self
-            .call(service_to_bpa::Msg::Send(ServiceSendRequest { data }))
-            .await?
-        {
-            bpa_to_service::Msg::Send(response) => {
-                hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
-                    .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
-            }
-            msg => {
-                warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
-                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-                ))
-            }
-        }
-    }
-
-    async fn send_streamed(
-        &self,
-        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        // Accumulate then delegate to the unary send: the wire has no
-        // streamed Send message yet, and its transport cap is the bound.
+        // The transport cap doubles as the pre-check from
+        // `client::application::Sink::send`: an oversized bundle returns a
+        // typed error here instead of letting tonic break the gRPC stream,
+        // which would cascade into `on_close` and unregister this service.
         let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
             .await
             .map_err(|e| match e {
@@ -127,20 +110,14 @@ impl hardy_bpa::services::ServiceSink for Sink {
                     hardy_bpa::services::Error::PayloadTooLarge { size, max }
                 }
             })?;
-        self.send(data).await
-    }
-
-    async fn cancel(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> hardy_bpa::services::Result<bool> {
         match self
-            .call(service_to_bpa::Msg::Cancel(CancelRequest {
-                bundle_id: bundle_id.to_key(),
-            }))
+            .call(service_to_bpa::Msg::Send(ServiceSendRequest { data }))
             .await?
         {
-            bpa_to_service::Msg::Cancel(response) => Ok(response.cancelled),
+            bpa_to_service::Msg::Send(response) => {
+                hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
+                    .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
+            }
             msg => {
                 warn!("Unexpected response: {msg:?}");
                 Err(hardy_bpa::services::Error::Internal(

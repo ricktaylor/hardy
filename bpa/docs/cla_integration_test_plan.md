@@ -42,7 +42,7 @@ The tests defined here are intended to be run against **all** implementations of
 | :--- | :--- | :--- | :--- |
 | **CLA-03** | **Forward Success** | 1. Register CLA.<br>2. Call `forward(addr, bundle)`. | 1. Returns `Ok(Sent)`.<br>2. Data appears on wire/medium. |
 | **CLA-04** | **Forward Failure** | 1. Call `forward` to unreachable address. | 1. Returns `Ok(NoNeighbour)` or `Err`. |
-| **CLA-05** | **Queue Selection** | 1. Call `forward(queue=Some(0))`.<br>2. Call `forward(queue=None)`. | 1. CLA respects queue priority (if supported). |
+| **CLA-05** | **Lane Selection** | 1. Call `forward(lane=Some(0))`.<br>2. Call `forward(lane=None)`. | 1. CLA forwards on the requested lane (if supported). |
 
 ### Suite C: Reception
 

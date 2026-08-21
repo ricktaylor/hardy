@@ -198,13 +198,25 @@ impl Cla for Tcpclv4 {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
+    // INTERIM BUFFERING: the transfer is resolved out-of-band by a spawned
+    // task that retries across pooled connections, so the whole bundle is
+    // assembled in memory via `stream::buffer_stream` before the offer is
+    // answered. This is a deliberate stepping stone toward the full
+    // streaming pipeline (a native implementation would stream segments
+    // straight into XFER_SEGMENT frames, sized from `total_len`); see
+    // bpa/docs/streaming_pipeline_design.md.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         cla_addr: &ClaAddress,
         bundle_id: &Id,
-        bundle: hardy_bpa::Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<ForwardBundleResult> {
         let ctx = self.connection_context().ok_or_else(|| {
             error!("forward called before on_register!");
@@ -214,6 +226,8 @@ impl Cla for Tcpclv4 {
         let ClaAddress::Tcp(remote_addr) = cla_addr else {
             return Ok(ForwardBundleResult::NoNeighbour);
         };
+
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
 
         debug!("Forwarding bundle to TCPCLv4 peer at {remote_addr}");
 
