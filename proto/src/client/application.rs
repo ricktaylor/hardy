@@ -163,26 +163,6 @@ impl hardy_bpa::services::ApplicationSink for Sink {
         }
     }
 
-    async fn cancel(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> hardy_bpa::services::Result<bool> {
-        match self
-            .call(app_to_bpa::Msg::Cancel(CancelRequest {
-                bundle_id: bundle_id.to_key(),
-            }))
-            .await?
-        {
-            bpa_to_app::Msg::Cancel(response) => Ok(response.cancelled),
-            msg => {
-                warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
-                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-                ))
-            }
-        }
-    }
-
     async fn unregister(&self) {
         self.proxy.shutdown().await;
     }

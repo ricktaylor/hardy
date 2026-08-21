@@ -21,9 +21,10 @@ use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
 
 enum Event {
     /// The buffering service assembled the whole bundle.
-    Received(Bytes),
+    Received(hardy_bpv7::bundle::Id, Bytes),
     /// The streaming service pulled the stream to completion.
     Streamed {
+        bundle_id: hardy_bpv7::bundle::Id,
         segments: Vec<Segment>,
         total_len: u64,
     },
@@ -67,7 +68,7 @@ impl services::Service for StreamingService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -91,6 +92,7 @@ impl services::Service for StreamingService {
             }
         }
         let _ = self.events_tx.send(Event::Streamed {
+            bundle_id: bundle_id.clone(),
             segments,
             total_len,
         });
@@ -138,13 +140,15 @@ impl services::Service for BufferedService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
         let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
-        let _ = self.events_tx.send(Event::Received(data));
+        let _ = self
+            .events_tx
+            .send(Event::Received(bundle_id.clone(), data));
         Ok(())
     }
 
@@ -317,6 +321,7 @@ async fn streaming_service_receives_single_final_segment() {
         .unwrap();
 
     let Event::Streamed {
+        bundle_id,
         segments,
         total_len,
     } = recv_event(&events_rx, 5).await
@@ -331,6 +336,7 @@ async fn streaming_service_receives_single_final_segment() {
 
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse delivered bundle");
+    assert_eq!(bundle_id, parsed.bundle.id);
     assert_eq!(parsed.bundle.id.source, "ipn:0.2.1".parse().unwrap());
     assert_eq!(parsed.bundle.destination, "ipn:0.1.7".parse().unwrap());
 
@@ -349,11 +355,12 @@ async fn buffered_service_receives_whole_bundle() {
         .await
         .unwrap();
 
-    let Event::Received(data) = recv_event(&events_rx, 5).await else {
+    let Event::Received(bundle_id, data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering service to assemble the bundle");
     };
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse delivered bundle");
+    assert_eq!(bundle_id, parsed.bundle.id);
     assert_eq!(parsed.bundle.destination, "ipn:0.1.7".parse().unwrap());
 
     bpa.shutdown().await;
@@ -416,9 +423,10 @@ async fn buffering_service_concats_multi_segment_stream() {
     .await
     .unwrap();
 
-    let Ok(Event::Received(received)) = events_rx.try_recv() else {
+    let Ok(Event::Received(received_id, received)) = events_rx.try_recv() else {
         panic!("Expected the buffering service to get the reassembled bundle");
     };
+    assert_eq!(received_id, bundle_id_of(&data));
     assert_eq!(received, data);
 }
 
@@ -443,9 +451,10 @@ async fn buffering_service_is_zero_copy_for_single_final() {
     .await
     .unwrap();
 
-    let Ok(Event::Received(received)) = events_rx.try_recv() else {
+    let Ok(Event::Received(received_id, received)) = events_rx.try_recv() else {
         panic!("Expected the buffering service to get the bundle");
     };
+    assert_eq!(received_id, bundle_id_of(&data));
     assert_eq!(received.as_ptr(), data.as_ptr());
 }
 

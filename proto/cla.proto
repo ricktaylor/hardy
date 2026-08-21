@@ -158,7 +158,8 @@ message ForwardBundleRequest {
   // as a safety net). Which bundles go on which lane is decided by the
   // BPA's egress policy; lanes carry no explicit priority.
   optional uint32 lane      = 3;
-  // The unique bundle identifier, formatted as specified in RFC 9171.
+  // The unique bundle identifier, an opaque stable key (the encoding is
+  // documented on service.proto's SendResponse.bundle_id).
   // Identifies the transfer for correlation; the CLA treats it as opaque.
   // Required: the CLA client rejects a request without it, so a CLA built
   // on this contract requires a BPA that sends it.

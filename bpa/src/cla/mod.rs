@@ -43,6 +43,9 @@ pub enum Error {
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: usize, expected: usize },
 
+    #[error("declared length of {total_len} bytes is unaddressable on this target")]
+    PayloadUnaddressable { total_len: u64 },
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
@@ -57,6 +60,9 @@ impl From<crate::stream::BufferError> for Error {
             }
             crate::stream::BufferError::Underrun { size, expected } => {
                 Error::PayloadUnderrun { size, expected }
+            }
+            crate::stream::BufferError::Unaddressable { total_len } => {
+                Error::PayloadUnaddressable { total_len }
             }
         }
     }

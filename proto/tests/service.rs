@@ -213,40 +213,6 @@ async fn svc_cli_04_status_notify() {
     server_tasks.shutdown().await;
 }
 
-// SVC-CLI-05: Cancel pending send.
-#[tokio::test]
-async fn svc_cli_05_cancel() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = svc.take_sink().expect("service should have a sink");
-
-    let bundle_id = hardy_bpv7::bundle::Id {
-        source: "ipn:1.42".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
-        fragment_info: None,
-    };
-
-    let cancelled = sink
-        .cancel(&bundle_id)
-        .await
-        .expect("cancel should succeed");
-
-    assert!(cancelled, "bundle should be cancelled");
-
-    // Clean up
-    sink.unregister().await;
-    server_tasks.shutdown().await;
-}
-
 // A service that replies from inside `on_deliver`, the shape echo-service
 // and any request/reply service uses.
 struct ReplyingService {

@@ -44,6 +44,9 @@ pub enum Error {
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: usize, expected: usize },
 
+    #[error("declared length of {total_len} bytes is unaddressable on this target")]
+    PayloadUnaddressable { total_len: u64 },
+
     /// The node ID configuration doesn't support the requested service scheme.
     #[error(transparent)]
     NodeId(#[from] crate::node_ids::Error),
@@ -98,6 +101,9 @@ impl From<crate::stream::BufferError> for Error {
             }
             crate::stream::BufferError::Underrun { size, expected } => {
                 Error::PayloadUnderrun { size, expected }
+            }
+            crate::stream::BufferError::Unaddressable { total_len } => {
+                Error::PayloadUnaddressable { total_len }
             }
         }
     }
@@ -231,9 +237,6 @@ pub trait ApplicationSink: Send + Sync {
         lifetime: core::time::Duration,
         options: Option<SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id>;
-
-    /// Cancels transmission of a previously sent bundle. Returns `true` if the bundle was found and cancelled.
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }
 
 /// Low-level service trait with raw bundle access.
@@ -370,9 +373,6 @@ pub trait ServiceSink: Send + Sync {
         &self,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<hardy_bpv7::bundle::Id>;
-
-    /// Cancels a pending bundle that hasn't been forwarded yet.
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> Result<bool>;
 }
 
 #[cfg(test)]

@@ -101,13 +101,6 @@ impl Sink {
             error!("Failed to unregister service: {e}");
         }
     }
-
-    async fn cancel_inner(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        if bundle_id.source != self.eid {
-            return Ok(false);
-        }
-        Ok(self.dispatcher.cancel_local_dispatch(bundle_id).await)
-    }
 }
 
 #[async_trait]
@@ -138,10 +131,6 @@ impl services::ServiceSink for Sink {
             .local_dispatch_raw_streamed(&self.eid, &mut stream)
             .await
     }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
-    }
 }
 
 #[async_trait]
@@ -164,10 +153,6 @@ impl services::ApplicationSink for Sink {
         self.dispatcher
             .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
             .await
-    }
-
-    async fn cancel(&self, bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.cancel_inner(bundle_id).await
     }
 }
 

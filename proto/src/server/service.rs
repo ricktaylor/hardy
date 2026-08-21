@@ -49,16 +49,6 @@ impl LowLevelService {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_service::Msg, tonic::Status> {
-        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
-        self.sink()?
-            .cancel(&bundle_id)
-            .await
-            .map(|cancelled| bpa_to_service::Msg::Cancel(CancelResponse { cancelled }))
-            .map_err(|e| tonic::Status::from_error(e.into()))
-    }
-
     async fn unregister(&self) {
         let sink = self.sink.lock().take();
         if let Some(sink) = sink {
@@ -92,8 +82,7 @@ impl hardy_bpa::services::Service for LowLevelService {
     // so the stream is assembled in memory via `stream::buffer_stream`
     // before marshalling. This is a deliberate stepping stone toward the
     // full streaming pipeline (chunked wire messages are the blocker); see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -175,7 +164,6 @@ impl ProxyHandler for Handler {
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
             service_to_bpa::Msg::Send(msg) => self.svc.send(msg).await,
-            service_to_bpa::Msg::Cancel(msg) => self.svc.cancel(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;

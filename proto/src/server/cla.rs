@@ -159,8 +159,7 @@ impl hardy_bpa::cla::Cla for Cla {
     // stream is assembled in memory via `stream::buffer_stream` before
     // marshalling. This is a deliberate stepping stone toward the full
     // streaming pipeline (chunked wire messages are the blocker); see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
         lane: Option<u32>,

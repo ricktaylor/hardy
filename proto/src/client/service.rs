@@ -91,8 +91,7 @@ impl hardy_bpa::services::ServiceSink for Sink {
     // segment stream is accumulated (bounded by the transport cap) and sent
     // as one unary ServiceSendRequest. This is a deliberate stepping stone
     // toward the full streaming pipeline (chunked wire messages are the
-    // blocker); see bpa/docs/streaming_pipeline_design.md. Native streaming
-    // here is tracked as follow-up work, not a review defect.
+    // blocker); see bpa/docs/streaming_pipeline_design.md.
     async fn send(
         &self,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
@@ -119,26 +118,6 @@ impl hardy_bpa::services::ServiceSink for Sink {
                 hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
                     .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
             }
-            msg => {
-                warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
-                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-                ))
-            }
-        }
-    }
-
-    async fn cancel(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> hardy_bpa::services::Result<bool> {
-        match self
-            .call(service_to_bpa::Msg::Cancel(CancelRequest {
-                bundle_id: bundle_id.to_key(),
-            }))
-            .await?
-        {
-            bpa_to_service::Msg::Cancel(response) => Ok(response.cancelled),
             msg => {
                 warn!("Unexpected response: {msg:?}");
                 Err(hardy_bpa::services::Error::Internal(

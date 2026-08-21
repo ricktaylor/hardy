@@ -140,10 +140,6 @@ impl services::ServiceSink for MockServiceSink {
             "mock sink: send not implemented".into(),
         ))
     }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
-    }
 }
 
 // ── ApplicationSink ───────────────────────────────────────────────────
@@ -176,9 +172,5 @@ impl services::ApplicationSink for MockApplicationSink {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
-    }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
     }
 }

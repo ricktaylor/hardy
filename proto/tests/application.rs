@@ -1,4 +1,4 @@
-//! Application client proxy tests (APP-CLI-01 through APP-CLI-06).
+//! Application client proxy tests (APP-CLI-01 through APP-CLI-05).
 //!
 //! Verify the Application client correctly maps Rust trait calls
 //! to service.proto messages (Application RPC) via the gRPC proxy.
@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct MockApplication {
     registered: AtomicBool,
     received: AtomicBool,
+    received_id: hardy_async::sync::spin::Mutex<Option<hardy_bpv7::bundle::Id>>,
     status_notified: AtomicBool,
     sink: hardy_async::sync::spin::Mutex<Option<Box<dyn ApplicationSink>>>,
 }
@@ -27,6 +28,7 @@ impl MockApplication {
         Self {
             registered: AtomicBool::new(false),
             received: AtomicBool::new(false),
+            received_id: hardy_async::sync::spin::Mutex::new(None),
             status_notified: AtomicBool::new(false),
             sink: hardy_async::sync::spin::Mutex::new(None),
         }
@@ -48,12 +50,13 @@ impl Application for MockApplication {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
         _total_len: u64,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        *self.received_id.lock() = Some(bundle_id.clone());
         self.received.store(true, Ordering::Relaxed);
         Ok(())
     }
@@ -189,6 +192,13 @@ async fn app_cli_04_receive_payload() {
         app.received.load(Ordering::Relaxed),
         "MockApplication should have received the payload"
     );
+    let received_id = app
+        .received_id
+        .lock()
+        .clone()
+        .expect("MockApplication should have recorded the bundle id");
+    assert_eq!(received_id, bundle_id, "bundle id must round-trip the wire");
+    assert_eq!(received_id.source, source);
 
     // Clean up
     drop(app.take_sink());
@@ -243,39 +253,5 @@ async fn app_cli_05_status_notify() {
     // Clean up
     drop(app.take_sink());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    server_tasks.shutdown().await;
-}
-
-// APP-CLI-06: Cancel pending send.
-#[tokio::test]
-async fn app_cli_06_cancel() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["application"]).await;
-
-    let app = Arc::new(MockApplication::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = app.take_sink().expect("app should have a sink");
-
-    let bundle_id = hardy_bpv7::bundle::Id {
-        source: "ipn:1.42".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
-        fragment_info: None,
-    };
-
-    let cancelled = sink
-        .cancel(&bundle_id)
-        .await
-        .expect("cancel should succeed");
-
-    assert!(cancelled, "bundle should be cancelled");
-
-    // Clean up
-    sink.unregister().await;
     server_tasks.shutdown().await;
 }

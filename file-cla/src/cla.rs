@@ -43,8 +43,7 @@ impl hardy_bpa::cla::Cla for Cla {
     // so the stream is assembled in memory via `stream::buffer_stream`
     // before writing. This is a deliberate stepping stone toward the full
     // streaming pipeline (a native implementation would spool segments
-    // straight to disk); see bpa/docs/streaming_pipeline_design.md. Native
-    // streaming here is tracked as follow-up work, not a review defect.
+    // straight to disk); see bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
         _lane: Option<u32>,

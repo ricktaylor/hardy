@@ -45,7 +45,6 @@ The tests utilize a **Mock Server** approach:
 | **APP-CLI-03** | **Send Bundle** | Call `send("ipn:2.1", payload, lifetime)` | Receives `SendRequest { destination: "ipn:2.1", payload: ..., lifetime: ... }`.<br>Replies `SendResponse`. | Implemented |
 | **APP-CLI-04** | **Receive Bundle** | Await `next_message()` | Server injects `ReceiveBundleRequest`.<br>Client yields `AppMsg::ReceiveBundle(...)`. | Implemented |
 | **APP-CLI-05** | **Status Notification** | Await `next_message()` | Server injects `StatusNotifyRequest`.<br>Client yields `AppMsg::StatusNotify(...)`. | Implemented |
-| **APP-CLI-06** | **Cancel Transmission** | Call `cancel(bundle_id)` | Receives `CancelRequest { bundle_id: ... }`.<br>Replies `CancelResponse`. | Implemented |
 
 ### Suite 2: CLA Client Proxy
 
@@ -69,7 +68,6 @@ The tests utilize a **Mock Server** approach:
 | **SVC-CLI-02** | **Send Raw Bundle** | Call `sink.send(bundle_bytes)` | Receives `ServiceSendRequest { data: ... }`.<br>Replies `SendResponse { bundle_id }`. | Implemented |
 | **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_deliver(bundle_id, stream, expiry, total_len)`. | Implemented |
 | **SVC-CLI-04** | **Status Notification** | Server injects `StatusNotifyRequest`. | Client trait receives `on_status_notify(...)`. | Implemented |
-| **SVC-CLI-05** | **Cancel Transmission** | Call `sink.cancel(bundle_id)` | Receives `CancelRequest { bundle_id }`.<br>Replies `CancelResponse { cancelled }`. | Implemented |
 
 ### Suite 4: Routing Agent Client Proxy
 

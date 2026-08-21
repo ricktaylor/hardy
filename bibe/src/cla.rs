@@ -51,7 +51,7 @@ impl BibeCla {
     // a complete bundle in memory, so it enters the BPA as a one-segment
     // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
     // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
-    // Native streaming here is tracked as follow-up work, not a review defect.
+    //
     pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
         self.sink
             .get()
@@ -106,8 +106,7 @@ impl Cla for BibeCla {
     // single BIBE-PDU byte string with a whole-buffer codec, so the stream
     // is assembled in memory via `stream::buffer_stream` first. This is a
     // deliberate stepping stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
         _lane: Option<u32>,

@@ -84,8 +84,7 @@ impl Service for DecapService {
     // whole-buffer codec, so the stream is assembled in memory via
     // `stream::buffer_stream` first. This is a deliberate stepping stone
     // toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,

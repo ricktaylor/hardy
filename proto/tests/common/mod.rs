@@ -201,9 +201,6 @@ impl services::ServiceSink for ServiceSinkWrapper {
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         self.0.send(s).await
     }
-    async fn cancel(&self, id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.0.cancel(id).await
-    }
 }
 
 #[async_trait]
@@ -219,9 +216,6 @@ impl services::ApplicationSink for ApplicationSinkWrapper {
         opts: Option<services::SendOptions>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         self.0.send(dest, data, lt, opts).await
-    }
-    async fn cancel(&self, id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        self.0.cancel(id).await
     }
 }
 

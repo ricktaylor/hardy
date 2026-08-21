@@ -61,8 +61,7 @@ impl hardy_bpa::cla::Sink for Sink {
     // the segment stream is accumulated (bounded by the transport cap) and
     // sent as one unary DispatchBundleRequest. This is a deliberate stepping
     // stone toward the full streaming pipeline (chunked wire messages are
-    // the blocker); see bpa/docs/streaming_pipeline_design.md. Native
-    // streaming here is tracked as follow-up work, not a review defect.
+    // the blocker); see bpa/docs/streaming_pipeline_design.md.
     async fn dispatch(
         &self,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,

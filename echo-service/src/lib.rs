@@ -160,8 +160,7 @@ impl hardy_bpa::services::Service for EchoService {
     // with a whole-buffer codec, so it assembles the stream in memory via
     // `stream::buffer_stream` before reflecting the payload. This is a
     // deliberate stepping stone toward the full streaming pipeline; see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,

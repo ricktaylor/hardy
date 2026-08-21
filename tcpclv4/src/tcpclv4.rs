@@ -208,8 +208,7 @@ impl Cla for Tcpclv4 {
     // answered. This is a deliberate stepping stone toward the full
     // streaming pipeline (a native implementation would stream segments
     // straight into XFER_SEGMENT frames, sized from `total_len`); see
-    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
-    // tracked as follow-up work, not a review defect.
+    // bpa/docs/streaming_pipeline_design.md.
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn forward(
         &self,

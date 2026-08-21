@@ -265,10 +265,13 @@ pub enum BufferError {
     #[error("the stream ended before its final segment")]
     Cancelled,
 
-    /// The accumulated segments exceeded the declared `total_len`, or the
-    /// declared `total_len` cannot be indexed as `usize` on this target.
+    /// The accumulated segments exceeded the declared `total_len`.
     #[error("streamed data too large: {size} bytes exceeds the maximum of {max} bytes")]
     TooLarge { size: usize, max: usize },
+
+    /// The declared `total_len` cannot be indexed as `usize` on this target.
+    #[error("declared length of {total_len} bytes is unaddressable on this target")]
+    Unaddressable { total_len: u64 },
 
     /// The stream completed with fewer bytes than its declared `total_len`.
     #[error("stream delivered {size} bytes of the {expected} declared")]
@@ -288,8 +291,8 @@ pub enum BufferError {
 /// segment-at-a-time consumers over time.
 ///
 /// `total_len` is exact, not a cap: a `total_len` that is not indexable as
-/// `usize` (32-bit targets) is rejected as [`BufferError::TooLarge`] before
-/// pulling a segment; a truncated stream yields [`BufferError::Cancelled`];
+/// `usize` (32-bit targets) is rejected as [`BufferError::Unaddressable`]
+/// before pulling a segment; a truncated stream yields [`BufferError::Cancelled`];
 /// a stream exceeding `total_len` yields [`BufferError::TooLarge`]; a
 /// stream completing with fewer bytes than `total_len` yields
 /// [`BufferError::Underrun`] — an implementation may have sized buffers or
@@ -300,10 +303,7 @@ pub async fn buffer_stream<R: Receiver<Segment> + ?Sized>(
     total_len: u64,
 ) -> core::result::Result<crate::Bytes, BufferError> {
     let Ok(max_size) = usize::try_from(total_len) else {
-        return Err(BufferError::TooLarge {
-            size: usize::MAX,
-            max: usize::MAX,
-        });
+        return Err(BufferError::Unaddressable { total_len });
     };
     let data = concat_stream(stream, max_size).await.map_err(|e| match e {
         ConcatError::Cancelled => BufferError::Cancelled,

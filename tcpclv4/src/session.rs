@@ -189,8 +189,7 @@ async fn run_ingest(
                 // one-segment stream (`Bytes` is a `stream::Receiver`). This is a deliberate
                 // stepping stone toward the full streaming pipeline (a native
                 // implementation would dispatch segments as they arrive); see
-                // bpa/docs/streaming_pipeline_design.md. Native streaming here
-                // is tracked as follow-up work, not a review defect.
+                // bpa/docs/streaming_pipeline_design.md.
                 if let Err(e) = sink
                     .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut bundle)
                     .await

@@ -179,15 +179,6 @@ impl Dispatcher {
         Ok(bundle_id)
     }
 
-    pub async fn cancel_local_dispatch(&self, bundle_id: &hardy_bpv7::bundle::Id) -> bool {
-        let Some(bundle) = self.store.get_metadata(bundle_id).await else {
-            return false;
-        };
-
-        self.delete_bundle(bundle).await;
-        true
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn deliver_bundle(
         &self,

@@ -49,7 +49,6 @@ The tests defined here are intended to be run against **all** implementations of
 | :--- | :--- | :--- | :--- |
 | **SVC-05** | **Send Bundle** | 1. Service calls `sink.send(dest, payload, ttl, opts)`. | 1. Returns `Ok(bundle_id)`.<br>2. BPA accepts bundle for routing. |
 | **SVC-06** | **Send Invalid** | 1. Service calls `sink.send` with invalid EID. | 1. Returns `Err(InvalidDestination)`. |
-| **SVC-07** | **Cancel Bundle** | 1. Service calls `sink.send`.<br>2. Service calls `sink.cancel(bundle_id)`. | 1. Returns `Ok(true)`.<br>2. BPA aborts transmission. |
 
 ### Suite D: Error Handling
 
