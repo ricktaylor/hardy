@@ -34,6 +34,10 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
@@ -45,8 +49,10 @@ impl cla::Cla for PipelineCla {
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        bundle: Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.forwarded_tx.send(bundle);
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -84,14 +90,15 @@ impl services::Application for TestApp {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        source: &Eid,
+        bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        payload: Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<()> {
+        let payload = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         self.received_tx
-            .send((source.clone(), payload))
+            .send((bundle_id.source.clone(), payload))
             .map_err(|e| services::Error::Internal(e.into()))
     }
 
@@ -133,9 +140,11 @@ impl services::Service for EchoService {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         if let Some(sink) = self.sink.get()
             && let Ok(parsed) =
                 hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
@@ -144,7 +153,7 @@ impl services::Service for EchoService {
             && let Ok(editor) = editor.with_destination(parsed.bundle.id.source.clone())
             && let Ok(chunks) = editor.rebuild()
         {
-            let reply = match data.try_into_mut() {
+            let mut reply = match data.try_into_mut() {
                 Ok(buf) => {
                     let mut vec = buf.into();
                     hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut vec);
@@ -152,7 +161,7 @@ impl services::Service for EchoService {
                 }
                 Err(original) => Bytes::from(hardy_bpv7::editor::Chunk::flatten(chunks, &original)),
             };
-            sink.send(reply).await.map(|_| ())
+            sink.send(&mut reply).await.map(|_| ())
         } else {
             Ok(())
         }
@@ -193,6 +202,10 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
@@ -204,7 +217,8 @@ impl cla::Cla for TimedCla {
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(tokio::time::Instant::now());
         Ok(cla::ForwardBundleResult::Sent)
@@ -402,13 +416,13 @@ async fn echo_round_trip() {
     // Build an inbound bundle: from remote node, to our echo service
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let echo_dest: Eid = "ipn:0.1.7".parse().unwrap();
-    let inbound = build_bundle(&remote_source, &echo_dest, b"ping");
+    let mut inbound = build_bundle(&remote_source, &echo_dest, b"ping");
 
     // Dispatch it as if received from the CLA
     cla.sink
         .get()
         .unwrap()
-        .dispatch(inbound, Some(&remote_node), None)
+        .dispatch(Some(&remote_node), None, &mut inbound)
         .await
         .unwrap();
 
@@ -445,7 +459,7 @@ async fn echo_round_trip() {
 // ---------------------------------------------------------------------------
 
 // Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
-// channel, service EID) drive ServiceSink::send_streamed directly.
+// channel, service EID) drive ServiceSink::send directly with multi-segment streams.
 async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
     let node_id = IpnNodeId {
         allocator_id: 0,
@@ -483,7 +497,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     (bpa, svc, forwarded_rx, "ipn:0.1.7".parse().unwrap())
 }
 
-/// A bundle streamed through `ServiceSink::send_streamed` in several segments
+/// A bundle streamed through `ServiceSink::send` in several segments
 /// originates identically to a whole-buffer `send`: the returned id matches
 /// the built bundle, and the bundle is forwarded to the CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -496,7 +510,7 @@ async fn service_streamed_originate_forwards() {
     // Split into two Next segments and a Final; the channel is sized to hold
     // them all so the producer side completes before the sink pulls.
     let third = data.len() / 3;
-    let (tx, rx) = hardy_async::channel::bounded(4);
+    let (tx, mut rx) = hardy_async::channel::bounded(4);
     tx.send(hardy_bpa::stream::Segment::Next(data.slice(..third)))
         .await
         .unwrap();
@@ -514,7 +528,7 @@ async fn service_streamed_originate_forwards() {
         .sink
         .get()
         .unwrap()
-        .send_streamed(&rx)
+        .send(&mut rx)
         .await
         .expect("streamed send failed");
     assert_eq!(id.source, source_eid);
@@ -544,7 +558,7 @@ async fn service_streamed_cancel_stores_nothing() {
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
     let data = build_bundle(&source_eid, &dest, b"cancelled");
 
-    let (tx, rx) = hardy_async::channel::bounded(4);
+    let (tx, mut rx) = hardy_async::channel::bounded(4);
     tx.send(hardy_bpa::stream::Segment::Next(
         data.slice(..data.len() / 2),
     ))
@@ -552,7 +566,7 @@ async fn service_streamed_cancel_stores_nothing() {
     .unwrap();
     drop(tx); // no Final — the producer aborts
 
-    let result = svc.sink.get().unwrap().send_streamed(&rx).await;
+    let result = svc.sink.get().unwrap().send(&mut rx).await;
     assert!(matches!(
         result,
         Err(hardy_bpa::services::Error::StreamCancelled)
@@ -584,7 +598,7 @@ async fn service_unregister_cancels_parked_send() {
 
     // One segment then a stall — the sender stays alive throughout, so only
     // registration teardown can end the stream.
-    let (tx, rx) = hardy_async::channel::bounded(2);
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
     hardy_async::channel::Sender::send(
         &tx,
         hardy_bpa::stream::Segment::Next(data.slice(..data.len() / 2)),
@@ -594,7 +608,7 @@ async fn service_unregister_cancels_parked_send() {
 
     let parked = {
         let svc = svc.clone();
-        tokio::spawn(async move { svc.sink.get().unwrap().send_streamed(&rx).await })
+        tokio::spawn(async move { svc.sink.get().unwrap().send(&mut rx).await })
     };
 
     // Let the consumer enter the stream and park on the second pull.
@@ -625,13 +639,13 @@ async fn service_streamed_send_rejects_spoofed_source() {
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
     let data = build_bundle(&spoofed, &dest, b"spoofed");
 
-    let (tx, rx) = hardy_async::channel::bounded(1);
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
     tx.send(hardy_bpa::stream::Segment::Final(data))
         .await
         .unwrap();
     drop(tx);
 
-    let result = svc.sink.get().unwrap().send_streamed(&rx).await;
+    let result = svc.sink.get().unwrap().send(&mut rx).await;
     assert!(matches!(
         result,
         Err(hardy_bpa::services::Error::InvalidDestination(_))
@@ -673,13 +687,13 @@ async fn local_delivery() {
     // Build an inbound bundle addressed to our local application
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
-    let inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
+    let mut inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
     cla.sink
         .get()
         .unwrap()
-        .dispatch(inbound, None, None)
+        .dispatch(None, None, &mut inbound)
         .await
         .unwrap();
 
@@ -704,7 +718,7 @@ async fn local_delivery() {
 // INT-BPA-12: Streamed CLA ingress
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched through `Sink::dispatch_streamed` in several segments
+/// A bundle dispatched through `Sink::dispatch` in several segments
 /// ingresses identically to the whole-buffer `dispatch`: the reassembled
 /// bundle reaches its local application.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -736,7 +750,7 @@ async fn cla_streamed_ingress_delivers() {
     // Three segments through a bounded channel with a spawned producer, so
     // the pull side is genuinely driving.
     let third = inbound.len() / 3;
-    let (tx, rx) = hardy_async::channel::bounded(1);
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
     let segments = vec![
         hardy_bpa::stream::Segment::Next(inbound.slice(..third)),
         hardy_bpa::stream::Segment::Next(inbound.slice(third..2 * third)),
@@ -753,7 +767,7 @@ async fn cla_streamed_ingress_delivers() {
     cla.sink
         .get()
         .unwrap()
-        .dispatch_streamed(&rx, None, None)
+        .dispatch(None, None, &mut rx)
         .await
         .unwrap();
     producer.await.unwrap();
@@ -791,7 +805,7 @@ async fn cla_unregister_cancels_parked_stream() {
 
     // A producer that sends one segment then stalls — the sender stays
     // alive throughout, so only registration teardown can end the stream.
-    let (tx, rx) = hardy_async::channel::bounded(2);
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
     hardy_async::channel::Sender::send(
         &tx,
         hardy_bpa::stream::Segment::Next(Bytes::from_static(b"partial")),
@@ -801,13 +815,7 @@ async fn cla_unregister_cancels_parked_stream() {
 
     let parked = {
         let cla = cla.clone();
-        tokio::spawn(async move {
-            cla.sink
-                .get()
-                .unwrap()
-                .dispatch_streamed(&rx, None, None)
-                .await
-        })
+        tokio::spawn(async move { cla.sink.get().unwrap().dispatch(None, None, &mut rx).await })
     };
 
     // Let the consumer enter the stream and park on the second pull.
@@ -859,7 +867,7 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
     let inbound = build_bundle(&remote_source, &local_dest, b"truncated");
 
-    let (tx, rx) = hardy_async::channel::bounded(4);
+    let (tx, mut rx) = hardy_async::channel::bounded(4);
     hardy_async::channel::Sender::send(
         &tx,
         hardy_bpa::stream::Segment::Next(inbound.slice(..inbound.len() / 2)),
@@ -868,12 +876,7 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     .unwrap();
     drop(tx); // no Final
 
-    let result = cla
-        .sink
-        .get()
-        .unwrap()
-        .dispatch_streamed(&rx, None, None)
-        .await;
+    let result = cla.sink.get().unwrap().dispatch(None, None, &mut rx).await;
     assert!(matches!(
         result,
         Err(hardy_bpa::cla::Error::StreamCancelled)
@@ -938,11 +941,11 @@ async fn throughput() {
         .collect();
 
     // Warm up
-    for (i, bundle) in warmup_bundles.into_iter().enumerate() {
+    for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
         cla.sink
             .get()
             .unwrap()
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await
             .unwrap();
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -955,11 +958,11 @@ async fn throughput() {
     // Each bundle is dispatched and received before the next is sent.
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
-    for (i, bundle) in test_bundles.into_iter().enumerate() {
+    for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         cla.sink
             .get()
             .unwrap()
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await
             .unwrap();
         last_arrival =
@@ -1039,11 +1042,11 @@ async fn forwarding_latency() {
         .collect();
 
     // Warm up
-    for (i, bundle) in warmup_bundles.into_iter().enumerate() {
+    for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
         cla.sink
             .get()
             .unwrap()
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await
             .unwrap();
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -1057,12 +1060,12 @@ async fn forwarding_latency() {
     // actual pipeline processing time, not the channel wait.
     let mut latencies = Vec::with_capacity(count);
 
-    for (i, bundle) in test_bundles.into_iter().enumerate() {
+    for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
         cla.sink
             .get()
             .unwrap()
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await
             .unwrap();
         let arrived =
@@ -1234,10 +1237,10 @@ impl services::Application for FailingApp {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        _payload: Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<()> {
         let err = services::Error::Internal("test: simulated delivery failure".into());
         let _ = self.completed_tx.send(());
@@ -1358,6 +1361,10 @@ impl DeferringCla {
 
 #[async_trait]
 impl cla::Cla for DeferringCla {
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
@@ -1369,7 +1376,8 @@ impl cla::Cla for DeferringCla {
         _queue: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.offers_tx.send(bundle_id.clone());
         if self
@@ -1455,13 +1463,13 @@ async fn deferred_outcome_failed_redispatches() {
 
     cla.sink()
         .dispatch(
-            build_bundle(
+            None,
+            None,
+            &mut build_bundle(
                 &"ipn:0.3.1".parse().unwrap(),
                 &"ipn:0.2.99".parse().unwrap(),
                 b"deferred-fail",
             ),
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -1491,12 +1499,15 @@ async fn deferred_outcome_failed_redispatches() {
 async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
-    let data = build_bundle(
+    let mut data = build_bundle(
         &"ipn:0.3.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"deferred-ok",
     );
-    cla.sink().dispatch(data.clone(), None, None).await.unwrap();
+    cla.sink()
+        .dispatch(None, None, &mut data.clone())
+        .await
+        .unwrap();
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
@@ -1513,7 +1524,7 @@ async fn deferred_outcome_completed_resolves() {
 
     // The completed bundle was deleted with a tombstone: a re-arrival of the
     // same bundle is dropped as a duplicate rather than re-forwarded.
-    cla.sink().dispatch(data, None, None).await.unwrap();
+    cla.sink().dispatch(None, None, &mut data).await.unwrap();
     expect_no_offer(&offers_rx).await;
 
     bpa.shutdown().await;
@@ -1532,13 +1543,13 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
 
     cla.sink()
         .dispatch(
-            build_bundle(
+            None,
+            None,
+            &mut build_bundle(
                 &"ipn:0.3.1".parse().unwrap(),
                 &"ipn:0.2.99".parse().unwrap(),
                 b"outcome-unknown",
             ),
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -1597,13 +1608,13 @@ async fn deferred_outcome_ignores_wrong_cla() {
     cla_a
         .sink()
         .dispatch(
-            build_bundle(
+            None,
+            None,
+            &mut build_bundle(
                 &"ipn:0.3.1".parse().unwrap(),
                 &"ipn:0.2.99".parse().unwrap(),
                 b"wrong-cla",
             ),
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -1697,7 +1708,7 @@ async fn deferred_outcome_loses_to_expiry() {
     .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
     .expect("Failed to build bundle");
     cla.sink()
-        .dispatch(Bytes::from(data), None, None)
+        .dispatch(None, None, &mut Bytes::from(data))
         .await
         .unwrap();
     let id = expect_offer(&offers_rx).await;

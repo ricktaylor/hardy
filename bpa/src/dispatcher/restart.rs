@@ -126,6 +126,10 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for RecordingCla {
+        fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+            None
+        }
+
         async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
             self.sink.call_once(|| sink);
         }
@@ -137,7 +141,8 @@ mod tests {
             _queue: Option<u32>,
             _cla_addr: &cla::ClaAddress,
             bundle_id: &Id,
-            _bundle: Bytes,
+            _total_len: u64,
+            _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
         ) -> cla::Result<cla::ForwardBundleResult> {
             let _ = self.offers_tx.send(bundle_id.clone());
             Ok(cla::ForwardBundleResult::Sent)

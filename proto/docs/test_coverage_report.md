@@ -138,7 +138,7 @@ lcov --summary lcov.info
 
 _Per-file figures are from a previous detailed run; regenerate with `cargo llvm-cov --html`._
 
-The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_receive`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
+The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_deliver`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
 
 ## 5. Test Infrastructure
 
@@ -162,7 +162,7 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
-| Application/Service client proxies | Server-push error-handling branches uncovered | Low | Error paths in `on_receive`, `on_status_notify` callbacks |
+| Application/Service client proxies | Server-push error-handling branches uncovered | Low | Error paths in `on_deliver`, `on_status_notify` callbacks |
 
 ## 7. Conclusion
 

@@ -348,7 +348,7 @@ impl Service {
         let send_time = time::OffsetDateTime::now_utc();
 
         let id = sink
-            .send(bundle_bytes.into())
+            .send(&mut hardy_bpa::Bytes::from(bundle_bytes))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send bundle: {e}"))?;
 
@@ -588,12 +588,20 @@ impl hardy_bpa::services::Service for Service {
         // Nothing to do
     }
 
+    // INTERIM BUFFERING: the ping client parses the whole response bundle
+    // with a whole-buffer codec, so it assembles the stream in memory via
+    // `stream::buffer_stream` before checking the reflected payload. This
+    // is a deliberate stepping stone toward the full streaming pipeline;
+    // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
 

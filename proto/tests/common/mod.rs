@@ -169,19 +169,11 @@ impl cla::Sink for ClaSinkWrapper {
     }
     async fn dispatch(
         &self,
-        b: hardy_bpa::Bytes,
         pn: Option<&NodeId>,
         pa: Option<&cla::ClaAddress>,
+        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<()> {
-        self.0.dispatch(b, pn, pa).await
-    }
-    async fn dispatch_streamed(
-        &self,
-        s: &dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-        pn: Option<&NodeId>,
-        pa: Option<&cla::ClaAddress>,
-    ) -> cla::Result<()> {
-        self.0.dispatch_streamed(s, pn, pa).await
+        self.0.dispatch(pn, pa, s).await
     }
     async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
         self.0.add_peer(a, n).await
@@ -203,14 +195,11 @@ impl services::ServiceSink for ServiceSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }
-    async fn send(&self, d: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send(d).await
-    }
-    async fn send_streamed(
+    async fn send(
         &self,
-        s: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.0.send_streamed(s).await
+        self.0.send(s).await
     }
     async fn cancel(&self, id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
         self.0.cancel(id).await

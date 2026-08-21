@@ -336,8 +336,8 @@ message AppSendRequest {
 // Only the payload and essential metadata are provided; full bundle
 // headers are not accessible via the Application API.
 message AppReceiveRequest {
-  // The source endpoint ID of the bundle sender.
-  string source = 1;
+  reserved 1;
+  reserved "source";
 
   // True if the sender requested an application-layer acknowledgement.
   // The application should send a response bundle if this is set.
@@ -351,7 +351,8 @@ message AppReceiveRequest {
   bytes payload = 4;
 
   // The unique bundle identifier of the delivered bundle, formatted as
-  // specified in RFC 9171. Can be used for status correlation.
+  // specified in RFC 9171. Can be used for status correlation; the source
+  // endpoint ID of the bundle sender is its source component.
   string bundle_id = 5;
 }
 

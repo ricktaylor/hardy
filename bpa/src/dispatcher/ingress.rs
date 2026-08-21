@@ -19,10 +19,10 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn receive_bundle(
         &self,
-        stream: &dyn Receiver<Segment>,
         ingress_cla: Arc<str>,
         ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<()> {
         let metadata = bundle::BundleMetadata {
             status: bundle::BundleStatus::New,

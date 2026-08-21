@@ -49,10 +49,10 @@ impl Application for MockApplication {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _source: &Eid,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        _payload: hardy_bpa::Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
         self.received.store(true, Ordering::Relaxed);
         Ok(())
@@ -178,14 +178,10 @@ async fn app_cli_04_receive_payload() {
         ..Default::default()
     };
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let mut payload = hardy_bpa::Bytes::from_static(b"hello");
+    let total_len = payload.len() as u64;
     server_app
-        .on_deliver(
-            &bundle_id,
-            &source,
-            expiry,
-            false,
-            hardy_bpa::Bytes::from_static(b"hello"),
-        )
+        .on_deliver(&bundle_id, expiry, false, total_len, &mut payload)
         .await
         .expect("Delivery should succeed");
 

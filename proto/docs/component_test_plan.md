@@ -67,7 +67,7 @@ The tests utilize a **Mock Server** approach:
 | ----- | ----- | ----- | ----- | ----- |
 | **SVC-CLI-01** | **Registration (IPN)** | Call `register_service(Some(Ipn(42)))` | Receives `RegisterRequest { service_id: { ipn: 42 } }`.<br>Replies `RegisterResponse { endpoint_id: "ipn:1.42" }`. | Implemented |
 | **SVC-CLI-02** | **Send Raw Bundle** | Call `sink.send(bundle_bytes)` | Receives `ServiceSendRequest { data: ... }`.<br>Replies `SendResponse { bundle_id }`. | Implemented |
-| **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_receive(data, expiry)`. | Implemented |
+| **SVC-CLI-03** | **Receive Raw Bundle** | Server injects `ServiceReceiveRequest`. | Client trait receives `on_deliver(bundle_id, stream, expiry, total_len)`. | Implemented |
 | **SVC-CLI-04** | **Status Notification** | Server injects `StatusNotifyRequest`. | Client trait receives `on_status_notify(...)`. | Implemented |
 | **SVC-CLI-05** | **Cancel Transmission** | Call `sink.cancel(bundle_id)` | Receives `CancelRequest { bundle_id }`.<br>Replies `CancelResponse { cancelled }`. | Implemented |
 

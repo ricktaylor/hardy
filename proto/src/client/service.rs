@@ -3,7 +3,7 @@ use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Service,
-    request: ServiceReceiveRequest,
+    mut request: ServiceReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
     let expiry = request
         .expiry
@@ -13,8 +13,11 @@ async fn receive(
     let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
+    // The unary wire message already delivered the whole bundle, so it
+    // reaches the service as a one-segment stream.
+    let total_len = request.data.len() as u64;
     service
-        .on_deliver(&bundle_id, request.data, expiry)
+        .on_deliver(&bundle_id, expiry, total_len, &mut request.data)
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
@@ -84,19 +87,30 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::services::ServiceSink for Sink {
+    // INTERIM BUFFERING: the wire has no streamed Send message yet, so the
+    // segment stream is accumulated (bounded by the transport cap) and sent
+    // as one unary ServiceSendRequest. This is a deliberate stepping stone
+    // toward the full streaming pipeline (chunked wire messages are the
+    // blocker); see bpa/docs/streaming_pipeline_design.md. Native streaming
+    // here is tracked as follow-up work, not a review defect.
     async fn send(
         &self,
-        data: hardy_bpa::Bytes,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        // See `client::application::Sink::send` for why this pre-check
-        // exists: oversized messages break the gRPC stream, which would
-        // cascade into `on_close` and unregister this service.
-        if data.len() > crate::MAX_PAYLOAD_SIZE {
-            return Err(hardy_bpa::services::Error::PayloadTooLarge {
-                size: data.len(),
-                max: crate::MAX_PAYLOAD_SIZE,
-            });
-        }
+        // The transport cap doubles as the pre-check from
+        // `client::application::Sink::send`: an oversized bundle returns a
+        // typed error here instead of letting tonic break the gRPC stream,
+        // which would cascade into `on_close` and unregister this service.
+        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
+            .await
+            .map_err(|e| match e {
+                hardy_bpa::stream::ConcatError::Cancelled => {
+                    hardy_bpa::services::Error::StreamCancelled
+                }
+                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
+                    hardy_bpa::services::Error::PayloadTooLarge { size, max }
+                }
+            })?;
         match self
             .call(service_to_bpa::Msg::Send(ServiceSendRequest { data }))
             .await?
@@ -112,25 +126,6 @@ impl hardy_bpa::services::ServiceSink for Sink {
                 ))
             }
         }
-    }
-
-    async fn send_streamed(
-        &self,
-        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
-        // Accumulate then delegate to the unary send: the wire has no
-        // streamed Send message yet, and its transport cap is the bound.
-        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
-            .await
-            .map_err(|e| match e {
-                hardy_bpa::stream::ConcatError::Cancelled => {
-                    hardy_bpa::services::Error::StreamCancelled
-                }
-                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::services::Error::PayloadTooLarge { size, max }
-                }
-            })?;
-        self.send(data).await
     }
 
     async fn cancel(

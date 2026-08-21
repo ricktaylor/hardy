@@ -17,7 +17,7 @@ The echo service implements the BPA's `Service` trait (low-level API):
 ```
 Incoming Bundle                   Echo Service                    Outgoing Bundle
 ───────────────                   ────────────                    ───────────────
-src: ipn:2.1    ──► on_receive() ──► Editor ──► sink.send() ──►   src: ipn:1.7
+src: ipn:2.1    ──► on_deliver() ──► Editor ──► sink.send() ──►   src: ipn:1.7
 dst: ipn:1.7        (parse)         (swap)                        dst: ipn:2.1
 payload: [...]                                                    payload: [...]
 ```
@@ -46,7 +46,7 @@ Rather than constructing a new bundle from scratch, the service uses `hardy_bpv7
 
 ### With hardy-bpa
 
-Implements `hardy_bpa::services::Service`. The BPA calls `on_receive()` when a bundle arrives at the registered endpoint.
+Implements `hardy_bpa::services::Service`. The BPA calls `on_deliver()` with a segment stream when a bundle arrives at the registered endpoint.
 
 ### With hardy-bpa-server
 

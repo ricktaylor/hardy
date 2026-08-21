@@ -34,10 +34,12 @@ impl LowLevelService {
 
     async fn send(
         &self,
-        request: ServiceSendRequest,
+        mut request: ServiceSendRequest,
     ) -> Result<bpa_to_service::Msg, tonic::Status> {
+        // The unary wire message already delivered the whole bundle, so it
+        // enters the BPA as a one-segment stream.
         self.sink()?
-            .send(request.data)
+            .send(&mut request.data)
             .await
             .map(|bundle_id| {
                 bpa_to_service::Msg::Send(SendResponse {
@@ -85,12 +87,21 @@ impl hardy_bpa::services::Service for LowLevelService {
         }
     }
 
+    // INTERIM BUFFERING: the wire protocol has no segmented bundle
+    // messages yet — deliveries travel as one unary ServiceReceiveRequest —
+    // so the stream is assembled in memory via `stream::buffer_stream`
+    // before marshalling. This is a deliberate stepping stone toward the
+    // full streaming pipeline (chunked wire messages are the blocker); see
+    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
+    // tracked as follow-up work, not a review defect.
     async fn on_deliver(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-        data: hardy_bpa::Bytes,
         expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_service::Msg::Receive(ServiceReceiveRequest {
                 data,

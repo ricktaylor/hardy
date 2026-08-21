@@ -108,7 +108,7 @@ See the storage backend packages for production implementations:
 
 ### Streamed Bundle Ingestion (interim accumulation)
 
-Both input doors accept a bundle as a pull-driven stream of `stream::Segment`s as their primitive: `cla::Sink::dispatch_streamed` (CLA ingress) and `services::ServiceSink::send_streamed` (service origination). The whole-buffer `dispatch`/`send` are provided conveniences that deliver a single `Segment::Final` through the same path, so each door has one pipeline.
+Both input doors accept a bundle as a pull-driven stream of `stream::Segment`s: `cla::Sink::dispatch` (CLA ingress) and `services::ServiceSink::send` (service origination). A caller holding a whole buffer passes it directly — `Bytes` implements `stream::Receiver`, draining as a single `Segment::Final` through the same path — so each door has one pipeline.
 
 Completion is explicit: `Final` marks a clean end, and a producer that drops its sender earlier has truncated the bundle — the door surfaces `StreamCancelled` rather than success, so a CLA withholds its transfer acknowledgement and the peer retransmits. Reassembly currently accumulates in memory (`stream::concat_stream`) bounded by `BpaBuilder::max_bundle_size` (default 64 MiB, `max-bundle-size` in bpa-server configuration) — a custody-admission bound sized for the in-memory interim. Registration liveness is enforced per segment: a CLA or service that unregisters mid-stream fails the next pull and never lands its bundle.
 

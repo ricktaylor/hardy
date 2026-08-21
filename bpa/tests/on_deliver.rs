@@ -1,5 +1,6 @@
-//! Integration tests for `Service::on_deliver_streamed` — the streamed
-//! delivery door and its buffered default adapter.
+//! Integration tests for `Service::on_deliver` — the streamed delivery
+//! door — and `stream::buffer_stream`, the whole-buffer convenience used by
+//! services that need a contiguous bundle.
 
 use std::sync::{
     Arc,
@@ -19,14 +20,14 @@ use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
 // ---------------------------------------------------------------------------
 
 enum Event {
-    /// `on_deliver` was invoked with the whole bundle.
+    /// The buffering service assembled the whole bundle.
     Received(Bytes),
-    /// `on_deliver_streamed` was invoked and pulled the stream to completion.
+    /// The streaming service pulled the stream to completion.
     Streamed {
         segments: Vec<Segment>,
         total_len: u64,
     },
-    /// `on_deliver_streamed` failed the delivery.
+    /// The delivery failed.
     Failed,
 }
 
@@ -34,11 +35,11 @@ enum Event {
 // Mock services
 // ---------------------------------------------------------------------------
 
-/// Overrides `on_deliver_streamed`, recording every segment it pulls.
+/// Consumes the stream segment by segment, recording every segment it pulls.
 struct StreamingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
-    /// When set, every `on_deliver_streamed` call fails without pulling.
+    /// When set, every `on_deliver` call fails without pulling.
     failing: AtomicBool,
 }
 
@@ -67,21 +68,9 @@ impl services::Service for StreamingService {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: Bytes,
-        _expiry: time::OffsetDateTime,
-    ) -> services::Result<()> {
-        // A call here means the streamed door was bypassed — observable,
-        // so the test fails on the assertion rather than inside a BPA task.
-        let _ = self.events_tx.send(Event::Received(data));
-        Ok(())
-    }
-
-    async fn on_deliver_streamed(
-        &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        stream: &dyn Receiver<Segment>,
         _expiry: time::OffsetDateTime,
         total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
         if self.failing.load(Ordering::SeqCst) {
             let _ = self.events_tx.send(Event::Failed);
@@ -119,8 +108,8 @@ impl services::Service for StreamingService {
     }
 }
 
-/// Relies on the provided `on_deliver_streamed` — the buffered default
-/// adapter.
+/// Buffers the stream into a contiguous bundle via `stream::buffer_stream`
+/// — the shape every whole-buffer service takes on the streamed-only door.
 struct BufferedService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
     events_tx: flume::Sender<Event>,
@@ -150,9 +139,11 @@ impl services::Service for BufferedService {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Received(data));
         Ok(())
     }
@@ -192,12 +183,17 @@ impl cla::Cla for IngressCla {
 
     async fn on_unregister(&self) {}
 
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: Bytes,
+        _total_len: u64,
+        _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
         Ok(cla::ForwardBundleResult::Sent)
     }
@@ -216,7 +212,7 @@ fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
 }
 
 /// The identity of a bundle built by [`build_bundle`], for direct
-/// `on_deliver_streamed` calls.
+/// `on_deliver` calls.
 fn bundle_id_of(data: &Bytes) -> hardy_bpv7::bundle::Id {
     hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse built bundle")
@@ -270,7 +266,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     cla.sink
         .get()
         .unwrap()
-        .dispatch(inbound.clone(), None, None)
+        .dispatch(None, None, &mut inbound.clone())
         .await
         .unwrap();
 
@@ -278,7 +274,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// Full-path tests: deliver_bundle -> on_deliver_streamed
+// Full-path tests: deliver_bundle -> on_deliver
 // ---------------------------------------------------------------------------
 
 /// A streaming service receives the whole bundle as a single `Final`
@@ -309,13 +305,13 @@ async fn streaming_service_receives_single_final_segment() {
         .get()
         .unwrap()
         .dispatch(
-            build_bundle(
+            None,
+            None,
+            &mut build_bundle(
                 &"ipn:0.2.1".parse().unwrap(),
                 &"ipn:0.1.7".parse().unwrap(),
                 b"ping",
             ),
-            None,
-            None,
         )
         .await
         .unwrap();
@@ -342,10 +338,10 @@ async fn streaming_service_receives_single_final_segment() {
     bpa.shutdown().await;
 }
 
-/// A service that only implements `on_deliver` still receives the whole
-/// bundle, through the buffered default adapter.
+/// A service that buffers via `stream::buffer_stream` still receives the
+/// whole bundle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn buffered_service_receives_whole_bundle_via_default_adapter() {
+async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
 
     let (svc, events_rx) = BufferedService::new();
@@ -354,7 +350,7 @@ async fn buffered_service_receives_whole_bundle_via_default_adapter() {
         .unwrap();
 
     let Event::Received(data) = recv_event(&events_rx, 5).await else {
-        panic!("Expected the buffered adapter to call on_deliver");
+        panic!("Expected the buffering service to assemble the bundle");
     };
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse delivered bundle");
@@ -391,16 +387,16 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
 }
 
 // ---------------------------------------------------------------------------
-// Direct-call tests: the default adapter body
+// Direct-call tests: a buffering service over `stream::buffer_stream`
 // ---------------------------------------------------------------------------
 
 fn expiry() -> time::OffsetDateTime {
     time::OffsetDateTime::now_utc() + time::Duration::hours(1)
 }
 
-/// The default body reassembles a multi-segment stream before delegating.
+/// The buffering path reassembles a multi-segment stream.
 #[tokio::test]
-async fn default_body_concats_multi_segment_stream() {
+async fn buffering_service_concats_multi_segment_stream() {
     let (svc, events_rx) = BufferedService::new();
     let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
@@ -408,69 +404,69 @@ async fn default_body_concats_multi_segment_stream() {
         b"payload",
     );
     let (head, tail) = (data.slice(..10), data.slice(10..));
-    let rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
+    let mut rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
 
-    services::Service::on_deliver_streamed(
+    services::Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
-        &rx,
         expiry(),
         data.len() as u64,
+        &mut rx,
     )
     .await
     .unwrap();
 
     let Ok(Event::Received(received)) = events_rx.try_recv() else {
-        panic!("Expected on_deliver to get the reassembled bundle");
+        panic!("Expected the buffering service to get the reassembled bundle");
     };
     assert_eq!(received, data);
 }
 
-/// A single-`Final` stream passes through the default body zero-copy.
+/// A single-`Final` stream passes through the buffering path zero-copy.
 #[tokio::test]
-async fn default_body_is_zero_copy_for_single_final() {
+async fn buffering_service_is_zero_copy_for_single_final() {
     let (svc, events_rx) = BufferedService::new();
     let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let rx = feed(vec![Segment::Final(data.clone())]).await;
+    let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    services::Service::on_deliver_streamed(
+    services::Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
-        &rx,
         expiry(),
         data.len() as u64,
+        &mut rx,
     )
     .await
     .unwrap();
 
     let Ok(Event::Received(received)) = events_rx.try_recv() else {
-        panic!("Expected on_deliver to get the bundle");
+        panic!("Expected the buffering service to get the bundle");
     };
     assert_eq!(received.as_ptr(), data.as_ptr());
 }
 
-/// A truncated stream is an error, and `on_deliver` is never invoked — no
-/// partial bundle reaches the service.
+/// A truncated stream is an error, and no partial bundle reaches the
+/// service's consumer.
 #[tokio::test]
-async fn default_body_truncated_stream_is_cancelled() {
+async fn buffering_service_truncated_stream_is_cancelled() {
     let (svc, events_rx) = BufferedService::new();
     let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let rx = feed(vec![Segment::Next(data.slice(..4))]).await;
+    let mut rx = feed(vec![Segment::Next(data.slice(..4))]).await;
 
-    let Err(err) = services::Service::on_deliver_streamed(
+    let Err(err) = services::Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
-        &rx,
         expiry(),
         data.len() as u64,
+        &mut rx,
     )
     .await
     else {
@@ -481,9 +477,9 @@ async fn default_body_truncated_stream_is_cancelled() {
 }
 
 /// A stream completing with fewer bytes than the declared `total_len` is
-/// rejected before delegation — no short bundle reaches the service.
+/// rejected — no short bundle reaches the service's consumer.
 #[tokio::test]
-async fn default_body_rejects_under_delivering_stream() {
+async fn buffering_service_rejects_under_delivering_stream() {
     let (svc, events_rx) = BufferedService::new();
     let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
@@ -491,14 +487,14 @@ async fn default_body_rejects_under_delivering_stream() {
         b"payload",
     );
     let short = data.slice(..data.len() - 1);
-    let rx = feed(vec![Segment::Final(short.clone())]).await;
+    let mut rx = feed(vec![Segment::Final(short.clone())]).await;
 
-    let Err(err) = services::Service::on_deliver_streamed(
+    let Err(err) = services::Service::on_deliver(
         &*svc,
         &bundle_id_of(&data),
-        &rx,
         expiry(),
         data.len() as u64,
+        &mut rx,
     )
     .await
     else {
@@ -512,20 +508,19 @@ async fn default_body_rejects_under_delivering_stream() {
     assert!(events_rx.is_empty());
 }
 
-/// A stream exceeding the declared `total_len` is rejected before
-/// delegation.
+/// A stream exceeding the declared `total_len` is rejected.
 #[tokio::test]
-async fn default_body_rejects_stream_exceeding_total_len() {
+async fn buffering_service_rejects_stream_exceeding_total_len() {
     let (svc, events_rx) = BufferedService::new();
     let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
-    let rx = feed(vec![Segment::Final(data.clone())]).await;
+    let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
     let Err(err) =
-        services::Service::on_deliver_streamed(&*svc, &bundle_id_of(&data), &rx, expiry(), 4).await
+        services::Service::on_deliver(&*svc, &bundle_id_of(&data), expiry(), 4, &mut rx).await
     else {
         panic!("Expected an oversize stream to fail");
     };

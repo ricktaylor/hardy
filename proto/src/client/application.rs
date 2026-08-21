@@ -3,13 +3,8 @@ use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Application,
-    request: AppReceiveRequest,
+    mut request: AppReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
-    let source = request
-        .source
-        .parse::<hardy_bpv7::eid::Eid>()
-        .map_err(|e| tonic::Status::from_error(e.into()))?;
-
     let expiry = request
         .expiry
         .map(from_timestamp)
@@ -19,13 +14,16 @@ async fn receive(
     let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
+    // The unary wire message already delivered the whole payload, so it
+    // reaches the application as a one-segment stream.
+    let total_len = request.payload.len() as u64;
     service
         .on_deliver(
             &bundle_id,
-            &source,
             expiry,
             request.ack_requested,
-            request.payload,
+            total_len,
+            &mut request.payload,
         )
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;

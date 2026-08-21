@@ -3,7 +3,7 @@ use proto::cla::*;
 
 async fn forward(
     cla: &dyn hardy_bpa::cla::Cla,
-    request: ForwardBundleRequest,
+    mut request: ForwardBundleRequest,
 ) -> Result<ForwardBundleResponse, tonic::Status> {
     let cla_addr = request
         .address
@@ -13,8 +13,17 @@ async fn forward(
     let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
         .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
 
+    // The unary wire message already delivered the whole bundle, so it
+    // reaches the CLA as a one-segment stream.
+    let total_len = request.bundle.len() as u64;
     let result = match cla
-        .forward(request.queue, &cla_addr, &bundle_id, request.bundle)
+        .forward(
+            request.lane,
+            &cla_addr,
+            &bundle_id,
+            total_len,
+            &mut request.bundle,
+        )
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?
     {
@@ -48,21 +57,30 @@ impl Sink {
 
 #[async_trait]
 impl hardy_bpa::cla::Sink for Sink {
+    // INTERIM BUFFERING: the wire has no streamed Dispatch message yet, so
+    // the segment stream is accumulated (bounded by the transport cap) and
+    // sent as one unary DispatchBundleRequest. This is a deliberate stepping
+    // stone toward the full streaming pipeline (chunked wire messages are
+    // the blocker); see bpa/docs/streaming_pipeline_design.md. Native
+    // streaming here is tracked as follow-up work, not a review defect.
     async fn dispatch(
         &self,
-        bundle: hardy_bpa::Bytes,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::cla::Result<()> {
-        // See `client::application::Sink::send` for why this pre-check
-        // exists: oversized messages break the gRPC stream, which would
-        // cascade into `on_close` and unregister this CLA.
-        if bundle.len() > crate::MAX_PAYLOAD_SIZE {
-            return Err(hardy_bpa::cla::Error::PayloadTooLarge {
-                size: bundle.len(),
-                max: crate::MAX_PAYLOAD_SIZE,
-            });
-        }
+        // The transport cap doubles as the pre-check from
+        // `client::application::Sink::send`: an oversized bundle returns a
+        // typed error here instead of letting tonic break the gRPC stream,
+        // which would cascade into `on_close` and unregister this CLA.
+        let bundle = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
+            .await
+            .map_err(|e| match e {
+                hardy_bpa::stream::ConcatError::Cancelled => hardy_bpa::cla::Error::StreamCancelled,
+                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
+                    hardy_bpa::cla::Error::PayloadTooLarge { size, max }
+                }
+            })?;
         match self
             .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
                 bundle,
@@ -79,25 +97,6 @@ impl hardy_bpa::cla::Sink for Sink {
                 ))
             }
         }
-    }
-
-    async fn dispatch_streamed(
-        &self,
-        stream: &dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-        peer_node: Option<&hardy_bpv7::eid::NodeId>,
-        peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
-    ) -> hardy_bpa::cla::Result<()> {
-        // Accumulate then delegate to the unary dispatch: the wire has no
-        // streamed Dispatch message yet, and its transport cap is the bound.
-        let data = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
-            .await
-            .map_err(|e| match e {
-                hardy_bpa::stream::ConcatError::Cancelled => hardy_bpa::cla::Error::StreamCancelled,
-                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::cla::Error::PayloadTooLarge { size, max }
-                }
-            })?;
-        self.dispatch(data, peer_node, peer_addr).await
     }
 
     async fn add_peer(

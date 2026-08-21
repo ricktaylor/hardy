@@ -39,8 +39,11 @@ pub fn new_queue_set(
     dispatcher: Arc<dispatcher::Dispatcher>,
     peer: u32,
     cla_addr: ClaAddress,
-    queue_count: u32,
+    lane_count: Option<core::num::NonZeroUsize>,
 ) -> HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> {
+    // Lane indices are u32 on the trait surface; an over-declared count is
+    // clamped rather than wrapped.
+    let lane_count = lane_count.map_or(0, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let shared = Arc::new(Shared {
         cla,
         dispatcher,
@@ -50,7 +53,7 @@ pub fn new_queue_set(
 
     let mut h: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> =
         [(None, EgressQueue::create(shared.clone(), None))].into();
-    for i in 0..queue_count {
+    for i in 0..lane_count {
         h.insert(Some(i), EgressQueue::create(shared.clone(), Some(i)));
     }
     h

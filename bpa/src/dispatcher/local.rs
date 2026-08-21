@@ -89,7 +89,7 @@ impl Dispatcher {
     pub async fn local_dispatch_raw_streamed(
         self: &Arc<Self>,
         expected_source: &Eid,
-        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         let data = crate::stream::concat_stream(stream, self.max_bundle_size)
             .await
@@ -199,7 +199,7 @@ impl Dispatcher {
         };
 
         // Deliver filter hook
-        let (mut bundle, data) = match self
+        let (mut bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
@@ -220,15 +220,10 @@ impl Dispatcher {
 
         let delivery_result = match &service.service {
             services::registry::ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services, always
-                // through the streamed door: the whole bundle is in hand,
-                // so it travels as a single Final segment.
+                // Pass raw bundle bytes to low-level services: the whole
+                // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                let (tx, rx) = hardy_async::channel::bounded(1);
-                crate::stream::Sender::send(&tx, crate::stream::Segment::Final(data))
-                    .await
-                    .trace_expect("bounded(1) send with live receiver cannot fail");
-                svc.on_deliver_streamed(&bundle.bundle.id, &rx, bundle.expiry(), total_len)
+                svc.on_deliver(&bundle.bundle.id, bundle.expiry(), total_len, &mut data)
                     .await
             }
             services::registry::ServiceImpl::Application(app) => {
@@ -238,7 +233,7 @@ impl Dispatcher {
                     bundle.bundle.block_data(1, &data, &*key_source)
                 }; // key_source dropped here, before any await
 
-                let payload = {
+                let mut payload = {
                     match payload_result {
                         Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                             // TODO: We are unable to decrypt the payload, what do we do?
@@ -264,21 +259,15 @@ impl Dispatcher {
                     }
                 };
 
-                // As for low-level services, delivery always goes through
-                // the streamed door: the whole payload is in hand, so it
-                // travels as a single Final segment.
+                // As for low-level services, the whole payload is in hand,
+                // so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
-                let (tx, rx) = hardy_async::channel::bounded(1);
-                crate::stream::Sender::send(&tx, crate::stream::Segment::Final(payload))
-                    .await
-                    .trace_expect("bounded(1) send with live receiver cannot fail");
-                app.on_deliver_streamed(
+                app.on_deliver(
                     &bundle.bundle.id,
-                    &bundle.bundle.id.source,
                     bundle.expiry(),
                     bundle.bundle.flags.app_ack_requested,
-                    &rx,
                     total_len,
+                    &mut payload,
                 )
                 .await
             }

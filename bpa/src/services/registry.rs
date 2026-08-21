@@ -116,9 +116,9 @@ impl services::ServiceSink for Sink {
         self.unregister_inner().await
     }
 
-    async fn send_streamed(
+    async fn send(
         &self,
-        stream: &dyn crate::stream::Receiver<crate::stream::Segment>,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> services::Result<hardy_bpv7::bundle::Id> {
         let service = self
             .service
@@ -130,12 +130,12 @@ impl services::ServiceSink for Sink {
         // stream immediately — even parked behind a stalled producer — and
         // the send surfaces as cancelled. Sink-side, so the dispatcher's
         // stream consumers stay registration-agnostic.
-        let stream = crate::stream::CancellableReceiver {
+        let mut stream = crate::stream::CancellableReceiver {
             inner: stream,
             token: service.cancel.clone(),
         };
         self.dispatcher
-            .local_dispatch_raw_streamed(&self.eid, &stream)
+            .local_dispatch_raw_streamed(&self.eid, &mut stream)
             .await
     }
 
@@ -442,10 +442,10 @@ mod tests {
         async fn on_deliver(
             &self,
             _bundle_id: &hardy_bpv7::bundle::Id,
-            _source: &hardy_bpv7::eid::Eid,
             _expiry: time::OffsetDateTime,
             _ack_requested: bool,
-            _payload: crate::Bytes,
+            _total_len: u64,
+            _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> services::Result<()> {
             Ok(())
         }

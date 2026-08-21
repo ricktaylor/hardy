@@ -49,8 +49,9 @@ impl Service for MockService {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
         self.received.store(true, Ordering::Relaxed);
         Ok(())
@@ -109,7 +110,9 @@ async fn svc_cli_02_send_bundle() {
     let sink = svc.take_sink().expect("service should have a sink");
 
     // send() calls the mock BPA sink which is unimplemented — expect an error
-    let result = sink.send(hardy_bpa::Bytes::from_static(b"\x9f\x89")).await;
+    let result = sink
+        .send(&mut hardy_bpa::Bytes::from_static(b"\x9f\x89"))
+        .await;
     assert!(result.is_err(), "mock sink send is unimplemented");
 
     // Clean up
@@ -140,11 +143,12 @@ async fn svc_cli_03_receive_bundle() {
         .clone()
         .expect("BPA should have the server-side service");
 
-    let data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
+    let mut data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
+    let total_len = data.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     server_svc
-        .on_deliver(&bundle_id, data, expiry)
+        .on_deliver(&bundle_id, expiry, total_len, &mut data)
         .await
         .expect("Delivery should succeed");
 
@@ -261,15 +265,17 @@ impl Service for ReplyingService {
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let mut data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let sink = self.sink.lock().clone().expect("registered");
         // Send back to the BPA before returning. The mock sink answers with an
         // error, but the round-trip must complete: a Send drawn from the same
         // id space as the BPA's in-flight Receive used to be mis-routed as that
         // Receive's response, hanging this call forever.
-        let _ = sink.send(data).await;
+        let _ = sink.send(&mut data).await;
         self.replied.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -319,11 +325,14 @@ async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     let deliveries = (0..N).map(|_| {
         let server_svc = server_svc.clone();
         tokio::spawn(async move {
+            let mut data = hardy_bpa::Bytes::from_static(b"payload");
+            let total_len = data.len() as u64;
             let _ = server_svc
                 .on_deliver(
                     &hardy_bpv7::bundle::Id::default(),
-                    hardy_bpa::Bytes::from_static(b"payload"),
                     expiry,
+                    total_len,
+                    &mut data,
                 )
                 .await;
         })

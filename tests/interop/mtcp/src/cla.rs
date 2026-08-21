@@ -71,15 +71,28 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.shutdown().await;
     }
 
+    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        None
+    }
+
+    // INTERIM BUFFERING: MTCP frames the whole bundle as one CBOR byte
+    // string, so the stream is assembled in memory via
+    // `stream::buffer_stream` before framing. This is a deliberate stepping
+    // stone toward the full streaming pipeline; see
+    // bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle: hardy_bpa::Bytes,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let hardy_bpa::cla::ClaAddress::Tcp(remote_addr) = cla_addr else {
             return Ok(hardy_bpa::cla::ForwardBundleResult::NoNeighbour);
         };
+
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
 
         debug!(
             "Forwarding bundle ({} bytes) to {remote_addr}",

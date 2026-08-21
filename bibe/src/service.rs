@@ -80,12 +80,21 @@ impl Service for DecapService {
         debug!("BIBE DecapService unregistered");
     }
 
+    // INTERIM BUFFERING: decapsulation parses the whole outer bundle with a
+    // whole-buffer codec, so the stream is assembled in memory via
+    // `stream::buffer_stream` first. This is a deliberate stepping stone
+    // toward the full streaming pipeline; see
+    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
+    // tracked as follow-up work, not a review defect.
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+
         // A malformed outer bundle is a permanent failure: log and accept it,
         // so it is not parked for a retry that could never succeed.
         let inner = match self.decapsulate(data) {

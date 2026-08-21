@@ -38,7 +38,7 @@ The tests defined here are intended to be run against **all** implementations of
 
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
-| **SVC-03** | **Receive Bundle** | 1. BPA calls `on_receive(src, expiry, ack, payload)`. | 1. Service processes payload.<br>2. Service acknowledges (if applicable). |
+| **SVC-03** | **Receive Bundle** | 1. BPA calls `on_deliver(bundle_id, expiry, ack, stream, total_len)`. | 1. Service processes payload.<br>2. Service acknowledges (if applicable). |
 | **SVC-04** | **Receive Status** | 1. BPA calls `on_status_notify(id, from, kind, reason, time)`. | 1. Service correlates ID with sent bundle.<br>2. Service handles status update. |
 
 ### Suite C: Transmission

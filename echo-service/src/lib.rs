@@ -117,9 +117,11 @@ impl EchoService {
             "Sending echo response"
         );
 
-        sink.send(response.into()).await.inspect_err(|e| {
-            warn!("Failed to send echo response: {e:?}");
-        })?;
+        sink.send(&mut hardy_bpa::Bytes::from(response))
+            .await
+            .inspect_err(|e| {
+                warn!("Failed to send echo response: {e:?}");
+            })?;
 
         Ok(())
     }
@@ -154,12 +156,20 @@ impl hardy_bpa::services::Service for EchoService {
     }
 
     /// Called when a bundle is delivered
+    // INTERIM BUFFERING: the echo service parses the whole request bundle
+    // with a whole-buffer codec, so it assembles the stream in memory via
+    // `stream::buffer_stream` before reflecting the payload. This is a
+    // deliberate stepping stone toward the full streaming pipeline; see
+    // bpa/docs/streaming_pipeline_design.md. Native streaming here is
+    // tracked as follow-up work, not a review defect.
     async fn on_deliver(
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        data: hardy_bpa::Bytes,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         self.echo(data).await.map_err(Into::into)
     }
 }
