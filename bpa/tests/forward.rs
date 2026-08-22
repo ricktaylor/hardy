@@ -66,7 +66,7 @@ impl cla::Cla for StreamingCla {
 
     async fn on_unregister(&self) {}
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 
@@ -132,7 +132,7 @@ impl cla::Cla for BufferedCla {
 
     async fn on_unregister(&self) {}
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

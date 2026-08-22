@@ -187,7 +187,7 @@ impl cla::Cla for IngressCla {
 
     async fn on_unregister(&self) {}
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

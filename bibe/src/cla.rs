@@ -97,7 +97,7 @@ impl Cla for BibeCla {
         debug!("BIBE CLA unregistered");
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

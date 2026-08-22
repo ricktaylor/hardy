@@ -35,7 +35,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.shutdown().await;
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

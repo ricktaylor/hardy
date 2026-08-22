@@ -36,7 +36,7 @@ impl cla::Cla for BenchCla {
         self.sink.call_once(|| sink);
     }
     async fn on_unregister(&self) {}
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 
