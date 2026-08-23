@@ -422,7 +422,7 @@ mod tests {
 
     #[async_trait]
     impl cla::Cla for TestCla {
-        fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
             None
         }
 

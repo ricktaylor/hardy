@@ -34,7 +34,7 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 
@@ -202,7 +202,7 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 
@@ -1361,7 +1361,7 @@ impl DeferringCla {
 
 #[async_trait]
 impl cla::Cla for DeferringCla {
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

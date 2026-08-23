@@ -198,7 +198,7 @@ impl Cla for Tcpclv4 {
         self.tasks.shutdown().await;
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

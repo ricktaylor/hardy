@@ -39,16 +39,14 @@ pub fn new_queue_set(
     dispatcher: Arc<dispatcher::Dispatcher>,
     peer: u32,
     cla_addr: ClaAddress,
-    lane_count: Option<core::num::NonZeroUsize>,
+    lane_count: Option<core::num::NonZeroU32>,
 ) -> HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> {
     // A queue is instantiated eagerly per declared lane, so the count a CLA
     // declares directly sizes an allocation here — cap it to keep an absurd
     // declaration from becoming a resource bomb. Lane indices are u32 on the
     // trait surface; an over-declared count is clamped rather than wrapped.
     const MAX_EAGER_LANE_QUEUES: u32 = 256;
-    let lane_count = lane_count
-        .map_or(0, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
-        .min(MAX_EAGER_LANE_QUEUES);
+    let lane_count = lane_count.map_or(0, |n| n.get()).min(MAX_EAGER_LANE_QUEUES);
     let shared = Arc::new(Shared {
         cla,
         dispatcher,

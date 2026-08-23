@@ -150,7 +150,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.address_type.get().copied().flatten()
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize> {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
         None
     }
 

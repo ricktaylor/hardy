@@ -273,7 +273,7 @@ pub trait Cla: Send + Sync {
     /// the BPA's egress policy, which decides what is forwarded onto each
     /// lane; the CLA simply transmits what arrives on a lane, and one
     /// lane's in-flight transfer must not head-of-line block another's.
-    fn lane_count(&self) -> Option<core::num::NonZeroUsize>;
+    fn lane_count(&self) -> Option<core::num::NonZeroU32>;
 
     /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
     /// address over a given lane.
