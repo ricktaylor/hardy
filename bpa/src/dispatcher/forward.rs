@@ -65,7 +65,7 @@ impl Dispatcher {
         // ForwardAckPending has no storage poller, so a bundle left there is
         // invisible until peer removal, restart, or expiry.
         let bundle_id = bundle.bundle.id.clone();
-        let (mut bundle, data) = match self
+        let (mut bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
             .await
@@ -98,8 +98,13 @@ impl Dispatcher {
             }
         };
 
-        // And pass to CLA
-        match cla.forward(queue, cla_addr, &bundle.bundle.id, data).await {
+        // And pass to CLA: the whole bundle is in hand, so it travels as a
+        // single Final segment.
+        let total_len = data.len() as u64;
+        match cla
+            .forward(queue, cla_addr, &bundle.bundle.id, total_len, &mut data)
+            .await
+        {
             Ok(cla::ForwardBundleResult::Sent) => {
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;

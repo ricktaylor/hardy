@@ -829,6 +829,7 @@ mod tests {
             Action::Internal(InternalAction::Local(Arc::new(Service {
                 service: ServiceImpl::LowLevel(Arc::new(NullService)),
                 service_id: EidService::Ipn(42),
+                cancel: hardy_async::CancellationToken::new(),
             }))),
             1,
         );
@@ -851,6 +852,7 @@ mod tests {
             Action::Internal(InternalAction::Local(Arc::new(Service {
                 service: ServiceImpl::LowLevel(Arc::new(NullService)),
                 service_id: EidService::Ipn(42),
+                cancel: hardy_async::CancellationToken::new(),
             }))),
             1,
         );

@@ -3,13 +3,10 @@
 // Provides a mock BPA and CLA setup that can be used by both the passive
 // (listener) and active (connector) fuzz targets.
 
-use bytes::Bytes;
-use hardy_bpa::async_trait;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::cla;
+use std::{net::SocketAddr, sync::Arc};
+
+use hardy_bpa::{async_trait, bpa::BpaRegistration, cla};
 use hardy_bpv7::eid::NodeId;
-use std::net::SocketAddr;
-use std::sync::Arc;
 
 // A mock CLA Sink that accepts everything and discards it.
 //
@@ -22,9 +19,9 @@ impl cla::Sink for MockSink {
 
     async fn dispatch(
         &self,
-        _bundle: Bytes,
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&cla::ClaAddress>,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<()> {
         Ok(())
     }

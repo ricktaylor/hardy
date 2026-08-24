@@ -72,16 +72,6 @@ impl Application {
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
-    async fn cancel(&self, request: CancelRequest) -> Result<bpa_to_app::Msg, tonic::Status> {
-        let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
-            .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
-        self.sink()?
-            .cancel(&bundle_id)
-            .await
-            .map(|cancelled| bpa_to_app::Msg::Cancel(CancelResponse { cancelled }))
-            .map_err(|e| tonic::Status::from_error(e.into()))
-    }
-
     async fn unregister(&self) {
         let sink = self.sink.lock().take();
         if let Some(sink) = sink {
@@ -110,19 +100,27 @@ impl hardy_bpa::services::Application for Application {
         }
     }
 
-    async fn on_receive(
+    // INTERIM BUFFERING: the wire protocol has no segmented payload
+    // messages yet — deliveries travel as one unary AppReceiveRequest — so
+    // the stream is assembled in memory via `stream::buffer_stream` before
+    // marshalling. This is a deliberate stepping stone toward the full
+    // streaming pipeline (chunked wire messages are the blocker); see
+    // bpa/docs/streaming_pipeline_design.md.
+    async fn on_deliver(
         &self,
-        source: hardy_bpv7::eid::Eid,
+        bundle_id: &hardy_bpv7::bundle::Id,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
-        payload: hardy_bpa::Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let payload = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_app::Msg::Receive(AppReceiveRequest {
-                source: source.to_string(),
                 ack_requested,
                 expiry: Some(to_timestamp(expiry)),
                 payload,
+                bundle_id: bundle_id.to_key(),
             }))
             .await?
         {
@@ -191,7 +189,6 @@ impl ProxyHandler for Handler {
     async fn on_notify(&self, msg: Self::RMsg) -> Option<Self::SMsg> {
         let msg = match msg {
             app_to_bpa::Msg::Send(msg) => self.app.send(msg).await,
-            app_to_bpa::Msg::Cancel(msg) => self.app.cancel(msg).await,
             _ => {
                 warn!("Ignoring unsolicited response: {msg:?}");
                 return None;

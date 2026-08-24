@@ -77,7 +77,7 @@ The policy subsystem controls **how** and **when** bundles are transmitted to pe
 │  1. Load bundle data                                                │
 │  2. Update extension blocks (Hop Count, Previous Node, Bundle Age)  │
 │  3. Run Egress filters (see filter_subsystem_design.md)             │
-│  4. CLA.forward(queue, cla_addr, data)                              │
+│  4. CLA.forward(lane, cla_addr, data)                               │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -119,11 +119,11 @@ When multiple peers can reach a destination, the RIB uses a hash of bundle sourc
 | `Some(n)` | Decreasing | Lower priority |
 | `None` | Lowest | Best-effort / fallback |
 
-### Strict Priority Semantics
+### Lane Semantics
 
 From `src/cla/mod.rs`:
 
-> If a CLA implements more than one queue, it is expected to implement strict priority. This means it will always transmit all packets from the highest priority queue (e.g., Queue 0) before servicing the next one (Queue 1), ensuring minimal latency for critical traffic.
+> Lanes are parallel transport channels — QUIC streams, DSCP classes, separate TCP connections — carrying in-flight transfers with no explicit priority among them. Scheduling and prioritisation live in the BPA's egress policy, which decides what is forwarded onto each lane; the CLA simply transmits what arrives on a lane, and one lane's in-flight transfer must not head-of-line block another's.
 
 ### Queue Creation
 
@@ -198,10 +198,10 @@ policy = "ground-link"
 
 The policy definition describes *what* the scheduling should be (traffic
 classes, priorities, rates). The controller adapts *how* to map those
-classes onto the CLA's actual queues at peer establishment time. The same
-named policy works regardless of the CLA's queue count — the controller
-degrades gracefully (multiple classes share a queue when N < M, or
-classes spread across queues when N > M).
+classes onto the CLA's actual lanes at peer establishment time. The same
+named policy works regardless of the CLA's lane count — the controller
+degrades gracefully (multiple classes share a lane when N < M, or
+classes spread across lanes when N > M).
 
 Multiple CLAs can reference the same named policy. A CLA that registers
 without specifying a policy (e.g., a gRPC-connected CLA server) defaults
@@ -210,36 +210,40 @@ to the null policy.
 This follows the linux `tc` model: the policy config defines the class
 hierarchy (like `tc class add`), and the controller is the qdisc
 attached to the device (CLA). The qdisc queries the device for
-capabilities (queue count) and builds the class-to-queue mapping at
+capabilities (lane count) and builds the class-to-lane mapping at
 attach time, not at config time.
 
-### CLA Queue Count
+### CLA Lane Count
 
-CLAs declare their queue count via `queue_count()` (default: 0, meaning
-single best-effort queue). These are physical or logical transport
-channels — QUIC streams, DSCP classes, separate TCP connections. The
-queue index is passed to `CLA::forward()`.
+CLAs declare their lane count via `lane_count()`, an
+`Option<NonZeroUsize>`: `None` (the default) declares no limit — the
+CLA is effectively unconstrained, and forwards arrive with lane
+`None`, each requesting a new lane from the infinite pool — while
+`Some(n)` declares `n` explicit lanes; a zero count is unrepresentable
+by construction. Lanes are physical or logical transport channels —
+QUIC streams, DSCP classes, separate TCP connections. The lane index
+is passed to `CLA::forward()`.
 
-The CLA does not need to understand traffic classes. It implements strict
-priority across its own queues (queue 0 before queue 1) and transmits
-what the controller gives it. All traffic class intelligence lives in
-the BPA's policy controller.
+The CLA does not need to understand traffic classes. It transmits
+what the controller gives it on each lane — lanes carry no explicit
+priority. All traffic class intelligence lives in the BPA's policy
+controller.
 
-### Runtime Class-to-Queue Mapping
+### Runtime Class-to-Lane Mapping
 
-The policy config defines M traffic classes. The CLA advertises N queues
+The policy config defines M traffic classes. The CLA advertises N lanes
 at registration time. When a peer connects, the controller builds the
 M→N mapping:
 
-**N >= M** — each class gets its own CLA queue. Remaining CLA queues
+**N >= M** — each class gets its own CLA lane. Remaining CLA lanes
 are unused (or classes can be spread for isolation). Scheduling within
-each queue is FIFO since each class is already separated.
+each lane is FIFO since each class is already separated.
 
-**N < M** — multiple classes share CLA queues. The controller does
-priority scheduling within each shared queue, ensuring higher-priority
+**N < M** — multiple classes share CLA lanes. The controller does
+priority scheduling within each shared lane, ensuring higher-priority
 classes are serviced before lower-priority ones on the same output.
 
-**N = 1** — all classes collapse onto a single CLA queue. The controller
+**N = 1** — all classes collapse onto a single CLA lane. The controller
 does all scheduling internally, feeding one output stream in priority
 order. The CLA sees a single FIFO, but the bundle ordering reflects
 the full HTB discipline.

@@ -80,9 +80,9 @@ impl cla::Sink for MockClaSink {
 
     async fn dispatch(
         &self,
-        _bundle: hardy_bpa::Bytes,
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&cla::ClaAddress>,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<()> {
         Ok(())
     }
@@ -132,14 +132,13 @@ impl services::ServiceSink for MockServiceSink {
         self.unregistered.store(true, Ordering::Relaxed);
     }
 
-    async fn send(&self, _data: hardy_bpa::Bytes) -> services::Result<hardy_bpv7::bundle::Id> {
+    async fn send(
+        &self,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
-    }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
     }
 }
 
@@ -173,9 +172,5 @@ impl services::ApplicationSink for MockApplicationSink {
         Err(services::Error::Internal(
             "mock sink: send not implemented".into(),
         ))
-    }
-
-    async fn cancel(&self, _bundle_id: &hardy_bpv7::bundle::Id) -> services::Result<bool> {
-        Ok(true)
     }
 }

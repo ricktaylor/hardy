@@ -3,21 +3,28 @@ use proto::service::*;
 
 async fn receive(
     service: &dyn hardy_bpa::services::Application,
-    request: AppReceiveRequest,
+    mut request: AppReceiveRequest,
 ) -> Result<ReceiveResponse, tonic::Status> {
-    let source = request
-        .source
-        .parse::<hardy_bpv7::eid::Eid>()
-        .map_err(|e| tonic::Status::from_error(e.into()))?;
-
     let expiry = request
         .expiry
         .map(from_timestamp)
         .ok_or(tonic::Status::invalid_argument("Missing expiry"))?
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
+    let bundle_id = hardy_bpv7::bundle::Id::from_key(&request.bundle_id)
+        .map_err(|e| tonic::Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
+
+    // The unary wire message already delivered the whole payload, so it
+    // reaches the application as a one-segment stream.
+    let total_len = request.payload.len() as u64;
     service
-        .on_receive(source, expiry, request.ack_requested, request.payload)
+        .on_deliver(
+            &bundle_id,
+            expiry,
+            request.ack_requested,
+            total_len,
+            &mut request.payload,
+        )
         .await
         .map_err(|e| tonic::Status::from_error(e.into()))?;
 
@@ -147,26 +154,6 @@ impl hardy_bpa::services::ApplicationSink for Sink {
                 hardy_bpv7::bundle::Id::from_key(&response.bundle_id)
                     .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))
             }
-            msg => {
-                warn!("Unexpected response: {msg:?}");
-                Err(hardy_bpa::services::Error::Internal(
-                    tonic::Status::internal(format!("Unexpected response: {msg:?}")).into(),
-                ))
-            }
-        }
-    }
-
-    async fn cancel(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> hardy_bpa::services::Result<bool> {
-        match self
-            .call(app_to_bpa::Msg::Cancel(CancelRequest {
-                bundle_id: bundle_id.to_key(),
-            }))
-            .await?
-        {
-            bpa_to_app::Msg::Cancel(response) => Ok(response.cancelled),
             msg => {
                 warn!("Unexpected response: {msg:?}");
                 Err(hardy_bpa::services::Error::Internal(

@@ -3,6 +3,8 @@
 //! Measures emit_uint_minor (the highest-frequency encoder function) and
 //! full bundle-like encoding workloads.
 
+use std::hint::black_box;
+
 use criterion::*;
 use hardy_cbor::encode::{self, Encoder};
 

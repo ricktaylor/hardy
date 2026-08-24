@@ -51,6 +51,10 @@ impl MockCla {
 
 #[async_trait]
 impl cla::Cla for MockCla {
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         *self.sink.lock() = Some(sink);
         self.registered.store(true, Ordering::Relaxed);
@@ -63,7 +67,8 @@ impl cla::Cla for MockCla {
         _queue: Option<u32>,
         _cla_addr: &ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: hardy_bpa::Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> cla::Result<ForwardBundleResult> {
         self.forwarded.store(true, Ordering::Relaxed);
         Ok(if self.defer {
@@ -120,8 +125,8 @@ async fn cla_cli_02_dispatch_bundle() {
 
     let sink = cla.take_sink().expect("CLA should have a sink");
 
-    let bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
-    sink.dispatch(bundle_data, None, None)
+    let mut bundle_data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00\x82\x01\x00");
+    sink.dispatch(None, None, &mut bundle_data)
         .await
         .expect("dispatch should succeed");
 
@@ -157,14 +162,15 @@ async fn cla_cli_03_forward_bundle() {
         .expect("BPA should have the server-side CLA");
 
     let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
-    let bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id {
         source: "ipn:0.9.1".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
         fragment_info: None,
     };
     let result = server_cla
-        .forward(None, &addr, &bundle_id, bundle)
+        .forward(None, &addr, &bundle_id, total_len, &mut bundle)
         .await
         .expect("forward should succeed");
 
@@ -266,14 +272,15 @@ async fn cla_cli_06_deferred_outcome() {
 
     // The forward is answered Accepted: ownership transferred, no outcome yet.
     let addr = ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap());
-    let bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let mut bundle = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00\x00");
+    let total_len = bundle.len() as u64;
     let bundle_id = hardy_bpv7::bundle::Id {
         source: "ipn:0.9.2".parse().unwrap(),
         timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
         fragment_info: None,
     };
     let result = server_cla
-        .forward(None, &addr, &bundle_id, bundle)
+        .forward(None, &addr, &bundle_id, total_len, &mut bundle)
         .await
         .expect("forward should succeed");
     assert!(

@@ -41,7 +41,7 @@ impl Peer {
                 dispatcher,
                 peer,
                 cla_addr,
-                cla.cla.queue_count(),
+                cla.cla.lane_count(),
             ))
             .await;
 

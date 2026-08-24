@@ -33,6 +33,7 @@ pub struct BpaBuilder {
     processing_pool_size: NonZeroUsize,
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
+    max_bundle_size: Option<NonZeroUsize>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -95,6 +96,7 @@ impl BpaBuilder {
             status_reports: false,
             lru_capacity: None,
             max_cached_bundle_size: None,
+            max_bundle_size: None,
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
@@ -141,6 +143,18 @@ impl BpaBuilder {
     /// Sets the largest bundle size eligible for caching, in bytes; unset
     /// applies the cache's own default. Has no effect when no bundle
     /// storage is configured: the default memory store is never cached.
+    /// Sets the maximum size of a single reassembled bundle at ingress.
+    ///
+    /// Streamed dispatch and streamed service origination accumulate
+    /// segments until the bundle is complete; this bound stops a runaway or
+    /// hostile producer growing BPA memory without limit. Streams exceeding
+    /// it are rejected with an error to the producer. Defaults privately at
+    /// the point of use.
+    pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
+        self.max_bundle_size = Some(v);
+        self
+    }
+
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_cached_bundle_size = Some(v);
         self
@@ -249,6 +263,7 @@ impl BpaBuilder {
             self.status_reports,
             self.poll_channel_depth,
             self.processing_pool_size,
+            self.max_bundle_size,
             node_ids.clone(),
             store.clone(),
             rib.clone(),

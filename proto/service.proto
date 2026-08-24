@@ -24,7 +24,7 @@ package service;
 //   - BPA validates service-constructed bundles (security boundary)
 //
 // Both APIs use the same bidirectional streaming pattern and share common
-// messages for registration, status notifications, cancellation, and
+// messages for registration, status notifications, and
 // unregistration.
 //
 // Protocol flow:
@@ -83,10 +83,10 @@ message AppToBpa {
     // Acknowledgement of a status notification (response to StatusNotifyRequest).
     StatusNotifyResponse status_notify = 6;
 
-    // Request to cancel a pending bundle transmission.
-    CancelRequest cancel = 7;
-
   }
+
+  reserved 7;
+  reserved "cancel";
 }
 
 // BpaToApp wraps all messages sent from the BPA to an application.
@@ -112,10 +112,10 @@ message BpaToApp {
     // Notification of a status report for a previously sent bundle.
     StatusNotifyRequest status_notify = 6;
 
-    // Response to CancelRequest indicating success or failure.
-    CancelResponse cancel = 7;
-
   }
+
+  reserved 7;
+  reserved "cancel";
 }
 
 // =============================================================================
@@ -145,10 +145,10 @@ message ServiceToBpa {
     // Acknowledgement of a status notification (response to StatusNotifyRequest).
     StatusNotifyResponse status_notify = 6;
 
-    // Request to cancel a pending bundle transmission.
-    CancelRequest cancel = 7;
-
   }
+
+  reserved 7;
+  reserved "cancel";
 }
 
 // BpaToService wraps all messages sent from the BPA to a service.
@@ -174,10 +174,10 @@ message BpaToService {
     // Notification of a status report for a previously sent bundle.
     StatusNotifyRequest status_notify = 6;
 
-    // Response to CancelRequest indicating success or failure.
-    CancelResponse cancel = 7;
-
   }
+
+  reserved 7;
+  reserved "cancel";
 }
 
 // =============================================================================
@@ -212,8 +212,14 @@ message RegisterResponse {
 // This does not guarantee delivery; use status notifications for delivery
 // confirmation.
 message SendResponse {
-  // The unique bundle identifier, formatted as specified in RFC 9171.
-  // Can be used for cancellation or status correlation.
+  // The unique bundle identifier: base64url (RFC 4648 section 5, no
+  // padding) over the canonical CBOR array [source EID, creation
+  // timestamp], extended with the fragment offset and total ADU length
+  // for fragments. RFC 9171 defines no text encoding for bundle ids;
+  // this is this API's stable key form for the RFC 9171 id tuple — treat
+  // it as opaque, or decode it as described. All bundle_id fields in
+  // this API use this encoding.
+  // Can be used for status correlation.
   string bundle_id = 1;
 }
 
@@ -264,20 +270,6 @@ message StatusNotifyRequest {
 
 // StatusNotifyResponse acknowledges receipt of a status notification.
 message StatusNotifyResponse {}
-
-// CancelRequest requests cancellation of a pending bundle. Only bundles
-// that have not yet been transmitted can be cancelled.
-message CancelRequest {
-  // The bundle ID to cancel (as returned by SendResponse).
-  string bundle_id = 1;
-}
-
-// CancelResponse indicates whether the cancellation was successful.
-message CancelResponse {
-  // True if the bundle was successfully cancelled; false if the bundle
-  // was not found or had already been transmitted.
-  bool cancelled = 1;
-}
 
 // =============================================================================
 // Application-Specific Messages
@@ -336,8 +328,8 @@ message AppSendRequest {
 // Only the payload and essential metadata are provided; full bundle
 // headers are not accessible via the Application API.
 message AppReceiveRequest {
-  // The source endpoint ID of the bundle sender.
-  string source = 1;
+  reserved 1;
+  reserved "source";
 
   // True if the sender requested an application-layer acknowledgement.
   // The application should send a response bundle if this is set.
@@ -349,6 +341,12 @@ message AppReceiveRequest {
 
   // The application payload extracted from the bundle.
   bytes payload = 4;
+
+  // The unique bundle identifier of the delivered bundle (see
+  // SendResponse.bundle_id for the encoding). Required: the client SDK
+  // fails the delivery without it. Can be used for status correlation;
+  // the source endpoint ID of the bundle sender is its source component.
+  string bundle_id = 5;
 }
 
 // =============================================================================
@@ -378,4 +376,10 @@ message ServiceReceiveRequest {
   // Computed from the bundle's creation timestamp plus lifetime.
   // Provided as a convenience; also available in the parsed bundle.
   google.protobuf.Timestamp expiry = 2;
+
+  // The unique bundle identifier of the delivered bundle (see
+  // SendResponse.bundle_id for the encoding). Required: the client SDK
+  // fails the delivery without it, even though the id is derivable from
+  // the parsed bundle. Can be used for status correlation.
+  string bundle_id = 3;
 }

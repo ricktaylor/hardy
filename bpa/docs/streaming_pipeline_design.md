@@ -167,6 +167,8 @@ The second case is the hot forward path optimisation: a small bundle tee'd durin
 
 ## 4. Stream Traits: Sender and Receiver
 
+> **Landed state (2026-08, `refactor/cla-streaming` / `refactor/service-streaming`).** The pull-side foundations of this section are now real, with the landed shape diverging from the sketch below in naming and location, not substance: `Receiver<T>`, `RecvError` (a unit struct), `Segment`, and the interim `concat_stream` (size-capped, truncation-as-error) live in `bpa::stream` rather than `hardy-async`, with blanket impls on the `hardy_async` channel endpoints in place of adapter types. The trait seams are `cla::Sink::dispatch` and `services::ServiceSink::send` (streamed-only since the buffered/streamed pairs were collapsed; a caller holding a whole buffer passes `&mut Bytes` directly — `Bytes` implements `Receiver<Segment>`, draining as a single `Final` segment), not the `write()` naming sketched in this section. A producer death before `Segment::Final` is a truncation error surfaced to the door (`StreamCancelled` — a CLA withholds its transfer ack), reassembly is bounded by `BpaBuilder::max_bundle_size` (`max-bundle-size` in bpa-server config), and registration liveness is enforced per segment by sink-side receiver wrappers. The forward design below is otherwise unchanged and still governs the remaining work.
+
 The pipeline streams items between components without coupling the trait surface to a specific channel implementation. The storage subsystem already establishes the **`Sender<T>` pattern** for this — see [storage_subsystem_design.md](storage_subsystem_design.md) §"Streaming results via `Sender<T>`" for the canonical definition and rationale. This section reuses that pattern across the BPA's storage, CLA, and filter trait surfaces.
 
 The push-side trait is `Sender<T>`, already in storage:
@@ -188,12 +190,12 @@ The pull-side dual is `Receiver<T>` — reserved name in the storage docs, defin
 ```rust
 /// Pull-side stream: consumer drives.
 #[async_trait]
-pub trait Receiver<T>: Send + Sync {
+pub trait Receiver<T>: Send {
     /// Returns `Ok(item)` for each value, or
     /// `Err(RecvError::Disconnected)` once the producer has finished
     /// (last `Sender` dropped or `close()` called) and the buffer is
     /// drained.
-    async fn recv(&self) -> Result<T, RecvError>;
+    async fn recv(&mut self) -> Result<T, RecvError>;
 }
 
 pub enum RecvError {
@@ -203,7 +205,7 @@ pub enum RecvError {
 
 The `Result`-based shape (not `Option`) mirrors `closeable::Receiver` in `hardy-async` directly. Trait surfaces that need to distinguish graceful end from abort do so by carrying a `Segment` item type (§3.2); for those, `Err(Disconnected)` means "producer dropped without sending `Segment::Final`" — i.e. abort.
 
-Both traits are passed as `&dyn Sender<T>` / `&dyn Receiver<T>`, preserving object safety on the traits that consume them (`BundleStorage`, `MetadataStorage`, `Cla`, `ReadFilter`, `WriteFilter` — all held as `Arc<dyn ...>` chosen at runtime). The cost of `&dyn` is one indirect call per item, negligible relative to underlying transport work.
+The two traits are deliberately asymmetric in their receivers: `send` takes `&self` (fills commute — concurrent producers may share a sink), while `recv` takes `&mut self` (a receiver is a drain — each pull is a state transition of the one consumer's totally-ordered view, so exclusive access is the semantic contract, and implementors need no interior mutability). They are passed as `&dyn Sender<T>` / `&mut dyn Receiver<T>`, preserving object safety on the traits that consume them (`BundleStorage`, `MetadataStorage`, `Cla`, `ReadFilter`, `WriteFilter` — all held as `Arc<dyn ...>` chosen at runtime). The cost of `dyn` is one indirect call per item, negligible relative to underlying transport work.
 
 Channel adapters live separately from the traits. The storage subsystem provides `ChannelSender<T>` wrapping `hardy_async::channel::Sender<T>`; the mirror `ChannelReceiver<T>` wraps `hardy_async::channel::Receiver<T>`. Tests use `Mutex<Vec<T>>`-backed collectors. None of these adapters appear in the trait surface.
 
@@ -231,7 +233,7 @@ The Sink stays as a `dyn Trait` — the abstraction boundary that lets the proto
 This framing matters for a handful of decisions that fall out of it:
 
 - **Control-plane methods stay as `async fn -> Result<T>`.** `add_peer`, `remove_peer`, and other helper operations on the Sink are infrequent, need typed replies, and have no streaming or backpressure requirement. Channelising them adds tax without benefit.
-- **Per-call channel granularity preserves priority and per-stream fan-out.** A single shared channel per CLA would head-of-line block on multi-priority egress (`Cla::forward(queue, ...)` — see §6.2) because ordering is cemented before the CLA implementation sees the bundle, and on multi-peer ingress because concurrent sessions serialise through one consumer. Per-call channels avoid both: priority is honoured because the BPA selects which call goes to the CLA next, and multi-peer ingress fans out naturally because each session manufactures its own channel.
+- **Per-call channel granularity preserves priority and per-stream fan-out.** A single shared channel per CLA would head-of-line block on multi-priority egress (`Cla::forward(lane, ...)` — see §6.2) because ordering is cemented before the CLA implementation sees the bundle, and on multi-peer ingress because concurrent sessions serialise through one consumer. Per-call channels avoid both: priority is honoured because the BPA selects which call goes to the CLA next, and multi-peer ingress fans out naturally because each session manufactures its own channel.
 - **Each call carries its own cancellation token** (passed to `write()` or `forward()`), scoped to one bundle's worth of work. There is no cancellation hierarchy mirroring the Sink's lifetime; the Sink's own lifecycle is handled separately (§5.1.2).
 
 #### 5.1.2. Sink Lifecycle and Ownership
@@ -279,7 +281,7 @@ Streaming CLAs (e.g., TCPCLv4) construct a bounded channel, spawn a task that pu
 
 If the BPA rejects mid-stream (e.g., early filter rejection), `write()` returns early; the CLA's pushing task sees `SendError` on its next push and tears down the wire transfer (e.g., emitting XFER_REFUSE on TCPCLv4).
 
-The BPA's `Sink` impl wraps `dispatch()` internally — it constructs a single-`Final(bytes)` `Receiver<Segment>` from the `Bytes`, then calls `dispatch_streamed()`. The BPA core only implements the streaming ingress path. (Implemented as `Sink::dispatch_streamed`; the §4 `write`/`read` naming convention was not adopted for this ingress method — it kept the `dispatch` family. Egress/filter surface naming is still open.)
+The BPA core only implements the streaming ingress path. (Implemented as the streamed-only `Sink::dispatch`; the §4 `write`/`read` naming convention was not adopted for this ingress method — it kept the `dispatch` family. The buffered `dispatch(Bytes, ..)` convenience existed as a provided default while the pair coexisted, and was removed when the pairs collapsed — callers pass whole buffers directly, `Bytes` being a `Receiver<Segment>`. Egress/filter surface naming is still open.)
 
 **Transitional convenience.** Retaining both `dispatch()` / `write()` (and likewise `Cla::forward()` / `Cla::write()` in §6.2) is transitional. Every existing CLA reads from a network stream and artificially materialises the full bundle before calling the non-streaming variant; all would benefit from migrating. Once migration is complete, the non-streaming methods can be removed.
 
@@ -783,6 +785,8 @@ Each step is a `mac.update()` or AAD accumulation call. The filter provides thes
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
+> **Landed state (2026-08, `feat/cla-forward-streamed`, then collapsed).** The streaming variant first landed as `Cla::forward_streamed` alongside the buffered `forward(Bytes)`, with a buffering default adapter bridging the pair. The pair has since been collapsed: `Cla::forward` is now the streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the adapter body became the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher always forwards through the streamed door, passing the loaded bundle as `&mut Bytes` (a whole buffer is itself a one-segment `Receiver`) with `total_len = data.len()`. The egress executor, streamed storage `load`, and the Transformer-derived `total_len` below remain pending.
+
 The existing `Cla::forward(Bytes)` method is retained for CLAs that expect a complete bundle in memory. A new streaming variant takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring `Sink::write` from §5.1:
 
 ```rust
@@ -1011,6 +1015,8 @@ pub fn parse(data: Bytes) -> Result<Parsed, Error>;   // bpv7::parse::parse
 Two entry points, each with a one-sentence purpose. `Parsed` is structural (decoded `PrimaryBlock` + extension-block index + decoded BPSec OperationSets); the rich decoded view — extension-block field values — is assembled at the call site (today: `bpa::Bpv7Bundle`), not returned by `bpv7`. The reason-code mapping, the filter implementations, and the operational policy that wraps these primitives all live in `bpa`.
 
 ## 10. Implementation Phasing
+
+> **Landed state (2026-08).** Phase 1's pull-side foundations and the door seams from Phase 3 item 2 plus the service-door twin are landed — now as the streamed-only `Sink::dispatch` and `ServiceSink::send` after the buffered/streamed pairs collapsed — with the interim whole-buffer accumulation in `bpa::stream::concat_stream` (and the exact-`total_len` `stream::buffer_stream` over it) standing in until Phase 2's storage streaming. The remaining items below are unstarted.
 
 ### Phase 0: Transformer Prototype
 

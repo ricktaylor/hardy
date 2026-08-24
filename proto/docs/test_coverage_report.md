@@ -32,7 +32,6 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `app_cli_03_send_payload` | APP-CLI-03 | Send payload via sink, verify round-trip (mock returns error) |
 | `app_cli_04_receive_payload` | APP-CLI-04 | Receive payload (BPA→App) via server-side push |
 | `app_cli_05_status_notify` | APP-CLI-05 | Status notification (BPA→App) via server-side push |
-| `app_cli_06_cancel` | APP-CLI-06 | Cancel pending send via sink round-trip |
 
 ### Suite 2: CLA Client (`tests/cla_tests.rs`)
 
@@ -52,7 +51,6 @@ The `hardy-proto` crate has no formal LLRs — it is internal gRPC infrastructur
 | `svc_cli_02_send_bundle` | SVC-CLI-02 | Send raw bundle via sink, verify error from mock BPA |
 | `svc_cli_03_receive_bundle` | SVC-CLI-03 | Receive bundle (BPA→Service) via server-side push to client |
 | `svc_cli_04_status_notify` | SVC-CLI-04 | Status notification (BPA→Service) via server-side push to client |
-| `svc_cli_05_cancel` | SVC-CLI-05 | Cancel pending send via sink round-trip |
 
 ### Suite 4: Routing Agent Client (`tests/routing_agent_tests.rs`)
 
@@ -138,7 +136,7 @@ lcov --summary lcov.info
 
 _Per-file figures are from a previous detailed run; regenerate with `cargo llvm-cov --html`._
 
-The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_receive`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
+The lowest-covered files are the Application and Service client proxies — their server-push callbacks (`on_deliver`, `on_status_notify`) have error-handling branches that the mock BPA doesn't exercise. The core proxy infrastructure (`proxy.rs`, 89.7%) and routing modules (`client/routing.rs`, 87.8%; `server/routing.rs`, 88.3%) have the highest coverage due to the error handling and server proxy unit tests.
 
 ## 5. Test Infrastructure
 
@@ -162,7 +160,7 @@ The lowest-covered files are the Application and Service client proxies — thei
 
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
-| Application/Service client proxies | Server-push error-handling branches uncovered | Low | Error paths in `on_receive`, `on_status_notify` callbacks |
+| Application/Service client proxies | Server-push error-handling branches uncovered | Low | Error paths in `on_deliver`, `on_status_notify` callbacks |
 
 ## 7. Conclusion
 

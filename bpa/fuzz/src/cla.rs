@@ -59,11 +59,11 @@ impl NullCla {
     pub fn new() -> Self {
         Self { sink: Once::new() }
     }
-    pub async fn dispatch(&self, bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
+    pub async fn dispatch(&self, mut bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
         self.sink
             .get()
             .expect("dispatch called before registration")
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await
     }
 }
@@ -96,12 +96,17 @@ impl hardy_bpa::cla::Cla for NullCla {
         .expect("remove_peer failed");
     }
 
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &hardy_bpa::cla::ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: hardy_bpa::Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         Ok(hardy_bpa::cla::ForwardBundleResult::Sent)
     }

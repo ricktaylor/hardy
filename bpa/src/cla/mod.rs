@@ -2,6 +2,8 @@ use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
 
+pub use crate::stream::Segment;
+
 pub(crate) mod peers;
 pub(crate) mod registry;
 
@@ -21,6 +23,12 @@ pub enum Error {
     #[error("The sink is disconnected")]
     Disconnected,
 
+    /// The bundle stream ended before its final segment: the producer went
+    /// away mid-bundle, the partial bytes are discarded, and the transfer
+    /// must not be acknowledged to the peer.
+    #[error("The bundle stream was cancelled before completion")]
+    StreamCancelled,
+
     /// The bundle exceeds the transport's maximum message size and was
     /// rejected before being sent. Returned by transport-backed sinks
     /// (e.g. gRPC) when a pre-flight size check fails, instead of
@@ -28,9 +36,36 @@ pub enum Error {
     #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
+    /// A bundle stream completed with fewer bytes than its declared
+    /// `total_len`. A transport may frame the wire transfer from the
+    /// declared length before pulling the first segment, so a short
+    /// delivery is rejected rather than shorting the transfer on the wire.
+    #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
+    PayloadUnderrun { size: usize, expected: usize },
+
+    #[error("declared length of {total_len} bytes is unaddressable on this target")]
+    PayloadUnaddressable { total_len: u64 },
+
     /// An internal error occurred.
     #[error(transparent)]
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
+}
+
+impl From<crate::stream::BufferError> for Error {
+    fn from(e: crate::stream::BufferError) -> Self {
+        match e {
+            crate::stream::BufferError::Cancelled => Error::StreamCancelled,
+            crate::stream::BufferError::TooLarge { size, max } => {
+                Error::PayloadTooLarge { size, max }
+            }
+            crate::stream::BufferError::Underrun { size, expected } => {
+                Error::PayloadUnderrun { size, expected }
+            }
+            crate::stream::BufferError::Unaddressable { total_len } => {
+                Error::PayloadUnaddressable { total_len }
+            }
+        }
+    }
 }
 
 /// An enumeration of known CLA address types.
@@ -157,8 +192,8 @@ pub enum TransferOutcome {
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs are often wrapped by an [`EgressPolicy`] to add more complex behaviors like
-/// rate limiting or prioritization.
+/// CLAs are often wrapped by an [`EgressPolicy`](crate::policy::EgressPolicy)
+/// to add more complex behaviors like rate limiting or prioritization.
 ///
 /// # Sink Lifecycle
 ///
@@ -222,32 +257,67 @@ pub trait Cla: Send + Sync {
         None
     }
 
-    /// Returns the number of egress queues this policy manages.
-    /// The default is 0, for simple FIFO behavior.
-    /// Any value > 0 indicates multiple priority queues with 0 highest
+    /// Returns this CLA's lane count: its honest parallelism, the number
+    /// of transfers it can usefully carry in flight at once.
     ///
-    /// If a CLA implements more than one queue, it is expected to implement strict priority.
-    /// This means it will always transmit all packets from the highest priority queue (e.g., Queue 0)
-    /// before servicing the next one (Queue 1), ensuring minimal latency for critical traffic
-    fn queue_count(&self) -> u32 {
-        0
-    }
+    /// `None` declares no limit: the CLA is effectively unconstrained (a
+    /// datagram CL), and every forward arrives with lane `None`, each
+    /// transfer travelling on a new lane from the infinite pool. `Some(n)`
+    /// declares `n` explicit lanes, indexed `0..n`; a zero count is
+    /// unrepresentable by construction. There is deliberately no default:
+    /// parallelism is a property every CLA must state for itself.
+    ///
+    /// Lanes are parallel transport channels — QUIC streams, DSCP classes,
+    /// separate TCP connections — carrying in-flight transfers with no
+    /// explicit priority among them. Scheduling and prioritisation live in
+    /// the BPA's egress policy, which decides what is forwarded onto each
+    /// lane; the CLA simply transmits what arrives on a lane, and one
+    /// lane's in-flight transfer must not head-of-line block another's.
+    fn lane_count(&self) -> Option<core::num::NonZeroU32>;
 
-    /// Forwards a bundle to a specific CLA address over a given queue.
+    /// Forwards a bundle, delivered as a stream of segments, to a specific CLA
+    /// address over a given lane.
     ///
-    /// Queue 'None' is the lowest priority Best Effort queue, often the only queue.
+    /// Lane `None` requests a new lane from the infinite pool — the
+    /// default for CLAs that declare no lane limit, where every transfer
+    /// travels on its own fresh lane (a datagram CL). `Some(i)` directs
+    /// the transfer onto explicit lane `i`. As a safety net, a CLA that
+    /// declares explicit lanes but still receives `None` should pick a
+    /// lane arbitrarily (e.g. at random) rather than fail the transfer.
+    /// Mirroring [`Sink::dispatch`] on the egress side, the
+    /// implementation pulls [`Segment::Next`] items from `stream` until
+    /// [`Segment::Final`] (which may carry empty bytes) completes the
+    /// transfer.
+    ///
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the transfer: the CLA must
+    /// tear down without delivering a partial bundle to the peer, and must
+    /// not return `Ok` — a truncated transfer surfaced as success would let
+    /// the peer treat delivery as complete.
+    ///
+    /// `total_len` is the exact number of bundle bytes the stream will
+    /// deliver — the sum of all segment payload lengths. It is a framing
+    /// hint for transports that must announce a length up front (e.g. a
+    /// TCPCLv4 XFER_SEGMENT length), carried as `u64` so it remains valid on
+    /// 32-bit targets. Producers must be exact: an implementation may frame
+    /// the wire transfer from it before pulling the first segment.
     ///
     /// `bundle_id` identifies the transfer if the CLA defers its outcome: a
     /// CLA answering [`ForwardBundleResult::Accepted`] echoes it back in
     /// [`Sink::transfer_outcome`]. It is the correlation key, not data to
     /// transmit — CLAs that answer terminally may ignore it, and no CLA needs
     /// to parse the bundle to learn it.
+    ///
+    /// An implementation that needs the whole bundle in memory buffers the
+    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
+    /// whose errors convert into this module's [`Error`] via `?`.
     async fn forward(
         &self,
-        queue: Option<u32>,
+        lane: Option<u32>,
         cla_addr: &ClaAddress,
         bundle_id: &Id,
-        bundle: Bytes,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<Segment>,
     ) -> Result<ForwardBundleResult>;
 }
 
@@ -280,7 +350,20 @@ pub trait Sink: Send + Sync {
     /// Typically called when the CLA encounters a fatal error and needs to shut down.
     async fn unregister(&self);
 
-    /// Dispatches a received bundle (as raw bytes) to the BPA's `Dispatcher` for processing.
+    /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
+    ///
+    /// A producer that drops its sender before [`Segment::Final`] has
+    /// truncated the bundle; the implementation must surface an error
+    /// (never a silent `Ok`), so the CLA withholds its transfer
+    /// acknowledgement and the peer can retransmit.
+    ///
+    /// A caller holding a complete bundle in memory dispatches it as a
+    /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
+    /// `sink.dispatch(&mut bundle, ..).await`.
+    ///
+    /// Producers: a failed send into the stream means the consumer has given
+    /// up on the transfer (size cap, dead registration, shutdown); stop
+    /// streaming and discard.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
@@ -292,9 +375,9 @@ pub trait Sink: Send + Sync {
     /// unidirectional links.
     async fn dispatch(
         &self,
-        bundle: Bytes,
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
+        stream: &mut dyn crate::stream::Receiver<Segment>,
     ) -> Result<()>;
 
     /// Notifies the BPA that a new peer (or neighbour) has been discovered at a given `ClaAddress`.

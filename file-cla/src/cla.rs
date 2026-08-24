@@ -35,37 +35,41 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.shutdown().await;
     }
 
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
+    // INTERIM BUFFERING: the bundle is written to the inbox file in one go,
+    // so the stream is assembled in memory via `stream::buffer_stream`
+    // before writing. This is a deliberate stepping stone toward the full
+    // streaming pipeline (a native implementation would spool segments
+    // straight to disk); see bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        bundle: hardy_bpa::Bytes,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let _sink = self.sink.get().ok_or_else(|| {
             error!("forward called before on_register!");
             hardy_bpa::cla::Error::Disconnected
         })?;
 
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+
         if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())
             && self.inboxes.values().any(|p| p == addr_str)
         {
             // Write bundle to peer's inbox directory
-            let path = match hardy_bpv7::bundle::Id::parse(&bundle) {
-                Ok(id) => {
-                    let mut filename = format!("{}_{}", id.source, id.timestamp)
-                        .replace(['\\', '/', ':', ' '], "_");
-                    if let Some(fragment_info) = id.fragment_info {
-                        filename.push_str(format!("_fragment_{}", fragment_info.offset).as_str());
-                    }
-                    PathBuf::from(addr_str).join(filename)
-                }
-                Err(e) => {
-                    warn!("Ignoring invalid bundle: {e}");
-                    return Err(hardy_bpa::cla::Error::Internal(e.into()));
-                }
-            };
+            let mut filename = format!("{}_{}", bundle_id.source, bundle_id.timestamp)
+                .replace(['\\', '/', ':', ' '], "_");
+            if let Some(fragment_info) = &bundle_id.fragment_info {
+                filename.push_str(format!("_fragment_{}", fragment_info.offset).as_str());
+            }
+            let path = PathBuf::from(addr_str).join(filename);
 
             return tokio::fs::write(&path, bundle)
                 .await

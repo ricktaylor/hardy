@@ -30,7 +30,7 @@ sequenceDiagram
     CLA->>BPA: dispatch(outer_bundle)
 
     Note over RIB,SVC: Decapsulation (inbound)
-    BPA->>SVC: on_receive(outer_bundle)
+    BPA->>SVC: on_deliver(outer_bundle)
     SVC->>SVC: inner = decapsulate(outer_bundle)
     SVC->>BPA: dispatch(inner_bundle)
 ```
@@ -546,7 +546,7 @@ graph TB
             C4 --> C5["Inject via dispatch()"]
         end
         subgraph SVC["DecapService"]
-            S1["on_receive(bundle)"] --> S2["decapsulate"]
+            S1["on_deliver(bundle)"] --> S2["decapsulate"]
             S2 --> S3["Extract payload (inner bundle)"]
             S3 --> S4["Validate inner bundle"]
             S4 --> S5["Inject via CLA dispatch()"]
@@ -712,7 +712,7 @@ ipn:100.* via ipn:100
 
 4. Deliver filters run on outer bundle
 
-5. DecapService.on_receive(outer_bundle):
+5. DecapService.on_deliver(outer_bundle):
    - Parse outer bundle
    - Extract payload → BIBE-PDU [transmission-id, total-length, offset, segment]
    - For complete bundles (all zeros): extract inner bundle bytes from segment

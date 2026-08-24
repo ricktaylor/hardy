@@ -192,6 +192,11 @@ pub struct Config {
     #[serde(default)]
     pub processing_pool_size: Option<NonZeroUsize>,
 
+    // Maximum size in bytes of a single reassembled bundle at ingress or
+    // origination; absent defers to the BPA default.
+    #[serde(default)]
+    pub max_bundle_size: Option<NonZeroUsize>,
+
     // Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
     #[serde(default)]
     pub node_ids: NodeIds,

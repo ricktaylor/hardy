@@ -46,10 +46,12 @@ impl Service for MockService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        _data: hardy_bpa::Bytes,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
         self.received.store(true, Ordering::Relaxed);
         Ok(())
@@ -108,7 +110,9 @@ async fn svc_cli_02_send_bundle() {
     let sink = svc.take_sink().expect("service should have a sink");
 
     // send() calls the mock BPA sink which is unimplemented — expect an error
-    let result = sink.send(hardy_bpa::Bytes::from_static(b"\x9f\x89")).await;
+    let result = sink
+        .send(&mut hardy_bpa::Bytes::from_static(b"\x9f\x89"))
+        .await;
     assert!(result.is_err(), "mock sink send is unimplemented");
 
     // Clean up
@@ -139,10 +143,12 @@ async fn svc_cli_03_receive_bundle() {
         .clone()
         .expect("BPA should have the server-side service");
 
-    let data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
+    let mut data = hardy_bpa::Bytes::from_static(b"\x9f\x89\x07\x00");
+    let total_len = data.len() as u64;
+    let bundle_id = hardy_bpv7::bundle::Id::default();
     let expiry = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     server_svc
-        .on_receive(data, expiry)
+        .on_deliver(&bundle_id, expiry, total_len, &mut data)
         .await
         .expect("Delivery should succeed");
 
@@ -207,41 +213,7 @@ async fn svc_cli_04_status_notify() {
     server_tasks.shutdown().await;
 }
 
-// SVC-CLI-05: Cancel pending send.
-#[tokio::test]
-async fn svc_cli_05_cancel() {
-    let bpa = Arc::new(MockBpa::new());
-    let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
-
-    let svc = Arc::new(MockService::new());
-    let remote_bpa = RemoteBpa::new(grpc_addr);
-
-    let _endpoint: Eid = remote_bpa
-        .register_service(hardy_bpv7::eid::Service::Ipn(42), svc.clone())
-        .await
-        .expect("registration should succeed");
-
-    let sink = svc.take_sink().expect("service should have a sink");
-
-    let bundle_id = hardy_bpv7::bundle::Id {
-        source: "ipn:1.42".parse().unwrap(),
-        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::new_sequential(),
-        fragment_info: None,
-    };
-
-    let cancelled = sink
-        .cancel(&bundle_id)
-        .await
-        .expect("cancel should succeed");
-
-    assert!(cancelled, "bundle should be cancelled");
-
-    // Clean up
-    sink.unregister().await;
-    server_tasks.shutdown().await;
-}
-
-// A service that replies from inside `on_receive`, the shape echo-service
+// A service that replies from inside `on_deliver`, the shape echo-service
 // and any request/reply service uses.
 struct ReplyingService {
     sink: hardy_async::sync::spin::Mutex<Option<Arc<dyn ServiceSink>>>,
@@ -256,17 +228,20 @@ impl Service for ReplyingService {
 
     async fn on_unregister(&self) {}
 
-    async fn on_receive(
+    async fn on_deliver(
         &self,
-        data: hardy_bpa::Bytes,
+        _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
+        let mut data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let sink = self.sink.lock().clone().expect("registered");
         // Send back to the BPA before returning. The mock sink answers with an
         // error, but the round-trip must complete: a Send drawn from the same
         // id space as the BPA's in-flight Receive used to be mis-routed as that
         // Receive's response, hanging this call forever.
-        let _ = sink.send(data).await;
+        let _ = sink.send(&mut data).await;
         self.replied.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -283,12 +258,12 @@ impl Service for ReplyingService {
 }
 
 // SVC-CLI-06 (regression): concurrent deliveries to a service that replies
-// from within `on_receive` must not wedge. The two ends of the proxy draw
+// from within `on_deliver` must not wedge. The two ends of the proxy draw
 // request ids from disjoint parities (proxy::Side), so a reply Send can never
 // collide with the BPA's outstanding Receive. Before the fix this deadlocked
 // deterministically on the first bundle.
 #[tokio::test]
-async fn svc_cli_06_concurrent_reply_from_on_receive() {
+async fn svc_cli_06_concurrent_reply_from_on_deliver() {
     let bpa = Arc::new(MockBpa::new());
     let (grpc_addr, server_tasks) = common::start_server(&bpa, &["service"]).await;
 
@@ -316,8 +291,15 @@ async fn svc_cli_06_concurrent_reply_from_on_receive() {
     let deliveries = (0..N).map(|_| {
         let server_svc = server_svc.clone();
         tokio::spawn(async move {
+            let mut data = hardy_bpa::Bytes::from_static(b"payload");
+            let total_len = data.len() as u64;
             let _ = server_svc
-                .on_receive(hardy_bpa::Bytes::from_static(b"payload"), expiry)
+                .on_deliver(
+                    &hardy_bpv7::bundle::Id::default(),
+                    expiry,
+                    total_len,
+                    &mut data,
+                )
                 .await;
         })
     });

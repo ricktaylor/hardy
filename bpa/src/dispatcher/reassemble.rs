@@ -1,8 +1,10 @@
 use tracing::debug;
 
 use super::Dispatcher;
-use crate::bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata};
-use crate::storage::adu_reassembly::ReassemblyResult;
+use crate::{
+    bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata},
+    storage::adu_reassembly::ReassemblyResult,
+};
 
 impl Dispatcher {
     pub async fn reassemble(&self, mut bundle: Bundle) {

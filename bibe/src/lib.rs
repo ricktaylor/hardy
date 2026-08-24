@@ -38,7 +38,7 @@ use tracing::{debug, warn};
 /// Provides Bundle-in-Bundle Encapsulation for tunneling bundles
 /// through intermediate networks. Uses a hybrid architecture:
 /// - CLA for encapsulation (via `forward()`)
-/// - Service for decapsulation (via `on_receive()`)
+/// - Service for decapsulation (via `on_deliver()`)
 pub struct Bibe {
     // Config values needed for registration
     decap_service_id: Option<Service>,

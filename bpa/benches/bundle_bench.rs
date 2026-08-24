@@ -36,12 +36,17 @@ impl cla::Cla for BenchCla {
         self.sink.call_once(|| sink);
     }
     async fn on_unregister(&self) {}
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        _bundle: Bytes,
+        _total_len: u64,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<cla::Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
         let _ = self.arrival_tx.send(std::time::Instant::now());
         Ok(cla::ForwardBundleResult::Sent)
@@ -171,7 +176,7 @@ fn throughput_benchmark(c: &mut Criterion) {
                     .sink
                     .get()
                     .unwrap()
-                    .dispatch(Bytes::from(data), None, None)
+                    .dispatch(None, None, &mut Bytes::from(data))
                     .await
                     .unwrap();
                 state.arrival_rx.recv_async().await.unwrap();

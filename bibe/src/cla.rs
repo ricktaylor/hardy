@@ -47,11 +47,15 @@ impl BibeCla {
     }
 
     /// Dispatch a bundle into the BPA (used by DecapService).
-    pub(crate) async fn dispatch(&self, bundle: Bytes) -> Result<(), Error> {
+    // INTERIM BUFFERING: both callers (decapsulation and encapsulation) hold
+    // a complete bundle in memory, so it enters the BPA as a one-segment
+    // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
+    // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
+    pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
         self.sink
             .get()
             .ok_or(Error::NotRegistered)?
-            .dispatch(bundle, None, None)
+            .dispatch(None, None, &mut bundle)
             .await?;
         Ok(())
     }
@@ -93,13 +97,25 @@ impl Cla for BibeCla {
         debug!("BIBE CLA unregistered");
     }
 
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
+    // INTERIM BUFFERING: encapsulation wraps the whole inner bundle in a
+    // single BIBE-PDU byte string with a whole-buffer codec, so the stream
+    // is assembled in memory via `stream::buffer_stream` first. This is a
+    // deliberate stepping stone toward the full streaming pipeline; see
+    // bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         cla_addr: &ClaAddress,
         _bundle_id: &hardy_bpv7::bundle::Id,
-        bundle: Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+
         // Decode destination EID from CBOR in ClaAddress
         let ClaAddress::Private(dest_bytes) = cla_addr else {
             warn!("BIBE forward called with non-Private ClaAddress");

@@ -32,7 +32,7 @@ impl Cla {
 
     async fn dispatch(
         &self,
-        request: DispatchBundleRequest,
+        mut request: DispatchBundleRequest,
     ) -> Result<bpa_to_cla::Msg, tonic::Status> {
         let peer_node: Option<hardy_bpv7::eid::NodeId> = request
             .peer_node_id
@@ -46,8 +46,10 @@ impl Cla {
         let peer_addr: Option<hardy_bpa::cla::ClaAddress> =
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
+        // The unary wire message already delivered the whole bundle, so it
+        // enters the BPA as a one-segment stream.
         self.sink()?
-            .dispatch(request.bundle, peer_node.as_ref(), peer_addr.as_ref())
+            .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut request.bundle)
             .await
             .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
             .map_err(|e| tonic::Status::from_error(e.into()))
@@ -148,18 +150,30 @@ impl hardy_bpa::cla::Cla for Cla {
         self.address_type.get().copied().flatten()
     }
 
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
+    // INTERIM BUFFERING: the wire protocol has no segmented bundle messages
+    // yet — transfers travel as one unary ForwardBundleRequest — so the
+    // stream is assembled in memory via `stream::buffer_stream` before
+    // marshalling. This is a deliberate stepping stone toward the full
+    // streaming pipeline (chunked wire messages are the blocker); see
+    // bpa/docs/streaming_pipeline_design.md.
     async fn forward(
         &self,
-        queue: Option<u32>,
+        lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
         bundle_id: &hardy_bpv7::bundle::Id,
-        bundle: hardy_bpa::Bytes,
+        total_len: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
+        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         match self
             .call(bpa_to_cla::Msg::Forward(ForwardBundleRequest {
                 bundle,
                 address: Some(cla_addr.clone().into()),
-                queue,
+                lane,
                 bundle_id: bundle_id.to_key(),
             }))
             .await?

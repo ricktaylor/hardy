@@ -438,9 +438,9 @@ mod tests {
 
         async fn dispatch(
             &self,
-            _bundle: hardy_bpa::Bytes,
             _peer_node: Option<&NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
+            _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
         ) -> hardy_bpa::cla::Result<()> {
             Ok(())
         }

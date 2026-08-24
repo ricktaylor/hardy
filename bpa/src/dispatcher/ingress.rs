@@ -1,5 +1,7 @@
-use super::*;
 use hardy_bpv7::status_report::ReasonCode;
+
+use super::*;
+use crate::stream::{Receiver, Segment};
 
 impl Dispatcher {
     // Entry point for bundles received from CLAs.
@@ -17,25 +19,39 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn receive_bundle(
         &self,
-        data: Bytes,
-        ingress_cla: Option<Arc<str>>,
-        ingress_peer_node: Option<hardy_bpv7::eid::NodeId>,
-        ingress_peer_addr: Option<cla::ClaAddress>,
+        ingress_cla: Arc<str>,
+        ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        ingress_peer_addr: Option<&cla::ClaAddress>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<()> {
-        metrics::counter!("bpa.bundle.received").increment(1);
-        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
-
         let metadata = bundle::BundleMetadata {
             status: bundle::BundleStatus::New,
             read_only: bundle::ReadOnlyMetadata {
                 received_at: time::OffsetDateTime::now_utc(),
-                ingress_peer_node,
-                ingress_peer_addr,
-                ingress_cla,
+                ingress_peer_node: ingress_peer_node.cloned(),
+                ingress_peer_addr: ingress_peer_addr.cloned(),
+                ingress_cla: Some(ingress_cla),
                 ..Default::default()
             },
             ..Default::default()
         };
+
+        // A truncated or oversized stream is the CLA's error to hear about:
+        // the transfer must not be acknowledged to the peer, so it can
+        // retransmit. Only a completely assembled bundle counts as received.
+        let data = match crate::stream::concat_stream(stream, self.max_bundle_size).await {
+            Ok(data) => data,
+            Err(crate::stream::ConcatError::Cancelled) => {
+                debug!("Stream cancelled");
+                return Err(cla::Error::StreamCancelled);
+            }
+            Err(crate::stream::ConcatError::TooLarge { size, max }) => {
+                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
+                return Err(cla::Error::PayloadTooLarge { size, max });
+            }
+        };
+        metrics::counter!("bpa.bundle.received").increment(1);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
         if let Some((bundle, data)) = self.process_received_bundle(data, metadata).await {
             self.ingress_bundle(bundle, data).await;
@@ -45,10 +61,10 @@ impl Dispatcher {
 
     // Shared bundle processing: parse, validate, store, and report.
     //
-    // Called from both the CLA ingress path (`receive_bundle`) and the ADU
-    // reassembly path (`reassemble`). Handles all bundle validation internally
-    // — invalid bundles are logged, counted, and dropped with status reports
-    // where possible.
+    // Called with a fully assembled buffer from the CLA ingress path
+    // (`receive_bundle`), the ADU reassembly path (`reassemble`), and restart
+    // recovery. Handles all bundle validation internally — invalid bundles
+    // are logged, counted, and dropped with status reports where possible.
     //
     // Returns `Some((bundle, data))` for valid bundles ready for ingress,
     // or `None` if the bundle was dropped (invalid, duplicate, etc.).

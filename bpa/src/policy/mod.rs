@@ -13,7 +13,7 @@ pub mod null_policy;
 /// This is often implemented by a CLA itself or by a policy manager.
 #[async_trait]
 pub trait EgressController: Send + Sync {
-    /// Forwards a bundle to a specific queue in a Controller.
+    /// Forwards a bundle from a specific queue in a Controller.
     async fn forward(&self, queue: Option<u32>, bundle: bundle::Bundle);
 }
 
@@ -25,7 +25,7 @@ pub trait EgressController: Send + Sync {
 pub trait EgressPolicy: Send + Sync {
     /// Returns the number of egress queues this policy manages.
     /// The default is 0, for simple FIFO behavior.
-    /// Any value > 0 indicates multiple priority queues with 0 highest
+    /// Any value > 0 indicates multiple priority queues with 0 highest.
     fn queue_count(&self) -> u32;
 
     /// Classifies a bundle based on its flow label into an egress queue index.
@@ -43,7 +43,7 @@ pub trait EgressPolicy: Send + Sync {
     ) -> Arc<dyn EgressController>;
 }
 
-/// A single egress queue that a CLA pulls bundles from for transmission.
+/// The queue feeding a single egress lane, from which a CLA pulls bundles for transmission.
 #[async_trait]
 pub trait EgressQueue: Send + Sync {
     /// Enqueues a bundle for transmission on this queue.

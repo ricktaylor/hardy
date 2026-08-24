@@ -172,6 +172,9 @@ impl BpaServer {
         if let Some(depth) = config.poll_channel_depth {
             builder = builder.poll_channel_depth(depth);
         }
+        if let Some(size) = config.max_bundle_size {
+            builder = builder.max_bundle_size(size);
+        }
         if let Some(pool_size) = config.processing_pool_size {
             builder = builder.processing_pool_size(pool_size);
         }

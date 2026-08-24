@@ -153,10 +153,13 @@ message ForwardBundleRequest {
   bytes           bundle    = 1;
   // The address to forward the bundle to.
   ClaAddress      address   = 2;
-  // The egress queue to use for forwarding. This is determined by the egress
-  // policy.
-  optional uint32 queue     = 3;
-  // The unique bundle identifier, formatted as specified in RFC 9171.
+  // The egress lane to forward on; absent requests a new lane from the
+  // CLA's infinite pool (a CLA with explicit lanes picks one arbitrarily
+  // as a safety net). Which bundles go on which lane is decided by the
+  // BPA's egress policy; lanes carry no explicit priority.
+  optional uint32 lane      = 3;
+  // The unique bundle identifier, an opaque stable key (the encoding is
+  // documented on service.proto's SendResponse.bundle_id).
   // Identifies the transfer for correlation; the CLA treats it as opaque.
   // Required: the CLA client rejects a request without it, so a CLA built
   // on this contract requires a BPA that sends it.
