@@ -21,13 +21,10 @@ pub fn has_required_privileges() -> bool {
         return true;
     }
 
-    // As a fallback, check if the user is running as root (EUID 0).
-    // A root user implicitly has all capabilities.
-    // Note: The `caps` crate can also check this, but a direct libc call is also common.
-    // We'll stick to the `caps` API for consistency here.
-    if caps::has_cap(None, CapSet::Effective, Capability::CAP_SETFCAP).is_ok() {
-        // A reasonable proxy for checking if the user is root, as only root can set file capabilities.
-        // A more direct check would be `nix::unistd::geteuid().is_root()`.
+    // As a fallback, check whether the process is effectively root: only
+    // root holds CAP_SETFCAP by default, so an effective CAP_SETFCAP is a
+    // reasonable proxy for EUID 0.
+    if caps::has_cap(None, CapSet::Effective, Capability::CAP_SETFCAP).unwrap_or(false) {
         return true;
     }
 
@@ -45,29 +42,30 @@ pub fn has_required_privileges() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+// The function must agree with the platform's ground truth for the
+// privileges it claims to check, whatever privileges the test runner
+// happens to have: the test passes for both privileged and unprivileged
+// runners, but fails if the function's answer diverges from the platform
+// query it is contracted to reflect.
 #[test]
-fn test() -> anyhow::Result<()> {
-    println!("Checking for required privileges...");
+fn agrees_with_platform_ground_truth() {
+    let actual = has_required_privileges();
 
-    if !has_required_privileges() {
-        eprintln!("\nError: This application requires elevated privileges to run.");
+    #[cfg(target_os = "linux")]
+    let expected = {
+        use caps::{CapSet, Capability};
+        caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_ADMIN).unwrap_or(false)
+            || caps::has_cap(None, CapSet::Effective, Capability::CAP_SETFCAP).unwrap_or(false)
+    };
 
-        // Provide platform-specific instructions for the user.
-        cfg_select! {
-            target_os = "windows" => eprintln!("Please right-click the executable and select 'Run as Administrator'."),
-            target_os = "linux" => eprintln!(
-                "Please re-run as root or grant the application the 'CAP_NET_ADMIN' capability using 'setcap'."
-            ),
-            _ => eprintln!("Please re-run as root."),
-        }
+    #[cfg(target_os = "windows")]
+    let expected = check_elevation::is_elevated().unwrap_or(false);
 
-        // Exit with a non-zero status code to indicate an error.
-        return Err(anyhow::anyhow!("Missing required privileges."));
-    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let expected = unsafe { libc::geteuid() == 0 };
 
-    println!("Success! Running with sufficient privileges.");
-    // --- Your main application logic would go here ---
-    // For example: opening a raw socket, configuring a network interface, etc.
-
-    Ok(())
+    assert_eq!(
+        actual, expected,
+        "has_required_privileges() disagrees with the platform privilege query"
+    );
 }
