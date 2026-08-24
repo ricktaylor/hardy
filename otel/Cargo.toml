@@ -28,4 +28,5 @@ metrics = "0.24"
 dashmap = "6"
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "0.32", features = ["trace", "metrics", "logs", "testing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

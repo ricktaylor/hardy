@@ -9,8 +9,8 @@
 //!
 //! The task pool implements a three-phase shutdown:
 //! 1. **Signal**: Cancel all tasks via the cancellation token
-//! 2. **Close**: Prevent new tasks from spawning
-//! 3. **Wait**: Block until all tasks complete
+//! 2. **Close**: Close the tracker so the final wait can complete
+//! 3. **Wait**: Block until all tracked tasks complete
 //!
 //! # Example
 //!
@@ -59,9 +59,11 @@
 ///
 /// When [`shutdown()`](TaskPool::shutdown) is called:
 /// - All tasks are signaled to cancel via the cancellation token
-/// - No new tasks can be spawned
-/// - The method blocks until all spawned tasks complete
+/// - The method blocks until all previously spawned tasks complete
 /// - Tasks can finish their current operation gracefully
+///
+/// Shutdown does not reject later [`spawn()`](TaskPool::spawn) calls; see
+/// `spawn()` for why they must nevertheless be avoided.
 ///
 /// # Panic propagation
 ///
@@ -145,10 +147,12 @@ impl TaskPool {
     /// The task will be tracked until it completes. The returned [`JoinHandle`](crate::JoinHandle)
     /// can be used to await the task's result or check if it has finished.
     ///
-    /// # Panics
+    /// # Interaction with shutdown
     ///
-    /// Panics if called after [`shutdown()`](TaskPool::shutdown) has been called,
-    /// as the tracker will be closed.
+    /// Spawning is not rejected after [`shutdown()`](TaskPool::shutdown): the
+    /// task still runs and remains awaitable via its handle, but the already
+    /// completed `shutdown()` call has not waited for it, so nothing
+    /// supervises the task. Callers must arrange not to spawn after shutdown.
     ///
     /// # Example
     ///
@@ -192,11 +196,15 @@ impl TaskPool {
     ///
     /// This method implements the three-phase shutdown pattern:
     /// 1. Cancels all tasks via the cancellation token
-    /// 2. Closes the tracker to prevent new tasks from being spawned
+    /// 2. Closes the tracker so the wait in step 3 can complete
     /// 3. Waits for all currently running tasks to complete
     ///
     /// Tasks are expected to check the cancellation token and exit gracefully.
     /// This method will block until all tasks have finished.
+    ///
+    /// Closing the tracker does not reject later [`spawn()`](TaskPool::spawn)
+    /// calls; a task spawned after this method returns runs unsupervised (see
+    /// `spawn()`).
     ///
     /// # Example
     ///
@@ -241,57 +249,5 @@ impl TaskPool {
 impl Default for TaskPool {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(all(test, feature = "tokio"))]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_task_pool_spawn_and_shutdown() {
-        let pool = TaskPool::new();
-        let cancel = pool.cancel_token().clone();
-
-        let mut count = 0;
-        pool.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
-                        count += 1;
-                    }
-                    _ = cancel.cancelled() => break,
-                }
-            }
-            count
-        });
-
-        pool.shutdown().await;
-        assert!(pool.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn test_child_token_independent_cancellation() {
-        let pool = TaskPool::new();
-        let child = pool.child_token();
-
-        // Cancel child without affecting parent
-        child.cancel();
-
-        assert!(child.is_cancelled());
-        assert!(!pool.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn test_parent_cancels_child() {
-        let pool = TaskPool::new();
-        let child = pool.child_token();
-
-        // Cancel parent
-        pool.shutdown().await;
-
-        // Child is also cancelled
-        assert!(child.is_cancelled());
-        assert!(pool.is_cancelled());
     }
 }

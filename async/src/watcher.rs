@@ -130,3 +130,110 @@ async fn watch_loop<F, Fut>(
         }
     }
 }
+
+#[cfg(all(test, feature = "tokio"))]
+mod tests {
+    use std::{
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Instant,
+    };
+
+    use notify::{
+        Event,
+        event::{AccessKind, ModifyKind},
+    };
+
+    use super::*;
+
+    fn event(kind: EventKind, path: &Path) -> DebouncedEvent {
+        DebouncedEvent::new(
+            Event::new(kind).add_path(path.to_path_buf()),
+            Instant::now(),
+        )
+    }
+
+    fn counting_callback() -> (Arc<AtomicUsize>, impl Fn() -> futures::future::Ready<()>) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        (count, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            futures::future::ready(())
+        })
+    }
+
+    /// `watch_loop` drains ready events before it polls the cancel arm
+    /// (`select_biased!` with the receive arm first), so pre-loading the
+    /// channel and pre-cancelling the token processes the whole backlog and
+    /// then breaks, deterministically.
+    #[tokio::test]
+    async fn watch_loop_filters_kind_and_path() {
+        let watched = PathBuf::from("/tmp/watched/config.toml");
+        let sibling = PathBuf::from("/tmp/watched/other.toml");
+
+        let (tx, rx) = flume::unbounded();
+
+        // Relevant: file create, any modify, and file remove of the watched path.
+        tx.send(event(EventKind::Modify(ModifyKind::Any), &watched))
+            .unwrap();
+        tx.send(event(EventKind::Create(CreateKind::File), &watched))
+            .unwrap();
+        tx.send(event(EventKind::Remove(RemoveKind::File), &watched))
+            .unwrap();
+
+        // Ignored: right kind, wrong path.
+        tx.send(event(EventKind::Modify(ModifyKind::Any), &sibling))
+            .unwrap();
+
+        // Ignored: wrong kind, right path.
+        tx.send(event(EventKind::Access(AccessKind::Any), &watched))
+            .unwrap();
+        tx.send(event(EventKind::Create(CreateKind::Folder), &watched))
+            .unwrap();
+        tx.send(event(EventKind::Remove(RemoveKind::Folder), &watched))
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let (count, on_change) = counting_callback();
+        watch_loop(&watched, &rx, &cancel, &on_change).await;
+
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    /// Dropping the sender ends the loop via the receive error arm.
+    #[tokio::test]
+    async fn watch_loop_ends_when_sender_dropped() {
+        let watched = PathBuf::from("/tmp/watched/config.toml");
+
+        let (tx, rx) = flume::unbounded();
+        tx.send(event(EventKind::Modify(ModifyKind::Any), &watched))
+            .unwrap();
+        drop(tx);
+
+        let (count, on_change) = counting_callback();
+        watch_loop(&watched, &rx, &CancellationToken::new(), &on_change).await;
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Cancellation ends the loop even while the sender is still alive.
+    #[tokio::test]
+    async fn watch_loop_ends_on_cancel_with_live_sender() {
+        let watched = PathBuf::from("/tmp/watched/config.toml");
+
+        let (tx, rx) = flume::unbounded::<DebouncedEvent>();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let (count, on_change) = counting_callback();
+        watch_loop(&watched, &rx, &cancel, &on_change).await;
+
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        drop(tx);
+    }
+}

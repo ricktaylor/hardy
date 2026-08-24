@@ -201,3 +201,71 @@ fn response_flags(request: &hardy_bpv7::bundle::Flags) -> hardy_bpv7::bundle::Fl
     }
     flags
 }
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::bundle::Flags;
+
+    use super::*;
+
+    // requested_status_reports is true when any of the four report flags is set.
+    #[test]
+    fn test_requested_status_reports() {
+        assert!(!requested_status_reports(&Flags::default()));
+
+        for set in [
+            |f: &mut Flags| f.receipt_report_requested = true,
+            |f: &mut Flags| f.forward_report_requested = true,
+            |f: &mut Flags| f.delivery_report_requested = true,
+            |f: &mut Flags| f.delete_report_requested = true,
+        ] {
+            let mut flags = Flags::default();
+            set(&mut flags);
+            assert!(requested_status_reports(&flags));
+        }
+    }
+
+    // Without a status-report request, only do_not_fragment mirrors; every
+    // other flag takes the node-sourced default.
+    #[test]
+    fn test_response_flags_default() {
+        let request = Flags {
+            do_not_fragment: true,
+            report_status_time: true, // Not mirrored without a report request
+            is_admin_record: true,    // Never mirrored
+            app_ack_requested: true,  // Never mirrored
+            ..Default::default()
+        };
+
+        assert_eq!(
+            response_flags(&request),
+            Flags {
+                do_not_fragment: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(response_flags(&Flags::default()), Flags::default());
+    }
+
+    // With a status-report request, the four report flags and
+    // report_status_time mirror the request individually.
+    #[test]
+    fn test_response_flags_mirror_reports() {
+        let request = Flags {
+            delivery_report_requested: true,
+            delete_report_requested: true,
+            report_status_time: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            response_flags(&request),
+            Flags {
+                delivery_report_requested: true,
+                delete_report_requested: true,
+                report_status_time: true,
+                ..Default::default()
+            }
+        );
+    }
+}
