@@ -41,8 +41,9 @@ The harness defines two test suites, one per storage trait:
 
 | Suite | Trait | Source | Tests |
 | :--- | :--- | :--- | :--- |
-| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 14 (`meta_01` .. `meta_14`) |
-| Bundle | `BundleStorage` | `src/bundle_suite.rs` | 4 (`blob_01` .. `blob_04`) |
+| Metadata (core) | `MetadataStorage` | `src/metadata_suite.rs` | 11 (`meta_01` .. `meta_14`, less the recovery tests) |
+| Metadata (recovery) | `MetadataStorage` | `src/metadata_suite.rs` | 2 (`meta_05`, `meta_13`) |
+| Bundle | `BundleStorage` | `src/bundle_suite.rs` | 5 (`blob_01` .. `blob_05`) |
 
 Each test function takes an `Arc<dyn MetadataStorage>` or `Arc<dyn BundleStorage>` — the suite has no knowledge of which backend it is testing.
 
@@ -52,10 +53,11 @@ Backends are registered in `tests/storage_harness.rs` using macros that generate
 
 | Macro | Setup signature | Use case |
 | :--- | :--- | :--- |
-| `storage_meta_tests!` | `fn() -> (Guard, Arc<dyn MetadataStorage>)` | Sync setup (Memory, SQLite) |
-| `storage_blob_tests!` | `fn() -> (Guard, Arc<dyn BundleStorage>)` | Sync setup (Memory, Local disk) |
-| `storage_meta_tests_async!` | `async fn() -> (Guard, Arc<dyn MetadataStorage>)` | Async setup (PostgreSQL) |
-| `storage_blob_tests_async!` | `async fn() -> (Guard, Arc<dyn BundleStorage>)` | Async setup (S3) |
+| `storage_meta_tests!` | `async fn() -> (Guard, Arc<dyn MetadataStorage>)` | Core metadata suite (every metadata backend) |
+| `storage_meta_recovery_tests!` | `async fn() -> (Guard, Arc<dyn MetadataStorage>)` | Recovery suite (persistent metadata backends only) |
+| `storage_blob_tests!` | `async fn() -> (Guard, Arc<dyn BundleStorage>)` | Bundle suite (every bundle backend) |
+
+Every setup function is `async` (even those with nothing to await) so the macros treat all backends uniformly.
 
 The `Guard` type is returned by the setup function and dropped when the test completes. This provides RAII cleanup regardless of test outcome.
 
@@ -69,7 +71,7 @@ Each backend setup function creates an isolated environment so tests can run in 
 | SQLite | `tempfile::TempDir` — unique directory per test | `TempDir::drop()` deletes directory |
 | Local disk | `tempfile::TempDir` — unique directory per test | `TempDir::drop()` deletes directory |
 | PostgreSQL | Random database name (`hardy_test_{uuid}`) per test | `PostgresTestGuard::drop()` runs `DROP DATABASE ... (FORCE)` |
-| S3/MinIO | Unique key prefix (`test-{uuid}`) within shared bucket | Prefix-scoped — no cross-test interference |
+| S3/MinIO | Unique key prefix (`test-{uuid}`) within shared bucket | `S3TestGuard::drop()` deletes the prefix's objects (best-effort) |
 
 ### 3.4 Feature Gating
 
@@ -85,12 +87,12 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 
 | Backend | Suite | Setup | Feature flag |
 | :--- | :--- | :--- | :--- |
-| Memory | MetadataStorage | `memory_meta_setup` | default |
-| SQLite | MetadataStorage + META-05 | `sqlite_meta_setup` | default |
-| PostgreSQL | MetadataStorage + META-05 | `postgres_meta_setup` (async) | `postgres` |
-| Memory | BundleStorage | `memory_blob_setup` | default |
-| Local disk | BundleStorage | `localdisk_blob_setup` | default |
-| S3/MinIO | BundleStorage | `s3_blob_setup` (async) | `s3` |
+| Memory | Metadata (core) | `memory_meta_setup` | default |
+| SQLite | Metadata (core + recovery) | `sqlite_meta_setup` | default |
+| PostgreSQL | Metadata (core + recovery) | `postgres_meta_setup` | `postgres` |
+| Memory | Bundle | `memory_blob_setup` | default |
+| Local disk | Bundle | `localdisk_blob_setup` | default |
+| S3/MinIO | Bundle | `s3_blob_setup` | `s3` |
 
 ## 4. Metadata Storage Suites
 
@@ -126,8 +128,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | :--- | :--- | :--- | :--- |
 | **META-05** | **Confirm Exists (Recovery)** | _Persistent backends only._<br>1. Insert bundle A.<br>2. Call `start_recovery()` (marks A unconfirmed).<br>3. Call `confirm_exists(A)`.<br>4. Call `confirm_exists(B)` (never inserted).<br>5. Call `remove_unconfirmed(tx)`. | 1. Step 3 returns `Some(metadata)`.<br>2. Step 4 returns `None`.<br>3. Step 5 removes nothing (A was confirmed).<br>4. `get(A)` still returns `Some`. |
 | **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: Some(0) }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: Some(0) }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
-| **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
-| **META-13** | **Remove Unconfirmed** | 1. Insert Bundle A.<br>2. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives bundles (if implementation supports unconfirmed state). |
+| **META-13** | **Remove Unconfirmed (Recovery)** | _Persistent backends only._<br>1. Insert Bundle A.<br>2. Call `start_recovery()` (marks A unconfirmed).<br>3. Confirm nothing.<br>4. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives exactly Bundle A.<br>3. `get(A)` returns `None` (unconfirmed entry deleted). |
 
 ## 5. Bundle Storage Suites
 
@@ -152,7 +153,7 @@ This section defines the boundary between generic harness coverage and backend-s
 | :--- | :--- | :--- |
 | CRUD lifecycle | META-01..04, BLOB-01..03 | Insert, get, update, tombstone, save, load, delete |
 | Polling & ordering | META-06..10, META-14 | FIFO ordering, expiry filtering, pending limits, peer matching, fragment ordering, service filtering |
-| State transitions | META-05, META-11..13 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup |
+| State transitions | META-05, META-11, META-13 | Recovery confirmation, peer queue reset, unconfirmed cleanup |
 | Recovery scan | BLOB-04 | Discovers all stored bundles on restart |
 
 ### 6.2 NOT covered — backend-specific responsibility
@@ -173,8 +174,8 @@ Each backend crate's `docs/TODO.md` tracks its own test gaps. These are areas wh
 
 1. Add the crate dependency to `Cargo.toml` (optionally feature-gated).
 2. Add a setup function in `src/lib.rs` returning `(Guard, Arc<dyn Trait>)`.
-3. Register it in `tests/storage_harness.rs` using the appropriate macro.
-4. If the backend is persistent, add a separate `meta_05_confirm_exists` test (not included in the macro suites — it only applies to backends that survive process restart).
+3. Register it in `tests/storage_harness.rs` using `storage_meta_tests!` or `storage_blob_tests!`.
+4. If the backend is a persistent metadata store, also register the recovery suite with `storage_meta_recovery_tests!`: the recovery protocol only applies to backends that survive process restart.
 5. Create backend-specific tests in the backend's own crate for areas listed in §6.2.
 
 ## 8. Running

@@ -47,15 +47,18 @@ impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
 // ---------------------------------------------------------------------------
 // Backend setup functions
 // ---------------------------------------------------------------------------
+//
+// All setup functions are async (even the ones with nothing to await) so the
+// test-generation macros below can treat every backend uniformly.
 
-pub fn memory_meta_setup() -> ((), Arc<dyn MetadataStorage>) {
+pub async fn memory_meta_setup() -> ((), Arc<dyn MetadataStorage>) {
     (
         (),
         Arc::new(hardy_bpa::storage::MetadataMemStorage::new(None)),
     )
 }
 
-pub fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
+pub async fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(hardy_sqlite_storage::SqliteStorage::new(
         Some(dir.path().into()),
@@ -65,14 +68,14 @@ pub fn sqlite_meta_setup() -> (tempfile::TempDir, Arc<dyn MetadataStorage>) {
     (dir, store)
 }
 
-pub fn memory_blob_setup() -> ((), Arc<dyn BundleStorage>) {
+pub async fn memory_blob_setup() -> ((), Arc<dyn BundleStorage>) {
     (
         (),
         Arc::new(hardy_bpa::storage::BundleMemStorage::new(None, None)),
     )
 }
 
-pub fn localdisk_blob_setup() -> (tempfile::TempDir, Arc<dyn BundleStorage>) {
+pub async fn localdisk_blob_setup() -> (tempfile::TempDir, Arc<dyn BundleStorage>) {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(hardy_localdisk_storage::LocalDiskStorage::new(
         Some(dir.path().into()),
@@ -103,24 +106,50 @@ impl Drop for PostgresTestGuard {
         let db_name = self.db_name.clone();
         // Spawn a dedicated OS thread + runtime so we can run async cleanup
         // from a synchronous Drop context (we may be inside a tokio executor).
-        let _ = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+        // Failures are reported to stderr but never panic: a leaked
+        // hardy_test_* database should be visible, not fatal.
+        let joined = std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("cleanup runtime")
-                .block_on(async move {
-                    use sqlx::Connection as _;
-                    if let Ok(mut conn) = sqlx::postgres::PgConnection::connect(&url).await {
-                        let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to build cleanup runtime for test database {db_name}: {e}"
+                    );
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                use sqlx::Connection as _;
+                match sqlx::postgres::PgConnection::connect(&url).await {
+                    Ok(mut conn) => {
+                        if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!(
                             "DROP DATABASE IF EXISTS \"{db_name}\" (FORCE)"
                         )))
                         .execute(&mut conn)
-                        .await;
+                        .await
+                        {
+                            eprintln!("warning: failed to drop test database {db_name}: {e}");
+                        }
                         let _ = conn.close().await;
                     }
-                });
+                    Err(e) => {
+                        eprintln!(
+                            "warning: failed to connect to drop test database {db_name}: {e}"
+                        );
+                    }
+                }
+            });
         })
         .join();
+        if joined.is_err() {
+            eprintln!(
+                "warning: cleanup thread for test database {} panicked",
+                self.db_name
+            );
+        }
     }
 }
 
@@ -183,6 +212,59 @@ pub async fn postgres_meta_setup() -> (PostgresTestGuard, Arc<dyn MetadataStorag
 //
 // Each call uses a unique key prefix so tests are isolated within the bucket
 // and can run in parallel. Credentials are read from the standard AWS env vars.
+// The returned guard removes the prefix's objects when the test completes.
+
+#[cfg(feature = "s3")]
+pub struct S3TestGuard {
+    store: Arc<dyn BundleStorage>,
+    prefix: String,
+}
+
+#[cfg(feature = "s3")]
+impl Drop for S3TestGuard {
+    fn drop(&mut self) {
+        let store = self.store.clone();
+        let prefix = self.prefix.clone();
+        // Best-effort removal of every object under the test prefix, reusing
+        // the store's own recover() listing and delete(). Runs on a dedicated
+        // OS thread + runtime because Drop is synchronous (and we may be
+        // inside a tokio executor). Failures are reported to stderr but never
+        // panic: a leaked test prefix should be visible, not fatal.
+        let joined = std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to build cleanup runtime for S3 test prefix {prefix}: {e}"
+                    );
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let sink = VecSink::new();
+                if let Err(e) = store.recover(&sink).await {
+                    eprintln!("warning: failed to list S3 test prefix {prefix}: {e}");
+                    return;
+                }
+                for (name, _) in sink.into_inner() {
+                    if let Err(e) = store.delete(&name).await {
+                        eprintln!("warning: failed to delete S3 test object {prefix}/{name}: {e}");
+                    }
+                }
+            });
+        })
+        .join();
+        if joined.is_err() {
+            eprintln!(
+                "warning: cleanup thread for S3 test prefix {} panicked",
+                self.prefix
+            );
+        }
+    }
+}
 
 /// Creates an S3 bundle storage backed by a unique key prefix.
 ///
@@ -192,7 +274,7 @@ pub async fn postgres_meta_setup() -> (PostgresTestGuard, Arc<dyn MetadataStorag
 /// - `TEST_S3_BUCKET` (default: `hardy-test`) — bucket name.
 /// - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — credentials.
 #[cfg(feature = "s3")]
-pub async fn s3_blob_setup() -> ((), Arc<dyn BundleStorage>) {
+pub async fn s3_blob_setup() -> (S3TestGuard, Arc<dyn BundleStorage>) {
     let endpoint = std::env::var("TEST_S3_ENDPOINT").ok();
     let bucket = std::env::var("TEST_S3_BUCKET").unwrap_or_else(|_| "hardy-test".to_string());
     let prefix = format!("test-{}", uuid::Uuid::new_v4().simple());
@@ -203,7 +285,7 @@ pub async fn s3_blob_setup() -> ((), Arc<dyn BundleStorage>) {
         .or_else(|| endpoint.as_ref().map(|_| "us-east-1".to_string()));
 
     let mut builder = hardy_s3_storage::S3Storage::builder(bucket.clone())
-        .prefix(prefix)
+        .prefix(prefix.clone())
         .force_path_style();
     if let Some(region) = region {
         builder = builder.region(region);
@@ -211,78 +293,30 @@ pub async fn s3_blob_setup() -> ((), Arc<dyn BundleStorage>) {
     if let Some(endpoint) = &endpoint {
         builder = builder.endpoint_url(endpoint);
     }
-    let store = Arc::new(builder.build().await.unwrap_or_else(|e| {
+    let store: Arc<dyn BundleStorage> = Arc::new(builder.build().await.unwrap_or_else(|e| {
         let endpoint = endpoint.as_deref().unwrap_or("(AWS default)");
         panic!("connect to S3/MinIO (bucket={bucket}, endpoint={endpoint}): {e}")
     }));
-    ((), store)
+    (
+        S3TestGuard {
+            store: store.clone(),
+            prefix,
+        },
+        store,
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Test generation macros
 // ---------------------------------------------------------------------------
+//
+// Each suite's test-name list is written exactly once here: every backend
+// module is generated from the same list, so adding a suite function needs a
+// single edit and cannot silently skip a backend.
 
+/// Generates the core metadata suite for one backend.
 #[macro_export]
 macro_rules! storage_meta_tests {
-    ($mod_name:ident, $setup:path) => {
-        mod $mod_name {
-            use super::*;
-
-            macro_rules! meta_test {
-                ($name:ident) => {
-                    #[tokio::test]
-                    async fn $name() {
-                        let (_cleanup, store) = $setup();
-                        storage_tests::metadata_suite::$name(store).await;
-                    }
-                };
-            }
-
-            meta_test!(meta_01_insert_and_get);
-            meta_test!(meta_02_duplicate_insert);
-            meta_test!(meta_03_update_replace);
-            meta_test!(meta_04_tombstone);
-            meta_test!(meta_06_poll_waiting_fifo);
-            meta_test!(meta_07_poll_expiry);
-            meta_test!(meta_08_poll_pending_limit);
-            meta_test!(meta_09_poll_pending_exact_match);
-            meta_test!(meta_10_poll_adu_fragments);
-            meta_test!(meta_11_reset_peer_queue);
-            meta_test!(meta_14_poll_service_waiting);
-            meta_test!(meta_12_recovery);
-            meta_test!(meta_13_remove_unconfirmed);
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! storage_blob_tests {
-    ($mod_name:ident, $setup:path) => {
-        mod $mod_name {
-            use super::*;
-
-            macro_rules! blob_test {
-                ($name:ident) => {
-                    #[tokio::test]
-                    async fn $name() {
-                        let (_cleanup, store) = $setup();
-                        storage_tests::bundle_suite::$name(store).await;
-                    }
-                };
-            }
-
-            blob_test!(blob_01_save_and_load);
-            blob_test!(blob_02_delete);
-            blob_test!(blob_03_missing_load);
-            blob_test!(blob_04_recovery_scan);
-            blob_test!(blob_05_repeatable_load);
-        }
-    };
-}
-
-/// Like [`storage_meta_tests!`] but for async setup functions (e.g. postgres).
-#[macro_export]
-macro_rules! storage_meta_tests_async {
     ($mod_name:ident, $setup:path) => {
         mod $mod_name {
             use super::*;
@@ -308,15 +342,39 @@ macro_rules! storage_meta_tests_async {
             meta_test!(meta_10_poll_adu_fragments);
             meta_test!(meta_11_reset_peer_queue);
             meta_test!(meta_14_poll_service_waiting);
-            meta_test!(meta_12_recovery);
-            meta_test!(meta_13_remove_unconfirmed);
         }
     };
 }
 
-/// Like [`storage_blob_tests!`] but for async setup functions (e.g. s3).
+/// Generates the recovery-protocol metadata tests for one backend.
+///
+/// Only applicable to persistent backends: the in-memory store's recovery
+/// entry points are deliberate no-ops.
 #[macro_export]
-macro_rules! storage_blob_tests_async {
+macro_rules! storage_meta_recovery_tests {
+    ($mod_name:ident, $setup:path) => {
+        mod $mod_name {
+            use super::*;
+
+            macro_rules! meta_recovery_test {
+                ($name:ident) => {
+                    #[tokio::test]
+                    async fn $name() {
+                        let (_cleanup, store) = $setup().await;
+                        storage_tests::metadata_suite::$name(store).await;
+                    }
+                };
+            }
+
+            meta_recovery_test!(meta_05_confirm_exists);
+            meta_recovery_test!(meta_13_remove_unconfirmed);
+        }
+    };
+}
+
+/// Generates the bundle (blob) suite for one backend.
+#[macro_export]
+macro_rules! storage_blob_tests {
     ($mod_name:ident, $setup:path) => {
         mod $mod_name {
             use super::*;
