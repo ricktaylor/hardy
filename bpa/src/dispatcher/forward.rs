@@ -46,10 +46,16 @@ impl Dispatcher {
         let (pre_rewrite, data) = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                return self.store.watch_bundle(bundle).await;
+                // Conditional: the reaper can resolve the claimed bundle at
+                // any await, and the park must not resurrect a tombstone.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
+                return;
             }
             Ok((new_bundle, data)) => (core::mem::replace(&mut bundle.bundle, new_bundle), data),
         };
@@ -106,6 +112,18 @@ impl Dispatcher {
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => {
+                // The terminal claim is a conditional tombstone: the reaper
+                // races a bundle that expires during a synchronous transmit,
+                // and losing the claim means its deletion report has gone
+                // out. The forwarded report is suppressed with the rest:
+                // a lost resolution never happened.
+                if !self.store.tombstone_if(&bundle).await {
+                    debug!(
+                        "Forward completion for {} lost the resolution race, ignored",
+                        bundle.bundle.id
+                    );
+                    return;
+                }
                 metrics::counter!("bpa.bundle.forwarded").increment(1);
                 self.report_bundle_forwarded(&bundle).await;
 
@@ -137,10 +155,15 @@ impl Dispatcher {
         // original) and return it to Waiting for a fresh routing decision
         // along with the rest of the peer's queue.
         bundle.bundle = pre_rewrite;
-        self.store
-            .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-            .await;
-        self.store.watch_bundle(bundle).await;
+        // Conditional for the same reason: losing the swap means the reaper
+        // or a sweep resolved the bundle while the CLA held the call.
+        if self
+            .store
+            .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+            .await
+        {
+            self.store.watch_bundle(bundle).await;
+        }
         self.store.reset_peer_queue(peer).await;
     }
 
