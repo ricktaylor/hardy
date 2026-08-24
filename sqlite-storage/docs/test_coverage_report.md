@@ -26,7 +26,7 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 All 17 pass. No failures or skips.
 
-### Backend-specific tests (`migrate.rs`, `storage.rs`)
+### Backend-specific tests (`src/migrate.rs`, `tests/storage.rs`)
 
 10 unit tests covering all 6 planned scenarios (SQL-01..06).
 
@@ -39,7 +39,7 @@ All 17 pass. No failures or skips.
 | `test_migration_detects_extra_historic` | SQL-03 | Inserted fake version row detected |
 | `test_migration_detects_altered_historic` | SQL-03 | Corrupted hash detected |
 | `test_configuration_custom_db_dir` | SQL-01 | DB file created at configured path |
-| `test_concurrency_no_sqlite_busy` | SQL-04 | 10 concurrent writers, all succeed |
+| `test_concurrency_no_sqlite_busy` | SQL-04 | 10 writers and 10 readers, barrier-released on a multi-thread runtime, all succeed |
 | `test_corrupt_data_does_not_panic` | SQL-05 | Corrupt blob: get() errors, confirm_exists() tombstones |
 | `test_waiting_queue_invalidation` | SQL-06 | Status change clears waiting queue |
 
@@ -73,4 +73,4 @@ Unit tests (10) exercise migration logic, configuration, concurrency, corrupt da
 
 ## 5. Conclusion
 
-27 tests (17 integration + 10 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer safety, corrupt data resilience, configuration, and waiting queue cache correctness.
+27 tests (17 integration + 10 unit) verify both the `MetadataStorage` trait contract and all backend-specific scenarios (100% of planned scenarios). All trait-level operations pass: CRUD, polling with FIFO ordering, exact-match filtering, peer queue reset, recovery protocol, and fragment handling. Backend-specific tests cover migration logic and tamper detection, concurrent writer and reader safety, corrupt data resilience, configuration, and waiting queue cache correctness.
