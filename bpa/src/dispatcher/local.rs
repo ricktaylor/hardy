@@ -278,8 +278,8 @@ impl Dispatcher {
                 service: service_eid,
             };
             // Conditional: the reaper expires bundles regardless of status,
-            // so it may have resolved this one mid-delivery — the park must
-            // not resurrect a tombstoned bundle.
+            // so it may have resolved this one mid-delivery, and the park
+            // must not resurrect a tombstoned bundle.
             if self.store.swap_status(&mut bundle, &desired).await {
                 self.store.watch_bundle(bundle).await;
             }
@@ -288,7 +288,7 @@ impl Dispatcher {
 
         // The terminal claim is a conditional tombstone: the reaper races
         // in-flight deliveries, and losing the claim means it resolved the
-        // bundle first — its "Lifetime expired" deletion report has gone
+        // bundle first. Its "Lifetime expired" deletion report has gone
         // out, so this delivery must stay silent rather than contradict it.
         if !self.store.tombstone_if(&bundle).await {
             debug!(

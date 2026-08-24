@@ -164,7 +164,7 @@ impl services::Service for BufferedService {
 }
 
 /// Holds every delivery open until released, then drains the stream and
-/// completes `Ok` — a delivery deliberately still in flight when something
+/// completes `Ok`: a delivery deliberately still in flight when something
 /// else (the expiry reaper) resolves the bundle.
 struct HoldingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
@@ -536,17 +536,43 @@ async fn expiry_mid_delivery_resolves_once() {
 
     // ...when the bundle expires: the reaper resolves it, and the deletion
     // report (the only report this bundle requests) reaches report_to.
-    assert!(matches!(
-        recv_event(&reports_rx, 10).await,
-        Event::Streamed { .. }
-    ));
+    let Event::Streamed { segments, .. } = recv_event(&reports_rx, 10).await else {
+        panic!("Expected the deletion report at report_to");
+    };
+
+    // Pin the winner's identity: the report is the *reaper's* deletion
+    // report, citing LifetimeExpired. If the claim logic ever inverted,
+    // a delivered/deleted pair from the completion would fail here.
+    let Some(hardy_bpa::stream::Segment::Final(report)) = segments.last() else {
+        panic!("Expected a whole report bundle");
+    };
+    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(report, hardy_bpv7::bpsec::no_keys)
+        .expect("Failed to parse report bundle");
+    let payload = report.slice(parsed.bundle.blocks.get(&1).unwrap().payload_range());
+    let hardy_bpv7::status_report::AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(payload.as_ref()).expect("Failed to parse admin record");
+    assert!(status.deleted.is_some(), "expected a deletion assertion");
+    assert!(status.received.is_none() && status.delivered.is_none());
+    assert_eq!(
+        status.reason,
+        hardy_bpv7::status_report::ReasonCode::LifetimeExpired
+    );
 
     // Release the held delivery: its completion must lose the terminal
-    // claim silently — no delivered/deleted reporting after the reaper's.
+    // claim silently, with no delivered/deleted reporting after the
+    // reaper's. A bounded negative wait: any wrongly-emitted report pair
+    // would arrive through the live pipeline well within it. (Shutdown is
+    // not usable as the barrier here: it closes the dispatch channel
+    // before joining the pool, so a late report would be dropped unsent
+    // and the assertion would pass vacuously.)
     release_tx.send(()).expect("Holding service gone");
-    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
     assert!(
-        reports_rx.is_empty(),
+        tokio::time::timeout(
+            tokio::time::Duration::from_millis(1000),
+            reports_rx.recv_async()
+        )
+        .await
+        .is_err(),
         "the completed delivery re-resolved the expired bundle"
     );
 

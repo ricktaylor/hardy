@@ -154,7 +154,7 @@ impl Dispatcher {
     // Every drop is a terminal resolution, claimed with a conditional
     // tombstone. Callers own their bundle through the pipeline's claim
     // discipline, but the reaper expires bundles regardless of owner, so
-    // any drop can race it — and it races them. Losing the claim means
+    // any drop can race it, and it races them. Losing the claim means
     // another resolver's deletion report has gone out; this one stays
     // silent rather than contradict it. Callers therefore pass a bundle
     // whose metadata is already stored, with a current status snapshot.
