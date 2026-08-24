@@ -163,6 +163,71 @@ impl services::Service for BufferedService {
     }
 }
 
+/// Holds every delivery open until released, then drains the stream and
+/// completes `Ok` — a delivery deliberately still in flight when something
+/// else (the expiry reaper) resolves the bundle.
+struct HoldingService {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    started_tx: flume::Sender<()>,
+    release_rx: flume::Receiver<()>,
+}
+
+impl HoldingService {
+    fn new() -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+        let (started_tx, started_rx) = flume::bounded(1);
+        let (release_tx, release_rx) = flume::bounded(1);
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                started_tx,
+                release_rx,
+            }),
+            started_rx,
+            release_tx,
+        )
+    }
+}
+
+#[async_trait]
+impl services::Service for HoldingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _expiry: time::OffsetDateTime,
+        _total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        let _ = self.started_tx.send(());
+        let _ = self.release_rx.recv_async().await;
+        // The race under test is the completion claim, not the stream: the
+        // delivery's buffer was loaded before the reaper ran, so it still
+        // drains to Final.
+        loop {
+            match stream.recv().await {
+                Ok(Segment::Final(_)) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: hardy_bpv7::status_report::ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Minimal CLA to inject inbound bundles
 // ---------------------------------------------------------------------------
@@ -389,6 +454,101 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
         panic!("Expected re-delivery through the streamed door");
     };
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
+
+    bpa.shutdown().await;
+}
+
+/// A bundle that expires while its delivery is in flight is resolved
+/// exactly once. The reaper wins the conditional terminal claim and sends
+/// the only deletion report; the delivery's completion loses the claim and
+/// stays silent instead of contradicting it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expiry_mid_delivery_resolves_once() {
+    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    // Deletion reports are addressed to ipn:0.1.9: a local capture service.
+    let (reports, reports_rx) = StreamingService::new(false);
+    bpa.register_service(hardy_bpv7::eid::Service::Ipn(9), reports.clone())
+        .await
+        .unwrap();
+
+    // A first delivery attempt fails, parking the bundle as
+    // WaitingForService — which is also what places it on the reaper's
+    // expiry watch list.
+    let (failing_svc, failing_rx) = StreamingService::new(true);
+    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), failing_svc.clone())
+        .await
+        .unwrap();
+
+    let (_, data) = hardy_bpv7::builder::Builder::new(
+        "ipn:0.2.1".parse().unwrap(),
+        "ipn:0.1.7".parse().unwrap(),
+    )
+    .with_report_to("ipn:0.1.9".parse().unwrap())
+    .with_flags(hardy_bpv7::bundle::Flags {
+        delete_report_requested: true,
+        ..Default::default()
+    })
+    .with_lifetime(core::time::Duration::from_millis(2000))
+    .with_payload(std::borrow::Cow::Borrowed(b"expire me".as_slice()))
+    .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+    .expect("Failed to build bundle");
+
+    let cla = IngressCla::new();
+    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut Bytes::from(data))
+        .await
+        .unwrap();
+    assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
+
+    // Re-register with a service that holds the redelivery open across
+    // the bundle's expiry.
+    failing_svc.sink.get().unwrap().unregister().await;
+    let (svc, started_rx, release_tx) = HoldingService::new();
+    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+
+    // The redelivery is in flight...
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), started_rx.recv_async())
+        .await
+        .expect("Timed out waiting for the delivery to start")
+        .expect("Holding service gone");
+
+    // ...when the bundle expires: the reaper resolves it, and the deletion
+    // report (the only report this bundle requests) reaches report_to.
+    assert!(matches!(
+        recv_event(&reports_rx, 10).await,
+        Event::Streamed { .. }
+    ));
+
+    // Release the held delivery: its completion must lose the terminal
+    // claim silently — no delivered/deleted reporting after the reaper's.
+    release_tx.send(()).expect("Holding service gone");
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+    assert!(
+        reports_rx.is_empty(),
+        "the completed delivery re-resolved the expired bundle"
+    );
 
     bpa.shutdown().await;
 }

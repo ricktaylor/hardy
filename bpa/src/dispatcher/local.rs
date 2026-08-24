@@ -277,8 +277,25 @@ impl Dispatcher {
             let desired = bundle::BundleStatus::WaitingForService {
                 service: service_eid,
             };
-            self.store.update_status(&mut bundle, &desired).await;
-            return self.store.watch_bundle(bundle).await;
+            // Conditional: the reaper expires bundles regardless of status,
+            // so it may have resolved this one mid-delivery — the park must
+            // not resurrect a tombstoned bundle.
+            if self.store.swap_status(&mut bundle, &desired).await {
+                self.store.watch_bundle(bundle).await;
+            }
+            return;
+        }
+
+        // The terminal claim is a conditional tombstone: the reaper races
+        // in-flight deliveries, and losing the claim means it resolved the
+        // bundle first — its "Lifetime expired" deletion report has gone
+        // out, so this delivery must stay silent rather than contradict it.
+        if !self.store.tombstone_if(&bundle).await {
+            debug!(
+                "Delivery completion for {} lost the resolution race, ignored",
+                bundle.bundle.id
+            );
+            return;
         }
 
         metrics::counter!("bpa.bundle.delivered").increment(1);
