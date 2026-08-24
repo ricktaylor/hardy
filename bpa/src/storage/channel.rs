@@ -117,6 +117,11 @@ struct Shared {
     tx: hardy_async::closeable::Sender<Bundle>,
     status: BundleStatus,
     notify: Arc<Notify>,
+    // Test-only state-transition signal: the state machine is otherwise
+    // unobservable without polling, and the test style guide requires
+    // synchronizing on the event itself.
+    #[cfg(test)]
+    state_notify: Notify,
 }
 
 impl Shared {
@@ -130,6 +135,8 @@ impl Shared {
     #[inline]
     fn store_state(&self, state: ChannelState, ordering: Ordering) {
         self.state.store(state.as_usize(), ordering);
+        #[cfg(test)]
+        self.state_notify.notify_one();
     }
 
     /// Atomically compare-and-swap: if current == expected, set to new.
@@ -144,10 +151,16 @@ impl Shared {
         success: Ordering,
         failure: Ordering,
     ) -> Result<ChannelState, ChannelState> {
-        self.state
+        let r = self
+            .state
             .compare_exchange(expected.as_usize(), new.as_usize(), success, failure)
             .map(ChannelState::from_usize)
-            .map_err(ChannelState::from_usize)
+            .map_err(ChannelState::from_usize);
+        #[cfg(test)]
+        if r.is_ok() {
+            self.state_notify.notify_one();
+        }
+        r
     }
 }
 
@@ -286,6 +299,8 @@ impl Store {
             tx,
             status: status.clone(),
             notify: Arc::new(Notify::new()),
+            #[cfg(test)]
+            state_notify: Notify::new(),
         });
 
         let store = self.clone();
@@ -474,21 +489,23 @@ mod tests {
         tx.send(bundle).await
     }
 
-    // Poll until the channel reaches `target`, or panic after a generous
-    // deadline. Replaces fixed sleeps so the tests stay robust on slow CI.
+    // Await the channel reaching `target`, synchronized on the state
+    // machine's transition signal; the timeout only bounds a regression.
+    // `notify_one` stores a permit, so a transition landing between the
+    // state check and the await is never lost.
     async fn wait_for_state(tx: &Sender, target: ChannelState) {
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            let state = tx.state();
-            if state == target {
-                return;
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
+            while tx.state() != target {
+                tx.shared.state_notify.notified().await;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timed out waiting for state {target:?}, got {state:?}"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Timed out waiting for state {target:?}, got {:?}",
+                tx.state()
+            )
+        })
     }
 
     // The fast path must re-open after draining even for tiny capacities.
@@ -584,42 +601,47 @@ mod tests {
             send(&tx, make_bundle(i)).await.unwrap();
         }
 
-        // Drain ALL bundles (unique + duplicates) and tombstone each.
-        // The poller re-opens when flume.len() < cap/2 and metadata is empty.
+        // Drain until every unique bundle has been delivered and
+        // tombstoned; each recv is event-driven, the timeout only bounds a
+        // regression.
         let mut seen = HashSet::new();
-        let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            match tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv()).await {
-                Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
-                }
-                Ok(Err(_)) => {
-                    // Channel closed
-                    break;
-                }
-                Err(_) if seen.len() >= 17 => {
-                    // No bundle for 200ms after full delivery — channel quiesced
-                    break;
-                }
-                Err(_) => {
-                    // Delivery can stall past 200ms under load — keep waiting
-                    // until the deadline
-                }
-            }
-            if tokio::time::Instant::now() > drain_deadline {
-                break;
-            }
+        while seen.len() < 17 {
+            let b = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx.recv())
+                .await
+                .expect("Timed out waiting for a bundle delivery")
+                .expect("Channel closed mid-drain");
+            store.tombstone_metadata(&b.bundle.id).await;
+            seen.insert(b.bundle.id);
         }
+        assert_eq!(seen.len(), 17, "Should have seen all 17 bundles");
 
-        assert!(
-            seen.len() >= 17,
-            "Should have seen all 17 bundles, got {}",
-            seen.len()
-        );
-
-        // Wait for the poller to see empty metadata and re-open the fast path.
-        wait_for_state(&tx, ChannelState::Open).await;
+        // The poller re-opens once metadata is empty and the buffer is
+        // below half capacity; duplicate deliveries may still be in
+        // flight, so keep draining them while awaiting the transition.
+        // The timeout only bounds a regression.
+        tokio::time::timeout(tokio::time::Duration::from_secs(30), async {
+            loop {
+                let notified = tx.shared.state_notify.notified();
+                if tx.state() == ChannelState::Open {
+                    break;
+                }
+                tokio::select! {
+                    _ = notified => {}
+                    r = rx.recv() => {
+                        if let Ok(b) = r {
+                            store.tombstone_metadata(&b.bundle.id).await;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "Timed out waiting for the fast path to re-open, got {:?}",
+                tx.state()
+            )
+        });
 
         drop(rx);
         tx.close();
