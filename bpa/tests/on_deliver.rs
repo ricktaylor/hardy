@@ -7,13 +7,18 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use hardy_bpa::storage::{MetadataMemStorage, MetadataStorage};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla, services,
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+use hardy_bpv7::{
+    bundle::ParsedBundle,
+    eid::{Eid, IpnNodeId, NodeId},
+    status_report::{AdministrativeRecord, ReasonCode},
+};
 
 // ---------------------------------------------------------------------------
 // Events observed by the mock services
@@ -472,9 +477,11 @@ async fn expiry_mid_delivery_resolves_once() {
         .as_slice(),
     )
     .unwrap();
+    let metadata_store = Arc::new(MetadataMemStorage::new(None));
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
+        .metadata_storage(metadata_store.clone())
         .build()
         .await
         .unwrap();
@@ -528,7 +535,7 @@ async fn expiry_mid_delivery_resolves_once() {
         .await
         .unwrap();
 
-    // The redelivery is in flight...
+    // The redelivery is in flight (the timeout only bounds a regression)...
     tokio::time::timeout(tokio::time::Duration::from_secs(5), started_rx.recv_async())
         .await
         .expect("Timed out waiting for the delivery to start")
@@ -546,37 +553,38 @@ async fn expiry_mid_delivery_resolves_once() {
     let Some(hardy_bpa::stream::Segment::Final(report)) = segments.last() else {
         panic!("Expected a whole report bundle");
     };
-    let parsed = hardy_bpv7::bundle::ParsedBundle::parse(report, hardy_bpv7::bpsec::no_keys)
+    let parsed = ParsedBundle::parse(report, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse report bundle");
     let payload = report.slice(parsed.bundle.blocks.get(&1).unwrap().payload_range());
-    let hardy_bpv7::status_report::AdministrativeRecord::BundleStatusReport(status) =
+    let AdministrativeRecord::BundleStatusReport(status) =
         hardy_cbor::decode::parse(payload.as_ref()).expect("Failed to parse admin record");
     assert!(status.deleted.is_some(), "expected a deletion assertion");
     assert!(status.received.is_none() && status.delivered.is_none());
-    assert_eq!(
-        status.reason,
-        hardy_bpv7::status_report::ReasonCode::LifetimeExpired
-    );
+    assert_eq!(status.reason, ReasonCode::LifetimeExpired);
 
     // Release the held delivery: its completion must lose the terminal
     // claim silently, with no delivered/deleted reporting after the
-    // reaper's. A bounded negative wait: any wrongly-emitted report pair
-    // would arrive through the live pipeline well within it. (Shutdown is
-    // not usable as the barrier here: it closes the dispatch channel
-    // before joining the pool, so a late report would be dropped unsent
-    // and the assertion would pass vacuously.)
+    // reaper's. shutdown() is the barrier: it joins the pools, so by the
+    // time it returns a wrongly-emitted second report has either been
+    // delivered (visible on reports_rx) or persisted-then-stranded when
+    // the dispatch channel closed (visible as live metadata below).
+    // Both are asserted empty; no quiet window is involved.
     release_tx.send(()).expect("Holding service gone");
+    bpa.shutdown().await;
     assert!(
-        tokio::time::timeout(
-            tokio::time::Duration::from_millis(1000),
-            reports_rx.recv_async()
-        )
-        .await
-        .is_err(),
+        reports_rx.is_empty(),
         "the completed delivery re-resolved the expired bundle"
     );
-
-    bpa.shutdown().await;
+    let (live_tx, live_rx) = hardy_async::channel::bounded(16);
+    metadata_store
+        .poll_expiry(&live_tx, 16)
+        .await
+        .expect("Failed to poll metadata store");
+    drop(live_tx);
+    assert!(
+        live_rx.recv().await.is_err(),
+        "a resolved bundle left live metadata behind"
+    );
 }
 
 // ---------------------------------------------------------------------------
