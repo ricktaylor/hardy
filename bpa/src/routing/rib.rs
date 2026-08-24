@@ -487,11 +487,12 @@ mod tests {
     use hardy_bpv7::eid::{IpnNodeId, Service as EidService};
 
     use super::*;
+    use crate::bundle::BundleStatus;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
-    use crate::storage::{BundleMemStorage, MetadataMemStorage};
+    use crate::storage::{BundleMemStorage, MetadataMemStorage, MetadataStorage};
 
-    fn make_rib() -> Arc<Rib> {
+    fn make_rib_with_store() -> (Arc<Rib>, Arc<MetadataMemStorage>) {
         let node_ids = Arc::new(NodeIds {
             ipn: Some(IpnNodeId {
                 allocator_id: 0,
@@ -500,13 +501,43 @@ mod tests {
             dtn: None,
         });
 
+        let metadata_storage = Arc::new(MetadataMemStorage::new(None));
         let store = Arc::new(Store::new(
             NonZeroUsize::new(16).unwrap(),
-            Arc::new(MetadataMemStorage::new(None)),
+            metadata_storage.clone(),
             Arc::new(BundleMemStorage::new(None, None)),
         ));
 
-        Arc::new(Rib::new(node_ids, store, 1))
+        (Arc::new(Rib::new(node_ids, store, 1)), metadata_storage)
+    }
+
+    fn make_rib() -> Arc<Rib> {
+        make_rib_with_store().0
+    }
+
+    // Seeds the metadata store with a bundle parked in `status`, returning
+    // its id.
+    async fn seed_bundle(
+        metadata_storage: &MetadataMemStorage,
+        source: &str,
+        destination: &str,
+        status: BundleStatus,
+    ) -> BundleId {
+        let mut bundle = make_bundle(destination);
+        bundle.bundle.id.source = source.parse().unwrap();
+        bundle.metadata.status = status;
+        assert!(metadata_storage.insert(&bundle).await.unwrap());
+        bundle.bundle.id
+    }
+
+    async fn seeded_status(metadata_storage: &MetadataMemStorage, id: &BundleId) -> BundleStatus {
+        metadata_storage
+            .get(id)
+            .await
+            .unwrap()
+            .expect("seeded bundle missing")
+            .metadata
+            .status
     }
 
     fn add_route(rib: &Rib, pattern: &str, source: &str, action: Action, priority: u32) {
@@ -775,6 +806,53 @@ mod tests {
     }
 
     #[test]
+    fn test_ecmp_hash_spreads_load() {
+        let rib = make_rib();
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_a",
+            Action::Route(RouteAction::Via("ipn:0.10.0".parse().unwrap())),
+            10,
+        );
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_b",
+            Action::Route(RouteAction::Via("ipn:0.11.0".parse().unwrap())),
+            10,
+        );
+        add_local_forward(&rib, ipn_node(10), 10);
+        add_local_forward(&rib, ipn_node(11), 11);
+
+        let find_peer = |bundle: &mut Bundle| match rib.find(bundle) {
+            Some(DispatchAction::Forward(p)) => p,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+
+        // 64 distinct destinations must select both peers: the per-instance
+        // seed is random, but all 64 hashing to one peer is a ~2^-63 event,
+        // so a constant selection is a bug, not bad luck.
+        let mut seen = HashSet::new();
+        for i in 0..64u32 {
+            let mut bundle = make_bundle(&alloc::format!("ipn:0.50.{i}"));
+            seen.insert(find_peer(&mut bundle));
+        }
+        assert_eq!(seen, [10, 11].into(), "hashing must spread destinations");
+
+        // The flow label participates in the hash: for a fixed (source,
+        // destination), 64 distinct labels must select both peers too.
+        let mut seen = HashSet::new();
+        let template = make_bundle("ipn:0.50.1");
+        for label in 0..64u32 {
+            let mut bundle = template.clone();
+            bundle.metadata.writable.flow_label = Some(label);
+            seen.insert(find_peer(&mut bundle));
+        }
+        assert_eq!(seen, [10, 11].into(), "hashing must spread flow labels");
+    }
+
+    #[test]
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
         let mut bundle = make_bundle("ipn:0.1.0");
@@ -954,5 +1032,174 @@ mod tests {
             futures::poll!(notified.as_mut()).is_ready(),
             "Route add must wake the Waiting poller even when no peer queue was preempted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_remove_local_route_wakes_waiting_poller() {
+        let rib = make_rib();
+
+        // Install the service route directly so the add side leaves no
+        // stored notify permit behind.
+        let service = Arc::new(Service {
+            service: ServiceImpl::LowLevel(Arc::new(NullService)),
+            service_id: EidService::Ipn(42),
+            cancel: hardy_async::CancellationToken::new(),
+        });
+        add_route(
+            &rib,
+            "ipn:0.1.42",
+            Rib::SERVICES_NAME,
+            Action::Internal(InternalAction::Local(service.clone())),
+            1,
+        );
+
+        let mut notified = core::pin::pin!(rib.poll_waiting_notify.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        assert!(
+            rib.remove_service(&"ipn:0.1.42".parse().unwrap(), service)
+                .await
+        );
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "Removing a service route must wake the Waiting poller"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_via_route_resets_queued_peer_and_notifies() {
+        let (rib, metadata_storage) = make_rib_with_store();
+
+        add_local_forward(&rib, ipn_node(2), 42);
+        add_route(
+            &rib,
+            "ipn:0.7.*",
+            "test",
+            Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+            10,
+        );
+
+        // A bundle queued on the peer the Via resolved through.
+        let id = seed_bundle(
+            &metadata_storage,
+            "ipn:0.99.1",
+            "ipn:0.7.5",
+            BundleStatus::ForwardPending {
+                peer: 42,
+                queue: None,
+            },
+        )
+        .await;
+
+        let mut notified = core::pin::pin!(rib.poll_waiting_notify.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        assert!(
+            rib.remove(
+                &"ipn:0.7.*".parse().unwrap(),
+                "test",
+                Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+                10,
+            )
+            .await
+        );
+
+        assert_eq!(
+            seeded_status(&metadata_storage, &id).await,
+            BundleStatus::Waiting,
+            "Removing a Via route must reset the queue of the peer it resolved through"
+        );
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "The reset queue must wake the Waiting poller"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_via_route_with_idle_peer_does_not_notify() {
+        let rib = make_rib();
+
+        add_local_forward(&rib, ipn_node(2), 42);
+        add_route(
+            &rib,
+            "ipn:0.7.*",
+            "test",
+            Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+            10,
+        );
+
+        let mut notified = core::pin::pin!(rib.poll_waiting_notify.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        assert!(
+            rib.remove(
+                &"ipn:0.7.*".parse().unwrap(),
+                "test",
+                Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
+                10,
+            )
+            .await
+        );
+
+        assert!(
+            futures::poll!(notified.as_mut()).is_pending(),
+            "Removing a Via route must notify only when a peer queue actually flipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_by_source_resets_forward_peer_and_notifies() {
+        let (rib, metadata_storage) = make_rib_with_store();
+
+        add_route(
+            &rib,
+            "ipn:0.9.*",
+            "agent",
+            Action::Internal(InternalAction::Forward(7)),
+            0,
+        );
+
+        // One bundle queued on the peer, one awaiting a transfer outcome.
+        let queued = seed_bundle(
+            &metadata_storage,
+            "ipn:0.99.1",
+            "ipn:0.9.1",
+            BundleStatus::ForwardPending {
+                peer: 7,
+                queue: None,
+            },
+        )
+        .await;
+        let in_flight = seed_bundle(
+            &metadata_storage,
+            "ipn:0.99.2",
+            "ipn:0.9.2",
+            BundleStatus::ForwardAckPending { peer: 7 },
+        )
+        .await;
+
+        let mut notified = core::pin::pin!(rib.poll_waiting_notify.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        rib.remove_by_source("agent").await;
+
+        assert_eq!(
+            seeded_status(&metadata_storage, &queued).await,
+            BundleStatus::Waiting,
+            "The unregistered source's forward peer queue must be reset"
+        );
+        assert_eq!(
+            seeded_status(&metadata_storage, &in_flight).await,
+            BundleStatus::Waiting,
+            "The peer's in-flight transfers must resolve as outcome-unknown"
+        );
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "The unregistration sweep must wake the Waiting poller"
+        );
+
+        // The swept route is gone.
+        let mut bundle = make_bundle("ipn:0.9.1");
+        assert!(rib.find(&mut bundle).is_none());
     }
 }

@@ -7,8 +7,12 @@ use hardy_bpa::bpa::{Bpa, BpaRegistration};
 use hardy_bpa::cla;
 use hardy_bpa::services;
 use hardy_bpa::{Bytes, async_trait};
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+use hardy_bpv7::eid::{Eid, NodeId};
 use std::sync::Arc;
+
+mod common;
+
+use common::{build_bundle, ipn_node, node_ids, recv_event};
 
 // ---------------------------------------------------------------------------
 // Test CLA — captures forwarded bundles via a channel
@@ -56,6 +60,27 @@ impl cla::Cla for PipelineCla {
         let _ = self.forwarded_tx.send(bundle);
         Ok(cla::ForwardBundleResult::Sent)
     }
+}
+
+/// Registers a `PipelineCla` named "test" with a peer for `ipn:0.<node_number>`.
+async fn connect_pipeline_cla(
+    bpa: &Bpa,
+    peer_node_number: u32,
+) -> (Arc<PipelineCla>, flume::Receiver<Bytes>) {
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[ipn_node(peer_node_number)],
+        )
+        .await
+        .unwrap();
+    (cla, forwarded_rx)
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +250,27 @@ impl cla::Cla for TimedCla {
     }
 }
 
+/// Registers a `TimedCla` named "test" with a peer for `ipn:0.<node_number>`.
+async fn connect_timed_cla(
+    bpa: &Bpa,
+    peer_node_number: u32,
+) -> (Arc<TimedCla>, flume::Receiver<tokio::time::Instant>) {
+    let (cla, arrival_rx) = TimedCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[ipn_node(peer_node_number)],
+        )
+        .await
+        .unwrap();
+    (cla, arrival_rx)
+}
+
 // ---------------------------------------------------------------------------
 // Helper: print system info for benchmark context
 // ---------------------------------------------------------------------------
@@ -291,18 +337,6 @@ fn print_system_info() {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a bundle as raw bytes
-// ---------------------------------------------------------------------------
-
-fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
-    let (_, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    Bytes::from(data)
-}
-
-// ---------------------------------------------------------------------------
 // INT-BPA-01: App-to-CLA Routing
 // ---------------------------------------------------------------------------
 
@@ -314,22 +348,7 @@ async fn app_to_cla_routing() {
     bpa.start(false);
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, &[remote_node])
-        .await
-        .unwrap();
+    let (_cla, forwarded_rx) = connect_pipeline_cla(&bpa, 2).await;
 
     // Register an application to send from
     let (app, _app_rx) = TestApp::new();
@@ -353,13 +372,7 @@ async fn app_to_cla_routing() {
         .unwrap();
 
     // The CLA should forward the bundle
-    let forwarded = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        forwarded_rx.recv_async(),
-    )
-    .await
-    .expect("Timeout waiting for forwarded bundle")
-    .expect("Channel closed");
+    let forwarded = recv_event(&forwarded_rx, 5).await;
 
     // Parse and verify the forwarded bundle
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
@@ -379,14 +392,7 @@ async fn app_to_cla_routing() {
 /// and forwarded out via the CLA with source/destination swapped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn echo_round_trip() {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     // Register echo service on service number 7
@@ -396,22 +402,8 @@ async fn echo_round_trip() {
         .unwrap();
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+    let (cla, forwarded_rx) = connect_pipeline_cla(&bpa, 2).await;
+    let remote_node = ipn_node(2);
 
     // Build an inbound bundle: from remote node, to our echo service
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
@@ -429,13 +421,7 @@ async fn echo_round_trip() {
     // The echo service should reflect the bundle back:
     // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
     // BPA routes to CLA peer (ipn:0.2.*)
-    let forwarded = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        forwarded_rx.recv_async(),
-    )
-    .await
-    .expect("Timeout waiting for echo reply")
-    .expect("Channel closed");
+    let forwarded = recv_event(&forwarded_rx, 5).await;
 
     // Parse and verify the echo reply
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
@@ -461,14 +447,7 @@ async fn echo_round_trip() {
 // Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
 // channel, service EID) drive ServiceSink::send directly with multi-segment streams.
 async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     // The service only captures its sink here; the test drives the sink itself.
@@ -477,22 +456,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
         .await
         .unwrap();
 
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+    let (_cla, forwarded_rx) = connect_pipeline_cla(&bpa, 2).await;
 
     (bpa, svc, forwarded_rx, "ipn:0.1.7".parse().unwrap())
 }
@@ -533,13 +497,7 @@ async fn service_streamed_originate_forwards() {
         .expect("streamed send failed");
     assert_eq!(id.source, source_eid);
 
-    let forwarded = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        forwarded_rx.recv_async(),
-    )
-    .await
-    .expect("Timeout waiting for forwarded bundle")
-    .expect("Channel closed");
+    let forwarded = recv_event(&forwarded_rx, 5).await;
 
     let parsed = hardy_bpv7::bundle::ParsedBundle::parse(&forwarded, hardy_bpv7::bpsec::no_keys)
         .expect("Failed to parse forwarded bundle");
@@ -596,13 +554,12 @@ async fn service_unregister_cancels_parked_send() {
     let dest: Eid = "ipn:0.2.1".parse().unwrap();
     let data = build_bundle(&source_eid, &dest, b"parked");
 
-    // One segment then a stall — the sender stays alive throughout, so only
-    // registration teardown can end the stream.
-    let (tx, mut rx) = hardy_async::channel::bounded(2);
-    hardy_async::channel::Sender::send(
-        &tx,
-        hardy_bpa::stream::Segment::Next(data.slice(..data.len() / 2)),
-    )
+    // Segments that stall before `Final` — the sender stays alive
+    // throughout, so only registration teardown can end the stream.
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    tx.send(hardy_bpa::stream::Segment::Next(
+        data.slice(..data.len() / 3),
+    ))
     .await
     .unwrap();
 
@@ -611,8 +568,14 @@ async fn service_unregister_cancels_parked_send() {
         tokio::spawn(async move { svc.sink.get().unwrap().send(&mut rx).await })
     };
 
-    // Let the consumer enter the stream and park on the second pull.
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // The buffer holds one segment, so this send completes only once the
+    // consumer has pulled the first: the consumer is provably inside the
+    // stream, and only registration teardown can end its next pulls.
+    tx.send(hardy_bpa::stream::Segment::Next(
+        data.slice(data.len() / 3..data.len() / 2),
+    ))
+    .await
+    .unwrap();
 
     svc.sink.get().unwrap().unregister().await;
 
@@ -662,14 +625,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
 /// delivered to that application's on_deliver callback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     // Register an application on service number 42
@@ -698,11 +654,7 @@ async fn local_delivery() {
         .unwrap();
 
     // Application should receive the payload
-    let (source, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
-            .await
-            .expect("Timeout waiting for local delivery")
-            .expect("Channel closed");
+    let (source, payload) = recv_event(&app_rx, 5).await;
 
     assert_eq!(source, remote_source, "Delivered source should match");
     assert_eq!(
@@ -723,14 +675,7 @@ async fn local_delivery() {
 /// bundle reaches its local application.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_delivers() {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let (app, app_rx) = TestApp::new();
@@ -758,9 +703,7 @@ async fn cla_streamed_ingress_delivers() {
     ];
     let producer = tokio::spawn(async move {
         for segment in segments {
-            hardy_async::channel::Sender::send(&tx, segment)
-                .await
-                .unwrap();
+            tx.send(segment).await.unwrap();
         }
     });
 
@@ -772,11 +715,7 @@ async fn cla_streamed_ingress_delivers() {
         .unwrap();
     producer.await.unwrap();
 
-    let (source, payload) =
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
-            .await
-            .expect("Timeout waiting for streamed delivery")
-            .expect("Channel closed");
+    let (source, payload) = recv_event(&app_rx, 5).await;
     assert_eq!(source, remote_source);
     assert_eq!(payload.as_ref(), b"streamed ingress");
 
@@ -788,14 +727,7 @@ async fn cla_streamed_ingress_delivers() {
 /// the registration dies, without waiting for the producer's next segment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_unregister_cancels_parked_stream() {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let (cla, _forwarded_rx) = PipelineCla::new();
@@ -803,13 +735,12 @@ async fn cla_unregister_cancels_parked_stream() {
         .await
         .unwrap();
 
-    // A producer that sends one segment then stalls — the sender stays
-    // alive throughout, so only registration teardown can end the stream.
-    let (tx, mut rx) = hardy_async::channel::bounded(2);
-    hardy_async::channel::Sender::send(
-        &tx,
-        hardy_bpa::stream::Segment::Next(Bytes::from_static(b"partial")),
-    )
+    // A producer that stalls before `Final` — the sender stays alive
+    // throughout, so only registration teardown can end the stream.
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    tx.send(hardy_bpa::stream::Segment::Next(Bytes::from_static(
+        b"partial",
+    )))
     .await
     .unwrap();
 
@@ -818,8 +749,14 @@ async fn cla_unregister_cancels_parked_stream() {
         tokio::spawn(async move { cla.sink.get().unwrap().dispatch(None, None, &mut rx).await })
     };
 
-    // Let the consumer enter the stream and park on the second pull.
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // The buffer holds one segment, so this send completes only once the
+    // consumer has pulled the first: the consumer is provably inside the
+    // stream, and only registration teardown can end its next pulls.
+    tx.send(hardy_bpa::stream::Segment::Next(Bytes::from_static(
+        b"stall",
+    )))
+    .await
+    .unwrap();
 
     cla.sink.get().unwrap().unregister().await;
 
@@ -843,14 +780,7 @@ async fn cla_unregister_cancels_parked_stream() {
 /// delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cla_streamed_ingress_truncation_is_an_error() {
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let (app, app_rx) = TestApp::new();
@@ -868,10 +798,9 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     let inbound = build_bundle(&remote_source, &local_dest, b"truncated");
 
     let (tx, mut rx) = hardy_async::channel::bounded(4);
-    hardy_async::channel::Sender::send(
-        &tx,
-        hardy_bpa::stream::Segment::Next(inbound.slice(..inbound.len() / 2)),
-    )
+    tx.send(hardy_bpa::stream::Segment::Next(
+        inbound.slice(..inbound.len() / 2),
+    ))
     .await
     .unwrap();
     drop(tx); // no Final
@@ -892,6 +821,69 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     bpa.shutdown().await;
 }
 
+/// A bundle exceeding the configured `max_bundle_size` is refused at the
+/// CLA ingress door: the dispatch fails with `PayloadTooLarge` carrying the
+/// configured cap, and the bundle is neither stored nor delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cla_ingress_rejects_oversized_bundle() {
+    use hardy_bpa::storage::MetadataStorage;
+
+    const MAX: usize = 256;
+
+    let metadata_store = Arc::new(hardy_bpa::storage::MetadataMemStorage::new(None));
+    let bpa = Bpa::builder()
+        .node_ids(node_ids(1))
+        .metadata_storage(metadata_store.clone())
+        .max_bundle_size(core::num::NonZeroUsize::new(MAX).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, &[0u8; 2 * MAX]);
+    assert!(inbound.len() > MAX);
+    let id = common::bundle_id_of(&inbound);
+
+    let result = cla
+        .sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut inbound.clone())
+        .await;
+    match result {
+        Err(hardy_bpa::cla::Error::PayloadTooLarge { size, max }) => {
+            assert_eq!(max, MAX, "the error must carry the configured cap");
+            assert_eq!(size, inbound.len());
+        }
+        other => panic!("oversized dispatch must fail with PayloadTooLarge, got {other:?}"),
+    }
+
+    // The dispatch failed before the bundle entered the pipeline, so
+    // absence is checkable immediately: no metadata entry, no delivery.
+    assert!(
+        metadata_store.get(&id).await.unwrap().is_none(),
+        "an oversized bundle must not be stored"
+    );
+    assert!(
+        app_rx.is_empty(),
+        "an oversized bundle must not be delivered"
+    );
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
@@ -901,32 +893,10 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn throughput() {
     print_system_info();
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
-    let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+    let (cla, arrival_rx) = connect_timed_cla(&bpa, 2).await;
 
     let src: Eid = "ipn:0.3.1".parse().unwrap();
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
@@ -978,10 +948,11 @@ async fn throughput() {
     let bundles_per_sec = count as f64 / elapsed.as_secs_f64();
     eprintln!("Throughput: {count} bundles in {elapsed:.2?} = {bundles_per_sec:.0} bundles/sec",);
 
-    // REQ-13: >1000 bundles/sec (in-memory, no I/O). Coverage instrumentation
-    // slows the pipeline below the target, so the gate is advisory there;
-    // REQ-13 is formally verified by the criterion benchmark.
-    if std::env::var_os("CARGO_LLVM_COV").is_none() {
+    // REQ-13: >1000 bundles/sec (in-memory, no I/O). Wall-clock throughput
+    // is not deterministic under coverage instrumentation or on shared,
+    // contended runners, so the hard gate is opt-in for a dedicated perf
+    // job; REQ-13 is formally verified by the criterion benchmark.
+    if std::env::var_os("HARDY_TEST_PERF_GATE").is_some() {
         assert!(
             bundles_per_sec > 1000.0,
             "Throughput {bundles_per_sec:.0} bundles/sec below REQ-13 target of 1000"
@@ -1002,32 +973,10 @@ async fn throughput() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forwarding_latency() {
     print_system_info();
-    let node_id = IpnNodeId {
-        allocator_id: 0,
-        node_number: 1,
-    };
-    let node_ids =
-        hardy_bpa::node_ids::NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
-
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
-    let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, std::slice::from_ref(&remote_node))
-        .await
-        .unwrap();
+    let (cla, arrival_rx) = connect_timed_cla(&bpa, 2).await;
 
     let src: Eid = "ipn:0.3.1".parse().unwrap();
     let dst: Eid = "ipn:0.2.99".parse().unwrap();
@@ -1075,6 +1024,15 @@ async fn forwarding_latency() {
                 .unwrap();
         latencies.push(arrived - dispatched);
     }
+
+    // Liveness: every dispatched bundle must have crossed the pipeline. The
+    // percentile prints below are informational; wall-clock gates live in
+    // the criterion benchmark.
+    assert_eq!(
+        latencies.len(),
+        count,
+        "every dispatched bundle must reach forward()"
+    );
 
     latencies.sort();
     let p50 = latencies[latencies.len() / 2];
@@ -1148,22 +1106,7 @@ async fn egress_filter_sees_consistent_extents() {
     bpa.start(false);
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
-    let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-
-    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
-    let remote_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
-    cla.sink
-        .get()
-        .unwrap()
-        .add_peer(peer_addr, &[remote_node])
-        .await
-        .unwrap();
+    let (_cla, forwarded_rx) = connect_pipeline_cla(&bpa, 2).await;
 
     // Register an application and send a bundle to the remote node — a
     // locally-originated bundle has no Previous Node block, so the
@@ -1184,13 +1127,7 @@ async fn egress_filter_sees_consistent_extents() {
         .await
         .unwrap();
 
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        forwarded_rx.recv_async(),
-    )
-    .await
-    .expect("Timeout waiting for forwarded bundle")
-    .expect("Channel closed");
+    recv_event(&forwarded_rx, 5).await;
 
     assert_eq!(
         *mismatch.lock().unwrap(),
@@ -1270,7 +1207,12 @@ impl services::Application for FailingApp {
 /// out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatcher_handles_on_deliver_err() {
-    let bpa = Bpa::builder().build().await.unwrap();
+    let (store, parked_rx) = common::ParkSignallingStore::new();
+    let bpa = Bpa::builder()
+        .metadata_storage(store)
+        .build()
+        .await
+        .unwrap();
     bpa.start(false);
 
     let (sender, _sender_rx) = TestApp::new();
@@ -1298,17 +1240,13 @@ async fn dispatcher_handles_on_deliver_err() {
         .unwrap();
 
     // The failing receiver rejects the bundle from within on_deliver.
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        completed_rx.recv_async(),
-    )
-    .await
-    .expect("dispatcher must call on_deliver")
-    .unwrap();
+    recv_event(&completed_rx, 5).await;
 
-    // Let the dispatcher's Err branch finish parking the bundle before the
-    // re-registration polls for waiting bundles.
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // The dispatcher parks the bundle only after on_deliver returns; the
+    // park signal fires once WaitingForService is in the store, so the
+    // swapped-in receiver's registration poll is guaranteed to find it.
+    // The timeout only bounds a regression.
+    recv_event(&parked_rx, 5).await;
 
     // Swap in a working receiver on the same service id. Its registration
     // polls WaitingForService bundles, which must re-deliver the parked one.
@@ -1318,13 +1256,7 @@ async fn dispatcher_handles_on_deliver_err() {
         .await
         .unwrap();
 
-    let (_source, payload) = tokio::time::timeout(
-        tokio::time::Duration::from_secs(5),
-        received_rx.recv_async(),
-    )
-    .await
-    .expect("parked bundle must be re-delivered on re-registration")
-    .unwrap();
+    let (_source, payload) = recv_event(&received_rx, 5).await;
     assert_eq!(payload, Bytes::from_static(b"payload"));
 
     bpa.shutdown().await;
@@ -1405,15 +1337,7 @@ async fn deferring_setup(
     Arc<DeferringCla>,
     flume::Receiver<hardy_bpv7::bundle::Id>,
 ) {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
-        [NodeId::Ipn(IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice(),
-    )
-    .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let (cla, offers_rx) = DeferringCla::new(accepts);
@@ -1423,10 +1347,7 @@ async fn deferring_setup(
     cla.sink()
         .add_peer(
             cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
-            &[NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: peer_node_number,
-            })],
+            &[ipn_node(peer_node_number)],
         )
         .await
         .unwrap();
@@ -1435,10 +1356,7 @@ async fn deferring_setup(
 }
 
 async fn expect_offer(rx: &flume::Receiver<hardy_bpv7::bundle::Id>) -> hardy_bpv7::bundle::Id {
-    tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv_async())
-        .await
-        .expect("Timeout waiting for CLA offer")
-        .expect("Channel closed")
+    recv_event(rx, 5).await
 }
 
 async fn expect_no_offer(rx: &flume::Receiver<hardy_bpv7::bundle::Id>) {
@@ -1557,10 +1475,7 @@ async fn deferred_outcome_peer_removal_resolves_unknown() {
     let id = expect_offer(&offers_rx).await;
 
     let peer_addr = cla::ClaAddress::Private("peer-2".as_bytes().into());
-    let peer_node = NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number: 2,
-    });
+    let peer_node = ipn_node(2);
     assert!(cla.sink().remove_peer(&peer_addr).await.unwrap());
     assert!(
         cla.sink()
@@ -1597,10 +1512,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
         .sink()
         .add_peer(
             cla::ClaAddress::Private("peer-b".as_bytes().into()),
-            &[NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 4,
-            })],
+            &[ipn_node(4)],
         )
         .await
         .unwrap();
@@ -1667,16 +1579,8 @@ async fn deferred_outcome_loses_to_expiry() {
 
     let metadata_store = Arc::new(hardy_bpa::storage::MetadataMemStorage::new(None));
 
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
-        [NodeId::Ipn(IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice(),
-    )
-    .unwrap();
     let bpa = Bpa::builder()
-        .node_ids(node_ids)
+        .node_ids(node_ids(1))
         .metadata_storage(metadata_store.clone())
         .build()
         .await
@@ -1690,10 +1594,7 @@ async fn deferred_outcome_loses_to_expiry() {
     cla.sink()
         .add_peer(
             cla::ClaAddress::Private("peer-2".as_bytes().into()),
-            &[NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 2,
-            })],
+            &[ipn_node(2)],
         )
         .await
         .unwrap();

@@ -200,17 +200,85 @@ impl PeerTable {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // // TODO: Implement test for 'Queue Selection' (Verify Policy maps to correct CLA queue)
-    // #[test]
-    // fn test_queue_selection() {
-    //     todo!("Verify Policy maps to correct CLA queue");
-    // }
+    fn make_bundle(flow_label: Option<u32>) -> bundle::Bundle {
+        let mut bundle = bundle::Bundle {
+            bundle: Default::default(),
+            metadata: Default::default(),
+        };
+        bundle.metadata.writable.flow_label = flow_label;
+        bundle
+    }
 
-    // // TODO: Implement test for 'Queue Fallback' (Verify fallback to default queue on invalid index)
-    // #[test]
-    // fn test_queue_fallback() {
-    //     todo!("Verify fallback to default queue on invalid index");
-    // }
+    // The peer is published into the PeerTable before start() initialises
+    // its queues: a forward racing ahead of initialisation must hand the
+    // bundle back for re-routing instead of blocking or panicking.
+    #[tokio::test]
+    async fn forward_before_start_returns_bundle() {
+        let peer = Peer::new(Weak::new());
+        let bundle = make_bundle(None);
+        let id = bundle.bundle.id.clone();
+
+        let returned = peer
+            .forward(bundle)
+            .await
+            .expect_err("forward on an unstarted peer must return the bundle");
+        assert_eq!(returned.bundle.id, id);
+    }
+
+    // A flow-labelled bundle classifies through the owning CLA; when the
+    // CLA registration is already gone the bundle is returned for
+    // re-routing rather than classified against a dead policy.
+    #[tokio::test]
+    async fn forward_with_flow_label_on_dead_cla_returns_bundle() {
+        let peer = Peer::new(Weak::new());
+        let bundle = make_bundle(Some(3));
+        let id = bundle.bundle.id.clone();
+
+        let returned = peer
+            .forward(bundle)
+            .await
+            .expect_err("forward through a dead CLA must return the bundle");
+        assert_eq!(returned.bundle.id, id);
+    }
+
+    // An orphaned peer (inserted but never started, e.g. the loser of the
+    // duplicate-address race in the registry) has no queues: removing it
+    // must be a no-op close, and later forwards to the freed id re-route.
+    #[tokio::test]
+    async fn remove_of_unstarted_peer_is_a_noop_close() {
+        let table = PeerTable::new();
+        let peer_id = table.insert(Arc::new(Peer::new(Weak::new())));
+
+        table.remove(peer_id).await;
+
+        let returned = table
+            .forward(peer_id, make_bundle(None))
+            .await
+            .expect_err("forward to a removed peer id must return the bundle");
+        assert!(returned.metadata.writable.flow_label.is_none());
+    }
+
+    // Id allocation wraps around u32::MAX and skips ids that are still
+    // live, rather than overwriting their peers.
+    #[test]
+    fn insert_skips_live_ids_across_wraparound() {
+        let table = PeerTable::new();
+        {
+            let mut inner = table.inner.write();
+            inner.next = u32::MAX - 1;
+            for id in [u32::MAX, 0, 1] {
+                inner.peers.insert(id, Arc::new(Peer::new(Weak::new())));
+            }
+        }
+
+        // u32::MAX, 0 and 1 are occupied: the wrapping scan lands on 2.
+        assert_eq!(table.insert(Arc::new(Peer::new(Weak::new()))), 2);
+        assert_eq!(table.insert(Arc::new(Peer::new(Weak::new()))), 3);
+
+        // The pre-seeded peers were not displaced.
+        let inner = table.inner.read();
+        assert_eq!(inner.peers.len(), 5);
+    }
 }

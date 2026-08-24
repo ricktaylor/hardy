@@ -328,9 +328,11 @@ mod tests {
         }
     }
 
-    // Store a bundle and then store a duplicate — second insert should return false.
+    // Store a bundle and then store a duplicate: the second insert must
+    // return false. (Capacity and watermark behaviour is pinned by the
+    // bundle_mem tests, not here.)
     #[tokio::test]
-    async fn test_quota_enforcement() {
+    async fn duplicate_bundle_id_is_rejected() {
         let store = make_store();
         let data = Bytes::from(vec![0xABu8; 100]);
         let mut bundle = make_bundle("ipn:0.2.1");

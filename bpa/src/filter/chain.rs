@@ -576,4 +576,107 @@ mod tests {
             ExecResult::Continue(_, _, _)
         ));
     }
+
+    struct RecordingFilter {
+        name: &'static str,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl ReadFilter for RecordingFilter {
+        async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
+            self.log.lock().unwrap().push(self.name);
+            Ok(ReadResult::Continue)
+        }
+    }
+
+    struct MetadataWriter;
+
+    #[async_trait]
+    impl WriteFilter for MetadataWriter {
+        async fn filter(
+            &self,
+            _bundle: &Bundle,
+            _data: &[u8],
+        ) -> Result<WriteResult, crate::Error> {
+            Ok(WriteResult::Continue(
+                Some(crate::bundle::WritableMetadata {
+                    flow_label: Some(7),
+                }),
+                None,
+            ))
+        }
+    }
+
+    struct DropWriter;
+
+    #[async_trait]
+    impl WriteFilter for DropWriter {
+        async fn filter(
+            &self,
+            _bundle: &Bundle,
+            _data: &[u8],
+        ) -> Result<WriteResult, crate::Error> {
+            Ok(WriteResult::Drop(Some(ReasonCode::BlockUnintelligible)))
+        }
+    }
+
+    // Dependency chains place filters at successive levels, and exec must
+    // run the levels front to back: a reversed or shuffled level walk
+    // produces a different recorded order.
+    #[tokio::test]
+    async fn exec_runs_levels_in_dependency_order() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut chain = FilterChainBuilder::default();
+        for (name, after) in [("a", [].as_slice()), ("b", &["a"]), ("c", &["b"])] {
+            chain
+                .add_filter(
+                    name,
+                    Filter::Read(Arc::new(RecordingFilter {
+                        name,
+                        log: log.clone(),
+                    })),
+                    after,
+                )
+                .unwrap();
+        }
+        assert_eq!(chain.level_count(), 3);
+
+        assert!(matches!(
+            run_chain(&chain).await,
+            ExecResult::Continue(_, _, _)
+        ));
+        assert_eq!(*log.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn exec_applies_writer_metadata() {
+        let mut chain = FilterChainBuilder::default();
+        chain
+            .add_filter("meta", Filter::Write(Arc::new(MetadataWriter)), &[])
+            .unwrap();
+
+        match run_chain(&chain).await {
+            ExecResult::Continue(mutation, bundle, _) => {
+                assert!(mutation.metadata, "metadata rewrite must be flagged");
+                assert!(!mutation.data);
+                assert_eq!(bundle.metadata.writable.flow_label, Some(7));
+            }
+            ExecResult::Drop(_, reason) => panic!("unexpected drop: {reason:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_write_filter_drops_with_reason() {
+        let mut chain = FilterChainBuilder::default();
+        read("pass", &[], &mut chain);
+        chain
+            .add_filter("veto", Filter::Write(Arc::new(DropWriter)), &[])
+            .unwrap();
+
+        assert!(matches!(
+            run_chain(&chain).await,
+            ExecResult::Drop(_, Some(ReasonCode::BlockUnintelligible))
+        ));
+    }
 }
