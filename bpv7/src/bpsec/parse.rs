@@ -255,3 +255,102 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
     })
     .map(|v| v.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // An Abstract Syntax Block is a CBOR sequence (RFC 9172 §3.6), not an
+    // array: emit each field into a bare encoder.
+    fn emit_asb(targets: &[u64], source: &eid::Eid, result_sets: usize) -> alloc::vec::Vec<u8> {
+        let mut encoder = hardy_cbor::encode::Encoder::new();
+        encoder.emit_array(Some(targets.len()), |a| {
+            for target in targets {
+                a.emit(target);
+            }
+        });
+        encoder.emit(&99u64); // unrecognised security context id
+        encoder.emit(&0u64); // flags: no context parameters
+        encoder.emit(source);
+        encoder.emit_array(Some(result_sets), |a| {
+            for _ in 0..result_sets {
+                a.emit_array(Some(0), |_| {}); // empty per-target result set
+            }
+        });
+        encoder.build()
+    }
+
+    fn ipn_source() -> eid::Eid {
+        "ipn:1.0".parse().unwrap()
+    }
+
+    fn expect_error(data: &[u8]) -> Error {
+        match hardy_cbor::decode::parse::<AbstractSyntaxBlock>(data) {
+            Ok(_) => panic!("malformed ASB parsed successfully"),
+            Err(e) => e,
+        }
+    }
+
+    // A well-formed ASB with an unrecognised context parses cleanly.
+    #[test]
+    fn asb_unknown_context_accepted() {
+        let data = emit_asb(&[1, 2], &ipn_source(), 2);
+        let (asb, shortest, len) =
+            hardy_cbor::decode::parse::<(AbstractSyntaxBlock, bool, usize)>(&data)
+                .expect("should parse");
+        assert!(matches!(asb.context, Context::Unrecognised(99)));
+        assert_eq!(asb.source, ipn_source());
+        assert_eq!(asb.results.len(), 2);
+        assert!(shortest, "strict-canonical ASB decode returns shortest");
+        assert_eq!(len, data.len());
+    }
+
+    // RFC 9172 §3.6: the security targets array must not be empty.
+    #[test]
+    fn asb_no_targets_rejected() {
+        let data = emit_asb(&[], &ipn_source(), 0);
+        assert!(matches!(expect_error(&data), Error::NoTargets));
+    }
+
+    // RFC 9172 §3.2.2: the same target must not appear twice in one
+    // security block. The error surfaces wrapped as the targets field error.
+    #[test]
+    fn asb_duplicate_target_rejected() {
+        let data = emit_asb(&[1, 1], &ipn_source(), 2);
+        let Error::InvalidField {
+            field: "security targets",
+            source,
+        } = expect_error(&data)
+        else {
+            panic!("duplicate target should fail on the security targets field");
+        };
+        assert!(matches!(
+            source.downcast_ref::<Error>(),
+            Some(Error::DuplicateOpTarget)
+        ));
+    }
+
+    // RFC 9172 §3.6: the security results array must line up one-to-one with
+    // the targets array, in both directions.
+    #[test]
+    fn asb_mismatched_target_result_rejected() {
+        // Fewer result sets than targets.
+        let data = emit_asb(&[1, 2], &ipn_source(), 1);
+        assert!(matches!(expect_error(&data), Error::MismatchedTargetResult));
+
+        // More result sets than targets.
+        let data = emit_asb(&[1], &ipn_source(), 2);
+        assert!(matches!(expect_error(&data), Error::MismatchedTargetResult));
+    }
+
+    // RFC 9172 §3.1: the security source must identify a node; the null and
+    // local-node EIDs are not acceptable.
+    #[test]
+    fn asb_invalid_security_source_rejected() {
+        let data = emit_asb(&[1], &eid::Eid::Null, 1);
+        assert!(matches!(expect_error(&data), Error::InvalidSecuritySource));
+
+        let data = emit_asb(&[1], &eid::Eid::LocalNode(1), 1);
+        assert!(matches!(expect_error(&data), Error::InvalidSecuritySource));
+    }
+}

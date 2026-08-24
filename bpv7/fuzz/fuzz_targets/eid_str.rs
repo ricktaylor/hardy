@@ -11,9 +11,6 @@ fuzz_target!(|data: &[u8]| {
             .parse::<hardy_bpv7::eid::Eid>()
             .expect("Failed to round-trip");
 
-        if eid2 != eid {
-            panic!("{s} and {s2}");
-        }
-        assert_eq!(eid2, eid);
+        assert_eq!(eid2, eid, "{s} round-tripped via {s2}");
     }
 });
