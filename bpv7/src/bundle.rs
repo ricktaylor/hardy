@@ -24,6 +24,34 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// The exact byte length of the bundle's encoded form, derived from
+    /// the block index alone.
+    ///
+    /// Two RFC 9171 §4.1 mandates make this a pure function of the payload
+    /// block's extent: the payload block MUST be the last block of the
+    /// bundle, and a bundle SHALL be an indefinite-length CBOR array,
+    /// closed by exactly one "break" byte after the last block. The
+    /// encoded length is therefore the payload block's bundle-absolute
+    /// [`extent`](block::Block::extent) end plus one.
+    ///
+    /// Canonical CBOR gives the payload a definite-length head, so the
+    /// value is known once the block headers have been parsed — no payload
+    /// bytes, loaded buffer, or stored measurement is needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bundle has no payload block (block number 1); every
+    /// bundle produced by [`parse`](crate::parse::parse) or
+    /// [`Builder`](crate::builder::Builder) has exactly one.
+    pub fn encoded_len(&self) -> u64 {
+        self.blocks
+            .get(&1)
+            .expect("bundle has no payload block")
+            .extent
+            .end
+            + 1
+    }
+
     /// Compare this bundle against `other` for semantic equivalence,
     /// tolerating the encoding freedoms in RFC 9171, RFC 9172, and
     /// RFC 9173: block order, block numbering, non-canonical re-encodings

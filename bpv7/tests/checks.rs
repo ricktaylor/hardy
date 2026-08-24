@@ -31,7 +31,31 @@ fn raw_parse_tuple(
         bcbs,
         bibs,
     } = parse::parse(data)?;
+    // Every parsed vector doubles as an `encoded_len` conformance check:
+    // the derivation must equal the wire length (RFC 9171 §4.1 —
+    // payload block last, one closing break byte).
+    assert_eq!(
+        bundle.encoded_len(),
+        data.len() as u64,
+        "encoded_len must match the wire length"
+    );
     Ok((data, bundle, bcbs, bibs))
+}
+
+// Requirement: RFC 9171 §4.1 — the payload block is the last block and one
+// break byte closes the bundle, so the encoded length is a pure function
+// of the block index, for built and parsed bundles alike.
+#[test]
+fn encoded_len_is_the_wire_length() {
+    let (bundle, data) =
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload("Hello".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+    assert_eq!(bundle.encoded_len(), data.len() as u64);
+
+    let parsed = parse::parse(Bytes::from(data)).expect("round-trip parse");
+    assert_eq!(parsed.bundle.encoded_len(), parsed.data.len() as u64);
 }
 
 // Requirement: LLR 1.1.15
