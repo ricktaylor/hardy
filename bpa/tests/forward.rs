@@ -14,7 +14,11 @@ use hardy_bpa::{
     services,
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+use hardy_bpv7::eid::{Eid, NodeId};
+
+mod common;
+
+use common::{build_bundle, bundle_id_of, feed, ipn_node, recv_event};
 
 // ---------------------------------------------------------------------------
 // Events observed by the mock CLAs
@@ -200,44 +204,6 @@ impl services::Application for SendOnlyApp {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_bundle(
-    source: &Eid,
-    destination: &Eid,
-    payload: &[u8],
-) -> (hardy_bpv7::bundle::Bundle, Bytes) {
-    let (bundle, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    (bundle, Bytes::from(data))
-}
-
-/// A pre-filled segment stream. The sender is dropped on return, so a
-/// sequence not ending in `Final` reads as a truncated stream.
-async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
-    let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
-    for segment in segments {
-        hardy_async::channel::Sender::send(&tx, segment)
-            .await
-            .unwrap();
-    }
-    rx
-}
-
-fn remote_node(node_number: u32) -> NodeId {
-    NodeId::Ipn(IpnNodeId {
-        allocator_id: 0,
-        node_number,
-    })
-}
-
-async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
-    tokio::time::timeout(tokio::time::Duration::from_secs(secs), rx.recv_async())
-        .await
-        .expect("Timed out waiting for CLA event")
-        .expect("CLA event channel closed")
-}
-
 /// Sends `payload` to ipn:0.2.99 via `app`, returning the destination EID.
 async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
     let dest: Eid = "ipn:0.2.99".parse().unwrap();
@@ -275,7 +241,7 @@ async fn streaming_cla_receives_single_final_segment() {
         .unwrap()
         .add_peer(
             cla::ClaAddress::Private("peer".as_bytes().into()),
-            &[remote_node(2)],
+            &[ipn_node(2)],
         )
         .await
         .unwrap();
@@ -305,8 +271,14 @@ async fn streaming_cla_receives_single_final_segment() {
     assert_eq!(parsed.bundle.id.source, source_eid);
     assert_eq!(parsed.bundle.destination, dest);
 
-    assert!(events_rx.is_empty());
     bpa.shutdown().await;
+
+    // Shutdown has drained the pipeline, so a duplicate forward would have
+    // enqueued its event by now.
+    assert!(
+        events_rx.is_empty(),
+        "the bundle must be forwarded exactly once"
+    );
 }
 
 /// A CLA that buffers via `stream::buffer_stream` still receives the whole
@@ -325,7 +297,7 @@ async fn buffered_cla_receives_whole_bundle() {
         .unwrap()
         .add_peer(
             cla::ClaAddress::Private("peer".as_bytes().into()),
-            &[remote_node(2)],
+            &[ipn_node(2)],
         )
         .await
         .unwrap();
@@ -364,7 +336,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
         .unwrap()
         .add_peer(
             cla::ClaAddress::Private("peer-a".as_bytes().into()),
-            &[remote_node(2)],
+            &[ipn_node(2)],
         )
         .await
         .unwrap();
@@ -387,7 +359,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
             .unwrap()
             .add_peer(
                 cla::ClaAddress::Private(format!("peer-{i}").into_bytes().into()),
-                &[remote_node(2)],
+                &[ipn_node(2)],
             )
             .await
             .unwrap();
@@ -417,29 +389,30 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
 fn direct_call_fixture() -> (
     Arc<BufferedCla>,
     flume::Receiver<Event>,
-    hardy_bpv7::bundle::Bundle,
+    hardy_bpv7::bundle::Id,
     Bytes,
     cla::ClaAddress,
 ) {
     let (cla, events_rx) = BufferedCla::new();
-    let (bundle, data) = build_bundle(
+    let data = build_bundle(
         &"ipn:0.1.1".parse().unwrap(),
         &"ipn:0.2.99".parse().unwrap(),
         b"payload",
     );
+    let bundle_id = bundle_id_of(&data);
     let addr = cla::ClaAddress::Private("x".as_bytes().into());
-    (cla, events_rx, bundle, data, addr)
+    (cla, events_rx, bundle_id, data, addr)
 }
 
 /// The buffering path reassembles a multi-segment stream.
 #[tokio::test]
 async fn buffering_cla_concats_multi_segment_stream() {
-    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let (cla, events_rx, bundle_id, data, addr) = direct_call_fixture();
     let (head, tail) = (data.slice(..10), data.slice(10..));
     let mut rx = feed(vec![Segment::Next(head), Segment::Final(tail)]).await;
 
     let result = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle_id, data.len() as u64, &mut rx)
         .await
         .unwrap();
     assert!(matches!(result, cla::ForwardBundleResult::Sent));
@@ -453,10 +426,10 @@ async fn buffering_cla_concats_multi_segment_stream() {
 /// A single-`Final` stream passes through the buffering path zero-copy.
 #[tokio::test]
 async fn buffering_cla_is_zero_copy_for_single_final() {
-    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let (cla, events_rx, bundle_id, data, addr) = direct_call_fixture();
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    cla.forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+    cla.forward(None, &addr, &bundle_id, data.len() as u64, &mut rx)
         .await
         .unwrap();
 
@@ -470,11 +443,11 @@ async fn buffering_cla_is_zero_copy_for_single_final() {
 /// transport.
 #[tokio::test]
 async fn buffering_cla_truncated_stream_is_cancelled() {
-    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let (cla, events_rx, bundle_id, data, addr) = direct_call_fixture();
     let mut rx = feed(vec![Segment::Next(data.slice(..4))]).await;
 
     let Err(err) = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle_id, data.len() as u64, &mut rx)
         .await
     else {
         panic!("Expected a truncated stream to fail");
@@ -487,12 +460,12 @@ async fn buffering_cla_truncated_stream_is_cancelled() {
 /// rejected — no short transfer reaches the transport.
 #[tokio::test]
 async fn buffering_cla_rejects_under_delivering_stream() {
-    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let (cla, events_rx, bundle_id, data, addr) = direct_call_fixture();
     let short = data.slice(..data.len() - 1);
     let mut rx = feed(vec![Segment::Final(short.clone())]).await;
 
     let Err(err) = cla
-        .forward(None, &addr, &bundle.id, data.len() as u64, &mut rx)
+        .forward(None, &addr, &bundle_id, data.len() as u64, &mut rx)
         .await
     else {
         panic!("Expected an under-delivering stream to fail");
@@ -508,10 +481,10 @@ async fn buffering_cla_rejects_under_delivering_stream() {
 /// A stream exceeding the declared `total_len` is rejected.
 #[tokio::test]
 async fn buffering_cla_rejects_stream_exceeding_total_len() {
-    let (cla, events_rx, bundle, data, addr) = direct_call_fixture();
+    let (cla, events_rx, bundle_id, data, addr) = direct_call_fixture();
     let mut rx = feed(vec![Segment::Final(data.clone())]).await;
 
-    let Err(err) = cla.forward(None, &addr, &bundle.id, 4, &mut rx).await else {
+    let Err(err) = cla.forward(None, &addr, &bundle_id, 4, &mut rx).await else {
         panic!("Expected an oversize stream to fail");
     };
     assert!(matches!(

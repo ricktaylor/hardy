@@ -196,6 +196,12 @@ impl Reaper {
         }
     }
 
+    /// Expose a snapshot of the cache, in expiry order, for test assertions.
+    #[cfg(test)]
+    fn cache_snapshot(&self) -> Vec<CacheEntry> {
+        self.cache.lock().iter().cloned().collect()
+    }
+
     async fn refill_cache(&self) {
         let cancel_token = self.tasks.cancel_token().clone();
         let (stream, rx) = hardy_async::channel::bounded::<Bundle>(self.cache_size);
@@ -236,7 +242,7 @@ impl Reaper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::collections::BTreeSet;
+    use crate::storage::MetadataMemStorage;
 
     fn make_entry(secs_from_now: i64, node: u32) -> CacheEntry {
         CacheEntry {
@@ -248,6 +254,37 @@ mod tests {
             },
             destination: format!("ipn:0.{node}.99").parse().unwrap(),
         }
+    }
+
+    // A bundle expiring `lifetime_secs` from now, with a per-node unique id.
+    fn make_bundle(lifetime_secs: u64, node: u32) -> Bundle {
+        Bundle {
+            bundle: hardy_bpv7::bundle::Bundle {
+                id: Id {
+                    source: format!("ipn:0.{node}.1").parse().unwrap(),
+                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                    fragment_info: None,
+                },
+                flags: Default::default(),
+                crc_type: Default::default(),
+                destination: format!("ipn:0.{node}.99").parse().unwrap(),
+                report_to: Default::default(),
+                lifetime: core::time::Duration::from_secs(lifetime_secs),
+                previous_node: None,
+                age: None,
+                hop_count: None,
+                blocks: Default::default(),
+            },
+            metadata: Default::default(),
+        }
+    }
+
+    fn make_reaper(cache_size: usize) -> Reaper {
+        Reaper::new(
+            TaskPool::new(),
+            Arc::new(MetadataMemStorage::new(None)),
+            cache_size,
+        )
     }
 
     #[test]
@@ -267,89 +304,100 @@ mod tests {
         assert_eq!(entries[2].expiry, later.expiry);
     }
 
+    // When the capped cache is full, watch() must keep the soonest-expiring
+    // bundles: a sooner bundle evicts the latest entry.
     #[test]
     fn test_cache_saturation() {
-        let mut cache = BTreeSet::new();
-        let cache_size = 3;
+        let reaper = make_reaper(3);
 
-        let e100 = make_entry(100, 1);
-        let e200 = make_entry(200, 2);
-        let e300 = make_entry(300, 3);
-        cache.insert(e100.clone());
-        cache.insert(e200.clone());
-        cache.insert(e300.clone());
-        assert_eq!(cache.len(), cache_size);
+        let b100 = make_bundle(100, 1);
+        let b200 = make_bundle(200, 2);
+        let b300 = make_bundle(300, 3);
+        reaper.watch(&b100, true);
+        reaper.watch(&b200, true);
+        reaper.watch(&b300, true);
+        assert_eq!(reaper.cache_snapshot().len(), 3);
 
-        let e50 = make_entry(50, 4);
-        if cache.len() >= cache_size {
-            let last_expiry = cache.last().unwrap().expiry;
-            if e50.expiry < last_expiry {
-                cache.pop_last();
-                cache.insert(e50.clone());
-            }
-        }
+        let b50 = make_bundle(50, 4);
+        reaper.watch(&b50, true);
 
-        assert_eq!(cache.len(), cache_size);
-        assert_eq!(cache.first().unwrap().expiry, e50.expiry);
-        assert!(!cache.contains(&e300));
+        let entries = reaper.cache_snapshot();
+        assert_eq!(entries.len(), 3, "Cache must stay at its cap");
+        assert_eq!(
+            entries[0].id, b50.bundle.id,
+            "Sooner bundle must become the cache head"
+        );
+        assert!(
+            entries.iter().all(|e| e.id != b300.bundle.id),
+            "Latest-expiring entry must be evicted"
+        );
     }
 
+    // When the capped cache is full, watch() must reject a bundle that
+    // expires later than every cached entry; without the cap the same
+    // bundle is accepted.
     #[test]
     fn test_cache_rejection() {
-        let mut cache = BTreeSet::new();
-        let cache_size = 3;
+        let reaper = make_reaper(3);
 
-        let e100 = make_entry(100, 1);
-        let e200 = make_entry(200, 2);
-        let e300 = make_entry(300, 3);
-        cache.insert(e100.clone());
-        cache.insert(e200.clone());
-        cache.insert(e300.clone());
+        reaper.watch(&make_bundle(100, 1), true);
+        reaper.watch(&make_bundle(200, 2), true);
+        reaper.watch(&make_bundle(300, 3), true);
 
-        let e400 = make_entry(400, 4);
-        let inserted = if cache.len() >= cache_size {
-            let last_expiry = cache.last().unwrap().expiry;
-            if e400.expiry < last_expiry {
-                cache.pop_last();
-                cache.insert(e400.clone());
-                true
-            } else {
-                false
-            }
-        } else {
-            cache.insert(e400.clone());
-            true
-        };
+        let b400 = make_bundle(400, 4);
+        reaper.watch(&b400, true);
 
-        assert!(!inserted);
-        assert_eq!(cache.len(), cache_size);
-        assert!(!cache.contains(&e400));
+        let entries = reaper.cache_snapshot();
+        assert_eq!(entries.len(), 3, "Cache must stay at its cap");
+        assert!(
+            entries.iter().all(|e| e.id != b400.bundle.id),
+            "Later-expiring bundle must be rejected by a full capped cache"
+        );
+
+        // The uncapped refill path bypasses the cap check entirely.
+        reaper.watch(&b400, false);
+        let entries = reaper.cache_snapshot();
+        assert_eq!(entries.len(), 4, "Uncapped watch must grow the cache");
+        assert!(
+            entries.iter().any(|e| e.id == b400.bundle.id),
+            "Uncapped watch must accept the later-expiring bundle"
+        );
     }
 
-    #[test]
-    fn test_wakeup_trigger() {
-        let e200 = make_entry(200, 1);
-        let e100 = make_entry(100, 2);
-        let e300 = make_entry(300, 3);
+    // watch() must wake the run loop exactly when the new entry becomes the
+    // soonest expiry in the cache.
+    #[tokio::test]
+    async fn test_wakeup_trigger() {
+        let reaper = make_reaper(8);
 
-        let old_expiry: Option<OffsetDateTime> = None;
-        let needs_wakeup = match old_expiry {
-            None => true,
-            Some(old) => e200.expiry < old,
-        };
-        assert!(needs_wakeup, "First entry should trigger wakeup");
+        let mut notified = core::pin::pin!(reaper.wakeup.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
 
-        let old_expiry = Some(e200.expiry);
-        let needs_wakeup = match old_expiry {
-            None => true,
-            Some(old) => e100.expiry < old,
-        };
-        assert!(needs_wakeup, "Sooner entry should trigger wakeup");
+        // The cache was empty: the first entry must trigger a wakeup.
+        reaper.watch(&make_bundle(200, 1), true);
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "First entry must trigger a wakeup"
+        );
 
-        let needs_wakeup = match old_expiry {
-            None => true,
-            Some(old) => e300.expiry < old,
-        };
-        assert!(!needs_wakeup, "Later entry should not trigger wakeup");
+        let mut notified = core::pin::pin!(reaper.wakeup.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        // A sooner entry shortens the next deadline: must wake.
+        reaper.watch(&make_bundle(100, 2), true);
+        assert!(
+            futures::poll!(notified.as_mut()).is_ready(),
+            "Sooner entry must trigger a wakeup"
+        );
+
+        let mut notified = core::pin::pin!(reaper.wakeup.notified());
+        assert!(futures::poll!(notified.as_mut()).is_pending());
+
+        // A later entry leaves the deadline unchanged: no wakeup.
+        reaper.watch(&make_bundle(300, 3), true);
+        assert!(
+            futures::poll!(notified.as_mut()).is_pending(),
+            "Later entry must not trigger a wakeup"
+        );
     }
 }

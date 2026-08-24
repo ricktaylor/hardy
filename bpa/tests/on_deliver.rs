@@ -13,7 +13,11 @@ use hardy_bpa::{
     cla, services,
     stream::{Receiver, Segment},
 };
-use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId};
+use hardy_bpv7::eid::{Eid, NodeId};
+
+mod common;
+
+use common::{build_bundle, bundle_id_of, feed, node_ids, recv_event};
 
 // ---------------------------------------------------------------------------
 // Events observed by the mock services
@@ -207,54 +211,10 @@ impl cla::Cla for IngressCla {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
-    let (_, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    Bytes::from(data)
-}
-
-/// The identity of a bundle built by [`build_bundle`], for direct
-/// `on_deliver` calls.
-fn bundle_id_of(data: &Bytes) -> hardy_bpv7::bundle::Id {
-    hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
-        .expect("Failed to parse built bundle")
-        .bundle
-        .id
-}
-
-/// A pre-filled segment stream. The sender is dropped on return, so a
-/// sequence not ending in `Final` reads as a truncated stream.
-async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment> {
-    let (tx, rx) = hardy_async::channel::bounded(segments.len().max(1));
-    for segment in segments {
-        hardy_async::channel::Sender::send(&tx, segment)
-            .await
-            .unwrap();
-    }
-    rx
-}
-
-async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
-    tokio::time::timeout(tokio::time::Duration::from_secs(secs), rx.recv_async())
-        .await
-        .expect("Timed out waiting for service event")
-        .expect("Service event channel closed")
-}
-
 /// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
 /// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
 async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
-        [NodeId::Ipn(IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice(),
-    )
-    .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let inbound = build_bundle(
@@ -285,15 +245,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 /// segment with an exact `total_len`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_service_receives_single_final_segment() {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
-        [NodeId::Ipn(IpnNodeId {
-            allocator_id: 0,
-            node_number: 1,
-        })]
-        .as_slice(),
-    )
-    .unwrap();
-    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids(1)).build().await.unwrap();
     bpa.start(false);
 
     let (svc, events_rx) = StreamingService::new(false);
@@ -340,8 +292,14 @@ async fn streaming_service_receives_single_final_segment() {
     assert_eq!(parsed.bundle.id.source, "ipn:0.2.1".parse().unwrap());
     assert_eq!(parsed.bundle.destination, "ipn:0.1.7".parse().unwrap());
 
-    assert!(events_rx.is_empty());
     bpa.shutdown().await;
+
+    // Shutdown has drained the pipeline, so a duplicate delivery would have
+    // enqueued its event by now.
+    assert!(
+        events_rx.is_empty(),
+        "the bundle must be delivered exactly once"
+    );
 }
 
 /// A service that buffers via `stream::buffer_stream` still receives the
@@ -370,13 +328,48 @@ async fn buffered_service_receives_whole_bundle() {
 /// subsequent registration on the same EID re-delivers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_delivery_parks_and_redelivers() {
-    let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
+    let (store, parked_rx) = common::ParkSignallingStore::new();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids(1))
+        .metadata_storage(store)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    let cla = IngressCla::new();
+    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(
+            None,
+            None,
+            &mut build_bundle(
+                &"ipn:0.2.1".parse().unwrap(),
+                &"ipn:0.1.7".parse().unwrap(),
+                b"park me",
+            ),
+        )
+        .await
+        .unwrap();
 
     let (failing_svc, failing_rx) = StreamingService::new(true);
     bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), failing_svc.clone())
         .await
         .unwrap();
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
+
+    // The dispatcher parks the bundle only after the failing on_deliver
+    // returns; the park signal fires once WaitingForService is in the
+    // store, so the next registration's poll is guaranteed to find it.
+    // The timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), parked_rx.recv_async())
+        .await
+        .expect("dispatcher must park the failed delivery")
+        .unwrap();
 
     failing_svc.sink.get().unwrap().unregister().await;
 

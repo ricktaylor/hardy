@@ -372,29 +372,150 @@ mod tests {
     }
 
     #[test]
-    fn test_impacted_subsets() {
+    fn test_impacted_vias_exact_set() {
         let mut table = make_table();
 
+        let via_equal: Eid = "ipn:0.9.0".parse().unwrap();
+        let via_below: Eid = "ipn:0.8.0".parse().unwrap();
+        let via_above: Eid = "ipn:0.7.0".parse().unwrap();
+        let via_disjoint: Eid = "ipn:0.6.0".parse().unwrap();
+
+        // A subset pattern at the query priority.
         table
             .insert(
-                "ipn:*.*".parse().unwrap(),
-                entry(
-                    Action::Route(RouteAction::Via("ipn:0.2.0".parse().unwrap())),
-                    "src",
-                ),
+                "ipn:0.2.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via_equal.clone())), "src"),
+                10,
+            )
+            .unwrap();
+        // A subset pattern at a numerically higher (lower-precedence) priority.
+        table
+            .insert(
+                "ipn:0.2.1".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via_below.clone())), "src"),
+                20,
+            )
+            .unwrap();
+        // A subset pattern at a numerically lower (higher-precedence)
+        // priority: outside the queried range.
+        table
+            .insert(
+                "ipn:0.2.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via_above.clone())), "src"),
+                5,
+            )
+            .unwrap();
+        // Not a subset of the query pattern.
+        table
+            .insert(
+                "ipn:0.3.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via_disjoint.clone())), "src"),
+                10,
+            )
+            .unwrap();
+        // Non-Via entries never contribute a via.
+        table
+            .insert(
+                "ipn:0.2.*".parse().unwrap(),
+                entry(Action::Internal(InternalAction::Forward(1)), "src"),
+                10,
+            )
+            .unwrap();
+
+        // Equal-priority and lower-precedence subsets are impacted; the
+        // higher-precedence route and the disjoint pattern are not.
+        assert_eq!(
+            table.impacted_vias(&"ipn:0.2.*".parse().unwrap(), 10),
+            [via_equal, via_below.clone()].into(),
+        );
+
+        // A narrower query pattern impacts only routes whose pattern is a
+        // subset of it: the broader ipn:0.2.* routes must not appear.
+        assert_eq!(
+            table.impacted_vias(&"ipn:0.2.1".parse().unwrap(), 10),
+            [via_below].into(),
+        );
+    }
+
+    #[test]
+    // Service's Hash/Eq/Ord are keyed on service_id only; the registration
+    // cancellation token's interior mutability never participates.
+    #[allow(clippy::mutable_key_type)]
+    fn test_remove_by_source_aggregates() {
+        use crate::services::registry::{Service, ServiceImpl};
+        use crate::services::tests::NullService;
+        use hardy_bpv7::eid::Service as EidService;
+
+        let mut table = make_table();
+
+        let via: Eid = "ipn:0.9.0".parse().unwrap();
+        table
+            .insert(
+                "ipn:0.2.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Via(via.clone())), "agent"),
                 10,
             )
             .unwrap();
         table
             .insert(
                 "ipn:0.3.*".parse().unwrap(),
-                entry(Action::Route(RouteAction::Drop(None)), "src"),
-                20,
+                entry(Action::Internal(InternalAction::Forward(7)), "agent"),
+                0,
+            )
+            .unwrap();
+        table
+            .insert(
+                "ipn:0.1.42".parse().unwrap(),
+                entry(
+                    Action::Internal(InternalAction::Local(Arc::new(Service {
+                        service: ServiceImpl::LowLevel(Arc::new(NullService)),
+                        service_id: EidService::Ipn(42),
+                        cancel: hardy_async::CancellationToken::new(),
+                    }))),
+                    "agent",
+                ),
+                1,
+            )
+            .unwrap();
+        // Contributes to the count but to none of the aggregate sets.
+        table
+            .insert(
+                "ipn:0.4.*".parse().unwrap(),
+                entry(Action::Route(RouteAction::Drop(None)), "agent"),
+                10,
+            )
+            .unwrap();
+        // Another source's route must survive the sweep.
+        table
+            .insert(
+                "ipn:0.5.*".parse().unwrap(),
+                entry(Action::Internal(InternalAction::Forward(9)), "other"),
+                0,
             )
             .unwrap();
 
-        assert!(table.routes.contains_key(&10));
-        assert!(table.routes.contains_key(&20));
+        let (vias, forward_peers, has_local, count) = table.remove_by_source("agent");
+        assert_eq!(vias, [via].into());
+        assert_eq!(forward_peers, [7].into());
+        assert!(has_local);
+        assert_eq!(count, 4);
+
+        // The swept routes are gone; the other source's route still resolves.
+        assert!(
+            table
+                .find_recurse(&"ipn:0.3.1".parse().unwrap(), false, &mut HashSet::new())
+                .is_none()
+        );
+        match table.find_recurse(&"ipn:0.5.1".parse().unwrap(), false, &mut HashSet::new()) {
+            Some(LookupResult::Forward(peer, _)) => assert_eq!(peer, 9),
+            other => panic!("unexpected lookup result: {other:?}"),
+        }
+
+        // A second sweep finds nothing.
+        assert_eq!(
+            table.remove_by_source("agent"),
+            (HashSet::new(), HashSet::new(), false, 0)
+        );
     }
 
     #[test]

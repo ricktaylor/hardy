@@ -2,9 +2,6 @@ mod cla;
 mod eid;
 mod service;
 
-#[cfg(test)]
-mod test;
-
 use arbitrary::Arbitrary;
 use hardy_bpa::bpa::BpaRegistration;
 use std::sync::Arc;
@@ -41,7 +38,12 @@ fn get_runtime() -> &'static tokio::runtime::Runtime {
 
 #[allow(unused)]
 async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
-    let path = std::env::temp_dir().join("hardy-fuzz").join(testname);
+    // Per-process directory: a fixed path would replay stale state from a
+    // crashed or concurrent run through restart recovery, making the same
+    // fuzz input behave differently across runs.
+    let path = std::env::temp_dir()
+        .join(format!("hardy-fuzz-{}", std::process::id()))
+        .join(testname);
 
     let mut builder = hardy_bpa::bpa::Bpa::builder()
         .status_reports(true)
@@ -223,4 +225,53 @@ pub fn send_random(data: &[u8]) -> bool {
 
 pub fn send_bundle(data: &[u8]) {
     Msg::ClaBytes(data.to_vec()).send()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    #[ignore] // Post-mortem debug test: run explicitly with `cargo test -- --ignored`
+    fn test() {
+        if let Ok(mut file) =
+            std::fs::File::open("./artifacts/bpa/oom-da39a3ee5e6b4b0d3255bfef95601890afd80709")
+        {
+            let mut buffer = Vec::new();
+            if file.read_to_end(&mut buffer).is_ok() {
+                send_random(&buffer);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore] // Post-mortem debug test: run explicitly with `cargo test -- --ignored`
+    fn test_all() {
+        match std::fs::read_dir("./corpus/bpa") {
+            Err(e) => {
+                eprintln!(
+                    "Failed to open dir: {e}, curr dir: {}",
+                    std::env::current_dir().unwrap().display()
+                );
+            }
+            Ok(dir) => {
+                let mut count = 0u64;
+                for path in dir.flatten() {
+                    let path = path.path();
+                    if path.is_file()
+                        && let Ok(mut file) = std::fs::File::open(&path)
+                    {
+                        let mut buffer = Vec::new();
+                        if file.read_to_end(&mut buffer).is_ok() {
+                            send_random(&buffer);
+
+                            count = count.saturating_add(1);
+                        }
+                    }
+                }
+                tracing::info!("Processed {count} bundles");
+            }
+        }
+    }
 }

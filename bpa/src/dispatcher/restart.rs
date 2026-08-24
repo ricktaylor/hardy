@@ -153,25 +153,74 @@ mod tests {
     // (in-memory metadata cannot survive a real restart, so its
     // confirm_exists is a stub). This wrapper answers confirm_exists from
     // the live map, making the replay path reachable in a test that seeds
-    // the same storage instance it recovers from.
-    struct RecoverableMem(MetadataMemStorage);
+    // the same storage instance it recovers from. It also raises an event
+    // for every status write, so tests synchronize on the transition itself
+    // instead of polling for it.
+    struct RecoverableMem {
+        inner: MetadataMemStorage,
+        status_tx: flume::Sender<(Id, bundle::BundleStatus)>,
+    }
+
+    impl RecoverableMem {
+        fn new() -> (Arc<Self>, flume::Receiver<(Id, bundle::BundleStatus)>) {
+            let (status_tx, status_rx) = flume::unbounded();
+            (
+                Arc::new(Self {
+                    inner: MetadataMemStorage::new(None),
+                    status_tx,
+                }),
+                status_rx,
+            )
+        }
+
+        fn signal(&self, id: &Id, status: &bundle::BundleStatus) {
+            let _ = self.status_tx.send((id.clone(), status.clone()));
+        }
+    }
+
+    // Receives status events until `id` reaches `status`. The timeout only
+    // bounds a regression; the assertion itself is event-driven.
+    async fn wait_for_status(
+        status_rx: &flume::Receiver<(Id, bundle::BundleStatus)>,
+        id: &Id,
+        status: &bundle::BundleStatus,
+    ) {
+        loop {
+            let (seen_id, seen_status) =
+                tokio::time::timeout(tokio::time::Duration::from_secs(5), status_rx.recv_async())
+                    .await
+                    .unwrap_or_else(|_| panic!("Timeout waiting for {id} to reach {status:?}"))
+                    .expect("Status channel closed");
+            if seen_id == *id && seen_status == *status {
+                return;
+            }
+        }
+    }
 
     #[async_trait]
     impl MetadataStorage for RecoverableMem {
         async fn get(&self, bundle_id: &Id) -> StorageResult<Option<bundle::Bundle>> {
-            self.0.get(bundle_id).await
+            self.inner.get(bundle_id).await
         }
 
         async fn insert(&self, bundle: &bundle::Bundle) -> StorageResult<bool> {
-            self.0.insert(bundle).await
+            let inserted = self.inner.insert(bundle).await?;
+            if inserted {
+                self.signal(&bundle.bundle.id, &bundle.metadata.status);
+            }
+            Ok(inserted)
         }
 
         async fn replace(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.replace(bundle).await
+            self.inner.replace(bundle).await?;
+            self.signal(&bundle.bundle.id, &bundle.metadata.status);
+            Ok(())
         }
 
         async fn update_status(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.update_status(bundle).await
+            self.inner.update_status(bundle).await?;
+            self.signal(&bundle.bundle.id, &bundle.metadata.status);
+            Ok(())
         }
 
         async fn swap_status(
@@ -180,7 +229,11 @@ mod tests {
             expected: &bundle::BundleStatus,
             status: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
-            self.0.swap_status(bundle_id, expected, status).await
+            let swapped = self.inner.swap_status(bundle_id, expected, status).await?;
+            if swapped {
+                self.signal(bundle_id, status);
+            }
+            Ok(swapped)
         }
 
         async fn tombstone_if(
@@ -188,11 +241,11 @@ mod tests {
             bundle_id: &Id,
             expected: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
-            self.0.tombstone_if(bundle_id, expected).await
+            self.inner.tombstone_if(bundle_id, expected).await
         }
 
         async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
-            self.0.tombstone(bundle_id).await
+            self.inner.tombstone(bundle_id).await
         }
 
         async fn start_recovery(&self) {}
@@ -201,22 +254,22 @@ mod tests {
             &self,
             bundle_id: &Id,
         ) -> StorageResult<Option<bundle::BundleMetadata>> {
-            Ok(self.0.get(bundle_id).await?.map(|b| b.metadata))
+            Ok(self.inner.get(bundle_id).await?.map(|b| b.metadata))
         }
 
         async fn remove_unconfirmed(
             &self,
             stream: &dyn Sender<bundle::Bundle>,
         ) -> StorageResult<()> {
-            self.0.remove_unconfirmed(stream).await
+            self.inner.remove_unconfirmed(stream).await
         }
 
         async fn reset_peer_queue(&self, peer: u32) -> StorageResult<u64> {
-            self.0.reset_peer_queue(peer).await
+            self.inner.reset_peer_queue(peer).await
         }
 
         async fn reset_peer_ack_pending(&self, peer: u32) -> StorageResult<u64> {
-            self.0.reset_peer_ack_pending(peer).await
+            self.inner.reset_peer_ack_pending(peer).await
         }
 
         async fn poll_expiry(
@@ -224,11 +277,11 @@ mod tests {
             stream: &dyn Sender<bundle::Bundle>,
             limit: usize,
         ) -> StorageResult<()> {
-            self.0.poll_expiry(stream, limit).await
+            self.inner.poll_expiry(stream, limit).await
         }
 
         async fn poll_waiting(&self, stream: &dyn Sender<bundle::Bundle>) -> StorageResult<()> {
-            self.0.poll_waiting(stream).await
+            self.inner.poll_waiting(stream).await
         }
 
         async fn poll_service_waiting(
@@ -236,7 +289,7 @@ mod tests {
             source: Eid,
             stream: &dyn Sender<bundle::Bundle>,
         ) -> StorageResult<()> {
-            self.0.poll_service_waiting(source, stream).await
+            self.inner.poll_service_waiting(source, stream).await
         }
 
         async fn poll_adu_fragments(
@@ -244,7 +297,7 @@ mod tests {
             stream: &dyn Sender<bundle::Bundle>,
             status: &bundle::BundleStatus,
         ) -> StorageResult<()> {
-            self.0.poll_adu_fragments(stream, status).await
+            self.inner.poll_adu_fragments(stream, status).await
         }
 
         async fn poll_pending(
@@ -253,87 +306,96 @@ mod tests {
             status: &bundle::BundleStatus,
             limit: usize,
         ) -> StorageResult<()> {
-            self.0.poll_pending(stream, status, limit).await
+            self.inner.poll_pending(stream, status, limit).await
         }
     }
 
-    // A transfer that is still ForwardAckPending when the BPA comes back up
-    // (an unclean stop: a clean shutdown's unregistration sweep resolves it
-    // first) is outcome-unknown: recovery resets it to Waiting, and it is
-    // re-offered once a route to its destination reappears.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restart_resets_ack_pending_transfer() {
-        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
-        let data_store = Arc::new(BundleMemStorage::new(None, None));
+    // A BundleMemStorage decorator that raises an event for every deletion,
+    // so tests synchronize on recovery discarding a copy instead of polling
+    // the store.
+    struct DeleteSignallingStore {
+        inner: BundleMemStorage,
+        deleted_tx: flume::Sender<Arc<str>>,
+    }
 
-        // Seed the stores as an unclean stop would leave them: bundle data
-        // present, metadata parked in ForwardAckPending via a now-stale peer
+    impl DeleteSignallingStore {
+        fn new() -> (Arc<Self>, flume::Receiver<Arc<str>>) {
+            let (deleted_tx, deleted_rx) = flume::unbounded();
+            (
+                Arc::new(Self {
+                    inner: BundleMemStorage::new(None, None),
+                    deleted_tx,
+                }),
+                deleted_rx,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl BundleStorage for DeleteSignallingStore {
+        async fn recover(
+            &self,
+            stream: &dyn Sender<crate::storage::RecoveryResponse>,
+        ) -> StorageResult<()> {
+            self.inner.recover(stream).await
+        }
+
+        async fn load(&self, storage_name: &str) -> StorageResult<Option<Bytes>> {
+            self.inner.load(storage_name).await
+        }
+
+        async fn save(&self, data: Bytes) -> StorageResult<Arc<str>> {
+            self.inner.save(data).await
+        }
+
+        async fn replace(&self, storage_name: &str, data: Bytes) -> StorageResult<()> {
+            self.inner.replace(storage_name, data).await
+        }
+
+        async fn delete(&self, storage_name: &str) -> StorageResult<()> {
+            self.inner.delete(storage_name).await?;
+            let _ = self.deleted_tx.send(Arc::from(storage_name));
+            Ok(())
+        }
+    }
+
+    fn build_bundle_bytes(payload: &[u8]) -> Bytes {
         let (_, data) = hardy_bpv7::builder::Builder::new(
             "ipn:0.3.1".parse().unwrap(),
             "ipn:0.2.99".parse().unwrap(),
         )
-        .with_payload(b"restart-replay".to_vec().into())
+        .with_payload(payload.to_vec().into())
         .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
         .unwrap();
-        let data = Bytes::from(data);
-        let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed =
-            hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys).unwrap();
-        let bundle = bundle::Bundle {
-            bundle: parsed.bundle,
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-                storage_name: Some(storage_name),
-                ..Default::default()
-            },
-        };
-        let id = bundle.bundle.id.clone();
-        assert!(metadata_store.insert(&bundle).await.unwrap());
+        Bytes::from(data)
+    }
 
-        let node_ids = crate::node_ids::NodeIds::try_from(
+    fn parse_bundle(data: &Bytes) -> hardy_bpv7::bundle::Bundle {
+        hardy_bpv7::bundle::ParsedBundle::parse(data, hardy_bpv7::bpsec::no_keys)
+            .unwrap()
+            .bundle
+    }
+
+    fn test_node_ids() -> crate::node_ids::NodeIds {
+        crate::node_ids::NodeIds::try_from(
             [NodeId::Ipn(IpnNodeId {
                 allocator_id: 0,
                 node_number: 1,
             })]
             .as_slice(),
         )
-        .unwrap();
-        let bpa = Bpa::builder()
-            .node_ids(node_ids)
-            .metadata_storage(metadata_store.clone())
-            .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        bpa.start(true);
+        .unwrap()
+    }
 
-        // Recovery replays the stored bundle and resets it to Waiting
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            let status = metadata_store
-                .get(&id)
-                .await
-                .unwrap()
-                .expect("Recovered bundle missing from metadata store")
-                .metadata
-                .status;
-            if status == bundle::BundleStatus::Waiting {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for recovery to reset the transfer, status: {status:?}"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
-
-        // A route to the destination appears; the bundle is re-offered
+    // Registers a RecordingCla with a peer for ipn:0.2, so recovered
+    // bundles destined there get (re-)offered.
+    async fn connect_recording_cla(bpa: &Bpa) -> (Arc<RecordingCla>, flume::Receiver<Id>) {
         let (offers_tx, offers_rx) = flume::bounded(16);
         let cla = Arc::new(RecordingCla {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-2".to_string(), cla.clone(), None)
+        bpa.register_cla("recording".to_string(), cla.clone(), None)
             .await
             .unwrap();
         cla.sink
@@ -348,12 +410,258 @@ mod tests {
             )
             .await
             .unwrap();
+        (cla, offers_rx)
+    }
 
-        let id2 = tokio::time::timeout(tokio::time::Duration::from_secs(5), offers_rx.recv_async())
+    async fn expect_offer(offers_rx: &flume::Receiver<Id>) -> Id {
+        // The timeout only bounds a regression; the assertion is event-driven.
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), offers_rx.recv_async())
             .await
-            .expect("Timeout waiting for re-offer")
-            .expect("Channel closed");
-        assert_eq!(id, id2, "Re-offer must be the recovered bundle");
+            .expect("Timeout waiting for offer")
+            .expect("Channel closed")
+    }
+
+    // A transfer that is still ForwardAckPending when the BPA comes back up
+    // (an unclean stop: a clean shutdown's unregistration sweep resolves it
+    // first) is outcome-unknown: recovery resets it to Waiting, and it is
+    // re-offered once a route to its destination reappears.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_resets_ack_pending_transfer() {
+        let (metadata_store, status_rx) = RecoverableMem::new();
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
+
+        // Seed the stores as an unclean stop would leave them: bundle data
+        // present, metadata parked in ForwardAckPending via a now-stale peer
+        let data = build_bundle_bytes(b"restart-replay");
+        let storage_name = data_store.save(data.clone()).await.unwrap();
+        let bundle = bundle::Bundle {
+            bundle: parse_bundle(&data),
+            metadata: bundle::BundleMetadata {
+                status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
+                storage_name: Some(storage_name),
+                ..Default::default()
+            },
+        };
+        let id = bundle.bundle.id.clone();
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+
+        let bpa = Bpa::builder()
+            .node_ids(test_node_ids())
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(data_store)
+            .build()
+            .await
+            .unwrap();
+        bpa.start(true);
+
+        // Recovery replays the stored bundle and resets it to Waiting
+        wait_for_status(&status_rx, &id, &bundle::BundleStatus::Waiting).await;
+
+        // A route to the destination appears; the bundle is re-offered
+        let (_cla, offers_rx) = connect_recording_cla(&bpa).await;
+        assert_eq!(
+            id,
+            expect_offer(&offers_rx).await,
+            "Re-offer must be the recovered bundle"
+        );
+
+        bpa.shutdown().await;
+    }
+
+    // Unparseable bundle data found at restart is junk: recovery deletes it
+    // without inventing metadata for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_deletes_corrupt_data() {
+        let (metadata_store, _status_rx) = RecoverableMem::new();
+        let (data_store, deleted_rx) = DeleteSignallingStore::new();
+
+        let storage_name = data_store
+            .save(Bytes::from_static(b"definitely not a bundle"))
+            .await
+            .unwrap();
+
+        let bpa = Bpa::builder()
+            .node_ids(test_node_ids())
+            .metadata_storage(metadata_store)
+            .bundle_storage(data_store.clone())
+            .build()
+            .await
+            .unwrap();
+        bpa.start(true);
+
+        // The timeout only bounds a regression; the assertion is event-driven.
+        let deleted =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), deleted_rx.recv_async())
+                .await
+                .expect("Timeout waiting for recovery to delete the corrupt data")
+                .expect("Channel closed");
+        assert_eq!(deleted, storage_name, "The corrupt data must be deleted");
+        assert!(data_store.load(&storage_name).await.unwrap().is_none());
+
+        bpa.shutdown().await;
+    }
+
+    // A second stored copy of a bundle whose metadata references another
+    // copy is a duplicate: recovery deletes the duplicate and leaves the
+    // canonical copy and its metadata untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_deletes_duplicate_copy() {
+        let (metadata_store, _status_rx) = RecoverableMem::new();
+        let (data_store, deleted_rx) = DeleteSignallingStore::new();
+
+        let data = build_bundle_bytes(b"restart-duplicate");
+        let canonical = data_store.save(data.clone()).await.unwrap();
+        let duplicate = data_store.save(data.clone()).await.unwrap();
+        assert_ne!(canonical, duplicate);
+
+        let bundle = bundle::Bundle {
+            bundle: parse_bundle(&data),
+            metadata: bundle::BundleMetadata {
+                status: bundle::BundleStatus::Waiting,
+                storage_name: Some(canonical.clone()),
+                ..Default::default()
+            },
+        };
+        let id = bundle.bundle.id.clone();
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+
+        let bpa = Bpa::builder()
+            .node_ids(test_node_ids())
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(data_store.clone())
+            .build()
+            .await
+            .unwrap();
+        bpa.start(true);
+
+        // Exactly the duplicate is discarded: a first deletion of the
+        // canonical copy would fail this assertion regardless of the order
+        // recovery walks the two copies in.
+        // The timeout only bounds a regression; the assertion is event-driven.
+        let deleted =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), deleted_rx.recv_async())
+                .await
+                .expect("Timeout waiting for recovery to delete the duplicate copy")
+                .expect("Channel closed");
+        assert_eq!(deleted, duplicate, "The duplicate copy must be deleted");
+
+        // The canonical copy and its metadata survive.
+        assert!(data_store.load(&canonical).await.unwrap().is_some());
+        assert!(data_store.load(&duplicate).await.unwrap().is_none());
+        let survivor = metadata_store
+            .get(&id)
+            .await
+            .unwrap()
+            .expect("Canonical metadata must survive recovery");
+        assert_eq!(survivor.metadata.storage_name, Some(canonical));
+
+        bpa.shutdown().await;
+    }
+
+    // Bundle data without metadata is an orphan: recovery replays it
+    // through the full receive pipeline, after which it routes like any
+    // freshly received bundle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_replays_orphan_data() {
+        let (metadata_store, status_rx) = RecoverableMem::new();
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
+
+        let data = build_bundle_bytes(b"restart-orphan");
+        let id = parse_bundle(&data).id;
+        data_store.save(data).await.unwrap();
+
+        let bpa = Bpa::builder()
+            .node_ids(test_node_ids())
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(data_store)
+            .build()
+            .await
+            .unwrap();
+        bpa.start(true);
+
+        // The replayed orphan runs ingress and, with no route to its
+        // destination yet, parks as Waiting: metadata has been recreated.
+        wait_for_status(&status_rx, &id, &bundle::BundleStatus::Waiting).await;
+
+        // A route to the destination appears; the recovered orphan is offered.
+        let (_cla, offers_rx) = connect_recording_cla(&bpa).await;
+        assert_eq!(
+            id,
+            expect_offer(&offers_rx).await,
+            "Offer must be the recovered orphan"
+        );
+
+        bpa.shutdown().await;
+    }
+
+    // An ingress filter that counts its executions, for asserting which
+    // recovery paths re-run ingress.
+    struct CountingFilter(Arc<core::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl filter::ReadFilter for CountingFilter {
+        async fn filter(
+            &self,
+            _bundle: &bundle::Bundle,
+            _data: &[u8],
+        ) -> core::result::Result<filter::ReadResult, crate::Error> {
+            self.0.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            Ok(filter::ReadResult::Continue)
+        }
+    }
+
+    // A bundle checkpointed as Dispatching already passed the Ingress
+    // filter before the stop: recovery re-dispatches it for routing without
+    // running ingress again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restart_resumes_dispatching_without_ingress() {
+        let (metadata_store, status_rx) = RecoverableMem::new();
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
+
+        let data = build_bundle_bytes(b"restart-dispatching");
+        let storage_name = data_store.save(data.clone()).await.unwrap();
+        let bundle = bundle::Bundle {
+            bundle: parse_bundle(&data),
+            metadata: bundle::BundleMetadata {
+                status: bundle::BundleStatus::Dispatching,
+                storage_name: Some(storage_name),
+                ..Default::default()
+            },
+        };
+        let id = bundle.bundle.id.clone();
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+
+        let ingress_runs = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        let bpa = Bpa::builder()
+            .node_ids(test_node_ids())
+            .metadata_storage(metadata_store.clone())
+            .bundle_storage(data_store)
+            .filter(
+                filter::Hook::Ingress,
+                "ingress-probe",
+                &[],
+                filter::Filter::Read(Arc::new(CountingFilter(ingress_runs.clone()))),
+            )
+            .build()
+            .await
+            .unwrap();
+        bpa.start(true);
+
+        // Re-dispatch routes the bundle; with no route yet it parks Waiting.
+        wait_for_status(&status_rx, &id, &bundle::BundleStatus::Waiting).await;
+
+        let (_cla, offers_rx) = connect_recording_cla(&bpa).await;
+        assert_eq!(
+            id,
+            expect_offer(&offers_rx).await,
+            "Offer must be the resumed bundle"
+        );
+
+        assert_eq!(
+            ingress_runs.load(core::sync::atomic::Ordering::SeqCst),
+            0,
+            "A Dispatching checkpoint must not re-run the Ingress filter"
+        );
 
         bpa.shutdown().await;
     }
