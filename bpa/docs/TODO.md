@@ -61,6 +61,16 @@ Two layers of work:
 
 Documentation: a new backend-agnostic "Storage Operations" table in `docs/user-docs/operations/observability.md`, plus per-backend tables as bespoke metrics land.
 
+## Bufferless bundle and ADU lengths (streaming prerequisite)
+
+The streaming end-state removes the loaded whole buffer that `total_len = data.len()` measures at the delivery and forward doors, but both lengths are derivable from the persisted block index alone. `Bundle::encoded_len()` (`refactor/bpv7-parse`, arriving with the train cascade) names the whole-bundle derivation with its RFC anchors — the payload block MUST be last and a bundle SHALL be an indefinite-length CBOR array (both RFC 9171 §4.1), so the payload's bundle-absolute `extent.end` plus the one break byte is the encoded length. Because canonical CBOR gives the payload a definite-length head, the value is known at header-parse time, before the payload arrives — available to the early-filter gate, egress framing ([`streaming_pipeline_design.md`](streaming_pipeline_design.md) §6.2's "original bundle size"), the forward-before-store tee (§5.7), and any announce-style wire's `bundle_size`, none of which a commit-measured metadata field could serve. The ADU length needs no accessor at all: the payload block's `data` range is an interior range with no break-byte dependency.
+
+Remaining work when the consumers land:
+
+**Spool-commit cross-check.** The spool counts the bytes it writes; a commit-time `debug_assert!(counted == encoded_len())` catches index-vs-bytes drift without minting a second source of truth in metadata.
+
+**Pin the ADU-length definition at the Application door.** The announced size is the *stored* payload block data length, pre-BPSec-decryption — AES-GCM preserves plaintext length so the two coincide today, but a length-changing confidentiality suite would make the distinction real. Post-reassembly bundles re-derive both lengths from the reassembled bundle's index.
+
 ## Registration/routing concurrency races (whole-codebase review 2026-07-08, #14/#15)
 
 Two non-atomic await sequences in the CLA/routing registries can race and leave stranded or wrongly-deleted state. Neither is data-loss or wire-corruption, and both need specific concurrent timing, so they were deferred past v0.2.0.
