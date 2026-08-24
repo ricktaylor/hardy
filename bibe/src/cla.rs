@@ -61,7 +61,7 @@ impl BibeCla {
     }
 
     /// Encapsulate an inner bundle into an outer bundle.
-    fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
+    pub fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
         // Parse inner bundle to get lifetime for outer bundle
         let parsed = ParsedBundle::parse(&inner, bpsec::no_keys)?;
         let lifetime = parsed.bundle.lifetime;
@@ -73,7 +73,11 @@ impl BibeCla {
             a.emit(&0u64); // transmission-id
             a.emit(&0u64); // total-length
             a.emit(&0u64); // segmented-offset
-            a.emit(inner.as_ref()); // encapsulated-bundle-segment
+
+            // encapsulated-bundle-segment, as a definite-length byte string
+            // (a bare `&[u8]` would encode as a CBOR array of integers, which
+            // decapsulation rejects)
+            a.emit(&hardy_cbor::encode::Bytes(inner.as_ref()));
         });
 
         let (_bundle, data) =

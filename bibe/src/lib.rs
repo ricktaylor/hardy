@@ -145,6 +145,9 @@ pub enum Error {
     /// Invalid CLA address format.
     #[error("Invalid CLA address format")]
     InvalidAddress,
+    /// The BIBE-PDU is a segment of a larger bundle; segmentation is not supported.
+    #[error("Segmented BIBE-PDUs are not supported")]
+    SegmentedPdu,
     /// Failed to parse bundle.
     #[error(transparent)]
     BundleParse(#[from] hardy_bpv7::Error),
