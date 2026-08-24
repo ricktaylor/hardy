@@ -4,15 +4,23 @@ use hardy_cbor::decode::{
 };
 use hex_literal::hex;
 
-fn test_simple<T>(expected: T, data: &[u8])
+fn test_parse<T>(expected: T, shortest: bool, data: &[u8])
 where
     T: FromCbor + PartialEq + core::fmt::Debug,
     T::Error: From<Error> + core::fmt::Debug,
 {
     let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
-    assert!(s);
+    assert_eq!(s, shortest);
     assert_eq!(len, data.len());
     assert_eq!(v, expected);
+}
+
+fn test_simple<T>(expected: T, data: &[u8])
+where
+    T: FromCbor + PartialEq + core::fmt::Debug,
+    T::Error: From<Error> + core::fmt::Debug,
+{
+    test_parse(expected, true, data)
 }
 
 fn test_simple_long<T>(expected: T, data: &[u8])
@@ -20,10 +28,17 @@ where
     T: FromCbor + PartialEq + core::fmt::Debug,
     T::Error: From<Error> + core::fmt::Debug,
 {
-    let (v, s, len) = parse::<(T, bool, usize)>(data).unwrap();
-    assert!(!s);
+    test_parse(expected, false, data)
+}
+
+// IEEE 754 compares -0.0 == 0.0, so `test_simple` cannot detect a lost sign
+// bit on a decoded zero; this asserts the sign explicitly.
+fn test_signed_zero(negative: bool, data: &[u8]) {
+    let (v, s, len) = parse::<(f64, bool, usize)>(data).unwrap();
+    assert!(s);
     assert_eq!(len, data.len());
-    assert_eq!(v, expected);
+    assert_eq!(v, 0.0);
+    assert_eq!(v.is_sign_negative(), negative);
 }
 
 fn test_sub_simple<T, const D: usize>(expected: T, seq: &mut Series<D>)
@@ -36,13 +51,13 @@ where
     assert_eq!(v, expected);
 }
 
-fn test_value<F>(data: &[u8], expected_tags: &[u64], f: F)
+fn test_value_with<F>(data: &[u8], shortest: bool, expected_tags: &[u64], f: F)
 where
     F: FnOnce(Value),
 {
     assert_eq!(
-        parse_value(data, |value, shortest, tags| {
-            assert!(shortest);
+        parse_value(data, |value, s, tags| {
+            assert_eq!(s, shortest);
             assert_eq!(tags, expected_tags);
             f(value);
             Ok::<_, Error>(())
@@ -53,21 +68,18 @@ where
     );
 }
 
+fn test_value<F>(data: &[u8], expected_tags: &[u64], f: F)
+where
+    F: FnOnce(Value),
+{
+    test_value_with(data, true, expected_tags, f)
+}
+
 fn test_value_long<F>(data: &[u8], expected_tags: &[u64], f: F)
 where
     F: FnOnce(Value),
 {
-    assert_eq!(
-        parse_value(data, |value, shortest, tags| {
-            assert!(!shortest);
-            assert_eq!(tags, expected_tags);
-            f(value);
-            Ok::<_, Error>(())
-        })
-        .unwrap()
-        .1,
-        data.len()
-    );
+    test_value_with(data, false, expected_tags, f)
 }
 
 fn test_sub_value<F, const D: usize>(expected_tags: &[u64], seq: &mut Series<D>, f: F)
@@ -155,12 +167,12 @@ fn test_sub_map<F, const D: usize>(
     })
 }
 
-#[test]
-fn rfc_tests() {
-    // RFC 8949, Appendix A:
-    // https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
+// The rfc_* tests below cover RFC 8949, Appendix A:
+// https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
 
-    // LLR 1.1.9: Support all primitive data items (Unsigned Integers)
+// LLR 1.1.9: Support all primitive data items (Unsigned Integers)
+#[test]
+fn rfc_unsigned_integers() {
     test_simple(0, &hex!("00"));
     test_simple(1, &hex!("01"));
     test_simple(10, &hex!("0a"));
@@ -175,30 +187,43 @@ fn rfc_tests() {
 
     // LLR 1.1.9: Correctly reject unsupported types (Bignums)
     /* We do not support BIGNUMs */
-    assert!(parse::<u64>(&hex!("c249010000000000000000")).is_err());
-    /*test_simple(
-        18446744073709551616,
-        &hex!("c249010000000000000000")
-    );*/
-    assert!(parse::<i64>(&hex!("3bffffffffffffffff")).is_err());
-    /*test_simple(
-        -18446744073709551616i128,
-        &hex!("3bffffffffffffffff")
-    );*/
-    assert!(parse::<i64>(&hex!("c349010000000000000000")).is_err());
-    /*test_simple(
-        -18446744073709551617,
-        &hex!("c349010000000000000000")
-    );*/
+    // Tag 2 (positive bignum, 18446744073709551616) wraps a byte string,
+    // which is not an untagged integer type.
+    assert!(matches!(
+        parse::<u64>(&hex!("c249010000000000000000")),
+        Err(Error::IncorrectType(_, _))
+    ));
+}
 
-    // LLR 1.1.9: Support all primitive data items (Negative Integers)
+// LLR 1.1.9: Support all primitive data items (Negative Integers)
+#[test]
+fn rfc_negative_integers() {
     test_simple(-1, &hex!("20"));
     test_simple(-10, &hex!("29"));
     test_simple(-100, &hex!("3863"));
     test_simple(-1000, &hex!("3903e7"));
-    // LLR 1.1.9: Support all primitive data items (Floating-Point Numbers)
-    test_simple(0.0, &hex!("f90000"));
-    test_simple(-0.0, &hex!("f98000"));
+
+    // LLR 1.1.9: Correctly reject unsupported types (Bignums)
+    /* We do not support BIGNUMs */
+    // -18446744073709551616 is a well-formed CBOR negative integer, but
+    // overflows i64.
+    assert!(matches!(
+        parse::<i64>(&hex!("3bffffffffffffffff")),
+        Err(Error::TryFromIntError(_))
+    ));
+    // Tag 3 (negative bignum, -18446744073709551617) wraps a byte string,
+    // which is not an untagged integer type.
+    assert!(matches!(
+        parse::<i64>(&hex!("c349010000000000000000")),
+        Err(Error::IncorrectType(_, _))
+    ));
+}
+
+// LLR 1.1.9: Support all primitive data items (Floating-Point Numbers)
+#[test]
+fn rfc_floats() {
+    test_signed_zero(false, &hex!("f90000"));
+    test_signed_zero(true, &hex!("f98000"));
     test_simple(1.0, &hex!("f93c00"));
     test_simple(1.1, &hex!("fb3ff199999999999a"));
     test_simple(1.5, &hex!("f93e00"));
@@ -215,20 +240,11 @@ fn rfc_tests() {
         assert!(matches!(v,Value::Float(v) if v.is_nan()))
     });
     test_simple(half::f16::NEG_INFINITY, &hex!("f9fc00"));
+}
 
-    // LLR 1.1.7: Report if a parsed data item is in canonical form (non-canonical floats)
-    test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
-    test_value_long(&hex!("fa7fc00000"), &[], |v| {
-        assert!(matches!(v,Value::Float(v) if v.is_nan()))
-    });
-    test_simple_long(f32::NEG_INFINITY, &hex!("faff800000"));
-    test_simple_long(f64::INFINITY, &hex!("fb7ff0000000000000"));
-    test_value_long(&hex!("fb7ff8000000000000"), &[], |v| {
-        assert!(matches!(v,Value::Float(v) if v.is_nan()))
-    });
-    test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
-
-    // LLR 1.1.9: Support all primitive data items (Simple values and booleans)
+// LLR 1.1.9: Support all primitive data items (Simple values and booleans)
+#[test]
+fn rfc_simple_values() {
     test_simple(false, &hex!("f4"));
     test_simple(true, &hex!("f5"));
     test_value(&hex!("f6"), &[], |v| assert!(matches!(v, Value::Null)));
@@ -239,8 +255,11 @@ fn rfc_tests() {
     test_value(&hex!("f8ff"), &[], |v| {
         assert!(matches!(v, Value::Simple(255)))
     });
+}
 
-    // LLR 1.1.8: Report if a parsed data item has associated tags
+// LLR 1.1.8: Report if a parsed data item has associated tags
+#[test]
+fn rfc_tags() {
     test_value(
         &hex!("c074323031332d30332d32315432303a30343a30305a"),
         &[0],
@@ -263,8 +282,11 @@ fn rfc_tests() {
         &[32],
         |v| assert!(matches!(v, Value::Text(v) if v == "http://www.example.com")),
     );
+}
 
-    // LLR 1.1.9: Support all primitive data items (Byte and Text Strings)
+// LLR 1.1.9: Support all primitive data items (Byte and Text Strings)
+#[test]
+fn rfc_strings() {
     test_value(&hex!("40"), &[], |v| {
         assert!(matches!(v, Value::Bytes(v) if v.is_empty()))
     });
@@ -281,8 +303,12 @@ fn rfc_tests() {
         "\u{10151}", /* surrogate pair: \u{d800}\u{dd51} */
         &hex!("64f0908591"),
     );
+}
 
-    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Arrays)
+// LLR 1.1.10: Parse items within context of Maps/Arrays correctly
+// (Definite-length Arrays and Maps)
+#[test]
+fn rfc_definite_arrays_maps() {
     test_array(&[], true, &hex!("80"), |a| assert_eq!(a.count(), Some(0)));
     test_array(&[], true, &hex!("83010203"), |a| {
         test_sub_simple(1, a);
@@ -311,7 +337,6 @@ fn rfc_tests() {
         },
     );
 
-    // LLR 1.1.10: Parse items within context of Maps/Arrays correctly (Definite-length Maps)
     test_map(&[], true, &hex!("a0"), |_| {});
     test_map(&[], true, &hex!("a201020304"), |m| {
         for i in 1..=4 {
@@ -344,8 +369,12 @@ fn rfc_tests() {
             }
         },
     );
+}
 
-    // LLR 1.1.5: Handle indefinite length items safely (Indefinite-length Strings)
+// LLR 1.1.5: Handle indefinite length items safely (Indefinite-length
+// Strings, Arrays, and Maps, including mixed definite/indefinite nesting)
+#[test]
+fn rfc_indefinite_items() {
     {
         let test_data = &hex!("5f42010243030405ff");
         test_value(test_data, &[], |v| match v {
@@ -650,6 +679,34 @@ fn non_canonical_integers() {
     test_simple_long(-24i64, &hex!("3817"));
 }
 
+// LLR 1.1.7: Report non-canonical float encodings
+//
+// RFC 8949 §4.2.1: floats must use the shortest width that represents the
+// value exactly.
+#[test]
+fn non_canonical_floats() {
+    // Infinities and NaN always fit in FP16, so any wider encoding is
+    // non-canonical.
+    test_simple_long(f32::INFINITY, &hex!("fa7f800000"));
+    test_value_long(&hex!("fa7fc00000"), &[], |v| {
+        assert!(matches!(v,Value::Float(v) if v.is_nan()))
+    });
+    test_simple_long(f32::NEG_INFINITY, &hex!("faff800000"));
+    test_simple_long(f64::INFINITY, &hex!("fb7ff0000000000000"));
+    test_value_long(&hex!("fb7ff8000000000000"), &[], |v| {
+        assert!(matches!(v,Value::Float(v) if v.is_nan()))
+    });
+    test_simple_long(f64::NEG_INFINITY, &hex!("fbfff0000000000000"));
+
+    // Normal-range values that are losslessly representable in a shorter
+    // width must also report non-shortest when carried in a wider form.
+    // 1.5 fits FP16 exactly, so both the FP32 and FP64 encodings are long.
+    test_simple_long(1.5, &hex!("fa3fc00000"));
+    test_simple_long(1.5, &hex!("fb3ff8000000000000"));
+    // 100000.0 fits FP32 exactly, so the FP64 encoding is long.
+    test_simple_long(100000.0, &hex!("fb40f86a0000000000"));
+}
+
 // Error path tests for malformed CBOR (beyond truncation)
 #[test]
 fn malformed_cbor() {
@@ -728,7 +785,7 @@ fn malformed_cbor() {
         Err(Error::IncorrectType(_, _))
     ));
 
-    // AdditionalItems: array has 1 item but trying to parse 2
+    // NoMoreItems: array has 1 item but trying to parse 2
     assert!(matches!(
         parse_array(&hex!("8101"), |a, _, _| {
             a.parse::<u64>()?;
@@ -896,14 +953,14 @@ fn head_consumed_bytes() {
     assert!(matches!(m.marker, Marker::Map(None)));
     assert_eq!(len, 1);
 
-    // Tagged uint: tag 1 + uint 0 — tag head (2 bytes) + value head (1 byte) = 3
+    // Tagged uint: tag 1 + uint 0, so tag head (1 byte) + value head (1 byte) = 2
     let data = hex!("C1 00");
     let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
     assert_eq!(m.tags.as_slice(), &[1u64]);
     assert_eq!(len, 2);
 
-    // Nested tags: tag 1, tag 2 + uint 0 = 3 bytes of tags + 1 byte value = 4
+    // Nested tags: tag 1, tag 2 + uint 0, so 2 bytes of tags + 1 byte value = 3
     let data = hex!("C1 C2 00");
     let (m, _, len) = Head::from_cbor(&data).unwrap();
     assert!(matches!(m.marker, Marker::UnsignedInteger(0)));
@@ -1034,11 +1091,7 @@ fn debug_array_mid_drain() {
         let _: u64 = a.parse()?; // consume the 1
         let s = format!("{a:?}");
         // Items 2 and 3 remain; leading `...` signals prior consumption.
-        assert!(s.contains("..."), "expected leading ..., got {s}");
-        assert!(
-            s.contains('2') && s.contains('3'),
-            "expected 2 and 3, got {s}"
-        );
+        assert_eq!(s, "[..., 2, 3]");
         // Drain the rest so parse_array's complete() doesn't return AdditionalItems.
         a.skip_to_end(16)?;
         Ok::<_, Error>(())
@@ -1056,13 +1109,10 @@ fn debug_map_mid_pair() {
     parse_map(&hex!("A2 01 02 03 04"), |m, _, _| {
         let _: u64 = m.parse()?; // consume key 1; value 2 still pending
         let s = format!("{m:?}");
-        // Expect `...: 2` for the dangling value and `3: 4` for the remaining pair.
-        assert!(s.contains("..."), "expected ... placeholder, got {s}");
-        assert!(s.contains('2'), "expected dangling value 2, got {s}");
-        assert!(
-            s.contains('3') && s.contains('4'),
-            "expected pair 3:4, got {s}"
-        );
+        // The dangling value 2 pairs with the `...` placeholder key, and the
+        // remaining pair 3: 4 stays aligned as a pair. Anything else means
+        // the value was misread as a key and every following pair shifted.
+        assert_eq!(s, "{...: 2, 3: 4}");
         // Drain the rest so parse_map's complete() doesn't return AdditionalItems.
         m.skip_to_end(16)?;
         Ok::<_, Error>(())
@@ -1078,13 +1128,10 @@ fn debug_map_mid_pairs_even() {
     // {1: 2, 3: 4}
     parse_map(&hex!("A2 01 02 03 04"), |m, _, _| {
         let _: u64 = m.parse()?; // key 1
-        let _: u64 = m.parse()?; // value 2 — parsed = 2 (even, > 0)
+        let _: u64 = m.parse()?; // value 2, so parsed = 2 (even, > 0)
         let s = format!("{m:?}");
-        assert!(s.contains("..."), "expected placeholder pair, got {s}");
-        assert!(
-            s.contains('3') && s.contains('4'),
-            "expected pair 3:4, got {s}"
-        );
+        // A whole `...: ...` placeholder pair leads, then the remaining pair.
+        assert_eq!(s, "{...: ..., 3: 4}");
         // Drain the rest so parse_map's complete() doesn't return AdditionalItems.
         m.skip_to_end(16)?;
         Ok::<_, Error>(())
@@ -1175,62 +1222,209 @@ fn skip_value_indefinite_map_partial() {
     assert_eq!(len, 2);
 }
 
-// Regression: Head::from_cbor's fast path (first_chunk::<9>) must report
-// the same byte count as the slow path. Previously, parse_uint_minor_fast
-// returned `1 + extra` while the caller had already incremented offset by
-// 1, double-counting the marker byte. Only surfaces when the buffer has
-// at least 9 bytes available — minimal-byte tests fall to the slow path
-// and miss it.
+// parse_exact is the guard against trailing bytes: a standalone slice must
+// hold exactly one item, so anything after it is AdditionalItems rather
+// than silently ignored.
 #[test]
-fn head_fast_path_byte_count() {
-    // 1-byte uint (minor < 24), padded so the fast path fires.
-    let mut data = hex!("00").to_vec();
-    data.resize(16, 0);
-    let (v, s, len) = parse::<(u64, bool, usize)>(&data).unwrap();
-    assert_eq!(v, 0);
-    assert!(s);
-    assert_eq!(len, 1, "1-byte uint must report len=1 even when buffered");
+fn parse_exact_rejects_trailing_data() {
+    // A minimal container FromCbor type: the built-in impls are all
+    // scalars, so trailing data after an array is exercised via a local
+    // two-field newtype.
+    #[derive(Debug, PartialEq)]
+    struct Pair(u64, u64);
 
-    // 2-byte uint (minor 24).
-    let mut data = hex!("18 7B").to_vec(); // 123
-    data.resize(16, 0);
-    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
-    assert_eq!(v, 123);
-    assert_eq!(len, 2);
+    impl FromCbor for Pair {
+        type Error = Error;
 
-    // 3-byte uint (minor 25).
-    let mut data = hex!("19 01 00").to_vec(); // 256
-    data.resize(16, 0);
-    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
-    assert_eq!(v, 256);
-    assert_eq!(len, 3);
+        fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+            parse_array(data, |a, shortest, _| {
+                let x = a.parse()?;
+                let y = a.parse()?;
+                Ok::<_, Error>((Pair(x, y), shortest))
+            })
+            .map(|((v, s), len)| (v, s, len))
+        }
+    }
 
-    // 9-byte uint (minor 27) — fast path exactly fits.
-    let mut data = hex!("1B 00 00 00 01 00 00 00 00").to_vec(); // 2^32
-    data.resize(16, 0);
-    let (v, _, len) = parse::<(u64, bool, usize)>(&data).unwrap();
-    assert_eq!(v, 1u64 << 32);
-    assert_eq!(len, 9);
+    // Exactly one item: accepted.
+    assert_eq!(parse_exact::<u64>(&hex!("01")).unwrap(), 1);
+    assert_eq!(parse_exact::<Pair>(&hex!("820102")).unwrap(), Pair(1, 2));
+
+    // Trailing bytes after the item: rejected.
+    assert!(matches!(
+        parse_exact::<u64>(&hex!("0102")),
+        Err(Error::AdditionalItems)
+    ));
+    assert!(matches!(
+        parse_exact::<Pair>(&hex!("82010200")),
+        Err(Error::AdditionalItems)
+    ));
+
+    // Contrast: parse ignores the trailing byte by design.
+    assert_eq!(parse::<u64>(&hex!("0102")).unwrap(), 1);
 }
 
-// Regression: Head::from_cbor's fast path must AND in parse_tags's
-// `shortest` flag. Previously the fast-path "minor" arms returned just
-// the value's `s`, dropping the tags' shortness.
+// Narrowing float decodes must fail with PrecisionLoss when the wire value
+// is not exactly representable at the requested width.
 #[test]
-fn head_fast_path_preserves_tags_shortest() {
-    // Tag 5 encoded with minor 24 (non-canonical — could fit in minor 0..23).
-    // Followed by uint 0 (canonical). Padded so the fast path fires.
-    // c8 05 = tag(5) in 1-byte form (non-canonical); 00 = uint 0.
-    let mut data = hex!("D8 05 00").to_vec();
-    data.resize(16, 0);
-    let (head, s, len) = parse::<(Head, bool, usize)>(&data).unwrap();
-    assert_eq!(head.tags.as_slice(), &[5]);
-    assert!(matches!(head.marker, Marker::UnsignedInteger(0)));
+fn float_narrowing_precision_loss() {
+    // 1.1 as FP64 has no exact FP32 or FP16 representation.
+    assert!(matches!(
+        parse::<f32>(&hex!("fb3ff199999999999a")),
+        Err(Error::PrecisionLoss)
+    ));
+    assert!(matches!(
+        parse::<half::f16>(&hex!("fb3ff199999999999a")),
+        Err(Error::PrecisionLoss)
+    ));
+
+    // 100000.0 as FP32 overflows FP16 (the rounding conversion saturates
+    // to infinity).
+    assert!(matches!(
+        parse::<half::f16>(&hex!("fa47c35000")),
+        Err(Error::PrecisionLoss)
+    ));
+
+    // Exactly-representable values narrow cleanly.
+    assert_eq!(parse::<f32>(&hex!("f93c00")).unwrap(), 1.0);
+    assert_eq!(parse::<half::f16>(&hex!("f93c00")).unwrap(), half::f16::ONE);
+    assert_eq!(parse::<f32>(&hex!("fb40f86a0000000000")).unwrap(), 100000.0);
+
+    // NaN is representable at every width, so narrowing keeps it.
+    assert!(parse::<f32>(&hex!("fb7ff8000000000000")).unwrap().is_nan());
     assert!(
-        !s,
-        "non-canonical tag encoding must propagate shortest=false through fast path"
+        parse::<half::f16>(&hex!("fb7ff8000000000000"))
+            .unwrap()
+            .is_nan()
     );
-    assert_eq!(len, 3);
+}
+
+// Wire-declared element counts near u64::MAX must be rejected as TooBig
+// instead of wrapping when converted to an item count.
+#[test]
+fn huge_declared_counts() {
+    // Definite map declaring u64::MAX pairs: doubling the pair count to an
+    // item count overflows usize on every target width.
+    assert!(matches!(
+        parse_map(&hex!("bb ffffffffffffffff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::TooBig)
+    ));
+
+    // Definite array declaring u64::MAX elements: exceeds usize on 32-bit
+    // targets.
+    #[cfg(target_pointer_width = "32")]
+    assert!(matches!(
+        parse_array(&hex!("9b ffffffffffffffff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::TooBig)
+    ));
+}
+
+// Indefinite-length string chunks must be untagged strings of the same
+// major type, and a chunk with a non-minimal length prefix must clear the
+// shortest flag for the whole string.
+#[test]
+fn chunked_string_edge_rules() {
+    // Tagged chunk inside a byte stream: rejected, not silently unwrapped.
+    assert!(matches!(
+        parse_value(&hex!("5f c0 42 0102 ff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidChunk)
+    ));
+    // Same for a text stream.
+    assert!(matches!(
+        parse_value(&hex!("7f c0 62 6161 ff"), |_, _, _| Ok::<_, Error>(())),
+        Err(Error::InvalidChunk)
+    ));
+    // skip_value applies the same chunk rules.
+    assert!(matches!(
+        skip_value(&hex!("5f c0 42 0102 ff"), 16),
+        Err(Error::InvalidChunk)
+    ));
+    assert!(matches!(
+        skip_value(&hex!("7f c0 62 6161 ff"), 16),
+        Err(Error::InvalidChunk)
+    ));
+
+    // Byte chunk with a 2-byte length prefix (58 02 instead of 42):
+    // decodes, but reports shortest = false.
+    let data = hex!("5f 58 02 0102 ff");
+    test_value_long(&data, &[], |v| match v {
+        Value::ByteStream(chunks) => assert_eq!(chunks, vec![3..5]),
+        _ => panic!("Expected indefinite byte string"),
+    });
+    let (shortest, len) = skip_value(&data, 16).unwrap();
+    assert!(!shortest);
+    assert_eq!(len, data.len());
+
+    // Same for a text chunk (78 01 instead of 61).
+    let data = hex!("7f 78 01 61 ff");
+    test_value_long(&data, &[], |v| match v {
+        Value::TextStream(chunks) => assert_eq!(chunks, &["a"]),
+        _ => panic!("Expected indefinite text string"),
+    });
+    let (shortest, len) = skip_value(&data, 16).unwrap();
+    assert!(!shortest);
+    assert_eq!(len, data.len());
+}
+
+// Option<T> maps CBOR Undefined (and only Undefined) to None, and tags on
+// plain scalars parse but clear the shortest flag.
+#[test]
+fn option_and_tagged_scalars() {
+    assert_eq!(parse::<Option<u64>>(&hex!("f7")).unwrap(), None);
+    assert_eq!(parse::<Option<u64>>(&hex!("01")).unwrap(), Some(1));
+
+    // Null is not Undefined: it falls through to the inner decoder.
+    assert!(matches!(
+        parse::<Option<u64>>(&hex!("f6")),
+        Err(Error::IncorrectType(_, _))
+    ));
+
+    // A tagged Undefined still decodes as None, with the tag folded into
+    // the shortest flag.
+    assert_eq!(
+        parse::<(Option<u64>, bool, usize)>(&hex!("c0f7")).unwrap(),
+        (None, false, 2)
+    );
+
+    // Tags on scalars parse but clear shortest.
+    assert_eq!(parse::<(u64, bool)>(&hex!("c000")).unwrap(), (0, false));
+    assert_eq!(parse::<(i64, bool)>(&hex!("c020")).unwrap(), (-1, false));
+    assert_eq!(parse::<(bool, bool)>(&hex!("c0f5")).unwrap(), (true, false));
+    assert_eq!(
+        parse::<(f64, bool)>(&hex!("c0f93c00")).unwrap(),
+        (1.0, false)
+    );
+}
+
+// Series::count() reports logical elements: pairs for maps, items for
+// arrays, and None for indefinite sequences until they are fully drained.
+#[test]
+fn series_count_elements() {
+    // {1: 2, 3: 4}: two pairs, four items on the wire.
+    parse_map(&hex!("a2 01 02 03 04"), |m, _, _| {
+        assert_eq!(m.count(), Some(2));
+        m.skip_to_end(16)?;
+        assert_eq!(m.count(), Some(2));
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // [1, 2, 3]
+    parse_array(&hex!("83 01 02 03"), |a, _, _| {
+        assert_eq!(a.count(), Some(3));
+        a.skip_to_end(16)?;
+        Ok::<_, Error>(())
+    })
+    .unwrap();
+
+    // Indefinite map: unknown until the break byte is reached.
+    parse_map(&hex!("bf 01 02 03 04 ff"), |m, _, _| {
+        assert_eq!(m.count(), None);
+        m.skip_to_end(16)?;
+        assert_eq!(m.count(), Some(2));
+        Ok::<_, Error>(())
+    })
+    .unwrap();
 }
 
 // The owned-container impls: each copies by construction, gathers
