@@ -117,6 +117,14 @@ struct Shared {
     tx: hardy_async::closeable::Sender<Bundle>,
     status: BundleStatus,
     notify: Arc<Notify>,
+    /// Successful Draining to Congested transitions won by [`Sender::send`],
+    /// recorded for test assertions.
+    #[cfg(test)]
+    congestion_signals: AtomicUsize,
+    /// Completed drain cycles (successful Draining to Open transitions by
+    /// the poller), recorded for test assertions.
+    #[cfg(test)]
+    reopen_count: AtomicUsize,
 }
 
 impl Shared {
@@ -163,6 +171,17 @@ impl Sender {
     // Expose the current channel state for test assertions.
     fn state(&self) -> ChannelState {
         self.shared.load_state(Ordering::Acquire)
+    }
+
+    // Number of successful Draining to Congested transitions won by send().
+    fn congestion_signals(&self) -> usize {
+        self.shared.congestion_signals.load(Ordering::Relaxed)
+    }
+
+    // Number of drain cycles the poller has completed by re-opening the
+    // fast path.
+    fn reopen_count(&self) -> usize {
+        self.shared.reopen_count.load(Ordering::Relaxed)
     }
 }
 
@@ -231,12 +250,22 @@ impl Sender {
             }
             ChannelState::Draining => {
                 // Signal new work arrived during drain
-                let _ = self.shared.compare_exchange_state(
-                    ChannelState::Draining,
-                    ChannelState::Congested,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                );
+                #[cfg_attr(not(test), allow(unused_variables))]
+                let signalled = self
+                    .shared
+                    .compare_exchange_state(
+                        ChannelState::Draining,
+                        ChannelState::Congested,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok();
+                #[cfg(test)]
+                if signalled {
+                    self.shared
+                        .congestion_signals
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
             ChannelState::Congested => {}
             ChannelState::Closing => return Err(SendError(bundle)),
@@ -286,6 +315,10 @@ impl Store {
             tx,
             status: status.clone(),
             notify: Arc::new(Notify::new()),
+            #[cfg(test)]
+            congestion_signals: AtomicUsize::new(0),
+            #[cfg(test)]
+            reopen_count: AtomicUsize::new(0),
         });
 
         let store = self.clone();
@@ -353,19 +386,36 @@ impl Store {
                 }
             }
 
-            // Re-open the fast path if the buffer has drained to half
-            // capacity or less and no new work arrived.
-            if should_reopen(shared.tx.len(), cap)
-                && shared
-                    .compare_exchange_state(
-                        ChannelState::Draining,
-                        ChannelState::Open,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_err()
-            {
-                continue; // Congested — loop again without waiting
+            // Re-open the fast path once the buffer has drained to half
+            // capacity or less. The consumer's progress raises no
+            // notification, so while the buffer sits above the threshold
+            // the check must repeat on a short tick; parking on `notify`
+            // alone would leave the fast path closed until the next send.
+            let reopened = loop {
+                if should_reopen(shared.tx.len(), cap) {
+                    break shared
+                        .compare_exchange_state(
+                            ChannelState::Draining,
+                            ChannelState::Open,
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok();
+                }
+                select_biased! {
+                    _ = shared.notify.notified().fuse() => break false,
+                    _ = cancel.cancelled().fuse() => return,
+                    _ = hardy_async::time::sleep(time::Duration::milliseconds(50)).fuse() => {}
+                }
+            };
+            #[cfg(test)]
+            if reopened {
+                shared.reopen_count.fetch_add(1, Ordering::Relaxed);
+            }
+            if !reopened {
+                // Congested, or new work arrived while the buffer drained:
+                // loop again without waiting.
+                continue;
             }
 
             // Wait for new work, or bail if the store is shutting down.
@@ -474,21 +524,45 @@ mod tests {
         tx.send(bundle).await
     }
 
-    // Poll until the channel reaches `target`, or panic after a generous
-    // deadline. Replaces fixed sleeps so the tests stay robust on slow CI.
-    async fn wait_for_state(tx: &Sender, target: ChannelState) {
+    // Poll until the poller has completed at least `n` drain cycles and the
+    // fast path is Open. Waiting for the Open state alone cannot distinguish
+    // the initial pre-poller state from a completed cycle; the reopen
+    // counter can. The deadline only bounds a regression.
+    async fn wait_for_reopen(tx: &Sender, n: usize) {
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
         loop {
-            let state = tx.state();
-            if state == target {
+            if tx.reopen_count() >= n && tx.state() == ChannelState::Open {
                 return;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "Timed out waiting for state {target:?}, got {state:?}"
+                "Timed out waiting for drain cycle {n}, state {:?}",
+                tx.state()
             );
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
+    }
+
+    // Receive bundles, tombstoning each so the poller cannot re-deliver it,
+    // until `want` distinct bundle ids have been seen. Returns the ids seen.
+    // The deadline only bounds a regression.
+    async fn recv_and_tombstone(
+        store: &Arc<Store>,
+        rx: &hardy_async::closeable::Receiver<Bundle>,
+        want: usize,
+    ) -> HashSet<hardy_bpv7::bundle::Id> {
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        let mut seen = HashSet::new();
+        while seen.len() < want {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(b)) => {
+                    store.tombstone_metadata(&b.bundle.id).await;
+                    seen.insert(b.bundle.id);
+                }
+                _ => break,
+            }
+        }
+        seen
     }
 
     // The fast path must re-open after draining even for tiny capacities.
@@ -513,20 +587,23 @@ mod tests {
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Wait for the poller's initial cycle to complete
-        wait_for_state(&tx, ChannelState::Open).await;
+        // Wait for the poller's initial cycle to complete, so the sends
+        // below start from a parked poller in the Open state.
+        wait_for_reopen(&tx, 1).await;
 
         // Fill channel to capacity
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
 
-        // Channel is full — next send triggers Draining
+        // Channel is full: the next send triggers Draining. With no
+        // consumer the buffer stays full, so the poller cannot re-open the
+        // fast path, and nothing can move the state to Congested.
         send(&tx, make_bundle(3)).await.unwrap();
 
-        let state = tx.state();
-        assert!(
-            state == ChannelState::Draining || state == ChannelState::Congested,
-            "Should be Draining or Congested after overflow, got {state:?}"
+        assert_eq!(
+            tx.state(),
+            ChannelState::Draining,
+            "Overflow should move the channel to Draining"
         );
 
         // close() is sync and non-blocking (it only cancels the cancel_token),
@@ -545,21 +622,24 @@ mod tests {
         let cap = 2;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Wait for poller's initial cycle
-        wait_for_state(&tx, ChannelState::Open).await;
+        // Wait for the poller's initial cycle, so the sends below start
+        // from a parked poller in the Open state.
+        wait_for_reopen(&tx, 1).await;
 
-        // Fill + overflow to enter Draining
+        // Fill + overflow to enter Draining. With no consumer the buffer
+        // stays full, so the poller cannot re-open the fast path.
         send(&tx, make_bundle(1)).await.unwrap();
         send(&tx, make_bundle(2)).await.unwrap();
         send(&tx, make_bundle(3)).await.unwrap();
 
-        // Another send while Draining should push to Congested
+        // A send while Draining must win the Draining to Congested
+        // transition. The poller may flip Congested back to Draining at any
+        // time, so assert on the recorded transition, not the live state.
         send(&tx, make_bundle(4)).await.unwrap();
 
-        let state = tx.state();
         assert!(
-            state == ChannelState::Draining || state == ChannelState::Congested,
-            "Should be Draining or Congested, got {state:?}"
+            tx.congestion_signals() >= 1,
+            "A send during drain should have signalled congestion"
         );
 
         drop(rx);
@@ -577,74 +657,104 @@ mod tests {
         let (tx, rx) = store.channel(STATUS, cap);
 
         // Wait for the poller's initial cycle before overflowing the buffer.
-        wait_for_state(&tx, ChannelState::Open).await;
+        wait_for_reopen(&tx, 1).await;
 
         // Now send enough to overflow: cap=16, send 17
         for i in 1..=17u32 {
             send(&tx, make_bundle(i)).await.unwrap();
         }
 
-        // Drain ALL bundles (unique + duplicates) and tombstone each.
-        // The poller re-opens when flume.len() < cap/2 and metadata is empty.
-        let mut seen = HashSet::new();
-        let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            match tokio::time::timeout(tokio::time::Duration::from_millis(200), rx.recv()).await {
-                Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
-                }
-                Ok(Err(_)) => {
-                    // Channel closed
-                    break;
-                }
-                Err(_) if seen.len() >= 17 => {
-                    // No bundle for 200ms after full delivery — channel quiesced
-                    break;
-                }
-                Err(_) => {
-                    // Delivery can stall past 200ms under load — keep waiting
-                    // until the deadline
-                }
-            }
-            if tokio::time::Instant::now() > drain_deadline {
-                break;
-            }
-        }
-
-        assert!(
-            seen.len() >= 17,
+        // Drain the 17 distinct bundles, tombstoning each so the poller
+        // cannot keep re-delivering them.
+        let seen = recv_and_tombstone(&store, &rx, 17).await;
+        assert_eq!(
+            seen.len(),
+            17,
             "Should have seen all 17 bundles, got {}",
             seen.len()
         );
 
-        // Wait for the poller to see empty metadata and re-open the fast path.
-        wait_for_state(&tx, ChannelState::Open).await;
+        // Keep draining stray duplicate re-deliveries until the poller
+        // observes the buffer at or below half capacity and re-opens the
+        // fast path. The deadline only bounds a regression.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        while tx.state() != ChannelState::Open {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Timed out waiting for the fast path to re-open"
+            );
+            if let Ok(Ok(b)) =
+                tokio::time::timeout(tokio::time::Duration::from_millis(10), rx.recv()).await
+            {
+                store.tombstone_metadata(&b.bundle.id).await;
+            }
+        }
 
         drop(rx);
         tx.close();
         store.shutdown().await;
     }
 
-    // Expired bundles should be filtered out during poll_once and not delivered.
+    // Expired bundles are filtered out by poll_once and never delivered.
+    // cap=1 forces the expired bundle onto the slow path: the valid bundle
+    // fills the buffer, so the expired one is dropped to storage and is
+    // recoverable only via the poller, which must filter it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_lazy_expiry() {
         let store = make_store();
-        let cap = 4; // Large enough that poller doesn't block
+        let cap = 1;
         let (tx, rx) = store.channel(STATUS, cap);
 
-        // Send a valid bundle and an expired one
-        send(&tx, make_bundle(1)).await.unwrap();
-        send(&tx, make_expired_bundle(2)).await.unwrap();
+        // Wait for the poller's initial cycle so the sends below start
+        // from a parked poller in the Open state.
+        wait_for_reopen(&tx, 1).await;
 
-        // The valid bundle should arrive on the fast path
-        let received = rx.recv().await;
-        assert!(received.is_ok(), "Valid bundle should be received");
+        let valid = make_bundle(1);
+        let valid_id = valid.bundle.id.clone();
+        let expired = make_expired_bundle(2);
+        let expired_id = expired.bundle.id.clone();
 
-        // The expired bundle was also sent on the fast path (expiry filtering
-        // only happens in poll_once for the slow path). On the fast path,
-        // expired bundles still arrive — the dispatcher handles expiry later.
-        // This test verifies the bundle at least doesn't crash the channel.
+        // Fill the fast path, then overflow with the expired bundle.
+        send(&tx, valid).await.unwrap();
+        send(&tx, expired).await.unwrap();
+
+        // Drain deliveries until the poller has polled storage (where the
+        // expired bundle sorts first by received_at), filtered it, and
+        // re-opened the fast path. The deadline only bounds a regression.
+        let mut seen = HashSet::new();
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        while tx.reopen_count() < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Timed out waiting for the drain cycle"
+            );
+            if let Ok(Ok(b)) =
+                tokio::time::timeout(tokio::time::Duration::from_millis(10), rx.recv()).await
+            {
+                store.tombstone_metadata(&b.bundle.id).await;
+                seen.insert(b.bundle.id);
+            }
+        }
+
+        assert!(seen.contains(&valid_id), "Valid bundle should be received");
+        assert!(
+            !seen.contains(&expired_id),
+            "Expired bundle must be filtered out, not delivered"
+        );
+
+        // The channel is open and empty again: a fresh bundle must be the
+        // next delivery. The timeout only bounds a regression.
+        let fresh = make_bundle(3);
+        let fresh_id = fresh.bundle.id.clone();
+        send(&tx, fresh).await.unwrap();
+        let b = tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Timed out waiting for the fresh bundle")
+            .unwrap();
+        assert_eq!(
+            b.bundle.id, fresh_id,
+            "The fresh bundle must be the next delivery"
+        );
 
         drop(rx);
         tx.close();
@@ -659,7 +769,7 @@ mod tests {
         let (tx, _rx) = store.channel(STATUS, cap);
 
         // Let poller complete its initial cycle
-        wait_for_state(&tx, ChannelState::Open).await;
+        wait_for_reopen(&tx, 1).await;
 
         tx.close();
 
@@ -686,17 +796,7 @@ mod tests {
         send(&tx, make_bundle(3)).await.unwrap();
 
         // Receive all 3, tombstoning each to prevent re-delivery.
-        let mut seen = HashSet::new();
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        while seen.len() < 3 {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
-                }
-                _ => break,
-            }
-        }
+        let seen = recv_and_tombstone(&store, &rx, 3).await;
 
         assert_eq!(
             seen.len(),
@@ -724,17 +824,7 @@ mod tests {
         }
 
         // Consume bundles and tombstone each so the poller won't re-send.
-        let mut seen = HashSet::new();
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        while seen.len() < total as usize {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
-                }
-                _ => break,
-            }
-        }
+        let seen = recv_and_tombstone(&store, &rx, total as usize).await;
 
         assert_eq!(
             seen.len(),
@@ -764,20 +854,16 @@ mod tests {
         send(&tx, make_bundle(2)).await.unwrap();
 
         // Collect unique bundles until we've seen both
-        let mut seen = HashSet::new();
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        while seen.len() < 2 {
-            match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id.source.clone());
-                }
-                _ => break,
-            }
-        }
+        let seen = recv_and_tombstone(&store, &rx, 2).await;
 
-        assert!(seen.contains(&src1), "Bundle 1 should arrive");
-        assert!(seen.contains(&src2), "Bundle 2 should arrive");
+        assert!(
+            seen.iter().any(|id| id.source == src1),
+            "Bundle 1 should arrive"
+        );
+        assert!(
+            seen.iter().any(|id| id.source == src2),
+            "Bundle 2 should arrive"
+        );
 
         drop(rx);
         tx.close();
