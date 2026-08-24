@@ -31,14 +31,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Configuration
+# Configuration (ports are allocated dynamically below)
 NODE1_NUM=1
 NODE2_NUM=2
-NODE3_NUM=3  # phantom node — no CLA, route-only
-NODE1_TCPCLV4_PORT=4560
-NODE2_TCPCLV4_PORT=4561
-BPA_GRPC_PORT=50051
-TVR_GRPC_PORT=50052
+NODE3_NUM=3  # phantom node: no CLA, route-only
 PING_COUNT=3
 PING_SERVICE=12345
 
@@ -53,6 +49,70 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
+
+# Probe a TCP port with bash's /dev/tcp; success means something is listening.
+port_open() {
+    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
+}
+
+# Pick a TCP port nothing is listening on, avoiding ports already handed out.
+find_free_port() {
+    local port used
+    while :; do
+        port=$(( (RANDOM % 20000) + 20000 ))
+        for used in "$@"; do
+            if [ "$port" -eq "$used" ]; then continue 2; fi
+        done
+        if ! port_open 127.0.0.1 "$port" && ! port_open ::1 "$port"; then
+            echo "$port"
+            return 0
+        fi
+    done
+}
+
+# Poll until a TCP port accepts connections, with a deadline in seconds.
+# If a PID is given, fail fast when that process dies first.
+wait_for_port() {
+    local host=$1 port=$2 deadline=$3 label=$4 pid=${5:-}
+    local waited=0
+    while ! port_open "$host" "$port"; do
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            log_error "$label exited before listening on $host:$port"
+            return 1
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            log_error "Timed out waiting for $label on $host:$port"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
+# Poll until a file contains at least N occurrences of a pattern, with a
+# deadline in seconds.
+wait_for_log() {
+    local file=$1 pattern=$2 count=$3 deadline=$4
+    local waited=0 seen
+    while :; do
+        seen=$(grep -c "$pattern" "$file" 2>/dev/null) || true
+        if [ "${seen:-0}" -ge "$count" ]; then
+            return 0
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            log_error "Timed out waiting for ${count}x '$pattern' in $file"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+NODE1_TCPCLV4_PORT=$(find_free_port)
+NODE2_TCPCLV4_PORT=$(find_free_port "$NODE1_TCPCLV4_PORT")
+BPA_GRPC_PORT=$(find_free_port "$NODE1_TCPCLV4_PORT" "$NODE2_TCPCLV4_PORT")
+TVR_GRPC_PORT=$(find_free_port "$NODE1_TCPCLV4_PORT" "$NODE2_TCPCLV4_PORT" "$BPA_GRPC_PORT")
 
 # Parse options
 SKIP_BUILD=false
@@ -107,16 +167,21 @@ trap cleanup EXIT INT TERM
 TEST_DIR=$(mktemp -d)
 log_info "Using test directory: $TEST_DIR"
 
-# Build if needed
+# Build if needed. Set BUILD_PROFILE=debug for a faster local build.
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
 if [ "$SKIP_BUILD" = false ]; then
-    log_step "Building Hardy binaries..."
+    log_step "Building Hardy binaries ($BUILD_PROFILE)..."
     cd "$WORKSPACE_DIR"
-    cargo build --release -p hardy-tools -p hardy-bpa-server -p hardy-tvr
+    if [ "$BUILD_PROFILE" = "release" ]; then
+        cargo build --release -p hardy-tools -p hardy-bpa-server -p hardy-tvr
+    else
+        cargo build -p hardy-tools -p hardy-bpa-server -p hardy-tvr
+    fi
 fi
 
-BP_BIN="$WORKSPACE_DIR/target/release/bp"
-BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
-TVR_BIN="$WORKSPACE_DIR/target/release/hardy-tvr"
+BP_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/bp"
+BPA_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/hardy-bpa-server"
+TVR_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/hardy-tvr"
 
 for bin in "$BP_BIN" "$BPA_BIN" "$TVR_BIN"; do
     if [ ! -x "$bin" ]; then
@@ -128,6 +193,12 @@ done
 # grpcurl configuration for TVR gRPC session tests
 GRPCURL_ARGS="-plaintext -import-path $WORKSPACE_DIR/tvr -import-path $WORKSPACE_DIR/proto -proto tvr.proto"
 TVR_ADDR="[::1]:$TVR_GRPC_PORT"
+
+SKIP_GRPC=false
+if ! command -v grpcurl > /dev/null 2>&1; then
+    log_warn "grpcurl not found; gRPC session tests (5-10) will be skipped"
+    SKIP_GRPC=true
+fi
 
 # Helper: invoke grpcurl against the TVR service with stdin data
 # Usage: echo '...' | tvr_grpcurl
@@ -174,9 +245,10 @@ do_ping() {
 # =============================================================================
 log_step "Starting BPA servers..."
 
-# Node 1: has gRPC enabled (for hardy-tvr), TCPCLv4 for peering
+# Node 1: has gRPC enabled (for hardy-tvr), TCPCLv4 for peering.
+# debug logging so route installs/withdrawals are observable in the log.
 cat > "$TEST_DIR/node1.toml" << EOF
-log-level = "info"
+log-level = "debug"
 node-ids = "ipn:$NODE1_NUM.0"
 
 [built-in-services]
@@ -195,7 +267,7 @@ services = ["routing"]
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$NODE1_TCPCLV4_PORT"
+listeners = ["[::]:$NODE1_TCPCLV4_PORT"]
 EOF
 
 # Node 2: echo service, TCPCLv4
@@ -215,24 +287,25 @@ type = "memory"
 [[clas]]
 name = "cl0"
 type = "tcpclv4"
-address = "[::]:$NODE2_TCPCLV4_PORT"
+listeners = ["[::]:$NODE2_TCPCLV4_PORT"]
 EOF
 
-"$BPA_BIN" -c "$TEST_DIR/node1.toml" &
+NODE1_LOG="$TEST_DIR/node1.log"
+NODE2_LOG="$TEST_DIR/node2.log"
+TVR_LOG="$TEST_DIR/tvr.log"
+
+"$BPA_BIN" -c "$TEST_DIR/node1.toml" > "$NODE1_LOG" 2>&1 &
 NODE1_PID=$!
 
-"$BPA_BIN" -c "$TEST_DIR/node2.toml" &
+"$BPA_BIN" -c "$TEST_DIR/node2.toml" > "$NODE2_LOG" 2>&1 &
 NODE2_PID=$!
 
-sleep 2
-
-for pid_var in NODE1_PID NODE2_PID; do
-    pid=${!pid_var}
-    if ! kill -0 "$pid" 2>/dev/null; then
-        log_error "BPA server failed to start ($pid_var)"
-        exit 1
-    fi
-done
+wait_for_port 127.0.0.1 "$NODE1_TCPCLV4_PORT" 20 "node 1 TCPCLv4" "$NODE1_PID" \
+    || { cat "$NODE1_LOG"; exit 1; }
+wait_for_port ::1 "$BPA_GRPC_PORT" 20 "node 1 gRPC" "$NODE1_PID" \
+    || { cat "$NODE1_LOG"; exit 1; }
+wait_for_port 127.0.0.1 "$NODE2_TCPCLV4_PORT" 20 "node 2 TCPCLv4" "$NODE2_PID" \
+    || { cat "$NODE2_LOG"; exit 1; }
 log_info "BPA servers started"
 
 # =============================================================================
@@ -257,20 +330,22 @@ grpc-listen = "[::1]:$TVR_GRPC_PORT"
 log-level = "info"
 EOF
 
-"$TVR_BIN" -c "$TEST_DIR/tvr.toml" &
+"$TVR_BIN" -c "$TEST_DIR/tvr.toml" > "$TVR_LOG" 2>&1 &
 TVR_PID=$!
 
-sleep 2
-
-if ! kill -0 "$TVR_PID" 2>/dev/null; then
-    log_error "hardy-tvr failed to start"
-    exit 1
-fi
+wait_for_port ::1 "$TVR_GRPC_PORT" 20 "hardy-tvr gRPC" "$TVR_PID" \
+    || { cat "$TVR_LOG"; exit 1; }
 log_info "hardy-tvr started with PID $TVR_PID"
 
-# Ping Node 2 — should succeed (permanent route installed)
-do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "Permanent route ping"
-TEST1=$?
+# The route must actually reach Node 1's RIB, then the ping must succeed
+if wait_for_log "$TVR_LOG" "Loaded contact plan" 1 15 \
+    && wait_for_log "$NODE1_LOG" "Adding route ipn:$NODE2_NUM" 1 15 \
+    && do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "Permanent route ping"
+then
+    TEST1=0
+else
+    TEST1=1
+fi
 
 # =============================================================================
 # TEST 2: Hot-reload — add a route to phantom node
@@ -281,21 +356,23 @@ log_step "TEST 2: Hot-reload — add route to phantom node"
 echo "============================================================"
 
 # Add a route to a phantom node (no CLA peer, no echo service).
-# We can't ping it, but we verify the route is installed by checking
-# that the BPA attempts to forward (bundle enters ForwardPending/Waiting).
-# For this test, we just verify the file reload succeeds and TVR logs
-# the addition.
+# We can't ping it, but we verify the reload happened and that the new
+# route was actually installed in Node 1's RIB.
 cat > "$TEST_DIR/contacts" << EOF
 ipn:$NODE2_NUM.*.* via ipn:$NODE2_NUM.1.0 priority 10
 ipn:$NODE3_NUM.*.* via ipn:$NODE3_NUM.1.0 priority 20
 EOF
 
-# Wait for debounce + reload
-sleep 3
-
-# Original route should still work
-do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "After hot-reload ping"
-TEST2=$?
+# Wait for debounce + reload, then check the route landed and the
+# original route still works
+if wait_for_log "$TVR_LOG" "Contact plan reloaded" 1 15 \
+    && wait_for_log "$NODE1_LOG" "Adding route ipn:$NODE3_NUM" 1 15 \
+    && do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "After hot-reload ping"
+then
+    TEST2=0
+else
+    TEST2=1
+fi
 
 # =============================================================================
 # TEST 3: File removal — withdraw routes, phantom node unreachable
@@ -311,16 +388,23 @@ cat > "$TEST_DIR/contacts" << EOF
 ipn:$NODE3_NUM.*.* via ipn:$NODE3_NUM.1.0 priority 20
 EOF
 
-sleep 3
+TEST3=1
+# Second reload: the Node 2 route must be withdrawn from Node 1's RIB
+if wait_for_log "$TVR_LOG" "Contact plan reloaded" 2 15 \
+    && wait_for_log "$NODE1_LOG" "Removed route ipn:$NODE2_NUM" 1 15
+then
+    # Delete the file: all TVR routes withdrawn
+    rm -f "$TEST_DIR/contacts"
 
-# Delete the file — all TVR routes withdrawn
-rm -f "$TEST_DIR/contacts"
-
-sleep 3
-
-# Ping the phantom node — should fail (no route, no CLA peer)
-do_ping "ipn:$NODE3_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" fail "Phantom node after file removal"
-TEST3=$?
+    # Ping the phantom node once withdrawal is done: should fail
+    # (no route, no CLA peer)
+    if wait_for_log "$TVR_LOG" "withdrawing all contacts" 1 15 \
+        && wait_for_log "$NODE1_LOG" "Removed route ipn:$NODE3_NUM" 1 15 \
+        && do_ping "ipn:$NODE3_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" fail "Phantom node after file removal"
+    then
+        TEST3=0
+    fi
+fi
 
 # =============================================================================
 # TEST 4: File restore — re-add routes
@@ -335,12 +419,16 @@ cat > "$TEST_DIR/contacts" << EOF
 ipn:$NODE2_NUM.*.* via ipn:$NODE2_NUM.1.0 priority 10
 EOF
 
-# Wait for debounce + reload
-sleep 3
-
-# Ping Node 2 — should work again
-do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "After file restore ping"
-TEST4=$?
+# Wait for the third reload and the Node 2 route to be re-installed
+# (second "Adding route ipn:2" in Node 1's log), then ping again
+if wait_for_log "$TVR_LOG" "Contact plan reloaded" 3 15 \
+    && wait_for_log "$NODE1_LOG" "Adding route ipn:$NODE2_NUM" 2 15 \
+    && do_ping "ipn:$NODE2_NUM.7" "127.0.0.1:$NODE2_TCPCLV4_PORT" pass "After file restore ping"
+then
+    TEST4=0
+else
+    TEST4=1
+fi
 
 # =============================================================================
 # TEST 5: gRPC session open (TVR-01)
@@ -349,6 +437,11 @@ echo ""
 echo "============================================================"
 log_step "TEST 5: gRPC session open"
 echo "============================================================"
+
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC session open: SKIPPED (no grpcurl)"
+    TEST5=skip
+else
 
 # Open a session via grpcurl and verify we get an OpenSessionResponse
 output=$(echo '{"msg_id": 1, "open": {"name": "test-open", "default_priority": 100}}' \
@@ -363,6 +456,8 @@ else
     TEST5=1
 fi
 
+fi
+
 # =============================================================================
 # TEST 6: gRPC add contacts + route verification (TVR-05, TVR-09)
 # =============================================================================
@@ -371,9 +466,14 @@ echo "============================================================"
 log_step "TEST 6: gRPC add contacts via session"
 echo "============================================================"
 
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC add contacts: SKIPPED (no grpcurl)"
+    TEST6=skip
+else
+
 # First, remove the file-based contacts so only gRPC routes are active
 rm -f "$TEST_DIR/contacts"
-sleep 3
+wait_for_log "$TVR_LOG" "withdrawing all contacts" 2 15 || true
 
 # Open a session in background using a FIFO to keep the stream alive
 ADD_FIFO="$TEST_DIR/add_fifo"
@@ -384,16 +484,16 @@ exec 4>"$ADD_FIFO"
 echo '{"msg_id": 1, "open": {"name": "route-test", "default_priority": 100}}' >&4
 echo '{"msg_id": 2, "add": {"contacts": [{"eid_pattern": "ipn:'"$NODE2_NUM"'.*.*", "via": "ipn:'"$NODE2_NUM"'.1.0", "priority": 10}]}}' >&4
 
-sleep 2
-
 # Verify the add response contains added count
-if grep -q '"added":' "$TEST_DIR/grpc_output.json" 2>/dev/null; then
+if wait_for_log "$TEST_DIR/grpc_output.json" '"added":' 1 15; then
     log_info "gRPC add contacts: PASSED"
     TEST6=0
 else
     log_error "gRPC add contacts: FAILED (no add response)"
     cat "$TEST_DIR/grpc_output.json" 2>/dev/null
     TEST6=1
+fi
+
 fi
 
 # =============================================================================
@@ -404,6 +504,11 @@ echo "============================================================"
 log_step "TEST 7: gRPC session close — routes withdrawn"
 echo "============================================================"
 
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC session close cleanup: SKIPPED (no grpcurl)"
+    TEST7=skip
+else
+
 # Close fd 4 to close the FIFO, ending the grpcurl stream
 exec 4>&-
 if [ -n "$GRPC_PID" ] && kill -0 "$GRPC_PID" 2>/dev/null; then
@@ -413,7 +518,7 @@ fi
 rm -f "$ADD_FIFO"
 
 # Wait for TVR to process the stream close and withdraw routes
-sleep 2
+wait_for_log "$TVR_LOG" "Withdrawing contacts for session 'route-test'" 1 15 || true
 
 # Verify cleanup: open a new session and re-add the same route.
 # If cleanup worked, the route was withdrawn and re-adding it should
@@ -434,6 +539,8 @@ else
     TEST7=1
 fi
 
+fi
+
 # =============================================================================
 # TEST 8: gRPC duplicate session name (TVR-02)
 # =============================================================================
@@ -441,6 +548,11 @@ echo ""
 echo "============================================================"
 log_step "TEST 8: gRPC duplicate session name rejected"
 echo "============================================================"
+
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC duplicate session name: SKIPPED (no grpcurl)"
+    TEST8=skip
+else
 
 # Start a session in background using a FIFO to keep stdin open.
 # Open fd 3 as a persistent writer so grpcurl's stdin stays open
@@ -452,7 +564,8 @@ DUP_PID1=$!
 exec 3>"$DUP_FIFO"
 echo '{"msg_id": 1, "open": {"name": "dup-test", "default_priority": 100}}' >&3
 
-sleep 1
+# Wait for the first session to be registered before opening the duplicate
+wait_for_log "$TVR_LOG" "TVR session opened: 'dup-test'" 1 15 || true
 
 # Try to open a second session with the same name
 output=$(echo '{"msg_id": 1, "open": {"name": "dup-test", "default_priority": 100}}' \
@@ -473,6 +586,8 @@ else
     TEST8=1
 fi
 
+fi
+
 # =============================================================================
 # TEST 9: gRPC missing open (TVR-03)
 # =============================================================================
@@ -480,6 +595,11 @@ echo ""
 echo "============================================================"
 log_step "TEST 9: gRPC missing open — rejected"
 echo "============================================================"
+
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC missing open: SKIPPED (no grpcurl)"
+    TEST9=skip
+else
 
 # Send an add as the first message (no open)
 output=$(echo '{"msg_id": 1, "add": {"contacts": [{"eid_pattern": "ipn:2.*.*", "via": "ipn:2.1.0"}]}}' \
@@ -494,6 +614,8 @@ else
     TEST9=1
 fi
 
+fi
+
 # =============================================================================
 # TEST 10: gRPC session name reuse after close (TVR-12)
 # =============================================================================
@@ -502,11 +624,17 @@ echo "============================================================"
 log_step "TEST 10: gRPC session name reuse after close"
 echo "============================================================"
 
+if [ "$SKIP_GRPC" = true ]; then
+    log_warn "gRPC session name reuse: SKIPPED (no grpcurl)"
+    TEST10=skip
+else
+
 # Open and close a session
 echo '{"msg_id": 1, "open": {"name": "reuse-test", "default_priority": 100}}' \
-    | tvr_grpcurl > /dev/null 2>&1
+    | tvr_grpcurl > /dev/null 2>&1 || true
 
-sleep 1
+# Wait for the close to be fully processed before re-opening
+wait_for_log "$TVR_LOG" "Withdrawing contacts for session 'reuse-test'" 1 15 || true
 
 # Re-open with the same name — should succeed
 output=$(echo '{"msg_id": 1, "open": {"name": "reuse-test", "default_priority": 100}}' \
@@ -521,6 +649,8 @@ else
     TEST10=1
 fi
 
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================
@@ -532,9 +662,10 @@ echo ""
 
 PASS=0
 FAIL=0
+SKIP=0
 
 for t in TEST1 TEST2 TEST3 TEST4 TEST5 TEST6 TEST7 TEST8 TEST9 TEST10; do
-    val=${!t}
+    val=${!t:-1}
     case $t in
         TEST1)  desc="Permanent route" ;;
         TEST2)  desc="Hot-reload (add)" ;;
@@ -547,17 +678,24 @@ for t in TEST1 TEST2 TEST3 TEST4 TEST5 TEST6 TEST7 TEST8 TEST9 TEST10; do
         TEST9)  desc="gRPC missing open" ;;
         TEST10) desc="gRPC session name reuse" ;;
     esac
-    if [ "$val" -eq 0 ]; then
-        echo "  $desc: PASS"
-        PASS=$((PASS + 1))
-    else
-        echo "  $desc: FAIL"
-        FAIL=$((FAIL + 1))
-    fi
+    case "$val" in
+        0)
+            echo "  $desc: PASS"
+            PASS=$((PASS + 1))
+            ;;
+        skip)
+            echo "  $desc: SKIP"
+            SKIP=$((SKIP + 1))
+            ;;
+        *)
+            echo "  $desc: FAIL"
+            FAIL=$((FAIL + 1))
+            ;;
+    esac
 done
 
 echo ""
-echo "  $PASS passed, $FAIL failed"
+echo "  $PASS passed, $FAIL failed, $SKIP skipped"
 echo ""
 
 if [ "$FAIL" -eq 0 ]; then
