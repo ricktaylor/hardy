@@ -64,6 +64,32 @@ async fn watcher_task(
 
     info!("Watching '{outbox}' for new files");
 
+    // Dispatch files already queued in the outbox: bundles are routinely
+    // dropped in the directory while the CLA is not running (removable media,
+    // restarts), and the watcher only reports files created after the watch is
+    // installed. The watch is installed before this scan, so a file arriving
+    // mid-scan is seen by at least one of the two paths; the forwarder
+    // tolerates the resulting duplicate.
+    match tokio::fs::read_dir(&outbox).await {
+        Ok(mut entries) => loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    if entry.file_type().await.is_ok_and(|t| t.is_file())
+                        && path_tx.send_async(entry.path()).await.is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    error!("Failed to scan outbox '{outbox}': {e}");
+                    break;
+                }
+            }
+        },
+        Err(e) => error!("Failed to scan outbox '{outbox}': {e}"),
+    }
+
     loop {
         tokio::select! {
             res = rx.recv_async() => match res {
