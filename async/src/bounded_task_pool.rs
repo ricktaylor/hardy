@@ -60,7 +60,7 @@ use crate::{join_handle::JoinHandle, task_pool::TaskPool};
 ///
 /// Like [`TaskPool`], shutdown is graceful:
 /// 1. The cancellation token is triggered
-/// 2. No new tasks can be spawned
+/// 2. The tracker is closed so the final wait can complete
 /// 3. All running tasks are awaited to completion
 #[derive(Clone)]
 pub struct BoundedTaskPool {
@@ -96,6 +96,10 @@ impl BoundedTaskPool {
     /// to complete before the new task can be spawned. The permit is held
     /// for the duration of the task and automatically released when the
     /// task completes.
+    ///
+    /// Spawning after [`shutdown()`](BoundedTaskPool::shutdown) follows the
+    /// [`TaskPool::spawn`] contract: the task still runs, unsupervised, and
+    /// must be avoided.
     ///
     /// # Example
     ///
@@ -154,7 +158,7 @@ impl BoundedTaskPool {
     ///
     /// This method:
     /// 1. Cancels all tasks via the cancellation token
-    /// 2. Closes the tracker to prevent new tasks from being spawned
+    /// 2. Closes the tracker so the wait in step 3 can complete
     /// 3. Waits for all currently running tasks to complete
     ///
     /// Tasks are expected to check the cancellation token and exit gracefully.
@@ -179,107 +183,5 @@ impl Default for BoundedTaskPool {
     // which queries the OS when the `std` feature is enabled, or returns 1 otherwise.
     fn default() -> Self {
         Self::new(crate::available_parallelism())
-    }
-}
-
-#[cfg(all(test, feature = "tokio"))]
-mod tests {
-    use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use core::time::Duration;
-
-    #[tokio::test]
-    async fn test_bounded_pool_limits_concurrency() {
-        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let max_concurrent = Arc::new(AtomicUsize::new(0));
-
-        let mut handles = vec![];
-
-        for _ in 0..10 {
-            let concurrent = concurrent.clone();
-            let max_concurrent = max_concurrent.clone();
-
-            let handle = pool
-                .spawn(async move {
-                    let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-
-                    // Update max if this is higher
-                    let mut max = max_concurrent.load(Ordering::SeqCst);
-                    while current > max {
-                        match max_concurrent.compare_exchange_weak(
-                            max,
-                            current,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        ) {
-                            Ok(_) => break,
-                            Err(m) => max = m,
-                        }
-                    }
-
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    concurrent.fetch_sub(1, Ordering::SeqCst);
-                })
-                .await;
-
-            handles.push(handle);
-        }
-
-        // Wait for all tasks
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        // Max concurrent should never exceed 2
-        assert!(max_concurrent.load(Ordering::SeqCst) <= 2);
-    }
-
-    #[tokio::test]
-    async fn test_bounded_pool_default_uses_available_parallelism() {
-        let pool = BoundedTaskPool::default();
-        let expected: usize = crate::available_parallelism().into();
-
-        // We can't directly inspect the semaphore, but we can verify the pool works
-        assert!(!pool.is_cancelled());
-
-        // Verify we can spawn at least one task
-        let handle = pool.spawn(async { 42 }).await;
-        assert_eq!(handle.await.unwrap(), 42);
-
-        pool.shutdown().await;
-        assert!(pool.is_cancelled());
-
-        // Just verify expected is reasonable
-        assert!(expected >= 1);
-    }
-
-    #[tokio::test]
-    async fn test_bounded_pool_shutdown() {
-        let pool = BoundedTaskPool::new(core::num::NonZeroUsize::new(4).unwrap());
-        let completed = Arc::new(AtomicUsize::new(0));
-
-        for _ in 0..4 {
-            let completed = completed.clone();
-            let cancel = pool.cancel_token().clone();
-
-            pool.spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                        _ = cancel.cancelled() => {
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            break;
-                        }
-                    }
-                }
-            })
-            .await;
-        }
-
-        pool.shutdown().await;
-
-        // All tasks should have completed
-        assert_eq!(completed.load(Ordering::SeqCst), 4);
     }
 }

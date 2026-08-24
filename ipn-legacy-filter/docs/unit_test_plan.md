@@ -33,7 +33,7 @@ This crate supports the interoperability aspects of RFC 9758 IPN encoding:
 | **IPNF-03** | **No next-hop** | Bundle with `next_hop = None`. | `Continue(None, None)` -- no rewrite. |
 | **IPNF-04** | **DTN destination (not IPN)** | Bundle with DTN-scheme destination; next-hop matches a configured pattern. | `Continue(None, None)` -- no rewrite (neither source nor dest is IPN). |
 | **IPNF-05** | **Only source needs rewrite** | Bundle with IPN 3-element source, DTN destination; next-hop matches. | `Continue(None, Some(data))` with only source rewritten to `LegacyIpn`. |
-| **IPNF-06** | **Empty config** | `Config` with no peer patterns. | `IpnLegacyFilter::new()` returns `None` (filter not needed). |
+| **IPNF-06** | **Empty config** | `Config` with no peer patterns. | Filter is a no-op: `Continue(None, None)` for any bundle. |
 
 ## 4. Execution Strategy
 

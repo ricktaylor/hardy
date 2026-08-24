@@ -26,3 +26,6 @@ hardy-bpa = { version = "0.2", path = "../bpa", default-features = false }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", default-features = false }
 tracing = { version = "0.1", default-features = false }
 time = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

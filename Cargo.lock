@@ -2066,6 +2066,7 @@ dependencies = [
  "hardy-bpa",
  "hardy-bpv7",
  "time",
+ "tokio",
  "tracing",
 ]
 
@@ -3226,6 +3227,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
