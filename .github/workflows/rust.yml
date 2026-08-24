@@ -19,9 +19,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  PROTOC_VERSION: "29.3"
 
 jobs:
-  build:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,10 +33,28 @@ jobs:
       - name: Use cached dependencies and artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci
+          shared-key: checks
 
-      - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # The release-asset URL is a plain CDN download, not the GitHub API,
+      # so it is not subject to API rate limits; with the cache it only
+      # runs at all when PROTOC_VERSION changes.
+      - name: Cache protoc
+        id: protoc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/protoc
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
+
+      - name: Install protoc (cache miss)
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          mkdir -p "$HOME/.local/protoc"
+          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
+
+      - name: Add protoc to PATH
+        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
         run: cargo fmt --check
@@ -43,8 +62,85 @@ jobs:
       - name: Check linting
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Build all tests
-        run: cargo test --no-run --locked --all-features --workspace
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Use cached dependencies and artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+
+      - name: Cache protoc
+        id: protoc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/protoc
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
+
+      - name: Install protoc (cache miss)
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          mkdir -p "$HOME/.local/protoc"
+          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
+
+      - name: Add protoc to PATH
+        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
+
+      - name: Start postgres and minio
+        run: docker compose up -d --wait postgres minio
+
+      - name: Create S3 test bucket
+        run: |
+          docker compose exec minio \
+            mc alias set local http://localhost:9000 minioadmin minioadmin
+          docker compose exec minio \
+            mc mb --ignore-existing local/hardy-test
+
+      - name: Run tests
+        env:
+          TEST_POSTGRES_URL: postgresql://hardy:hardy@localhost:5432
+          TEST_S3_ENDPOINT: http://localhost:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+        run: cargo test --locked --all-features --workspace
+
+      - name: Stop postgres and minio
+        if: always()
+        run: docker compose down -v
+
+      - name: Build ping test binaries
+        run: cargo build --locked --all-features -p hardy-bpa-server -p hardy-tools
+
+      - name: Run ping tests
+        env:
+          BP_BIN: ./target/debug/bp
+          HARDY_BPA_SERVER_CONFIG_FILE: ${{ runner.temp }}/hardy-ping.yaml
+        run: |
+          cat > "$HARDY_BPA_SERVER_CONFIG_FILE" <<'EOF'
+          log-level: info
+          node-ids: ["ipn:1.0"]
+          status-reports: true
+          built-in-services:
+            echo: [7]
+          storage:
+            metadata:
+              type: memory
+            bundle:
+              type: memory
+          clas:
+            - name: cl0
+              type: tcpclv4
+              listeners: ["[::]:4556"]
+          EOF
+          ./target/debug/hardy-bpa-server &
+          bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5
 
   no-std:
     runs-on: ubuntu-latest
@@ -89,113 +185,6 @@ jobs:
           -p hardy-eid-patterns
           --target thumbv7em-none-eabihf
 
-  test:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Restore cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci
-          save-if: false
-
-      - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Run tests
-        run: cargo test --locked --all-features --verbose --workspace --exclude storage-tests
-
-  storage-tests:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Restore cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci
-          save-if: false
-
-      - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Start postgres and minio
-        run: |
-          docker compose up -d --wait postgres minio
-
-      - name: Create S3 test bucket
-        run: |
-          docker compose exec minio \
-            mc alias set local http://localhost:9000 minioadmin minioadmin
-          docker compose exec minio \
-            mc mb --ignore-existing local/hardy-test
-
-      - name: Run storage tests
-        env:
-          TEST_POSTGRES_URL: postgresql://hardy:hardy@localhost:5432
-          TEST_S3_ENDPOINT: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
-        run: cargo test -p storage-tests --locked --features postgres,s3 --verbose
-
-      - name: Cleanup
-        if: always()
-        run: docker compose down -v
-
-  ping-tests:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Restore cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci
-          save-if: false
-
-      - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Build binaries
-        run: cargo build --locked --all-features -p hardy-bpa-server -p hardy-tools
-
-      - name: Run ping tests
-        env:
-          BP_BIN: ./target/debug/bp
-          HARDY_BPA_SERVER_CONFIG_FILE: ${{ runner.temp }}/hardy-ping.yaml
-        run: |
-          cat > "$HARDY_BPA_SERVER_CONFIG_FILE" <<'EOF'
-          log-level: info
-          node-ids: ["ipn:1.0"]
-          status-reports: true
-          built-in-services:
-            echo: [7]
-          storage:
-            metadata:
-              type: memory
-            bundle:
-              type: memory
-          clas:
-            - name: cl0
-              type: tcpclv4
-              listeners: ["[::]:4556"]
-          EOF
-          ./target/debug/hardy-bpa-server &
-          bash ./tests/interop/hardy/run_hardy_ping_test.sh --peer 127.0.0.1:4556 --count 5
-
   msrv:
     runs-on: ubuntu-latest
     steps:
@@ -215,8 +204,23 @@ jobs:
         with:
           shared-key: msrv
 
-      - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Cache protoc
+        id: protoc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/protoc
+          key: protoc-${{ env.PROTOC_VERSION }}-linux-x86_64
+
+      - name: Install protoc (cache miss)
+        if: steps.protoc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          mkdir -p "$HOME/.local/protoc"
+          unzip -q /tmp/protoc.zip -d "$HOME/.local/protoc"
+
+      - name: Add protoc to PATH
+        run: echo "$HOME/.local/protoc/bin" >> "$GITHUB_PATH"
 
       - name: Check on MSRV
         run: cargo check --locked --all-features --workspace
