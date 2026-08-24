@@ -215,14 +215,22 @@ impl Default for BundleStorageConfig {
 // Combined storage configuration. The cache knobs are optional: absent
 // keys leave the cache's own defaults in force, so no default value is
 // restated here.
+//
+// Defaults are per-field, not container-level: a container-level
+// `#[serde(default)]` constructs the whole `Default` up front, and the
+// backend selector defaults panic in builds without the default-backend
+// features, even when every backend is explicitly configured. Per-field
+// defaults fire only for the keys that are actually absent.
 #[derive(Default, Serialize, Deserialize, Debug)]
-#[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct StorageConfig {
     // LRU bundle cache capacity, in entries; must be greater than zero.
+    #[serde(default)]
     pub lru_capacity: Option<NonZeroUsize>,
 
     // Largest bundle size eligible for caching, in bytes; must be greater
     // than zero.
+    #[serde(default)]
     pub max_cached_bundle_size: Option<NonZeroUsize>,
 
     #[serde(default)]
