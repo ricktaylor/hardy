@@ -575,8 +575,34 @@ mod tests {
         }
 
         roundtrip!(aes_gcm::aes::cipher::consts::U8, 8);
+        roundtrip!(aes_gcm::aes::cipher::consts::U9, 9);
+        roundtrip!(aes_gcm::aes::cipher::consts::U10, 10);
+        roundtrip!(aes_gcm::aes::cipher::consts::U11, 11);
         roundtrip!(aes_gcm::aes::cipher::consts::U12, 12);
+        roundtrip!(aes_gcm::aes::cipher::consts::U13, 13);
+        roundtrip!(aes_gcm::aes::cipher::consts::U14, 14);
+        roundtrip!(aes_gcm::aes::cipher::consts::U15, 15);
         roundtrip!(aes_gcm::aes::cipher::consts::U16, 16);
+    }
+
+    // RFC 9173 §4.3.1: the decrypt-level size dispatch pins the lower
+    // boundary too, independently of the Parameters::from_cbor bound.
+    #[test]
+    fn decrypt_rejects_out_of_range_iv() {
+        let key = [0x42u8; 32];
+        let op = Operation {
+            parameters: Arc::new(Parameters {
+                iv: alloc::vec![0xAB; 7].into(),
+                variant: AesVariant::A256GCM,
+                key: None,
+                flags: ScopeFlags::default(),
+            }),
+            results: Results(None),
+        };
+        assert!(matches!(
+            op.decrypt_gcm::<aes_gcm::aes::Aes256>(&key, b"aad", b"data"),
+            Err(Error::InvalidIvLength(7))
+        ));
     }
 
     // RFC 9173 §4.3.1: an IV outside the 8-16 byte range is rejected at parse.

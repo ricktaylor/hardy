@@ -1,7 +1,12 @@
 //! Integration tests for primary-block parsing/validation via the public
 //! `hardy_bpv7` API (Builder → bytes → parse).
 
-use hardy_bpv7::{Error, builder, crc, creation_timestamp, parse};
+use hardy_bpv7::{
+    Error, builder, bundle, crc, creation_timestamp, dtn_time, eid, parse,
+    primary_block::PrimaryBlock,
+};
+use hardy_cbor::decode::FromCbor;
+
 fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_crc_type(crc_type)
@@ -80,5 +85,129 @@ fn primary_block_validation() {
             Some(Error::InvalidVersion(6))
         ),
         "the primary-block failure must be InvalidVersion(6), got {source}"
+    );
+}
+
+// Hand-encode a primary block without CRC: an array of 8 fields, plus
+// fragment offset and total ADU length when `fragment_fields` supplies
+// them. Field order per RFC 9171 §4.3.1: version, flags, crc_type,
+// destination, source, report_to, creation timestamp, lifetime[, offset,
+// total].
+fn emit_primary(flags: u64, fragment_fields: Option<(u64, u64)>) -> Vec<u8> {
+    hardy_cbor::encode::emit_array(Some(if fragment_fields.is_some() { 10 } else { 8 }), |a| {
+        a.emit(&7u64); // version
+        a.emit(&flags);
+        a.emit(&0u64); // CRC type: none
+        a.emit(&"ipn:2.0".parse::<eid::Eid>().unwrap()); // destination
+        a.emit(&"ipn:1.0".parse::<eid::Eid>().unwrap()); // source
+        a.emit(&"ipn:1.0".parse::<eid::Eid>().unwrap()); // report-to
+        a.emit(&creation_timestamp::CreationTimestamp::from_parts(
+            Some(dtn_time::DtnTime::new(820_000_000_000)),
+            1,
+        ));
+        a.emit(&86_400_000u64); // lifetime (ms)
+        if let Some((offset, total_adu_length)) = fragment_fields {
+            a.emit(&offset);
+            a.emit(&total_adu_length);
+        }
+    })
+}
+
+// RFC 9171 §4.3.1: fragment offset and total ADU length are present exactly
+// when the is_fragment flag (bit 0) is set, and a fragment cannot start
+// beyond the end of the original ADU.
+#[test]
+fn fragment_primary_block_parsing() {
+    // Interior fragment: offset zero.
+    let data = emit_primary(0x01, Some((0, 5000)));
+    let (block, _, _) = PrimaryBlock::from_cbor(&data).expect("should parse");
+    assert!(block.flags.is_fragment);
+    assert_eq!(
+        block.id.fragment_info,
+        Some(bundle::FragmentInfo {
+            offset: 0,
+            total_adu_length: 5000
+        })
+    );
+
+    // Boundary: offset == total ADU length is legal (empty final fragment).
+    let data = emit_primary(0x01, Some((5000, 5000)));
+    let (block, _, _) = PrimaryBlock::from_cbor(&data).expect("should parse");
+    assert_eq!(
+        block.id.fragment_info,
+        Some(bundle::FragmentInfo {
+            offset: 5000,
+            total_adu_length: 5000
+        })
+    );
+
+    // offset > total ADU length is rejected during the primary-block parse.
+    let data = emit_primary(0x01, Some((5001, 5000)));
+    assert!(
+        matches!(
+            PrimaryBlock::from_cbor(&data),
+            Err(Error::InvalidFragmentInfo(5001, 5000))
+        ),
+        "offset 5001 > total 5000 should be InvalidFragmentInfo, got: {:?}",
+        PrimaryBlock::from_cbor(&data)
+    );
+}
+
+// A non-fragment primary block carrying the two extra fragment fields is
+// structurally invalid.
+#[test]
+fn non_fragment_with_fragment_fields_rejected() {
+    let data = emit_primary(0x00, Some((40, 5000)));
+    assert!(
+        PrimaryBlock::from_cbor(&data).is_err(),
+        "non-fragment primary block with 10 fields should fail to parse"
+    );
+}
+
+// Through the full bundle parse an invalid fragment offset surfaces as an
+// InvalidField error, under the primary block, wrapping InvalidFragmentInfo.
+#[test]
+fn fragment_bundle_parsing() {
+    fn make_bundle(offset: u64, total: u64) -> Vec<u8> {
+        let mut data = vec![0x9Fu8]; // indefinite-length bundle array
+        data.extend_from_slice(&emit_primary(0x01, Some((offset, total))));
+        // Payload block [1, 1, flags=0, crc_type=0, data]
+        data.extend_from_slice(&hardy_cbor::encode::emit_array(Some(5), |a| {
+            a.emit(&1u64);
+            a.emit(&1u64);
+            a.emit(&0u64);
+            a.emit(&0u64);
+            a.emit(&hardy_cbor::encode::Bytes(b"Hi"));
+        }));
+        data.push(0xFF); // break
+        data
+    }
+
+    // A valid fragment parses and carries its fragment info in the id.
+    let parsed = parse::parse(bytes::Bytes::copy_from_slice(&make_bundle(40, 5000))).unwrap();
+    assert!(parsed.bundle.primary.flags.is_fragment);
+    assert_eq!(
+        parsed.bundle.primary.id.fragment_info,
+        Some(bundle::FragmentInfo {
+            offset: 40,
+            total_adu_length: 5000
+        })
+    );
+
+    // An invalid offset is rejected as a primary-block field error.
+    let result = parse::parse(bytes::Bytes::copy_from_slice(&make_bundle(5001, 5000)));
+    let Err(Error::InvalidField {
+        field: "primary block",
+        source,
+    }) = result
+    else {
+        panic!("invalid fragment offset should fail as a primary-block error");
+    };
+    assert!(
+        matches!(
+            source.downcast_ref::<Error>(),
+            Some(Error::InvalidFragmentInfo(5001, 5000))
+        ),
+        "expected InvalidFragmentInfo(5001, 5000), got: {source:?}"
     );
 }
