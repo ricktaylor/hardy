@@ -786,6 +786,8 @@ BIBE-PDU = [
 
 For complete (non-segmented) bundles, `transmission-id`, `total-length`, and `segmented-offset` are all set to zero. This adds 3 bytes overhead but simplifies processing since BIBE-PDU is always a 4-element array, and enables future segmentation support.
 
+A PDU with any non-zero field is a segment of a larger bundle. Until segmentation is implemented, the decapsulation service rejects such PDUs rather than dispatch a partial bundle as if it were complete.
+
 **Example (complete bundle):**
 
 ```cbor
