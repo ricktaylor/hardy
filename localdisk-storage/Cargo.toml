@@ -33,6 +33,7 @@ futures = { version = "0.3", default-features = false, features = ["alloc", "asy
 memmap2 = { version = "0.9", optional = true }
 
 [dev-dependencies]
+storage-tests = { path = "../tests/storage" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
 

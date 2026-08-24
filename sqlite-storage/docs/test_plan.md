@@ -25,11 +25,11 @@ Trait-level contract testing (CRUD, polling, ordering, state transitions, recove
 
 ## 3. Generic Harness Coverage
 
-This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus a dedicated `meta_05_confirm_exists` recovery test. The following suites run against SQLite:
+This backend is registered in the storage harness with `storage_meta_tests!(sqlite, ...)` plus the recovery suite `storage_meta_recovery_tests!(sqlite_recovery, ...)`. The following suites run against SQLite:
 
 - Suite A: Basic CRUD Operations (META-01..04, META-15, META-17)
 - Suite B: Polling & Ordering (META-06..10, META-14)
-- Suite C: State Transitions & Bulk Ops (META-05, META-11..13, META-16)
+- Suite C: State Transitions & Bulk Ops (META-05, META-11, META-13, META-16)
 
 Persistence across restart (META-05) is explicitly tested — the harness inserts data, triggers recovery, and verifies the entry survives. This is not duplicated here.
 
