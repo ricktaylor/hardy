@@ -97,6 +97,35 @@ This is the rustfmt `imports_granularity = "Crate"` layout; like the block order
 
 **Keep `use` at module scope.** Imports belong at the top of the file (or `mod` block), never inside a function body. A reader should find every path a function depends on in one place, and a function-local `use` — an alias especially — hides where a name really comes from.
 
+**Refer to imported items by their bare name; do not spell a multi-segment path at the use site.** Every type, trait, function, enum variant, and constant a file references is imported at the top and used unqualified in the body. A `::`-qualified path appearing in an expression, a type position, or a signature is a defect to fix, not a stylistic choice: it is the function-local equivalent of not importing at all, scattering the "where does this come from" answer across every call rather than gathering it into the `use` block.
+
+```rust
+// avoid — paths spelled inline
+fn build(&self) -> std::sync::Arc<hardy_bpa::cla::Registry> {
+    let n = core::num::NonZeroU32::new(self.lanes)?;
+    std::sync::Arc::new(hardy_bpa::cla::Registry::with_lanes(n))
+}
+
+// preferred — names imported, body reads clean
+use core::num::NonZeroU32;
+use std::sync::Arc;
+
+use hardy_bpa::cla::Registry;
+
+fn build(&self) -> Arc<Registry> {
+    let n = NonZeroU32::new(self.lanes)?;
+    Arc::new(Registry::with_lanes(n))
+}
+```
+
+The single sanctioned reason to keep a path qualified is a **name collision**: when two imports would introduce the same identifier (a `bpsec::Error` alongside a `cbor::Error`, or two `Config`s), import the more-central one plainly and disambiguate the other. Prefer aliasing (`use hardy_cbor::decode::Error as CborError;`) and use the alias; fall back to a bare qualified path (`hardy_cbor::decode::Error`) only where an alias reads worse at the point of use. Leave a one-line comment at the qualified use so the next reader knows the qualification is deliberate, not an un-hoisted import.
+
+Three constructs are exempt because they carry no import to hoist:
+
+- **Trait-method calls**: `value.method()` and the disambiguating `<Type as Trait>::method()`.
+- **Macro invocation paths**: `tracing::debug!(...)`, `serde_json::json!(...)`.
+- **An associated function or constant reached through a type that is already imported**: with `NonZeroU32` in scope, `NonZeroU32::new(n)` and `NonZeroU32::MAX` are correct; `Self::MAX` and `Duration::from_secs(1)` likewise. The rule is about *paths to items*, not about the `Type::assoc` access that names an imported type.
+
 **Name child modules through `self::`** when importing or re-exporting from them (`use self::foo::Foo;`, `pub use self::foo::Foo;`). The explicit `self::` distinguishes the child module from a same-named dependency, so introducing a crate called `foo` later cannot silently change what the path resolves to.
 
 ```rust
@@ -193,15 +222,17 @@ extern crate alloc;
 Where a test lives depends on what it needs to reach:
 
 - **Integration tests — the default.** If a test exercises a crate's public API, put it in the crate's `tests/` directory (a sibling of `src/`). These compile as separate crates and can only see the public surface, which keeps them honest about what the crate actually exposes.
-- **In-file unit tests — only for private access.** Add a `#[cfg(test)] mod tests { use super::*; … }` block at the bottom of a source file *only* when the test needs access to private module or file internals that are not (and should not be) public. This is the one place `use super::*;` is expected — the test module deliberately pulls in its parent's private items. When such a test module grows large relative to the source it covers, move it into a dedicated `tests.rs` file in the module (declared with `#[cfg(test)] mod tests;`) rather than letting it dominate the source file; as a child module it retains the same private access.
+- **In-file unit tests — only for private access.** Add a `#[cfg(test)] mod tests { use super::*; … }` block at the bottom of a source file *only* when the test needs access to private module or file internals that are not (and should not be) public. This is the one place `use super::*;` is expected — the test module deliberately pulls in its parent's private items. A test module that has grown large is not a reason to hive it into a dedicated `src/tests.rs`: there are **no dedicated test or fixture files under `src/`**. If the large module's tests only touch the public API, move those to `tests/`; keep the genuinely internal ones inline, and put shared fixtures in an inline `#[cfg(test)] pub mod tests` cross-imported by path (`use crate::session::tests::MockSink;`).
 
-Conventions for both:
+Beyond placement, tests must be **deterministic** (never synchronize with a sleep or a timing margin; `timeout` bounds regressions only, never orders operations or proves absence) and must be **able to fail for the behaviour they name** (exercise the real production path, assert the specific value or typed error variant, never a bare `is_err()`). The full conventions (the synchronization toolbox, the paused clock, ambient-state isolation, and the fixture layout) are in the [test style guide](test_style_guide.md).
+
+Conventions for all tests:
 
 - Test functions are `snake_case` and name the scenario under test.
 - Do not add rustdoc to test functions or test helpers.
 - Parsers and protocol stream handlers also have fuzz targets under the crate's `fuzz/` directory; new wire-facing parsing code should come with one.
 
-See the [test strategy](../test_strategy.md) for the overall testing approach across unit, integration, fuzz, and interop levels.
+See the [test style guide](test_style_guide.md) for the full testing conventions and the [test strategy](../test_strategy.md) for the overall approach across unit, integration, fuzz, and interop levels.
 
 ## Markdown and Prose (for docs you write)
 

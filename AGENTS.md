@@ -45,11 +45,23 @@ Full reference: [`docs/style_guides/code_style_guide.md`](./docs/style_guides/co
 - **Write idiomatic Rust.** Default to community-standard idioms (the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) and [Rust Style Guide](https://doc.rust-lang.org/style-guide/)); the guide only records project-specific conventions, and Clippy enforces most of the rest.
 - **Formatting is `rustfmt`-decided.** Run `cargo fmt`; never hand-format to deviate from it.
 - **`use` statements form up to three blank-line-separated blocks**, in order: `std`/`core`/`alloc`, then third-party crates, then local (`self::`/`super::`/`crate::`, the order rustfmt sorts them within the block) — the rustfmt `group_imports = "StdExternalCrate"` order. Collapse same-crate imports into one nested `use` (`imports_granularity = "Crate"`, e.g. `use crate::{bundle::Bundle, eid::Eid};`); avoid glob imports (`use foo::*;`) except `super::*` in leaf/test modules.
+- **Import items; use the bare name.** Every type, trait, function, variant, and constant a file references is imported at the top and used unqualified; a multi-segment path at the use site (`std::sync::Arc::new`, `core::num::NonZeroU32`) is a defect. The one exception is a name collision between two imports (alias or qualify the less-central one, with a comment). Trait-method calls, macro paths, and `Type::assoc` on an already-imported type are exempt. Full rule and examples: [Imports and `use` Blocks](./docs/style_guides/code_style_guide.md#imports-and-use-blocks).
 - **Set visibility at the definition.** Use `pub`/`pub(crate)` on the item itself; do not widen or narrow it via re-exports elsewhere. Inside a private or `pub(crate)` module, write plain `pub`, not redundant `pub(crate)`.
 - **32-bit safe.** Hardy targets 32-bit. Never `as usize` a wire-derived `u64` length — compare in `u64` first, then `try_from`.
 - **Errors are `thiserror` enums** with a `#[error("…")]` per variant; modules expose `pub type Result<T> = core::result::Result<T, Error>`. Give sub-parsers focused leaf error types rather than reusing a crate-root `Error`.
 - **`no_std` core.** `cbor`, `bpv7`, and `bpa` are `no_std` + `alloc`; gate `std` behind a feature, don't assume it.
 - **Comments describe the present.** No "moved from / replaces the old X / now takes Y" porting narration — git holds that history.
+
+## Testing
+
+Full conventions: [`docs/style_guides/test_style_guide.md`](./docs/style_guides/test_style_guide.md). The rules most easily missed:
+
+- **Deterministic, never timed.** A test must never use `sleep` or a timing margin to order two operations: synchronize on the event itself (a signal the code raises, a capacity-1 channel rendezvous, a `Barrier`, bind-before-spawn), or add a minimal `#[cfg(test)]` hook when a private transition is otherwise unobservable.
+- **`timeout()` bounds regressions only.** Use it solely as a generous hang failsafe on an event-driven wait, with the comment `the timeout only bounds a regression`; never size it to "should finish in time", and never prove absence with a quiet window (drive a real barrier like a completed `shutdown().await`, then assert empty).
+- **Paused clock for time-dependent behaviour.** `#[tokio::test(start_paused = true)]` plus `tokio::time::advance`; never wait for a real timeout.
+- **No shared ambient state.** Ephemeral ports (`:0`), per-process temp dirs (`std::process::id()`), and RAII-guarded env vars in `#[serial]` tests.
+- **A test must be able to fail for the behaviour it names.** Exercise the real production path (never a re-implementation of the algorithm), and assert the specific value or typed error variant, never a bare `is_err()` or a `to_string().contains(...)`.
+- **Placement:** public-API tests in the crate's `tests/`; private-internal tests in an inline `#[cfg(test)] mod tests`. No test or fixture file under `src/` (no `src/tests.rs`, no `src/test_util.rs`); shared fixtures live in an inline `#[cfg(test)] pub mod tests` cross-imported by path.
 
 ## Documentation & prose
 
@@ -63,6 +75,7 @@ All in [`docs/style_guides/`](./docs/style_guides/):
 | Topic | Guide |
 |-------|-------|
 | Rust code conventions | [code_style_guide.md](./docs/style_guides/code_style_guide.md) |
+| Test conventions | [test_style_guide.md](./docs/style_guides/test_style_guide.md) |
 | Rustdoc comments | [rustdoc_style_guide.md](./docs/style_guides/rustdoc_style_guide.md) |
 | Per-crate design docs | [design_doc_style_guide.md](./docs/style_guides/design_doc_style_guide.md) |
 | Per-crate READMEs | [readme_style_guide.md](./docs/style_guides/readme_style_guide.md) |
