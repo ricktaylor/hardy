@@ -262,7 +262,17 @@ impl Store {
                 debug!("Fragment 0 extends beyond total ADU length: {}", first.0);
                 return None;
             }
-            new_data[..len].copy_from_slice(&old_data[first.2.clone()]);
+            // Defence-in-depth: the range is stored metadata, the loaded
+            // bytes are ground truth. A disagreement is a failed
+            // reassembly, never a panic.
+            let Some(payload) = old_data.get(first.2.clone()) else {
+                debug!(
+                    "Fragment 0 payload range exceeds its stored data: {}",
+                    first.0
+                );
+                return None;
+            };
+            new_data[..len].copy_from_slice(payload);
         }
 
         for (bundle_id, storage_name, payload) in results.adus.values() {
@@ -292,8 +302,13 @@ impl Store {
                 return None;
             };
 
-            let adu = self.load_data(storage_name).await?.slice(payload.clone());
-            new_data[offset..offset + len].copy_from_slice(adu.as_ref());
+            let data = self.load_data(storage_name).await?;
+            // Same defence-in-depth as fragment 0 above.
+            let Some(adu) = data.get(payload.clone()) else {
+                debug!("Fragment payload range exceeds its stored data: {bundle_id}");
+                return None;
+            };
+            new_data[offset..offset + len].copy_from_slice(adu);
         }
 
         // Rewrite primary block — Editor needs a `&Bundle`; re-parse structurally.
@@ -479,6 +494,58 @@ mod tests {
         assert!(
             result.is_none(),
             "Should reject fragment extending beyond ADU length"
+        );
+    }
+
+    /// A stored fragment-0 payload range that exceeds the stored data is a
+    /// failed reassembly, never a panic: the range is metadata, the loaded
+    /// bytes are ground truth.
+    #[tokio::test]
+    async fn reassemble_rejects_first_fragment_range_beyond_stored_data() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        // 5 bytes stored, but the recorded payload range claims 9.
+        let name0 = store_bytes(&store, b"Hello").await;
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 9);
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..9))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should fail reassembly when the stored range exceeds the data"
+        );
+    }
+
+    /// The same guard for a non-first fragment: its recorded payload range
+    /// exceeds its own stored bytes.
+    #[tokio::test]
+    async fn reassemble_rejects_fragment_range_beyond_stored_data() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let name0 = store_bytes(&store, b"Hello").await;
+        // 2 bytes stored, but the recorded payload range claims 5.
+        let name1 = store_bytes(&store, b"Wo").await;
+
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 5, 10);
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should fail reassembly when a fragment's stored range exceeds its data"
         );
     }
 
