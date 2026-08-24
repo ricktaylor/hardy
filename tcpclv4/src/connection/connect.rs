@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::*,
+    sync::mpsc::channel,
 };
 
 pub struct Connector {
@@ -90,7 +90,7 @@ impl Connector {
             } else {
                 // Terminate session
                 transport::terminate(
-                    codec::MessageCodec::new_framed(stream),
+                    codec::MessageCodec::new_framed(stream, self.ctx.segment_mru.get()),
                     codec::SessionTermReasonCode::VersionMismatch,
                     self.ctx.contact_timeout.get(),
                     &self.ctx.task_cancel_token,
@@ -118,7 +118,7 @@ impl Connector {
         } else if self.ctx.tls.as_ref().is_some_and(|tls| tls.is_required()) {
             debug!(%local_addr, %remote_addr, "Peer does not support TLS, but TLS is required by configuration");
             transport::terminate(
-                codec::MessageCodec::new_framed(stream),
+                codec::MessageCodec::new_framed(stream, self.ctx.segment_mru.get()),
                 codec::SessionTermReasonCode::ContactFailure,
                 self.ctx.contact_timeout.get(),
                 &self.ctx.task_cancel_token,
@@ -129,11 +129,12 @@ impl Connector {
         }
 
         debug!(%local_addr, %remote_addr, "New TCP (NO-TLS) connection connected");
+        let segment_mru = self.ctx.segment_mru.get();
         self.new_active(
             local_addr,
             remote_addr,
             None,
-            codec::MessageCodec::new_framed(stream),
+            codec::MessageCodec::new_framed(stream, segment_mru),
         )
         .await
     }
@@ -174,11 +175,12 @@ impl Connector {
         // authentication; a rejected certificate fails the handshake above
         debug!(%local_addr, %remote_addr, "TLS session key negotiation completed");
 
+        let segment_mru = self.ctx.segment_mru.get();
         self.new_active(
             local_addr,
             remote_addr,
             None,
-            codec::MessageCodec::new_framed(tls_stream),
+            codec::MessageCodec::new_framed(tls_stream, segment_mru),
         )
         .await
     }
@@ -334,5 +336,46 @@ impl Connector {
         });
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{connection::context::tests::test_context, tests::loopback};
+
+    // A peer answering with a TCPCLv3 contact header gets the TCPCLv3
+    // SHUTDOWN bytes [0x45, 0x01] (RFC 9174 Section 4.3's compatibility
+    // courtesy) and the dial fails as InvalidProtocol.
+    #[tokio::test]
+    async fn active_v3_peer_gets_tcpclv3_shutdown() {
+        let listener = tokio::net::TcpListener::bind(loopback()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut header = [0u8; 6];
+            stream.read_exact(&mut header).await.unwrap();
+            // The dialer's contact header: v4, no TLS configured
+            assert_eq!(header, *b"dtn!\x04\x00");
+
+            stream.write_all(b"dtn!\x03\x00").await.unwrap();
+
+            // The dialer answers with exactly the TCPCLv3 SHUTDOWN message,
+            // then shuts the stream down.
+            let mut reply = Vec::new();
+            stream.read_to_end(&mut reply).await.unwrap();
+            assert_eq!(reply, [0x45, 0x01]);
+        });
+
+        let connector = Connector {
+            tasks: Arc::new(hardy_async::TaskPool::new()),
+            ctx: test_context(None),
+        };
+        assert!(matches!(
+            connector.connect(&addr).await,
+            Err(Error::InvalidProtocol)
+        ));
+        server.await.unwrap();
     }
 }
