@@ -12,8 +12,6 @@ conversion to/from exact EIDs.
 
 extern crate alloc;
 
-#[cfg(test)]
-use alloc::vec;
 use alloc::{
     borrow::Cow,
     boxed::Box,
@@ -30,9 +28,6 @@ mod parse;
 #[cfg(feature = "dtn-pat-item")]
 mod dtn_pattern;
 
-#[cfg(test)]
-mod tests;
-
 /// Errors produced by EID pattern parsing and conversion.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -40,7 +35,8 @@ pub enum Error {
     #[error("Parse error: {0}")]
     ParseError(String),
 
-    /// The pattern is not an exact EID (contains wildcards or multiple items).
+    /// The pattern does not denote exactly one EID (it contains wildcards, or
+    /// its items name different EIDs).
     #[error("Not an exact Eid")]
     NotExact,
 }
@@ -275,12 +271,26 @@ impl From<Eid> for EidPattern {
 impl TryFrom<EidPattern> for Eid {
     type Error = Error;
 
+    /// Succeeds when every item in the set denotes the same single EID. This
+    /// covers the usual one-item exact pattern, and also the two-item set that
+    /// `From<Eid>` produces for [`Eid::Null`] (`ipn:0.0` | `dtn:none`), whose
+    /// items both name the null endpoint.
     fn try_from(value: EidPattern) -> Result<Self, Self::Error> {
         match value {
-            EidPattern::Set(items) if items.len() == 1 => {
-                items[0].try_to_eid().ok_or(Error::NotExact)
+            EidPattern::Set(items) => {
+                let mut items = items.iter();
+                let first = items
+                    .next()
+                    .and_then(EidPatternItem::try_to_eid)
+                    .ok_or(Error::NotExact)?;
+                for item in items {
+                    if item.try_to_eid().as_ref() != Some(&first) {
+                        return Err(Error::NotExact);
+                    }
+                }
+                Ok(first)
             }
-            _ => Err(Error::NotExact),
+            EidPattern::Any => Err(Error::NotExact),
         }
     }
 }

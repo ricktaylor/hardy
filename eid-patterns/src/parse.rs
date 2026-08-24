@@ -97,3 +97,27 @@ where
         .try_map(|v: &str| v.parse::<T>())
         .parse_next(input)
 }
+
+#[cfg(all(test, feature = "dtn-pat-item"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_scheme_union() {
+        assert_eq!(
+            "dtn://node/service|ipn:0.3.4"
+                .parse::<EidPattern>()
+                .expect("Failed to parse"),
+            EidPattern::Set(
+                [
+                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::Exact(
+                        "node".into(),
+                        "service".into()
+                    )),
+                    EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 3, Some(4)))
+                ]
+                .into()
+            )
+        );
+    }
+}

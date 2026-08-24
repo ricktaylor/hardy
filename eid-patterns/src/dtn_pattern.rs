@@ -269,3 +269,55 @@ fn do_glob(node_name: &str, demux: &str, pattern: &glob::Pattern) -> bool {
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Parses `s` and asserts it is a set of exactly one dtn pattern item equal
+    // to `expected`.
+    fn dtn_parse(s: &str, expected: DtnPatternItem) {
+        let EidPattern::Set(v) = s
+            .parse()
+            .unwrap_or_else(|e| panic!("failed to parse pattern {s}: {e}"))
+        else {
+            panic!("{s}: expected a pattern set");
+        };
+        let [EidPatternItem::DtnPatternItem(item)] = &v[..] else {
+            panic!("{s}: expected exactly one dtn pattern item, got {v:?}");
+        };
+        assert_eq!(item, &expected);
+    }
+
+    #[test]
+    fn parse_items() {
+        dtn_parse(
+            "dtn://node/service",
+            DtnPatternItem::Exact("node".into(), "service".into()),
+        );
+        dtn_parse("dtn://node/*", DtnPatternItem::new_glob("node/*").unwrap());
+        dtn_parse(
+            "dtn://node/**",
+            DtnPatternItem::new_glob("node/**").unwrap(),
+        );
+        dtn_parse(
+            "dtn://node/pre/**",
+            DtnPatternItem::new_glob("node/pre/**").unwrap(),
+        );
+        dtn_parse(
+            "dtn://**/some/serv",
+            DtnPatternItem::new_glob("**/some/serv").unwrap(),
+        );
+    }
+
+    #[test]
+    fn none_pattern() {
+        dtn_parse("dtn:none", DtnPatternItem::None);
+    }
+
+    #[test]
+    fn scheme_wildcard() {
+        dtn_parse("dtn:**", DtnPatternItem::Any);
+        dtn_parse("1:**", DtnPatternItem::Any);
+    }
+}
