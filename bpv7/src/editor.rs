@@ -824,6 +824,16 @@ impl<'a> Editor<'a> {
         // by this BIB. Targets of an *encrypted* BIB carry
         // `BibCoverage::Maybe` and keep it: another encrypted BIB may
         // cover them, so `Maybe` remains the accurate answer.
+        //
+        // Unlike `remove_integrity`, no CRC is restored on targets left at
+        // `CrcType::None`. This path removes a BIB wholesale precisely
+        // because the BIB cannot be processed here (unknown context,
+        // malformed — the RFC 9172 §5.1.1 failure-drop), so it never
+        // constituted a checkable integrity statement at this node, and
+        // stamping a fresh CRC would assert an integrity the node cannot
+        // vouch for. `remove_integrity` strips a *processable* BIB from a
+        // specific target, so there a CRC preserves the continuity of an
+        // integrity check that genuinely existed.
         let mut bib_targets: Vec<u64> = Vec::new();
         if let Some((block, Some(payload))) = self.block(block_number)
             && matches!(block.block_type, block::Type::BlockIntegrity)

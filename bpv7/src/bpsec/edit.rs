@@ -76,6 +76,11 @@ pub trait BPSecEditor: Sized {
     /// All-dead shrinks (every target of a covering BIB is in `blocks`)
     /// need no Encrypt key: the cascade empties the OperationSet and
     /// recursively drops the BIB.
+    ///
+    /// Targets uncovered by a removed BIB keep their original CRC type —
+    /// see [`remove_integrity`] for why no CRC is restored on this path.
+    ///
+    /// [`remove_integrity`]: BPSecEditor::remove_integrity
     #[allow(clippy::result_large_err)]
     fn remove_blocks<K>(
         self,
@@ -87,6 +92,15 @@ pub trait BPSecEditor: Sized {
 
     /// Strip the integrity check (BIB) covering a target block. Restores
     /// a CRC on the target if it had none and is no longer BCB-protected.
+    ///
+    /// The CRC restoration is deliberately unique to this path. It edits
+    /// a *processable* BIB — a checkable integrity statement — so the CRC
+    /// preserves the continuity of protection the caller is knowingly
+    /// downgrading. Removing a BIB wholesale (via [`remove_blocks`])
+    /// restores nothing: that path exists for BIBs that cannot be
+    /// processed here (unknown context, malformed — the RFC 9172 §5.1.1
+    /// failure-drop), which never made a checkable integrity statement
+    /// this node could transcribe into a CRC it vouches for.
     ///
     /// Errors with [`Error::NotSigned`] if the target has no covering
     /// BIB. Errors if the covering BIB is itself BCB-encrypted (the BIB
