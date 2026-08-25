@@ -143,16 +143,18 @@ impl Dispatcher {
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
                 // Link-scoped evidence: the neighbour is gone. Restore the
-                // pre-rewrite blocks (the stored data is the un-rewritten
-                // original), return the bundle to Waiting, and reset the
+                // pre-rewrite block map (the stored data is the
+                // un-rewritten original), park the bundle, and reset the
                 // whole peer queue so its bundles await a fresh routing
-                // decision alongside it.
+                // decision when the link returns.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
                 bundle.bpv7.blocks = pre_rewrite;
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
+                // Conditional: a peer removal or a deferred Failed
+                // outcome may have released and re-claimed the bundle
+                // while the CLA held the call; the stale snapshot must
+                // not stomp the successor's claim.
                 if self
                     .store
                     .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
@@ -164,25 +166,25 @@ impl Dispatcher {
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
+                debug!("Failed to forward bundle to peer {peer}: {e}, re-dispatching");
 
-                // Bundle-scoped evidence about a single transfer: park only
-                // this bundle, leaving the rest of the peer's queue alone —
-                // resetting the queue is the response to link-scoped
-                // evidence, above. Unlike the deferred `Failed` outcome,
-                // which is paced by a network round trip, a synchronous
-                // failure can be deterministic and instantaneous, so
-                // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event.
+                // Bundle-scoped evidence about a single transfer: restore
+                // the pre-rewrite block map (the stored data is the
+                // un-rewritten original) and re-run the routing decision
+                // now, rather than parking in Waiting or resetting the
+                // whole peer queue (link-scoped). Dispatch parks it in
+                // Waiting itself if no route remains. Mirrors the deferred
+                // `Failed` outcome path.
                 bundle.bpv7.blocks = pre_rewrite;
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
+                // Conditional for the same reason as the NoNeighbour
+                // arm: losing the swap means another task already
+                // resolved the claim, and re-dispatch is theirs.
                 if self
                     .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
                     .await
                 {
-                    self.store.watch_bundle(bundle).await;
+                    self.dispatch_bundle(bundle).await;
                 }
             }
         }
