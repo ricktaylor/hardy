@@ -1,4 +1,4 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use super::*;
 
@@ -6,7 +6,7 @@ macro_rules! impl_uint_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -21,7 +21,7 @@ macro_rules! impl_uint_from_cbor {
 impl_uint_from_cbor!(u8, u16, u32, usize);
 
 impl FromCbor for u64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -41,7 +41,7 @@ macro_rules! impl_int_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -56,7 +56,7 @@ macro_rules! impl_int_from_cbor {
 impl_int_from_cbor!(i8, i16, i32, isize);
 
 impl FromCbor for i64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -81,7 +81,7 @@ macro_rules! impl_float_from_cbor {
     ($(($ty:ty, $convert_expr:expr)),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -105,7 +105,7 @@ impl_float_from_cbor!(
 );
 
 impl FromCbor for f64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -119,7 +119,7 @@ impl FromCbor for f64 {
 }
 
 impl FromCbor for bool {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -139,7 +139,7 @@ impl FromCbor for bool {
 // instead.
 
 impl FromCbor for String {
-    type Error = self::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
@@ -157,7 +157,7 @@ impl FromCbor for String {
 }
 
 impl FromCbor for Box<[u8]> {
-    type Error = self::Error;
+    type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
@@ -183,7 +183,7 @@ impl FromCbor for Box<[u8]> {
 impl<T> FromCbor for Option<T>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     type Error = T::Error;
 
@@ -210,7 +210,7 @@ macro_rules! impl_tuple_from_cbor {
             impl<T> FromCbor for $tuple_ty
             where
                 T: FromCbor,
-                T::Error: From<self::Error>,
+                T::Error: From<Error>,
             {
                 type Error = T::Error;
 

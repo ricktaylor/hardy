@@ -1,5 +1,8 @@
-use super::*;
+use core::{cmp::Ordering, fmt, num::FpCategory};
+
 use smallvec::SmallVec;
+
+use super::*;
 
 /// Tag list carried inside a [`Head`].
 ///
@@ -132,8 +135,8 @@ pub struct Head {
     pub marker: Marker,
 }
 
-impl core::fmt::Display for Head {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Head {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ItemType::from(self).fmt(f)
     }
 }
@@ -179,8 +182,8 @@ pub enum ItemKind {
     Float,
 }
 
-impl core::fmt::Display for ItemKind {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ItemKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsignedInteger => f.write_str("Unsigned Integer"),
             Self::NegativeInteger => f.write_str("Negative Integer"),
@@ -241,8 +244,8 @@ pub struct ItemType {
     pub kind: ItemKind,
 }
 
-impl core::fmt::Display for ItemType {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for ItemType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let prefix = if self.tagged { "Tagged" } else { "Untagged" };
         write!(f, "{prefix} {}", self.kind)
     }
@@ -393,13 +396,11 @@ impl FromCbor for Head {
                 let v = f32::from_be_bytes(to_array(data)?);
                 if shortest {
                     match v.classify() {
-                        core::num::FpCategory::Nan
-                        | core::num::FpCategory::Infinite
-                        | core::num::FpCategory::Zero => {
+                        FpCategory::Nan | FpCategory::Infinite | FpCategory::Zero => {
                             // There is an FP16 representation that is shorter
                             shortest = false;
                         }
-                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        FpCategory::Subnormal | FpCategory::Normal => {
                             if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v)
                                 && <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v)
                             {
@@ -415,13 +416,11 @@ impl FromCbor for Head {
                 let v = f64::from_be_bytes(to_array(data)?);
                 if shortest {
                     match v.classify() {
-                        core::num::FpCategory::Nan
-                        | core::num::FpCategory::Infinite
-                        | core::num::FpCategory::Zero => {
+                        FpCategory::Nan | FpCategory::Infinite | FpCategory::Zero => {
                             // There is an FP16 representation that is shorter
                             shortest = false;
                         }
-                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        FpCategory::Subnormal | FpCategory::Normal => {
                             if let Some(v32) = f32::from_f64(v) {
                                 if v32.to_f64() == Some(v) {
                                     shortest = false;
@@ -484,9 +483,9 @@ fn parse_tags(data: &[u8], tags: &mut Tags) -> Result<(bool, usize), Error> {
 #[inline]
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     match data.len().cmp(&N) {
-        core::cmp::Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
-        core::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
-        core::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
+        Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
+        Ordering::Equal => Ok(data.try_into().unwrap()),
+        Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
     }
 }
 

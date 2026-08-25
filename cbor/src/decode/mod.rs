@@ -113,8 +113,14 @@ match head.marker {
 
 [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
-use super::*;
-use core::{ops::Range, str::Utf8Error};
+use alloc::vec::Vec;
+use core::{
+    fmt,
+    num::TryFromIntError,
+    ops::Range,
+    str::{Utf8Error, from_utf8},
+};
+
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
@@ -175,7 +181,7 @@ pub enum Error {
 
     /// An integer conversion failed, typically due to an out-of-range value.
     #[error(transparent)]
-    TryFromIntError(#[from] core::num::TryFromIntError),
+    TryFromIntError(#[from] TryFromIntError),
 
     /// A floating-point conversion would result in a loss of precision.
     #[error("Loss of floating-point precision")]
@@ -333,8 +339,8 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     }
 }
 
-impl<'a, 'b: 'a> core::fmt::Debug for Value<'a, 'b> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<'a, 'b: 'a> fmt::Debug for Value<'a, 'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::UnsignedInteger(n) => write!(f, "{n:?}"),
             Value::NegativeInteger(n) => write!(f, "-{n:?}"),
@@ -505,7 +511,7 @@ where
             let extent = offset_extent(data, offset, len)?;
             offset = extent.end;
             f(
-                Value::Text(core::str::from_utf8(&data[extent]).map_err(Into::into)?),
+                Value::Text(from_utf8(&data[extent]).map_err(Into::into)?),
                 shortest,
                 &marker.tags,
             )
@@ -526,7 +532,7 @@ where
                     Marker::Text(Some(len)) if inner_marker.tags.is_empty() => {
                         let extent = offset_extent(data, offset, len)?;
                         offset = extent.end;
-                        chunks.push(core::str::from_utf8(&data[extent]).map_err(Into::into)?);
+                        chunks.push(from_utf8(&data[extent]).map_err(Into::into)?);
                         shortest &= inner_shortest;
                     }
                     _ => {
@@ -627,7 +633,7 @@ where
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     T::from_cbor(data).map(|v| v.0)
 }
@@ -643,12 +649,12 @@ where
 pub fn parse_exact<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     let (value, _, len) = T::from_cbor(data)?;
     if len == data.len() {
         Ok(value)
     } else {
-        Err(self::Error::AdditionalItems.into())
+        Err(Error::AdditionalItems.into())
     }
 }

@@ -1,4 +1,7 @@
-use hardy_cbor::decode::*;
+use hardy_cbor::decode::{
+    Array, Error, FromCbor, Head, Map, Marker, Series, Value, parse, parse_array, parse_exact,
+    parse_map, parse_sequence, parse_value, skip_value,
+};
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
