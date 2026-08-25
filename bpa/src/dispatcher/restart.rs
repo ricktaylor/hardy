@@ -112,12 +112,11 @@ mod tests {
     use super::*;
     use crate::{
         bpa::{Bpa, BpaRegistration},
-        services::{Application, ApplicationSink, StatusNotify},
         storage::{
             BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
         },
-        stream::{Receiver, Segment, Sender},
+        stream::Sender,
     };
 
     struct RecordingCla {
@@ -355,131 +354,6 @@ mod tests {
             .expect("Timeout waiting for re-offer")
             .expect("Channel closed");
         assert_eq!(id, id2, "Re-offer must be the recovered bundle");
-
-        bpa.shutdown().await;
-    }
-
-    // An application stash for the recovery test: buffers the announced
-    // payload and hands it to the test.
-    struct StashApp {
-        sink: hardy_async::sync::spin::Once<Box<dyn ApplicationSink>>,
-        payloads_tx: flume::Sender<(Id, Bytes)>,
-    }
-
-    #[async_trait]
-    impl Application for StashApp {
-        async fn on_register(&self, _source: &Eid, sink: Box<dyn ApplicationSink>) {
-            self.sink.call_once(|| sink);
-        }
-
-        async fn on_unregister(&self) {}
-
-        async fn on_deliver(
-            &self,
-            bundle_id: &Id,
-            _expiry: time::OffsetDateTime,
-            _ack_requested: bool,
-            adu_size: u64,
-            stream: &mut dyn Receiver<Segment>,
-        ) -> services::Result<()> {
-            let payload = crate::stream::buffer_stream(stream, adu_size).await?;
-            let _ = self.payloads_tx.send((bundle_id.clone(), payload));
-            Ok(())
-        }
-
-        async fn on_status_notify(
-            &self,
-            _bundle_id: &Id,
-            _from: &Eid,
-            _kind: StatusNotify,
-            _reason: hardy_bpv7::status_report::ReasonCode,
-            _timestamp: Option<time::OffsetDateTime>,
-        ) {
-        }
-    }
-
-    // A bundle parked WaitingForService survives a restart: recovery
-    // replays it, the service's next registration is announced the
-    // bundle afresh, and the fresh stream collects it whole.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restart_re_announces_waiting_for_service() {
-        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
-        let data_store = Arc::new(BundleMemStorage::new(None, None));
-
-        // Seed the stores as a stop would leave them: data present,
-        // metadata parked for the service endpoint ipn:1.42.
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            "ipn:0.3.1".parse().unwrap(),
-            "ipn:1.42".parse().unwrap(),
-        )
-        .with_payload(b"survives restart".to_vec().into())
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        let data = Bytes::from(data);
-        let storage_name = data_store.save(data.clone()).await.unwrap();
-        let parsed =
-            hardy_bpv7::bundle::ParsedBundle::parse(&data, hardy_bpv7::bpsec::no_keys).unwrap();
-        let bundle = bundle::Bundle {
-            bundle: parsed.bundle,
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::WaitingForService {
-                    service: "ipn:1.42".parse().unwrap(),
-                },
-                storage_name: Some(storage_name),
-                ..Default::default()
-            },
-        };
-        let id = bundle.bundle.id.clone();
-        assert!(metadata_store.insert(&bundle).await.unwrap());
-
-        let node_ids = crate::node_ids::NodeIds::try_from(
-            [NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            })]
-            .as_slice(),
-        )
-        .unwrap();
-        let bpa = Bpa::builder()
-            .node_ids(node_ids)
-            .metadata_storage(metadata_store.clone())
-            .bundle_storage(data_store)
-            .build()
-            .await
-            .unwrap();
-        bpa.start(true);
-
-        let (payloads_tx, payloads_rx) = flume::bounded(4);
-        let app = Arc::new(StashApp {
-            sink: hardy_async::sync::spin::Once::new(),
-            payloads_tx,
-        });
-        bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
-            .await
-            .unwrap();
-
-        let (announced, payload) = tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            payloads_rx.recv_async(),
-        )
-        .await
-        .expect("the recovered bundle must be re-delivered")
-        .unwrap();
-        assert_eq!(announced, id);
-        assert_eq!(payload.as_ref(), b"survives restart");
-
-        // Completion resolves the recovered bundle terminally.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if metadata_store.0.get(&id).await.unwrap().is_none() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for the collected delivery to resolve"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
 
         bpa.shutdown().await;
     }

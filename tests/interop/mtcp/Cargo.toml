@@ -14,7 +14,7 @@ path = "src/main.rs"
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("instrument"))'] }
 
 [dependencies]
-hardy-proto = { path = "../../../proto", features = ["client"] }
+hardy-proto = { path = "../../../proto" }
 hardy-bpa = { path = "../../../bpa" }
 hardy-bpv7 = { path = "../../../bpv7" }
 hardy-cbor = { path = "../../../cbor" }

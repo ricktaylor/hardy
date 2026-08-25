@@ -1,0 +1,176 @@
+//! Mock sink implementations for testing.
+//!
+//! Each mock tracks `unregister()` calls via an `AtomicBool`.
+//! Other methods return success with no side effects.
+#![allow(dead_code)]
+
+use hardy_async::async_trait;
+use hardy_bpa::{cla, routing, services};
+use hardy_bpv7::eid::NodeId;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// ── RoutingSink ───────────────────────────────────────────────────────
+
+pub struct MockRoutingSink {
+    unregistered: AtomicBool,
+}
+
+impl MockRoutingSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+        }
+    }
+
+    pub fn is_unregistered(&self) -> bool {
+        self.unregistered.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait]
+impl routing::RoutingSink for MockRoutingSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn add_route(
+        &self,
+        _pattern: hardy_eid_patterns::EidPattern,
+        _action: routing::RouteAction,
+        _priority: u32,
+    ) -> routing::Result<bool> {
+        Ok(true)
+    }
+
+    async fn remove_route(
+        &self,
+        _pattern: &hardy_eid_patterns::EidPattern,
+        _action: &routing::RouteAction,
+        _priority: u32,
+    ) -> routing::Result<bool> {
+        Ok(true)
+    }
+}
+
+// ── CLA Sink ──────────────────────────────────────────────────────────
+
+pub struct MockClaSink {
+    unregistered: AtomicBool,
+    outcomes: std::sync::Mutex<Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)>>,
+}
+
+impl MockClaSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+            outcomes: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn outcomes(&self) -> Vec<(hardy_bpv7::bundle::Id, cla::TransferOutcome)> {
+        self.outcomes.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl cla::Sink for MockClaSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn dispatch(
+        &self,
+        _peer_node: Option<&NodeId>,
+        _peer_addr: Option<&cla::ClaAddress>,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+    ) -> cla::Result<()> {
+        Ok(())
+    }
+
+    async fn add_peer(
+        &self,
+        _cla_addr: cla::ClaAddress,
+        _node_ids: &[NodeId],
+    ) -> cla::Result<bool> {
+        Ok(true)
+    }
+
+    async fn remove_peer(&self, _cla_addr: &cla::ClaAddress) -> cla::Result<bool> {
+        Ok(true)
+    }
+
+    async fn transfer_outcome(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        outcome: cla::TransferOutcome,
+    ) -> cla::Result<()> {
+        self.outcomes
+            .lock()
+            .unwrap()
+            .push((bundle_id.clone(), outcome));
+        Ok(())
+    }
+}
+
+// ── ServiceSink ───────────────────────────────────────────────────────
+
+pub struct MockServiceSink {
+    unregistered: AtomicBool,
+}
+
+impl MockServiceSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl services::ServiceSink for MockServiceSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn send(
+        &self,
+        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
+        Err(services::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
+    }
+}
+
+// ── ApplicationSink ───────────────────────────────────────────────────
+
+pub struct MockApplicationSink {
+    unregistered: AtomicBool,
+}
+
+impl MockApplicationSink {
+    pub fn new() -> Self {
+        Self {
+            unregistered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl services::ApplicationSink for MockApplicationSink {
+    async fn unregister(&self) {
+        self.unregistered.store(true, Ordering::Relaxed);
+    }
+
+    async fn send(
+        &self,
+        _destination: hardy_bpv7::eid::Eid,
+        _data: hardy_bpa::Bytes,
+        _lifetime: core::time::Duration,
+        _options: Option<services::SendOptions>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
+        Err(services::Error::Internal(
+            "mock sink: send not implemented".into(),
+        ))
+    }
+}

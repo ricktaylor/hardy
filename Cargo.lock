@@ -1760,10 +1760,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1962,8 +1960,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tonic",
- "tonic-health",
  "trace-err",
  "tracing",
  "tracing-subscriber",
@@ -2167,23 +2163,20 @@ dependencies = [
 
 [[package]]
 name = "hardy-proto"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
- "dashmap",
- "foldhash 0.2.0",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",
  "hardy-eid-patterns",
- "jsonwebtoken",
  "prost",
  "prost-types",
- "rand 0.10.2",
  "serde",
  "time",
  "tokio",
  "tokio-stream",
  "tonic",
+ "tonic-health",
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
@@ -2302,7 +2295,6 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "tonic",
  "trace-err",
  "tracing",
  "tracing-subscriber",
@@ -2809,21 +2801,6 @@ dependencies = [
  "pest",
  "pest_derive",
  "serde",
-]
-
-[[package]]
-name = "jsonwebtoken"
-version = "9.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
-dependencies = [
- "base64 0.22.1",
- "js-sys",
- "pem",
- "ring",
- "serde",
- "serde_json",
- "simple_asn1",
 ]
 
 [[package]]
@@ -4236,18 +4213,6 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "simple_asn1"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d585997b0ac10be3c5ee635f1bab02d512760d14b7c468801ac8a01d9ae5f1d"
-dependencies = [
- "num-bigint",
- "num-traits",
- "thiserror",
- "time",
 ]
 
 [[package]]

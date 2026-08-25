@@ -155,9 +155,7 @@ impl hardy_bpa::services::Service for EchoService {
         // Do nothing
     }
 
-    /// Receives the delivered bundle to completion and reflects it.
-    /// The delivery completes on receipt, so a failed response send
-    /// loses only the reply: like a lost ping, the peer retries.
+    /// Called when a bundle is delivered
     // INTERIM BUFFERING: the echo service parses the whole request bundle
     // with a whole-buffer codec, so it assembles the stream in memory via
     // `stream::buffer_stream` before reflecting the payload. This is a
@@ -167,10 +165,10 @@ impl hardy_bpa::services::Service for EchoService {
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
-        bundle_size: u64,
+        total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = hardy_bpa::stream::buffer_stream(stream, bundle_size).await?;
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         self.echo(data).await.map_err(Into::into)
     }
 }

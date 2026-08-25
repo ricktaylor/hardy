@@ -44,15 +44,7 @@ impl policy::EgressPolicy for EgressPolicy {
         &self,
         queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
     ) -> Arc<dyn policy::EgressController> {
-        // A CLA may declare explicit lanes the null policy never
-        // classifies onto; they are tolerated and ignored, because the
-        // declaration is CLA-side shape, not this policy's contract.
-        if queues.len() > 1 {
-            debug!(
-                "Ignoring {} explicit egress lanes: the null policy forwards on the default lane",
-                queues.len() - 1
-            );
-        }
+        assert!(queues.len() == 1, "Too many queues!");
         let queue = queues.get(&None).trace_expect("No None queue?!?").clone();
         Arc::new(EgressController { queue })
     }
