@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::boxed::Box;
 
 #[cfg(feature = "rfc9173")]
 use alloc::string::ToString;
@@ -41,12 +41,7 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-// `crc`, `eid`, and `HashSet` (and the bpsec-gated names below) are also
-// relied upon by the child modules through their `use super::*` globs.
-use crate::{HashMap, HashSet, block, bundle, crc, eid, error::CaptureFieldErr};
-
-#[cfg(feature = "bpsec")]
-use crate::{bpsec, builder, editor};
+use crate::{HashMap, block, bundle, error::CaptureFieldErr};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.

@@ -5,13 +5,12 @@
 //! `parse()` consumers never reach.
 
 use bytes::Bytes;
-use hardy_bpv7::parse::{BundleParser, ParserProgress, PayloadTail};
 use hardy_bpv7::{
     Error, builder,
     crc::{self, CrcType},
     creation_timestamp, parse,
+    parse::{BundleParser, ParserProgress, PayloadTail},
 };
-
 // A bundle with a payload far larger than any sane parser chunk size, so the
 // streaming fallback fires once the payload header is passed.
 fn large_payload_bundle() -> Box<[u8]> {

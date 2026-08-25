@@ -7,11 +7,11 @@ This module defines the core bundle data model: the [`Bundle`] structure
 */
 
 use super::*;
+use crate::primary_block::PrimaryBlock;
 use alloc::collections::{BTreeMap, BTreeSet};
 use base64::prelude::*;
 use bpsec::{bcb, bib};
 use hardy_cbor::decode::{self, FromCbor};
-use primary_block::PrimaryBlock;
 
 /// A parsed BPv7 bundle: the primary block plus the extension and payload
 /// blocks keyed by block number. This is the crate's structural bundle

@@ -13,10 +13,12 @@ The §A–§E pipeline these helpers implement — what each `A1` / `A2` /
 in `bpv7/docs/parser_design.md`.
 */
 
-use super::*;
-use error::CaptureFieldErr;
+use alloc::{boxed::Box, vec::Vec};
+
+use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
+use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a
@@ -55,7 +57,7 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
 
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
     hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)

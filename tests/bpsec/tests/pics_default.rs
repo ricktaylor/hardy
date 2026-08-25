@@ -8,10 +8,10 @@ use hardy_bpv7::{
     bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     bundle, checks,
     editor::{Chunk, Editor},
+    eid::Eid,
     parse, rewrite,
 };
 use std::collections::{HashMap, HashSet};
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum PolicyAction {
     Pass,
@@ -149,7 +149,7 @@ fn pics_2_1_source_sign_payload_and_bundle_age() {
     );
 
     let sign_key = integrity_key();
-    let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
+    let src: Eid = "ipn:3.1".parse().unwrap();
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let signed = signer::Signer::new(&parsed.bundle, &incoming)
@@ -224,7 +224,7 @@ fn pics_2_3_source_encrypt_payload_and_bundle_age() {
     );
 
     let enc_key = confidentiality_key();
-    let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
+    let src: Eid = "ipn:3.1".parse().unwrap();
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let encrypted = encryptor::Encryptor::new(&parsed.bundle, &incoming)
@@ -305,7 +305,7 @@ fn pics_2_5_source_sign_then_encrypt_both() {
 
     let sign_key = integrity_key();
     let enc_key = confidentiality_key();
-    let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
+    let src: Eid = "ipn:3.1".parse().unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
@@ -448,7 +448,7 @@ fn pics_2_7_source_interleaved_sign_encrypt() {
 
     let sign_key = integrity_key();
     let enc_key = confidentiality_key();
-    let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
+    let src: Eid = "ipn:3.1".parse().unwrap();
     let flags = ScopeFlags {
         include_security_header: false,
         ..ScopeFlags::default()
@@ -783,7 +783,7 @@ fn pics_21_1_bib_split_on_partial_encrypt() {
     );
 
     let enc_key = confidentiality_key();
-    let src: hardy_bpv7::eid::Eid = "ipn:3.1".parse().unwrap();
+    let src: Eid = "ipn:3.1".parse().unwrap();
     let parsed = parse::parse(Bytes::copy_from_slice(&incoming)).expect("Failed to parse");
 
     let flags = ScopeFlags {

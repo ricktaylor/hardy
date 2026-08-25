@@ -9,10 +9,14 @@ classification / decrypt / verify primitives in [`crate::checks`] to decide
 BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 */
 
-use super::*;
-use bpsec::edit::BPSecEditor;
-use editor::{Chunk, Editor};
+use alloc::vec::Vec;
 
+use bpsec::edit::BPSecEditor;
+
+use crate::{
+    Bundle, Error, HashMap, HashSet, bpsec,
+    editor::{Chunk, Editor},
+};
 /// Apply queued rewrites. Bulk-removes via
 /// [`BPSecEditor::remove_blocks`] (which handles cascading
 /// through BCB-encrypted BIBs internally), then applies non-canonical

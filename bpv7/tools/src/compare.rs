@@ -24,7 +24,6 @@ use hardy_bpv7::{
 };
 use hardy_cbor::decode::{self, FromCbor};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
 /// Compare two bundles from their raw bytes.
 ///
 /// Returns a list of human-readable differences. Empty means identical.

@@ -1,8 +1,18 @@
-use super::*;
-use editor::{Chunk, Editor};
+use alloc::boxed::Box;
+
+use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
+use crate::{
+    HashMap, block,
+    bpsec::{self, bib, key},
+    builder, bundle, crc,
+    editor::{self, Chunk, Editor},
+    eid,
+};
 /// Errors that can occur during bundle signing.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -231,7 +241,7 @@ impl<'a> Signer<'a> {
                 .editor
                 .update_block_inner(source)
                 .map_err(|(_, e)| e)?
-                .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
+                .with_data(emit(&operation_set).0.into())
                 .rebuild();
 
             // Set BIB coverage on target blocks

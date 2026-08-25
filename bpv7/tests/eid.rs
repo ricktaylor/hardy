@@ -2,7 +2,7 @@
 //! decoding, and roundtrip canonicalisation via the public API.
 
 use hardy_bpv7::eid::{Eid, Error, IpnNodeId};
-
+use hardy_cbor::{decode::parse, encode::emit};
 mod str_tests {
     use super::*;
 
@@ -243,8 +243,7 @@ mod cbor_tests {
     fn indefinite_outer_array_accepted_but_flagged() {
         // 9f ... ff = indefinite-length array of [1, "//node/"]
         let bytes = hex!("9f 01 67 2f2f6e6f64652f ff");
-        let (eid, shortest) =
-            hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+        let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
         assert!(matches!(eid, Eid::Dtn { .. }));
         assert!(
             !shortest,
@@ -259,15 +258,13 @@ mod cbor_tests {
     fn dtn_null_canonicality() {
         // [1, "none"] — non-canonical form
         let bytes = hex!("82 01 64 6e6f6e65");
-        let (eid, shortest) =
-            hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+        let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
         assert_eq!(eid, Eid::Null);
         assert!(!shortest, "Text(\"none\") should flag shortest=false");
 
         // [1, 0] — canonical form per §4.2.5.1.1
         let bytes = hex!("82 01 00");
-        let (eid, shortest) =
-            hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+        let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
         assert_eq!(eid, Eid::Null);
         assert!(shortest, "uint 0 form should flag shortest=true");
     }
@@ -289,18 +286,15 @@ mod cbor_tests {
     }
 
     fn expect_error(data: &[u8]) -> Error {
-        hardy_cbor::decode::parse::<Eid>(data).expect_err("Parsed successfully!")
+        parse::<Eid>(data).expect_err("Parsed successfully!")
     }
 
     fn null_check(data: &[u8]) {
-        assert_eq!(
-            hardy_cbor::decode::parse::<Eid>(data).expect("Failed to parse"),
-            Eid::Null
-        );
+        assert_eq!(parse::<Eid>(data).expect("Failed to parse"), Eid::Null);
     }
 
     fn dtn_check(data: &[u8], expected_node_name: &str, expected_service_name: &str) {
-        match hardy_cbor::decode::parse(data).expect("Failed to parse") {
+        match parse(data).expect("Failed to parse") {
             Eid::Dtn {
                 node_name,
                 service_name,
@@ -318,7 +312,7 @@ mod cbor_tests {
         expected_node_number: u32,
         expected_service_number: u32,
     ) {
-        match hardy_cbor::decode::parse(data).expect("Failed to parse") {
+        match parse(data).expect("Failed to parse") {
             Eid::LegacyIpn {
                 fqnn:
                     IpnNodeId {
@@ -341,7 +335,7 @@ mod cbor_tests {
         expected_node_number: u32,
         expected_service_number: u32,
     ) {
-        match hardy_cbor::decode::parse(data).expect("Failed to parse") {
+        match parse(data).expect("Failed to parse") {
             Eid::Ipn {
                 fqnn:
                     IpnNodeId {
@@ -379,8 +373,8 @@ mod roundtrip_tests {
 
     fn roundtrip_eid_almost(eid_str: &str, expected: &str) {
         let eid = eid_str.parse::<Eid>().expect("Invalid EID");
-        let cbor = hardy_cbor::encode::emit(&eid).0;
-        let eid2 = hardy_cbor::decode::parse::<Eid>(&cbor).expect("Invalid CBOR");
+        let cbor = emit(&eid).0;
+        let eid2 = parse::<Eid>(&cbor).expect("Invalid CBOR");
         let eid_str2 = eid2.to_string();
         assert_eq!(eid_str2, expected);
     }

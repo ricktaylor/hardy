@@ -1,6 +1,7 @@
 //! Integration tests for `hardy_bpv7::editor::Editor` — building, mutating,
 //! and rebuilding bundles through the public API.
 
+use core::time::Duration;
 use hardy_bpv7::{
     Bundle, block,
     bpsec::{key, rfc9173::ScopeFlags, signer},
@@ -9,7 +10,6 @@ use hardy_bpv7::{
     eid, hop_info, parse,
 };
 use std::collections::HashSet;
-
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -100,7 +100,7 @@ fn change_report_to() {
 #[test]
 fn change_lifetime() {
     let (bundle, data) = make_bundle();
-    let new_lifetime = core::time::Duration::from_secs(7200);
+    let new_lifetime = Duration::from_secs(7200);
     let new_data = ok(Editor::new(&bundle, &data).with_lifetime(new_lifetime))
         .rebuild()
         .map(|c| Chunk::flatten(c, &data))
@@ -183,7 +183,7 @@ fn cannot_add_duplicate_hop_count() {
 fn multiple_primary_changes() {
     let (bundle, data) = make_bundle();
     let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
-    let new_lifetime = core::time::Duration::from_secs(600);
+    let new_lifetime = Duration::from_secs(600);
     let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
     let new_data = ok(editor.with_lifetime(new_lifetime))
         .rebuild()
@@ -323,7 +323,7 @@ fn rebuild_bundle_change_destination() {
 fn rebuild_bundle_multiple_primary_changes() {
     let (bundle, data) = make_bundle();
     let new_dest: eid::Eid = "ipn:99.0".parse().unwrap();
-    let new_lifetime = core::time::Duration::from_secs(600);
+    let new_lifetime = Duration::from_secs(600);
     let editor = ok(Editor::new(&bundle, &data).with_destination(new_dest.clone()));
     let (new_bundle, new_data) = ok(editor.with_lifetime(new_lifetime))
         .rebuild_bundle()

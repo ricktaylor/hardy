@@ -29,13 +29,17 @@ tools / third-party callers go through this trait for anything that
 needs a [`key::KeySource`].
 */
 
-use super::*;
-use crate::editor::{Editor, EditorBlockSet, Error as EditorError};
-use smallvec::SmallVec;
+use crate::{
+    HashMap, HashSet, block,
+    bpsec::{Error, bcb, bib, key},
+    crc,
+    editor::{Editor, EditorBlockSet, Error as EditorError},
+};
 
-// ===========================================================================
-// Extension trait — the public API
-// ===========================================================================
+use alloc::{boxed::Box, vec::Vec};
+
+use hardy_cbor::{decode::parse_exact, encode::emit};
+use smallvec::SmallVec;
 
 /// BPSec-aware operations on an [`Editor`]. See module docs for the
 /// capability list. Implemented on [`Editor<'_>`] in this module.
@@ -465,7 +469,7 @@ fn decode_bcb_opset(
     let Some((_, Some(bcb_payload))) = editor.block(bcb_num) else {
         return Ok(None);
     };
-    match hardy_cbor::decode::parse_exact::<bcb::OperationSet>(bcb_payload) {
+    match parse_exact::<bcb::OperationSet>(bcb_payload) {
         Ok(opset) => Ok(Some(opset)),
         Err(e) => Err(crate::error::Error::InvalidField {
             field: "BCB Abstract Syntax Block",
@@ -521,7 +525,7 @@ where
         Ok(p) => p,
         Err(_) => return (editor, CoveredBib::DecryptFailed),
     };
-    match hardy_cbor::decode::parse_exact::<bib::OperationSet>(&plaintext) {
+    match parse_exact::<bib::OperationSet>(&plaintext) {
         Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),
         Err(e) => (
             editor,
@@ -629,7 +633,7 @@ where
             // Unreachable: BCB {bcb_block_number} is an existing block.
             panic!("update_block on existing BCB {bcb_block_number} cannot fail (logic bug): {e}")
         })
-        .with_data(hardy_cbor::encode::emit(&new_bcb_opset).0.into())
+        .with_data(emit(&new_bcb_opset).0.into())
         .rebuild();
 
     Ok(editor)

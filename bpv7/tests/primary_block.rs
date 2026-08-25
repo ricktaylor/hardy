@@ -2,7 +2,6 @@
 //! `hardy_bpv7` API (Builder → bytes → parse).
 
 use hardy_bpv7::{builder, crc, creation_timestamp, parse};
-
 fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_crc_type(crc_type)

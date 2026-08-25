@@ -1,6 +1,17 @@
-use super::*;
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
+
+use hardy_cbor::{
+    decode::{FromCbor, parse},
+    encode::{Array, Encoder, ToCbor},
+};
 use smallvec::SmallVec;
 
+use crate::{
+    HashMap, block,
+    bpsec::{BlockSet, Context, Error, key, parse},
+    crc, eid,
+};
 /// A parsed BIB (Block Integrity Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -67,7 +78,7 @@ impl Operation {
         }
     }
 
-    fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
+    fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.emit_context(encoder, source),
@@ -75,7 +86,7 @@ impl Operation {
         }
     }
 
-    fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
+    fn emit_result(&self, array: &mut Array) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::HMAC_SHA2(o) => o.emit_result(array),
@@ -176,10 +187,10 @@ impl OperationSet {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for OperationSet {
+impl ToCbor for OperationSet {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         // Ensure we process operations in the same order
         let (targets, operations): (SmallVec<[&u64; 4]>, SmallVec<[&Operation; 4]>) =
             self.operations.iter().unzip();
@@ -203,14 +214,14 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for OperationSet {
+impl FromCbor for OperationSet {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         // ASB parsing is strict-canonical (errors on non-shortest, indefinite,
         // or tagged content) and likewise the rfc9173 context parsers below,
         // so any value returned here is canonical by construction.
-        let (asb, len) = hardy_cbor::decode::parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
+        let (asb, len) = parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
 
         // Unpack into strong types
         #[allow(unreachable_patterns)]

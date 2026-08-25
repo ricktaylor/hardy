@@ -5,10 +5,18 @@ A `BundleStatusReport` is a type of `AdministrativeRecord` used in a Bundle Prot
 on the status of a bundle. This can include events like bundle reception, forwarding, delivery, and deletion.
 */
 
-use super::*;
-use crate::error::{CaptureFieldErr, HasInvalidField};
+use alloc::boxed::Box;
+
+use hardy_cbor::{
+    decode::{FromCbor, parse, parse_array},
+    encode::{Array, Encoder, ToCbor},
+};
 use thiserror::Error;
 
+use crate::{
+    bundle, dtn_time,
+    error::{CaptureFieldErr, HasInvalidField},
+};
 /// Errors that can occur when working with status reports.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -144,19 +152,19 @@ impl TryFrom<u64> for ReasonCode {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for ReasonCode {
+impl ToCbor for ReasonCode {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&u64::from(*self))
     }
 }
 
-impl hardy_cbor::decode::FromCbor for ReasonCode {
+impl FromCbor for ReasonCode {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (v, shortest, len) = hardy_cbor::decode::parse::<(u64, bool, usize)>(data)?;
+        let (v, shortest, len) = parse::<(u64, bool, usize)>(data)?;
         if !shortest {
             return Err(Error::NotCanonical);
         }
@@ -171,7 +179,7 @@ impl hardy_cbor::decode::FromCbor for ReasonCode {
 #[derive(Debug, Clone)]
 pub struct StatusAssertion(pub Option<time::OffsetDateTime>);
 
-fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAssertion>) {
+fn emit_status_assertion(a: &mut Array, sa: &Option<StatusAssertion>) {
     // This is a horrible format!
     match sa {
         None => a.emit(&[false]),
@@ -184,7 +192,7 @@ fn emit_status_assertion(a: &mut hardy_cbor::encode::Array, sa: &Option<StatusAs
 
 fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
     match a.parse::<(T, bool)>() {
@@ -246,10 +254,10 @@ pub struct BundleStatusReport {
     pub reason: ReasonCode,
 }
 
-impl hardy_cbor::encode::ToCbor for BundleStatusReport {
+impl ToCbor for BundleStatusReport {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit_array(
             Some(if self.bundle_id.fragment_info.is_none() {
                 4
@@ -282,7 +290,7 @@ impl hardy_cbor::encode::ToCbor for BundleStatusReport {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for BundleStatusReport {
+impl FromCbor for BundleStatusReport {
     type Error = Error;
 
     /// Strict-canonical-with-§4.1-carveout decode: non-shortest scalars
@@ -290,7 +298,7 @@ impl hardy_cbor::decode::FromCbor for BundleStatusReport {
     /// indefinite-length arrays are RFC-permitted and demote the
     /// returned `shortest` flag without erroring.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, s, tags| {
+        parse_array(data, |a, s, tags| {
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
@@ -358,17 +366,17 @@ pub enum AdministrativeRecord {
     BundleStatusReport(BundleStatusReport),
 }
 
-impl hardy_cbor::encode::ToCbor for AdministrativeRecord {
+impl ToCbor for AdministrativeRecord {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
             AdministrativeRecord::BundleStatusReport(report) => encoder.emit(&(1, report)),
         }
     }
 }
 
-impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
+impl FromCbor for AdministrativeRecord {
     type Error = Error;
 
     /// Strict-canonical-with-§4.1-carveout decode: non-shortest scalars
@@ -376,7 +384,7 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
     /// indefinite-length arrays are RFC-permitted and demote the
     /// returned `shortest` flag without erroring.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, s, tags| {
+        parse_array(data, |a, s, tags| {
             // Canonical: reject non-shortest encodings and any tags.
             if !s || !tags.is_empty() {
                 return Err(Error::NotCanonical);
@@ -398,18 +406,23 @@ impl hardy_cbor::decode::FromCbor for AdministrativeRecord {
 
 #[cfg(test)]
 mod tests {
+    use hardy_cbor::{
+        decode::FromCbor,
+        encode::{emit, emit_array},
+    };
+
     use super::*;
-    use hardy_cbor::decode::FromCbor;
+    use crate::creation_timestamp;
 
     fn roundtrip_report(report: &BundleStatusReport) -> BundleStatusReport {
-        let encoded = hardy_cbor::encode::emit(report);
+        let encoded = emit(report);
         let (decoded, _, _) =
             BundleStatusReport::from_cbor(&encoded.0).expect("Should decode status report");
         decoded
     }
 
     fn roundtrip_admin(record: &AdministrativeRecord) -> AdministrativeRecord {
-        let encoded = hardy_cbor::encode::emit(record);
+        let encoded = emit(record);
         let (decoded, _, _) =
             AdministrativeRecord::from_cbor(&encoded.0).expect("Should decode admin record");
         decoded
@@ -567,7 +580,7 @@ mod tests {
     #[test]
     fn reason_code_cbor_roundtrip() {
         let code = ReasonCode::HopLimitExceeded;
-        let encoded = hardy_cbor::encode::emit(&code);
+        let encoded = emit(&code);
         let (decoded, _, _) =
             ReasonCode::from_cbor(&encoded.0).expect("Should decode reason code from CBOR");
         assert_eq!(decoded, code);
@@ -576,7 +589,7 @@ mod tests {
     #[test]
     fn unknown_admin_record_type() {
         // Encode an admin record with type code 99 (unknown)
-        let data = hardy_cbor::encode::emit_array(Some(2), |a| {
+        let data = emit_array(Some(2), |a| {
             a.emit(&99u64);
             a.emit(&0u64);
         });

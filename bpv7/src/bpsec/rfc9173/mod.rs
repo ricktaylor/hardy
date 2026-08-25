@@ -1,9 +1,12 @@
-use super::*;
-use alloc::borrow::Cow;
-use alloc::vec;
-use core::ops::Range;
+use alloc::{borrow::Cow, boxed::Box, string::ToString, vec};
+
+use hardy_cbor::{
+    decode::{FromCbor, parse_exact},
+    encode::{Encoder, ToCbor},
+};
 use rand::TryRng;
 
+use crate::{bpsec::Error, primary_block};
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
@@ -17,7 +20,7 @@ mod key_wrap;
 ///   cannot silently fall back to raw bytes and produce a wrong IPPT/AAD.
 /// - Parse fails: errors — we cannot verify or produce a canonical form.
 pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
-    match hardy_cbor::decode::parse_exact::<(primary_block::PrimaryBlock, bool)>(raw) {
+    match parse_exact::<(primary_block::PrimaryBlock, bool)>(raw) {
         Ok((_, true)) => Ok(Cow::Borrowed(raw)),
         Ok((pb, false)) => pb.emit().map(Cow::Owned).map_err(|_| Error::NotCanonical),
         Err(_) => Err(Error::NotCanonical),
@@ -69,7 +72,7 @@ impl Default for ScopeFlags {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for ScopeFlags {
+impl FromCbor for ScopeFlags {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -102,10 +105,10 @@ impl hardy_cbor::decode::FromCbor for ScopeFlags {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for ScopeFlags {
+impl ToCbor for ScopeFlags {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         let mut flags = self.unrecognised.unwrap_or(0);
         if self.include_primary_block {
             flags |= 1 << 0;

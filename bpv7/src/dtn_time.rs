@@ -3,8 +3,12 @@ This module provides a representation of DTN time, which is defined as the
 number of milliseconds since the DTN epoch (2000-01-01 00:00:00 UTC).
 */
 
-use super::*;
-
+use crate::Error;
+use core::fmt;
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Encoder, ToCbor},
+};
 const DTN_EPOCH: time::OffsetDateTime = time::macros::datetime!(2000-01-01 00:00:00 UTC);
 
 /// Represents a DTN timestamp.
@@ -46,15 +50,15 @@ impl DtnTime {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for DtnTime {
+impl ToCbor for DtnTime {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&self.0)
     }
 }
 
-impl hardy_cbor::decode::FromCbor for DtnTime {
+impl FromCbor for DtnTime {
     type Error = Error;
 
     /// Strict-canonical decode per RFC 9171 §4.1: DTN time is a bare unsigned
@@ -95,8 +99,8 @@ impl From<DtnTime> for time::OffsetDateTime {
     }
 }
 
-impl core::fmt::Display for DtnTime {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for DtnTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", time::OffsetDateTime::from(*self))
     }
 }

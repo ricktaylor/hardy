@@ -8,7 +8,7 @@ decode and emit. Reachable from [`Bundle::primary`](crate::bundle::Bundle).
 */
 
 use super::*;
-use error::CaptureFieldErr;
+use crate::error::CaptureFieldErr;
 use hardy_cbor::decode::Error as CborError;
 
 #[derive(Clone, Debug, Default)]

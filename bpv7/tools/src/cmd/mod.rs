@@ -1,15 +1,19 @@
-use std::collections::{HashMap, HashSet};
-
+use crate::{flags, io, keys};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
 use hardy_bpv7::{
     Bundle, CaptureFieldErr,
+    block::{Block, Type},
     bpsec::{bib, key::KeySet},
-    checks, parse,
+    bundle_age::BundleAge,
+    checks,
+    editor::Chunk,
+    eid::Eid,
+    hop_info::HopInfo,
+    parse,
 };
-
-use crate::{flags, io, keys};
-
+use hardy_cbor::{decode::FromCbor, encode::emit};
+use std::collections::{HashMap, HashSet};
 /// Structural parse + keyed BPSec validation in one pass: each tool runs
 /// the stages it needs and gets back a `parse::Parsed` (already
 /// coverage-stamped) ready to feed to Editor / Signer / Encryptor — no
@@ -76,7 +80,7 @@ pub(crate) fn parse_with_keys(
 /// helpers in `validate` / `inspect` / `full_rewrite`.
 pub(crate) fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, hardy_bpv7::Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
     hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
@@ -88,12 +92,12 @@ where
 /// `parse_exact` behind the `inspect` / `validate` / `full_rewrite` extraction
 /// loops.
 pub(crate) fn extract_known<T>(
-    block: &hardy_bpv7::block::Block,
+    block: &Block,
     data: &[u8],
     field: &'static str,
 ) -> Result<Option<T>, hardy_bpv7::Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
     if block.bcb.is_some() {
@@ -114,7 +118,7 @@ where
 /// per-block status).
 pub(crate) fn verify_block(
     block_number: u64,
-    blocks: &HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &HashMap<u64, Block>,
     data: &[u8],
     bib_ops: &HashMap<u64, bib::OperationSet>,
     keys: &KeySet,
@@ -169,7 +173,7 @@ pub(crate) fn verify_block(
 pub(crate) fn full_rewrite(
     data: Bytes,
     keys: &KeySet,
-) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
+) -> Result<Option<Vec<Chunk>>, hardy_bpv7::Error> {
     let parse::Parsed {
         data,
         mut bundle,
@@ -212,10 +216,10 @@ pub(crate) fn full_rewrite(
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
-            hardy_bpv7::block::Type::HopCount => {
+            Type::HopCount => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
-            hardy_bpv7::block::Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
+            Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
             _ => {}
@@ -229,25 +233,23 @@ pub(crate) fn full_rewrite(
     // here only to reject a malformed body.
     for (&n, b) in &bundle.blocks {
         match b.block_type {
-            hardy_bpv7::block::Type::PreviousNode => {
+            Type::PreviousNode => {
                 if let Some((v, shortest)) =
-                    extract_known::<(hardy_bpv7::eid::Eid, bool)>(b, &data, "Previous Node Block")?
+                    extract_known::<(Eid, bool)>(b, &data, "Previous Node Block")?
                     && !shortest
                 {
-                    to_update.insert(n, hardy_cbor::encode::emit(&v).0);
+                    to_update.insert(n, emit(&v).0);
                 }
             }
-            hardy_bpv7::block::Type::BundleAge => {
-                extract_known::<hardy_bpv7::bundle_age::BundleAge>(b, &data, "Bundle Age Block")?;
+            Type::BundleAge => {
+                extract_known::<BundleAge>(b, &data, "Bundle Age Block")?;
             }
-            hardy_bpv7::block::Type::HopCount => {
-                if let Some((v, shortest)) = extract_known::<(hardy_bpv7::hop_info::HopInfo, bool)>(
-                    b,
-                    &data,
-                    "Hop Count Block",
-                )? && !shortest
+            Type::HopCount => {
+                if let Some((v, shortest)) =
+                    extract_known::<(HopInfo, bool)>(b, &data, "Hop Count Block")?
+                    && !shortest
                 {
-                    to_update.insert(n, hardy_cbor::encode::emit(&v).0);
+                    to_update.insert(n, emit(&v).0);
                 }
             }
             _ => {}

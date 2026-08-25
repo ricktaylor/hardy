@@ -1,8 +1,18 @@
-use super::*;
-use editor::{Chunk, Editor};
+use alloc::boxed::Box;
+
+use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
+use crate::{
+    HashMap, block,
+    bpsec::{self, bcb, key},
+    bundle, crc,
+    editor::{self, Chunk, Editor},
+    eid,
+};
 /// Errors that can occur during bundle encryption.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -304,7 +314,7 @@ impl<'a> Encryptor<'a> {
                 .update_block_inner(source)
                 .map_err(|(_, e)| e)?
                 .with_data(
-                    hardy_cbor::encode::emit(&bcb::OperationSet {
+                    emit(&bcb::OperationSet {
                         source: bpsec_source,
                         operations,
                     })

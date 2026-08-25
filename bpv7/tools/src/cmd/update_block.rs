@@ -1,5 +1,8 @@
 use super::*;
-
+use hardy_bpv7::{
+    bpsec::key::KeySet,
+    editor::{Chunk, Editor},
+};
 #[derive(Parser, Debug)]
 #[command(
     about = "Update an existing block in a bundle",
@@ -45,7 +48,7 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
         let data = self.input.read_all()?;
 
         // Structural parse + keyed BPSec validation in one pass
@@ -55,7 +58,7 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = hardy_bpv7::editor::Editor::new(&raw, &data);
+        let editor = Editor::new(&raw, &data);
 
         let mut block_builder = editor
             .update_block(self.block_number)
@@ -87,7 +90,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        let out = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
+        let out = Chunk::flatten_bytes(chunks, data);
         self.output.write_all(&out)
     }
 }

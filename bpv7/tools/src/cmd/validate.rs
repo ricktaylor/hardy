@@ -1,5 +1,12 @@
 use super::*;
-
+use hardy_bpv7::{
+    block::{Block, Type},
+    bpsec::key::KeySet,
+    bundle_age::BundleAge,
+    eid::Eid,
+    hop_info::HopInfo,
+};
+use std::collections::HashMap;
 #[derive(Parser, Debug)]
 #[command(
     about = "Check one or more bundles for validity",
@@ -22,7 +29,7 @@ impl Command {
             return Err(anyhow::anyhow!("No files to validate"));
         }
 
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let mut count_failed: usize = 0;
         for input in self.files {
@@ -65,25 +72,22 @@ impl Command {
 /// skipped.
 fn known_blocks_canonical(
     data: &[u8],
-    blocks: &std::collections::HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &HashMap<u64, Block>,
 ) -> Result<bool, hardy_bpv7::Error> {
     for b in blocks.values() {
-        let shortest = match b.block_type {
-            hardy_bpv7::block::Type::PreviousNode => {
-                extract_known::<(hardy_bpv7::eid::Eid, bool)>(b, data, "Previous Node Block")?
-                    .is_none_or(|(_, s)| s)
-            }
-            hardy_bpv7::block::Type::HopCount => {
-                extract_known::<(hardy_bpv7::hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
-                    .is_none_or(|(_, s)| s)
-            }
-            hardy_bpv7::block::Type::BundleAge => {
-                // Always canonical; decoded only to reject a malformed body.
-                extract_known::<hardy_bpv7::bundle_age::BundleAge>(b, data, "Bundle Age Block")?;
-                true
-            }
-            _ => true,
-        };
+        let shortest =
+            match b.block_type {
+                Type::PreviousNode => extract_known::<(Eid, bool)>(b, data, "Previous Node Block")?
+                    .is_none_or(|(_, s)| s),
+                Type::HopCount => extract_known::<(HopInfo, bool)>(b, data, "Hop Count Block")?
+                    .is_none_or(|(_, s)| s),
+                Type::BundleAge => {
+                    // Always canonical; decoded only to reject a malformed body.
+                    extract_known::<BundleAge>(b, data, "Bundle Age Block")?;
+                    true
+                }
+                _ => true,
+            };
         if !shortest {
             return Ok(false);
         }

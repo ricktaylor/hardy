@@ -1,7 +1,10 @@
-use super::*;
-use alloc::borrow::Cow;
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use core::time::Duration;
+
+use hardy_cbor::encode::{Array, Raw, emit, emit_array};
 use thiserror::Error;
 
+use crate::{HashMap, block, bundle, crc, creation_timestamp, eid, error, hop_info, primary_block};
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Cannot add a primary block")]
@@ -26,7 +29,7 @@ pub struct Builder<'a> {
     source: eid::Eid,
     destination: eid::Eid,
     report_to: Option<eid::Eid>,
-    lifetime: core::time::Duration,
+    lifetime: Duration,
     payload: BlockTemplate<'a>,
     extensions: Vec<BlockTemplate<'a>>,
 }
@@ -50,7 +53,7 @@ impl<'a> Builder<'a> {
             bundle_flags: bundle::Flags::default(),
             crc_type: crc::CrcType::CRC32_CASTAGNOLI,
             report_to: None,
-            lifetime: core::time::Duration::new(24 * 60 * 60, 0),
+            lifetime: Duration::new(24 * 60 * 60, 0),
             payload: BlockTemplate::new(
                 block::Type::Payload,
                 block::Flags::default(),
@@ -87,8 +90,8 @@ impl<'a> Builder<'a> {
     }
 
     /// Sets the lifetime for this [`Builder`].
-    pub fn with_lifetime(mut self, lifetime: core::time::Duration) -> Self {
-        self.lifetime = lifetime.min(core::time::Duration::from_millis(u64::MAX));
+    pub fn with_lifetime(mut self, lifetime: Duration) -> Self {
+        self.lifetime = lifetime.min(Duration::from_millis(u64::MAX));
         self
     }
 
@@ -121,7 +124,7 @@ impl<'a> Builder<'a> {
                 must_replicate: true,
                 ..Default::default()
             })
-            .build(hardy_cbor::encode::emit(hop_info).0.into())
+            .build(emit(hop_info).0.into())
     }
 
     /// Builds the bundle with the given timestamp, returning the parsed
@@ -153,7 +156,7 @@ impl<'a> Builder<'a> {
             // slices via `block.extent` would read the outer array head
             // instead of the primary's own array head.
             let primary_bytes = primary.emit()?;
-            let extent = a.emit(&hardy_cbor::encode::Raw(&primary_bytes));
+            let extent = a.emit(&Raw(&primary_bytes));
             blocks.insert(
                 0,
                 primary_block::PrimaryBlock::as_block(primary.crc_type, extent),
@@ -251,7 +254,7 @@ impl<'a> BlockTemplate<'a> {
         let data = self.data.take().ok_or(Error::NoBlockData)?;
         let bytes = crc::append_crc_value(
             self.block.crc_type,
-            hardy_cbor::encode::emit_array(
+            emit_array(
                 Some(if matches!(self.block.crc_type, crc::CrcType::None) {
                     5
                 } else {
@@ -275,11 +278,7 @@ impl<'a> BlockTemplate<'a> {
     }
 
     /// Builds the [`block::Block`] with the given block number and array.
-    pub fn build(
-        mut self,
-        block_number: u64,
-        array: &mut hardy_cbor::encode::Array,
-    ) -> Result<block::Block, Error> {
+    pub fn build(mut self, block_number: u64, array: &mut Array) -> Result<block::Block, Error> {
         self.block.emit(
             block_number,
             self.data
@@ -307,7 +306,7 @@ pub struct BundleTemplate {
     /// The crc_type of the bundle.
     pub crc_type: Option<crc::CrcType>,
     /// The lifetime of the bundle.
-    pub lifetime: Option<core::time::Duration>,
+    pub lifetime: Option<Duration>,
     /// The hop_limit of the bundle.
     pub hop_limit: Option<u64>,
 }
@@ -361,10 +360,10 @@ fn test_builder_block_map_keys() {
     let (bundle, _data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .add_extension_block(block::Type::PreviousNode)
         .unwrap()
-        .build(hardy_cbor::encode::emit(&prev_node).0.into())
+        .build(emit(&prev_node).0.into())
         .add_extension_block(block::Type::BundleAge)
         .unwrap()
-        .build(hardy_cbor::encode::emit(&0u64).0.into())
+        .build(emit(&0u64).0.into())
         .with_payload("Hello".as_bytes().into())
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();

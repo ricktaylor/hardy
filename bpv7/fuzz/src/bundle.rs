@@ -2,7 +2,6 @@ use bytes::Bytes;
 use hardy_bpv7::{bpsec::key, checks, parse, rewrite};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-
 /// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
 /// classify A1/A2/A3 (with the §A delete-block list), `checks::verify`
 /// (§B decrypt-and-validate BCB-covered BIBs, §C8 decrypt BCB-protected

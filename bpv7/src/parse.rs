@@ -10,11 +10,12 @@ BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 */
 
 use super::*;
-use bytes::{Bytes, BytesMut};
-use error::CaptureFieldErr;
 use hardy_cbor::decode::{Error as CborError, Head, Marker};
-use primary_block::PrimaryBlock;
+
+use bytes::{Bytes, BytesMut};
 use smallvec::SmallVec;
+
+use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
