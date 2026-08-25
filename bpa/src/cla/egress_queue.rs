@@ -41,18 +41,12 @@ pub fn new_queue_set(
     cla_addr: ClaAddress,
     lane_count: Option<core::num::NonZeroU32>,
 ) -> HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> {
-    // The declared count sizes an allocation loop, so it is clamped to
-    // MAX_LANE_COUNT rather than trusted.
-    let lane_count = lane_count.map_or(0, |n| n.get());
-    let lane_count = if lane_count > super::MAX_LANE_COUNT {
-        warn!(
-            "CLA declared {lane_count} egress lanes, clamping to {}",
-            super::MAX_LANE_COUNT
-        );
-        super::MAX_LANE_COUNT
-    } else {
-        lane_count
-    };
+    // A queue is instantiated eagerly per declared lane, so the count a CLA
+    // declares directly sizes an allocation here — cap it to keep an absurd
+    // declaration from becoming a resource bomb. Lane indices are u32 on the
+    // trait surface; an over-declared count is clamped rather than wrapped.
+    const MAX_EAGER_LANE_QUEUES: u32 = 256;
+    let lane_count = lane_count.map_or(0, |n| n.get()).min(MAX_EAGER_LANE_QUEUES);
     let shared = Arc::new(Shared {
         cla,
         dispatcher,

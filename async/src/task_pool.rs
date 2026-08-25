@@ -73,7 +73,7 @@
 ///
 /// For hierarchical cancellation (e.g., cancelling a subtask without affecting
 /// the parent pool), use [`child_token()`](TaskPool::child_token).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TaskPool {
     cancel_token: crate::CancellationToken,
     task_tracker: tokio_util::task::TaskTracker,
@@ -145,9 +145,10 @@ impl TaskPool {
     /// The task will be tracked until it completes. The returned [`JoinHandle`](crate::JoinHandle)
     /// can be used to await the task's result or check if it has finished.
     ///
-    /// A task spawned after [`shutdown()`](TaskPool::shutdown) still runs,
-    /// but an already-returned `shutdown` has not waited for it; check
-    /// [`cancel_token()`](TaskPool::cancel_token) first when that matters.
+    /// # Panics
+    ///
+    /// Panics if called after [`shutdown()`](TaskPool::shutdown) has been called,
+    /// as the tracker will be closed.
     ///
     /// # Example
     ///

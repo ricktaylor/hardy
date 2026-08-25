@@ -82,16 +82,14 @@ node-ids:
 
 ## `grpc` — Management Interface
 
-The gRPC server enables external components (CLAs, services,
-applications, routing agents) to connect to the BPA. An absent `grpc`
-section runs no gRPC server; a present section must enable at least one
-service, or parsing fails.
+The gRPC server enables external components (CLAs, services, routing
+agents) to connect to the BPA. It only starts if at least one service
+is enabled.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections; the port is claimed at startup, so a conflict is a startup error. |
-| `services` | A list drawn from `cla`, `service`, `application`, `routing`. `service` components exchange whole BPv7 bundles; `application` components exchange payloads (ADUs) | - | Required; list at least one, with no repeats, or parsing fails. A typo'd name is a parse error listing the known ones. |
-| `drain-timeout` | humantime duration string, e.g. `5s`, `1m 30s`; `0s` cuts open connections immediately | `5s` | How long a graceful shutdown waits for open gRPC connections to drain before abandoning them (a client holding an unread response stream can otherwise stall shutdown indefinitely). |
+| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections. |
+| `services` | List of service names | `[]` | Services to enable. Server does not start if empty. |
 
 Example (standalone deployment):
 

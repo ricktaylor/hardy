@@ -139,50 +139,32 @@ impl Dispatcher {
                 return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // Link-scoped evidence: the neighbour is gone. Restore the
-                // stored (un-rewritten) bundle, park it, and reset the
-                // whole peer queue so its bundles await a fresh routing
-                // decision when the link returns.
+                // The neighbour has gone, kill the queue
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
-                bundle.bundle = pre_rewrite;
-                // Conditional: a peer removal or a deferred Failed
-                // outcome may have released and re-claimed the bundle
-                // while the CLA held the call; the stale snapshot must
-                // not stomp the successor's claim.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    self.store.watch_bundle(bundle).await;
-                }
-                self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, re-dispatching");
-
-                // Bundle-scoped evidence about a single transfer: restore
-                // the stored (un-rewritten) bundle and re-run the routing
-                // decision now, rather than parking in Waiting or resetting
-                // the whole peer queue (link-scoped). Dispatch parks it in
-                // Waiting itself if no route remains. Mirrors the deferred
-                // `Failed` outcome path.
-                bundle.bundle = pre_rewrite;
-                // Conditional for the same reason as the NoNeighbour
-                // arm: losing the swap means another task already
-                // resolved the claim, and re-dispatch is theirs.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                    .await
-                {
-                    self.dispatch_bundle(bundle).await;
-                }
+                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
             }
         }
+
+        // Synchronous failure: this bundle never entered the channel. Restore
+        // the pre-rewrite Bundle (the stored data is the un-rewritten
+        // original) and return it to Waiting for a fresh routing decision
+        // along with the rest of the peer's queue.
+        bundle.bundle = pre_rewrite;
+        // Conditional for the same reason: losing the swap means the reaper
+        // or a sweep resolved the bundle while the CLA held the call.
+        if self
+            .store
+            .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+            .await
+        {
+            self.store.watch_bundle(bundle).await;
+        }
+        self.store.reset_peer_queue(peer).await;
     }
 
     // Resolves a deferred transfer outcome reported by `cla` for a bundle it

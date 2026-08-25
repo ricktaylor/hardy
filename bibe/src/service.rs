@@ -89,10 +89,10 @@ impl Service for DecapService {
         &self,
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
-        bundle_size: u64,
+        total_len: u64,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = hardy_bpa::stream::buffer_stream(stream, bundle_size).await?;
+        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
 
         // A malformed outer bundle is a permanent failure: log and accept it,
         // so it is not parked for a retry that could never succeed.

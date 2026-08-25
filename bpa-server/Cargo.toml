@@ -12,10 +12,10 @@ publish = false
 default = ["sqlite-storage", "localdisk-storage", "grpc", "tcpclv4", "otel", "ipn-legacy-filter", "echo"]
 otel = ["dep:hardy-otel"]
 sqlite-storage = ["dep:hardy-sqlite-storage"]
-postgres-storage = ["dep:hardy-postgres-storage"]
+postgres-storage = ["dep:hardy-postgres-storage", "dep:humantime"]
 localdisk-storage = ["dep:hardy-localdisk-storage"]
 s3-storage = ["dep:hardy-s3-storage"]
-grpc = ["dep:hardy-proto", "hardy-proto/server", "dep:tonic", "dep:tonic-health"]
+grpc = ["dep:hardy-proto"]
 tcpclv4 = ["dep:hardy-tcpclv4"]
 file-cla = ["dep:hardy-file-cla"]
 ipn-legacy-filter = ["dep:hardy-ipn-legacy-filter"]
@@ -39,7 +39,7 @@ hardy-async = { version = "0.2", path = "../async", features = ["watcher"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7", features = ["serde"] }
 hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["serde", "rfc9173", "tokio", "no-rfc9171-autoregister"] }
 hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", features = ["serde", "dtn-pat-item"] }
-hardy-proto = { version = "0.3", path = "../proto", optional = true }
+hardy-proto = { version = "0.2", path = "../proto", features = ["serde"], optional = true }
 hardy-sqlite-storage = { version = "0.6", path = "../sqlite-storage", optional = true }
 hardy-postgres-storage = { version = "0.2", path = "../postgres-storage", optional = true }
 hardy-localdisk-storage = { version = "0.6", path = "../localdisk-storage", optional = true }
@@ -51,12 +51,10 @@ hardy-ipn-legacy-filter = { version = "0.2", path = "../ipn-legacy-filter", feat
 hardy-echo-service = { version = "0.2", path = "../echo-service", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"] }
 config = { version = "0.15", features = ["yaml", "toml", "json"] }
-humantime = "2"
+humantime = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 directories = "6"
 clap = { version = "4", features = ["derive"] }
-tonic = { version = "0.14", optional = true }
-tonic-health = { version = "0.14", optional = true }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 trace-err = "1"

@@ -1,13 +1,8 @@
 pub mod registry;
 
-use core::time::Duration;
-
-use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
-use thiserror::Error;
-use time::OffsetDateTime;
-
 use super::*;
-use crate::stream::{Receiver, Segment};
+use hardy_bpv7::eid::Eid;
+use thiserror::Error;
 
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -19,24 +14,36 @@ pub enum Error {
     #[error("There is already a service registered as {0}")]
     ServiceIdInUse(String),
 
+    /// The provided DTN service name is syntactically invalid.
+    #[error("Invalid dtn service name {0}")]
+    DtnInvalidServiceName(String),
+
+    /// No IPN node ID is configured on this BPA, so IPN services cannot register.
+    #[error("There is no ipn node id configured")]
+    NoIpnNodeId,
+
+    /// No DTN node ID is configured on this BPA, so DTN services cannot register.
+    #[error("There is no dtn node id configured")]
+    NoDtnNodeId,
+
     /// The sink has been dropped or the BPA has shut down.
     #[error("The sink is disconnected")]
     Disconnected,
 
-    /// The accumulated payload or bundle stream exceeded the BPA's
-    /// maximum bundle size while a send was being assembled.
+    /// The payload exceeds the transport's maximum message size and was
+    /// rejected before being sent. Returned by transport-backed sinks
+    /// (e.g. gRPC) when a pre-flight size check fails, instead of
+    /// letting the oversized message break the underlying stream.
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
     /// A bundle stream completed with fewer bytes than its declared
-    /// `total_len`. An implementation may size buffers, or frame a
-    /// transfer, from the declared length before pulling the first
+    /// `total_len`. An implementation may size buffers — or frame a
+    /// transfer — from the declared length before pulling the first
     /// segment, so an under-delivering producer is rejected at the seam.
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: usize, expected: usize },
 
-    /// A declared `total_len` exceeds `usize` on this target, so the
-    /// bundle can never be addressed in memory here.
     #[error("declared length of {total_len} bytes is unaddressable on this target")]
     PayloadUnaddressable { total_len: u64 },
 
@@ -48,11 +55,6 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
-    /// The bundle's source EID does not match the sending
-    /// registration's endpoint.
-    #[error("Bundle source {0} is not the registration's endpoint")]
-    InvalidSource(Eid),
-
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]
@@ -60,7 +62,7 @@ pub enum Error {
 
     /// The bundle was dropped by a processing filter, with an optional reason code.
     #[error("Bundle dropped by filter: {0:?}")]
-    Dropped(Option<ReasonCode>),
+    Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
     #[error("Duplicate bundle already exists")]
@@ -75,15 +77,19 @@ pub enum Error {
     Internal(#[from] Box<dyn core::error::Error + Send + Sync>),
 }
 
-impl From<crate::stream::ConcatError> for Error {
-    fn from(e: crate::stream::ConcatError) -> Self {
-        match e {
-            crate::stream::ConcatError::Cancelled => Error::StreamCancelled,
-            crate::stream::ConcatError::TooLarge { size, max } => {
-                Error::PayloadTooLarge { size, max }
-            }
-        }
-    }
+/// The kind of bundle status event being reported to a service.
+///
+/// These correspond to the four status assertions defined in RFC 9171 Section 6.1.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusNotify {
+    /// The bundle was received by the reporting node.
+    Received,
+    /// The bundle was forwarded by the reporting node.
+    Forwarded,
+    /// The bundle was delivered to its destination endpoint.
+    Delivered,
+    /// The bundle was deleted by the reporting node.
+    Deleted,
 }
 
 impl From<crate::stream::BufferError> for Error {
@@ -101,21 +107,6 @@ impl From<crate::stream::BufferError> for Error {
             }
         }
     }
-}
-
-/// The kind of bundle status event being reported to a service.
-///
-/// These correspond to the four status assertions defined in RFC 9171 Section 6.1.1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusNotify {
-    /// The bundle was received by the reporting node.
-    Received,
-    /// The bundle was forwarded by the reporting node.
-    Forwarded,
-    /// The bundle was delivered to its destination endpoint.
-    Delivered,
-    /// The bundle was deleted by the reporting node.
-    Deleted,
 }
 
 /// High-level application trait for services that work with payloads only.
@@ -157,37 +148,46 @@ pub trait Application: Send + Sync {
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     async fn on_unregister(&self);
 
-    /// Called when a bundle is deliverable to this application.
+    /// Called when a bundle payload is delivered to this application as a stream of segments.
     ///
-    /// The decoded payload arrives as a segment stream. Receive it to
-    /// completion ([`Segment::Final`], usually via
-    /// [`buffer_stream`](crate::stream::buffer_stream)) and return
-    /// `Ok(())` to complete the delivery: the BPA finalizes metadata and
-    /// reporting, and the bundle is gone. Returning `Err` parks the
-    /// bundle as `WaitingForService`; a subsequent registration on the
-    /// same endpoint re-delivers it.
+    /// The implementation pulls
+    /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
+    /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
+    /// carry empty bytes) completes the delivery. The source endpoint of
+    /// the payload is `bundle_id.source`.
     ///
-    /// `adu_size` is the payload block's data size, before any BPSec
-    /// decryption, carried as `u64` so it remains valid on 32-bit
-    /// targets. An implementation may size buffers from it, but a
-    /// producer that under-delivers against it fails at the seam.
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the delivery: the
+    /// implementation must not act on the partial payload and must not
+    /// return `Ok`. Returning `Err` parks the bundle as
+    /// `WaitingForService`; a subsequent registration on the same EID
+    /// re-delivers it.
+    ///
+    /// `total_len` is the exact number of payload bytes the stream will
+    /// deliver — the sum of all segment payload lengths — carried as `u64`
+    /// so it remains valid on 32-bit targets. An implementation may size
+    /// buffers from it before pulling the first segment.
+    ///
+    /// An implementation that needs the whole payload in memory buffers the
+    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
+    /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
-        expiry: OffsetDateTime,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expiry: time::OffsetDateTime,
         ack_requested: bool,
-        adu_size: u64,
-        stream: &mut dyn Receiver<Segment>,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<()>;
 
     /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
         &self,
-        bundle_id: &Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: ReasonCode,
-        timestamp: Option<OffsetDateTime>,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<time::OffsetDateTime>,
     );
 }
 
@@ -230,24 +230,13 @@ pub trait ApplicationSink: Send + Sync {
     async fn unregister(&self);
 
     /// Sends a payload to a destination, wrapped in a bundle by the BPA.
-    ///
-    /// The payload arrives as a stream of
-    /// [`Segment`](crate::stream::Segment)s; the BPA assembles it
-    /// (canonical CBOR needs the payload's definite length before the
-    /// bundle can be built), builds and stores the bundle, and returns
-    /// its id. Dropping the sender before a [`Segment::Final`] cancels
-    /// the send and returns [`Error::StreamCancelled`].
-    ///
-    /// A caller holding a complete payload in memory sends it as a
-    /// one-segment stream, since `Bytes` implements [`Receiver`]:
-    /// `sink.send(destination, lifetime, options, &mut data).await`.
     async fn send(
         &self,
         destination: Eid,
-        lifetime: Duration,
+        data: Bytes,
+        lifetime: core::time::Duration,
         options: Option<SendOptions>,
-        stream: &mut dyn Receiver<Segment>,
-    ) -> Result<Id>;
+    ) -> Result<hardy_bpv7::bundle::Id>;
 }
 
 /// Low-level service trait with raw bundle access.
@@ -304,34 +293,47 @@ pub trait Service: Send + Sync {
     /// 2. The BPA is shutting down (BPA-initiated disconnection)
     async fn on_unregister(&self);
 
-    /// Called when a bundle is deliverable to this service.
+    /// Called when a bundle is delivered to this service as a stream of segments.
     ///
-    /// The raw bundle bytes arrive as a segment stream. Receive it to
-    /// completion ([`Segment::Final`], usually via
-    /// [`buffer_stream`](crate::stream::buffer_stream)) and return
-    /// `Ok(())` to complete the delivery: the BPA finalizes metadata and
-    /// reporting, and the bundle is gone. Returning `Err` parks the
-    /// bundle as `WaitingForService`; a subsequent registration on the
-    /// same endpoint re-delivers it.
+    /// The stream carries the raw bundle bytes (the service can parse them
+    /// if needed); `bundle_id` is the identity of the delivered bundle and
+    /// `expiry` is calculated from bundle metadata by the dispatcher. The
+    /// implementation pulls
+    /// [`Segment::Next`](crate::stream::Segment::Next) items from `stream`
+    /// until [`Segment::Final`](crate::stream::Segment::Final) (which may
+    /// carry empty bytes) completes the delivery.
     ///
-    /// `bundle_size` is the encoded bundle's size in bytes, carried as
-    /// `u64` so it remains valid on 32-bit targets.
+    /// A pull returning `Err(`[`RecvError`](crate::stream::RecvError)`)`
+    /// before `Final` means the producer aborted the delivery: the
+    /// implementation must not act on the partial bundle and must not
+    /// return `Ok`. Returning `Err` parks the bundle as
+    /// `WaitingForService`; a subsequent registration on the same EID
+    /// re-delivers it.
+    ///
+    /// `total_len` is the exact number of bundle bytes the stream will
+    /// deliver — the sum of all segment payload lengths — carried as `u64`
+    /// so it remains valid on 32-bit targets. An implementation may size
+    /// buffers from it before pulling the first segment.
+    ///
+    /// An implementation that needs the whole bundle in memory buffers the
+    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
+    /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &Id,
-        expiry: OffsetDateTime,
-        bundle_size: u64,
-        stream: &mut dyn Receiver<Segment>,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
     ) -> Result<()>;
 
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
         &self,
-        bundle_id: &Id,
+        bundle_id: &hardy_bpv7::bundle::Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: ReasonCode,
-        timestamp: Option<OffsetDateTime>,
+        reason: hardy_bpv7::status_report::ReasonCode,
+        timestamp: Option<time::OffsetDateTime>,
     );
 }
 
@@ -361,13 +363,16 @@ pub trait ServiceSink: Send + Sync {
     /// The service delivers `bpv7::Builder`-constructed bundle bytes segment
     /// by segment, and the BPA parses and validates the assembled bundle
     /// (security boundary - services are not trusted). Dropping the sender
-    /// before a [`Segment::Final`] cancels the send and returns
-    /// [`Error::StreamCancelled`].
+    /// before a [`Segment::Final`](crate::stream::Segment::Final) cancels
+    /// the send and returns [`Error::StreamCancelled`].
     ///
     /// A caller holding a complete bundle in memory sends it as a
-    /// one-segment stream, since `Bytes` implements [`Receiver`]:
+    /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
     /// `sink.send(&mut data).await`.
-    async fn send(&self, stream: &mut dyn Receiver<Segment>) -> Result<Id>;
+    async fn send(
+        &self,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+    ) -> Result<hardy_bpv7::bundle::Id>;
 }
 
 #[cfg(test)]
@@ -382,20 +387,20 @@ pub(crate) mod tests {
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
-            _: &Id,
-            _: OffsetDateTime,
+            _: &hardy_bpv7::bundle::Id,
+            _: time::OffsetDateTime,
             _: u64,
-            _: &mut dyn Receiver<Segment>,
+            _: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
         ) -> Result<()> {
             Ok(())
         }
         async fn on_status_notify(
             &self,
-            _: &Id,
+            _: &hardy_bpv7::bundle::Id,
             _: &Eid,
             _: StatusNotify,
-            _: ReasonCode,
-            _: Option<OffsetDateTime>,
+            _: hardy_bpv7::status_report::ReasonCode,
+            _: Option<time::OffsetDateTime>,
         ) {
         }
     }
