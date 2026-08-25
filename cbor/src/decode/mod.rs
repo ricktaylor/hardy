@@ -308,12 +308,12 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     ///
     /// # Which skip to use
     ///
-    /// - If you do **not** need the [`Value`], call [`decode::skip_value`]
+    /// - If you do **not** need the [`Value`], call [`skip_value`]
     ///   on the byte slice. It walks the wire format directly and pays no
     ///   chunk-list or `Series` allocation.
     /// - If you are inside a sequence and want to skip a single item
     ///   without parsing it, call [`Series::skip_value`].
-    /// - If you have already called [`decode::parse_value`] (typically
+    /// - If you have already called [`parse_value`] (typically
     ///   because you needed the `Value` to inspect or format it) and now
     ///   need to advance the cursor past the rest of that value, use this
     ///   method. The allocations have already been paid; this just

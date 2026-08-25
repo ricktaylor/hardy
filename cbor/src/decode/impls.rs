@@ -156,6 +156,13 @@ impl FromCbor for String {
     }
 }
 
+/// Decode-only by design: there is deliberately no matching `ToCbor` for
+/// `Box<[u8]>`. The blanket `[T]` encode gives `[u8]` *array* semantics
+/// (major type 4), so a byte-string impl here would make `x.to_cbor()` and
+/// `(&*x).to_cbor()` emit different wire types for the same bytes. Encode
+/// byte strings explicitly through [`encode::Bytes`](crate::encode::Bytes);
+/// an owned blob type wraps that for encoding and delegates to this impl
+/// for decoding.
 impl FromCbor for Box<[u8]> {
     type Error = Error;
 
