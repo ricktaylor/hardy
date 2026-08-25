@@ -20,17 +20,19 @@ This crate supports the interoperability aspects of RFC 9758 IPN encoding (LLR 1
 
 ### Unit Tests
 
-7 test functions in `src/lib.rs`.
+9 test functions in `src/lib.rs`.
 
 | Test Function | Plan Ref | Scope |
 | :--- | :--- | :--- |
-| `test_empty_config` | IPNF-06 | `Config::default()` → `new()` returns `None` |
+| `test_empty_config` | IPNF-06 | Empty pattern list → filter is a no-op for any bundle |
 | `test_no_next_hop` | IPNF-06b | `next_hop = None` → no rewrite |
 | `test_dtn_no_rewrite` | IPNF-06c | DTN source + dest → no rewrite |
 | `test_alloc0_non_matching` | IPNF-01 | allocator_id=0, non-matching next-hop → no rewrite |
 | `test_alloc0_matching` | IPNF-02 | allocator_id=0, matching → rewrite idempotent (already legacy on wire) |
 | `test_alloc1_non_matching` | IPNF-03 | allocator_id!=0, non-matching → no rewrite |
 | `test_alloc1_matching` | IPNF-04 | allocator_id!=0, matching → bytes change, output parses as `LegacyIpn` |
+| `test_mixed_source_only_rewrite` | IPNF-05 | IPN source + DTN dest → only the source rewritten, payload intact |
+| `test_mixed_dest_only_rewrite` | IPNF-05 (mirror) | DTN source + IPN dest → only the destination rewritten |
 
 ### Integration Verification
 
@@ -45,9 +47,9 @@ Coverage is measured against [`PLAN-IPNF-01`](unit_test_plan.md).
 
 | Scope | Planned | Implemented | Status |
 | :--- | :--- | :--- | :--- |
-| Dedicated unit tests (IPNF-01..06) | 7 | 7 | Complete |
+| Dedicated unit tests (IPNF-01..06) | 7 | 9 | Complete |
 | Filter via BPA pipeline | — | Implicit | Rewriting path exercised |
-| **Total** | **7** | **7** | **100%** |
+| **Total** | **7** | **9** | **100%** |
 
 ## 4. Line Coverage
 
@@ -63,8 +65,8 @@ lcov --summary lcov.info
   functions..: 100.0% (21 of 21 functions)
 ```
 
-Unit tests (7) exercise pattern matching, EID rewriting, no-op paths, and configuration. The 2 uncovered lines are in the `WriteFilter` trait wiring (async trait boilerplate).
+Unit tests (9) exercise pattern matching, EID rewriting, no-op paths, and configuration. The 2 uncovered lines are in the `WriteFilter` trait wiring (async trait boilerplate).
 
 ## 5. Conclusion
 
-7 unit tests cover all planned scenarios (100%): allocator×matching matrix for both allocator_id=0 and allocator_id!=0, no-op paths (no next-hop, DTN endpoints, non-matching patterns), and empty configuration. The filter is also exercised implicitly through the BPA pipeline and interop tests.
+9 unit tests cover all planned scenarios (100%): allocator×matching matrix for both allocator_id=0 and allocator_id!=0, mixed-scheme bundles where only one of source/destination is rewritten, no-op paths (no next-hop, DTN endpoints, non-matching patterns), and empty configuration. The filter is also exercised implicitly through the BPA pipeline and interop tests.

@@ -1,9 +1,8 @@
 use super::*;
-use fixtures;
 
 /// BLOB-01: Save & Load
 pub async fn blob_01_save_and_load(store: Arc<dyn BundleStorage>) {
-    let data = fixtures::random_payload(1024);
+    let data = fixtures::patterned_payload(1024);
     let name = store.save(data.clone()).await.unwrap();
 
     let loaded = store.load(&name).await.unwrap();
@@ -13,7 +12,7 @@ pub async fn blob_01_save_and_load(store: Arc<dyn BundleStorage>) {
 
 /// BLOB-02: Delete
 pub async fn blob_02_delete(store: Arc<dyn BundleStorage>) {
-    let data = fixtures::random_payload(512);
+    let data = fixtures::patterned_payload(512);
     let name = store.save(data).await.unwrap();
 
     store.delete(&name).await.unwrap();
@@ -30,43 +29,44 @@ pub async fn blob_03_missing_load(store: Arc<dyn BundleStorage>) {
 }
 
 /// BLOB-04: Recovery Scan
+///
+/// `recover()` makes no ordering promise, so all assertions here are
+/// membership checks.
 pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
-    let data_a = fixtures::random_payload(256);
-    let data_b = fixtures::random_payload(512);
+    // Generous slack for the timestamp bounds: S3-style backends stamp
+    // objects with the server clock, not ours.
+    let slack = time::Duration::hours(1);
+    let earliest = time::OffsetDateTime::now_utc() - slack;
+
+    let data_a = fixtures::patterned_payload(256);
+    let data_b = fixtures::patterned_payload(512);
 
     let name_a = store.save(data_a).await.unwrap();
     let name_b = store.save(data_b).await.unwrap();
 
-    let sink = super::VecSink::new();
+    let sink = super::VecSink::<hardy_bpa::storage::RecoveryResponse>::new();
     store.recover(&sink).await.unwrap();
-    let mut results = sink.into_inner();
+    let results = sink.into_inner();
 
     assert!(
         results.len() >= 2,
         "recover should emit entries for saved bundles"
     );
-
-    // Sort by name for deterministic comparison
-    results.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let names: Vec<&str> = results
-        .iter()
-        .map(|(n, _): &hardy_bpa::storage::RecoveryResponse| n.as_ref())
-        .collect();
     assert!(
-        names.contains(&name_a.as_ref()),
+        results.iter().any(|(n, _)| n.as_ref() == name_a.as_ref()),
         "recovery should include first saved bundle"
     );
     assert!(
-        names.contains(&name_b.as_ref()),
+        results.iter().any(|(n, _)| n.as_ref() == name_b.as_ref()),
         "recovery should include second saved bundle"
     );
 
-    // Each entry should have a valid timestamp
-    for (_, ts) in &results {
+    // Each entry should carry a timestamp close to the save time
+    let latest = time::OffsetDateTime::now_utc() + slack;
+    for (name, ts) in &results {
         assert!(
-            *ts > time::OffsetDateTime::UNIX_EPOCH,
-            "recovery timestamp should be valid"
+            *ts >= earliest && *ts <= latest,
+            "recovery timestamp for {name} should be close to the save time, got {ts}"
         );
     }
 }
@@ -76,7 +76,7 @@ pub async fn blob_04_recovery_scan(store: Arc<dyn BundleStorage>) {
 /// Loading is non-destructive: the BPA re-loads on every forwarding retry,
 /// so the entry must survive until `delete()`.
 pub async fn blob_05_repeatable_load(store: Arc<dyn BundleStorage>) {
-    let data = fixtures::random_payload(1024);
+    let data = fixtures::patterned_payload(1024);
     let name = store.save(data.clone()).await.unwrap();
 
     let first = store.load(&name).await.unwrap();

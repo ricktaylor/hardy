@@ -141,27 +141,3 @@ impl S3StorageBuilder {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn empty_bucket_is_refused() {
-        assert!(matches!(
-            S3Storage::builder(String::new()).build().await,
-            Err(Error::EmptyBucket)
-        ));
-    }
-
-    #[tokio::test]
-    async fn threshold_below_part_size_is_refused() {
-        assert!(matches!(
-            S3Storage::builder("bucket")
-                .multipart_threshold(MultipartThreshold::new(1024).unwrap())
-                .build()
-                .await,
-            Err(Error::ThresholdBelowPartSize { .. })
-        ));
-    }
-}

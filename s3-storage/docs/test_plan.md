@@ -20,7 +20,7 @@ Trait-level contract testing (save, load, delete, recovery scan) is covered by t
 
 | Ref | Description | Verified By |
 | :--- | :--- | :--- |
-| **9.1** | Store bundles on a remote system supporting the Amazon S3 API | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..04) |
+| **9.1** | Store bundles on a remote system supporting the Amazon S3 API | [`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) Suite D (BLOB-01..05) |
 | **9.1.1** | Configurable location and access credentials for the S3 instance | Harness setup (§5) — every run supplies the endpoint and credentials via configuration (`TEST_S3_ENDPOINT`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`); CI runs against MinIO |
 | **9.1.2** | Configurable maximum total for all bundle data stored on S3 | Not tested |
 | **9.1.4** | Use common S3 APIs, avoiding provider-specific extensions | By design (`aws-sdk-s3`) |
@@ -28,15 +28,15 @@ Trait-level contract testing (save, load, delete, recovery scan) is covered by t
 
 ## 3. Generic Harness Coverage
 
-This backend is registered in the storage harness with `storage_blob_tests_async!(s3, ...)`. The following suite runs against S3:
+This backend is registered in the storage harness with `storage_blob_tests!(s3, ...)`. The following suite runs against S3:
 
-- Suite D: Payload Operations (BLOB-01..04)
+- Suite D: Payload Operations (BLOB-01..05)
 
 Requires `--features s3` and a running S3-compatible endpoint (default: MinIO at `http://localhost:9000`, bucket `hardy-test`).
 
 ## 4. Backend-Specific Test Rationale
 
-No unit tests are planned for this crate. The `BundleStorage` trait contract is fully verified by the generic harness against a real S3-compatible endpoint (4 tests, feature-gated behind `--features s3`). The backend-specific scenarios listed below all require a live S3/MinIO service and are effectively testing `aws-sdk-s3` behaviour rather than Hardy code. Adding crate-level unit tests would duplicate the harness coverage or test third-party SDK semantics.
+No unit tests are planned for this crate. The `BundleStorage` trait contract is fully verified by the generic harness against a real S3-compatible endpoint (5 tests, feature-gated behind `--features s3`). The backend-specific scenarios listed below all require a live S3/MinIO service and are effectively testing `aws-sdk-s3` behaviour rather than Hardy code. Adding crate-level unit tests would duplicate the harness coverage or test third-party SDK semantics.
 
 If backend-specific integration tests are needed in future (e.g. for multipart upload verification), they should be added to the storage harness as new feature-gated tests, reusing the existing per-test prefix isolation infrastructure.
 

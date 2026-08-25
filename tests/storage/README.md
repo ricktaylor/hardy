@@ -77,8 +77,8 @@ AWS_SECRET_ACCESS_KEY=minioadmin \
 
 1. Add the crate dependency (optionally feature-gated) to `Cargo.toml`.
 2. Add a setup function in `src/lib.rs` returning `(Guard, Arc<dyn MetadataStorage>)` or `(Guard, Arc<dyn BundleStorage>)`.
-3. Register it in `tests/storage_harness.rs` using `storage_meta_tests!` / `storage_blob_tests!` (sync setup) or `storage_meta_tests_async!` / `storage_blob_tests_async!` (async setup).
-4. If the backend is persistent, add a dedicated `meta_05_confirm_exists` test outside the macro (recovery protocol only applies to persistent backends).
+3. Register it in `tests/storage_harness.rs` using `storage_meta_tests!` / `storage_blob_tests!` (setup functions are always `async`).
+4. If the backend is a persistent metadata store, also register the recovery suite with `storage_meta_recovery_tests!` (the recovery protocol only applies to backends that survive process restart).
 
 ## Documentation
 
