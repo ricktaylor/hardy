@@ -1229,3 +1229,67 @@ fn head_fast_path_preserves_tags_shortest() {
     );
     assert_eq!(len, 3);
 }
+
+// The owned-container impls: each copies by construction, gathers
+// indefinite-length chunks, and reports indefinite form as non-canonical.
+#[test]
+fn owned_string_decodes_definite_and_chunked() {
+    // Definite: 0x63 "abc" — canonical.
+    test_simple(String::from("abc"), &hex!("63 616263"));
+
+    // Indefinite: 0x7F, chunks "hi" + "!", break — legal, never canonical.
+    let (v, s, len) = parse::<(String, bool, usize)>(&hex!("7F 62 6869 61 21 FF")).unwrap();
+    assert_eq!(v, "hi!");
+    assert!(!s, "indefinite-length text must report non-canonical");
+    assert_eq!(len, 7);
+
+    // Tagged text decodes but is non-canonical here (tag folded into `s`).
+    let (v, s, _) = parse::<(String, bool, usize)>(&hex!("C1 61 61")).unwrap();
+    assert_eq!(v, "a");
+    assert!(!s, "tagged text must fold the tag into the canonical flag");
+}
+
+#[test]
+fn owned_bytes_decode_definite_and_chunked() {
+    // Definite: 0x43 [1, 2, 3] — canonical.
+    test_simple(Box::<[u8]>::from(&hex!("010203")[..]), &hex!("43 010203"));
+
+    // Indefinite: 0x5F, chunks [1] + [2, 3], break — legal, never canonical.
+    let (v, s, len) = parse::<(Box<[u8]>, bool, usize)>(&hex!("5F 41 01 42 0203 FF")).unwrap();
+    assert_eq!(&*v, &hex!("010203"));
+    assert!(!s, "indefinite-length bytes must report non-canonical");
+    assert_eq!(len, 7);
+}
+
+#[test]
+fn owned_containers_reject_wrong_types() {
+    // A uint is neither text nor bytes.
+    let Err(Error::IncorrectType(expected, _)) = parse::<String>(&hex!("01")) else {
+        panic!("String from a uint must be IncorrectType");
+    };
+    assert_eq!(expected, "Untagged Text String");
+
+    let Err(Error::IncorrectType(expected, _)) = parse::<Box<[u8]>>(&hex!("01")) else {
+        panic!("Box<[u8]> from a uint must be IncorrectType");
+    };
+    assert_eq!(expected, "Untagged Byte String");
+
+    // Text is not bytes, and vice versa.
+    assert!(matches!(
+        parse::<Box<[u8]>>(&hex!("61 61")),
+        Err(Error::IncorrectType(_, _))
+    ));
+    assert!(matches!(
+        parse::<String>(&hex!("41 01")),
+        Err(Error::IncorrectType(_, _))
+    ));
+}
+
+#[test]
+fn owned_containers_respect_parse_exact() {
+    // Trailing bytes after the item must be rejected by parse_exact.
+    let Err(Error::AdditionalItems) = parse_exact::<String>(&hex!("61 61 00")) else {
+        panic!("trailing bytes must be AdditionalItems");
+    };
+    assert_eq!(parse_exact::<String>(&hex!("61 61")).unwrap(), "a");
+}

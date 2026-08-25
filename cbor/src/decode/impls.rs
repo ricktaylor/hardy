@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use super::*;
 
 macro_rules! impl_uint_from_cbor {
@@ -127,6 +129,54 @@ impl FromCbor for bool {
             Marker::True => Ok((true, shortest && marker.tags.is_empty(), offset)),
             _ => Err(Error::IncorrectType("Untagged Boolean", (&marker).into())),
         }
+    }
+}
+
+// The two owned-container impls. Each copies by construction — the requested
+// type announces the allocation at the call site, which is what keeps the
+// codec's zero-copy discipline honest (see the `FromCbor` trait docs). On
+// hot paths, borrow through `parse_value` and `Value::Text`/`Value::Bytes`
+// instead.
+
+impl FromCbor for String {
+    type Error = self::Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
+            Value::Text(t) => Ok((String::from(t), shortest && tags.is_empty())),
+            // Indefinite-length text is RFC-permitted but never canonical;
+            // the chunk gather is the copy the owned return type announces.
+            Value::TextStream(chunks) => Ok((chunks.concat(), false)),
+            value => Err(Error::IncorrectType(
+                "Untagged Text String",
+                value.item_type(!tags.is_empty()),
+            )),
+        })?;
+        Ok((value, shortest, len))
+    }
+}
+
+impl FromCbor for Box<[u8]> {
+    type Error = self::Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
+            Value::Bytes(r) => Ok((Box::from(&data[r]), shortest && tags.is_empty())),
+            // Indefinite-length bytes are RFC-permitted but never canonical;
+            // the chunk gather is the copy the owned return type announces.
+            Value::ByteStream(ranges) => {
+                let mut gathered = Vec::with_capacity(ranges.iter().map(|r| r.len()).sum());
+                for r in ranges {
+                    gathered.extend_from_slice(&data[r]);
+                }
+                Ok((gathered.into_boxed_slice(), false))
+            }
+            value => Err(Error::IncorrectType(
+                "Untagged Byte String",
+                value.item_type(!tags.is_empty()),
+            )),
+        })?;
+        Ok((value, shortest, len))
     }
 }
 

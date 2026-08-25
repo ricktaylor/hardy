@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - `decode::ItemType` and `decode::ItemKind` (both `Copy`): the wire-level classification of an item — tag status plus payload-free marker shape — with `From<&Head>`/`From<&Marker>` conversions. `Display` output matches the strings `Head`'s `Display` (unchanged) has always produced.
+- `FromCbor` implementations for `String` and `Box<[u8]>` — the two owned-container decodes. Each copies by construction (the requested type announces the allocation), gathers indefinite-length chunks, and folds tags and indefinite encodings into the canonical flag; decoding otherwise remains zero-copy through the borrowed `Value` forms, whose docs now state that contract.
 
 ### Changed
 - **BREAKING:** `decode::Error::IncorrectType` carries `(&'static str, ItemType)` instead of `(String, String)`, so constructing a type-mismatch error never heap-allocates; message formatting is deferred to `Display` and the rendered text is unchanged.

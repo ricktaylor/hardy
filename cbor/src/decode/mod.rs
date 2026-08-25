@@ -186,8 +186,16 @@ pub enum Error {
 ///
 /// This trait is the foundation of the decoding system. By implementing `FromCbor`
 /// for a type, you define how it can be constructed from a CBOR representation.
-/// The library provides implementations for most primitive types, `String`, `Box<[u8]>`,
-/// and tuples.
+/// The library provides implementations for most primitive types, `Option`,
+/// tuples, and the two owned containers `String` and `Box<[u8]>`.
+///
+/// Decoding is otherwise deliberately zero-copy: text and byte strings
+/// surface as borrowed [`Value::Text`] / [`Value::Bytes`] through
+/// [`parse_value`], and no impl hides an allocation behind a borrowed
+/// return type. The two owned-container impls are the sanctioned way to
+/// *request* a copy — the type at the call site announces the allocation —
+/// and each gathers indefinite-length chunks correctly. On hot paths,
+/// prefer the borrowed `Value` forms.
 pub trait FromCbor: Sized {
     /// The error type returned when decoding fails.
     type Error;
