@@ -596,8 +596,9 @@ mod tests {
         // Wait for the poller's initial cycle before overflowing the buffer.
         wait_for_state(&tx, ChannelState::Open).await;
 
-        // Now send enough to overflow: cap=16, send 17
-        for i in 1..=17u32 {
+        // Now send enough to overflow: one more than the buffer holds.
+        let bundles = cap + 1;
+        for i in 1..=bundles as u32 {
             send(&tx, make_bundle(i)).await.unwrap();
         }
 
@@ -605,7 +606,7 @@ mod tests {
         // tombstoned; each recv is event-driven, the timeout only bounds a
         // regression.
         let mut seen = HashSet::new();
-        while seen.len() < 17 {
+        while seen.len() < bundles {
             let b = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx.recv())
                 .await
                 .expect("Timed out waiting for a bundle delivery")
@@ -613,7 +614,11 @@ mod tests {
             store.tombstone_metadata(&b.bundle.id).await;
             seen.insert(b.bundle.id);
         }
-        assert_eq!(seen.len(), 17, "Should have seen all 17 bundles");
+        assert_eq!(
+            seen.len(),
+            bundles,
+            "Should have seen all {bundles} bundles"
+        );
 
         // The poller re-opens once metadata is empty and the buffer is
         // below half capacity; duplicate deliveries may still be in
@@ -628,9 +633,12 @@ mod tests {
                 tokio::select! {
                     _ = notified => {}
                     r = rx.recv() => {
-                        if let Ok(b) = r {
-                            store.tombstone_metadata(&b.bundle.id).await;
-                        }
+                        // The sender stays alive until after this loop, so a
+                        // recv error means the channel died mid-test; fail
+                        // immediately rather than spinning on a ready Err arm
+                        // until the outer timeout.
+                        let b = r.expect("Channel disconnected while awaiting re-open");
+                        store.tombstone_metadata(&b.bundle.id).await;
                     }
                 }
             }
