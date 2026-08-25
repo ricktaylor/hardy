@@ -13,6 +13,9 @@ pub(crate) use engine::FilterEngine;
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
 pub mod rfc9171;
 
+/// Annotation slots — embedder-private metadata in the classification group.
+pub mod slots;
+
 /// Bundle validity filter - lifetime and hop-count checks.
 pub mod validity;
 
