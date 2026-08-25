@@ -593,17 +593,17 @@ impl hardy_bpa::services::Service for Service {
 
     // INTERIM BUFFERING: the ping client parses the whole response bundle
     // with a whole-buffer codec, so it assembles the stream in memory via
-    // `stream::buffer_stream` before checking the reflected payload. This
+    // `stream::concat_stream` before checking the reflected payload. This
     // is a deliberate stepping stone toward the full streaming pipeline;
     // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
-        total_len: u64,
+        bundle_size: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, bundle_size).await?;
 
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
@@ -719,6 +719,6 @@ impl hardy_bpa::services::Service for Service {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Status reports arrive via on_deliver when report_to = service EID
+        // Status reports arrive via on_receive when report_to = service EID
     }
 }

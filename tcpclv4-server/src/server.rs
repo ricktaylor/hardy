@@ -7,8 +7,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use hardy_async::{CancellationToken, TaskPool};
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_proto::client::RemoteBpa;
+use hardy_proto::client::BpaClient;
 use hardy_tcpclv4::{Tcpclv4, tls};
 use tokio::net::lookup_host;
 use tracing::{info, warn};
@@ -109,10 +108,11 @@ impl Tcpclv4Server {
     pub async fn run(self) -> anyhow::Result<()> {
         info!("Connecting to BPA at {}", self.bpa_address);
 
-        let remote_bpa = RemoteBpa::new(self.bpa_address.clone());
+        let client = BpaClient::new(self.bpa_address.clone(), self.tasks.clone())
+            .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
 
-        let node_ids = remote_bpa
-            .register_cla(self.cla_name.clone(), self.cla.clone(), None)
+        let node_ids = client
+            .register_cla(self.cla_name.clone(), self.cla.clone())
             .await
             .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 

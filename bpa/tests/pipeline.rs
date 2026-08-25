@@ -45,6 +45,10 @@ use std::{
     thread::available_parallelism,
 };
 
+// ---------------------------------------------------------------------------
+// Test CLA — captures forwarded bundles via a channel
+// ---------------------------------------------------------------------------
+
 struct PipelineCla {
     sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
     forwarded_tx: flume::Sender<Bytes>,
@@ -65,19 +69,19 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
 
+    fn lane_count(&self) -> Option<NonZeroU32> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &Id,
         total_len: u64,
@@ -236,19 +240,19 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
 
+    fn lane_count(&self) -> Option<NonZeroU32> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &Id,
         _total_len: u64,
@@ -377,9 +381,9 @@ async fn app_to_cla_routing() {
         .unwrap()
         .send(
             dest.clone(),
-            Bytes::from_static(b"Hello remote"),
             Duration::from_secs(3600),
             None,
+            &mut Bytes::from_static(b"Hello remote"),
         )
         .await
         .unwrap();
@@ -494,7 +498,7 @@ async fn echo_round_trip() {
 // ---------------------------------------------------------------------------
 
 // Register a service and a CLA peer; the returned (bpa, sink-holder, forwarded
-// channel, service EID) drive ServiceSink::send directly with multi-segment streams.
+// channel, service EID) drive ServiceSink::send_streamed directly.
 async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<Bytes>, Eid) {
     let node_id = IpnNodeId {
         allocator_id: 0,
@@ -531,7 +535,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
     (bpa, svc, forwarded_rx, "ipn:0.1.7".parse().unwrap())
 }
 
-/// A bundle streamed through `ServiceSink::send` in several segments
+/// A bundle streamed through `ServiceSink::send_streamed` in several segments
 /// originates identically to a whole-buffer `send`: the returned id matches
 /// the built bundle, and the bundle is forwarded to the CLA peer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -674,7 +678,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
     let result = svc.sink.get().unwrap().send(&mut rx).await;
     assert!(matches!(
         result,
-        Err(hardy_bpa::services::Error::InvalidDestination(_))
+        Err(hardy_bpa::services::Error::InvalidSource(source)) if source == spoofed
     ));
 
     bpa.shutdown().await;
@@ -685,7 +689,7 @@ async fn service_streamed_send_rejects_spoofed_source() {
 // ---------------------------------------------------------------------------
 
 /// A bundle dispatched via CLA addressed to a local application is
-/// delivered to that application's on_deliver callback.
+/// delivered to that application.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_delivery() {
     let node_id = IpnNodeId {
@@ -901,7 +905,7 @@ async fn reception_report_carries_unknown_security_operation() {
 // INT-BPA-12: Streamed CLA ingress
 // ---------------------------------------------------------------------------
 
-/// A bundle dispatched through `Sink::dispatch` in several segments
+/// A bundle dispatched through `Sink::dispatch_streamed` in several segments
 /// ingresses identically to the whole-buffer `dispatch`: the reassembled
 /// bundle reaches its local application.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1834,9 +1838,9 @@ async fn egress_filter_sees_consistent_extents() {
         .unwrap()
         .send(
             "ipn:0.2.99".parse().unwrap(),
-            Bytes::from_static(b"Hello remote"),
             Duration::from_secs(3600),
             None,
+            &mut Bytes::from_static(b"Hello remote"),
         )
         .await
         .unwrap();
@@ -1860,18 +1864,17 @@ async fn egress_filter_sees_consistent_extents() {
 }
 
 // ---------------------------------------------------------------------------
-// Failing Application — always returns Err from on_deliver
+// Ignoring Application — announced deliveries are never received
 // ---------------------------------------------------------------------------
 
-struct FailingApp {
+struct IgnoringApp {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
-    /// Fires once on_deliver completes (after constructing the Err), so a
-    /// waiter observes the point at which the dispatcher's Err-handling
-    /// branch is about to run rather than the point at which it started.
+    /// Fires once the announcement has arrived, so a waiter observes
+    /// that the dispatcher announced and parked the bundle.
     completed_tx: flume::Sender<()>,
 }
 
-impl FailingApp {
+impl IgnoringApp {
     fn new() -> (Arc<Self>, flume::Receiver<()>) {
         let (tx, rx) = flume::bounded(16);
         (
@@ -1885,7 +1888,7 @@ impl FailingApp {
 }
 
 #[async_trait]
-impl services::Application for FailingApp {
+impl services::Application for IgnoringApp {
     async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
         self.sink.call_once(|| sink);
     }
@@ -1897,12 +1900,12 @@ impl services::Application for FailingApp {
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        _total_len: u64,
+        _adu_size: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
-        let err = services::Error::Internal("test: simulated delivery failure".into());
+        // Returning Err declines the delivery: the bundle must stay parked.
         let _ = self.completed_tx.send(());
-        Err(err)
+        Err(services::Error::StreamCancelled)
     }
 
     async fn on_status_notify(
@@ -1917,17 +1920,17 @@ impl services::Application for FailingApp {
 }
 
 // ---------------------------------------------------------------------------
-// INT-BPA-05: dispatcher tolerates on_deliver returning Err
+// INT-BPA-05: an unreceived announcement stays parked
 // ---------------------------------------------------------------------------
 
-/// When `on_deliver` returns `Err`, the dispatcher must preserve the bundle
-/// as `WaitingForService`, not report it delivered and delete it. Proven
-/// end-to-end: after the failing receiver rejects the bundle, a fresh working
-/// receiver registered on the same service id must have it re-delivered. A
-/// regression to the old drop-on-error behaviour makes the re-delivery time
-/// out.
+/// A delivery never received to completion must stay parked as
+/// `WaitingForService`, not be reported delivered and deleted. Proven
+/// end-to-end: after an application ignores the announcement, a fresh
+/// working receiver registered on the same service id must have it
+/// re-announced and receive it. A regression to delete-on-announce
+/// makes the re-delivery time out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatcher_handles_on_deliver_err() {
+async fn unreceived_announcement_stays_parked() {
     let bpa = Bpa::builder().build().await.unwrap();
     bpa.start(false);
 
@@ -1936,7 +1939,7 @@ async fn dispatcher_handles_on_deliver_err() {
         .await
         .unwrap();
 
-    let (failing, completed_rx) = FailingApp::new();
+    let (failing, completed_rx) = IgnoringApp::new();
     let receiver_eid = bpa
         .register_application(Service::Ipn(42), failing.clone())
         .await
@@ -1948,24 +1951,24 @@ async fn dispatcher_handles_on_deliver_err() {
         .unwrap()
         .send(
             receiver_eid,
-            Bytes::from_static(b"payload"),
             Duration::from_secs(3600),
             None,
+            &mut Bytes::from_static(b"payload"),
         )
         .await
         .unwrap();
 
-    // The failing receiver rejects the bundle from within on_deliver.
+    // The ignoring receiver sees the announcement and does nothing.
     // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         completed_rx.recv_async(),
     )
     .await
-    .expect("dispatcher must call on_deliver")
+    .expect("dispatcher must announce the delivery")
     .unwrap();
 
-    // Let the dispatcher's Err branch finish parking the bundle before the
+    // Let the dispatcher finish parking the bundle before the
     // re-registration polls for waiting bundles.
     // Known test-guide deviation (timed quiesce): scheduled for the
     // dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
@@ -2023,19 +2026,19 @@ impl DeferringCla {
 
 #[async_trait]
 impl cla::Cla for DeferringCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
 
+    fn lane_count(&self) -> Option<NonZeroU32> {
+        None
+    }
+
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         bundle_id: &Id,
         _total_len: u64,
