@@ -55,11 +55,14 @@ port_open() {
     (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
 }
 
-# Pick a TCP port nothing is listening on, avoiding ports already handed out.
+# Pick a TCP port nothing is listening on, avoiding ports already handed
+# out. Kept below the Linux ephemeral floor (32768) so a transient
+# outbound connection cannot grab the port between this probe and the
+# server's bind; RANDOM caps at 32767 anyway, so 20000..32767 stays clear.
 find_free_port() {
     local port used
     while :; do
-        port=$(( (RANDOM % 20000) + 20000 ))
+        port=$(( (RANDOM % 12768) + 20000 ))
         for used in "$@"; do
             if [ "$port" -eq "$used" ]; then continue 2; fi
         done
@@ -168,7 +171,13 @@ TEST_DIR=$(mktemp -d)
 log_info "Using test directory: $TEST_DIR"
 
 # Build if needed. Set BUILD_PROFILE=debug for a faster local build.
+# Only 'release' or 'debug' are valid: any other value would build debug
+# but look under target/$BUILD_PROFILE/ and misreport a missing binary.
 BUILD_PROFILE="${BUILD_PROFILE:-release}"
+if [ "$BUILD_PROFILE" != "release" ] && [ "$BUILD_PROFILE" != "debug" ]; then
+    log_error "BUILD_PROFILE must be 'release' or 'debug', got '$BUILD_PROFILE'"
+    exit 1
+fi
 if [ "$SKIP_BUILD" = false ]; then
     log_step "Building Hardy binaries ($BUILD_PROFILE)..."
     cd "$WORKSPACE_DIR"

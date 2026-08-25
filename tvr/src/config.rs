@@ -180,6 +180,9 @@ mod tests {
 
     // Sets env vars for its lifetime and removes them on drop, so a
     // panicking assertion cannot leak them into the other #[serial] tests.
+    // Removal (rather than restoring a prior value) is deliberate: an
+    // ambient HARDY_TVR_* would corrupt the unguarded config tests anyway,
+    // so clearing it is the safer disposition.
     struct EnvGuard(Vec<&'static str>);
 
     impl EnvGuard {
