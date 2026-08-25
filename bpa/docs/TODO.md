@@ -51,13 +51,9 @@ Two non-atomic await sequences in the CLA/routing registries can race and leave 
 
 **`unregister_agent` name-reuse race (`src/routing/rib.rs`, review #15).** `unregister_agent` removes the agent from the name map, `await`s `agent.on_unregister()` (arbitrary duration — e.g. a gRPC proxy drain), then calls `remove_by_source(name)`. A new agent that registers under the same name during that await (the map slot is already free) has its freshly-installed routes deleted by the stale `remove_by_source`, which matches purely on the source string. Fix needs an identity/generation token so `remove_by_source` only removes routes owned by the unregistering agent instance, not a same-named successor.
 
-## Bundle cancellation (dropped 2026-08-21, re-owned by grpc-api-v1)
+## Bundle cancellation (dropped 2026-08-21)
 
-`ServiceSink::cancel`/`ApplicationSink::cancel`, the wire `CancelRequest`/`CancelResponse` pair, and `Dispatcher::cancel_local_dispatch` were removed: the wire was the only consumer, and the implementation was status-blind (it would "cancel" a bundle mid-CLA-transfer, returning true while the peer might still receive it). If cancellation returns, it must be conditional on a still-cancellable status (CAS tombstone), and per-flow replacement/deletion-in-custody belongs to the FlowController seam (`policy_subsystem_redesign.md`). The oneof slot 7 / name "cancel" is reserved in service.proto.
-
-## Wire lane_count for remote CLAs
-
-`Cla::lane_count()` is a required method, but CLA registration on the wire carries no lane count, so the gRPC bridge hardcodes `None` and a remote multi-lane CLA has no way to declare its parallelism. Add `optional uint32 lane_count` to registration (presence-tracked: absent = no declared limit, zero = invalid and rejected — the shape settled in `policy_subsystem_redesign.md`) when the wire batch for `hardy.*.v1` package scoping lands.
+`ServiceSink::cancel`/`ApplicationSink::cancel` and `Dispatcher::cancel_local_dispatch` were removed, along with the old wire's `CancelRequest`/`CancelResponse` pair: the wire was the only consumer, and the implementation was status-blind (it would "cancel" a bundle mid-CLA-transfer, returning true while the peer might still receive it). The v1 wire deliberately carries no cancellation. If cancellation returns, it must be conditional on a still-cancellable status (CAS tombstone), and per-flow replacement/deletion-in-custody belongs to the FlowController seam (`policy_subsystem_redesign.md`).
 
 ## CLA transfer-outcome follow-ups (feat/cla-transfer-outcome review, 2026-08-07)
 
