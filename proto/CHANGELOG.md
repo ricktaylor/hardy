@@ -6,22 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Added
-- `ForwardBundleRequest.bundle_id` — the RFC 9171 bundle identifier in key form, identifying the transfer for correlation; CLAs treat it as opaque. Required: the CLA client rejects a forward that omits it, so a CLA built on this crate requires a BPA of at least the same version (the reverse skew — an old CLA against a new BPA — degrades safely).
-- Deferred transfer outcomes on the wire: `accepted` as a `ForwardBundleResponse` result, and the `TransferOutcomeRequest`/`TransferOutcomeResponse` pair resolving an accepted transfer as `completed` or `failed` (with an opaque `google.rpc.Status` reason), keyed by `bundle_id`. Deferral is a per-bundle choice in the forward answer — there is no registration-level capability negotiation.
-- `AppReceiveRequest.bundle_id` and `ServiceReceiveRequest.bundle_id` — the delivered bundle's identifier, in the key encoding documented on `SendResponse.bundle_id`. Required: the client SDK fails the delivery without it.
-
 ### Changed
-- **BREAKING** (`serde` feature): the server `Config` refuses unknown keys at deserialization, so a typo in a consumer's `grpc` config section fails loudly instead of silently leaving the default in force.
-- **BREAKING:** `ForwardBundleRequest.queue` is renamed to `lane` (same field number and type: binary-compatible on the wire, breaking for generated-code consumers).
-- **BREAKING:** tracked the upstream `hardy-bpa` trait rework: the client-side `Application`/`Service` implementations deliver via `on_deliver` with the bundle ID and a segment stream, and the CLA client's `forward` carries the lane, `total_len`, and segment stream.
+- **BREAKING**: the wire protocol is redesigned as a versioned v1 contract, with no interoperability with the previous protocol. One gRPC service per component surface (`application.v1`, `service.v1`, `cla.v1`, `routing.v1`): `Subscribe` carries the registration lifecycle up and a pure event stream down, every component action is an ordinary RPC gated by the session token minted at registration, and payload bytes move on chunked streaming calls with in-stream cancellation in both directions. The schemas speak RFC 9171 vocabulary (ADU, delivery, bundle status report assertions, transmission flags), and the RFC 9171 bundle id is the one identity across announcements, collection, send results, and status reports. Errors are native gRPC statuses, never message payloads, which removes the vendored `google/rpc/status.proto`.
+- **BREAKING**: the crate core is reduced to the contract: the v1 schemas compiled to generated types (one root module per package: `application`, `service`, `cla`, `routing`), the wire constants (`MAX_MESSAGE_SIZE`, `CHUNK_SIZE`, `MAX_TRANSFER_SIZE`), and the domain conversions. The previous client, server, and proxy implementation (`RemoteBpa`, `GrpcServer`, the `RpcProxy` correlation engine) is removed.
 
-### Fixed
-- The `bundle_id` comments claimed the id is "formatted as specified in RFC 9171" — an encoding that RFC does not define. The actual encoding (base64url without padding over the canonical CBOR array of the id's components) is now documented on `SendResponse.bundle_id` and referenced by every other `bundle_id` field.
-
-### Removed
-- **BREAKING:** the `cancel` exchange — `CancelRequest`/`CancelResponse` and the `cancel` member of all four stream oneofs (field number 7 and the name are reserved in each). The implementation was status-blind; see the `hardy-bpa` changelog.
-- **BREAKING:** `AppReceiveRequest.source` (field number and name reserved) — the sender's endpoint ID is the `bundle_id`'s source component.
+### Added
+- The `server` feature: the BPA-side bridges (`ApplicationServiceImpl`, `ServiceServiceImpl`, `ClaServiceImpl`, `RoutingAgentServiceImpl`, and the session-token `Signer`), each serving its surface over any `hardy_bpa::bpa::BpaRegistration`, for a host to mount on its own tonic transport.
+- The `client` feature: the component SDK. `BpaClient` registers local `Application`/`Service`/`Cla`/`RoutingAgent` implementations against a remote BPA over the v1 wire, carrying the session lifecycle, HTTP/2 keepalive, and the chunked data-plane calls.
 
 ## [0.2.0]
 

@@ -4,15 +4,12 @@ mod config;
 mod connect;
 mod listen;
 
-use hardy_async::TaskPool;
-use hardy_async::sync::spin::Once;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpv7::eid::NodeId;
-use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use std::{path::PathBuf, sync::Arc};
 
 use clap::Parser;
-use std::path::PathBuf;
+use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_bpv7::eid::NodeId;
+use tracing::{debug, error, info, warn};
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,12 +47,16 @@ async fn main() -> anyhow::Result<()> {
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let cla = Arc::new(cla::Cla::new(config.cla));
 
+    let tasks = TaskPool::new();
+    hardy_async::signal::listen_for_cancel(&tasks);
+
     info!("Connecting to BPA at {}", config.bpa_address);
 
-    let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
+    let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
+        .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
 
-    let node_ids = remote_bpa
-        .register_cla(config.cla_name.clone(), cla.clone(), None)
+    let node_ids = client
+        .register_cla(config.cla_name.clone(), cla.clone())
         .await
         .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 
@@ -64,9 +65,6 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         config.cla_name,
         node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
     );
-
-    let tasks = TaskPool::new();
-    hardy_async::signal::listen_for_cancel(&tasks);
 
     info!("Started successfully");
 

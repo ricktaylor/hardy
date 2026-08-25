@@ -6,7 +6,7 @@
 // runtime types construct themselves from config (`PatternKeySource::load`,
 // `StaticRoutesAgent`).
 
-use std::{collections::HashMap, io::ErrorKind, sync::Arc};
+use std::{collections::HashMap, io::ErrorKind, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use hardy_async::TaskPool;
@@ -29,18 +29,43 @@ use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
 use hardy_postgres_storage::PostgresStorage;
 #[cfg(feature = "grpc")]
-use hardy_proto::server::GrpcServer;
+use hardy_proto::{
+    MAX_MESSAGE_SIZE,
+    application::application_service_server::ApplicationServiceServer,
+    cla::cla_service_server::ClaServiceServer,
+    routing::routing_agent_service_server::RoutingAgentServiceServer,
+    server::{
+        ApplicationServiceImpl, ClaServiceImpl, RoutingAgentServiceImpl, ServiceServiceImpl, Signer,
+    },
+    service::service_service_server::ServiceServiceServer,
+};
 #[cfg(feature = "s3-storage")]
 use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
 use hardy_tcpclv4::{Tcpclv4, tls};
+#[cfg(feature = "grpc")]
+use tonic::{
+    service::Routes,
+    transport::{
+        Server,
+        server::{Router, TcpIncoming},
+    },
+};
+#[cfg(feature = "grpc")]
+use tonic_health::{ServingStatus, server::health_reporter};
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
+#[cfg(feature = "grpc")]
+use crate::config::GrpcService;
 use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
 use crate::static_routes::StaticRoutesAgent;
+
+#[cfg(feature = "grpc")]
+const DEFAULT_GRPC_ADDRESS: std::net::SocketAddr =
+    std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 50051);
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
 // running it needs, with everything between "constructed" and "stopped"
@@ -49,7 +74,8 @@ pub struct BpaServer {
     bpa: Arc<Bpa>,
     recover_storage: bool,
     #[cfg(feature = "grpc")]
-    grpc_config: Option<hardy_proto::server::Config>,
+    // The composed gRPC router and its bound listener, not yet serving.
+    grpc: Option<(Router, TcpIncoming, Duration)>,
     tasks: TaskPool,
 }
 
@@ -68,9 +94,6 @@ impl BpaServer {
         #[allow(unused_variables)] upgrade_storage: bool,
         recover_storage: bool,
     ) -> anyhow::Result<Self> {
-        #[cfg(feature = "grpc")]
-        let grpc_config = config.grpc;
-
         // The upgrade flag is consumed only by persistent backends, so a
         // memory-only build leaves it unused.
         let metadata_storage: Arc<dyn MetadataStorage> = match &config.storage.metadata {
@@ -386,11 +409,98 @@ impl BpaServer {
 
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
 
+        #[cfg(feature = "grpc")]
+        let grpc = match config.grpc {
+            None => None,
+            Some(grpc_config) => {
+                // One signing identity for the whole server: every
+                // surface's sessions mint their tokens with it.
+                let signer = Signer::new();
+
+                // Mount each listed surface: the config guarantees the
+                // list is non-empty with no repeats, and the exhaustive
+                // match means a new `GrpcService` variant fails to
+                // compile here until it is wired.
+                let mut routes = Routes::builder();
+                for service in &grpc_config.services {
+                    match service {
+                        GrpcService::Application => routes.add_service(
+                            ApplicationServiceServer::new(ApplicationServiceImpl::new(
+                                bpa.clone(),
+                                tasks.clone(),
+                                signer.clone(),
+                            ))
+                            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                            .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                        ),
+                        GrpcService::Service => routes.add_service(
+                            ServiceServiceServer::new(ServiceServiceImpl::new(
+                                bpa.clone(),
+                                tasks.clone(),
+                                signer.clone(),
+                            ))
+                            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                            .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                        ),
+                        GrpcService::Cla => routes.add_service(
+                            ClaServiceServer::new(ClaServiceImpl::new(
+                                bpa.clone(),
+                                tasks.clone(),
+                                signer.clone(),
+                            ))
+                            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                            .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                        ),
+                        GrpcService::Routing => routes.add_service(
+                            RoutingAgentServiceServer::new(RoutingAgentServiceImpl::new(
+                                bpa.clone(),
+                                tasks.clone(),
+                                signer.clone(),
+                            ))
+                            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                            .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                        ),
+                    };
+                }
+
+                let (health_reporter, health_service) = health_reporter();
+                health_reporter
+                    .set_service_status("", ServingStatus::Serving)
+                    .await;
+
+                let address = grpc_config.address.unwrap_or(DEFAULT_GRPC_ADDRESS);
+
+                // `serve_with_incoming` ignores the tonic `Server` TCP
+                // settings, so restate its `TCP_NODELAY` default here.
+                let incoming = TcpIncoming::bind(address)
+                    .with_context(|| format!("Failed to bind gRPC listener on {address}"))?
+                    .with_nodelay(Some(true));
+
+                info!(
+                    "gRPC server hosting {:?}, listening on {address}",
+                    grpc_config.services
+                );
+
+                Some((
+                    // HTTP/2 keepalive bounds how long a silently dead
+                    // peer can hold sessions and parked door calls;
+                    // graceful ends are caught by the streams themselves.
+                    Server::builder()
+                        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+                        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+                        .add_routes(routes.routes())
+                        .add_service(health_service),
+                    incoming,
+                    grpc_config.drain_timeout,
+                ))
+            }
+        };
+
         Ok(Self {
             bpa,
             recover_storage,
             #[cfg(feature = "grpc")]
-            grpc_config,
+            grpc,
             tasks,
         })
     }
@@ -400,36 +510,57 @@ impl BpaServer {
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
-        self.bpa.start(self.recover_storage);
+        let Self {
+            bpa,
+            recover_storage,
+            #[cfg(feature = "grpc")]
+            grpc,
+            tasks,
+        } = self;
+
+        bpa.start(recover_storage);
 
         #[cfg(feature = "grpc")]
-        if let Some(grpc_config) = &self.grpc_config {
-            let server = GrpcServer::new(grpc_config, self.bpa.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to create gRPC server: {e}"))?;
-            let cancel = self.tasks.cancel_token().clone();
-            hardy_async::spawn!(self.tasks, "grpc_server", async move {
-                if let Err(e) = server.serve(cancel).await {
-                    tracing::error!("gRPC server failed: {e}");
+        if let Some((router, incoming, drain_timeout)) = grpc {
+            let cancel = tasks.cancel_token().clone();
+            hardy_async::spawn!(tasks, "grpc_server", async move {
+                let mut server = core::pin::pin!(
+                    router.serve_with_incoming_shutdown(incoming, cancel.cancelled())
+                );
+                tokio::select! {
+                    biased;
+                    result = &mut server => {
+                        if let Err(e) = result {
+                            tracing::error!("gRPC server failed: {e}");
+                        }
+                    }
+                    // The graceful drain is shutdown's one unbounded
+                    // wait: a client holding an unread response stream
+                    // keeps its connection open indefinitely, so the
+                    // drain gets a deadline. Every other task exits on
+                    // the trigger by construction, and connections
+                    // abandoned here die with the process.
+                    _ = async {
+                        cancel.cancelled().await;
+                        tokio::time::sleep(drain_timeout).await;
+                    } => {
+                        tracing::warn!(
+                            "gRPC connections did not drain within {drain_timeout:?}, abandoning them"
+                        );
+                    }
                 }
             });
         }
 
         info!("Started successfully");
 
-        self.tasks.cancel_token().cancelled().await;
+        tasks.cancel_token().cancelled().await;
 
-        self.shutdown().await;
+        tasks.shutdown().await;
+        bpa.shutdown().await;
 
         info!("Stopped");
 
         Ok(())
-    }
-
-    // Stops the server, in dependency order: the background tasks (gRPC
-    // front end, BPSec watcher) are wound down before the BPA they drive
-    // work into.
-    async fn shutdown(&self) {
-        self.tasks.shutdown().await;
-        self.bpa.shutdown().await;
     }
 }

@@ -55,7 +55,7 @@ impl Dispatcher {
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
     pub(super) async fn process_bundle(
-        &self,
+        self: &Arc<Self>,
         mut bundle: bundle::Bundle,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
