@@ -7,7 +7,11 @@ use crate::{
     bpa::Bpa,
     cla::{Cla, registry::ClaRegistryBuilder},
     dispatcher::{self, Dispatcher},
-    filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
+    filter::{
+        Filter, FilterEngine, Hook,
+        slots::{SlotHandle, SlotRegistry, SlotValue},
+        validity::BundleValidityFilter,
+    },
     keys::KeyProvider,
     node_ids::NodeIds,
     policy::FlowControllerFactory,
@@ -48,6 +52,7 @@ pub struct BpaBuilder {
     service_registry_builder: ServiceRegistryBuilder,
     cla_registry_builder: ClaRegistryBuilder,
     rib_builder: RibBuilder,
+    slot_registry: SlotRegistry,
 }
 
 impl BpaBuilder {
@@ -97,6 +102,7 @@ impl BpaBuilder {
             service_registry_builder: ServiceRegistryBuilder::new(),
             cla_registry_builder: ClaRegistryBuilder::new(),
             rib_builder: RibBuilder::new(),
+            slot_registry: SlotRegistry::default(),
         }
     }
 
@@ -247,8 +253,32 @@ impl BpaBuilder {
         self
     }
 
+    /// Registers an annotation slot: a stable name plus a typed,
+    /// size-bounded value an embedder's filter pair carries with a bundle
+    /// from admission to transmission.
+    ///
+    /// Returns the builder and the slot's typed [`SlotHandle`] — the
+    /// capability gating every read and write of the slot; a filter pair
+    /// shares state by sharing the handle. `max_size` bounds the encoded
+    /// value: larger writes are dropped (with a warning) when the delta is
+    /// applied. Registering the same name twice is rejected loudly by
+    /// [`build()`](Self::build).
+    pub fn annotation_slot<T: SlotValue>(
+        mut self,
+        name: &str,
+        max_size: NonZeroUsize,
+    ) -> (Self, SlotHandle<T>) {
+        let handle = self.slot_registry.register(name, max_size);
+        (self, handle)
+    }
+
     /// Consume the builder and construct the BPA with all registered components.
     pub async fn build(self) -> Result<Bpa, Box<dyn core::error::Error + Send + Sync>> {
+        // Freeze the annotation-slot registrations first: a duplicate name
+        // is a construction error. The engine swap (C3) threads the frozen
+        // table into the dispatcher; until then freezing is the validation.
+        let _slot_table = self.slot_registry.freeze()?;
+
         // Auto-register the RFC 9171 validity filter unless disabled: built
         // here, from the final flag values, so this seat and the dispatcher's
         // pre-drain gate enforce the same policy.
