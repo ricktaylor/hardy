@@ -1,4 +1,6 @@
-use super::*;
+use alloc::{boxed::Box, string::String, vec::Vec};
+
+use crate::{HashSet, eid};
 
 /// Resolves cryptographic keys for BPSec operations by source EID and required operations.
 pub trait KeySource {

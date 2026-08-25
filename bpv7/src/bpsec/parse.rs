@@ -1,8 +1,11 @@
 use super::*;
-use crate::error::HasInvalidField;
-use alloc::sync::Arc;
+
+use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
+
 use smallvec::SmallVec;
+
+use crate::{HashMap, eid, error::HasInvalidField};
 
 fn require_canonical<T, const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,

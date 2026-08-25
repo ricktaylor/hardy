@@ -1,8 +1,17 @@
-use super::*;
-use alloc::borrow::Cow;
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    format,
+    string::{String, ToString},
+};
+use core::fmt;
+
+use hardy_cbor::{
+    decode::parse_value,
+    encode::{Encoder, Raw, ToCbor},
+};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
 use thiserror::Error;
-
 // Encode set matching RFC 3986 unreserved characters (keeps alphanumerics, -, _, ., ~)
 const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -42,8 +51,8 @@ impl From<NodeId> for String {
     }
 }
 
-impl core::fmt::Display for IpnNodeId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for IpnNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.allocator_id == 0 {
             write!(f, "ipn:{}.0", self.node_number)
         } else {
@@ -70,8 +79,8 @@ impl From<DtnNodeId> for Eid {
     }
 }
 
-impl core::fmt::Display for DtnNodeId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for DtnNodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "dtn://{}/", self.node_name)
     }
 }
@@ -115,8 +124,8 @@ impl TryFrom<Eid> for NodeId {
     }
 }
 
-impl core::fmt::Display for NodeId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NodeId::LocalNode => f.write_str("ipn:!.0"),
             NodeId::Ipn(ipn) => {
@@ -146,8 +155,8 @@ pub enum Service {
     Dtn(DtnServiceName),
 }
 
-impl core::fmt::Display for Service {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Service {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Service::Ipn(n) => write!(f, "{n}"),
             Service::Dtn(s) => write!(f, "{s}"),
@@ -282,10 +291,10 @@ impl TryFrom<(NodeId, Service)> for Eid {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Eid {
+impl ToCbor for Eid {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
             Eid::LocalNode(service_number) => encoder.emit(&(2, &(u32::MAX, *service_number))),
             Eid::Null => encoder.emit(&(1, 0)),
@@ -319,7 +328,7 @@ impl hardy_cbor::encode::ToCbor for Eid {
                     encoder.emit(&(2, &[fqdn.allocator_id, fqdn.node_number, *service_number]))
                 }
             }
-            Eid::Unknown { scheme, data } => encoder.emit(&(scheme, hardy_cbor::encode::Raw(data))),
+            Eid::Unknown { scheme, data } => encoder.emit(&(scheme, Raw(data))),
         }
     }
 }
@@ -330,7 +339,7 @@ enum DisplayError {
     Decode(#[from] hardy_cbor::decode::Error),
 
     #[error(transparent)]
-    Fmt(#[from] core::fmt::Error),
+    Fmt(#[from] fmt::Error),
 }
 
 impl From<Eid> for String {
@@ -339,8 +348,8 @@ impl From<Eid> for String {
     }
 }
 
-impl core::fmt::Display for Eid {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for Eid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Eid::Null => f.write_str("dtn:none"),
             Eid::LocalNode(service_number) => {
@@ -377,7 +386,7 @@ impl core::fmt::Display for Eid {
                 )
             }
             Eid::Unknown { scheme, data } => {
-                let r = hardy_cbor::decode::parse_value(data, |mut value, _, _| {
+                let r = parse_value(data, |mut value, _, _| {
                     write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DisplayError>::into)?;
                     value.skip(16).map_err(Into::<DisplayError>::into)
                 });

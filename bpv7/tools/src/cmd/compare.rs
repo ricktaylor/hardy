@@ -1,5 +1,4 @@
 use super::*;
-
 #[derive(Parser, Debug)]
 #[command(
     about = "Compare two bundles for semantic equivalence",

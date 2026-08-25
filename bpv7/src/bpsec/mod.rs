@@ -1,5 +1,12 @@
-use super::*;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
+#[cfg(feature = "rfc9173")]
+use alloc::string::ToString;
+
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Encoder, ToCbor},
+};
 /// Block Confidentiality Block (BCB) types and operations (RFC 9172 Section 3.7).
 pub mod bcb;
 /// Block Integrity Block (BIB) types and operations (RFC 9172 Section 3.6).
@@ -34,7 +41,12 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-use crate::error::CaptureFieldErr;
+// `crc`, `eid`, and `HashSet` (and the bpsec-gated names below) are also
+// relied upon by the child modules through their `use super::*` globs.
+use crate::{HashMap, HashSet, block, bundle, crc, eid, error::CaptureFieldErr};
+
+#[cfg(feature = "bpsec")]
+use crate::{bpsec, builder, editor};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -57,10 +69,10 @@ pub enum Context {
     Unrecognised(u64),
 }
 
-impl hardy_cbor::encode::ToCbor for Context {
+impl ToCbor for Context {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(match self {
             #[cfg(feature = "rfc9173")]
             Self::BIB_HMAC_SHA2 => &1,
@@ -71,7 +83,7 @@ impl hardy_cbor::encode::ToCbor for Context {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Context {
+impl FromCbor for Context {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {

@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::{bpsec::key::KeySet, editor::Chunk};
 #[derive(Parser, Debug)]
 #[command(
     about = "Rewrite a bundle, removing unsupported blocks and canonicalizing",
@@ -22,13 +22,13 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let data = self.input.read_all()?;
 
         let data = match super::full_rewrite(data.clone(), &key_store) {
             Ok(None) => data,
-            Ok(Some(chunks)) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data),
+            Ok(Some(chunks)) => Chunk::flatten_bytes(chunks, data),
             Err(error) => {
                 return Err(anyhow::anyhow!("Failed to parse bundle: {error}"));
             }

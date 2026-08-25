@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::bpsec::key::KeySet;
 #[derive(Parser, Debug)]
 #[command(
     about = "Verify the integrity signature of a block",
@@ -22,7 +22,7 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let data = self.input.read_all()?;
 

@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::{bpsec::encryptor::Encryptor, eid::Eid};
 mod rfc9173 {
     use super::*;
 
@@ -73,7 +73,7 @@ pub struct Command {
 
     /// The security source Endpoint ID (EID) to use for signing, uses the bundle source if omitted
     #[arg(short, long)]
-    source: Option<hardy_bpv7::eid::Eid>,
+    source: Option<Eid>,
 
     #[clap(flatten)]
     key_input: keys::KeyInput,
@@ -98,7 +98,7 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let encryptor = hardy_bpv7::bpsec::encryptor::Encryptor::new(&raw, &data)
+        let encryptor = Encryptor::new(&raw, &data)
             .encrypt_block(
                 self.block,
                 hardy_bpv7::bpsec::encryptor::Context::AES_GCM(rfc9173::ArgFlags::to_scope_flags(

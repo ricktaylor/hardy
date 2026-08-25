@@ -1,5 +1,7 @@
 use super::*;
-use crate::error::{CaptureFieldErr, HasInvalidField};
+
+use alloc::{boxed::Box, string::ToString};
+
 use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
@@ -8,6 +10,8 @@ use winnow::{
     stream::AsChar,
     token::take_while,
 };
+
+use crate::error::{CaptureFieldErr, HasInvalidField};
 
 fn parse_ipn_parts(input: &mut &str) -> ModalResult<Eid> {
     (

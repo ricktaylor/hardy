@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::eid::Eid;
 mod rfc9173 {
     use super::*;
 
@@ -73,7 +73,7 @@ pub struct Command {
 
     /// The security source Endpoint ID (EID) to use for signing, uses the bundle source if omitted
     #[arg(short, long)]
-    source: Option<hardy_bpv7::eid::Eid>,
+    source: Option<Eid>,
 
     #[clap(flatten)]
     key_input: keys::KeyInput,

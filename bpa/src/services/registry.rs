@@ -1,5 +1,8 @@
-use super::*;
+use hardy_async::async_trait;
 use hardy_bpv7::eid::Eid;
+use tracing::{error, info};
+
+use crate::{Arc, Bytes, HashMap, Weak, dispatcher, node_ids, routing, services};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -28,7 +31,7 @@ impl Service {
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
         from: &Eid,
-        kind: StatusNotify,
+        kind: services::StatusNotify,
         reason: hardy_bpv7::status_report::ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     ) {

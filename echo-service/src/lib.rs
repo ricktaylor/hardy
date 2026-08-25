@@ -14,9 +14,20 @@ reflected. The response is submitted to the BPA for normal forwarding.
 */
 
 use hardy_async::sync::spin::Once;
-use hardy_bpa::async_trait;
+use hardy_bpa::{
+    async_trait,
+    services::StatusNotify,
+    stream::{Receiver, Segment, buffer_stream},
+};
+use hardy_bpv7::{
+    builder::Builder,
+    bundle::{Flags, Id},
+    creation_timestamp::CreationTimestamp,
+    eid::Eid,
+    parse::{Parsed, parse},
+    status_report::ReasonCode,
+};
 use tracing::{debug, warn};
-
 /// A BPA service that echoes received bundles back to their source.
 ///
 /// When a bundle is delivered to a registered endpoint, the service builds a
@@ -54,8 +65,8 @@ impl EchoService {
         // stop rather than propagate, which would park it for a retry that can
         // never succeed. Only a failed send (below) is transient and worth a
         // retry. In practice the BPA already parsed these bytes at ingress.
-        let Ok(hardy_bpv7::parse::Parsed { data, bundle, .. }) = hardy_bpv7::parse::parse(data)
-            .inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))
+        let Ok(Parsed { data, bundle, .. }) =
+            parse(data).inspect_err(|e| debug!("Failed to parse incoming bundle: {e:?}"))
         else {
             return Ok(());
         };
@@ -88,7 +99,7 @@ impl EchoService {
         // (the request's destination), destination = the request's source, with
         // a new creation timestamp. Adopt the request's lifetime (the BPA bounds
         // it by local policy as for any bundle).
-        let mut builder = hardy_bpv7::builder::Builder::new(
+        let mut builder = Builder::new(
             bundle.primary.destination.clone(),
             bundle.primary.id.source.clone(),
         )
@@ -106,7 +117,7 @@ impl EchoService {
         // here is permanent too: stop rather than park for retry.
         let Ok((_, response)) = builder
             .with_payload(payload.into())
-            .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+            .build(CreationTimestamp::now())
             .inspect_err(|e| debug!("Failed to build echo response: {e:?}"))
         else {
             return Ok(());
@@ -131,11 +142,7 @@ impl EchoService {
 #[async_trait]
 impl hardy_bpa::services::Service for EchoService {
     /// Stores the BPA sink for later use when echoing bundles.
-    async fn on_register(
-        &self,
-        _source: &hardy_bpv7::eid::Eid,
-        sink: Box<dyn hardy_bpa::services::ServiceSink>,
-    ) {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn hardy_bpa::services::ServiceSink>) {
         self.sink.call_once(|| sink);
     }
 
@@ -147,10 +154,10 @@ impl hardy_bpa::services::Service for EchoService {
     /// No-op; the echo service does not act on status reports.
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &hardy_bpv7::eid::Eid,
-        _kind: hardy_bpa::services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: StatusNotify,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
         // Do nothing
@@ -164,18 +171,18 @@ impl hardy_bpa::services::Service for EchoService {
     // bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, total_len).await?;
         self.echo(data).await.map_err(Into::into)
     }
 }
 
 // Whether the request asked for any kind of status report.
-fn requested_status_reports(flags: &hardy_bpv7::bundle::Flags) -> bool {
+fn requested_status_reports(flags: &Flags) -> bool {
     flags.receipt_report_requested
         || flags.forward_report_requested
         || flags.delivery_report_requested
@@ -188,8 +195,8 @@ fn requested_status_reports(flags: &hardy_bpv7::bundle::Flags) -> bool {
 // flags and the "status time requested in reports" flag. Every other flag
 // (notably administrative-record, fragment, and application-acknowledgement)
 // takes the node-sourced default.
-fn response_flags(request: &hardy_bpv7::bundle::Flags) -> hardy_bpv7::bundle::Flags {
-    let mut flags = hardy_bpv7::bundle::Flags {
+fn response_flags(request: &Flags) -> Flags {
+    let mut flags = Flags {
         do_not_fragment: request.do_not_fragment,
         ..Default::default()
     };

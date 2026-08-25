@@ -5,9 +5,13 @@ provides functions for parsing and validating CRCs from incoming bundles, as
 well as appending CRCs to outgoing bundles.
 */
 
-use super::*;
-use thiserror::Error;
+use alloc::vec::Vec;
 
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Encoder, ToCbor},
+};
+use thiserror::Error;
 const X25: ::crc::Crc<u16> = ::crc::Crc::<u16>::new(&::crc::CRC_16_IBM_SDLC);
 const CASTAGNOLI: ::crc::Crc<u32> = ::crc::Crc::<u32>::new(&::crc::CRC_32_ISCSI);
 
@@ -73,15 +77,15 @@ impl From<CrcType> for u64 {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for CrcType {
+impl ToCbor for CrcType {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&u64::from(*self))
     }
 }
 
-impl hardy_cbor::decode::FromCbor for CrcType {
+impl FromCbor for CrcType {
     type Error = crate::Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {

@@ -1,25 +1,38 @@
-use super::*;
-use hardy_bpa::async_trait;
-use hardy_bpv7::{eid::Eid, status_report::AdministrativeRecord};
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
+use hardy_bpa::{
+    async_trait,
+    services::StatusNotify,
+    stream::{Receiver, Segment, buffer_stream},
+};
+use hardy_bpv7::{
+    bundle::Id,
+    eid::{Eid, NodeId},
+    parse::{Parsed, parse},
+    status_report::{AdministrativeRecord, ReasonCode},
+};
+use hardy_cbor::decode::parse_exact;
+use trace_err::*;
+
+use super::{Command, payload};
 // Statistics for ping session, following IP ping conventions.
 #[derive(Default, Clone)]
 pub struct Statistics {
     pub sent: u32,
     pub received: u32,
     pub corrupted: u32,
-    pub min_rtt: Option<std::time::Duration>,
-    pub max_rtt: Option<std::time::Duration>,
+    pub min_rtt: Option<Duration>,
+    pub max_rtt: Option<Duration>,
     sum_rtt_us: u128,         // Microseconds for precision
     sum_rtt_squared_us: u128, // For stddev calculation
 }
 
 impl Statistics {
-    pub fn record_rtt(&mut self, rtt: std::time::Duration) {
+    pub fn record_rtt(&mut self, rtt: Duration) {
         self.received += 1;
         let rtt_us = rtt.as_micros();
         self.sum_rtt_us += rtt_us;
@@ -28,9 +41,9 @@ impl Statistics {
         self.max_rtt = Some(self.max_rtt.map_or(rtt, |max| max.max(rtt)));
     }
 
-    pub fn avg_rtt(&self) -> Option<std::time::Duration> {
+    pub fn avg_rtt(&self) -> Option<Duration> {
         if self.received > 0 {
-            Some(std::time::Duration::from_micros(
+            Some(Duration::from_micros(
                 (self.sum_rtt_us / self.received as u128) as u64,
             ))
         } else {
@@ -38,13 +51,13 @@ impl Statistics {
         }
     }
 
-    pub fn stddev_rtt(&self) -> Option<std::time::Duration> {
+    pub fn stddev_rtt(&self) -> Option<Duration> {
         if self.received > 1 {
             let n = self.received as u128;
             let mean = self.sum_rtt_us / n;
             let variance = (self.sum_rtt_squared_us / n).saturating_sub(mean * mean);
             let stddev_us = (variance as f64).sqrt() as u64;
-            Some(std::time::Duration::from_micros(stddev_us))
+            Some(Duration::from_micros(stddev_us))
         } else {
             None
         }
@@ -70,8 +83,8 @@ struct SentBundle {
 // report; elapsed is measured from when that request was sent.
 struct PathHop {
     node: Eid,
-    elapsed: std::time::Duration,
-    kind: hardy_bpa::services::StatusNotify,
+    elapsed: Duration,
+    kind: StatusNotify,
 }
 
 // A hop on the return (Pong) path of one echo response bundle. The client never
@@ -79,13 +92,13 @@ struct PathHop {
 // report time is kept and rendered relative to the first report for that bundle.
 struct ReturnHop {
     node: Eid,
-    kind: hardy_bpa::services::StatusNotify,
+    kind: StatusNotify,
     report_time: time::OffsetDateTime,
 }
 
 // Shared mutable state protected by a single mutex.
 struct SharedState {
-    sent_bundles: HashMap<hardy_bpv7::bundle::Id, SentBundle>,
+    sent_bundles: HashMap<Id, SentBundle>,
     // Sequence number -> (send time, the payload bytes we sent). The send time
     // drives the RTT calculation; the payload bytes are compared against the
     // reflected payload for round-trip integrity.
@@ -102,31 +115,31 @@ struct SharedState {
     // Return (Pong) journeys, keyed by the echo response bundle-id (echo source
     // + creation timestamp). A status report carries no echoed sequence number,
     // so return-leg reports can only be grouped per response bundle, not per ping.
-    return_journeys: HashMap<hardy_bpv7::bundle::Id, Vec<ReturnHop>>,
+    return_journeys: HashMap<Id, Vec<ReturnHop>>,
 }
 
 pub struct Service {
-    sink: std::sync::OnceLock<Box<dyn hardy_bpa::services::ServiceSink>>,
+    sink: OnceLock<Box<dyn hardy_bpa::services::ServiceSink>>,
     local_node: NodeId,
     destination: Eid,
-    lifetime: std::time::Duration,
+    lifetime: Duration,
     quiet: bool,
     semaphore: Option<Arc<tokio::sync::Semaphore>>,
     count: Option<u32>,
-    state: std::sync::Mutex<SharedState>,
+    state: Mutex<SharedState>,
 }
 
 impl Service {
     pub fn new(args: &Command) -> Self {
         Self {
-            sink: std::sync::OnceLock::new(),
+            sink: OnceLock::new(),
             local_node: args.node_id().unwrap(),
             destination: args.destination.clone(),
             lifetime: args.lifetime(),
             quiet: args.quiet,
             count: args.count,
             semaphore: args.count.map(|_| Arc::new(tokio::sync::Semaphore::new(0))),
-            state: std::sync::Mutex::new(SharedState {
+            state: Mutex::new(SharedState {
                 sent_bundles: HashMap::new(),
                 expected_responses: HashMap::new(),
                 stats: Statistics::default(),
@@ -283,10 +296,10 @@ impl Service {
                     && let Some(last_hop) = hops.iter().max_by_key(|h| h.elapsed)
                 {
                     let status = match last_hop.kind {
-                        hardy_bpa::services::StatusNotify::Received => "received by",
-                        hardy_bpa::services::StatusNotify::Forwarded => "forwarded by",
-                        hardy_bpa::services::StatusNotify::Delivered => "delivered to",
-                        hardy_bpa::services::StatusNotify::Deleted => "deleted by",
+                        StatusNotify::Received => "received by",
+                        StatusNotify::Forwarded => "forwarded by",
+                        StatusNotify::Delivered => "delivered to",
+                        StatusNotify::Deleted => "deleted by",
                     };
                     println!(
                         "  seq={} {} {} after {}",
@@ -317,7 +330,7 @@ impl Service {
                     .map(
                         |h| match t0.and_then(|t0| (h.report_time - t0).try_into().ok()) {
                             Some(elapsed) => {
-                                let elapsed: std::time::Duration = elapsed;
+                                let elapsed: Duration = elapsed;
                                 format!(
                                     "{} {} ({})",
                                     abbrev(h.kind),
@@ -335,7 +348,7 @@ impl Service {
     }
 
     pub async fn send(&self, args: &Command, seq_no: u32) -> anyhow::Result<()> {
-        let (bundle_bytes, payload_bytes) = ping::payload::build_payload(args, seq_no)?;
+        let (bundle_bytes, payload_bytes) = payload::build_payload(args, seq_no)?;
 
         if !self.quiet {
             eprintln!("Sending ping {seq_no}...");
@@ -418,7 +431,7 @@ impl Service {
     fn handle_status_report(&self, payload_data: &[u8], report_source: &Eid) {
         use hardy_bpv7::status_report::ReasonCode;
 
-        let report = match hardy_cbor::decode::parse_exact::<AdministrativeRecord>(payload_data) {
+        let report = match parse_exact::<AdministrativeRecord>(payload_data) {
             Ok(AdministrativeRecord::BundleStatusReport(r)) => r,
             _ => return,
         };
@@ -454,19 +467,10 @@ impl Service {
         };
 
         for (kind, assertion) in [
-            (
-                hardy_bpa::services::StatusNotify::Received,
-                &report.received,
-            ),
-            (
-                hardy_bpa::services::StatusNotify::Forwarded,
-                &report.forwarded,
-            ),
-            (
-                hardy_bpa::services::StatusNotify::Delivered,
-                &report.delivered,
-            ),
-            (hardy_bpa::services::StatusNotify::Deleted, &report.deleted),
+            (StatusNotify::Received, &report.received),
+            (StatusNotify::Forwarded, &report.forwarded),
+            (StatusNotify::Delivered, &report.delivered),
+            (StatusNotify::Deleted, &report.deleted),
         ] {
             let Some(assertion) = assertion else { continue };
 
@@ -484,8 +488,7 @@ impl Service {
 
             match &leg {
                 Leg::Forward { seqno, send_time } => {
-                    let elapsed: Option<std::time::Duration> =
-                        (report_time - *send_time).try_into().ok();
+                    let elapsed: Option<Duration> = (report_time - *send_time).try_into().ok();
                     let after = elapsed
                         .map(|e| format!(" after {}", humantime::format_duration(e)))
                         .unwrap_or_default();
@@ -511,7 +514,7 @@ impl Service {
                     // A deletion on the outbound leg ends this ping: it either
                     // never reached the echo, or was delivered and cleaned up.
                     // Either way no further reply is expected for this seqno.
-                    if matches!(kind, hardy_bpa::services::StatusNotify::Deleted) {
+                    if matches!(kind, StatusNotify::Deleted) {
                         self.resolve(*seqno);
                     }
                 }
@@ -558,22 +561,22 @@ fn same_endpoint(a: &Eid, b: &Eid) -> bool {
 }
 
 // Short label for a status kind, used in path displays.
-fn abbrev(kind: hardy_bpa::services::StatusNotify) -> &'static str {
+fn abbrev(kind: StatusNotify) -> &'static str {
     match kind {
-        hardy_bpa::services::StatusNotify::Received => "rcv",
-        hardy_bpa::services::StatusNotify::Forwarded => "fwd",
-        hardy_bpa::services::StatusNotify::Delivered => "dlv",
-        hardy_bpa::services::StatusNotify::Deleted => "del",
+        StatusNotify::Received => "rcv",
+        StatusNotify::Forwarded => "fwd",
+        StatusNotify::Delivered => "dlv",
+        StatusNotify::Deleted => "del",
     }
 }
 
 // Verb for a status kind, used in per-report lines.
-fn verb(kind: hardy_bpa::services::StatusNotify) -> &'static str {
+fn verb(kind: StatusNotify) -> &'static str {
     match kind {
-        hardy_bpa::services::StatusNotify::Received => "received",
-        hardy_bpa::services::StatusNotify::Forwarded => "forwarded",
-        hardy_bpa::services::StatusNotify::Delivered => "delivered",
-        hardy_bpa::services::StatusNotify::Deleted => "deleted",
+        StatusNotify::Received => "received",
+        StatusNotify::Forwarded => "forwarded",
+        StatusNotify::Delivered => "delivered",
+        StatusNotify::Deleted => "deleted",
     }
 }
 
@@ -595,18 +598,18 @@ impl hardy_bpa::services::Service for Service {
     // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, total_len).await?;
 
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();
 
         // Parse the bundle structurally (the client does not use BPSec).
-        let hardy_bpv7::parse::Parsed { data, bundle, .. } = match hardy_bpv7::parse::parse(data) {
+        let Parsed { data, bundle, .. } = match parse(data) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("Failed to parse bundle: {e}");
@@ -710,10 +713,10 @@ impl hardy_bpa::services::Service for Service {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
-        _from: &hardy_bpv7::eid::Eid,
-        _kind: hardy_bpa::services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: StatusNotify,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
         // Status reports arrive via on_deliver when report_to = service EID

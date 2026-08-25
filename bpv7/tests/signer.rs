@@ -6,8 +6,6 @@
 //! not attempt to reference the feature-gated modules.
 #![cfg(all(feature = "rfc9173", feature = "serde"))]
 
-use std::collections::HashMap;
-
 use hardy_bpv7::{
     Bundle, block,
     bpsec::{self, edit::BPSecEditor, key, rfc9173::ScopeFlags, signer},
@@ -17,7 +15,7 @@ use hardy_bpv7::{
     editor::Editor,
     parse,
 };
-
+use std::collections::HashMap;
 // Signer works on a parse-shaped `Bundle`; re-parse the builder output to
 // get one with real wire extents.
 fn reparse(

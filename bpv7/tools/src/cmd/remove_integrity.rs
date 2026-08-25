@@ -1,5 +1,8 @@
 use super::*;
-
+use hardy_bpv7::{
+    bpsec::key::KeySet,
+    editor::{Chunk, Editor},
+};
 #[derive(Parser, Debug)]
 #[command(
     about = "Remove a block from BIB protection",
@@ -27,7 +30,7 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let data = self.input.read_all()?;
 
@@ -39,7 +42,7 @@ impl Command {
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         use hardy_bpv7::bpsec::edit::BPSecEditor;
-        let editor = hardy_bpv7::editor::Editor::new(&raw, &data)
+        let editor = Editor::new(&raw, &data)
             .remove_integrity(self.block)
             .map_err(|(_, e)| anyhow::anyhow!("Failed to remove integrity check: {e}"))?;
 
@@ -47,7 +50,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        let out = hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data);
+        let out = Chunk::flatten_bytes(chunks, data);
         self.output.write_all(&out)
     }
 }

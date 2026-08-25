@@ -1,7 +1,14 @@
-use super::*;
-use hardy_bpa::async_trait;
-use std::slice;
+use core::num::NonZeroU32;
+use std::{path::PathBuf, slice, sync::Arc};
 
+use hardy_bpa::{
+    async_trait,
+    stream::{Receiver, buffer_stream},
+};
+use hardy_bpv7::{bundle::Id, eid::NodeId};
+use tracing::{error, warn};
+
+use crate::Cla;
 #[async_trait]
 impl hardy_bpa::cla::Cla for Cla {
     async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
@@ -34,7 +41,7 @@ impl hardy_bpa::cla::Cla for Cla {
         self.tasks.shutdown().await;
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+    fn lane_count(&self) -> Option<NonZeroU32> {
         None
     }
 
@@ -47,16 +54,16 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         _lane: Option<u32>,
         cla_addr: &hardy_bpa::cla::ClaAddress,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        stream: &mut dyn Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<hardy_bpa::cla::ForwardBundleResult> {
         let _sink = self.sink.get().ok_or_else(|| {
             error!("forward called before on_register!");
             hardy_bpa::cla::Error::Disconnected
         })?;
 
-        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let bundle = buffer_stream(stream, total_len).await?;
 
         if let hardy_bpa::cla::ClaAddress::Private(remote_addr) = cla_addr
             && let Ok(addr_str) = str::from_utf8(remote_addr.as_ref())

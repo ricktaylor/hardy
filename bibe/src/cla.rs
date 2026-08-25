@@ -1,6 +1,23 @@
-use super::*;
-use hardy_bpa::cla::{Cla, ClaAddress, ForwardBundleResult, Sink};
+use alloc::borrow::Cow;
+use core::num::NonZeroU32;
 
+use hardy_async::sync::spin::Once;
+use hardy_bpa::{
+    Bytes, async_trait,
+    cla::{Cla, ClaAddress, ForwardBundleResult, Sink},
+    stream::{Receiver, buffer_stream},
+};
+use hardy_bpv7::{
+    builder::Builder,
+    bundle::Id,
+    creation_timestamp::CreationTimestamp,
+    eid::{Eid, NodeId},
+    parse::Parsed,
+};
+use hardy_cbor::encode::{emit, emit_array};
+use tracing::{debug, warn};
+
+use crate::Error;
 /// BIBE CLA for encapsulation.
 ///
 /// Implements `forward()` to encapsulate bundles and re-inject them into the BPA.
@@ -33,7 +50,7 @@ impl BibeCla {
     /// will be encapsulated with `decap_endpoint` as the outer destination.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         // Encode the decap endpoint as CBOR
-        let cbor_bytes = hardy_cbor::encode::emit(&decap_endpoint).0;
+        let cbor_bytes = emit(&decap_endpoint).0;
         let cla_addr = ClaAddress::Private(cbor_bytes.into());
 
         // Register as a peer - this creates the local route entry
@@ -63,7 +80,7 @@ impl BibeCla {
     /// Encapsulate an inner bundle into an outer bundle.
     fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
         // Parse inner bundle structurally to read its lifetime.
-        let hardy_bpv7::parse::Parsed {
+        let Parsed {
             data: inner,
             bundle: parsed_bundle,
             ..
@@ -73,18 +90,17 @@ impl BibeCla {
         // Build outer bundle with BIBE-PDU payload:
         // [transmission-id, total-length, segmented-offset, encapsulated-bundle-segment]
         // For complete bundles: [0, 0, 0, bundle-bytes]
-        let payload = hardy_cbor::encode::emit_array(Some(4), |a| {
+        let payload = emit_array(Some(4), |a| {
             a.emit(&0u64); // transmission-id
             a.emit(&0u64); // total-length
             a.emit(&0u64); // segmented-offset
             a.emit(inner.as_ref()); // encapsulated-bundle-segment
         });
 
-        let (_bundle, data) =
-            hardy_bpv7::builder::Builder::new(self.tunnel_source.clone(), outer_dest)
-                .with_lifetime(lifetime)
-                .with_payload(Cow::Owned(payload))
-                .build(CreationTimestamp::now())?;
+        let (_bundle, data) = Builder::new(self.tunnel_source.clone(), outer_dest)
+            .with_lifetime(lifetime)
+            .with_payload(Cow::Owned(payload))
+            .build(CreationTimestamp::now())?;
 
         Ok(data.into())
     }
@@ -101,7 +117,7 @@ impl Cla for BibeCla {
         debug!("BIBE CLA unregistered");
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+    fn lane_count(&self) -> Option<NonZeroU32> {
         None
     }
 
@@ -114,11 +130,11 @@ impl Cla for BibeCla {
         &self,
         _lane: Option<u32>,
         cla_addr: &ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
+        stream: &mut dyn Receiver<hardy_bpa::cla::Segment>,
     ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
-        let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let bundle = buffer_stream(stream, total_len).await?;
 
         // Decode destination EID from CBOR in ClaAddress
         let ClaAddress::Private(dest_bytes) = cla_addr else {

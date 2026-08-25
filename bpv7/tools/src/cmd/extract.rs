@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::bpsec::{block_data, key::KeySet};
 #[derive(Parser, Debug)]
 #[command(
     about = "Extract the data from a block in a bundle",
@@ -26,7 +26,7 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let data = self.input.read_all()?;
 
@@ -40,9 +40,8 @@ impl Command {
         } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let payload =
-            hardy_bpv7::bpsec::block_data(self.block, &bundle.blocks, &data, &bcb_ops, &key_store)
-                .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?;
+        let payload = block_data(self.block, &bundle.blocks, &data, &bcb_ops, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?;
 
         self.output.write_all(payload.as_ref())
     }

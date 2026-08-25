@@ -1,7 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::{Eid, NodeId};
 use rand::RngExt;
-use trace_err::*;
 
 mod exec;
 mod payload;

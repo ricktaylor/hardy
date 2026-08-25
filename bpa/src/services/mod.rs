@@ -1,8 +1,12 @@
 pub mod registry;
 
-use super::*;
-use hardy_bpv7::eid::Eid;
+use core::time::Duration;
+
+use hardy_async::async_trait;
+use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
+
+use crate::Bytes;
 
 /// A specialized `Result` type for service operations.
 pub type Result<T> = core::result::Result<T, Error>;
@@ -62,7 +66,7 @@ pub enum Error {
 
     /// The bundle was dropped by a processing filter, with an optional reason code.
     #[error("Bundle dropped by filter: {0:?}")]
-    Dropped(Option<hardy_bpv7::status_report::ReasonCode>),
+    Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
     #[error("Duplicate bundle already exists")]
@@ -173,7 +177,7 @@ pub trait Application: Send + Sync {
     /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         expiry: time::OffsetDateTime,
         ack_requested: bool,
         total_len: u64,
@@ -183,10 +187,10 @@ pub trait Application: Send + Sync {
     /// Called when a status report is received for a bundle sent by this application.
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
+        reason: ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     );
 }
@@ -234,9 +238,9 @@ pub trait ApplicationSink: Send + Sync {
         &self,
         destination: Eid,
         data: Bytes,
-        lifetime: core::time::Duration,
+        lifetime: Duration,
         options: Option<SendOptions>,
-    ) -> Result<hardy_bpv7::bundle::Id>;
+    ) -> Result<Id>;
 }
 
 /// Low-level service trait with raw bundle access.
@@ -322,7 +326,7 @@ pub trait Service: Send + Sync {
     /// whose errors convert into this module's [`Error`] via `?`.
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -331,10 +335,10 @@ pub trait Service: Send + Sync {
     /// Called when status report received for a sent bundle
     async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         from: &Eid,
         kind: StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
+        reason: ReasonCode,
         timestamp: Option<time::OffsetDateTime>,
     );
 }
@@ -374,7 +378,7 @@ pub trait ServiceSink: Send + Sync {
     async fn send(
         &self,
         stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> Result<hardy_bpv7::bundle::Id>;
+    ) -> Result<Id>;
 }
 
 #[cfg(test)]
@@ -389,7 +393,7 @@ pub(crate) mod tests {
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
-            _: &hardy_bpv7::bundle::Id,
+            _: &Id,
             _: time::OffsetDateTime,
             _: u64,
             _: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
@@ -398,10 +402,10 @@ pub(crate) mod tests {
         }
         async fn on_status_notify(
             &self,
-            _: &hardy_bpv7::bundle::Id,
+            _: &Id,
             _: &Eid,
             _: StatusNotify,
-            _: hardy_bpv7::status_report::ReasonCode,
+            _: ReasonCode,
             _: Option<time::OffsetDateTime>,
         ) {
         }

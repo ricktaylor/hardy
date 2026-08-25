@@ -4,7 +4,7 @@ Bundle-in-Bundle Encapsulation (BIBE) for the Hardy BPA.
 This crate implements Bundle-in-Bundle Encapsulation (RFC 9171 Appendix B concept),
 enabling bundles to be tunneled through intermediate DTN networks by wrapping an
 inner bundle inside the payload of an outer bundle. It uses a hybrid CLA/Service
-architecture: encapsulation is performed by a [`Cla`](hardy_bpa::cla::Cla)
+architecture: encapsulation is performed by a [`Cla`](Cla)
 implementation that intercepts `forward()` calls, while decapsulation is handled by
 a [`Service`](hardy_bpa::services::Service) that receives outer bundles, extracts
 the inner bundle, and re-injects it into the BPA. Tunnel destinations are registered
@@ -12,6 +12,7 @@ as virtual peers, making them routable via standard BPA forwarding.
 */
 
 #![cfg_attr(not(feature = "std"), no_std)]
+
 extern crate alloc;
 
 mod cla;
@@ -21,14 +22,11 @@ mod service;
 pub use config::{Config, Tunnel};
 
 // Common imports for submodules (accessed via `use super::*;`)
-use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+
 use hardy_async::sync::spin::Once;
-use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::{Bytes, async_trait};
-use hardy_bpv7::{
-    creation_timestamp::CreationTimestamp,
-    eid::{Eid, NodeId, Service},
-};
+use hardy_bpa::{Bytes, async_trait, bpa::BpaRegistration};
+use hardy_bpv7::eid::{Eid, NodeId, Service};
 use tracing::{debug, warn};
 
 /// BIBE tunnel endpoint manager.

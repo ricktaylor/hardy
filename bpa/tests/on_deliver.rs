@@ -2,33 +2,39 @@
 //! door — and `stream::buffer_stream`, the whole-buffer convenience used by
 //! services that need a contiguous bundle.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-use hardy_bpa::storage::{MetadataMemStorage, MetadataStorage};
+use core::{num::NonZeroU32, time::Duration};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla, services,
-    stream::{Receiver, Segment},
+    cla,
+    node_ids::NodeIds,
+    services,
+    storage::{MetadataMemStorage, MetadataStorage},
+    stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
-    eid::{Eid, IpnNodeId, NodeId},
+    builder::Builder,
+    bundle::{Flags, Id},
+    creation_timestamp::CreationTimestamp,
+    eid::{Eid, IpnNodeId, NodeId, Service},
+    parse::parse,
     status_report::{AdministrativeRecord, ReasonCode},
 };
-
-// ---------------------------------------------------------------------------
-// Events observed by the mock services
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 // ---------------------------------------------------------------------------
 
 enum Event {
     /// The buffering service assembled the whole bundle.
-    Received(hardy_bpv7::bundle::Id, Bytes),
+    Received(Id, Bytes),
     /// The streaming service pulled the stream to completion.
     Streamed {
-        bundle_id: hardy_bpv7::bundle::Id,
+        bundle_id: Id,
         segments: Vec<Segment>,
         total_len: u64,
     },
@@ -72,7 +78,7 @@ impl services::Service for StreamingService {
 
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -105,10 +111,10 @@ impl services::Service for StreamingService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _from: &Eid,
         _kind: services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
     }
@@ -144,12 +150,12 @@ impl services::Service for BufferedService {
 
     async fn on_deliver(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
-        let data = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, total_len).await?;
         let _ = self
             .events_tx
             .send(Event::Received(bundle_id.clone(), data));
@@ -158,10 +164,10 @@ impl services::Service for BufferedService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _from: &Eid,
         _kind: services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
     }
@@ -202,7 +208,7 @@ impl services::Service for HoldingService {
 
     async fn on_deliver(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
@@ -223,10 +229,10 @@ impl services::Service for HoldingService {
 
     async fn on_status_notify(
         &self,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _from: &Eid,
         _kind: services::StatusNotify,
-        _reason: hardy_bpv7::status_report::ReasonCode,
+        _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
     }
@@ -256,7 +262,7 @@ impl cla::Cla for IngressCla {
 
     async fn on_unregister(&self) {}
 
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+    fn lane_count(&self) -> Option<NonZeroU32> {
         None
     }
 
@@ -264,7 +270,7 @@ impl cla::Cla for IngressCla {
         &self,
         _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
-        _bundle_id: &hardy_bpv7::bundle::Id,
+        _bundle_id: &Id,
         _total_len: u64,
         _stream: &mut dyn Receiver<Segment>,
     ) -> cla::Result<cla::ForwardBundleResult> {
@@ -277,17 +283,17 @@ impl cla::Cla for IngressCla {
 // ---------------------------------------------------------------------------
 
 fn build_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
-    let (_, data) = hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+    let (_, data) = Builder::new(source.clone(), destination.clone())
+        .with_payload(Cow::Borrowed(payload))
+        .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
     Bytes::from(data)
 }
 
 /// The identity of a bundle built by [`build_bundle`], for direct
 /// `on_deliver` calls.
-fn bundle_id_of(data: &Bytes) -> hardy_bpv7::bundle::Id {
-    hardy_bpv7::parse::parse(data.clone())
+fn bundle_id_of(data: &Bytes) -> Id {
+    parse(data.clone())
         .expect("Failed to parse built bundle")
         .bundle
         .primary
@@ -307,6 +313,7 @@ async fn feed(segments: Vec<Segment>) -> hardy_async::channel::Receiver<Segment>
 }
 
 async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
+    // Event-driven wait; the timeout only bounds a regression.
     tokio::time::timeout(tokio::time::Duration::from_secs(secs), rx.recv_async())
         .await
         .expect("Timed out waiting for service event")
@@ -316,7 +323,7 @@ async fn recv_event(rx: &flume::Receiver<Event>, secs: u64) -> Event {
 /// Builds a BPA as node ipn:0.1 with an ingress CLA, and dispatches an
 /// inbound bundle from ipn:0.2.1 addressed to the local service ipn:0.1.7.
 async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+    let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 1,
@@ -355,7 +362,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
 /// segment with an exact `total_len`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_service_receives_single_final_segment() {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+    let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 1,
@@ -367,7 +374,7 @@ async fn streaming_service_receives_single_final_segment() {
     bpa.start(false);
 
     let (svc, events_rx) = StreamingService::new(false);
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -404,7 +411,7 @@ async fn streaming_service_receives_single_final_segment() {
     };
     assert_eq!(total_len, data.len() as u64);
 
-    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse delivered bundle");
+    let parsed = parse(data.clone()).expect("Failed to parse delivered bundle");
     assert_eq!(bundle_id, parsed.bundle.primary.id);
     assert_eq!(
         parsed.bundle.primary.id.source,
@@ -426,14 +433,14 @@ async fn buffered_service_receives_whole_bundle() {
     let (bpa, _inbound) = bpa_with_inbound(b"pong").await;
 
     let (svc, events_rx) = BufferedService::new();
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
 
     let Event::Received(bundle_id, data) = recv_event(&events_rx, 5).await else {
         panic!("Expected the buffering service to assemble the bundle");
     };
-    let parsed = hardy_bpv7::parse::parse(data.clone()).expect("Failed to parse delivered bundle");
+    let parsed = parse(data.clone()).expect("Failed to parse delivered bundle");
     assert_eq!(bundle_id, parsed.bundle.primary.id);
     assert_eq!(
         parsed.bundle.primary.destination,
@@ -450,7 +457,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     let (bpa, _inbound) = bpa_with_inbound(b"park me").await;
 
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(Service::Ipn(7), failing_svc.clone())
         .await
         .unwrap();
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
@@ -463,9 +470,12 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     let mut redelivery = None;
     for i in 0.. {
         let (svc, events_rx) = StreamingService::new(false);
-        bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+        bpa.register_service(Service::Ipn(7), svc.clone())
             .await
             .unwrap();
+        // Known test-guide deviation: a timed retry loop, not an
+        // event-driven wait. Scheduled for rewrite against the Phase 3
+        // Deliver seat (see bpa/docs/refactor_plan.md).
         if let Ok(Ok(event)) = tokio::time::timeout(
             tokio::time::Duration::from_millis(500),
             events_rx.recv_async(),
@@ -492,7 +502,7 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
 /// stays silent instead of contradicting it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn expiry_mid_delivery_resolves_once() {
-    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+    let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
             node_number: 1,
@@ -512,7 +522,7 @@ async fn expiry_mid_delivery_resolves_once() {
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::new(false);
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(9), reports.clone())
+    bpa.register_service(Service::Ipn(9), reports.clone())
         .await
         .unwrap();
 
@@ -520,23 +530,20 @@ async fn expiry_mid_delivery_resolves_once() {
     // WaitingForService — which is also what places it on the reaper's
     // expiry watch list.
     let (failing_svc, failing_rx) = StreamingService::new(true);
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), failing_svc.clone())
+    bpa.register_service(Service::Ipn(7), failing_svc.clone())
         .await
         .unwrap();
 
-    let (_, data) = hardy_bpv7::builder::Builder::new(
-        "ipn:0.2.1".parse().unwrap(),
-        "ipn:0.1.7".parse().unwrap(),
-    )
-    .with_report_to("ipn:0.1.9".parse().unwrap())
-    .with_flags(hardy_bpv7::bundle::Flags {
-        delete_report_requested: true,
-        ..Default::default()
-    })
-    .with_lifetime(core::time::Duration::from_millis(2000))
-    .with_payload(std::borrow::Cow::Borrowed(b"expire me".as_slice()))
-    .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-    .expect("Failed to build bundle");
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+        .with_report_to("ipn:0.1.9".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_lifetime(Duration::from_millis(2000))
+        .with_payload(Cow::Borrowed(b"expire me".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
     bpa.register_cla("ingress".to_string(), cla.clone(), None)
@@ -554,7 +561,7 @@ async fn expiry_mid_delivery_resolves_once() {
     // the bundle's expiry.
     failing_svc.sink.get().unwrap().unregister().await;
     let (svc, started_rx, release_tx) = HoldingService::new();
-    bpa.register_service(hardy_bpv7::eid::Service::Ipn(7), svc.clone())
+    bpa.register_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
 
@@ -573,10 +580,10 @@ async fn expiry_mid_delivery_resolves_once() {
     // Pin the winner's identity: the report is the *reaper's* deletion
     // report, citing LifetimeExpired. If the claim logic ever inverted,
     // a delivered/deleted pair from the completion would fail here.
-    let Some(hardy_bpa::stream::Segment::Final(report)) = segments.last() else {
+    let Some(Segment::Final(report)) = segments.last() else {
         panic!("Expected a whole report bundle");
     };
-    let parsed = hardy_bpv7::parse::parse(report.clone()).expect("Failed to parse report bundle");
+    let parsed = parse(report.clone()).expect("Failed to parse report bundle");
     let payload = parsed
         .bundle
         .blocks

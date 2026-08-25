@@ -1,6 +1,6 @@
-use super::*;
-use thiserror::Error;
+use alloc::{boxed::Box, string::String};
 
+use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Invalid ipn allocator id {0}")]
