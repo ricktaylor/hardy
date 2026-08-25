@@ -1,6 +1,5 @@
 use clap::Parser;
 use hardy_async::TaskPool;
-use hardy_bpa::bpa::BpaRegistration;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -92,12 +91,16 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         scheduler_handle.clone(),
     ));
 
+    let tasks = TaskPool::new();
+    hardy_async::signal::listen_for_cancel(&tasks);
+
     // Connect to BPA and register as a RoutingAgent
     info!("Connecting to BPA at {}", config.bpa_address);
 
-    let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
+    let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
+        .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
 
-    let node_ids = remote_bpa
+    let node_ids = client
         .register_routing_agent(config.agent_name.clone(), agent.clone())
         .await
         .map_err(|e| anyhow::anyhow!("RoutingAgent registration failed: {e}"))?;
@@ -107,9 +110,6 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         config.agent_name,
         node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
     );
-
-    let tasks = TaskPool::new();
-    hardy_async::signal::listen_for_cancel(&tasks);
 
     // Start scheduler task (sink is now available after registration)
     {

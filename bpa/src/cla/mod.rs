@@ -29,10 +29,8 @@ pub enum Error {
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
-    /// The bundle exceeds the transport's maximum message size and was
-    /// rejected before being sent. Returned by transport-backed sinks
-    /// (e.g. gRPC) when a pre-flight size check fails, instead of
-    /// letting the oversized message break the underlying stream.
+    /// The accumulated bundle stream exceeded the declared or maximum
+    /// transfer size while being buffered.
     #[error("Bundle too large: {size} bytes exceeds the maximum of {max} bytes")]
     PayloadTooLarge { size: usize, max: usize },
 
@@ -43,6 +41,8 @@ pub enum Error {
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
     PayloadUnderrun { size: usize, expected: usize },
 
+    /// The declared `total_len` cannot be indexed as `usize` on this
+    /// target, so the stream cannot be buffered whole.
     #[error("declared length of {total_len} bytes is unaddressable on this target")]
     PayloadUnaddressable { total_len: u64 },
 
@@ -160,6 +160,15 @@ impl core::fmt::Display for ClaAddress {
 }
 
 /// The result of a bundle forwarding attempt by a CLA.
+/// The most explicit egress lanes a CLA may declare.
+///
+/// Lane declarations size per-peer egress queue sets, so the count is
+/// bounded to keep an erroneous or hostile declaration from driving
+/// unbounded allocation; [`Cla::lane_count`] values above it are
+/// clamped, and wire registrations must reject them.
+pub const MAX_LANE_COUNT: u32 = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForwardBundleResult {
     /// The bundle was successfully sent.
     Sent,

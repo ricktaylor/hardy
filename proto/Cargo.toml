@@ -1,6 +1,6 @@
 [package]
 name = "hardy-proto"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ readme = "README.md"
 keywords = ["dtn", "bpv7", "grpc", "protobuf", "tonic"]
 categories = ["network-programming"]
 exclude = ["docs/"]
-description = "gRPC proxy infrastructure for Hardy BPA components"
+description = "The gRPC wire contract of the Hardy BPA"
 
 [lib]
 path = "src/lib.rs"
@@ -17,24 +17,35 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-serde = ["dep:serde"]
+client = []
 instrument = ["tracing/attributes"]
+server = ["dep:dashmap", "dep:foldhash", "dep:jsonwebtoken", "dep:rand", "dep:serde"]
 
 [dependencies]
+dashmap = { version = "6", optional = true }
+foldhash = { version = "0.2", optional = true }
 hardy-async = { version = "0.2", path = "../async" }
+hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["tokio"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7" }
-hardy-bpa = { version = "0.2", path = "../bpa" }
-hardy-eid-patterns = { version = "0.4", path = "../eid-patterns" }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item", "std"] }
+jsonwebtoken = { version = "9", optional = true }
+prost = "0.14"
+prost-types = "0.14"
+rand = { version = "0.10", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+time = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tokio-stream = "0.1"
 tonic = "0.14"
 tonic-prost = "0.14"
-tonic-health = "0.14"
-prost = "0.14"
-prost-types = "0.14"
-serde = { version = "1", features = ["derive"], optional = true }
-time = "0.3"
 tracing = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = [
+    "tokio",
+    "no-rfc9171-autoregister",
+] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "time"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14"

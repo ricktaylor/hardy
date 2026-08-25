@@ -48,14 +48,14 @@ impl PipeService {
     pub async fn send(
         &self,
         destination: Eid,
-        data: hardy_bpa::Bytes,
+        mut data: hardy_bpa::Bytes,
         lifetime: core::time::Duration,
         options: Option<hardy_bpa::services::SendOptions>,
     ) -> hardy_bpa::services::Result<hardy_bpv7::bundle::Id> {
         self.sink
             .get()
             .expect("send called before registration")
-            .send(destination, data, lifetime, options)
+            .send(destination, lifetime, options, &mut data)
             .await
     }
 }
@@ -81,10 +81,11 @@ impl hardy_bpa::services::Application for PipeService {
         _bundle_id: &hardy_bpv7::bundle::Id,
         _expiry: time::OffsetDateTime,
         _ack_requested: bool,
-        _total_len: u64,
-        _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
+        _adu_size: u64,
+        stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        // Do nothing
+        // Receive to completion and discard the payload.
+        let _ = hardy_bpa::stream::concat_stream(stream, usize::MAX).await;
         Ok(())
     }
 

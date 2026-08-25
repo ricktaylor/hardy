@@ -1,4 +1,7 @@
 use core::num::NonZeroUsize;
+#[cfg(feature = "grpc")]
+use std::net::SocketAddr;
+use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
 
 use hardy_async::watcher::WatchMode;
@@ -36,6 +39,10 @@ fn default_config_path() -> std::path::PathBuf {
     default_config_dir().join("bpa")
 }
 
+fn default_drain_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
 fn default_log_level() -> Level {
     Level::INFO
 }
@@ -61,19 +68,43 @@ mod log_level_serde {
     }
 }
 
+// A duration written as a humantime string (e.g. `5s`, `1m 30s`);
+// zero is allowed, meaning the wait is disabled outright.
+mod human_duration {
+    use std::time::Duration;
+
+    use serde::Deserialize;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        humantime::parse_duration(&text)
+            .map_err(|e| serde::de::Error::custom(format_args!("invalid duration: {e}")))
+    }
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&humantime::format_duration(*duration))
+    }
+}
+
 // A positive duration, written as a humantime string (e.g. `30s`, `10m`,
 // `1h 30m`).
 #[cfg(feature = "postgres-storage")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NonZeroDuration(std::time::Duration);
+pub struct NonZeroDuration(Duration);
 
 #[cfg(feature = "postgres-storage")]
 impl NonZeroDuration {
-    pub fn new(duration: std::time::Duration) -> Option<Self> {
+    pub fn new(duration: Duration) -> Option<Self> {
         (!duration.is_zero()).then_some(Self(duration))
     }
 
-    pub fn get(&self) -> std::time::Duration {
+    pub fn get(&self) -> Duration {
         self.0
     }
 }
@@ -170,6 +201,88 @@ pub struct BuiltInServicesConfig {
     pub echo: Option<Vec<Service>>,
 }
 
+// A BPA registration surface the gRPC front end can host. Listed by
+// name in `grpc.services`; an unknown name is refused at parse with the
+// known ones listed.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GrpcService {
+    // Remote convergence-layer adapters.
+    Cla,
+    // Remote low-level services, which exchange whole BPv7 bundles.
+    Service,
+    // Remote applications, which exchange payloads (ADUs).
+    Application,
+    // Remote routing agents.
+    Routing,
+}
+
+// The service list must name at least one surface and each at most once:
+// an empty list is a misconfiguration (omit the `grpc` section to run no
+// gRPC server), and a repeated surface is a mistake, not a doubled mount.
+#[cfg(feature = "grpc")]
+fn at_least_one_service<'de, D>(deserializer: D) -> Result<Vec<GrpcService>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let names = Vec::<String>::deserialize(deserializer)?;
+    if names.is_empty() {
+        return Err(serde::de::Error::custom(
+            "grpc.services must list at least one service",
+        ));
+    }
+    let mut services = Vec::with_capacity(names.len());
+    for name in names {
+        let service = match name.as_str() {
+            "cla" => GrpcService::Cla,
+            "service" => GrpcService::Service,
+            "application" => GrpcService::Application,
+            "routing" => GrpcService::Routing,
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "grpc.services has unknown service {other:?}, expected one of cla, service, application, routing"
+                )));
+            }
+        };
+        if services.contains(&service) {
+            return Err(serde::de::Error::custom(format!(
+                "grpc.services lists {service:?} more than once"
+            )));
+        }
+        services.push(service);
+    }
+    Ok(services)
+}
+
+// The `grpc` section: the gRPC front end serving BPA registration to
+// remote CLAs, services, applications, and routing agents. Absent runs
+// no gRPC server. The transport is owned and assembled by this crate
+// (`hardy-proto` provides the per-surface services), so the defaults are
+// this crate's own.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GrpcConfig {
+    // The listen address; absent defers to the server default
+    // (`[::1]:50051`).
+    #[serde(default)]
+    pub address: Option<SocketAddr>,
+
+    // The services to expose, e.g. `["application", "cla", "service",
+    // "routing"]`; required and non-empty.
+    #[serde(deserialize_with = "at_least_one_service")]
+    pub services: Vec<GrpcService>,
+
+    // How long a graceful shutdown waits for open gRPC connections to
+    // drain before abandoning them, as a humantime string; `0s` cuts
+    // them immediately. The drain is shutdown's one unbounded wait: a
+    // client holding an unread response stream keeps its connection
+    // open indefinitely.
+    #[serde(default = "default_drain_timeout", with = "human_duration")]
+    pub drain_timeout: Duration,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
@@ -212,7 +325,7 @@ pub struct Config {
     // gRPC options
     #[serde(default)]
     #[cfg(feature = "grpc")]
-    pub grpc: Option<hardy_proto::server::Config>,
+    pub grpc: Option<GrpcConfig>,
 
     // Storage configuration (cache + metadata + bundle backends)
     #[serde(default)]
@@ -670,6 +783,110 @@ storage:
         assert!(err.contains("lru-capactiy"), "{err}");
     }
 
+    // A `grpc` section enabling no services is refused at parse: absent
+    // and all-off are different spellings, and only an absent section
+    // means "no gRPC server".
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_no_services_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let path = dir.path().join("all-off.yaml");
+        std::fs::write(&path, "grpc:\n  services: []\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("at least one"), "{err}");
+
+        let path = dir.path().join("missing.yaml");
+        std::fs::write(&path, "grpc:\n  address: \"[::1]:50051\"\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("services"), "{err}");
+    }
+
+    // Unknown gRPC service names are refused at parse with the known ones
+    // listed (previously ignored with a warning at startup).
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_unknown_service_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grpc.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"clas\"]\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("application"), "{err}");
+    }
+
+    // The service list parses into the typed surfaces it names.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_services_list() {
+        use super::GrpcService;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"application\", \"routing\"]\n").unwrap();
+
+        let config = Config::load(Some(path)).expect("the service list must parse");
+        let services = config.grpc.expect("grpc section must be present").services;
+        assert_eq!(
+            services,
+            vec![GrpcService::Application, GrpcService::Routing]
+        );
+    }
+
+    // The drain timeout is a humantime string: defaulted when absent,
+    // zero allowed (cut connections immediately), garbage refused.
+    #[test]
+    #[cfg(feature = "grpc")]
+    fn grpc_drain_timeout_parses_as_humantime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+
+        std::fs::write(&path, "grpc:\n  services: [\"application\"]\n").unwrap();
+        let config = Config::load(Some(path.clone())).unwrap();
+        assert_eq!(config.grpc.unwrap().drain_timeout, Duration::from_secs(5));
+
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  drain-timeout: 0s\n",
+        )
+        .unwrap();
+        let config = Config::load(Some(path.clone())).unwrap();
+        assert_eq!(config.grpc.unwrap().drain_timeout, Duration::ZERO);
+
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  drain-timeout: eventually\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path)).is_err());
+    }
+
+    // A repeated surface is a mistake, not a doubled mount.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_duplicate_service_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.yaml");
+        std::fs::write(&path, "grpc:\n  services: [\"cla\", \"cla\"]\n").unwrap();
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("expected a parse error");
+        };
+        let err = err.to_string();
+        assert!(err.contains("more than once"), "{err}");
+    }
+
     // The shipped example config parses under the strict schema, so its
     // keys cannot drift from the real ones.
     #[test]
@@ -681,8 +898,10 @@ storage:
         feature = "tcpclv4"
     ))]
     fn example_config_parses() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.yaml");
-        Config::load(Some(path)).expect("the shipped config.yaml must parse");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        Config::load(Some(root.join("config.yaml"))).expect("the shipped config.yaml must parse");
+        Config::load(Some(root.join("examples/config.yaml")))
+            .expect("the example config.yaml must parse");
     }
 
     // Node IDs can be a single string.
@@ -814,7 +1033,7 @@ node-ids:
     #[cfg(feature = "postgres-storage")]
     fn non_zero_duration_round_trips() {
         let duration: NonZeroDuration = serde_json::from_str("\"1m 30s\"").unwrap();
-        assert_eq!(duration.get(), std::time::Duration::from_secs(90));
+        assert_eq!(duration.get(), Duration::from_secs(90));
         assert_eq!(serde_json::to_string(&duration).unwrap(), "\"1m 30s\"");
 
         let err = serde_json::from_str::<NonZeroDuration>("\"0s\"")

@@ -1,0 +1,183 @@
+// The routing surface of the client SDK: one Subscribe session per
+// registration, and a sink whose calls are the wire's token-gated route
+// RPCs. Routing agents are push-only, so there are no events to
+// translate: the session's down direction carries the Registration and
+// then anchors liveness, and `run_session` just waits for the stream to
+// end. Declarations are ordered define-before-reference: the wire
+// conversions, the sink, the event loop, then the handshake.
+
+use std::sync::Arc;
+
+use hardy_async::CancellationToken;
+use hardy_bpa::{
+    Bytes, async_trait,
+    routing::{self, RouteAction, RoutingAgent, RoutingSink},
+};
+use hardy_bpv7::eid::NodeId;
+use hardy_eid_patterns::EidPattern;
+use tokio::sync::mpsc::{self, Sender};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Code, Status, Streaming, transport::Channel};
+use tracing::warn;
+
+use crate::MAX_MESSAGE_SIZE;
+use crate::routing::{
+    AddRouteRequest, Register, RemoveRouteRequest, SubscribeRequest, SubscribeResponse,
+    routing_agent_service_client::RoutingAgentServiceClient, subscribe_request, subscribe_response,
+};
+
+// Wire statuses become routing errors: a dead token or an unreachable
+// BPA is the sink's disconnection, a duplicate name is the local
+// registry's error, everything else carries through.
+fn routing_error(status: Status) -> routing::Error {
+    match status.code() {
+        Code::Unauthenticated | Code::Unavailable => routing::Error::Disconnected,
+        Code::AlreadyExists => routing::Error::AlreadyExists(status.message().to_string()),
+        _ => routing::Error::Internal(status.into()),
+    }
+}
+
+// The registration's sink: every call is a token-gated RPC of the
+// session. No Drop impl is needed: dropping the sink drops the request
+// sender, which half-closes the session stream, and the BPA treats that
+// exactly as an Unregister (withdrawing the agent's routes).
+pub struct GrpcRoutingSink {
+    client: RoutingAgentServiceClient<Channel>,
+    token: Bytes,
+    requests: Sender<SubscribeRequest>,
+}
+
+#[async_trait]
+impl RoutingSink for GrpcRoutingSink {
+    async fn unregister(&self) {
+        let _ = self
+            .requests
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Unregister(
+                    crate::routing::Unregister {},
+                )),
+            })
+            .await;
+    }
+
+    async fn add_route(
+        &self,
+        pattern: EidPattern,
+        action: RouteAction,
+        priority: u32,
+    ) -> routing::Result<bool> {
+        let response = self
+            .client
+            .clone()
+            .add_route(AddRouteRequest {
+                session_token: self.token.clone(),
+                pattern: pattern.to_string(),
+                action: Some((&action).into()),
+                priority,
+            })
+            .await
+            .map_err(routing_error)?
+            .into_inner();
+        Ok(response.added)
+    }
+
+    async fn remove_route(
+        &self,
+        pattern: &EidPattern,
+        action: &RouteAction,
+        priority: u32,
+    ) -> routing::Result<bool> {
+        let response = self
+            .client
+            .clone()
+            .remove_route(RemoveRouteRequest {
+                session_token: self.token.clone(),
+                pattern: pattern.to_string(),
+                action: Some(action.into()),
+                priority,
+            })
+            .await
+            .map_err(routing_error)?
+            .into_inner();
+        Ok(response.removed)
+    }
+}
+
+// The session anchor: routing agents receive no events, so the loop only
+// waits for the session to end (the stream closing or the client's
+// shutdown), which is the unregistration. An event on this stream is a
+// contract violation by the server and is logged.
+pub async fn run_session(
+    mut events: Streaming<SubscribeResponse>,
+    agent: Arc<dyn RoutingAgent>,
+    cancel: CancellationToken,
+) {
+    loop {
+        let message = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            message = events.message() => message,
+        };
+        match message {
+            Ok(Some(SubscribeResponse { event: Some(event) })) => {
+                warn!("Ignoring unexpected routing event: {event:?}");
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => break,
+        }
+    }
+    agent.on_unregister().await;
+}
+
+// The Subscribe handshake: Register up, Registration down, and the
+// session is live. Returns the BPA's node ids, the sink, and the event
+// stream, which run_session anchors from then on.
+pub async fn subscribe(
+    channel: Channel,
+    name: String,
+) -> routing::Result<(Vec<NodeId>, GrpcRoutingSink, Streaming<SubscribeResponse>)> {
+    let mut client = RoutingAgentServiceClient::new(channel)
+        .max_encoding_message_size(MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(MAX_MESSAGE_SIZE);
+
+    // The wire requires Register first, sent without waiting for
+    // response headers.
+    let (requests, rx) = mpsc::channel(4);
+    requests
+        .send(SubscribeRequest {
+            request: Some(subscribe_request::Request::Register(Register { name })),
+        })
+        .await
+        .map_err(|e| routing::Error::Internal(e.into()))?;
+
+    let mut events = client
+        .subscribe(ReceiverStream::new(rx))
+        .await
+        .map_err(routing_error)?
+        .into_inner();
+
+    let Some(SubscribeResponse {
+        event: Some(subscribe_response::Event::Registration(registration)),
+    }) = events.message().await.map_err(routing_error)?
+    else {
+        return Err(routing::Error::Internal(
+            "The first event must be Registration".into(),
+        ));
+    };
+    let node_ids = registration
+        .node_ids
+        .iter()
+        .map(|s| s.parse::<NodeId>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| routing::Error::Internal(e.into()))?;
+
+    Ok((
+        node_ids,
+        GrpcRoutingSink {
+            client,
+            token: registration.session_token,
+            requests,
+        },
+        events,
+    ))
+}

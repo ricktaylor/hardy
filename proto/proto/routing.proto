@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package routing.v1;
+
+import "google/protobuf/empty.proto";
+
+// A routing agent's connection to the BPA.
+//
+// Routing agents are push-only: they discover or compute routes and
+// install them with AddRoute and RemoveRoute; the BPA never calls back
+// into the agent. The Subscribe session is the control plane: Register
+// commences the registration, the BPA answers with Registration
+// carrying the session token, and from then on the stream only anchors
+// the session. Closing it, or sending Unregister, terminates the
+// registration, invalidates the token, and withdraws the agent's
+// routes.
+service RoutingAgentService {
+  // -- Control plane ---------------------------------------------------
+
+  // The session: the registration lifecycle up, the registration event
+  // down, then the liveness anchor.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Routes ----------------------------------------------------------
+
+  // Install a route in the RIB.
+  rpc AddRoute(AddRouteRequest) returns (AddRouteResponse);
+
+  // Remove a route from the RIB.
+  rpc RemoveRoute(RemoveRouteRequest) returns (RemoveRouteResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// The up direction of the session: the registration lifecycle, nothing else.
+message SubscribeRequest {
+  oneof request {
+    Register   register   = 1;
+    Unregister unregister = 2;
+  }
+}
+
+// Commences the registration. Must be the first message.
+message Register {
+  // The unique name of this routing agent instance; its routes are
+  // attributed to it.
+  string name = 1;
+}
+
+// Terminates the registration gracefully; closing the stream does too.
+message Unregister {}
+
+// The down direction of the session: the registration event, then
+// silence. A failed registration terminates the stream with a gRPC
+// status instead.
+message SubscribeResponse {
+  oneof event {
+    Registration registration = 1;
+  }
+}
+
+// The commenced registration. Always the first event.
+message Registration {
+  // The node ids of the BPA.
+  repeated string node_ids = 1;
+  // Presented by every route RPC of this session. Opaque; invalid once
+  // the session stream closes.
+  bytes           session_token = 2;
+}
+
+// ---------------------------------------------------------------------
+// Routes: token-gated unary RPCs.
+// ---------------------------------------------------------------------
+
+message AddRouteRequest {
+  // The session token from Registration.
+  bytes       session_token = 1;
+  // The EID pattern to match, e.g. "ipn:*.*" or "dtn://node/**".
+  string      pattern       = 2;
+  // The action to take for matching bundles.
+  RouteAction action        = 3;
+  // The route priority; lower values take precedence.
+  uint32      priority      = 4;
+}
+
+message AddRouteResponse {
+  // Whether the route was newly installed.
+  bool added = 1;
+}
+
+message RemoveRouteRequest {
+  // The session token from Registration.
+  bytes       session_token = 1;
+  // The EID pattern of the route to remove.
+  string      pattern       = 2;
+  // The action of the route to remove.
+  RouteAction action        = 3;
+  // The priority of the route to remove.
+  uint32      priority      = 4;
+}
+
+message RemoveRouteResponse {
+  // Whether the route was known and removed.
+  bool removed = 1;
+}
+
+// A routing action for bundles matching a route's pattern.
+message RouteAction {
+  oneof action {
+    // Drop the bundle.
+    Drop                  drop    = 1;
+    // Return the bundle to the previous hop.
+    google.protobuf.Empty reflect = 2;
+    // Recursive lookup via this EID.
+    string                via     = 3;
+  }
+}
+
+message Drop {
+  // The RFC 9171 reason code to report, if any.
+  optional uint64 reason_code = 1;
+}

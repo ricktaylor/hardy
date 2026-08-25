@@ -1,285 +1,110 @@
 # hardy-proto Design
 
-gRPC protocol definitions and Rust proxy implementations for distributed BPA deployment.
+The gRPC wire contract of the Hardy BPA: versioned protobuf schemas for connecting remote applications, low-level services, convergence-layer adapters, and routing agents to a BPA, together with the server bridges that serve those schemas against a `hardy_bpa::Bpa` and the client SDK that registers local components against a remote one.
 
 ## Design Goals
 
-- **Multi-process deployment.** Enable CLAs and application services to run as separate processes from the BPA, communicating over gRPC. This allows independent scaling, fault isolation, and deployment flexibility.
-
-- **Language-agnostic interface.** The protobuf specifications serve as an open interface that can be implemented in any language with gRPC support. External systems can integrate with Hardy without using Rust.
-
-- **Transparent proxying.** Rust clients use the same traits (`Cla`, `Sink`, `Application`, `Service`) whether communicating in-process or over gRPC. The proxy layer handles protocol translation invisibly.
+- **One open, versioned contract per component surface.** Each of the four component surfaces gets its own gRPC service in its own protobuf package (`application.v1`, `service.v1`, `cla.v1`, `routing.v1`). The `.proto` files are the authoritative interface specification: any language with gRPC support can implement a component against a Hardy BPA without touching Rust, and the `v1` package names version the contract so it can evolve without ambiguity.
+- **Thin bridges.** gRPC already provides call correlation, deadlines, statuses, and HTTP/2 flow control. The crate adds only what the wire's semantics require: session identity, announced work, and the seams into `hardy_bpa`. There is no protocol machinery of its own, no message-id bookkeeping, and no reimplementation of backpressure.
+- **Streaming end-to-end wherever `hardy_bpa` has a seam.** Bundle bytes flow from wire chunk to `hardy_bpa::stream` segment without materialising in the bridge on every path where the component API is streamed. The one path where it is not (application `Send`) accumulates behind a declared guard and is marked as scaffolding with its retirement path named (see the streaming decision below).
+- **Cancellation-correct.** Every way a transfer or a session can end (an in-band `cancel` message, stream closure, unregistration from either side, host shutdown) releases resources promptly, and every abandoned delivery or forwarding stays parked in the BPA for a later attempt instead of being lost.
+- **Possession-is-proof authorization.** Resolving any data-plane call to its session costs one concurrent-map probe. No per-call cryptography runs on the hot path.
 
 ## Architecture Overview
 
-The package provides two main components:
+The crate is three parts in one package, selected by feature flags:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Proto Definitions (*.proto)                                │
-│  ├── cla.proto      - CLA ↔ BPA bidirectional streaming     │
-│  ├── service.proto  - Application/Service ↔ BPA streaming   │
-│  └── routing.proto  - RoutingAgent ↔ BPA streaming          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Rust Proxy Module                                          │
-│  ├── proxy.rs       - Split reader/writer RpcProxy          │
-│  ├── server/        - BPA-side gRPC service implementations │
-│  │   ├── cla.rs     - Implements hardy_bpa::cla::{Cla,Sink} │
-│  │   ├── routing.rs - Implements routes::RoutingAgent       │
-│  │   ├── service.rs - Implements services::Service          │
-│  │   └── application.rs - Implements services::Application  │
-│  └── client/        - Remote-side proxy implementations     │
-│      ├── cla.rs     - register_cla()                        │
-│      ├── routing.rs - register_routing_agent()              │
-│      ├── service.rs - register_endpoint_service()           │
-│      └── application.rs - register_application_service()    │
-└─────────────────────────────────────────────────────────────┘
-```
+1. **The contract** (no features). The four schemas under `proto/` are compiled into one generated root module per package: `hardy_proto::application`, `hardy_proto::service`, `hardy_proto::cla`, and `hardy_proto::routing`. Alongside the generated types live the conversions to and from `hardy_bpa`/`hardy_bpv7` domain types (send options, status assertions, CLA addresses, route actions), the wire constants, and the chunked-transfer grammar in `hardy_proto::stream`. A consumer that only wants to speak the wire, such as a component written against the generated clients, depends on nothing else.
+2. **The server bridges** (`server` feature). One bridge per surface (`ApplicationServiceImpl`, `ServiceServiceImpl`, `ClaServiceImpl`, `RoutingAgentServiceImpl`), each implementing its generated service trait directly against the public `hardy_bpa::bpa::BpaRegistration` trait, plus the one `Signer` a host shares across them. The shared session machinery (`Session`, `Sessions`, `SessionStream`, the token types, the transfer pump) is private: the host-facing surface is deliberately the four bridges and the signer, nothing more. The feature also activates the server-only dependencies (`dashmap`, `foldhash`, `jsonwebtoken`, `rand`, `serde`), keeping the default contract-only build light.
+3. **The client SDK** (`client` feature). `BpaClient` lets a local component register against a remote BPA with the same component traits a local `Bpa` takes (`Application`, `Service`, `Cla`, `RoutingAgent` and their sinks). The SDK owns the sessions, tokens, event loops, and data-plane calls; the component neither sees nor speaks gRPC.
 
-All protocols use bidirectional streaming with message correlation, enabling asynchronous request/response patterns over a single gRPC stream.
+Three constants shape every data-plane exchange. `MAX_MESSAGE_SIZE` (16 MiB) caps a single encoded gRPC message in either direction. `CHUNK_SIZE` (256 KiB) is one slice of a data-plane transfer: large enough to amortise per-message overhead, small enough to interleave fairly with other HTTP/2 streams on the connection. `MAX_TRANSFER_SIZE` (8 GiB) is the reassembly guard for the one path that materialises a transfer at the wire boundary, capping what a peer can make the server hold.
+
+### Sessions, tokens, and doors
+
+Every surface follows the same three-concept design:
+
+1. **A session is one `Subscribe` stream.** The client opens the bidirectional stream and sends `Register` as its first message; the bridge registers the component with the BPA inline and answers with a `Registration` event carrying a bearer session token; from then on the down direction is a pure event stream of small messages (deliveries, status reports, forwardings), and bundle bytes never ride it. Closing the stream, or sending `Unregister`, terminates the registration and invalidates the token. A failed registration is a plain gRPC error on the call, so there is no orphan state to clean up.
+2. **Doors are stateless.** Every other RPC (the streaming data-plane calls `Send`, `Receive`, `Dispatch`, `Forward`, and the unary calls for peers, routes, and transfer outcomes) presents the session token in its first message and resolves it to the live session in a single concurrent-map probe. The doors hold no state of their own between calls.
+3. **Announced work is keyed by the wire's one identity.** A `Delivery` (application, service) or `Forwarding` (CLA) event announces a bundle by its RFC 9171 bundle id; the remote collects or executes it through a door presenting the same id; completing the door call completes the work. Work that is announced but never completed survives the session: the BPA keeps the bundle parked and announces it again to a later registration.
+
+The routing surface is this template minus the data plane: routing agents are push-only, so their session carries only the initial `Registration` and then anchors the registration's liveness, and the two unary doors (`AddRoute`, `RemoveRoute`) drive the RIB directly.
+
+### The chunked-transfer grammar
+
+All four streaming data-plane calls speak one grammar, defined in `hardy_proto::stream` and implemented as capabilities (`Chunk`, `Cancel`) on the generated message types. Bundle bytes travel as a run of `chunk` messages ended by `last_chunk` (possibly the only message, possibly empty), and the `last_chunk` is the commit signal: a stream that ends without it was truncated and commits nothing. An in-band `cancel` from the sending side abandons the transfer, and an in-band `cancelled` in the down direction withdraws a delivery or forwarding mid-transfer (the bundle expired or was deleted), after which nothing follows. Truncation-is-an-error is the load-bearing rule: a partial ADU is never submitted, a partial bundle is never dispatched, and a CLA must never transmit a bundle whose stream ended without its last chunk.
 
 ## Key Design Decisions
 
-### Bidirectional Streaming with Message Correlation
+### The bridges live in hardy-proto behind a feature, not in bpa-server
 
-Rather than separate RPC calls for each operation, all protocols use a single bidirectional stream per connection. The stream is established via a `Register()` RPC and remains open for the session lifetime.
+The server bridges are part of this crate, behind the `server` feature, rather than application code in `bpa-server`. The rationale is Hardy's extension model: closed-source hosts embed the unmodified `bpa` crate and compose their own binaries, and the bridges depend only on the public `hardy_bpa::bpa::BpaRegistration` trait, so any host embedding a `Bpa` can serve the wire by mounting the four `*ServiceImpl` types into its own tonic transport. Keeping them in `bpa-server` was considered and rejected because it would have made the ready-made bridges available only to consumers of that binary crate; a separate bridge crate was also rejected because a feature on the contract crate provides the same dependency isolation (the contract-only default pulls in none of the server dependencies) without another package to version. `bpa-server` keeps only what is genuinely its own: transport composition, configuration, and shutdown ordering.
 
-**Stream message structure:**
+### Possession-is-proof session tokens
 
-```protobuf
-message ClaToBpa {
-  uint32 msg_id = 1;           // Correlation ID
-  oneof msg {
-    google.rpc.Status status = 2;  // Error response
-    RegisterClaRequest register = 3;
-    DispatchBundleRequest dispatch = 4;
-    // ... other message types
-  }
-}
-```
+Registration mints a bearer token, and the token itself is the key of the bridge's session map (`Sessions`, a `DashMap` from token to live session). Resolving a data-plane call is therefore one map probe: a forged or retired token is simply absent, and the call fails with `UNAUTHENTICATED`. No signature verification runs per call; the token embeds an unguessable random 128-bit session id, so possession is the proof. The tokens are nevertheless JWTs (HS256, signed with a process-local random secret created once per server) whose `sub` claim names the registration identity: the JWT shape costs nothing on the hot path, keeps the token self-describing for debugging, and leaves room for evolutions such as reconnectable sessions that would need real verification. Tokens do not expire, because the session map is the sole authority on liveness and an expiring token would break a long-lived quiet peer. Because the keys are server-minted random values rather than attacker-chosen strings, the map trades the DoS-resistant default hasher for the faster `foldhash` without opening a collision vector.
 
-Each direction has a wrapper message containing:
+### Announce-and-collect delivery
 
-- `msg_id` - Correlation identifier for request/response matching
-- `oneof msg` - The actual payload, one of several message types
+Deliveries and forwardings are announced on the session stream and pulled through a door, rather than pushed as payloads. The announcement is small and fire-and-forget: a dead session drops it, and the BPA announces the parked bundle again to a later registration. The pull is paced by the consumer: the `Receive` and `Forward` doors pump the BPA's segment stream as wire chunks through a shallow buffer, so HTTP/2 flow control paces the BPA to the remote's read rate, and nothing is queued that the remote may never read. Completion is structural: the bridge pulls the BPA's final segment only after the previous chunks are queued and no abandonment is pending, so every abandoned path (in-band cancel, truncation, session death) leaves the bundle parked, which implements RFC 9171 delivery deferral for free. Collection is repeatable until it completes.
 
-**Protocol flow:**
+The CLA's `Forward` door adds a rendezvous, because the BPA's `Cla::forward` call arrives holding a borrowed stream that must stay alive for the whole transfer: the bridge parks a one-shot channel keyed by the announced bundle id, the door claims it (making that call the forwarding's sole executor, and a `Forward` for an unannounced id a `NOT_FOUND`), and the transfer is then driven inline by the BPA's own call, streaming chunks down and carrying the CLA's result (`sent`, `no_neighbour`, `accepted`) back up the same call. An `accepted` result is finalised later by the unary `ReportTransferOutcome`. A drop guard removes the rendezvous however the forwarding ends, so an abandoned announcement can never leak an entry.
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Server
+### One `CancellationToken` per session, one exit sequence
 
-    Client->>Server: Register() RPC
-    Note over Client,Server: Bidirectional Stream established
+Each session owns a single cancellation token, created as a child of the host's `TaskPool` token, and every way a session can end converges on firing it: the client's `Unregister` or half-close (observed by the session's one task), the rpc dying for any reason (tonic exposes no per-request cancellation signal, so a `SessionGuard` attached to the response stream fires the token from `Drop`), the BPA's `on_unregister` callback, and pool shutdown (the parent token's broadcast). The one task a session owns then runs the one exit sequence: abort the session, remove it from the map, and unregister the sink from the BPA. Everything long-lived in the session either selects on the token or fails through the channel closure it causes: the event sender races sends against teardown (so a full buffer can never wedge a dying session), in-flight door streams end with `ABORTED`, and a `forward` awaiting its door resolves as disconnection. Because the session's response stream ends itself when the token fires, the rpc completes without anyone dropping a sender by hand, and `TaskPool::shutdown` always drains.
 
-    Client->>Server: RegisterRequest (msg_id=0)
-    Server->>Client: RegisterResponse (msg_id=0)
+The response stream also enforces one ordering invariant by construction: the `Registration` event is the stream's held first item, ahead of anything already in the event channel, because the BPA announces parked bundles from inside `register_*` itself and those announcements must not outrun the registration that carries the token.
 
-    Client->>Server: DispatchBundle (msg_id=1)
-    Note right of Client: Client-initiated (concurrent)
-    Client->>Server: AddPeer (msg_id=2)
-    Server->>Client: DispatchResponse (msg_id=1)
-    Server->>Client: AddPeerResponse (msg_id=2)
+### A concrete lifecycle per surface, not a generic engine
 
-    Server->>Client: ForwardBundleRequest (msg_id=3)
-    Note left of Server: Server-initiated
-    Client->>Server: ForwardBundleResponse (msg_id=3)
-```
+The session lifecycle (read `Register`, register with the BPA, publish the token, spawn the session task, return the stream) is written out concretely in each surface's `subscribe` handler, with `services/application.rs` as the template the others follow. Generic engines (a closure-parameterised `serve`, then a trait pair abstracting the component and subscriber) were built and rejected: four plain copies of a small readable lifecycle beat one abstraction, and the wire vocabulary (the `oneof` matches) stays visible in each handler where the schema it implements is easiest to check.
 
-The first message must always be a registration request with `msg_id=0`. After registration succeeds, either side can initiate messages. The sender assigns a unique `msg_id`; the receiver echoes it in the response, allowing the sender to match responses to requests even when multiple operations are in flight.
+### Streaming: native where the seam exists, declared scaffolding where not
 
-**Unregister vs OnUnregister:**
+| Path | `hardy_bpa` seam | Bridge behaviour |
+|---|---|---|
+| CLA `Dispatch` (in) | `Sink::dispatch` | The wire's request stream is adapted into the segment stream the BPA pulls (`ServerTransfer`); the BPA parses, validates, and caps the reassembly with its own bundle size limit; nothing materialises in the bridge |
+| Service `Send` (in) | `ServiceSink::send` | Same pump; no bridge-side accumulation |
+| Application `Send` (in) | `ApplicationSink::send` | Same pump; the BPA assembles the ADU behind its own bundle size bound (canonical CBOR needs the payload's definite length before the bundle can be built), and a declared `adu_size` above `MAX_TRANSFER_SIZE` is still rejected before any bytes arrive |
+| Deliveries (out: application and service `Receive`) | `on_deliver` carries the delivery's lazy segment stream | The bridge holds the unopened stream keyed by bundle id until the client's `Receive`, whose first-pull probe answers `NOT_FOUND` for a dead delivery; segments become `CHUNK_SIZE` wire chunks through a shallow buffer, and pulling the final segment is the completion signal |
+| CLA `Forward` (down) | `Cla::forward` awaits the outcome, borrowing its stream | A rendezvous, not a lazy map: the awaiting `forward` parks a one-shot keyed by bundle id, announces `Forwarding`, and drives the transfer inline when the `Forward` door hands its call back, because the outcome rides `forward`'s return value and the borrowed stream lives only for that call |
 
-Each protocol defines two unregistration message pairs:
+The application `Send` door keeps one pre-flight guard: a declared `adu_size` above `MAX_TRANSFER_SIZE` is rejected with `RESOURCE_EXHAUSTED` before any bytes arrive. The declared size is otherwise only a hint the wire carries; the transfer is delimited by `last_chunk` regardless, and the accumulation the ADU still needs (the BPA builds the bundle around it, and canonical CBOR needs the definite length) happens in the BPA behind its own bound, not in the bridge.
 
-- `Unregister` — Client-initiated: client sends `UnregisterRequest`, server responds with `UnregisterResponse`
-- `OnUnregister` — Server-initiated (BPA shutdown): server sends `OnUnregisterRequest`, client responds with `OnUnregisterResponse`
+The client SDK is the mirror image, and it is where the end-to-end story completes: the sinks it hands to components are streaming producers. `dispatch` and `send` pump the component's segments onto wire chunks while the call runs (tonic wants an owned request stream and the segment stream is borrowed for the call, so a channel pump joined with the call bridges the two), and deliveries arrive as a lazy wire-backed stream on `on_deliver`: the first pull issues the `Receive` RPC, so a deferred collection touches nothing on the wire and a dropped stream declines the announcement end to end. Once open, the collection is `ClientTransfer`, a pull stream whose `recv` fetches one wire chunk at a time and which abandons the collection with the wire's in-band cancel if dropped before its final chunk. A remote CLA transfer thus flows link segment to wire chunk to server pump to `dispatch` with no whole-bundle materialisation anywhere in this crate.
 
-Both use standard msg_id correlation.
+### Errors convert at exactly one point per call
 
-**Mapping to Component/Sink traits:**
+Errors on the wire are native gRPC statuses; the schemas deliberately contain no status or error payload messages. Inside the bridges and the SDK, errors are `hardy_bpa`'s own enums. Each side converts at exactly one point per domain: the server maps `services::Error`, `cla::Error`, and `routing::Error` to statuses in one function each, and the client maps statuses back to the same enums in one function each, so a remote registration or send fails with the same typed error a local one would (`ServiceIdInUse` for `ALREADY_EXISTS`, `UnknownDelivery` for `NOT_FOUND`, `Disconnected` for `UNAUTHENTICATED` or `UNAVAILABLE`). The load-bearing mappings: a dead or forged token is `UNAUTHENTICATED`; a door for unannounced work is `NOT_FOUND`; the size guards are `RESOURCE_EXHAUSTED`; an in-band cancel ends its call with `CANCELLED`; truncation and session death end it with `ABORTED`; a malformed message is `INVALID_ARGUMENT`. On the streamed inbound paths the bridge records the wire-side reason a transfer ended and reports that status, because it outranks the generic stream error the BPA observed.
 
-The bidirectional stream directly mirrors the BPA's Component/Sink trait pattern (see [BPA design](../../bpa/docs/design.md#component-registry-and-sink-pattern)):
+One asymmetry of the delivery doors is deliberate and worth naming: completion commits on the BPA's side, when `stream_delivery` pulls the final segment (the bridge then sends the remaining chunks regardless of a late cancel). Client receipt is not part of the commit: a session lost between the commit and the client reading `last_chunk` loses the collected bytes while the bundle completes, because the wire carries no receipt acknowledgement. The window is the depth-4 bridge buffer plus transport flow control, and closing it entirely needs an acknowledgement-gated completion message in a future wire revision; the schemas state the semantics so a client author can decide whether the window matters for their application.
 
-| Direction | In-Process | Over gRPC |
-|-----------|------------|-----------|
-| BPA → Component | Component trait methods (`on_register`, `forward`) | Server-initiated stream messages |
-| Component → BPA | Sink trait methods (`dispatch`, `add_peer`) | Client-initiated stream messages |
-
-This symmetry allows the proxy module to implement the same traits used for in-process components, making deployment topology transparent to the component implementation.
-
-### RpcProxy: Split Reader/Writer Architecture
-
-The `RpcProxy` struct manages the bidirectional stream using independent reader and writer tasks, following the pattern established by TCPCLv4:
-
-```
-                 ┌─────────────────────┐
-                 │    Writer Task      │
- write_tx ──────►│  write_rx → stream  │──► gRPC outbound
-                 └─────────────────────┘
-                        ▲
-                        │ write_tx.send()
-                        │
-                 ┌──────┴──────────────┐
-                 │    Reader Task      │
- gRPC inbound ──►│  stream → dispatch  │
-                 │                     │
-                 │  if response:       │
-                 │    complete oneshot │
-                 │  if request:        │
-                 │    spawn handler    │──► TaskPool
-                 └─────────────────────┘
-```
-
-**Writer task**: Dedicated task owning the outbound stream direction. Anyone sends by cloning `write_tx`. Exits on parent cancellation or when all senders drop.
-
-**Reader task**: Owns the inbound stream. Responses are matched to pending callers via msg_id oneshots. Requests spawn handler tasks on the caller's `TaskPool`.
-
-**msg_id correlation**: `call()` allocates a msg_id, registers a oneshot in a shared pending map (`Arc<Mutex<Option<HashMap>>>`), sends via `write_tx`, and awaits the oneshot. The reader completes the oneshot when it sees the matching response.
-
-**Hierarchical cancellation**: `run()` takes a `&TaskPool` and creates a child cancel token. Server shutdown (parent cancel) cascades to all proxies. `close()` cancels only the proxy's child token without affecting siblings.
-
-**Graceful handler drain**: When the reader exits (stream closed by remote), it closes the pending map (`Option` → `None`) and drops its `write_tx` clone, but does NOT cancel the child token. In-flight handler tasks finish their work and send responses through their own `write_tx` clones. The writer stays alive until all handlers complete, then exits naturally when `write_rx` closes. Future `call()` attempts see the closed pending map and return immediately.
-
-**Spin Mutex**: The pending map and msg_id counter use `hardy_async::sync::spin::Mutex` — all operations are O(1) HashMap insert/remove/lookup with no blocking or I/O.
-
-### Spawned Handshake Pattern
-
-The `register()` gRPC method must return the response stream immediately so tonic can establish the bidirectional channel. The registration handshake (receive request, register with BPA, send response, start proxy) runs in a spawned task:
-
-```rust
-async fn register(&self, request: ...) -> Result<Response<RegisterStream>> {
-    let (channel_sender, rx) = mpsc::channel(size);
-    let channel_receiver = request.into_inner();
-
-    // Spawn — return stream immediately
-    hardy_async::spawn!(self.session_tasks, "session", async move {
-        run_session(channel_sender, channel_receiver, bpa, &tasks).await;
-    });
-
-    Ok(Response::new(ReceiverStream::new(rx)))
-}
-```
-
-Session tasks are spawned on the server's `TaskPool`, tracked for graceful shutdown.
-
-### Interfaces Not Exposed via gRPC
-
-Two BPA interfaces are intentionally kept in-process only:
-
-**Filter interface**: Filters run in the bundle processing hot path. The latency of gRPC serialization would impact throughput unacceptably. Filters must be compiled into the BPA process.
-
-**Storage interface**: Storage backends that need remote access (PostgreSQL, S3) already provide their own protocols. Adding a gRPC layer would introduce unnecessary overhead. Storage implementations link directly into the BPA.
-
-### Two Service API Levels
-
-The service protocol exposes both the Application API (payload-only) and Service API (full bundle access) described in the [BPA design](../../bpa/docs/design.md). The gRPC messages mirror the trait method signatures, with the BPA validating all service-constructed bundles as a security boundary.
-
-### Trust Model
-
-The gRPC layer is the **security boundary** for the BPA. Two deployment modes exist:
-
-**In-process components** (CLAs, services, filters compiled into the BPA) are fully trusted. They share the same process—if compromised, the entire BPA is compromised. No authorization checks are performed on in-process calls.
-
-**Remote components** (connecting via gRPC) are authenticated and authorized at the gRPC layer:
-
-```mermaid
-graph BT
-    remote["Remote CLA / Service / App"] -- "gRPC + mTLS" --> grpc
-
-    subgraph bpa_server["bpa-server process"]
-        subgraph grpc["gRPC handlers — TRUST BOUNDARY"]
-            mtls["mTLS authentication (certificate = identity)"]
-            ns["Namespace validation at registration"]
-            policy["Policy enforcement (rate limits, quotas)"]
-        end
-        grpc -- "direct Rust calls" --> core["bpa (core) — trusts all callers"]
-    end
-```
-
-**Resource ownership** is enforced structurally by the Sink pattern (see [BPA design](../../bpa/docs/design.md#authorization-and-ownership)). Each gRPC connection receives a Sink bound to its own resources—a client cannot affect another client's registrations because it has no reference to them.
-
-**Security layers** (when mTLS is enabled):
-
-1. **Authentication**: Client certificate required; CN/SAN establishes identity
-2. **Registration validation**: Namespace checks on requested EIDs
-3. **Ownership enforcement**: Structural via Sink pattern (no token needed)
-4. **Policy enforcement**: Rate limits and quotas per connection
-
-The `bpa/` crate remains security-agnostic—all authorization logic lives in `bpa-server/src/grpc/`.
-
-### Error Handling via google.rpc.Status
-
-Errors are embedded in the stream as `google.rpc.Status` messages rather than terminating the stream. This allows granular error reporting for individual operations. Fatal errors (like registration failure) close the stream.
-
-## Protocol Definitions
-
-The `.proto` files define the wire format for each interface:
-
-- **`cla.proto`** - CLA registration, bundle dispatch/forwarding, peer management, and unregistration. Maps to the `Cla` and `cla::Sink` traits.
-
-- **`service.proto`** - Endpoint registration, send/receive, status notifications, and unregistration. Defines separate message types for Application API (payload-only) and Service API (full bundle). Maps to the `Application`, `Service`, and corresponding Sink traits.
-
-- **`routing.proto`** - Routing agent registration, route add/remove, and unregistration. Maps to the `RoutingAgent` and `RoutingSink` traits.
-
-## Proxy Module
-
-The `proxy` module provides Rust implementations of BPA traits that communicate over gRPC:
-
-- `register_cla()` - Connect a CLA implementation to a remote BPA
-- `register_routing_agent()` - Connect a RoutingAgent to a remote BPA
-- `register_application_service()` - Connect an Application to a remote BPA
-- `register_endpoint_service()` - Connect a Service to a remote BPA
-
-Internal traits abstract over message handling:
-
-- `SendMsg` - Compose messages with correlation IDs
-- `RecvMsg` - Extract message content and handle status errors
-- `ProxyHandler` - Handle incoming notifications and manage lifecycle
-
-The `RpcProxy` struct manages the bidirectional stream via split reader/writer tasks, correlating requests with responses via a closeable pending map.
+The wire is also the trust boundary it always was: the BPA parses and validates everything that arrives through it (a service's bundle must parse, and must claim the registration's own endpoint as its source), and the session token is the only credential the wire itself carries, so transport-level protection and peer authentication remain the host's composition concern.
 
 ## Integration
 
 ### With hardy-bpa
 
-The BPA library defines the traits (`Cla`, `Sink`, `Application`, `Service`, `RoutingAgent`, `RoutingSink`). hardy-proto provides gRPC-based implementations that proxy method calls over the network.
+The server bridges consume exactly one trait, `hardy_bpa::bpa::BpaRegistration`, and each bridge holds it as `Arc<dyn BpaRegistration>`, so a host passes its `Bpa` directly. Components on the far side implement the unchanged component traits; the bridge structs (`GrpcApplication`, `GrpcService`, `GrpcCla`, `GrpcRoutingAgent`) are those traits' implementations as the BPA sees them, translating callbacks into session events. One integration note: the wire's `register_cla` carries no egress policy, because a policy is an in-process trait object the wire cannot express; remote CLAs run under the host's policy configuration.
 
-### With hardy-bpa-server
+### Hosting the bridges
 
-The server implements the gRPC service handlers, translating between protobuf messages and BPA trait calls. It manages stream lifecycle, connection authentication, and error propagation. Session tasks and proxy tasks are spawned on a shared `TaskPool` for hierarchical cancellation during shutdown.
+A host creates one `Signer` (the signing identity belongs to the server, not to a surface), passes its `TaskPool` and its `Bpa` to each bridge it wants to serve, wraps each in its generated `<Surface>ServiceServer` with `MAX_MESSAGE_SIZE` as the encoding and decoding cap, and mounts them on its transport. `bpa-server` does exactly this behind its `grpc` feature: its configuration validates a non-empty, duplicate-free list of surfaces to serve, mounts each next to the gRPC health service, and arms HTTP/2 keepalive so a silently dead peer cannot hold sessions and parked door calls indefinitely. Shutdown order matters and is the host's job: stop accepting on the transport, then shut down the pool (which tears every session and drives unregistration against the still-live BPA), then shut down the BPA.
 
-### With External Clients
+### The client SDK
 
-Any gRPC client can implement these protocols. Python, Go, or C++ applications can register as services, CLAs, or routing agents without depending on Rust code. The `.proto` files serve as the authoritative interface specification.
+`BpaClient` multiplexes every registration over one lazily-established channel and exposes six inherent registration methods mirroring the shape of `BpaRegistration` (`register_application`, `register_dynamic_application`, `register_service`, `register_dynamic_service`, `register_cla`, `register_routing_agent`); it does not implement the trait itself, because the wire's registration surface differs where the wire must (no egress policy parameter). Each registration spawns one event-loop task on the client's `TaskPool` that translates session events onto the local trait; application and service events are handled sequentially so a slow `on_deliver` backpressures the BPA by design, while each CLA forwarding executes on its own task so a slow transfer never stalls the next announcement. Every way a registration ends (explicit `unregister`, dropping the sink, connection loss, BPA shutdown, pool shutdown) converges on the component's `on_unregister`. `BpaClient::new` arms HTTP/2 keepalive so a silently dead server ends its sessions within about a minute; `with_endpoint` leaves transport settings to the caller. Two sink calls are not carried by the v1 wire and return errors: `cancel` of a pending send, on both payload surfaces. Hardy's own remote components (`bp` in `tools`, `tcpclv4-server`, `tvr`) are the SDK's first consumers.
 
-## Dependencies
+### External clients
 
-| Crate | Purpose |
-|-------|---------|
-| hardy-bpa | Trait definitions being proxied |
-| hardy-bpv7 | EID and bundle types |
-| hardy-async | TaskPool, spawn macro, spin Mutex |
-| tonic | gRPC server/client framework |
-| prost | Protocol buffer serialization |
-| tokio-stream | Async stream utilities |
+Any gRPC stack can implement a component against the schemas in `proto/`; the schema comments specify the wire contract (message ordering, commit and cancellation semantics, status codes) precisely so that non-Rust implementations need no knowledge of this crate's Rust API.
+
+## Standards Compliance
+
+This crate implements no protocol RFC of its own; it is Hardy's component API on the wire, and it speaks RFC 9171 vocabulary throughout: registrations, ADUs, bundle status report assertions (received, forwarded, delivered, deleted) with their reason codes and optional status time, the per-transmission flags, and the RFC 9171 bundle id as the one identity across announcements, collection, send results, and status reports. The announce-and-collect model implements delivery deferral (an uncollected delivery is re-announced to a later registration), and the truncation-is-an-error contract preserves transfer acknowledgement semantics: a CLA acknowledges only what the BPA has accepted in full. Bundle-format and BPA-behaviour compliance are the concern of `hardy-bpv7` and `hardy-bpa` (see the [BPA design](../../bpa/docs/design.md)); the wire neither adds to nor relaxes them.
 
 ## Testing
 
-- [Component Test Plan](component_test_plan.md) - gRPC streaming interface verification
-- ION interoperability tests (`tests/interop/ION/`) - end-to-end via STCP
-
-### Test Coverage Gaps
-
-The following unit tests would improve confidence in the proxy mechanism:
-
-- **Registration handshake** — all four server types complete without deadlock
-- **Client-initiated unregister** — `Unregister` request/response with msg_id correlation
-- **BPA-initiated unregister** — `OnUnregister` request/response with msg_id correlation
-- **Concurrent handler messages** — handler sends through proxy while another message is being processed
-- **Slow handler doesn't block reader** — reader continues correlating responses while a handler is blocked
-- **Clean shutdown** — `close()` and parent cancellation complete without hanging; in-flight handlers drain
+- [Component Test Plan](component_test_plan.md) (COMP-GRPC-01): the bridges and the SDK exercised over real sockets against a real `Bpa`, per surface, including every cancellation direction.
+- [Test Coverage Report](test_coverage_report.md): the current test inventory and the known gaps, including the scenarios deferred to a cross-crate lifecycle suite.

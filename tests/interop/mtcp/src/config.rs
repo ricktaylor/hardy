@@ -87,7 +87,11 @@ pub struct ClaConfig {
 impl Config {
     pub fn load(config_file: Option<PathBuf>) -> anyhow::Result<Config> {
         let config_file = config_file
-            .or_else(|| std::env::var("MTCP_CLA_CONFIG_FILE").ok().map(PathBuf::from))
+            .or_else(|| {
+                std::env::var("MTCP_CLA_CONFIG_FILE")
+                    .ok()
+                    .map(PathBuf::from)
+            })
             .unwrap_or_else(|| PathBuf::from("mtcp-cla"));
 
         let source_file = config::File::with_name(&config_file.to_string_lossy());
