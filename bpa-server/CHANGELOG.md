@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Optional TLS for the gRPC listener: a `grpc.tls` block with a required `identity` (`cert-file`/`key-file`, `private-key-file` aliasing `key-file`), a `client-auth` key (`off` | `optional` | `required`) enabling mutual TLS, and `ca-certs` (a PEM file of one or more CA certificates) as the client-certificate trust anchor, required when `client-auth` is not `off`. Absent, the listener serves plaintext HTTP/2 as before. The vocabulary mirrors the tcpclv4 `tls` block minus the keys with no meaning for a listener: a gRPC port is TLS or plaintext with no in-band negotiation, so there is no `required` key (the block's presence enforces TLS), and the dial-side `server-name`/`insecure-skip-verify` are absent.
+
 ### Changed
 - **BREAKING**: the gRPC front end is owned and assembled by this crate: the `grpc` section schema lives here (previously deserialized through `hardy-proto`'s serde `Config`), and `BpaServer::new` builds the tonic server, adds the health service, mounts the chosen v1 surfaces from `hardy-proto`'s server bridges with message-size caps and HTTP/2 keepalive, and binds the listener eagerly, so a port conflict is a startup error. `services` is a validated list of surface names (`cla`, `service`, `application`, `routing`): an unknown or repeated name is a parse error naming the known ones (previously unknown names were ignored with a startup warning), and a present `grpc` section with an empty or missing `services` list is a parse error. The default listen address (`[::1]:50051`) is unchanged.
 - Command-line parsing uses clap: the version flag is `-V`/`--version`, and lowercase `-v` no longer prints the version.

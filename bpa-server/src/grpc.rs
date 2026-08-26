@@ -30,7 +30,7 @@ use hardy_proto::{
 use tonic::{
     service::Routes,
     transport::{
-        Server,
+        Server, ServerTlsConfig,
         server::{Router, TcpIncoming},
     },
 };
@@ -67,6 +67,7 @@ impl GrpcServer {
         address: Option<SocketAddr>,
         services: Vec<GrpcService>,
         drain_timeout: Duration,
+        tls: Option<ServerTlsConfig>,
         bpa: &Arc<Bpa>,
         tasks: &TaskPool,
     ) -> Result<Self, Error> {
@@ -136,13 +137,23 @@ impl GrpcServer {
         // HTTP/2 keepalive bounds how long a silently dead peer can hold
         // sessions and parked door calls; graceful ends are caught by the
         // streams themselves.
-        let router = Server::builder()
+        let mut builder = Server::builder()
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
-            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)));
+
+        let tls_enabled = tls.is_some();
+        if let Some(tls) = tls {
+            builder = builder.tls_config(tls)?;
+        }
+
+        let router = builder
             .add_routes(routes.routes())
             .add_service(health_service);
 
-        info!("gRPC server hosting {services:?}, bound on {address}");
+        info!(
+            "gRPC server hosting {services:?}, bound on {address}{}",
+            if tls_enabled { " over TLS" } else { "" }
+        );
 
         Ok(Self {
             router,
@@ -204,11 +215,16 @@ impl GrpcServer {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv6Addr, sync::Arc, time::Duration};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::Arc,
+        time::Duration,
+    };
 
-    use hardy_async::TaskPool;
+    use hardy_async::{CancellationToken, TaskPool};
     use hardy_bpa::bpa::Bpa;
-    use tonic::transport::Channel;
+    use rcgen::{CertifiedKey, generate_simple_self_signed};
+    use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, ServerTlsConfig};
     use tonic_health::pb::{
         HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
     };
@@ -223,6 +239,29 @@ mod tests {
         Arc::new(Bpa::builder().build().await.unwrap())
     }
 
+    // A successful SERVING check is the event that proves the listener is
+    // bound, accepting, and has flipped readiness on.
+    async fn assert_serving(channel: Channel) {
+        let status = HealthClient::new(channel)
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .status;
+        assert_eq!(status, ServingStatus::Serving as i32);
+    }
+
+    // Cancelling must drive `serve` to return.
+    async fn cancel_and_join(cancel: CancellationToken, served: tokio::task::JoinHandle<()>) {
+        cancel.cancel();
+        tokio::time::timeout(REGRESSION_BOUND, served)
+            .await
+            .expect("the timeout only bounds a regression")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn serves_health_and_returns_on_cancel() {
         let bpa = minimal_bpa().await;
@@ -234,6 +273,7 @@ mod tests {
             vec![GrpcService::Application],
             // Do not wait on the still-open health connection at shutdown.
             Duration::ZERO,
+            None,
             &bpa,
             &tasks,
         )
@@ -243,28 +283,54 @@ mod tests {
         let cancel = tasks.cancel_token().clone();
         let served = tokio::spawn(server.serve(cancel.clone()));
 
-        // A successful SERVING check is the event that proves the listener
-        // is bound, accepting, and has flipped readiness on.
         let channel = Channel::from_shared(format!("http://{address}"))
             .unwrap()
             .connect()
             .await
             .unwrap();
-        let status = HealthClient::new(channel)
-            .check(HealthCheckRequest {
-                service: String::new(),
-            })
-            .await
-            .unwrap()
-            .into_inner()
-            .status;
-        assert_eq!(status, ServingStatus::Serving as i32);
+        assert_serving(channel).await;
 
-        // Cancelling must drive `serve` to return.
-        cancel.cancel();
-        tokio::time::timeout(REGRESSION_BOUND, served)
+        cancel_and_join(cancel, served).await;
+    }
+
+    #[tokio::test]
+    async fn serves_over_tls() {
+        let bpa = minimal_bpa().await;
+        let tasks = TaskPool::new();
+
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let tls = ServerTlsConfig::new()
+            .identity(Identity::from_pem(cert.pem(), signing_key.serialize_pem()));
+
+        let server = GrpcServer::new(
+            Some((Ipv4Addr::LOCALHOST, 0).into()),
+            vec![GrpcService::Application],
+            Duration::ZERO,
+            Some(tls),
+            &bpa,
+            &tasks,
+        )
+        .unwrap();
+        let address = server.address();
+
+        let cancel = tasks.cancel_token().clone();
+        let served = tokio::spawn(server.serve(cancel.clone()));
+
+        // The client trusts the self-signed cert as its own CA and verifies
+        // it against the SAN, so a successful check proves the TLS handshake.
+        let tls = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(cert.pem()))
+            .domain_name("localhost");
+        let channel = Channel::from_shared(format!("https://{address}"))
+            .unwrap()
+            .tls_config(tls)
+            .unwrap()
+            .connect()
             .await
-            .expect("the timeout only bounds a regression")
             .unwrap();
+        assert_serving(channel).await;
+
+        cancel_and_join(cancel, served).await;
     }
 }
