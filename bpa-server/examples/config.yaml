@@ -40,6 +40,23 @@ grpc:
   #   # verifying client certificates. Required when client-auth is not "off".
   #   ca-certs: "/etc/hardy/ca/clients.pem"
 
+  # --- HTTP/2 transport tuning (optional) ---
+  # Defaults favour throughput: a single large transfer is otherwise capped
+  # at window/round-trip-time by the fixed ~64 KiB default window. Sizes are
+  # in bytes.
+  # http2:
+  #   # Auto-size the flow-control windows to the connection's
+  #   # bandwidth-delay product (default true). When on, the fixed
+  #   # initial-*-window-size keys below are ignored; set false to pin them.
+  #   adaptive-window: true
+  #   # Fixed windows (only when adaptive-window is false).
+  #   initial-stream-window-size: 16777216       # 16 MiB
+  #   initial-connection-window-size: 134217728  # 128 MiB
+  #   # Bound per-connection memory (window x streams).
+  #   max-concurrent-streams: 1024
+  #   # Larger DATA frames cut per-frame bookkeeping for big transfers.
+  #   max-frame-size: 1048576                    # 1 MiB
+
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
 # If not provided, a random IPN-formatted node ID will be generated.

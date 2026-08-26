@@ -39,7 +39,7 @@ use crate::{
         register, send_request, subscribe_request, subscribe_response,
     },
     server::{
-        CHANNEL_DEPTH, adapter,
+        CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
         session::{Session, SessionStream, Sessions},
         token::Signer,
     },
@@ -120,11 +120,15 @@ impl services::Application for GrpcApplication {
         // client racing its Receive against the announcement always
         // finds the entry.
         let (tx, rx) = hardy_async::channel::bounded(0);
+        // `hold` keeps the map's copy; the original key moves out onto the
+        // wire in the event below. The cold withdraw paths recompute the
+        // (deterministic) key rather than hold a third copy on every
+        // delivery.
         self.deliveries.hold(key.clone(), expiry, Box::new(rx));
 
         if !self
             .event(subscribe_response::Event::Delivery(Delivery {
-                bundle_id: key.clone(),
+                bundle_id: key,
                 // The wire's source is the bundle id's source component,
                 // carried separately as a convenience.
                 source: bundle_id.source.to_string(),
@@ -134,13 +138,13 @@ impl services::Application for GrpcApplication {
             }))
             .await
         {
-            self.deliveries.withdraw(&key);
+            self.deliveries.withdraw(&bundle_id.to_key());
             return Err(services::Error::Disconnected);
         }
 
         let result = pump_to_collector(self.session.cancellation(), expiry, stream, tx).await;
         if result.is_err() {
-            self.deliveries.withdraw(&key);
+            self.deliveries.withdraw(&bundle_id.to_key());
         }
         result
     }
@@ -390,9 +394,7 @@ impl ApplicationService for ApplicationServiceImpl {
             .await
             .map_err(|_| Status::not_found("No such delivery"))?;
 
-        // A shallow buffer: HTTP/2 flow control does the real pacing,
-        // and anything queued here is bytes the client may never read.
-        let (tx, rx) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
         let cancelled = application.session.cancellation();
         hardy_async::spawn!(self.tasks, "application_receive", async move {
             stream_delivery(cancelled, first, stream, tx, abandonment(requests)).await;

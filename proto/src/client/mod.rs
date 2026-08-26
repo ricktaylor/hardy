@@ -11,7 +11,11 @@ mod adapter;
 mod collector;
 mod services;
 
-use core::time::Duration;
+use core::{
+    num::NonZeroUsize,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 use std::sync::Arc;
 
 use hardy_async::TaskPool;
@@ -21,11 +25,19 @@ use tonic::transport::{Channel, Endpoint};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+use crate::DEFAULT_MAX_FRAME_SIZE;
+
 /// A client of a remote BPA: components register against it with the
 /// same traits a local `Bpa` takes, and unregister by dropping their
 /// sink or calling its `unregister` (completion is asynchronous, and
-/// `on_unregister` marks it). All registrations multiplex one
-/// lazily-established connection.
+/// `on_unregister` marks it). Registrations are sharded round-robin
+/// across a pool of lazily-established connections (one by default): a
+/// single session's event stream, its token-gated data-plane calls, and
+/// its in-band cancels all stay on one connection, while separate
+/// sessions spread across the pool so no single HTTP/2 state machine or
+/// TCP flow bounds aggregate throughput. See [`new_pool`].
+///
+/// [`new_pool`]: BpaClient::new_pool
 ///
 /// # Lifecycle
 ///
@@ -65,13 +77,19 @@ use tracing::instrument;
 /// announced to the new registration.
 #[derive(Clone, Debug)]
 pub struct BpaClient {
-    channel: Channel,
+    // The connection pool; sessions are sharded round-robin across it by
+    // `next_channel`. A `Channel` clone shares its connection, so a whole
+    // session pins to one entry.
+    channels: Arc<[Channel]>,
+    next: Arc<AtomicUsize>,
     tasks: TaskPool,
 }
 
 impl BpaClient {
-    /// A client of the BPA server at `endpoint`: anything convertible
-    /// to a tonic [`Endpoint`], such as `"http://[::1]:50051"`.
+    /// A client of the BPA server at `endpoint` over a single connection:
+    /// anything convertible to a tonic [`Endpoint`], such as
+    /// `"http://[::1]:50051"`. Equivalent to [`new_pool`] with one
+    /// connection.
     ///
     /// The session event loops run on `tasks`: shutting the pool down
     /// ends every registration made through this client, and the pool
@@ -81,36 +99,102 @@ impl BpaClient {
     /// The connection is armed with HTTP/2 keepalive (a ping every
     /// 30 seconds, 10 seconds to answer, active while idle), so a
     /// silently dead peer ends its sessions within about a minute
-    /// even when the event streams are quiet. For different transport
-    /// settings, configure an `Endpoint` and use [`with_endpoint`];
-    /// keepalive set here would override the endpoint's own.
+    /// even when the event streams are quiet, with an adaptive
+    /// flow-control window so a large delivery is not throttled to the
+    /// fixed default window per round-trip, and with a chunk-sized DATA
+    /// frame cap so a transfer is not fragmented into many small frames.
+    /// For different transport settings, configure an `Endpoint` and use
+    /// [`with_endpoint`]; keepalive set here would override the
+    /// endpoint's own.
     ///
+    /// [`new_pool`]: BpaClient::new_pool
     /// [`with_endpoint`]: BpaClient::with_endpoint
     pub fn new<D>(endpoint: D, tasks: TaskPool) -> hardy_bpa::services::Result<Self>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
-        Ok(Self::with_endpoint(
-            endpoint
-                .try_into()
-                .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))?
-                .http2_keep_alive_interval(Duration::from_secs(30))
-                .keep_alive_timeout(Duration::from_secs(10))
-                .keep_alive_while_idle(true),
-            tasks,
-        ))
+        Self::new_pool(endpoint, NonZeroUsize::MIN, tasks)
     }
 
-    /// A client over `endpoint` exactly as configured: no transport
-    /// defaults are applied, keepalive included. Without keepalive, a
-    /// silently dead peer is only detected when the operating system
-    /// gives up on the connection.
+    /// A client of the BPA server at `endpoint` over a pool of
+    /// `connections` connections, with the same transport defaults as
+    /// [`new`]. Sessions shard round-robin across the pool (see
+    /// [`BpaClient`]); use this to drive many concurrent large transfers,
+    /// since one connection is one HTTP/2 state machine over one TCP flow.
+    /// Keep the count small (a handful): each is a full connection, and
+    /// the pool is allocated up front.
+    ///
+    /// [`new`]: BpaClient::new
+    pub fn new_pool<D>(
+        endpoint: D,
+        connections: NonZeroUsize,
+        tasks: TaskPool,
+    ) -> hardy_bpa::services::Result<Self>
+    where
+        D: TryInto<Endpoint>,
+        D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
+    {
+        let endpoint = endpoint
+            .try_into()
+            .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))?
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true)
+            // Auto-size the flow-control window to the connection's
+            // bandwidth-delay product: the fixed ~64 KiB default caps a
+            // transfer at window/RTT, throttling GB-scale bundles on any
+            // link with non-trivial latency.
+            .http2_adaptive_window(true)
+            // Carry a whole chunk in as few HTTP/2 DATA frames as
+            // possible: the ~16 KiB default fragments each chunk into
+            // many frames, all per-frame bookkeeping on a GB transfer.
+            .max_frame_size(DEFAULT_MAX_FRAME_SIZE);
+        Ok(Self::with_endpoint_pool(endpoint, connections, tasks))
+    }
+
+    /// A client over `endpoint` exactly as configured (no transport
+    /// defaults, keepalive included) over a single connection. Without
+    /// keepalive, a silently dead peer is only detected when the
+    /// operating system gives up on the connection. Equivalent to
+    /// [`with_endpoint_pool`] with one connection.
+    ///
+    /// [`with_endpoint_pool`]: BpaClient::with_endpoint_pool
     pub fn with_endpoint(endpoint: Endpoint, tasks: TaskPool) -> Self {
+        Self::with_endpoint_pool(endpoint, NonZeroUsize::MIN, tasks)
+    }
+
+    /// A client over `endpoint` exactly as configured, over a pool of
+    /// `connections` connections sharded per session. The endpoint's own
+    /// settings apply identically to every connection. Keep the count
+    /// small (a handful): each is a full connection, and the pool is
+    /// allocated up front.
+    pub fn with_endpoint_pool(
+        endpoint: Endpoint,
+        connections: NonZeroUsize,
+        tasks: TaskPool,
+    ) -> Self {
+        // Each `connect_lazy` is an independent connection (cloning a
+        // `Channel` would instead share one), so the pool is genuinely
+        // `connections` connections, each established on first use.
+        let channels = (0..connections.get())
+            .map(|_| endpoint.connect_lazy())
+            .collect::<Vec<_>>()
+            .into();
         Self {
-            channel: endpoint.connect_lazy(),
+            channels,
+            next: Arc::new(AtomicUsize::new(0)),
             tasks,
         }
+    }
+
+    // The next connection in round-robin order. Cloning a `Channel` shares
+    // its underlying connection, so every call a session makes off this
+    // clone stays on one HTTP/2 state machine (required: the session token
+    // and its in-band cancel are peer-connection state).
+    fn next_channel(&self) -> Channel {
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.channels.len();
+        self.channels[index].clone()
     }
 
     /// Registers an application under an explicit service id. The
@@ -129,7 +213,7 @@ impl BpaClient {
             return Err(hardy_bpa::services::Error::Disconnected);
         }
         let (eid, sink, collector, events) =
-            services::application::subscribe(self.channel.clone(), Some(service_id)).await?;
+            services::application::subscribe(self.next_channel(), Some(service_id)).await?;
         application.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
@@ -149,7 +233,7 @@ impl BpaClient {
             return Err(hardy_bpa::services::Error::Disconnected);
         }
         let (eid, sink, collector, events) =
-            services::application::subscribe(self.channel.clone(), None).await?;
+            services::application::subscribe(self.next_channel(), None).await?;
         application.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
@@ -173,7 +257,7 @@ impl BpaClient {
             return Err(hardy_bpa::services::Error::Disconnected);
         }
         let (eid, sink, collector, events) =
-            services::service::subscribe(self.channel.clone(), Some(service_id)).await?;
+            services::service::subscribe(self.next_channel(), Some(service_id)).await?;
         service.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
@@ -193,7 +277,7 @@ impl BpaClient {
             return Err(hardy_bpa::services::Error::Disconnected);
         }
         let (eid, sink, collector, events) =
-            services::service::subscribe(self.channel.clone(), None).await?;
+            services::service::subscribe(self.next_channel(), None).await?;
         service.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
@@ -218,7 +302,7 @@ impl BpaClient {
             return Err(routing::Error::Disconnected);
         }
         let (node_ids, sink, events) =
-            services::routing::subscribe(self.channel.clone(), name).await?;
+            services::routing::subscribe(self.next_channel(), name).await?;
         agent.on_register(Box::new(sink), &node_ids).await;
 
         let cancel = self.tasks.cancel_token().clone();
@@ -251,7 +335,7 @@ impl BpaClient {
             client,
             token,
         } = services::cla::subscribe(
-            self.channel.clone(),
+            self.next_channel(),
             name,
             convergence_layer.address_type(),
             convergence_layer.lane_count(),

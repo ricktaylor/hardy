@@ -31,9 +31,26 @@ pub mod stream;
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// One slice of a data-plane transfer: large enough to amortise the
-/// per-message overhead, small enough to interleave fairly with other
-/// HTTP/2 streams on the connection.
-pub const CHUNK_SIZE: usize = 256 * 1024;
+/// per-message overhead (encode, framing, a channel hop) across a
+/// GB-scale transfer, small enough to stay well under [`MAX_MESSAGE_SIZE`]
+/// and to interleave fairly with other HTTP/2 streams (whose pacing the
+/// adaptive flow-control window governs, not this size).
+pub const CHUNK_SIZE: usize = 1024 * 1024;
+
+/// The default HTTP/2 DATA frame cap for the SDK client and, unless the
+/// operator overrides it, the server: sized to carry a whole
+/// [`CHUNK_SIZE`] slice in one frame, but clamped to HTTP/2's maximum
+/// frame size (`2^24 - 1`, RFC 9113 §6.5.2) so a chunk raised toward
+/// [`MAX_MESSAGE_SIZE`] simply spans more frames rather than producing an
+/// out-of-range setting.
+pub const DEFAULT_MAX_FRAME_SIZE: u32 = {
+    let max = (1u32 << 24) - 1;
+    if CHUNK_SIZE < max as usize {
+        CHUNK_SIZE as u32
+    } else {
+        max
+    }
+};
 
 /// The pre-flight bound on a transfer's declared size: a Send whose
 /// metadata declares more than this is rejected before any bytes

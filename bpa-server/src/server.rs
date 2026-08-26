@@ -429,6 +429,7 @@ impl BpaServer {
                 grpc.services,
                 grpc.drain_timeout,
                 tls,
+                grpc.http2,
                 &bpa,
                 &tasks,
             )?)
