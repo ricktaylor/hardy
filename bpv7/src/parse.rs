@@ -862,8 +862,11 @@ impl BundleParser {
                     // the trailer is tiny, so if the remaining chunk
                     // capacity covers body + trailer, we prefer to wait
                     // one more chunk over falling back to streaming.
-                    let needed = shortfall_usize + trailer_len;
-                    if needed <= self.chunk_size.saturating_sub(offset) {
+                    // Compare in u64: on 32-bit a wire-derived shortfall of
+                    // usize::MAX would overflow the usize add and wrap the
+                    // threshold test onto the small-wait path.
+                    let needed = shortfall + trailer_len as u64;
+                    if needed <= self.chunk_size.saturating_sub(offset) as u64 {
                         return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
                     }
                     // Body too big to inline — streaming fallback for the
