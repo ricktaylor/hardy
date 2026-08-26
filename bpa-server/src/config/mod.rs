@@ -10,11 +10,14 @@ use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
 
+#[cfg(feature = "grpc")]
+use crate::config::tls::GrpcTlsConfig;
 use crate::error::Error;
 
 pub mod bpsec;
 pub mod cla;
 pub mod storage;
+pub mod tls;
 
 // Returns the default config directory, platform-specific:
 // - Linux: /etc/hardy/
@@ -281,6 +284,10 @@ pub struct GrpcConfig {
     // open indefinitely.
     #[serde(default = "default_drain_timeout", with = "human_duration")]
     pub drain_timeout: Duration,
+
+    // TLS for the listener; absent serves plaintext HTTP/2.
+    #[serde(default)]
+    pub tls: Option<GrpcTlsConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -648,7 +655,7 @@ clas:
             tls.identity.as_ref().unwrap().key_file,
             std::path::PathBuf::from("/etc/hardy/private/server.key")
         );
-        assert_eq!(tls.client_auth, cla::ClientAuth::Required);
+        assert_eq!(tls.client_auth, super::tls::ClientAuth::Required);
         assert_eq!(
             tls.ca_certs.as_deref(),
             Some(std::path::Path::new("/etc/hardy/ca"))

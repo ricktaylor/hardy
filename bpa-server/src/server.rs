@@ -7,6 +7,8 @@
 // `StaticRoutesAgent`); the gRPC front end is assembled by the `grpc`
 // module.
 
+#[cfg(feature = "grpc")]
+use std::fs;
 use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
@@ -35,10 +37,16 @@ use hardy_s3_storage::S3Storage;
 use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
 use hardy_tcpclv4::{Tcpclv4, tls};
+#[cfg(feature = "grpc")]
+use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
+#[cfg(feature = "grpc")]
+use crate::config::tls::ClientAuth;
 use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
+#[cfg(feature = "grpc")]
+use crate::error::Error;
 #[cfg(feature = "grpc")]
 use crate::grpc::GrpcServer;
 use crate::static_routes::StaticRoutesAgent;
@@ -386,18 +394,47 @@ impl BpaServer {
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
 
         #[cfg(feature = "grpc")]
-        let grpc = config
-            .grpc
-            .map(|grpc| {
-                GrpcServer::new(
-                    grpc.address,
-                    grpc.services,
-                    grpc.drain_timeout,
-                    &bpa,
-                    &tasks,
-                )
-            })
-            .transpose()?;
+        let grpc = if let Some(grpc) = config.grpc {
+            // Turn the gRPC TLS schema into the listener's `ServerTlsConfig`:
+            // the identity to present, and the optional mutual-TLS trust
+            // anchor. `client-auth` other than `off` requires `ca-certs`.
+            let tls = if let Some(tls) = grpc.tls {
+                let cert = fs::read(&tls.identity.cert_file).map_err(|source| Error::TlsRead {
+                    path: tls.identity.cert_file.clone(),
+                    source,
+                })?;
+                let key = fs::read(&tls.identity.key_file).map_err(|source| Error::TlsRead {
+                    path: tls.identity.key_file.clone(),
+                    source,
+                })?;
+                let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
+
+                if tls.client_auth != ClientAuth::Off {
+                    let ca_certs = tls.ca_certs.ok_or(Error::TlsClientAuthWithoutCaCerts)?;
+                    let ca = fs::read(&ca_certs).map_err(|source| Error::TlsRead {
+                        path: ca_certs,
+                        source,
+                    })?;
+                    server_tls = server_tls
+                        .client_ca_root(Certificate::from_pem(ca))
+                        .client_auth_optional(tls.client_auth == ClientAuth::Optional);
+                }
+                Some(server_tls)
+            } else {
+                None
+            };
+
+            Some(GrpcServer::new(
+                grpc.address,
+                grpc.services,
+                grpc.drain_timeout,
+                tls,
+                &bpa,
+                &tasks,
+            )?)
+        } else {
+            None
+        };
 
         Ok(Self {
             bpa,

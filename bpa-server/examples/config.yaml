@@ -14,6 +14,32 @@ grpc:
   # List at least one, or the gRPC section fails to parse.
   services: ["application", "cla", "service"]
 
+  # How long a graceful shutdown waits for open connections to drain
+  # before abandoning them (humantime; `0s` cuts them immediately).
+  # Default: 5s.
+  # drain-timeout: "5s"
+
+  # --- TLS (optional, plaintext HTTP/2 if the tls: block is absent) ---
+  # Unlike the tcpclv4 tls block, a gRPC listener is TLS or plaintext for
+  # the whole port (no in-band negotiation), so there is no `required` key:
+  # the presence of this block enforces TLS. The dial-side `server-name`
+  # and `insecure-skip-verify` keys likewise do not apply to a listener.
+  # tls:
+  #   # The server's own certificate and key, only ever configured together
+  #   # (a lone half is a parse error; `private-key-file` aliases `key-file`).
+  #   identity:
+  #     cert-file: "/etc/hardy/certs/server.crt"
+  #     key-file: "/etc/hardy/private/server.key"
+  #
+  #   # Require clients to present a certificate chaining to `ca-certs`
+  #   # (mutual TLS): "off" (default), "optional" (verify a certificate when
+  #   # presented, accept clients without one), or "required".
+  #   client-auth: "off"
+  #
+  #   # A PEM file of CA certificates (one file, one or more certificates)
+  #   # verifying client certificates. Required when client-auth is not "off".
+  #   ca-certs: "/etc/hardy/ca/clients.pem"
+
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
 # If not provided, a random IPN-formatted node ID will be generated.
