@@ -154,11 +154,21 @@ impl Dispatcher {
                 }
             };
 
-        // Early-reject gate (lifetime / hop) before the payload is drained, so an
-        // expired / hop-exhausted bundle is reported and dropped having spooled
-        // nothing. (The rich `Bundle::has_expired` re-checks lifetime post-store
-        // in the ingress filter — a cheap, harmless overlap.)
+        // Early-reject gate (lifetime / hop) before the payload is drained, so a
+        // dead bundle is dropped having spooled nothing. (The rich
+        // `Bundle::has_expired` re-checks lifetime post-store in the ingress
+        // filter — a cheap, harmless overlap.)
         if let Some(reason) = hv.gate_reason(metadata.read_only.received_at) {
+            if let ReasonCode::LifetimeExpired = reason {
+                // A bundle that arrives already expired is treated as if it
+                // never arrived, not amplified into report traffic — §5.10
+                // deletion reports are for bundles that expire in custody (the
+                // validity filter and reaper paths). Dropping before anything
+                // is stored also keeps expired traffic from churning the
+                // metadata store's dedup LRU.
+                debug!("Bundle arrived already expired; dropped");
+                return Ok(None);
+            }
             let bundle = bundle::Bundle {
                 metadata,
                 bundle: parse::reshape_to_rich(hv.raw, hv.extracted),
