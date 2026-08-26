@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - The `server` feature: the BPA-side bridges (`ApplicationServiceImpl`, `ServiceServiceImpl`, `ClaServiceImpl`, `RoutingAgentServiceImpl`, and the session-token `Signer`), each serving its surface over any `hardy_bpa::bpa::BpaRegistration`, for a host to mount on its own tonic transport.
-- The `client` feature: the component SDK. `BpaClient` registers local `Application`/`Service`/`Cla`/`RoutingAgent` implementations against a remote BPA over the v1 wire, carrying the session lifecycle, HTTP/2 keepalive, and the chunked data-plane calls.
+- The `client` feature: the component SDK. `BpaClient` registers local `Application`/`Service`/`Cla`/`RoutingAgent` implementations against a remote BPA over the v1 wire, carrying the session lifecycle, HTTP/2 keepalive, and the chunked data-plane calls. `BpaClient::new`'s default `Endpoint` also enables an adaptive HTTP/2 flow-control window (so a large transfer is not throttled to `window / round-trip-time` by the fixed default window) and a chunk-sized DATA frame cap (so a transfer is not fragmented into many small frames); `with_endpoint` leaves all transport settings to the caller. `new_pool`/`with_endpoint_pool` open a pool of connections and shard registrations across it round-robin, keeping each session (its event stream, token-gated calls, and in-band cancels) pinned to one connection while spreading sessions so no single HTTP/2 connection bounds aggregate throughput.
 
 ## [0.2.0]
 

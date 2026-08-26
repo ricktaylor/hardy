@@ -258,6 +258,125 @@ where
     Ok(services)
 }
 
+/// An HTTP/2 flow-control window size in bytes.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Debug, Clone, Copy)]
+pub struct Http2WindowSize(u32);
+
+#[cfg(feature = "grpc")]
+impl Http2WindowSize {
+    /// The RFC 9113 Section 6.9.1 maximum: `2^31 - 1` bytes.
+    pub const MAX: Http2WindowSize = Http2WindowSize(i32::MAX as u32);
+
+    /// Creates a window size; `None` above [`MAX`](Self::MAX).
+    pub const fn new(bytes: u32) -> Option<Self> {
+        if bytes > Self::MAX.0 {
+            None
+        } else {
+            Some(Self(bytes))
+        }
+    }
+
+    /// The window size in bytes.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[cfg(feature = "grpc")]
+impl<'de> Deserialize<'de> for Http2WindowSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = u32::deserialize(deserializer)?;
+        Self::new(bytes).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "HTTP/2 window size {bytes} exceeds the maximum of {}",
+                Self::MAX.get()
+            ))
+        })
+    }
+}
+
+/// An HTTP/2 maximum frame size in bytes.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Debug, Clone, Copy)]
+pub struct Http2FrameSize(u32);
+
+#[cfg(feature = "grpc")]
+impl Http2FrameSize {
+    /// The RFC 9113 Section 6.5.2 minimum: `2^14` bytes.
+    pub const MIN: Http2FrameSize = Http2FrameSize(1 << 14);
+    /// The RFC 9113 Section 6.5.2 maximum: `2^24 - 1` bytes.
+    pub const MAX: Http2FrameSize = Http2FrameSize((1 << 24) - 1);
+
+    /// Creates a frame size; `None` outside
+    /// [`MIN`](Self::MIN)`..=`[`MAX`](Self::MAX).
+    pub const fn new(bytes: u32) -> Option<Self> {
+        if bytes < Self::MIN.0 || bytes > Self::MAX.0 {
+            None
+        } else {
+            Some(Self(bytes))
+        }
+    }
+
+    /// The frame size in bytes.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[cfg(feature = "grpc")]
+impl<'de> Deserialize<'de> for Http2FrameSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let bytes = u32::deserialize(deserializer)?;
+        Self::new(bytes).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "HTTP/2 max-frame-size {bytes} must be between {} and {}",
+                Self::MIN.get(),
+                Self::MAX.get()
+            ))
+        })
+    }
+}
+
+// HTTP/2 transport tuning for the gRPC listener: what the operator wrote,
+// with every key optional. Absent keys defer to the server's own defaults
+// (applied in `grpc.rs`), which favour throughput at scale (a single large
+// transfer is otherwise capped at `window / round-trip-time` by the fixed
+// ~64 KiB default window). All sizes are in bytes.
+#[cfg(feature = "grpc")]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GrpcHttp2Config {
+    // Auto-size the stream and connection flow-control windows to the
+    // connection's bandwidth-delay product; absent defers to the server
+    // default (on). When on, the fixed `initial-*-window-size` keys below
+    // are ignored; set this `false` to pin fixed windows instead.
+    pub adaptive_window: Option<bool>,
+
+    // Fixed initial per-stream receive window; absent uses the transport
+    // default. Ignored while `adaptive-window` is on.
+    pub initial_stream_window_size: Option<Http2WindowSize>,
+
+    // Fixed initial whole-connection receive window; absent uses the
+    // transport default. Ignored while `adaptive-window` is on.
+    pub initial_connection_window_size: Option<Http2WindowSize>,
+
+    // Maximum concurrent HTTP/2 streams a peer may open; absent uses the
+    // transport default. Bounds per-connection memory (window x streams).
+    pub max_concurrent_streams: Option<u32>,
+
+    // Maximum HTTP/2 DATA frame payload; absent defers to the server
+    // default (one chunk per frame). Larger frames cut per-frame
+    // bookkeeping for big transfers.
+    pub max_frame_size: Option<Http2FrameSize>,
+}
+
 // The `grpc` section: the gRPC front end serving BPA registration to
 // remote CLAs, services, applications, and routing agents. Absent runs
 // no gRPC server. The transport is owned and assembled by this crate
@@ -288,6 +407,10 @@ pub struct GrpcConfig {
     // TLS for the listener; absent serves plaintext HTTP/2.
     #[serde(default)]
     pub tls: Option<GrpcTlsConfig>,
+
+    // HTTP/2 transport tuning; absent defers to the server defaults.
+    #[serde(default)]
+    pub http2: GrpcHttp2Config,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -892,6 +1015,46 @@ storage:
         };
         let err = err.to_string();
         assert!(err.contains("more than once"), "{err}");
+    }
+
+    // HTTP/2 tuning values outside their protocol ranges are refused at
+    // parse by their newtypes.
+    #[test]
+    #[serial]
+    #[cfg(feature = "grpc")]
+    fn grpc_http2_out_of_range_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("http2.yaml");
+
+        // In-range values parse and round-trip through the newtypes.
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  http2:\n    max-frame-size: 1048576\n    initial-stream-window-size: 16777216\n",
+        )
+        .unwrap();
+        let http2 = Config::load(Some(path.clone()))
+            .unwrap()
+            .grpc
+            .unwrap()
+            .http2;
+        assert_eq!(http2.max_frame_size.unwrap().get(), 1048576);
+        assert_eq!(http2.initial_stream_window_size.unwrap().get(), 16777216);
+
+        // A frame size below HTTP/2's 2^14 minimum is refused.
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  http2:\n    max-frame-size: 1024\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path.clone())).is_err());
+
+        // A window size above HTTP/2's 2^31 - 1 maximum is refused.
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  http2:\n    initial-stream-window-size: 4294967295\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path)).is_err());
     }
 
     // The shipped example config parses under the strict schema, so its

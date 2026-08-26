@@ -50,7 +50,7 @@ use crate::{
         report_transfer_outcome_request, subscribe_request, subscribe_response,
     },
     server::{
-        CHANNEL_DEPTH, adapter,
+        CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
         session::{Session, SessionStream, Sessions},
         token::Signer,
     },
@@ -573,11 +573,9 @@ impl ClaService for ClaServiceImpl {
             return Err(Status::not_found("No such forwarding"));
         };
 
-        // A shallow buffer: HTTP/2 flow control does the real pacing,
-        // and anything queued here is bytes the client may never read.
-        // `forward_streamed` drives the transfer through these streams,
-        // so the BPA's bundle bytes never materialise in the bridge.
-        let (tx, rx) = mpsc::channel(4);
+        // `forward_streamed` drives the transfer through these streams, so
+        // the BPA's bundle bytes never materialise in the bridge.
+        let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
         if door.send(ForwardCall { tx, requests }).is_err() {
             // `forward_streamed` stopped awaiting between the announce
             // and now (session death); the forwarding is no longer live.

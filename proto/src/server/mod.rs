@@ -28,3 +28,11 @@ pub use self::token::Signer;
 // The outbound buffer per session stream: events are small, so this
 // only smooths bursts.
 const CHANNEL_DEPTH: usize = 16;
+
+// The outbound buffer for a data-plane transfer (delivery or forward),
+// in [`CHUNK_SIZE`](crate::CHUNK_SIZE) slices. Deliberately shallow:
+// HTTP/2 flow control does the real pacing, and anything staged here is
+// bytes a client may abandon unread, so the resident cost per in-flight
+// transfer is `DATA_CHANNEL_DEPTH * CHUNK_SIZE`. Tune against the
+// negotiated flow-control window, not upward for its own sake.
+const DATA_CHANNEL_DEPTH: usize = 4;
