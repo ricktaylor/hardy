@@ -462,9 +462,11 @@ fn verify_headers(
     // on an all-resident buffer (`deferred_bibs` empty).
     bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
 
-    // §D — extract extension fields. Any canonical re-emits ride along in
-    // `extracted.canonical_rewrites`; `finalize_with_provider` applies them after
-    // the drain. Extension blocks only — never the payload, so header-resident.
+    // §D — decode the well-known extension fields into the rich view. Decode
+    // only: no canonical re-emission is queued — `finalize_with_provider`
+    // passes an empty rewrite map (see the §E note there; non-canonical CBOR
+    // is rejected at parse). Extension blocks only — never the payload, so
+    // header-resident.
     let extracted = extract_extension_block_fields(headers, &raw.blocks, &decrypted)?;
 
     Ok((extracted, to_remove, report_reason))
