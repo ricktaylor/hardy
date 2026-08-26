@@ -9,6 +9,8 @@ use self::server::BpaServer;
 mod bpsec;
 mod config;
 mod error;
+#[cfg(feature = "grpc")]
+mod grpc;
 mod server;
 mod static_routes;
 
