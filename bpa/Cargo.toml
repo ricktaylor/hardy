@@ -60,6 +60,7 @@ base64 = { version = "0.23", default-features = false, features = ["alloc"], opt
 [dev-dependencies]
 criterion = "0.8"
 flume = "0.12"
+hex-literal = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 hardy-bpa-fuzz = { path = "./fuzz" }
 hardy-cbor = { version = "2", path = "../cbor" }

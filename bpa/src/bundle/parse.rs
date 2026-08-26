@@ -424,12 +424,18 @@ fn verify_headers(
     // RFC 9172 §5.1.1 failure-drop. `facts.failed` carries only blocks whose
     // ciphertext failed authentication (corrupt) — undecipherable (NoKey) blocks
     // go to `facts.nokey_ext` and are handled below. A corrupt *payload* (block 1)
-    // discards the whole bundle; a corrupt *non-payload* target is discarded with
-    // its protecting BCB and the bundle forwarded (applied in the §E rewrite via
-    // `to_remove`). §C8 never decrypts the payload and a payload BCB is decrypted
-    // at delivery, so the block-1 branch is defensive. A corrupt liveness-critical
-    // target can't be stripped-and-forwarded — see `is_liveness_critical` — so
-    // it's fatal, exactly as its undecipherable counterpart is below.
+    // discards the whole bundle; a corrupt *non-payload* target is discarded and
+    // the bundle forwarded (applied in the §E rewrite via `to_remove`). Only the
+    // failed target is queued: the editor cascade strips it from its covering
+    // BCB's OperationSet and drops the BCB only once it empties. A shared BCB
+    // with a surviving co-target must stay — the payload is decrypted only at
+    // delivery, so it always survives here, and naming the BCB itself in the
+    // request would strand its ciphertext (`StrandsCiphertext`) and panic
+    // `apply_rewrites`. §C8 never decrypts the payload and a payload BCB is
+    // decrypted at delivery, so the block-1 branch is defensive. A corrupt
+    // liveness-critical target can't be stripped-and-forwarded — see
+    // `is_liveness_critical` — so it's fatal, exactly as its undecipherable
+    // counterpart is below.
     let is_clocked = raw.primary.id.timestamp.is_clocked();
     for &target in &facts.failed {
         if target == 1
@@ -441,9 +447,6 @@ fn verify_headers(
             return Err(bpsec::Error::DecryptionFailed.into());
         }
         to_remove.insert(target);
-        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
-            to_remove.insert(bcb);
-        }
     }
     // Anything still in `facts.failed` here was queued for failure-drop (the
     // fatal cases returned above) — surface that in the reception report.
@@ -607,7 +610,92 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
+    use hex_literal::hex;
+
     use super::*;
+
+    // RFC 9172 §5.1.1 through the real ingress pipeline, with a *shared*
+    // BCB — the RFC 9173 Appendix A.4 wire vector, where one BCB (block 2)
+    // covers both the encrypted BIB (block 3) and the payload (block 1).
+    // Corrupting the BIB's ciphertext must failure-drop only the BIB: the
+    // §E cascade shrinks the shared BCB to the payload and the bundle
+    // survives. Queuing the shared BCB itself would strand the payload
+    // ciphertext (`StrandsCiphertext`) and panic `apply_rewrites` in the
+    // ingress task.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn multi_target_bcb_failure_drop_survives_ingress() {
+        let mut data = hex!(
+            "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+             005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+             420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+             9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+             313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+             50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
+             724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+        )
+        .to_vec();
+        // Flip one byte of the BIB's ciphertext: the block-3 body is the
+        // 70-byte string right after its `58 46` bytes header.
+        let pos = data
+            .windows(2)
+            .position(|w| w == hex!("5846"))
+            .expect("BIB body header present")
+            + 2;
+        data[pos] ^= 0x01;
+
+        // The Appendix A vector keys, raw (the JWK forms are base64url of
+        // these bytes).
+        fn keys() -> Box<dyn bpsec::key::KeySource> {
+            use bpsec::key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type};
+            Box::new(KeySet::new(vec![
+                Key {
+                    key_type: Type::OctetSequence {
+                        key: hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
+                    },
+                    key_algorithm: Some(KeyAlgorithm::HS384),
+                    enc_algorithm: None,
+                    operations: Some([Operation::Verify].into_iter().collect()),
+                    id: Some("ipn:2.1".into()),
+                    key_use: None,
+                },
+                Key {
+                    key_type: Type::OctetSequence {
+                        key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
+                    },
+                    key_algorithm: None,
+                    enc_algorithm: Some(EncAlgorithm::A256GCM),
+                    operations: Some([Operation::Decrypt].into_iter().collect()),
+                    id: Some("ipn:2.1".into()),
+                    key_use: None,
+                },
+            ]))
+        }
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        hardy_async::channel::Sender::send(
+            &tx,
+            crate::cla::Segment::Final(crate::Bytes::from(data)),
+        )
+        .await
+        .expect("channel open");
+
+        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, |_, _| keys()).await else {
+            panic!("headers must verify: only the corrupt BIB target fails");
+        };
+        assert!(tail.is_none(), "the small bundle is fully resident");
+
+        let (bundle, chunks, _reason) = finalize_with_provider(&headers, hv, |_, _| keys())
+            .map_err(|(_, e)| e)
+            .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
+        assert!(chunks.is_some(), "the bundle must be rewritten");
+        assert!(!bundle.blocks.contains_key(&3), "corrupt BIB dropped");
+        assert!(
+            bundle.blocks.contains_key(&2),
+            "shared BCB survives, still covering the payload"
+        );
+        assert!(bundle.blocks.contains_key(&1), "payload survives");
+    }
 
     #[test]
     fn reception_reason_precedence() {

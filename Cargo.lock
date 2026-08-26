@@ -1897,6 +1897,7 @@ dependencies = [
  "hardy-cbor",
  "hardy-eid-patterns",
  "hashbrown 0.17.1",
+ "hex-literal",
  "lru 0.18.2",
  "metrics",
  "rand 0.10.2",

@@ -204,15 +204,14 @@ pub(crate) fn full_rewrite(
         &to_update,
     )?;
     // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
-    // non-payload → remove the target and its security block.
+    // non-payload → remove the target only. The editor cascade strips it
+    // from its covering BCB and drops the BCB once it empties; naming the
+    // BCB here would strand a surviving co-target's ciphertext.
     for &target in &facts.failed {
         if target == 1 {
             return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
         }
         to_remove.insert(target);
-        if let Some(bcb) = bundle.blocks.get(&target).and_then(|b| b.bcb) {
-            to_remove.insert(bcb);
-        }
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {

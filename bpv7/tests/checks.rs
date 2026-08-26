@@ -117,15 +117,14 @@ fn parse_full_for_test(
         &to_update,
     )?;
     // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
-    // non-payload → remove the target and its security block.
+    // non-payload → remove the target only. The editor cascade strips it
+    // from its covering BCB and drops the BCB once it empties; naming the
+    // BCB here would strand a surviving co-target's ciphertext.
     for &target in &facts.failed {
         if target == 1 {
             return Err(bpsec::Error::DecryptionFailed.into());
         }
         to_remove.insert(target);
-        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
-            to_remove.insert(bcb);
-        }
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
@@ -904,6 +903,68 @@ mod cascade_reencryption_tests {
             "BCB protecting the corrupt BIB must be dropped"
         );
         assert!(bundle.blocks.contains_key(&1), "payload must survive");
+    }
+
+    // RFC 9172 §5.1.1 with a *shared* BCB — the RFC 9173 Appendix A.4 wire
+    // vector, where one BCB (block 2) covers both the encrypted BIB (block
+    // 3) and the payload (block 1). Corrupting the BIB's ciphertext must
+    // failure-drop only the BIB: the cascade strips block 3 from the BCB's
+    // OperationSet and the BCB survives covering the payload. Queuing the
+    // shared BCB itself for removal would strand the payload ciphertext
+    // (`StrandsCiphertext`) and panic `apply_rewrites`.
+    #[test]
+    fn multi_target_bcb_failure_drop_spares_the_shared_bcb() {
+        // `hex_literal::hex!` is path-qualified rather than imported: a later
+        // leg moves the file-level `hex!` users into tests/parse.rs and drops
+        // the top-level `use`, but this test stays.
+        let mut data = hex_literal::hex!(
+            "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+             005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+             420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+             9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+             313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+             50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
+             724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+        )
+        .to_vec();
+        // Flip one byte of the BIB's ciphertext: the block-3 body is the
+        // 70-byte string right after its `58 46` bytes header.
+        let pos = data
+            .windows(2)
+            .position(|w| w == hex_literal::hex!("5846"))
+            .expect("BIB body header present")
+            + 2;
+        data[pos] ^= 0x01;
+
+        let keys: bpsec::key::KeySet = serde_json::from_value(serde_json::json!({
+            "keys": [
+                {
+                    "kid": "ipn:2.1",
+                    "kty": "oct",
+                    "alg": "HS384",
+                    "key_ops": ["verify"],
+                    "k": "GisaKxorGisaKxorGisaKw"
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "kty": "oct",
+                    "enc": "A256GCM",
+                    "key_ops": ["decrypt"],
+                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let (bundle, chunks) = parse_full_for_test(&data, &keys)
+            .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
+        assert!(chunks.is_some(), "the bundle must be rewritten");
+        assert!(!bundle.blocks.contains_key(&3), "corrupt BIB dropped");
+        assert!(
+            bundle.blocks.contains_key(&2),
+            "shared BCB survives, still covering the payload"
+        );
+        assert!(bundle.blocks.contains_key(&1), "payload survives");
     }
 
     // RFC 9172 §5.1.1: when remove_blocks is called on a target whose
