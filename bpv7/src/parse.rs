@@ -238,7 +238,14 @@ impl BundleParser {
                     Ok(b) => b,
                     Err(orig) => BytesMut::from(orig.as_ref()),
                 });
-                buf.reserve(more);
+                // `more` is a wire-derived shortfall (a block can claim a body
+                // far larger than any bundle we would accept), so it is only a
+                // growth hint — never an allocation size. Reserving it verbatim
+                // lets a hostile length abort the process (capacity overflow)
+                // before the caller's own size cap is consulted. Grow by at most
+                // one `chunk_size`; the buffer still fills from the bytes that
+                // actually arrive on later pushes.
+                buf.reserve(more.min(self.chunk_size));
                 self.data = Some(buf);
                 Ok(ParserProgress::NeedMore(more))
             }
@@ -908,4 +915,52 @@ pub fn parse(data: Bytes) -> Result<Parsed, Error> {
     }
 
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A block whose byte-string body header claims a length far larger than
+    // the bytes present must not drive an unbounded `BytesMut::reserve` on the
+    // `NeedMoreData` growth path. Reserving the raw wire shortfall aborts the
+    // process with a capacity overflow (before any caller size cap is
+    // consulted) — a remotely reachable DoS the `random_bundles` fuzzer found.
+    // The reserve is clamped to `chunk_size`, so the truncated input is
+    // rejected gracefully instead of aborting. The valid builder-made primary
+    // keeps this on the block-length path across the whole parse train (a
+    // non-canonical primary would be rejected earlier on later legs); the
+    // guarded regression is abort-vs-return, so the assertion is on graceful
+    // failure rather than a specific error variant that evolves down the train.
+    #[test]
+    fn oversized_block_length_does_not_abort_the_reserve() {
+        let (bundle, full) =
+            crate::builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_payload(b"hi".as_slice().into())
+                .build(crate::creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+
+        // Keep `0x9f` + the valid canonical primary block (so the input stays
+        // on the block-length path across the whole parse train — a
+        // non-canonical primary is rejected earlier on later legs), then
+        // append an unknown extension block whose byte-string body claims
+        // 2^63 bytes and truncate. 2^63 exceeds `isize::MAX`, so an unclamped
+        // `reserve` aborts with a capacity overflow; the clamp turns it into a
+        // graceful rejection instead.
+        let payload_start = bundle.blocks[&1].extent.start as usize;
+        let mut input = full[..payload_start].to_vec();
+        input.extend_from_slice(&[
+            0x85, // block: array(5)
+            0x18, 0xc0, // block type 192 (unknown)
+            0x02, // block number 2
+            0x00, // flags
+            0x00, // CRC type: none
+            0x5b, 0x80, 0, 0, 0, 0, 0, 0, 0, // byte string, 8-byte length 2^63
+        ]);
+
+        assert!(
+            parse(Bytes::copy_from_slice(&input)).is_err(),
+            "an oversized block length must fail gracefully, not abort the process"
+        );
+    }
 }
