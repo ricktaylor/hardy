@@ -1,9 +1,12 @@
+use bytes::Bytes;
+use core::fmt;
 use std::{
     borrow::Cow,
-    io::{Read, Write},
+    fs,
+    io::{BufReader, BufWriter, Read, Write, stdin, stdout},
     path::PathBuf,
+    str::FromStr,
 };
-
 #[derive(Debug, Clone)]
 pub enum Input {
     StdIn,
@@ -11,18 +14,24 @@ pub enum Input {
 }
 
 impl Input {
-    pub fn read_all(&self) -> anyhow::Result<Vec<u8>> {
-        match self {
+    /// Slurp the entire input into an owned [`Bytes`] buffer (single
+    /// `Vec<u8>` allocation, no copy on the `Vec → Bytes` conversion).
+    /// Callers that need byte-slice access just deref (`&buf`); callers
+    /// that need to mutate in place (e.g. `Chunk::flatten_inplace`)
+    /// reclaim a `Vec<u8>` via `Bytes::try_into_mut`.
+    pub fn read_all(&self) -> anyhow::Result<Bytes> {
+        let vec = match self {
             Self::StdIn => {
                 let mut buffer = Vec::new();
-                std::io::BufReader::new(std::io::stdin())
+                BufReader::new(stdin())
                     .read_to_end(&mut buffer)
                     .map_err(|e| anyhow::anyhow!("Failed to read from stdin: {e}"))?;
-                Ok(buffer)
+                buffer
             }
-            Self::Path(f) => std::fs::read(f)
-                .map_err(|e| anyhow::anyhow!("Failed to read from '{}': {e}", f.display())),
-        }
+            Self::Path(f) => fs::read(f)
+                .map_err(|e| anyhow::anyhow!("Failed to read from '{}': {e}", f.display()))?,
+        };
+        Ok(Bytes::from(vec))
     }
 
     pub fn filepath<'a>(&'a self) -> Cow<'a, str> {
@@ -33,7 +42,7 @@ impl Input {
     }
 }
 
-impl std::str::FromStr for Input {
+impl FromStr for Input {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -45,8 +54,8 @@ impl std::str::FromStr for Input {
     }
 }
 
-impl std::fmt::Display for Input {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Input {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
             Self::StdIn => write!(f, "stdin"),
             Self::Path(p) => write!(f, "{}", p.display()),
@@ -60,12 +69,12 @@ pub struct Output(Option<PathBuf>);
 impl Output {
     pub fn write_all(&self, buf: &[u8]) -> anyhow::Result<()> {
         match &self.0 {
-            Some(f) => std::io::BufWriter::new(std::fs::File::create(f).map_err(|e| {
+            Some(f) => BufWriter::new(fs::File::create(f).map_err(|e| {
                 anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())
             })?)
             .write_all(buf)
             .map_err(|e| anyhow::anyhow!("Failed to write to output file '{}': {e}", f.display())),
-            None => std::io::BufWriter::new(std::io::stdout())
+            None => BufWriter::new(stdout())
                 .write_all(buf)
                 .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
         }
@@ -79,22 +88,22 @@ impl Output {
         let buf = buf.as_ref().as_bytes();
         match &self.0 {
             Some(f) => {
-                std::io::BufWriter::new(std::fs::OpenOptions::new().append(true).open(f).map_err(
-                    |e| anyhow::anyhow!("Failed to open output file '{}': {e}", f.display()),
-                )?)
+                BufWriter::new(fs::OpenOptions::new().append(true).open(f).map_err(|e| {
+                    anyhow::anyhow!("Failed to open output file '{}': {e}", f.display())
+                })?)
                 .write_all(buf)
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to write to output file '{}': {e}", f.display())
                 })
             }
-            None => std::io::BufWriter::new(std::io::stdout())
+            None => BufWriter::new(stdout())
                 .write_all(buf)
                 .map_err(|e| anyhow::anyhow!("Failed to write to stdout: {e}")),
         }
     }
 }
 
-impl std::str::FromStr for Output {
+impl FromStr for Output {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -106,8 +115,8 @@ impl std::str::FromStr for Output {
     }
 }
 
-impl std::fmt::Display for Output {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Output {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
             None => write!(f, "stdout"),
             Some(p) => write!(f, "{}", p.display()),

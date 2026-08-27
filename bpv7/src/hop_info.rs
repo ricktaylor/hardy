@@ -5,14 +5,17 @@ typically part of the bundle's primary block and is used to prevent infinite
 loops and to control the bundle's lifetime in the network.
 */
 
-use super::*;
-use error::require_canonical;
+use hardy_cbor::{
+    decode::{FromCbor, parse_array},
+    encode::{Encoder, ToCbor},
+};
 
+use crate::{Error, error::require_canonical};
 /// Contains hop limit and hop count information for a bundle.
 ///
 /// The hop limit is the maximum number of hops a bundle is allowed to traverse,
 /// while the hop count is the number of hops it has already traversed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HopInfo {
     /// The maximum number of hops the bundle is allowed to traverse.
@@ -21,15 +24,15 @@ pub struct HopInfo {
     pub count: u64,
 }
 
-impl hardy_cbor::encode::ToCbor for HopInfo {
+impl ToCbor for HopInfo {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&(&self.limit, &self.count))
     }
 }
 
-impl hardy_cbor::decode::FromCbor for HopInfo {
+impl FromCbor for HopInfo {
     type Error = Error;
 
     /// Strict-canonical decode per RFC 9171 §4.1 plus §4.4.3 range check:
@@ -42,7 +45,7 @@ impl hardy_cbor::decode::FromCbor for HopInfo {
     ///     with `InvalidHopLimit`. The `count` field has no RFC-mandated
     ///     range (only a SHOULD that it start at 0 and increment).
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
+        parse_array(data, |a, shortest, tags| {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }

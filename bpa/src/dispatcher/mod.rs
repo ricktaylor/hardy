@@ -217,14 +217,14 @@ impl Dispatcher {
 
     fn key_provider(
         &self,
-    ) -> impl Fn(&hardy_bpv7::bundle::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + '_
+    ) -> impl Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> + Clone + '_
     {
         |bundle, data| self.key_provider.key_source(bundle, data)
     }
 
     fn key_source(
         &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
+        bundle: &hardy_bpv7::Bundle,
         data: &[u8],
     ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
         self.key_provider.key_source(bundle, data)

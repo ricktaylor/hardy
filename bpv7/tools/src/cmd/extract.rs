@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::bpsec::{block_data, key::KeySet};
 #[derive(Parser, Debug)]
 #[command(
     about = "Extract the data from a block in a bundle",
@@ -26,19 +26,23 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
         let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass; gives us
+        // the bcb_ops map we need for the per-block decrypt below.
+        let parse::Parsed {
+            data,
+            bundle,
+            bcbs: bcb_ops,
+            ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        self.output.write_all(
-            bundle
-                .block_data(self.block, &data, &key_store)
-                .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?
-                .as_ref(),
-        )
+        let payload = block_data(self.block, &bundle.blocks, &data, &bcb_ops, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt block: {e}"))?;
+
+        self.output.write_all(payload.as_ref())
     }
 }

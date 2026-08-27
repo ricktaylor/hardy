@@ -1,5 +1,10 @@
 use super::*;
-
+use hardy_bpv7::{
+    bpsec::key::KeySet,
+    creation_timestamp::CreationTimestamp,
+    editor::{Chunk, Editor},
+    eid::Eid,
+};
 #[derive(Parser, Debug)]
 #[command(
     about = "Update the primary block of a bundle",
@@ -24,15 +29,15 @@ pub struct Command {
 
     /// New source EID
     #[arg(short, long)]
-    source: Option<hardy_bpv7::eid::Eid>,
+    source: Option<Eid>,
 
     /// New destination EID
     #[arg(short, long)]
-    destination: Option<hardy_bpv7::eid::Eid>,
+    destination: Option<Eid>,
 
     /// New report-to EID
     #[arg(short, long = "report-to")]
-    report_to: Option<hardy_bpv7::eid::Eid>,
+    report_to: Option<Eid>,
 
     /// Bundle processing flags (comma-separated, replaces existing flags)
     #[arg(short, long, value_delimiter = ',')]
@@ -66,14 +71,17 @@ impl Command {
             ));
         }
 
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
-        let mut data = self.input.read_all()?;
+        let key_store: KeySet = self.key_args.try_into()?;
+        let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed {
+            data, bundle: raw, ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let mut editor = hardy_bpv7::editor::Editor::new(&bundle, &data);
+        let mut editor = Editor::new(&raw, &data);
 
         // Update lifetime if provided
         if let Some(lifetime) = self.lifetime {
@@ -85,7 +93,7 @@ impl Command {
         // Reset timestamp if requested
         if self.reset_timestamp {
             editor = editor
-                .with_timestamp(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .with_timestamp(CreationTimestamp::now())
                 .map_err(|(_, e)| anyhow::anyhow!("Failed to update timestamp: {e}"))?;
         }
 
@@ -128,8 +136,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut data);
-
-        self.output.write_all(&data)
+        let out = Chunk::flatten_bytes(chunks, data);
+        self.output.write_all(&out)
     }
 }

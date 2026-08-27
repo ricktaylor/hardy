@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-
 mod cmd;
+mod compare;
 mod flags;
 mod io;
 mod keys;

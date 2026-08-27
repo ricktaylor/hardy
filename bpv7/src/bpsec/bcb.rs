@@ -78,6 +78,51 @@ impl Operation {
         }
     }
 
+    /// Encrypts the target block using this operation's context parameters
+    /// (e.g. AES-GCM scope flags), looking up the key on the bpsec source
+    /// EID via `key_source`. The target's plaintext is read from
+    /// `args.blocks.block(args.target)`. Returns a fresh operation carrying
+    /// the newly generated per-context state (e.g. a new AES-GCM IV) along
+    /// with the ciphertext; `self` is left untouched so the caller can
+    /// decide whether to replace the original entry.
+    ///
+    /// Works equally on an operation just constructed in memory (with
+    /// caller-chosen context parameters) and on one parsed from a wire
+    /// BCB — the method only inspects this operation's parameters and
+    /// the bytes in `args.blocks`.
+    #[allow(unused_variables)]
+    pub fn encrypt<K>(
+        &self,
+        key_source: &K,
+        args: OperationArgs,
+    ) -> Result<(Self, Box<[u8]>), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        // RFC 9172 Section 3.9: CRC must be removed from BCB targets.
+        if let Some((target_block, _)) = args.blocks.block(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::AES_GCM(op) => {
+                let key = key_source
+                    .key(args.bpsec_source, &[key::Operation::Encrypt])
+                    .ok_or(Error::NoKey)?;
+                let (new_op, ciphertext) = rfc9173::bcb_aes_gcm::Operation::encrypt(
+                    key,
+                    op.parameters.flags.clone(),
+                    args,
+                )?;
+                Ok((Self::AES_GCM(new_op), ciphertext))
+            }
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
+        }
+    }
+
     fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
         match self {
             #[cfg(feature = "rfc9173")]
@@ -135,6 +180,56 @@ impl OperationSet {
             .values()
             .next()
             .is_some_and(|op| op.can_share())
+    }
+
+    /// Per-OperationSet structural validation of this BCB against the
+    /// bundle's blocks (RFC 9172 §3.6 / §3.7): the BCB MUST NOT set
+    /// delete-block-on-failure, every target must exist, no target may be
+    /// the primary block or another security block, a payload target
+    /// requires must-replicate, and no target may already be covered by a
+    /// different BCB. Pure inspection — stamps no coverage; the caller
+    /// stamps after a successful return. Cross-BCB uniqueness (§2.6) is
+    /// not checked here (it needs every operation in view at once).
+    ///
+    /// Shared by the structural parser ([`crate::parse`]) and the keyed
+    /// [`crate::checks::verify`] pass as the single source of truth for
+    /// the per-OperationSet BCB rules.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bcb_block_number` is not in `blocks`. The caller looked
+    /// the BCB up in `blocks` to obtain this OperationSet; passing a
+    /// different block set is a caller error, not a recoverable state.
+    pub fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
+    where
+        B: BlockSet<'a> + ?Sized,
+    {
+        let bcb_block = blocks
+            .block_header(bcb_block_number)
+            .expect("OperationSet::check called with a bcb_block_number not in the block set");
+        if bcb_block.flags.delete_block_on_failure {
+            return Err(Error::BCBDeleteFlag);
+        }
+        let must_replicate = bcb_block.flags.must_replicate;
+
+        for &target_number in self.operations.keys() {
+            let target_block = blocks
+                .block_header(target_number)
+                .ok_or(Error::MissingSecurityTarget)?;
+            match target_block.block_type {
+                block::Type::Primary | block::Type::BlockSecurity => {
+                    return Err(Error::InvalidBCBTarget);
+                }
+                block::Type::Payload if !must_replicate => {
+                    return Err(Error::BCBMustReplicate);
+                }
+                _ => {}
+            }
+            if matches!(target_block.bcb, Some(n) if n != bcb_block_number) {
+                return Err(Error::DuplicateOpTarget);
+            }
+        }
+        Ok(())
     }
 }
 

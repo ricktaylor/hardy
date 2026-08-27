@@ -1,5 +1,8 @@
 use super::*;
-
+use hardy_bpv7::{
+    bpsec::key::KeySet,
+    editor::{Chunk, Editor},
+};
 #[derive(Parser, Debug)]
 #[command(
     about = "Decrypt a block and remove it from BCB protection",
@@ -27,24 +30,29 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
+        let key_store: KeySet = self.key_args.try_into()?;
 
-        let mut data = self.input.read_all()?;
+        let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed {
+            data, bundle: raw, ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
-            .remove_encryption(self.block, &key_store)
-            .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
+        let editor = hardy_bpv7::bpsec::edit::remove_encryption(
+            Editor::new(&raw, &data),
+            self.block,
+            &key_store,
+        )
+        .map_err(|(_, e)| anyhow::anyhow!("Failed to remove encryption: {e}"))?;
 
         let chunks = editor
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut data);
-
-        self.output.write_all(&data)
+        let out = Chunk::flatten_bytes(chunks, data);
+        self.output.write_all(&out)
     }
 }

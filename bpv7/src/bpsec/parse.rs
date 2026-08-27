@@ -1,8 +1,11 @@
 use super::*;
-use crate::error::HasInvalidField;
-use alloc::sync::Arc;
+
+use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
+
 use smallvec::SmallVec;
+
+use crate::{HashMap, eid, error::HasInvalidField};
 
 fn require_canonical<T, const D: usize>(
     seq: &mut hardy_cbor::decode::Series<D>,
@@ -67,8 +70,8 @@ pub struct UnknownOperation {
 /// Every parameter/result range stored in an [`AbstractSyntaxBlock`]
 /// originally came from parsing `source_data`, so under normal use the
 /// range is in-bounds. The check guards against a caller passing a
-/// partial slice or a mismatched buffer — it converts a release-mode
-/// panic into a clean [`Error::SourceOutOfRange`].
+/// partial slice (early-block-processing case) or a mismatched buffer —
+/// it converts a release-mode panic into a clean [`Error::SourceOutOfRange`].
 pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8], Error> {
     data.get(range.clone()).ok_or(Error::SourceOutOfRange {
         start: range.start,

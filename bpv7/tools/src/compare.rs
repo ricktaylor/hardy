@@ -3,32 +3,44 @@ Semantic comparison of BPv7 bundles, accounting for the encoding freedoms
 in RFC 9171, RFC 9172, and RFC 9173.
 
 See `bpv7/docs/bundle_compare.md` for the full design.
+
+Lives in `hardy-bpv7-tools` (not `hardy-bpv7`) because it's a
+tool/test utility, not parser-layer library code — `bundle compare`
+in the CLI calls into it, and the in-module `tests` submodule below
+exercises it directly.
 */
 
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::fmt::Display;
-
+use hardy_bpv7::{
+    Bundle, Error,
+    block::{Block, Type},
+    bpsec::{bcb, bib},
+    bundle_age::BundleAge,
+    crc::CrcType,
+    eid::Eid,
+    hop_info::HopInfo,
+    parse,
+};
 use hardy_cbor::decode::{self, FromCbor};
-
-use crate::block::{Block, Type};
-use crate::bpsec::{bcb, bib, no_keys};
-use crate::bundle::{Bundle, ParsedBundle};
-use crate::crc::CrcType;
-use crate::eid::Eid;
-use crate::{Error, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Compare two bundles from their raw bytes.
 ///
 /// Returns a list of human-readable differences. Empty means identical.
 pub fn compare_bundles(data_a: &[u8], data_b: &[u8]) -> Result<Vec<String>, Error> {
-    let parsed_a = ParsedBundle::parse(data_a, no_keys)?;
-    let parsed_b = ParsedBundle::parse(data_b, no_keys)?;
+    let parse::Parsed {
+        data: data_a,
+        bundle: bundle_a,
+        ..
+    } = parse::parse(bytes::Bytes::copy_from_slice(data_a))?;
+    let parse::Parsed {
+        data: data_b,
+        bundle: bundle_b,
+        ..
+    } = parse::parse(bytes::Bytes::copy_from_slice(data_b))?;
 
-    let side_a = BundleSide::new(&parsed_a.bundle, data_a);
-    let side_b = BundleSide::new(&parsed_b.bundle, data_b);
+    let side_a = BundleSide::new(&bundle_a, &data_a);
+    let side_b = BundleSide::new(&bundle_b, &data_b);
 
     Ok(compare_parsed(&side_a, &side_b))
 }
@@ -118,6 +130,15 @@ fn compare_parsed(a: &BundleSide, b: &BundleSide) -> Vec<String> {
                         blk_a, blk_b, a, b, &tag, &mut diffs,
                     );
                 }
+                // Known extension blocks compare by decoded *content*, so a
+                // non-canonical re-encoding of the same value is equivalent
+                // (the whole point of a semantic compare). Encrypted bodies
+                // are opaque — fall through to the raw-bytes comparison.
+                Type::PreviousNode | Type::BundleAge | Type::HopCount
+                    if blk_a.bcb.is_none() && blk_b.bcb.is_none() =>
+                {
+                    compare_known_extension(bt, blk_a, a.data, blk_b, b.data, &tag, &mut diffs);
+                }
                 _ => {
                     compare_block_data(blk_a, a.data, blk_b, b.data, &tag, &mut diffs);
                 }
@@ -130,22 +151,22 @@ fn compare_parsed(a: &BundleSide, b: &BundleSide) -> Vec<String> {
 
 /// Compare primary block parsed fields.
 fn compare_primary(a: &Bundle, b: &Bundle, diffs: &mut Vec<String>) {
-    if a.id != b.id {
+    if a.primary.id != b.primary.id {
         diffs.push("Primary: id differs".into());
     }
-    if a.destination != b.destination {
+    if a.primary.destination != b.primary.destination {
         diffs.push("Primary: destination differs".into());
     }
-    if a.report_to != b.report_to {
+    if a.primary.report_to != b.primary.report_to {
         diffs.push("Primary: report_to differs".into());
     }
-    if a.lifetime != b.lifetime {
+    if a.primary.lifetime != b.primary.lifetime {
         diffs.push("Primary: lifetime differs".into());
     }
-    if a.flags != b.flags {
+    if a.primary.flags != b.primary.flags {
         diffs.push("Primary: flags differ".into());
     }
-    compare_crc(a.crc_type, b.crc_type, "Primary", diffs);
+    compare_crc(a.primary.crc_type, b.primary.crc_type, "Primary", diffs);
 }
 
 /// Compare CRC presence. The exact CRC type (CRC-16 vs CRC-32) is an
@@ -179,6 +200,53 @@ fn compare_block_data(
             diffs.push(format!("{tag}: data unavailable"));
         }
         _ => {}
+    }
+}
+
+/// Compare a known extension block (PreviousNode / BundleAge / HopCount)
+/// by its decoded value rather than its wire bytes, so two encodings of
+/// the same value compare equal.
+fn compare_known_extension(
+    bt: Type,
+    blk_a: &Block,
+    data_a: &[u8],
+    blk_b: &Block,
+    data_b: &[u8],
+    tag: &str,
+    diffs: &mut Vec<String>,
+) {
+    let (Some(a_body), Some(b_body)) = (blk_a.payload(data_a), blk_b.payload(data_b)) else {
+        diffs.push(format!("{tag}: data unavailable"));
+        return;
+    };
+    match bt {
+        Type::PreviousNode => compare_decoded::<Eid>(a_body, b_body, tag, diffs),
+        Type::BundleAge => compare_decoded::<BundleAge>(a_body, b_body, tag, diffs),
+        Type::HopCount => compare_decoded::<HopInfo>(a_body, b_body, tag, diffs),
+        _ => unreachable!("compare_known_extension called for non-extension block"),
+    }
+}
+
+/// Decode `T` from both bodies and compare the values. Uses the
+/// `(T, bool)` decode — which tolerates a non-shortest encoding and
+/// reports it via the (here discarded) flag — rather than the strict
+/// `parse::<T>`, so a non-canonically encoded value still compares by
+/// content. A decode failure or value mismatch is recorded as a diff.
+fn compare_decoded<T>(a_body: &[u8], b_body: &[u8], tag: &str, diffs: &mut Vec<String>)
+where
+    T: FromCbor<Error: Display + From<decode::Error>> + PartialEq,
+{
+    match (
+        decode::parse::<(T, bool)>(a_body),
+        decode::parse::<(T, bool)>(b_body),
+    ) {
+        (Ok((a, _)), Ok((b, _))) => {
+            if a != b {
+                diffs.push(format!("{tag}: content differs"));
+            }
+        }
+        (Err(e), _) => diffs.push(format!("{tag}: failed to decode in A: {e}")),
+        (_, Err(e)) => diffs.push(format!("{tag}: failed to decode in B: {e}")),
     }
 }
 
@@ -230,10 +298,10 @@ trait OperationSet: FromCbor<Error: Display + From<decode::Error>> {
 impl OperationSet for bib::OperationSet {
     type Operation = bib::Operation;
     fn source(&self) -> &Eid {
-        &self.source
+        bib::OperationSet::source(self)
     }
     fn operations(&self) -> &HashMap<u64, Self::Operation> {
-        &self.operations
+        bib::OperationSet::operations(self)
     }
     fn compare_operation(
         a: &bib::Operation,
@@ -242,8 +310,12 @@ impl OperationSet for bib::OperationSet {
         target: (Type, usize),
         diffs: &mut Vec<String>,
     ) {
+        // hardy-bpv7-tools hardcodes `hardy-bpv7`'s `rfc9173` feature on
+        // (see Cargo.toml), so the `HMAC_SHA2` variant always exists —
+        // no `#[cfg(feature = "rfc9173")]` gate needed here. If
+        // bpv7-tools ever makes rfc9173 optional, add an `rfc9173`
+        // feature flag here and forward it to hardy-bpv7.
         match (a, b) {
-            #[cfg(feature = "rfc9173")]
             (bib::Operation::HMAC_SHA2(a), bib::Operation::HMAC_SHA2(b)) => {
                 if a.parameters != b.parameters {
                     diffs.push(format!("{tag}: parameters for target {target:?} differ"));
@@ -262,10 +334,10 @@ impl OperationSet for bib::OperationSet {
 impl OperationSet for bcb::OperationSet {
     type Operation = bcb::Operation;
     fn source(&self) -> &Eid {
-        &self.source
+        bcb::OperationSet::source(self)
     }
     fn operations(&self) -> &HashMap<u64, Self::Operation> {
-        &self.operations
+        bcb::OperationSet::operations(self)
     }
     fn compare_operation(
         a: &bcb::Operation,
@@ -275,7 +347,7 @@ impl OperationSet for bcb::OperationSet {
         diffs: &mut Vec<String>,
     ) {
         match (a, b) {
-            #[cfg(feature = "rfc9173")]
+            // See the BIB comment above re: no `#[cfg(feature = "rfc9173")]`.
             (bcb::Operation::AES_GCM(a), bcb::Operation::AES_GCM(b)) => {
                 if a.parameters != b.parameters {
                     diffs.push(format!("{tag}: parameters for target {target:?} differ"));
@@ -353,5 +425,101 @@ fn compare_security_block<S: OperationSet>(
             *resolved,
             diffs,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compare_bundles;
+    use bytes::Bytes;
+    use hardy_bpv7::parse;
+    use hex_literal::hex;
+
+    // Original plain bundle (RFC 9173, Section A.3.1.4)
+    const ORIGINAL: &[u8] = &hex!(
+        "9F88070000820282010282028202018202820201820018281A000F42408507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    // BIB signing payload (block 1) and BundleAge (block 2), source ipn:3.1.
+    const BIB_BUNDLE: &[u8] = &hex!(
+        "9F88070000820282010282028202018202820201820018281A000F4240850B030000587582010201008202820301828182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D7181820158306EE5CA30AB3A1BF1E7F645EB21418FFC129BACFB69677FDAE0D08CB63159358FA86BE682538299B4B7E53C04FE03FDE88507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+    );
+
+    /// Run both implementations and assert they agree on equivalence.
+    /// Returns the diff list for further assertions.  If they disagree,
+    /// the diff text is the diagnostic.
+    fn compare(a: &[u8], b: &[u8]) -> Vec<String> {
+        let pa = parse::parse(Bytes::copy_from_slice(a)).expect("parse a");
+        let pb = parse::parse(Bytes::copy_from_slice(b)).expect("parse b");
+        let semantic = pa.bundle.semantic_eq(&pa.data, &pb.bundle, &pb.data);
+        let diffs = compare_bundles(a, b).expect("compare_bundles");
+        assert_eq!(
+            semantic,
+            diffs.is_empty(),
+            "semantic_eq={semantic} disagrees with compare_bundles ({} diff(s)): {diffs:?}",
+            diffs.len()
+        );
+        diffs
+    }
+
+    // One smoke test per major code path in compare_bundles, cross-checking
+    // that it agrees with semantic_eq.  cmp.rs owns exhaustive equivalence
+    // coverage; these four catch divergence between the two implementations.
+
+    #[test]
+    fn identical_bundles() {
+        assert!(compare(ORIGINAL, ORIGINAL).is_empty());
+    }
+
+    #[test]
+    fn different_extension_content_detected() {
+        // HopCount limit 30 vs 99 — exercises the decoded known-extension path.
+        let limit_30 = hex!(
+            "9F88070000820282010282028202018202820201820018281A000F4240"
+            "85070200004100"
+            "850A0300004482181E00"
+            "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
+            "FF"
+        );
+        let limit_99 = hex!(
+            "9F88070000820282010282028202018202820201820018281A000F4240"
+            "85070200004100"
+            "850A0300004482186300"
+            "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
+            "FF"
+        );
+        assert!(!compare(&limit_30, &limit_99).is_empty());
+    }
+
+    #[test]
+    fn bib_hmac_difference_caught() {
+        // BIB_BUNDLE with the last byte of the first HMAC changed (0x71 → 0x70)
+        // — exercises the security-block difference path.
+        let tampered = hex!(
+            "9F88070000820282010282028202018202820201820018281A000F4240850B030000587582010201008202820301828182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D7081820158306EE5CA30AB3A1BF1E7F645EB21418FFC129BACFB69677FDAE0D08CB63159358FA86BE682538299B4B7E53C04FE03FDE88507020000410085010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164FF"
+        );
+        assert!(!compare(BIB_BUNDLE, &tampered).is_empty());
+    }
+
+    #[test]
+    fn different_bib_target_order_is_equivalent() {
+        // BIB targets [1,2] vs [2,1] — exercises the security-block equivalence
+        // path (target resolution by type+position, not block number).
+        let targets_12 = hex!(
+            "9F88070000820282010282028202018202820201820018281A000F4240"
+            "850B030000587582010201008202820301828182015830F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D7181820158306EE5CA30AB3A1BF1E7F645EB21418FFC129BACFB69677FDAE0D08CB63159358FA86BE682538299B4B7E53C04FE03FDE8"
+            "8507020000 4100"
+            "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
+            "FF"
+        );
+        let targets_21 = hex!(
+            "9F88070000820282010282028202018202820201820018281A000F4240"
+            "850B030000587582020101008202820301828182015830 6EE5CA30AB3A1BF1E7F645EB21418FFC129BACFB69677FDAE0D08CB63159358FA86BE682538299B4B7E53C04FE03FDE8 8182015830 F75FE4C37F76F046165855BD5FF72FBFD4E3A64B4695C40E2B787DA005AE819F0A2E30A2E8B325527DE8AEFB52E73D71"
+            "8507020000 4100"
+            "85010100005823526561647920746F2067656E657261746520612033322D62797465207061796C6F6164"
+            "FF"
+        );
+        assert_ne!(targets_12.as_slice(), targets_21.as_slice());
+        assert!(compare(&targets_12, &targets_21).is_empty());
     }
 }

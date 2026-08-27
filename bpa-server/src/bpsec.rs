@@ -4,20 +4,18 @@
 //! [`PatternKeySource`], so the key configuration can be hot-reloaded while
 //! bundles are being processed.
 
-use std::{collections::HashMap, sync::Arc};
-
+use crate::config::bpsec::BPSecConfig;
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
+use hardy_bpa::keys::KeyProvider;
 use hardy_bpv7::{
     bpsec::key::{Key, KeySet, KeySource, Operation, Type},
     eid::Eid,
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs, path::Path, sync::Arc};
 use tracing::{debug, error, info, warn};
-
-use crate::config::bpsec::BPSecConfig;
-
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
 ///
 /// A role is expressed entirely through which operations keys are released
@@ -127,7 +125,7 @@ impl PatternKeySource {
     pub fn load(config: &BPSecConfig) -> anyhow::Result<Self> {
         check_permissions(&config.keys_file);
 
-        let file = std::fs::File::open(&config.keys_file).map_err(|e| {
+        let file = fs::File::open(&config.keys_file).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to open key file '{}': {e}",
                 config.keys_file.display()
@@ -186,10 +184,10 @@ impl PatternKeySource {
 }
 
 #[cfg(unix)]
-fn check_permissions(path: &std::path::Path) {
+fn check_permissions(path: &Path) {
     use std::os::unix::fs::MetadataExt;
 
-    if let Ok(meta) = std::fs::metadata(path) {
+    if let Ok(meta) = fs::metadata(path) {
         let mode = meta.mode() & 0o777;
         if mode & 0o077 != 0 {
             warn!(
@@ -203,7 +201,7 @@ fn check_permissions(path: &std::path::Path) {
 }
 
 #[cfg(not(unix))]
-fn check_permissions(_path: &std::path::Path) {}
+fn check_permissions(_path: &Path) {}
 
 impl KeySource for PatternKeySource {
     fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {
@@ -262,8 +260,8 @@ impl Default for PatternKeyProvider {
     }
 }
 
-impl hardy_bpa::keys::KeyProvider for PatternKeyProvider {
-    fn key_source(&self, _bundle: &hardy_bpv7::bundle::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+impl KeyProvider for PatternKeyProvider {
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
         Box::new(CurrentKeys(self.source.load_full()))
     }
 }
@@ -320,7 +318,12 @@ mod tests {
     use hardy_bpv7::{
         block,
         bpsec::key::{EncAlgorithm, KeyAlgorithm, Type, Use},
-        bundle::RewrittenBundle,
+        checks,
+    };
+
+    use hardy_bpv7::{
+        bpsec::block_data,
+        parse::{Parsed, parse},
     };
 
     use super::*;
@@ -649,7 +652,7 @@ mod tests {
                 03837241e070b02619fc59c5214a22f08cd70795e73e9aff"
     );
 
-    fn count_bcbs(bundle: &hardy_bpv7::bundle::Bundle) -> usize {
+    fn count_bcbs(bundle: &hardy_bpv7::Bundle) -> usize {
         bundle
             .blocks
             .values()
@@ -657,19 +660,61 @@ mod tests {
             .count()
     }
 
+    // Run the keyed BPSec pipeline a BPA runs at ingress — §A classify, §B
+    // decrypt BCB-covered BIBs, §C7 verify — and return the parsed pieces for
+    // delivery-time assertions. Passing without error means nothing needed
+    // rewriting for this vector.
+    #[allow(clippy::type_complexity)]
+    fn a2_checked(
+        source: &PatternKeySource,
+    ) -> (
+        hardy_bpa::Bytes,
+        hardy_bpv7::Bundle,
+        HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+    ) {
+        let Parsed {
+            data,
+            mut bundle,
+            bcbs,
+            mut bibs,
+        } = parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE)).expect("parse failed");
+
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        checks::classify_unsupported(&bundle.blocks, &bcbs, &bibs, &[]).expect("classify failed");
+        checks::decrypt_and_validate_covered_bibs(
+            &data,
+            source,
+            &mut bundle.blocks,
+            &bcbs,
+            &mut bibs,
+            &mut decrypted,
+            &no_updates,
+        )
+        .expect("covered-BIB decrypt failed");
+        checks::verify_all_bibs(
+            &data,
+            source,
+            &bundle.blocks,
+            &bibs,
+            &decrypted,
+            &no_updates,
+        )
+        .expect("BIB verify failed");
+
+        (data, bundle, bcbs)
+    }
+
     #[test]
     fn verifier_forwards_bcb_intact() {
         let source = a2_source(SecurityRole::Verifier);
-        let result = RewrittenBundle::parse_with_keys(&A2_BUNDLE, &source).expect("parse failed");
+        let (data, bundle, bcbs) = a2_checked(&source);
 
-        let RewrittenBundle::Valid { bundle, .. } = result else {
-            panic!("verifier must not rewrite the bundle");
-        };
         assert_eq!(count_bcbs(&bundle), 1);
 
         // The decrypt key is withheld at delivery: NoKey, payload stays encrypted
         assert!(matches!(
-            bundle.block_data(1, &A2_BUNDLE, &source),
+            block_data(1, &bundle.blocks, &data, &bcbs, &source),
             Err(hardy_bpv7::Error::InvalidBPSec(
                 hardy_bpv7::bpsec::Error::NoKey
             ))
@@ -679,15 +724,11 @@ mod tests {
     #[test]
     fn acceptor_decrypts_payload_at_delivery() {
         let source = a2_source(SecurityRole::Acceptor);
-        let result = RewrittenBundle::parse_with_keys(&A2_BUNDLE, &source).expect("parse failed");
+        let (data, bundle, bcbs) = a2_checked(&source);
 
-        let RewrittenBundle::Valid { bundle, .. } = result else {
-            panic!("payload BCB decryption is deferred to delivery, not parse");
-        };
         assert_eq!(count_bcbs(&bundle), 1);
 
-        let payload = bundle
-            .block_data(1, &A2_BUNDLE, &source)
+        let payload = block_data(1, &bundle.blocks, &data, &bcbs, &source)
             .expect("acceptor must decrypt the payload");
         assert_eq!(payload.as_ref(), b"Ready to generate a 32-byte payload");
     }
@@ -711,10 +752,17 @@ mod tests {
         )
     }
 
+    // `key_source` ignores the bundle for this provider; any parsed bundle do.
+    fn any_bundle() -> hardy_bpv7::Bundle {
+        parse(hardy_bpa::Bytes::copy_from_slice(&A2_BUNDLE))
+            .expect("parse failed")
+            .bundle
+    }
+
     #[test]
     fn empty_provider_returns_none() {
         let provider = PatternKeyProvider::default();
-        let keys = provider.key_source(&Default::default(), &[]);
+        let keys = provider.key_source(&any_bundle(), &[]);
         assert!(keys.key(&Eid::default(), &[Operation::Verify]).is_none());
     }
 
@@ -723,7 +771,7 @@ mod tests {
         let provider = PatternKeyProvider::new(make_source("key-1"));
         provider.set(make_source("key-2"));
 
-        let keys = provider.key_source(&Default::default(), &[]);
+        let keys = provider.key_source(&any_bundle(), &[]);
         let key = keys
             .key(&parse_eid("ipn:0.1.0"), &[Operation::Verify])
             .unwrap();
@@ -735,7 +783,7 @@ mod tests {
         let provider = PatternKeyProvider::new(make_source("key-1"));
 
         // The KeySource handed out for a bundle is a point-in-time snapshot
-        let snapshot = provider.key_source(&Default::default(), &[]);
+        let snapshot = provider.key_source(&any_bundle(), &[]);
 
         provider.set(make_source("key-2"));
 
@@ -746,7 +794,7 @@ mod tests {
         assert_eq!(key.id.as_deref(), Some("key-1"));
 
         // A fresh snapshot returns key-2
-        let new_snapshot = provider.key_source(&Default::default(), &[]);
+        let new_snapshot = provider.key_source(&any_bundle(), &[]);
         let key = new_snapshot.key(&eid, &[Operation::Verify]).unwrap();
         assert_eq!(key.id.as_deref(), Some("key-2"));
     }
@@ -761,6 +809,8 @@ mod load_tests {
         eid::Eid,
     };
 
+    use std::fs;
+
     use super::{PatternKeySource, SecurityRole};
     use crate::config::WatchConfig;
     use crate::config::bpsec::{BPSecConfig, KeyBindingConfig};
@@ -771,11 +821,11 @@ mod load_tests {
 
     fn write_keys(dir: &tempfile::TempDir, json: &str) -> PathBuf {
         let path = dir.path().join("keys.jwks");
-        std::fs::write(&path, json).unwrap();
+        fs::write(&path, json).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         }
         path
     }

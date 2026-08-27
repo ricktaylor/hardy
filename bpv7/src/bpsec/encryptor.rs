@@ -83,7 +83,7 @@ impl<'a> Encryptor<'a> {
         source: eid::Eid,
         key: &'a key::Key,
     ) -> Result<Self, (Self, Error)> {
-        if self.original.flags.is_fragment {
+        if self.original.primary.flags.is_fragment {
             return Err((self, Error::FragmentedBundle));
         }
 
@@ -119,6 +119,7 @@ impl<'a> Encryptor<'a> {
                     }
                 };
 
+                // `source_data` is the full in-memory bundle being edited.
                 let bib_payload = match bib.payload(self.source_data) {
                     Some(p) => p,
                     None => {
@@ -342,5 +343,10 @@ fn build_bcb_data(
         return Ok((bcb::Operation::AES_GCM(op), data));
     }
 
-    unreachable!("Unsupported BCB context");
+    // Reachable when no security context feature is enabled (e.g.
+    // `--no-default-features` with no `rfc9173`), or when a caller
+    // somehow constructs `Context::__Reserved`. Type-safe by signature
+    // now rather than by an unreachable!() panic.
+    let _ = (context, args, key);
+    Err(bpsec::Error::UnsupportedOperation)
 }

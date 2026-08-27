@@ -1,5 +1,8 @@
 use super::*;
-
+use hardy_bpv7::{
+    bpsec::key::KeySet,
+    editor::{Chunk, Editor},
+};
 #[derive(Parser, Debug)]
 #[command(
     about = "Remove an extension block from a bundle",
@@ -28,14 +31,17 @@ pub struct Command {
 
 impl Command {
     pub fn exec(self) -> anyhow::Result<()> {
-        let key_store: hardy_bpv7::bpsec::key::KeySet = self.key_args.try_into()?;
-        let mut data = self.input.read_all()?;
+        let key_store: KeySet = self.key_args.try_into()?;
+        let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed {
+            data, bundle: raw, ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let editor = hardy_bpv7::editor::Editor::new(&bundle, &data)
+        let editor = Editor::new(&raw, &data)
             .remove_block(self.block_number)
             .map_err(|(_, e)| {
                 anyhow::anyhow!("Failed to remove block {}: {e}", self.block_number)
@@ -45,8 +51,7 @@ impl Command {
             .rebuild()
             .map_err(|e| anyhow::anyhow!("Failed to rebuild bundle: {e}"))?;
 
-        hardy_bpv7::editor::Chunk::flatten_inplace(chunks, &mut data);
-
-        self.output.write_all(&data)
+        let out = Chunk::flatten_bytes(chunks, data);
+        self.output.write_all(&out)
     }
 }

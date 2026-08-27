@@ -12,6 +12,9 @@ pub enum Error {
     #[error("Block {0} may be protected by an encrypted BIB that couldn't be decrypted")]
     MaybeHasBib(u64),
 
+    #[error("Cannot remove BCB {0} without also removing all of its targets")]
+    StrandsCiphertext(u64),
+
     #[error("Mismatch Target and Results arrays")]
     MismatchedTargetResult,
 

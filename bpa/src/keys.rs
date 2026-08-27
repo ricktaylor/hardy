@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-
+use hardy_bpv7::bpsec::key::{KeySet, KeySource};
 /// Selects the key material to use for a given bundle.
 ///
 /// The flow/context-level selector: it may inspect the bundle — its source, or
@@ -14,23 +14,21 @@ use alloc::boxed::Box;
 pub trait KeyProvider: Send + Sync {
     /// Returns the [`KeySource`] to use for this bundle.
     ///
+    /// The bundle argument is the structural [`hardy_bpv7::Bundle`]
+    /// (primary block + blocks map). The decoded extension fields
+    /// (`previous_node`, `age`, `hop_count`) are *not* available here —
+    /// keyed BPSec hasn't run yet — so an implementation that needs them
+    /// must decode the relevant extension blocks itself.
+    ///
     /// [`KeySource`]: hardy_bpv7::bpsec::key::KeySource
-    fn key_source(
-        &self,
-        bundle: &hardy_bpv7::bundle::Bundle,
-        data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource>;
+    fn key_source(&self, bundle: &hardy_bpv7::Bundle, data: &[u8]) -> Box<dyn KeySource>;
 }
 
 /// The default [`KeyProvider`]: no keys, every BPSec lookup is NoKey.
 pub(crate) struct NullKeyProvider;
 
 impl KeyProvider for NullKeyProvider {
-    fn key_source(
-        &self,
-        _bundle: &hardy_bpv7::bundle::Bundle,
-        _data: &[u8],
-    ) -> Box<dyn hardy_bpv7::bpsec::key::KeySource> {
-        Box::new(hardy_bpv7::bpsec::key::KeySet::EMPTY)
+    fn key_source(&self, _bundle: &hardy_bpv7::Bundle, _data: &[u8]) -> Box<dyn KeySource> {
+        Box::new(KeySet::EMPTY)
     }
 }

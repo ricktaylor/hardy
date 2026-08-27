@@ -225,6 +225,9 @@ pub(crate) struct ClaRegistry {
 }
 
 impl ClaRegistry {
+    // Err(bundle) deliberately hands ownership back to the caller; boxing
+    // the bundle to shrink the Err variant would tax every call site.
+    #[allow(clippy::result_large_err)]
     pub async fn forward(
         &self,
         peer_id: u32,

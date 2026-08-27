@@ -1,5 +1,5 @@
 use super::*;
-
+use hardy_bpv7::eid::Eid;
 mod rfc9173 {
     use super::*;
 
@@ -73,7 +73,7 @@ pub struct Command {
 
     /// The security source Endpoint ID (EID) to use for signing, uses the bundle source if omitted
     #[arg(short, long)]
-    source: Option<hardy_bpv7::eid::Eid>,
+    source: Option<Eid>,
 
     #[clap(flatten)]
     key_input: keys::KeyInput,
@@ -91,17 +91,20 @@ impl Command {
         let (key_store, key) = self.key_input.try_into_keyset_and_key()?;
         let data = self.input.read_all()?;
 
-        let bundle = hardy_bpv7::bundle::ParsedBundle::parse_with_keys(&data, &key_store)
-            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?
-            .bundle;
+        // Structural parse + keyed BPSec validation in one pass
+        // (see `cmd::parse_with_keys` for the stage list).
+        let parse::Parsed {
+            data, bundle: raw, ..
+        } = parse_with_keys(data, &key_store)
+            .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        let signer = hardy_bpv7::bpsec::signer::Signer::new(&bundle, &data)
+        let signer = hardy_bpv7::bpsec::signer::Signer::new(&raw, &data)
             .sign_block(
                 self.block,
                 hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(rfc9173::ArgFlags::to_scope_flags(
                     &self.flags,
                 )),
-                self.source.unwrap_or_else(|| bundle.id.source.clone()),
+                self.source.unwrap_or_else(|| raw.primary.id.source.clone()),
                 &key,
             )
             .map_err(|(_, e)| anyhow::anyhow!("Failed to sign block: {e}"))?;

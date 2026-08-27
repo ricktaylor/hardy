@@ -84,12 +84,16 @@ impl Store {
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
 
         let total_adu_len = fragment_info.total_adu_length;
-        let payload = &bundle
+        let r = bundle
             .bundle
             .blocks
             .get(&1)
             .trace_expect("Bundle without payload?!")
             .payload_range();
+        let (Ok(start), Ok(end)) = (usize::try_from(r.start), usize::try_from(r.end)) else {
+            return None;
+        };
+        let payload: Range<usize> = start..end;
 
         let mut adu_totals = payload.len() as u64;
         let mut results = FragmentSet {
@@ -136,12 +140,18 @@ impl Store {
                                 timestamp == bundle.bundle.id.timestamp &&
                                 let Some(fragment_info) = &bundle.bundle.id.fragment_info
                             {
-                                let payload = &bundle
+                                let r = bundle
                                     .bundle
                                     .blocks
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
                                     .payload_range();
+                                let (Ok(start), Ok(end)) =
+                                    (usize::try_from(r.start), usize::try_from(r.end))
+                                else {
+                                    continue;
+                                };
+                                let payload: Range<usize> = start..end;
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
@@ -252,7 +262,17 @@ impl Store {
                 debug!("Fragment 0 extends beyond total ADU length: {}", first.0);
                 return None;
             }
-            new_data[..len].copy_from_slice(&old_data[first.2.clone()]);
+            // Defence-in-depth: the range is stored metadata, the loaded
+            // bytes are ground truth. A disagreement is a failed
+            // reassembly, never a panic.
+            let Some(payload) = old_data.get(first.2.clone()) else {
+                debug!(
+                    "Fragment 0 payload range exceeds its stored data: {}",
+                    first.0
+                );
+                return None;
+            };
+            new_data[..len].copy_from_slice(payload);
         }
 
         for (bundle_id, storage_name, payload) in results.adus.values() {
@@ -282,12 +302,30 @@ impl Store {
                 return None;
             };
 
-            let adu = self.load_data(storage_name).await?.slice(payload.clone());
-            new_data[offset..offset + len].copy_from_slice(adu.as_ref());
+            let data = self.load_data(storage_name).await?;
+            // Same defence-in-depth as fragment 0 above.
+            let Some(adu) = data.get(payload.clone()) else {
+                debug!("Fragment payload range exceeds its stored data: {bundle_id}");
+                return None;
+            };
+            new_data[offset..offset + len].copy_from_slice(adu);
         }
 
-        // Rewrite primary block
-        let mut editor = Editor::new(&bundle.bundle, &old_data);
+        // Rewrite primary block — Editor needs a `&Bundle`; re-parse structurally.
+        // Consume `old_data` into the parse and use the authoritative
+        // buffer it returns (the streaming path concatenates pushes).
+        let (old_data, raw) = match hardy_bpv7::parse::parse(old_data) {
+            Ok(hardy_bpv7::parse::Parsed {
+                data: buf,
+                bundle: b,
+                ..
+            }) => (buf, b),
+            Err(e) => {
+                debug!("Failed to re-parse stored bundle: {e}");
+                return None;
+            }
+        };
+        let mut editor = Editor::new(&raw, &old_data);
         editor = match editor.with_fragment_info(None) {
             Ok(e) => e,
             Err((_, e)) => {
@@ -311,15 +349,9 @@ impl Store {
             },
         };
 
-        // Write the rewritten bundle now for safety
-        let new_data = match old_data.try_into_mut() {
-            Ok(buf) => {
-                let mut vec = buf.into();
-                Chunk::flatten_inplace(chunks, &mut vec);
-                Bytes::from(vec)
-            }
-            Err(original) => Bytes::from(Chunk::flatten(chunks, &original)),
-        };
+        // Write the rewritten bundle now for safety. Zero-copy when
+        // `old_data` uniquely owns; otherwise allocates a fresh buffer.
+        let new_data = Chunk::flatten_bytes(chunks, old_data);
         let new_storage_name = self.save_data(new_data.clone()).await;
         Some((new_storage_name, new_data))
     }
@@ -357,9 +389,30 @@ mod tests {
         store.save_data(Bytes::from(data.to_vec())).await
     }
 
+    /// Structural parse + reshape to the rich `crate::bundle::Bpv7Bundle`
+    /// the BPA wrapper expects. Used by tests that build bundles via
+    /// `Editor::flatten` and need to feed them back through the BPA's
+    /// `Bundle { bundle, metadata }` container; the keyed parse_preserve
+    /// pipeline would just do this same reshape after redundant BPSec
+    /// validation.
+    fn rich_from_bytes(data: &[u8]) -> crate::bundle::Bpv7Bundle {
+        let hardy_bpv7::parse::Parsed { bundle: raw, .. } =
+            hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
+        crate::bundle::Bpv7Bundle {
+            id: raw.primary.id,
+            flags: raw.primary.flags,
+            crc_type: raw.primary.crc_type,
+            destination: raw.primary.destination,
+            report_to: raw.primary.report_to,
+            lifetime: raw.primary.lifetime,
+            blocks: raw.blocks,
+            ..Default::default()
+        }
+    }
+
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
         let bundle = Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bundle: crate::bundle::Bpv7Bundle {
                 id: id.clone(),
                 destination: "ipn:0.2.1".parse().unwrap(),
                 lifetime: core::time::Duration::from_secs(3600),
@@ -441,6 +494,58 @@ mod tests {
         assert!(
             result.is_none(),
             "Should reject fragment extending beyond ADU length"
+        );
+    }
+
+    /// A stored fragment-0 payload range that exceeds the stored data is a
+    /// failed reassembly, never a panic: the range is metadata, the loaded
+    /// bytes are ground truth.
+    #[tokio::test]
+    async fn reassemble_rejects_first_fragment_range_beyond_stored_data() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        // 5 bytes stored, but the recorded payload range claims 9.
+        let name0 = store_bytes(&store, b"Hello").await;
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 9);
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..9))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should fail reassembly when the stored range exceeds the data"
+        );
+    }
+
+    /// The same guard for a non-first fragment: its recorded payload range
+    /// exceeds its own stored bytes.
+    #[tokio::test]
+    async fn reassemble_rejects_fragment_range_beyond_stored_data() {
+        let store = make_store();
+        let ts = CreationTimestamp::now();
+
+        let name0 = store_bytes(&store, b"Hello").await;
+        // 2 bytes stored, but the recorded payload range claims 5.
+        let name1 = store_bytes(&store, b"Wo").await;
+
+        let id0 = make_id("ipn:0.1.1", &ts, 0, 10);
+        let id1 = make_id("ipn:0.1.1", &ts, 5, 10);
+        store_fragment_metadata(&store, &id0, &name0).await;
+
+        let fragments = FragmentSet {
+            received_at: OffsetDateTime::now_utc(),
+            adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
+        };
+
+        let result = store.reassemble(&fragments).await;
+        assert!(
+            result.is_none(),
+            "Should fail reassembly when a fragment's stored range exceeds its data"
         );
     }
 
@@ -537,14 +642,21 @@ mod tests {
         let payload = b"HelloWorld"; // 10 bytes, split into 5+5
 
         // Build a complete bundle
-        let (complete_bundle, complete_data) =
+        let (_complete_bundle, complete_data) =
             hardy_bpv7::builder::Builder::new(source.clone(), dest.clone())
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload[..]))
                 .build(ts.clone())
                 .unwrap();
 
+        // Editor needs a `&Bundle`; re-parse structurally.
+        let hardy_bpv7::parse::Parsed {
+            data: complete_data,
+            bundle: raw_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
+
         // Create fragment 0: offset=0, total=10, payload="Hello"
-        let frag0_data = Editor::new(&complete_bundle, &complete_data)
+        let frag0_data = Editor::new(&raw_bundle, &complete_data)
             .with_fragment_info(Some(FragmentInfo {
                 offset: 0,
                 total_adu_length: 10,
@@ -561,7 +673,7 @@ mod tests {
             .unwrap();
 
         // Create fragment 1: offset=5, total=10, payload="World"
-        let frag1_data = Editor::new(&complete_bundle, &complete_data)
+        let frag1_data = Editor::new(&raw_bundle, &complete_data)
             .with_fragment_info(Some(FragmentInfo {
                 offset: 5,
                 total_adu_length: 10,
@@ -577,15 +689,13 @@ mod tests {
             .map(|c| Chunk::flatten(c, &complete_data))
             .unwrap();
 
-        // Parse fragments back to get Bundle structs with correct block ranges
-        let bundle0 =
-            hardy_bpv7::bundle::ParsedBundle::parse(&frag0_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
-        let bundle1 =
-            hardy_bpv7::bundle::ParsedBundle::parse(&frag1_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+        // We control these bytes (they came from `Editor::flatten` of the
+        // complete bundle), so a structural parse is enough — no need to
+        // run keyed BPSec validation. The BPA `Bundle { bundle, metadata }`
+        // container below still holds the rich `crate::bundle::Bpv7Bundle`,
+        // so reshape inline.
+        let bundle0 = rich_from_bytes(&frag0_data);
+        let bundle1 = rich_from_bytes(&frag1_data);
 
         // Store fragment data
         let name0 = store_bytes(&store, &frag0_data).await;
@@ -603,8 +713,10 @@ mod tests {
         store.insert_metadata(&meta_bundle).await;
 
         // Get payload ranges from the parsed bundles
-        let payload0_range = bundle0.blocks.get(&1).unwrap().payload_range();
-        let payload1_range = bundle1.blocks.get(&1).unwrap().payload_range();
+        let r0 = bundle0.blocks.get(&1).unwrap().payload_range();
+        let r1 = bundle1.blocks.get(&1).unwrap().payload_range();
+        let payload0_range: Range<usize> = r0.start as usize..r0.end as usize;
+        let payload1_range: Range<usize> = r1.start as usize..r1.end as usize;
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
@@ -620,22 +732,23 @@ mod tests {
 
         let (_, reassembled_data) = result.unwrap();
 
-        // Parse the reassembled bundle and verify
-        let reassembled_bundle =
-            hardy_bpv7::bundle::ParsedBundle::parse(&reassembled_data, hardy_bpv7::bpsec::no_keys)
-                .unwrap()
-                .bundle;
+        // Parse the reassembled bundle structurally and verify.
+        let hardy_bpv7::parse::Parsed {
+            data: reassembled_data,
+            bundle: reassembled_bundle,
+            ..
+        } = hardy_bpv7::parse::parse(reassembled_data).unwrap();
 
         // Should no longer be a fragment
         assert!(
-            reassembled_bundle.id.fragment_info.is_none(),
+            reassembled_bundle.primary.id.fragment_info.is_none(),
             "Reassembled bundle should not have fragment_info"
         );
 
         // Extract and verify the payload
         let payload_block = reassembled_bundle.blocks.get(&1).unwrap();
-        let payload_range = payload_block.payload_range();
-        let reassembled_payload = &reassembled_data[payload_range];
+        let r = payload_block.payload_range();
+        let reassembled_payload = &reassembled_data[r.start as usize..r.end as usize];
         assert_eq!(
             reassembled_payload, payload,
             "Reassembled payload should be 'HelloWorld'"

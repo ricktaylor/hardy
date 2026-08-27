@@ -87,12 +87,14 @@ impl Dispatcher {
             return None;
         }
 
-        // Parse the bundle with full processing (block removal, canonicalization, BPSec)
-        let (bundle, reason, report_unsupported) = match hardy_bpv7::bundle::RewrittenBundle::parse(
-            &data,
+        // Parse the bundle with full processing (block removal, canonicalization, BPSec).
+        // See `parse_full_with_provider` doc for the four arms below.
+        let (bundle, reason, report_unsupported) = match crate::bp7_parse::parse_full_with_provider(
+            data.clone(),
             self.key_provider(),
         ) {
-            Err(e) => {
+            // Hard parse failure — no partial bundle to emit a status report against.
+            Err((None, e)) => {
                 debug!("Bundle parse failed: {e}");
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
                 if let Some(storage_name) = &metadata.storage_name {
@@ -100,10 +102,8 @@ impl Dispatcher {
                 }
                 return None;
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Valid {
-                bundle,
-                report_unsupported,
-            }) => {
+            // Clean parse, no rewrite.
+            Ok((bundle, None, _, report_unsupported)) => {
                 if metadata.storage_name.is_none() {
                     metadata.storage_name = Some(self.store.save_data(data.clone()).await);
                 }
@@ -113,24 +113,12 @@ impl Dispatcher {
                     report_unsupported,
                 )
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Rewritten {
-                bundle,
-                new_data,
-                report_unsupported,
-                non_canonical: _,
-            }) => {
+            // Bundle was rewritten — flatten the chunks back into a single buffer
+            // and persist the rewritten form.
+            Ok((bundle, Some(new_data), _non_canonical, report_unsupported)) => {
                 debug!("Received bundle has been rewritten");
 
-                data = match data.try_into_mut() {
-                    Ok(buf) => {
-                        let mut vec = buf.into();
-                        hardy_bpv7::editor::Chunk::flatten_inplace(new_data, &mut vec);
-                        Bytes::from(vec)
-                    }
-                    Err(original) => {
-                        Bytes::from(hardy_bpv7::editor::Chunk::flatten(new_data, &original))
-                    }
-                };
+                data = hardy_bpv7::editor::Chunk::flatten_bytes(new_data, data);
 
                 if let Some(storage_name) = &metadata.storage_name {
                     self.store.replace_data(storage_name, data.clone()).await;
@@ -144,12 +132,10 @@ impl Dispatcher {
                     report_unsupported,
                 )
             }
-            Ok(hardy_bpv7::bundle::RewrittenBundle::Invalid {
-                bundle,
-                reason,
-                error,
-            }) => {
+            // Partial parse — bundle ID is recoverable, so we can emit a status report.
+            Err((Some(bundle), error)) => {
                 debug!("Invalid bundle received: {error}");
+                let reason = crate::bp7_parse::status_report_reason_for(&error);
 
                 // Delete any pre-saved data (reassembly case)
                 if let Some(storage_name) = metadata.storage_name.take() {
