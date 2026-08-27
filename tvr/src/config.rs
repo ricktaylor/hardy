@@ -178,6 +178,30 @@ mod tests {
         Config::load(Some(path)).unwrap()
     }
 
+    // Sets env vars for its lifetime and removes them on drop, so a
+    // panicking assertion cannot leak them into the other #[serial] tests.
+    // Removal (rather than restoring a prior value) is deliberate: an
+    // ambient HARDY_TVR_* would corrupt the unguarded config tests anyway,
+    // so clearing it is the safer disposition.
+    struct EnvGuard(Vec<&'static str>);
+
+    impl EnvGuard {
+        fn set<V: AsRef<std::ffi::OsStr>>(vars: &[(&'static str, V)]) -> Self {
+            for (name, value) in vars {
+                unsafe { std::env::set_var(name, value) };
+            }
+            Self(vars.iter().map(|(name, _)| *name).collect())
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for name in &self.0 {
+                unsafe { std::env::remove_var(name) };
+            }
+        }
+    }
+
     // Empty config file produces sensible defaults.
     #[test]
     #[serial]
@@ -266,11 +290,11 @@ priority = 50
         let path = dir.path().join("test.yaml");
         std::fs::write(&path, "log-level: info\nagent-name: file-tvr\n").unwrap();
 
-        unsafe { std::env::set_var("HARDY_TVR_LOG_LEVEL", "debug") };
-        unsafe { std::env::set_var("HARDY_TVR_AGENT_NAME", "env-tvr") };
+        let _env = EnvGuard::set(&[
+            ("HARDY_TVR_LOG_LEVEL", "debug"),
+            ("HARDY_TVR_AGENT_NAME", "env-tvr"),
+        ]);
         let config = Config::load(Some(path)).unwrap();
-        unsafe { std::env::remove_var("HARDY_TVR_LOG_LEVEL") };
-        unsafe { std::env::remove_var("HARDY_TVR_AGENT_NAME") };
 
         assert_eq!(
             config.log_level,
