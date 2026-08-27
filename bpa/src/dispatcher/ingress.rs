@@ -24,7 +24,17 @@ async fn drain_payload(
     mut tail: PayloadTail,
     max_size: usize,
 ) -> core::result::Result<Bytes, DrainFailure> {
-    let mut whole = crate::BytesMut::from(consumed.as_ref());
+    // Reuse the consumed prefix's allocation when we hold the only reference —
+    // the common multi-segment case, where the parser already dropped its
+    // clone — instead of deep-copying it; fall back to a copy only if a CLA
+    // still holds the `Bytes`. We deliberately do *not* `reserve`
+    // `tail.remaining()`: that count is wire-declared, so pre-allocating it
+    // would let a peer force a `max_size` allocation from a tiny transfer
+    // (the same amplification the parser's `reserve` clamp guards against).
+    // Growth tracks the bytes that actually arrive, bounded by `max_size`.
+    let mut whole = consumed
+        .try_into_mut()
+        .unwrap_or_else(|b| crate::BytesMut::from(b.as_ref()));
     loop {
         let (bytes, last) = match stream.recv().await {
             Ok(Segment::Next(b)) => (b, false),

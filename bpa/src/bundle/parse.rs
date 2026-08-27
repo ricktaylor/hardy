@@ -279,7 +279,7 @@ impl HeaderVerify {
 // The recoverable bundle rides the cold error path by value — the same
 // trade recorded by the `result_large_err` allow on `parse_headers`.
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum HeaderFailure {
+pub enum HeaderFailure {
     /// The producer went away before the bundle completed.
     Cancelled,
     /// The accumulated stream crossed the caller's size bound.
@@ -333,12 +333,26 @@ where
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
                 Ok(parsed) => break (parsed, whole, None),
-                Err(_) => return Err(HeaderFailure::Invalid(None)),
+                Err(e) => {
+                    debug!("Bundle BPSec structural validation failed: {e}");
+                    return Err(HeaderFailure::Invalid(None));
+                }
             },
+            // A `Partial` after the stream has already ended is a truncated
+            // bundle: the declared payload cannot complete (`tail.remaining()`
+            // is positive), so reject it exactly like `NeedMore` at end-of-
+            // stream instead of handing an exhausted stream to the payload drain.
+            Ok(parse::ParserProgress::Partial { .. }) if last => {
+                debug!("Truncated bundle (oversized payload, stream ended)");
+                return Err(HeaderFailure::Invalid(None));
+            }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
                 match parser.finish(consumed.clone()) {
                     Ok(parsed) => break (parsed, consumed, Some(tail)),
-                    Err(_) => return Err(HeaderFailure::Invalid(None)),
+                    Err(e) => {
+                        debug!("Bundle BPSec structural validation failed: {e}");
+                        return Err(HeaderFailure::Invalid(None));
+                    }
                 }
             }
             Err(e) => {
@@ -486,16 +500,24 @@ pub fn finalize_with_provider<F>(
 where
     F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
-    let key_source = key_provider(&hv.raw, whole);
+    // Only the deferred-payload verify and the §E rewrite below consume keys.
+    // The common no-BPSec, no-removal bundle must not pay a second
+    // KeyProvider call and KeySource allocation (the header pass already
+    // built one), so construct it lazily, once, iff a branch needs it.
+    let key_source = (!hv.deferred_bibs.is_empty() || !hv.to_remove.is_empty())
+        .then(|| key_provider(&hv.raw, whole));
 
     // Deferred payload pass: verify exactly the block-1 BIB targets (header
     // targets were already checked in the header pass — no repeated crypto).
     if !hv.deferred_bibs.is_empty() {
+        let key_source = key_source
+            .as_deref()
+            .expect("built when a BPSec branch runs");
         let no_decrypted = HashMap::new();
         let no_updates = HashMap::new();
         if let Err(e) = checks::verify_payload(
             whole,
-            &*key_source,
+            key_source,
             &hv.raw.blocks,
             &hv.deferred_bibs,
             &no_decrypted,
@@ -515,7 +537,10 @@ where
     let chunks = if hv.to_remove.is_empty() {
         None
     } else {
-        match rewrite::apply_rewrites(whole, &hv.raw, &*key_source, HashMap::new(), hv.to_remove) {
+        let key_source = key_source
+            .as_deref()
+            .expect("built when a BPSec branch runs");
+        match rewrite::apply_rewrites(whole, &hv.raw, key_source, HashMap::new(), hv.to_remove) {
             Ok(rewritten) => rewritten.map(|(new_raw, chunks)| {
                 hv.raw = new_raw;
                 chunks
