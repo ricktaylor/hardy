@@ -1,5 +1,5 @@
 use hardy_async::async_trait;
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_bpv7::{bpsec::key::KeySource, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
 
 use crate::bundle::{Bundle, WritableMetadata};
@@ -90,6 +90,127 @@ pub trait WriteFilter: Send + Sync {
 pub enum Filter {
     Read(Arc<dyn ReadFilter>),
     Write(Arc<dyn WriteFilter>),
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 filter kinds — the committed extension-API traits and their verdict.
+//
+// These are the successors to `ReadFilter`/`WriteFilter`: three payload-free,
+// byte-pure kinds behind one verdict. Added here unconsumed — the engine still
+// runs the old traits until the C3 swap wires these into the dispatcher.
+// ---------------------------------------------------------------------------
+
+/// The outcome of a filter invocation, shared across all three kinds.
+///
+/// `Continue` carries the kind's contribution `T`: a [`slots::MetadataDelta`]
+/// for a [`Classifier`], and `()` for a [`Verifier`] (which contributes
+/// nothing) and a [`Rewriter`] (whose edits are applied through the editor
+/// handle). One enum spans every kind so the drop path — and its status-report
+/// reason — is identical everywhere.
+#[derive(Debug)]
+pub enum Verdict<T = ()> {
+    /// Accept the bundle, carrying the kind's contribution.
+    Continue(T),
+    /// Drop the bundle, optionally with a status-report reason code.
+    Drop(Option<ReasonCode>),
+}
+
+/// A read-only admission check. Runs in parallel with the other Verifiers at
+/// its hook (registrable at any hook) and contributes nothing — it only
+/// accepts or drops.
+///
+/// The invocation sees the bundle, the resident source bytes, and the key
+/// source. Block bodies are read through bpv7's `Block::payload` /
+/// `Block::extract` accessors over `data`, which return `None` when the bytes
+/// are not resident (the headers-only or streaming case) — the kind is
+/// payload-independent by contract.
+pub trait Verifier: Send + Sync {
+    /// Inspect the bundle and return [`Verdict::Continue`] to accept or
+    /// [`Verdict::Drop`] to reject it.
+    fn check(&self, bundle: &Bundle, data: &[u8], keys: &dyn KeySource) -> Verdict;
+}
+
+/// An annotating input filter for the Ingress and Originate hooks. Runs
+/// sequentially — seeing the deltas applied by preceding links of the same
+/// pass — and contributes a [`slots::MetadataDelta`] the engine applies before
+/// the next invocation.
+///
+/// Node-scoped: it writes metadata this node's own downstream consumes. The
+/// returned delta is applied idempotently, never by touching `bundle.metadata`
+/// directly.
+pub trait Classifier: Send + Sync {
+    /// Inspect the bundle and return the metadata changes to apply
+    /// ([`Verdict::Continue`]) or drop the bundle ([`Verdict::Drop`]).
+    fn classify(
+        &self,
+        bundle: &Bundle,
+        data: &[u8],
+        keys: &dyn KeySource,
+    ) -> Verdict<slots::MetadataDelta>;
+}
+
+/// An extension-block rewriter. Runs sequentially, per attempt, in memory —
+/// the edits are derived fresh each time and never written back to storage —
+/// at one of two boundaries, distinguished by the [`RewriteContext`]:
+///
+/// - **Egress**: prepares the wire form for the resolved next hop
+///   (network-scoped — it writes extension blocks the next hops consume).
+/// - **Deliver**: strips transport-scoped extension blocks (network QoS,
+///   custody — the "transport headers") before a bundle is handed to a local
+///   raw-bundle [`Service`](crate::services::Service), so the application
+///   receives only content. Only the raw-`Service` path sees blocks at all;
+///   the payload-only `Application` path never does.
+///
+/// It edits *extension* blocks, never the payload, so it runs before the
+/// payload's BPSec decrypt at Deliver; it holds the [`KeySource`] to decrypt
+/// any extension block it needs to inspect.
+pub trait Rewriter: Send + Sync {
+    /// Edit extension blocks through `editor` — insert/replace/remove only,
+    /// never the primary, payload, or BIB/BCB blocks, and never a block under
+    /// existing BPSec coverage. `context` carries the boundary (and, at
+    /// Egress, the resolved next hop). Return [`Verdict::Drop`] to abort the
+    /// attempt.
+    fn rewrite(
+        &self,
+        bundle: &Bundle,
+        data: &[u8],
+        keys: &dyn KeySource,
+        context: RewriteContext<'_>,
+        editor: &mut ScopedEditor<'_>,
+    ) -> Verdict;
+}
+
+/// The boundary a [`Rewriter`] is invoked at, with any hook-specific context.
+///
+/// Next-hop context is Egress-only — a delivering bundle terminates here and
+/// has no next hop — so it rides the variant rather than the method signature,
+/// letting one trait serve both boundaries.
+pub enum RewriteContext<'a> {
+    /// Preparing the wire form for the resolved `next_hop`, per transmission
+    /// attempt.
+    Egress {
+        /// The next hop the dispatch decision resolved for this attempt.
+        next_hop: &'a Eid,
+    },
+    /// Stripping transport-scoped extension blocks before local delivery to a
+    /// raw-bundle [`Service`](crate::services::Service).
+    Deliver,
+}
+
+/// The scoped extension-block editor handed to a [`Rewriter`].
+///
+/// It exposes insert/replace/remove of *extension* blocks only, making
+/// payload/primary/BIB/BCB immutability a compile-time property rather than a
+/// review promise, and refusing edits to blocks under existing BPSec coverage.
+/// The concrete operation set — and the plumbing that constructs one over the
+/// bundle being transmitted — lands with the filter registration surface (the
+/// remainder of C2); this is the handle type the [`Rewriter`] trait is defined
+/// against.
+pub struct ScopedEditor<'a> {
+    // Placeholder: the operation surface and its backing editor land with the
+    // registration step. Carries the borrow the real handle will hold.
+    #[allow(dead_code)]
+    bundle: core::marker::PhantomData<&'a mut Bundle>,
 }
 
 /// Hook points in bundle processing
