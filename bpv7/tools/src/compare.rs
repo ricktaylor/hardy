@@ -15,7 +15,6 @@ use hardy_bpv7::{
     Bundle, Error,
     block::{Block, Type},
     bpsec::{bcb, bib},
-    bundle::blocks_by_type,
     bundle_age::BundleAge,
     crc::CrcType,
     eid::Eid,
@@ -58,7 +57,7 @@ struct BundleSide<'a> {
 
 impl<'a> BundleSide<'a> {
     fn new(bundle: &'a Bundle, data: &'a [u8]) -> Self {
-        let by_type = blocks_by_type(bundle);
+        let by_type = bundle.blocks_by_type();
         let mut index = BTreeMap::new();
         index.insert(0, (Type::Primary, 0));
         for (bt, bns) in by_type.values() {

@@ -11,7 +11,7 @@ use super::*;
 use crate::error::CaptureFieldErr;
 use hardy_cbor::decode::Error as CborError;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The BPv7 primary block (RFC 9171 §4.2): the bundle's identifying header.
 pub struct PrimaryBlock {
@@ -95,10 +95,7 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             let mut canonical = block.is_definite();
 
             // Version: always 7; enforce canonical encoding of the integer.
-            let (version, v_s): (u64, bool) = block.parse().map_field_err::<Error>("version")?;
-            if !v_s {
-                return Err(Error::NotCanonical);
-            }
+            let version: u64 = parse::parse_canonical_item(block, "version")?;
             if version != 7 {
                 return Err(Error::InvalidVersion(version));
             }

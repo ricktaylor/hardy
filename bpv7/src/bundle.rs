@@ -17,7 +17,7 @@ use hardy_cbor::decode::{self, FromCbor};
 /// blocks keyed by block number. This is the crate's structural bundle
 /// representation, produced by [`parse`](crate::parse::parse) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
     /// The bundle's primary block, decoded into typed fields.
@@ -95,8 +95,8 @@ impl Bundle {
 
         // Block identity is by type + position, not block number, so group
         // each side by type code and pair the groups up.
-        let by_type_a = blocks_by_type(self);
-        let by_type_b = blocks_by_type(other);
+        let by_type_a = self.blocks_by_type();
+        let by_type_b = other.blocks_by_type();
         if !by_type_a.keys().eq(by_type_b.keys()) {
             return false;
         }
@@ -141,26 +141,26 @@ impl Bundle {
         }
         true
     }
-}
 
-/// Group block numbers by type code, each list sorted ascending. The
-/// primary block (number 0) is handled separately and excluded.
-pub fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
-    let mut map: BTreeMap<u64, (block::Type, Vec<u64>)> = BTreeMap::new();
-    for (&bn, blk) in &bundle.blocks {
-        if bn == 0 {
-            continue;
+    /// Group block numbers by type code, each list sorted ascending. The
+    /// primary block (number 0) is handled separately and excluded.
+    pub fn blocks_by_type(&self) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
+        let mut map: BTreeMap<u64, (block::Type, Vec<u64>)> = BTreeMap::new();
+        for (&bn, blk) in &self.blocks {
+            if bn == 0 {
+                continue;
+            }
+            let type_code: u64 = blk.block_type.into();
+            map.entry(type_code)
+                .or_insert_with(|| (blk.block_type, Vec::new()))
+                .1
+                .push(bn);
         }
-        let type_code: u64 = blk.block_type.into();
-        map.entry(type_code)
-            .or_insert_with(|| (blk.block_type, Vec::new()))
-            .1
-            .push(bn);
+        for v in map.values_mut() {
+            v.1.sort();
+        }
+        map
     }
-    for v in map.values_mut() {
-        v.1.sort();
-    }
-    map
 }
 
 /// Map each block number to its (type, position-within-type) so that
@@ -405,32 +405,6 @@ pub struct Id {
 }
 
 impl Id {
-    /// Extracts a bundle's [`Id`] from its wire-format CBOR, parsing only the
-    /// outer array head and the primary block.
-    ///
-    /// Extension blocks are not parsed, so the strict per-block validation of a
-    /// full [`parse`](crate::parse::parse) is skipped — enough to identify a
-    /// bundle for routing or storage without rejecting it over an extension
-    /// block. Both definite- and indefinite-length outer arrays are accepted.
-    pub fn parse(data: &[u8]) -> Result<Self, crate::Error> {
-        let (head, _, offset) = decode::parse::<(decode::Head, bool, usize)>(data)?;
-        match head.marker {
-            // A bundle is at least a primary block and a payload block; a
-            // definite-length array claiming fewer can't be one. Indefinite
-            // arrays carry no count, so leave them to the primary-block parse.
-            decode::Marker::Array(Some(count)) if count < 2 => {
-                return Err(crate::Error::MissingPayload);
-            }
-            decode::Marker::Array(_) => {}
-            _ => {
-                return Err(
-                    decode::Error::IncorrectType("array".to_string(), head.to_string()).into(),
-                );
-            }
-        }
-        decode::parse::<PrimaryBlock>(&data[offset..]).map(|primary| primary.id)
-    }
-
     /// Deserializes a bundle ID from a compact, base64-encoded string representation.
     ///
     /// This is useful for using the bundle ID as a key in databases or other systems.

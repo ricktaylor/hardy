@@ -853,9 +853,13 @@ impl BundleParser {
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
             if (data.len() as u64) < body_end {
-                // Body doesn't fit in the buffer yet.
+                // Body doesn't fit in the buffer yet. Keep the shortfall in
+                // u64: the streaming-fallback path below must stay reachable on
+                // 32-bit for a payload whose missing byte count exceeds usize
+                // (`Block::extent` is u64 precisely so streamed bundles need
+                // not fit in usize), so the `usize` conversion is deferred into
+                // the two `NeedMoreData` returns that actually need it.
                 let shortfall = body_end - data.len() as u64;
-                let shortfall_usize = usize::try_from(shortfall).map_err(|_| CborError::TooBig)?;
 
                 if is_payload {
                     // For payloads, "small wait" vs "streaming fallback":
@@ -867,7 +871,11 @@ impl BundleParser {
                     // threshold test onto the small-wait path.
                     let needed = shortfall + trailer_len as u64;
                     if needed <= self.chunk_size.saturating_sub(offset) as u64 {
-                        return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
+                        // The threshold bounds `shortfall` below `chunk_size`
+                        // (a usize), so this conversion is infallible; the
+                        // hint is only a lower bound `push` re-clamps anyway.
+                        let hint = usize::try_from(shortfall).unwrap_or(usize::MAX);
+                        return Err(Error::InvalidCBOR(CborError::NeedMoreData(hint)));
                     }
                     // Body too big to inline — streaming fallback for the
                     // payload. `offset` stays at the post-header position so
@@ -875,8 +883,10 @@ impl BundleParser {
                     // still known (computed above) — only the CRC over the
                     // body is deferred.
                 } else {
-                    // Extension blocks must fit fully in the buffer; bubble
-                    // up the exact shortfall and wait for more bytes.
+                    // Extension blocks must fit fully in the buffer; a shortfall
+                    // beyond usize is unrepresentable (and unaddressable) here.
+                    let shortfall_usize =
+                        usize::try_from(shortfall).map_err(|_| CborError::TooBig)?;
                     return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
                 }
             } else {
