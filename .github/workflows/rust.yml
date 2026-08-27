@@ -6,6 +6,8 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      # README code blocks are compiled as doctests (hardy-btpu).
+      - "**/README.md"
       - ".github/workflows/rust.yml"
       - "proto/**"
       - "tests/**"
@@ -147,10 +149,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Rust toolchain (32-bit bare-metal target)
+      - name: Setup Rust toolchain (32-bit bare-metal targets)
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: thumbv7em-none-eabihf
+          target: thumbv7em-none-eabihf, thumbv6m-none-eabi
 
       - name: Use cached dependencies and artifacts
         uses: Swatinem/rust-cache@v2
@@ -171,10 +173,11 @@ jobs:
       # critical-section impl — only final binaries need one.
       # TODO: extend to hardy-bpa once its --no-default-features build is
       # confirmed clean on this target.
-      - name: Build cbor (no_std, 32-bit)
+      - name: Build cbor + btpu (no_std, 32-bit)
         run: >
           cargo build --locked --no-default-features
           -p hardy-cbor
+          -p hardy-btpu
           --target thumbv7em-none-eabihf
 
       - name: Build bpv7 + eid-patterns (no_std, 32-bit)
@@ -184,6 +187,16 @@ jobs:
           -p hardy-bpv7
           -p hardy-eid-patterns
           --target thumbv7em-none-eabihf
+
+      # thumbv6m-none-eabi (Cortex-M0) has no atomic compare-and-swap at all,
+      # so alloc::sync::Arc does not exist there and `bytes` needs
+      # portable-atomic, which btpu's `critical-section` feature enables.
+      - name: Build btpu (no_std, no atomic CAS)
+        run: >
+          cargo build --locked --no-default-features
+          --features hardy-btpu/critical-section
+          -p hardy-btpu
+          --target thumbv6m-none-eabi
 
   msrv:
     runs-on: ubuntu-latest
