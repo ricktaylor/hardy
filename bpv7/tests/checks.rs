@@ -126,15 +126,11 @@ fn parse_full_for_test(
         }
         to_remove.insert(target);
     }
-    for (_, block_type) in &facts.nokey_ext {
-        match block_type {
-            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-            block::Type::BundleAge if !raw.primary.id.timestamp.is_clocked() => {
-                return Err(bpsec::Error::NoKey.into());
-            }
-            _ => {}
-        }
-    }
+    // The NoKey liveness policy (fatal for encrypted HopCount / unclocked
+    // BundleAge) is exercised where it lives — the bpa ingress path — not
+    // mirrored here; the test style guide forbids re-implementing the
+    // algorithm under test, and no fixture in this file produces a
+    // non-empty `facts.nokey_ext`.
 
     // §D (extension-field extraction / canonical re-emit) is a BPA concern
     // and now lives in `hardy-bpa`; the cascade-test bundles carry no

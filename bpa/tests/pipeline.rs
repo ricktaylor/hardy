@@ -3,7 +3,10 @@
 //! These tests verify end-to-end bundle processing through the BPA,
 //! covering the component test plan (PLAN-BPA-01) Suites A and B.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::{
+    num::{NonZeroU32, NonZeroUsize},
+    time::Duration,
+};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -1279,6 +1282,139 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     );
 
     bpa.shutdown().await;
+}
+
+/// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
+/// truncated — the parser takes the streaming fallback (`Partial`) though the
+/// stream has already ended — must be an internal drop, not handed to the
+/// payload drain (which would await an exhausted stream: a hang, or a spurious
+/// `StreamCancelled` driving unbounded peer retransmit of a permanently-invalid
+/// bundle).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false);
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, _fwd) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    // A 20 KB-payload bundle truncated to 8 KB: the payload byte-string header
+    // still claims 20 KB (shortfall exceeds the 4096 parser chunk, forcing
+    // `Partial`), but the body is short and the stream ends in this one `Final`.
+    let full = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
+    let truncated = Bytes::copy_from_slice(&full[..8_000]);
+    let mut stream = SegmentReceiver::new(&truncated, truncated.len()); // one Final
+
+    // The timeout only bounds a regression: before the fix this parked forever
+    // on the exhausted stream (or returned StreamCancelled).
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, &mut stream),
+    )
+    .await
+    .expect("a truncated Final must not hang the ingress task");
+    assert!(
+        result.is_ok(),
+        "a truncated complete transfer is an internal drop, not StreamCancelled: {result:?}"
+    );
+
+    bpa.shutdown().await;
+    assert!(
+        app_rx.is_empty(),
+        "the truncated bundle must not be delivered"
+    );
+}
+
+/// R-04: the ingress size cap refuses an over-cap bundle at both new
+/// enforcement points — header accumulation (`HeaderFailure::TooLarge`) and the
+/// payload drain (`DrainFailure::TooLarge`) — surfacing `PayloadTooLarge` so the
+/// CLA withholds the transfer ack.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_size_cap_refuses_oversized_bundle() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let inbound = build_bundle(&remote_source, &local_dest, &vec![0xA5_u8; 20_000]);
+
+    // Header phase: a cap below the first accumulated segment trips
+    // `parse_headers` before the header chain even completes.
+    {
+        let bpa = Bpa::builder()
+            .node_ids(node_ids.clone())
+            .max_bundle_size(NonZeroUsize::new(256).unwrap())
+            .build()
+            .await
+            .unwrap();
+        bpa.start(false);
+        let (cla, _fwd) = PipelineCla::new();
+        bpa.register_cla("test".to_string(), cla.clone(), None)
+            .await
+            .unwrap();
+        let mut stream = SegmentReceiver::new(&inbound, 1000);
+        let err = cla
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .expect_err("an over-cap bundle must be refused");
+        assert!(
+            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 256),
+            "header-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        );
+        bpa.shutdown().await;
+    }
+
+    // Drain phase: a cap that admits the header (so parse yields `Partial`) but
+    // not the payload tail trips `drain_payload`.
+    {
+        let bpa = Bpa::builder()
+            .node_ids(node_ids.clone())
+            .max_bundle_size(NonZeroUsize::new(10_000).unwrap())
+            .build()
+            .await
+            .unwrap();
+        bpa.start(false);
+        let (cla, _fwd) = PipelineCla::new();
+        bpa.register_cla("test".to_string(), cla.clone(), None)
+            .await
+            .unwrap();
+        let mut stream = SegmentReceiver::new(&inbound, 1000);
+        let err = cla
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .expect_err("an over-cap payload tail must be refused");
+        assert!(
+            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 10_000),
+            "drain-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        );
+        bpa.shutdown().await;
+    }
 }
 
 // ---------------------------------------------------------------------------

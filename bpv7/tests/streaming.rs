@@ -139,7 +139,12 @@ fn partial_tail_detects_truncation() {
     let complete = tail.push(&tail_bytes[..tail_bytes.len() - 4]).unwrap();
     assert!(!complete, "incomplete tail must not report complete");
     assert!(
-        matches!(tail.finish(), Err(Error::InvalidCBOR(_))),
+        matches!(
+            tail.finish(),
+            Err(Error::InvalidCBOR(hardy_cbor::decode::Error::NeedMoreData(
+                _
+            )))
+        ),
         "truncated tail should finish with NeedMoreData"
     );
 }
@@ -292,7 +297,12 @@ fn one_shot_rejects_truncated_large_payload() {
     let full = large_payload_bundle();
     let result = parse::parse(Bytes::copy_from_slice(&full[..500]));
     assert!(
-        matches!(result, Err(Error::InvalidCBOR(_))),
+        matches!(
+            result,
+            Err(Error::InvalidCBOR(hardy_cbor::decode::Error::NeedMoreData(
+                _
+            )))
+        ),
         "expected NeedMoreData truncation"
     );
 }
