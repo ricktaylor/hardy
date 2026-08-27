@@ -29,17 +29,17 @@ tools / third-party callers go through this trait for anything that
 needs a [`key::KeySource`].
 */
 
+use alloc::{boxed::Box, vec::Vec};
+
+use hardy_cbor::{decode::parse_exact, encode::emit};
+use smallvec::SmallVec;
+
 use crate::{
     HashMap, HashSet, block,
     bpsec::{Error, bcb, bib, key},
     crc,
     editor::{Editor, EditorBlockSet, Error as EditorError},
 };
-
-use alloc::{boxed::Box, vec::Vec};
-
-use hardy_cbor::{decode::parse_exact, encode::emit};
-use smallvec::SmallVec;
 
 /// BPSec-aware operations on an [`Editor`]. See module docs for the
 /// capability list. Implemented on [`Editor<'_>`] in this module.

@@ -700,12 +700,9 @@ mod tests {
         }
 
         let (tx, mut rx) = hardy_async::channel::bounded(1);
-        hardy_async::channel::Sender::send(
-            &tx,
-            crate::cla::Segment::Final(crate::Bytes::from(data)),
-        )
-        .await
-        .expect("channel open");
+        tx.send(Segment::Final(Bytes::from(data)))
+            .await
+            .expect("channel open");
 
         let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, |_, _| keys()).await else {
             panic!("headers must verify: only the corrupt BIB target fails");

@@ -10,9 +10,9 @@ BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 */
 
 use super::*;
-use hardy_cbor::decode::{Error as CborError, Head, Marker};
 
 use bytes::{Bytes, BytesMut};
+use hardy_cbor::decode::{Error as CborError, Head, Marker};
 use smallvec::SmallVec;
 
 use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};

@@ -1,6 +1,3 @@
-#[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
-
 use alloc::boxed::Box;
 
 use hardy_cbor::{
@@ -9,6 +6,8 @@ use hardy_cbor::{
 };
 use smallvec::SmallVec;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
     bpsec::{BlockSet, Context, Error, key, parse},

@@ -1,12 +1,11 @@
-#[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
-
 use hardy_cbor::{
     decode::{FromCbor, parse},
     encode::{Array, Encoder, ToCbor},
 };
 use smallvec::SmallVec;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
     bpsec::{BlockSet, Context, Error, key, parse},
