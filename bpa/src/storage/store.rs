@@ -49,11 +49,13 @@ impl Store {
 
     /// Start storage subsystem tasks.
     ///
-    /// Optionally runs crash recovery, then starts the reaper background task
+    /// Optionally runs crash recovery — awaited to completion, so the store
+    /// is quiescent while recovery's checkpoint resets run (see
+    /// [`recover`](Self::recover)) — then starts the reaper background task
     /// for bundle lifetime monitoring.
-    pub fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
+    pub async fn start(self: &Arc<Self>, dispatcher: Arc<Dispatcher>, recover_storage: bool) {
         if recover_storage {
-            self.recover(&dispatcher);
+            self.recover(&dispatcher).await;
         }
 
         let reaper = self.reaper.clone();
@@ -286,6 +288,24 @@ impl Store {
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardAckPending { peer }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
+                .increment(reset as f64);
+        }
+
+        reset != 0
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    pub async fn reset_service_queue(&self, service: &Eid) -> bool {
+        let reset = self
+            .metadata_storage
+            .reset_service_queue(service)
+            .await
+            .trace_expect("Failed to reset service delivery queue");
+
+        if reset > 0 {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::DeliverPending { service: service.clone() }))
+                .decrement(reset as f64);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::WaitingForService { service: service.clone() }))
                 .increment(reset as f64);
         }
 

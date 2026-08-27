@@ -9,26 +9,28 @@ use super::{RecoveryResponse, store::Store};
 use crate::{Arc, bundle::Bundle, dispatcher::Dispatcher};
 
 impl Store {
-    pub fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
-        // Start the store - this can take a while as the store is walked
-        let store = self.clone();
-        let dispatcher = dispatcher.clone();
-        hardy_async::spawn!(self.tasks, "store_check_task", async move {
-            // Start the store - this can take a while as the store is walked
-            info!("Starting store consistency check...");
+    /// Run the store consistency check to completion.
+    ///
+    /// Recovery assumes a quiescent store: its checkpoint resets (e.g.
+    /// `ForwardPending` → `Waiting`, because peer IDs are stale after a
+    /// restart) cannot distinguish a pre-restart checkpoint from a bundle a
+    /// live registration has just queued. The caller must therefore await
+    /// this before accepting CLA or service registrations — this can take a
+    /// while, as the whole store is walked.
+    pub async fn recover(self: &Arc<Self>, dispatcher: &Arc<Dispatcher>) {
+        info!("Starting store consistency check...");
 
-            store.start_metadata_storage_recovery().await;
+        self.start_metadata_storage_recovery().await;
 
-            store.bundle_storage_recovery(dispatcher.clone()).await;
+        self.bundle_storage_recovery(dispatcher.clone()).await;
 
-            if !store.tasks.is_cancelled() {
-                store.metadata_storage_recovery(dispatcher).await;
-            }
+        if !self.tasks.is_cancelled() {
+            self.metadata_storage_recovery(dispatcher.clone()).await;
+        }
 
-            if !store.tasks.is_cancelled() {
-                info!("Store consistency check completed");
-            }
-        });
+        if !self.tasks.is_cancelled() {
+            info!("Store consistency check completed");
+        }
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]

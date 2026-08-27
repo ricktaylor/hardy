@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - `forward_ack_pending` bundle status (migration 0002), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
+- `dispatch_pending`, `deliver_pending`, and `delivery_ack_pending` bundle statuses (migration 0004) with the `deliver_pending` per-service partial index (migration 0005), and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
 
 ### Changed
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Records written by earlier versions no longer deserialize: recovery treats each as corrupt and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates against the permanent `bundles` identity anchor. The schema-checksum validation cannot catch this — the blob inside the schema is unversioned. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.

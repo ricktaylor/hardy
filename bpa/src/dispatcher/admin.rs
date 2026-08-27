@@ -144,8 +144,11 @@ impl Dispatcher {
                         service: report.bundle_id.source.clone(),
                     };
 
-                    self.store.update_status(&mut bundle, &desired).await;
-                    self.store.watch_bundle(bundle).await;
+                    // Conditional: the reaper can resolve the bundle at any
+                    // await, and the park must not resurrect a tombstone.
+                    if self.store.swap_status(&mut bundle, &desired).await {
+                        self.store.watch_bundle(bundle).await;
+                    }
                 }
             }
         }

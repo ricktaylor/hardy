@@ -400,7 +400,7 @@ impl BpaServer {
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
-        self.bpa.start(self.recover_storage);
+        self.bpa.start(self.recover_storage).await;
 
         #[cfg(feature = "grpc")]
         if let Some(grpc_config) = &self.grpc_config {

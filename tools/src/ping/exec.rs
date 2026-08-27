@@ -67,7 +67,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     .await
     .map_err(|e| anyhow::anyhow!("Failed to register default routes: {e}"))?;
 
-    bpa.start(false);
+    bpa.start(false).await;
 
     if is_external_cla(&args.cla) {
         exec_external_cla(args, &bpa).await

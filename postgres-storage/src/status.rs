@@ -13,6 +13,9 @@ pub enum BundleStatusKind {
     AduFragment,
     WaitingForService,
     ForwardAckPending,
+    DispatchPending,
+    DeliverPending,
+    DeliveryAckPending,
 }
 
 /// Error returned when a `BundleStatus` value cannot be represented in the postgres schema.
@@ -85,6 +88,13 @@ impl StatusFields {
             BundleStatusKind::ForwardAckPending => Some(BundleStatus::ForwardAckPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
             }),
+            BundleStatusKind::DispatchPending => Some(BundleStatus::DispatchPending),
+            BundleStatusKind::DeliverPending => Some(BundleStatus::DeliverPending {
+                service: self.service_eid?.parse().ok()?,
+            }),
+            BundleStatusKind::DeliveryAckPending => Some(BundleStatus::DeliveryAckPending {
+                service: self.service_eid?.parse().ok()?,
+            }),
         }
     }
 }
@@ -98,6 +108,7 @@ impl TryFrom<&BundleStatus> for StatusFields {
             BundleStatus::New => Self::with_kind(BundleStatusKind::New),
             BundleStatus::Waiting => Self::with_kind(BundleStatusKind::Waiting),
             BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
+            BundleStatus::DispatchPending => Self::with_kind(BundleStatusKind::DispatchPending),
             BundleStatus::ForwardPending { peer, queue } => Self {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
@@ -130,6 +141,14 @@ impl TryFrom<&BundleStatus> for StatusFields {
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
                 ..Self::with_kind(BundleStatusKind::ForwardAckPending)
+            },
+            BundleStatus::DeliverPending { service } => Self {
+                service_eid: Some(service.to_string()),
+                ..Self::with_kind(BundleStatusKind::DeliverPending)
+            },
+            BundleStatus::DeliveryAckPending { service } => Self {
+                service_eid: Some(service.to_string()),
+                ..Self::with_kind(BundleStatusKind::DeliveryAckPending)
             },
         })
     }

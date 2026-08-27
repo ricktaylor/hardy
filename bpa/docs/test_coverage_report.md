@@ -273,7 +273,7 @@ in-memory `Store` via `Store::new()` with `MetadataMemStorage` + `BundleMemStora
 
 ```rust
 let bpa = Bpa::builder().status_reports(true).build();
-bpa.start(false);
+bpa.start(false).await;
 // register via BpaRegistration trait
 bpa.shutdown().await;
 ```

@@ -170,6 +170,23 @@ impl Reaper {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
+                    // Hand-off commits at its claim: a bundle mid-`on_deliver`
+                    // cannot be recalled from the service, and a transfer a
+                    // CLA has accepted cannot be recalled from the wire, so
+                    // expiring either here would report a deletion that did
+                    // not happen. Each hand-off resolves its own outcome — a
+                    // completion tombstones truthfully, and every
+                    // non-terminal exit either parks the bundle (park_bundle
+                    // re-arms this watch) or re-enters dispatch, whose expiry
+                    // checkpoint drops it as LifetimeExpired.
+                    if matches!(
+                        bundle.status,
+                        BundleStatus::DeliveryAckPending { .. }
+                            | BundleStatus::ForwardAckPending { .. }
+                    ) {
+                        debug!("Deferring expiry of in-flight hand-off");
+                        continue;
+                    }
                     dispatcher
                         .drop_bundle(
                             bundle,
@@ -219,7 +236,17 @@ impl Reaper {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.status != BundleStatus::New {
+                            // Skip the statuses the expiry pass defers (plus
+                            // New, which ingress has not finished storing):
+                            // re-adding a deferred bundle to a depleted cache
+                            // would spin refill for as long as the hand-off
+                            // is held open. Their exits re-arm the watch.
+                            if !matches!(
+                                bundle.status,
+                                BundleStatus::New
+                                    | BundleStatus::DeliveryAckPending { .. }
+                                    | BundleStatus::ForwardAckPending { .. }
+                            ) {
                                 self.watch(&bundle, false);
                             }
                         },
