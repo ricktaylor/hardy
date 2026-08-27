@@ -1,9 +1,16 @@
 use hardy_async::async_trait;
-use hardy_bpv7::{bpsec::key::KeySource, eid::Eid, status_report::ReasonCode};
+use hardy_bpv7::{
+    block,
+    bpsec::{self, bcb, key::KeySource},
+    eid::Eid,
+    primary_block::PrimaryBlock,
+    status_report::ReasonCode,
+};
+use hardy_cbor::decode::{FromCbor, parse_exact};
 use thiserror::Error;
 
-use crate::bundle::{Bundle, WritableMetadata};
-use crate::{Arc, Bytes};
+use crate::bundle::{Bundle, BundleMetadata, WritableMetadata};
+use crate::{Arc, Bytes, HashMap};
 
 mod chain;
 mod engine;
@@ -115,19 +122,117 @@ pub enum Verdict<T = ()> {
     Drop(Option<ReasonCode>),
 }
 
+/// The read handle every filter kind is invoked with: the bundle, the resident
+/// source bytes, the BCB OperationSets, and the key source, bundled into one
+/// borrow.
+///
+/// The OperationSets are stack-local at the call site (decoded once by
+/// `parse()`); the reader lends them to block access, so a filter reads or
+/// decrypts blocks without a second parse. Block bodies come back through the
+/// bpv7 accessors, which return `None` when the bytes are not resident (the
+/// headers-only or streaming case).
+pub struct BundleReader<'a> {
+    bundle: &'a Bundle,
+    data: &'a [u8],
+    bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+    keys: &'a dyn KeySource,
+}
+
+impl<'a> BundleReader<'a> {
+    /// Builds a reader over a bundle, its resident bytes, the decoded BCB
+    /// OperationSets, and the key source. Constructed by the engine at each
+    /// hook from the pieces `parse()` produced.
+    #[allow(dead_code)] // wired by the engine when the C3 swap lands
+    pub(crate) fn new(
+        bundle: &'a Bundle,
+        data: &'a [u8],
+        bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+        keys: &'a dyn KeySource,
+    ) -> Self {
+        Self {
+            bundle,
+            data,
+            bcb_ops,
+            keys,
+        }
+    }
+
+    /// The BPA-local metadata (provenance, wire cache, classification), read
+    /// through the record's own field privacy.
+    pub fn metadata(&self) -> &'a BundleMetadata {
+        &self.bundle.metadata
+    }
+
+    /// The bundle's primary block, decoded into typed fields.
+    pub fn primary(&self) -> &'a PrimaryBlock {
+        &self.bundle.bundle.primary
+    }
+
+    /// The block header (type, flags, CRC, BPSec coverage, extents) for a block
+    /// number, or `None` when the bundle has no such block. Block *bodies* come
+    /// from [`block_data`](Self::block_data).
+    pub fn block(&self, block_number: u64) -> Option<&'a block::Block> {
+        self.bundle.bundle.blocks.get(&block_number)
+    }
+
+    /// A block's plaintext bytes: the raw body when unencrypted, or the
+    /// BCB-decrypted body (via the OperationSets + key source) when covered.
+    /// Same contract as [`hardy_bpv7::bpsec::block_data`].
+    ///
+    /// `Ok(None)` is the "not available to me" path — the block is absent or
+    /// not resident, or it is BCB-covered and no usable key is held (a
+    /// Classifier's no-match case). Other BPSec failures propagate. Coverage is
+    /// visible up front via [`block`](Self::block)'s `bcb` field, so a filter
+    /// never needs the raw ciphertext.
+    pub fn block_data(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<block::Payload<'a>>, hardy_bpv7::Error> {
+        let bundle = self.bundle;
+        match bpsec::block_data(
+            block_number,
+            &bundle.bundle.blocks,
+            self.data,
+            self.bcb_ops,
+            self.keys,
+        ) {
+            Ok(payload) => Ok(Some(payload)),
+            Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+            | Err(hardy_bpv7::Error::MissingBlock(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// CBOR-decodes a block's plaintext body into `T`, requiring the whole body
+    /// to be consumed. Decrypts a covered block first (via [`block_data`]), so
+    /// it works uniformly on plaintext and BCB-covered blocks. `Ok(None)` when
+    /// the block is absent, not resident, or covered with no usable key.
+    ///
+    /// [`block_data`]: Self::block_data
+    pub fn extract<T>(&self, block_number: u64) -> Result<Option<T>, hardy_bpv7::Error>
+    where
+        T: FromCbor,
+        T::Error: From<hardy_cbor::decode::Error>,
+        hardy_bpv7::Error: From<T::Error>,
+    {
+        match self.block_data(block_number)? {
+            Some(payload) => Ok(Some(parse_exact::<T>(payload.as_ref())?)),
+            None => Ok(None),
+        }
+    }
+}
+
 /// A read-only admission check. Runs in parallel with the other Verifiers at
 /// its hook (registrable at any hook) and contributes nothing — it only
 /// accepts or drops.
 ///
-/// The invocation sees the bundle, the resident source bytes, and the key
-/// source. Block bodies are read through bpv7's `Block::payload` /
-/// `Block::extract` accessors over `data`, which return `None` when the bytes
-/// are not resident (the headers-only or streaming case) — the kind is
-/// payload-independent by contract.
+/// The invocation reads the bundle through the [`BundleReader`] — the primary
+/// block, per-block headers, and block bodies (plaintext or BCB-decrypted). The
+/// kind is payload-independent by contract.
 pub trait Verifier: Send + Sync {
     /// Inspect the bundle and return [`Verdict::Continue`] to accept or
     /// [`Verdict::Drop`] to reject it.
-    fn check(&self, bundle: &Bundle, data: &[u8], keys: &dyn KeySource) -> Verdict;
+    fn check(&self, reader: &BundleReader<'_>) -> Verdict;
 }
 
 /// An annotating input filter for the Ingress and Originate hooks. Runs
@@ -141,12 +246,7 @@ pub trait Verifier: Send + Sync {
 pub trait Classifier: Send + Sync {
     /// Inspect the bundle and return the metadata changes to apply
     /// ([`Verdict::Continue`]) or drop the bundle ([`Verdict::Drop`]).
-    fn classify(
-        &self,
-        bundle: &Bundle,
-        data: &[u8],
-        keys: &dyn KeySource,
-    ) -> Verdict<slots::MetadataDelta>;
+    fn classify(&self, reader: &BundleReader<'_>) -> Verdict<slots::MetadataDelta>;
 }
 
 /// An extension-block rewriter. Runs sequentially, per attempt, in memory —
@@ -172,9 +272,7 @@ pub trait Rewriter: Send + Sync {
     /// attempt.
     fn rewrite(
         &self,
-        bundle: &Bundle,
-        data: &[u8],
-        keys: &dyn KeySource,
+        reader: &BundleReader<'_>,
         context: RewriteContext<'_>,
         editor: &mut ScopedEditor<'_>,
     ) -> Verdict;
