@@ -12,7 +12,14 @@ pub enum BundleStatus {
     /// Freshly received, not yet processed.
     #[default]
     New,
-    /// Currently being dispatched (routing lookup and forwarding decision).
+    /// Queued for dispatch processing. The dispatch queue consumer claims the
+    /// bundle to [`Dispatching`](Self::Dispatching) on dequeue; the storage
+    /// poller only recovers bundles still in this status, so an in-flight
+    /// bundle cannot be re-queued as a duplicate.
+    DispatchPending,
+    /// Routing decision in flight. Transient: the dispatch consumer claims a
+    /// bundle into this status, and the routing outcome immediately moves it
+    /// on (a queue, a park, reassembly, or a tombstone).
     Dispatching,
     /// Queued for forwarding to a specific CLA peer.
     ForwardPending {
@@ -22,11 +29,33 @@ pub enum BundleStatus {
         queue: Option<u32>,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained
-    /// until the CLA reports the outcome via `Sink::transfer_outcome`, the
-    /// peer is removed, or the bundle's lifetime expires.
+    /// until the CLA reports the outcome via `Sink::transfer_outcome` or the
+    /// peer is removed. The reaper defers expiry of this status — the
+    /// transfer cannot be recalled from the wire — so an expired bundle
+    /// resolves when the outcome arrives: a completed transfer reports
+    /// truthfully, and any other exit is dropped as `LifetimeExpired` at the
+    /// dispatch expiry checkpoint.
     ForwardAckPending {
         /// Identifier of the CLA peer the transfer was accepted for.
         peer: u32,
+    },
+    /// Queued for delivery to a specific local service (the local analogue
+    /// of [`ForwardPending`](Self::ForwardPending)). Held in the service's
+    /// delivery channel; swept to
+    /// [`WaitingForService`](Self::WaitingForService) when the service
+    /// unregisters or the BPA restarts.
+    DeliverPending {
+        /// Canonical registration EID of the service this bundle is queued for.
+        service: Eid,
+    },
+    /// Offered to a local service via `on_deliver` (the local analogue of
+    /// [`ForwardAckPending`](Self::ForwardAckPending)). No storage poller
+    /// recovers this status: every delivery exit resolves the claim, and a
+    /// restart re-parks it as
+    /// [`WaitingForService`](Self::WaitingForService).
+    DeliveryAckPending {
+        /// Canonical registration EID of the service the bundle was offered to.
+        service: Eid,
     },
     /// Fragment of an Application Data Unit awaiting reassembly.
     AduFragment {

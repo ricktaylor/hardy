@@ -4,9 +4,14 @@ use super::*;
 
 impl Dispatcher {
     /// Queue a bundle for dispatch processing.
-    /// The caller must ensure the bundle status is already `Dispatching`.
+    /// The caller must have claimed the bundle (`Dispatching`), or be
+    /// re-queueing one recovered still queued (`DispatchPending`); the send
+    /// moves it to `DispatchPending` until the consumer claims it back.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
-        debug_assert!(matches!(bundle.status, bundle::BundleStatus::Dispatching));
+        debug_assert!(matches!(
+            bundle.status,
+            bundle::BundleStatus::Dispatching | bundle::BundleStatus::DispatchPending
+        ));
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
@@ -18,7 +23,20 @@ impl Dispatcher {
         self: Arc<Self>,
         dispatch_rx: hardy_async::closeable::Receiver<bundle::Bundle>,
     ) {
-        while let Ok(bundle) = dispatch_rx.recv().await {
+        while let Ok(mut bundle) = dispatch_rx.recv().await {
+            // Claim the bundle out of DispatchPending before spending a pool
+            // slot on it: the channel is at-least-once (its storage poller
+            // can push a copy already snapshotted before this claim), so a
+            // copy that loses the swap is a duplicate and is dropped here.
+            if !self
+                .store
+                .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                .await
+            {
+                debug!("Bundle already claimed for processing, dropping duplicate copy");
+                continue;
+            }
+
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
                 dispatcher
@@ -44,9 +62,11 @@ impl Dispatcher {
     /// | `Drop` | Delete bundle with reason | `Dispatching` → Tombstone |
     /// | `AdminEndpoint` | Handle administrative record | `Dispatching` → Tombstone |
     /// | `Deliver` (fragment) | Queue for reassembly | `Dispatching` → `AduFragment` |
-    /// | `Deliver` (whole) | Deliver to service | `Dispatching` → Tombstone |
+    /// | `Deliver` (whole) | Queue to the service | `Dispatching` → `DeliverPending` |
+    /// | `Deliver` (service gone) | Wait for a service | `Dispatching` → `WaitingForService` |
     /// | `Forward` | Queue to CLA peer | `Dispatching` → `ForwardPending` |
     /// | `Forward` (peer gone) | Wait for route | `Dispatching` → `Waiting` |
+    /// | `None` (local destination) | Wait for a service | `Dispatching` → `WaitingForService` |
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
@@ -56,6 +76,18 @@ impl Dispatcher {
         mut bundle: bundle::Bundle,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
+        // Expiry checkpoint: the reaper defers the hand-off statuses
+        // (DeliveryAckPending/ForwardAckPending), so an expired bundle can
+        // re-enter dispatch through a transfer outcome, a sweep, or a poll —
+        // resolve it here rather than routing it onward.
+        if bundle.has_expired() {
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+        }
+
+        // Snapshot the routing table before the lookup: the parks below
+        // re-check it to close the park-vs-poll window (see park_bundle).
+        let seen = self.rib.table_snapshot();
+
         // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
         match self.rib.find(&mut bundle) {
             Some(routing::DispatchAction::Drop(reason)) => {
@@ -76,47 +108,52 @@ impl Dispatcher {
                     // Reassemble the bundle before delivery
                     self.reassemble(bundle).await
                 } else {
-                    // Bundle is for a local service
-                    self.deliver_bundle(service, bundle).await
+                    // Queue to the service's delivery channel
+                    if let Err(bundle) = service.deliver(bundle).await {
+                        // The service unregistered between the RIB lookup and
+                        // the send: park for the next registration.
+                        debug!("Service delivery queue closed, parking bundle");
+                        let service_eid = self
+                            .node_ids
+                            .resolve_eid(&service.service_id)
+                            .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+                        self.park_bundle(
+                            bundle,
+                            bundle::BundleStatus::WaitingForService {
+                                service: service_eid,
+                            },
+                            &seen,
+                        )
+                        .await
+                    }
                 }
             }
             Some(routing::DispatchAction::Forward(peer)) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(mut bundle) = cla_registry.forward(peer, bundle).await {
-                    // The peer vanished between the RIB lookup and the forward:
-                    // return the bundle to Waiting so the next route event
-                    // re-dispatches it, rather than leaving it stranded in
-                    // Dispatching/ForwardPending until lifetime expiry. The
-                    // move is conditional on this copy's snapshot: a stale
-                    // duplicate loses to wherever the live copy has moved on
-                    // to and is dropped.
+                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
+                    // The peer vanished between the RIB lookup and the
+                    // forward: return the bundle to Waiting so the next route
+                    // event re-dispatches it, rather than leaving it stranded
+                    // in Dispatching/ForwardPending until lifetime expiry.
                     debug!("CLA forward failed, returning bundle to Waiting");
-                    if self
-                        .store
-                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
                         .await
-                    {
-                        self.store.watch_bundle(bundle).await;
-                    } else {
-                        debug!("Bundle already moved on, dropping duplicate copy");
-                    }
                 }
             }
             None => {
-                // No route available - wait for one. Conditional on this
-                // copy's snapshot, as above: a stale duplicate must not stomp
-                // a live in-flight transfer back to Waiting.
+                // No opportunity available — wait for one. A local
+                // destination waits for its service to register; anything
+                // else waits for a route.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
+                let parked = match self
+                    .node_ids
+                    .local_service_eid(&bundle.bundle.primary.destination)
                 {
-                    self.store.watch_bundle(bundle).await
-                } else {
-                    debug!("Bundle already moved on, dropping duplicate copy");
-                }
+                    Some(service) => bundle::BundleStatus::WaitingForService { service },
+                    None => bundle::BundleStatus::Waiting,
+                };
+                self.park_bundle(bundle, parked, &seen).await
             }
         }
     }

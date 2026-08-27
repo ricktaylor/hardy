@@ -109,7 +109,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     bpa.start(cfg_select! {
         all(feature = "localdisk-storage", feature = "sqlite-storage") => true,
         _ => false,
-    });
+    })
+    .await;
 
     #[cfg(feature = "file-cla")]
     {

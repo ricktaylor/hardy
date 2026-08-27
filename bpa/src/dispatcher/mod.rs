@@ -39,35 +39,18 @@ pub(crate) struct Dispatcher {
 }
 
 impl Dispatcher {
+    /// Construct the dispatcher and return it with a deferred-start closure
+    /// for the dispatch-queue consumer.
+    ///
+    /// The consumer must not start until
+    /// [`set_cla_registry`](Self::set_cla_registry) has been called: the
+    /// dispatch channel's storage poller recovers persisted
+    /// `DispatchPending` bundles as soon as the consumer drains them, and
+    /// processing one dereferences the CLA registry — starting the consumer
+    /// before the registry is wired panics the processing task and strands
+    /// the claimed bundle in `Dispatching`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        status_reports: bool,
-        poll_channel_depth: core::num::NonZeroUsize,
-        processing_pool_size: core::num::NonZeroUsize,
-        max_bundle_size: Option<core::num::NonZeroUsize>,
-        node_ids: Arc<node_ids::NodeIds>,
-        store: Arc<storage::store::Store>,
-        rib: Arc<routing::Rib>,
-        key_provider: Arc<dyn keys::KeyProvider>,
-        filter_engine: Arc<filter::FilterEngine>,
-    ) -> Arc<Self> {
-        let (dispatcher, start) = Self::new_inner(
-            status_reports,
-            poll_channel_depth,
-            processing_pool_size,
-            max_bundle_size,
-            node_ids,
-            store,
-            rib,
-            key_provider,
-            filter_engine,
-        );
-        start(&dispatcher);
-        dispatcher
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_inner(
         status_reports: bool,
         poll_channel_depth: core::num::NonZeroUsize,
         processing_pool_size: core::num::NonZeroUsize,
@@ -84,9 +67,14 @@ impl Dispatcher {
 
         let poll_channel_depth_usize: usize = poll_channel_depth.into();
 
-        // Create the dispatch queue channel
-        let (dispatch_tx, dispatch_rx) =
-            store.channel(bundle::BundleStatus::Dispatching, poll_channel_depth_usize);
+        // Create the dispatch queue channel. DispatchPending marks "queued":
+        // the consumer claims each bundle to Dispatching on dequeue, so the
+        // channel's storage poller (which recovers by this status) can never
+        // re-queue a bundle that is already being processed.
+        let (dispatch_tx, dispatch_rx) = store.channel(
+            bundle::BundleStatus::DispatchPending,
+            poll_channel_depth_usize,
+        );
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
@@ -172,6 +160,55 @@ impl Dispatcher {
         self.delete_bundle(bundle).await
     }
 
+    /// Park a claimed bundle for a future opportunity, closing the
+    /// park-vs-poll window.
+    ///
+    /// The park is a conditional swap: the reaper or a sweep can resolve the
+    /// bundle at any await, and a park must never resurrect a tombstone. On
+    /// a win, if the route table changed while the bundle was in flight
+    /// (`seen` is captured when the flight begins), the event's poll took
+    /// its snapshot before this park was visible and cannot have seen the
+    /// bundle — so re-enter dispatch once instead of sleeping. Re-dispatch
+    /// only fires when the table actually changed, so a deterministic
+    /// failure cannot spin; and a racing poll that *did* see the park
+    /// arbitrates through the claim-back CAS, so exactly one side proceeds.
+    ///
+    /// A re-dispatch discards the in-hand copy and re-enters from the
+    /// persisted representation: parks persist status only, and a failure
+    /// exit may hand in a bundle carrying in-memory rewrites (hop count,
+    /// filter mutations) whose block extents no longer index the stored
+    /// bytes. Reloading here keeps that invariant in one place instead of
+    /// at every caller's exit.
+    pub async fn park_bundle(
+        &self,
+        mut bundle: bundle::Bundle,
+        parked: bundle::BundleStatus,
+        seen: &routing::RibSnapshot,
+    ) {
+        if !self.store.swap_status(&mut bundle, &parked).await {
+            debug!("Bundle already resolved, dropping duplicate copy");
+            return;
+        }
+
+        if self.rib.table_changed_since(seen)
+            && self
+                .store
+                .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                .await
+        {
+            let Some(bundle) = self.store.get_metadata(&bundle.bundle.primary.id).await else {
+                // Someone resolved the bundle after the swap (e.g. the
+                // reaper dropped it as expired); their resolution stands.
+                debug!("Re-dispatch lost the bundle to a concurrent resolution");
+                return;
+            };
+            debug!("Routing changed mid-flight, re-dispatching parked bundle");
+            return self.dispatch_bundle(bundle).await;
+        }
+
+        self.store.watch_bundle(bundle).await
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle)))]
     async fn delete_bundle(&self, bundle: bundle::Bundle) {
         // Delete the bundle from the bundle store
@@ -181,6 +218,34 @@ impl Dispatcher {
         self.store.tombstone_metadata(bundle.id()).await;
 
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
+    }
+
+    /// Create a per-service delivery queue: the hybrid storage channel whose
+    /// target status is `DeliverPending { service }`, plus its consumer
+    /// task. The channel's creation-time poll recovers any bundle already
+    /// persisted in that status for this EID. Mirrors the per-peer egress
+    /// queues (`cla::peers`), including their serialization: one delivery at
+    /// a time per service, in queue order.
+    pub fn start_delivery_queue(
+        self: &Arc<Self>,
+        service: Arc<services::registry::Service>,
+        service_eid: &Eid,
+    ) -> storage::channel::Sender {
+        let (tx, rx) = self.store.channel(
+            bundle::BundleStatus::DeliverPending {
+                service: service_eid.clone(),
+            },
+            self.poll_channel_depth,
+        );
+
+        let dispatcher = self.clone();
+        hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
+            while let Ok(bundle) = rx.recv().await {
+                dispatcher.deliver_bundle(service.clone(), bundle).await;
+            }
+        });
+
+        tx
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {

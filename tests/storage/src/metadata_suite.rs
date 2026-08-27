@@ -185,27 +185,52 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     // Bundle C: expiry = now + 100s (New — should be excluded)
     let bundle_c =
         fixtures::bundle_with_expiry(BundleStatus::New, now, core::time::Duration::from_secs(100));
+    // Bundles D and E: the in-flight hand-off states. `New` is the ONLY
+    // status poll_expiry may exclude — hand-off deferral is the reaper's
+    // decision, made against fresh status at expiry time, so a backend that
+    // pre-filters these hides them from the caller's policy.
+    let bundle_d = fixtures::bundle_with_expiry(
+        BundleStatus::ForwardAckPending { peer: 7 },
+        now,
+        core::time::Duration::from_secs(200),
+    );
+    let bundle_e = fixtures::bundle_with_expiry(
+        BundleStatus::DeliveryAckPending {
+            service: "ipn:60.3".parse().unwrap(),
+        },
+        now,
+        core::time::Duration::from_secs(400),
+    );
 
     assert!(store.insert(&bundle_a).await.unwrap());
     assert!(store.insert(&bundle_b).await.unwrap());
     assert!(store.insert(&bundle_c).await.unwrap());
+    assert!(store.insert(&bundle_d).await.unwrap());
+    assert!(store.insert(&bundle_e).await.unwrap());
 
-    // Full poll: should return B then A, excluding C (New status)
+    // Full poll: D, B, E, A in expiry order — C (New) excluded, both
+    // hand-off states included
     let sink = super::VecSink::<bundle::Bundle>::new();
     store.poll_expiry(&sink, 10).await.unwrap();
     let results = sink.into_inner();
 
-    assert_eq!(results.len(), 2, "New-status bundle should be excluded");
+    assert_eq!(results.len(), 4, "only the New-status bundle is excluded");
     assert_eq!(
         results[0].id(),
-        bundle_b.id(),
-        "first should be the bundle with earlier expiry"
+        bundle_d.id(),
+        "ForwardAckPending must be returned, in expiry order"
     );
     assert_eq!(
         results[1].id(),
-        bundle_a.id(),
-        "second should be the bundle with later expiry"
+        bundle_b.id(),
+        "Waiting bundles follow in expiry order"
     );
+    assert_eq!(
+        results[2].id(),
+        bundle_e.id(),
+        "DeliveryAckPending must be returned, in expiry order"
+    );
+    assert_eq!(results[3].id(), bundle_a.id(), "latest expiry comes last");
 
     // Limit test: limit=1 should return only the earliest-expiry bundle
     let sink = super::VecSink::<bundle::Bundle>::new();
@@ -213,7 +238,7 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
-    assert_eq!(results[0].id(), bundle_b.id());
+    assert_eq!(results[0].id(), bundle_d.id());
 }
 
 /// META-08: Poll Pending (FIFO & Limit)
@@ -440,6 +465,79 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
         got_b.status, status_200,
         "peer 200 bundle should remain ForwardPending"
     );
+}
+
+/// META-16: Reset Service Queue (the unregistration sweep)
+pub async fn meta_16_reset_service_queue(store: Arc<dyn MetadataStorage>) {
+    let now = time::OffsetDateTime::now_utc();
+
+    let service_a: hardy_bpv7::eid::Eid = "ipn:60.1".parse().unwrap();
+    let service_b: hardy_bpv7::eid::Eid = "ipn:60.2".parse().unwrap();
+
+    // One bundle queued for service_a, one in-flight with service_a, one
+    // queued for service_b
+    let queued_a = fixtures::bundle_with_status(
+        BundleStatus::DeliverPending {
+            service: service_a.clone(),
+        },
+        now,
+    );
+    let in_flight_a = fixtures::bundle_with_status(
+        BundleStatus::DeliveryAckPending {
+            service: service_a.clone(),
+        },
+        now,
+    );
+    let queued_b = fixtures::bundle_with_status(
+        BundleStatus::DeliverPending {
+            service: service_b.clone(),
+        },
+        now,
+    );
+
+    assert!(store.insert(&queued_a).await.unwrap());
+    assert!(store.insert(&in_flight_a).await.unwrap());
+    assert!(store.insert(&queued_b).await.unwrap());
+
+    let changed = store.reset_service_queue(&service_a).await.unwrap();
+    assert_eq!(changed, 1, "only service_a's queued bundle is swept");
+
+    // The swept bundle now polls as WaitingForService for service_a
+    let sink = super::VecSink::<bundle::Bundle>::new();
+    store
+        .poll_service_waiting(service_a.clone(), &sink)
+        .await
+        .unwrap();
+    let results = sink.into_inner();
+    assert_eq!(
+        results.len(),
+        1,
+        "swept bundle should await re-registration"
+    );
+    assert_eq!(results[0].id(), queued_a.id());
+    assert_eq!(
+        results[0].status,
+        BundleStatus::WaitingForService {
+            service: service_a.clone()
+        }
+    );
+
+    // The in-flight bundle and the other service's queue are untouched
+    assert_eq!(
+        store.get(in_flight_a.id()).await.unwrap().unwrap().status,
+        BundleStatus::DeliveryAckPending {
+            service: service_a.clone()
+        },
+        "an in-flight delivery must not be swept"
+    );
+    assert_eq!(
+        store.get(queued_b.id()).await.unwrap().unwrap().status,
+        BundleStatus::DeliverPending { service: service_b },
+        "another service's queue must not be swept"
+    );
+
+    // A second sweep finds nothing left to reset
+    assert_eq!(store.reset_service_queue(&service_a).await.unwrap(), 0);
 }
 
 /// META-12: Recovery

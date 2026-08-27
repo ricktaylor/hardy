@@ -15,6 +15,10 @@ impl Dispatcher {
             return;
         };
 
+        // Snapshot the routing table before the claim: the parks below
+        // re-check it to close the park-vs-poll window (see park_bundle).
+        let seen = self.rib.table_snapshot();
+
         // Claim the bundle out of its peer queue before the in-memory rewrite
         // below and before offering it. The claim must be a conditional swap:
         // the egress channel delivers at-least-once, so a duplicate copy
@@ -39,28 +43,22 @@ impl Dispatcher {
 
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
-        // pair, so the rebuilt block map must replace the pre-rewrite one. The
-        // pre-rewrite blocks are kept: the rewrite is in-memory only, and a
-        // bundle parked back to Waiting must persist metadata that indexes
-        // the stored (un-rewritten) data.
-        let (pre_rewrite, data) = match self.update_extension_blocks(&bundle, data) {
+        // pair, so the rebuilt block map must replace the pre-rewrite one.
+        // The rewrite is in-memory only: parks persist status alone, and a
+        // re-dispatch re-enters from the persisted representation (see
+        // park_bundle), so no failure exit needs to restore the pre-rewrite
+        // map.
+        let data = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    self.store.watch_bundle(bundle).await;
-                }
-                return;
+                return self
+                    .park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
             }
-            Ok((new_bundle, data)) => (
-                core::mem::replace(&mut bundle.bpv7.blocks, new_bundle.blocks),
-                data,
-            ),
+            Ok((new_bundle, data)) => {
+                bundle.bpv7.blocks = new_bundle.blocks;
+                data
+            }
         };
 
         // - Runs after dequeue from ForwardPending, just before CLA send
@@ -71,10 +69,11 @@ impl Dispatcher {
         // - On Drop result: call drop_bundle() and return early
         //
         // Every exit below this point must resolve the claim taken above:
-        // ForwardAckPending has no storage poller, so a bundle left there is
-        // invisible until peer removal, restart, or expiry.
+        // ForwardAckPending has no storage poller and the reaper defers its
+        // expiry, so a bundle left there is invisible until the outcome
+        // arrives, the peer is removed, or the BPA restarts.
         let bundle_id = bundle.id().clone();
-        let (mut bundle, mut data) = match self
+        let (bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
             .await
@@ -92,16 +91,13 @@ impl Dispatcher {
 
                 // The filter consumed the claimed bundle, so re-fetch it and
                 // conditionally return the claim to Waiting for a fresh
-                // routing decision. Losing the swap means a sweep or the
+                // routing decision. Losing the park means a sweep or the
                 // reaper resolved the bundle first.
-                if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
+                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
                     && bundle.status == (bundle::BundleStatus::ForwardAckPending { peer })
-                    && self
-                        .store
-                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                        .await
                 {
-                    self.store.watch_bundle(bundle).await;
+                    self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                        .await;
                 }
                 return;
             }
@@ -116,10 +112,10 @@ impl Dispatcher {
         {
             Ok(cla::ForwardBundleResult::Sent) => {
                 // The terminal claim is a conditional tombstone: the reaper
-                // races a bundle that expires during a synchronous transmit,
-                // and losing the claim means its deletion report has gone
-                // out. The forwarded report is suppressed with the rest:
-                // a lost resolution never happened.
+                // defers in-flight transfers, but a peer sweep can still
+                // resolve the bundle mid-transmit, and losing the claim means
+                // its resolution has gone out. The forwarded report is
+                // suppressed with the rest: a lost resolution never happened.
                 if !self.store.tombstone_if(&bundle).await {
                     debug!(
                         "Forward completion for {} lost the resolution race, ignored",
@@ -137,29 +133,21 @@ impl Dispatcher {
             }
             Ok(cla::ForwardBundleResult::Accepted) => {
                 // The CLA owns the transfer; the bundle stays in
-                // ForwardAckPending until the outcome arrives, the peer is
-                // removed, or the bundle's lifetime expires.
+                // ForwardAckPending until the outcome arrives or the peer is
+                // removed. The watch stays armed even though the expiry pass
+                // defers this status: if a peer sweep parks the bundle before
+                // its expiry, the live entry still reaps it promptly.
                 return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // Link-scoped evidence: the neighbour is gone. Restore the
-                // pre-rewrite blocks (the stored data is the un-rewritten
-                // original), return the bundle to Waiting, and reset the
-                // whole peer queue so its bundles await a fresh routing
-                // decision alongside it.
+                // Link-scoped evidence: the neighbour is gone. Return the
+                // bundle to Waiting, and reset the whole peer queue so its
+                // bundles await a fresh routing decision alongside it.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
-                bundle.bpv7.blocks = pre_rewrite;
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    self.store.watch_bundle(bundle).await;
-                }
+                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
                 self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
@@ -173,17 +161,11 @@ impl Dispatcher {
                 // which is paced by a network round trip, a synchronous
                 // failure can be deterministic and instantaneous, so
                 // re-running dispatch inline here could spin; the retry
-                // waits in Waiting for the next routing or link event.
-                bundle.bpv7.blocks = pre_rewrite;
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    self.store.watch_bundle(bundle).await;
-                }
+                // waits in Waiting for the next routing or link event —
+                // park_bundle re-dispatches at most once, and only if such
+                // an event landed while this transfer was in flight.
+                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
             }
         }
     }
@@ -263,7 +245,9 @@ impl Dispatcher {
                 // routing decision now, rather than parking in Waiting (whose
                 // semantic is "nowhere to go") or resetting the whole peer
                 // queue (link-scoped evidence). Dispatch parks the bundle in
-                // Waiting itself if no route remains.
+                // Waiting itself if no route remains, and its expiry
+                // checkpoint drops a bundle that expired during the deferred
+                // transfer.
                 self.dispatch_bundle(bundle).await
             }
         }

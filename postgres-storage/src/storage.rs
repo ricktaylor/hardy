@@ -4,6 +4,7 @@ use hardy_bpa::{
     storage,
     stream::Sender,
 };
+use hardy_bpv7::eid::Eid;
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
@@ -596,6 +597,26 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(i32::try_from(peer)?)
         .bind(status::BundleStatusKind::Waiting)
         .bind(status::BundleStatusKind::ForwardAckPending)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows)
+    }
+
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
+        // The service EID column is the same in both statuses, so only the
+        // status changes.
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status = $2
+             WHERE status = $3
+               AND service_eid = $1",
+        )
+        .bind(service.to_string())
+        .bind(status::BundleStatusKind::WaitingForService)
+        .bind(status::BundleStatusKind::DeliverPending)
         .execute(&self.pool)
         .await?
         .rows_affected();

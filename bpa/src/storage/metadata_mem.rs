@@ -374,6 +374,22 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
+    async fn reset_service_queue(&self, service: &Eid) -> Result<u64> {
+        let mut updated = 0;
+        for (_, v) in self.inner.lock().entries.iter_mut() {
+            if let Entry::Live(v) = v
+                && let BundleStatus::DeliverPending { service: s } = &v.status
+                && s == service
+            {
+                v.status = BundleStatus::WaitingForService {
+                    service: service.clone(),
+                };
+                updated += 1;
+            }
+        }
+        Ok(updated)
+    }
+
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .inner

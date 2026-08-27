@@ -43,6 +43,10 @@ pub enum DispatchAction {
     Drop(Option<ReasonCode>),
 }
 
+/// An opaque identity token for a point-in-time route table, captured by
+/// [`Rib::table_snapshot`] and compared by [`Rib::table_changed_since`].
+pub struct RibSnapshot(Arc<RouteTable>);
+
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
     table: Mutex<RouteTable>,
@@ -165,6 +169,21 @@ impl Rib {
             }
             LookupResult::Reflect => None,
         }
+    }
+
+    /// Capture an identity token for the current route table contents.
+    ///
+    /// Every table mutation publishes a fresh `Arc` (and no-op mutations
+    /// publish nothing), so comparing tokens detects whether *any* routing
+    /// change — route, peer, or service registration — landed in between.
+    /// The token holds the table alive, so the comparison is ABA-free.
+    pub fn table_snapshot(&self) -> RibSnapshot {
+        RibSnapshot(self.snapshot.load_full())
+    }
+
+    /// Whether the route table has changed since `seen` was captured.
+    pub fn table_changed_since(&self, seen: &RibSnapshot) -> bool {
+        !Arc::ptr_eq(&seen.0, &self.snapshot.load_full())
     }
 
     pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
@@ -297,7 +316,15 @@ impl Rib {
                     self.poll_waiting_notify.notify_one();
                 }
             }
-            Action::Internal(InternalAction::Local(_)) => {
+            Action::Internal(InternalAction::Local(ref service)) => {
+                // The service is going: bundles queued in its delivery
+                // channel re-park to await the next registration (the local
+                // analogue of the peer sweeps above). In-flight deliveries
+                // (DeliveryAckPending) are untouched — they resolve
+                // themselves.
+                if let Some(eid) = service.queue_eid() {
+                    self.store.reset_service_queue(eid).await;
+                }
                 self.poll_waiting_notify.notify_one();
             }
             _ => {}
@@ -803,11 +830,10 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service {
-                service: ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-                cancel: hardy_async::CancellationToken::new(),
-            }))),
+            Action::Internal(InternalAction::Local(Arc::new(Service::new(
+                ServiceImpl::LowLevel(Arc::new(NullService)),
+                EidService::Ipn(42),
+            )))),
             1,
         );
 
@@ -826,11 +852,10 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service {
-                service: ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-                cancel: hardy_async::CancellationToken::new(),
-            }))),
+            Action::Internal(InternalAction::Local(Arc::new(Service::new(
+                ServiceImpl::LowLevel(Arc::new(NullService)),
+                EidService::Ipn(42),
+            )))),
             1,
         );
 

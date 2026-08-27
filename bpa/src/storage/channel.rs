@@ -25,14 +25,20 @@
 //!
 //! - On the fast path (in-memory buffer has space), the bundle is enqueued
 //!   directly. A subsequent poller cycle may *also* pull it from storage
-//!   and re-deliver it; consumers must tombstone delivered bundles to
-//!   suppress duplicates.
+//!   and re-deliver it.
 //! - On the slow path (buffer full), the in-memory copy is dropped on the
 //!   floor and the poller recovers it via `MetadataStorage::poll_pending`
 //!   filtered by the channel's target status. The drop is safe because the
 //!   bundle's status is already persisted (see above).
 //!
-//! Consumers that need exactly-once must tombstone each delivered bundle.
+//! Consumers therefore **must claim each received bundle out of the
+//! channel's target status** (a conditional `swap_status` from the received
+//! copy's snapshot) before acting on it, and drop copies that lose the
+//! swap. The target status must mean exactly "queued in this channel":
+//! while a bundle keeps it, the poller treats the bundle as recoverable and
+//! will re-push it. The dispatch queue claims `DispatchPending` →
+//! `Dispatching` on dequeue; the egress queues claim `ForwardPending` →
+//! `ForwardAckPending` before offering the transfer to a CLA.
 //!
 //! # State Machine
 //!

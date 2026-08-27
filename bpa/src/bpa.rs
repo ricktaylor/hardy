@@ -235,12 +235,21 @@ impl Bpa {
         BpaBuilder::new()
     }
 
+    /// Start the BPA's background machinery.
+    ///
+    /// When `recover_storage` is set, storage crash recovery runs to
+    /// completion before this returns: recovery's checkpoint resets assume
+    /// a quiescent store, so CLAs and services must only be registered
+    /// after `start` resolves.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub fn start(&self, recover_storage: bool) {
+    pub async fn start(&self, recover_storage: bool) {
         otel_metrics::init();
 
-        // Start the store
-        self.store.start(self.dispatcher.clone(), recover_storage);
+        // Start the store, awaiting recovery so registrations that follow
+        // cannot race the consistency check
+        self.store
+            .start(self.dispatcher.clone(), recover_storage)
+            .await;
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());

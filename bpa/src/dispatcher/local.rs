@@ -183,12 +183,59 @@ impl Dispatcher {
         service: Arc<services::registry::Service>,
         bundle: bundle::Bundle,
     ) {
-        let Some((bundle, data)) = self.load_data_or_drop(bundle).await else {
+        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
+        // The claim key and every park below use the canonical registration
+        // EID — the exact key `poll_service_waiting` matches on
+        // re-registration. The bundle's own destination can be a different
+        // Eid variant for the same endpoint (e.g. LegacyIpn vs Ipn) and
+        // would never match.
+        let service_eid = self
+            .node_ids
+            .resolve_eid(&service.service_id)
+            .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+
+        // Snapshot the routing table before the claim: the parks below
+        // re-check it to close the park-vs-poll window (see park_bundle).
+        let seen = self.rib.table_snapshot();
+
+        // Delivery commits at the claim below — the reaper defers an
+        // in-flight delivery — so never commence one for a bundle that has
+        // already expired: resolve it as the reaper would.
+        if bundle.has_expired() {
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+        }
+
+        // Claim the bundle out of its delivery queue before offering it.
+        // The claim must be a conditional swap: the delivery channel is
+        // at-least-once, so a duplicate copy recovered by the storage
+        // poller must lose here rather than produce a second delivery. The
+        // new status also marks the point past which the delivery cannot be
+        // recalled: the reaper defers it, and the unregister sweep only
+        // touches the queued status.
+        if !self
+            .store
+            .swap_status(
+                &mut bundle,
+                &bundle::BundleStatus::DeliveryAckPending {
+                    service: service_eid.clone(),
+                },
+            )
+            .await
+        {
+            debug!("Bundle already claimed for delivery or swept, skipping offer");
+            return;
+        }
+
+        // Every exit below this point must resolve the claim taken above:
+        // DeliveryAckPending has no storage poller and the reaper defers it,
+        // so a bundle left there is invisible until restart.
+        let bundle_id = bundle.bundle.primary.id.clone();
+
         // Deliver filter hook
-        let (mut bundle, mut data) = match self
+        let (bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
@@ -203,6 +250,25 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!("Deliver filter execution failed: {e}");
+
+                // The filter consumed the claimed bundle, so re-fetch it and
+                // conditionally park it for the next registration. Losing
+                // the park means a sweep or the reaper resolved it first.
+                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
+                    && bundle.status
+                        == (bundle::BundleStatus::DeliveryAckPending {
+                            service: service_eid.clone(),
+                        })
+                {
+                    self.park_bundle(
+                        bundle,
+                        bundle::BundleStatus::WaitingForService {
+                            service: service_eid,
+                        },
+                        &seen,
+                    )
+                    .await;
+                }
                 return;
             }
         };
@@ -254,8 +320,19 @@ impl Dispatcher {
                 let mut payload = match payload_result {
                     Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                         // TODO: We are unable to decrypt the payload, what do we do?
+                        // For now, park for the next registration (which may
+                        // bring usable keys) — the claim must not be left
+                        // dangling in DeliveryAckPending.
                         debug!("Failed to decrypt payload: No valid keys");
-                        return self.store.watch_bundle(bundle).await;
+                        return self
+                            .park_bundle(
+                                bundle,
+                                bundle::BundleStatus::WaitingForService {
+                                    service: service_eid,
+                                },
+                                &seen,
+                            )
+                            .await;
                     }
                     Err(e) => {
                         // Other decryption error - skip delivery
@@ -286,24 +363,19 @@ impl Dispatcher {
 
         if let Err(e) = delivery_result {
             debug!("Service delivery deferred: {e}");
-            // Park under the service's registration EID, the exact key
-            // `poll_service_waiting` matches on re-registration. The bundle's
-            // own destination can be a different Eid variant for the same
-            // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
-            let service_eid = self
-                .node_ids
-                .resolve_eid(&service.service_id)
-                .unwrap_or_else(|_| bundle.primary().destination.clone());
-            let desired = bundle::BundleStatus::WaitingForService {
-                service: service_eid,
-            };
-            // Conditional: the reaper expires bundles regardless of status,
-            // so it may have resolved this one mid-delivery, and the park
-            // must not resurrect a tombstoned bundle.
-            if self.store.swap_status(&mut bundle, &desired).await {
-                self.store.watch_bundle(bundle).await;
-            }
-            return;
+            // Park under the registration EID for the next registration; the
+            // park re-checks the routing snapshot, so a service that
+            // (re-)registered while this delivery was in flight re-dispatches
+            // the bundle instead of stranding it (see park_bundle).
+            return self
+                .park_bundle(
+                    bundle,
+                    bundle::BundleStatus::WaitingForService {
+                        service: service_eid,
+                    },
+                    &seen,
+                )
+                .await;
         }
 
         // The terminal claim is a conditional tombstone: the reaper races

@@ -47,7 +47,7 @@ let bpa = Bpa::builder()
     .build();
 
 // Start processing
-bpa.start(false);
+bpa.start(false).await;
 
 // Register components via the BpaRegistration trait
 bpa.register_cla(name, cla, policy).await?;

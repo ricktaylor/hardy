@@ -147,7 +147,7 @@ impl Drop for Sink {
 }
 
 // CLA registry in the building phase — only insert() is available.
-pub(crate) struct ClaRegistryBuilder {
+pub struct ClaRegistryBuilder {
     clas: ClaMap,
 }
 
@@ -214,7 +214,7 @@ impl ClaRegistryBuilder {
 }
 
 // CLA registry in the running phase — full register/unregister available.
-pub(crate) struct ClaRegistry {
+pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
     rib: Arc<routing::Rib>,
@@ -453,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_registration() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla1 = Arc::new(TestCla::new());
         let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
@@ -473,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn test_peer_lifecycle() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
@@ -509,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn test_cascading_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)
