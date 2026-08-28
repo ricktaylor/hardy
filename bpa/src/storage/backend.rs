@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use crate::{
     Arc, Bytes,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     stream::Sender,
 };
 
@@ -55,7 +55,8 @@ pub trait MetadataStorage: Send + Sync {
     /// Replaces an existing bundle's metadata.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
-    /// Updates only the typed status columns for an existing bundle's metadata.
+    /// Unconditionally sets the status of the bundle with the given
+    /// `bundle_id` — the typed status columns only.
     ///
     /// Cheaper than `replace` because the bundle blob is not written. Use this
     /// for pure state-machine transitions where no other metadata has changed.
@@ -63,7 +64,7 @@ pub trait MetadataStorage: Send + Sync {
     /// A bundle deleted concurrently is not an error: delete is terminal, and
     /// the update quietly loses. Backends must neither resurrect the bundle
     /// nor fail the call.
-    async fn update_status(&self, bundle: &Bundle) -> Result<()>;
+    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()>;
 
     /// Updates the status of the bundle with the given `bundle_id` only if
     /// its current status equals `expected`, returning whether the swap was
@@ -115,7 +116,9 @@ pub trait MetadataStorage: Send + Sync {
     /// Part of the startup recovery protocol. Called once per bundle after
     /// `start_recovery()` as the BPA walks the bundle store and finds data on
     /// disk. Confirms that the metadata entry for this bundle is still wanted,
-    /// and returns its metadata so the BPA can resume processing.
+    /// and returns the stored record — metadata and status — so the BPA can
+    /// resume processing. Distinct from [`get`](Self::get) only by the
+    /// confirmation side-effect.
     ///
     /// For persistent backends (e.g. SQLite), this removes the bundle from the
     /// "unconfirmed" set populated by `start_recovery()`. Any entries still in
@@ -124,7 +127,7 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
     /// this returns `Ok(None)`.
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
+    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<Bundle>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last

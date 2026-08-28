@@ -552,6 +552,7 @@ mod tests {
                 blocks: Default::default(),
             },
             metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         };
         chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)

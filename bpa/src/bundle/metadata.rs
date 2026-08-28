@@ -6,7 +6,6 @@ use hardy_bpv7::{
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use super::status::BundleStatus;
 use crate::{Arc, cla::ClaAddress};
 
 /// How a bundle entered this BPA's custody.
@@ -117,9 +116,6 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Current processing status of this bundle within the BPA pipeline.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub status: BundleStatus,
     /// Next-hop EID resolved by the RIB for the dispatch in progress; consumed
     /// by the forwarding path, recomputed on re-dispatch. Never persisted.
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -144,7 +140,6 @@ impl BundleMetadata {
             wire: WireCache::default(),
             classification: Classification::default(),
             storage_name: None,
-            status: BundleStatus::New,
             next_hop: None,
             writable: WritableMetadata::default(),
         }

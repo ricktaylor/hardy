@@ -208,6 +208,7 @@ mod tests {
                             blocks: Default::default(),
                         },
                         metadata: crate::bundle::BundleMetadata::originated(),
+                        status: crate::bundle::BundleStatus::New,
                     };
                     let result = engine
                         .exec(

@@ -170,11 +170,14 @@ impl Dispatcher {
             // are internally generated, so they skip both the Originate and
             // Ingress filters and go directly to routing.
             let mut metadata = bundle::BundleMetadata::originated();
-            metadata.status = bundle::BundleStatus::Dispatching;
             metadata.wire.previous_node = extracted.previous_node;
             metadata.wire.age = extracted.age;
             metadata.wire.hop_count = extracted.hop_count;
-            let mut bundle = bundle::Bundle { metadata, bundle };
+            let mut bundle = bundle::Bundle {
+                metadata,
+                bundle,
+                status: bundle::BundleStatus::Dispatching,
+            };
 
             // Store (no Originate filter - not user-originated)
             if !self.store.store(&mut bundle, &data).await {
@@ -183,7 +186,7 @@ impl Dispatcher {
                 return;
             }
 
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
             // Dispatch via queue to avoid blocking the CLA session reader.
             // Running inline would block incoming bundles on this connection

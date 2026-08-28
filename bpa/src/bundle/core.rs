@@ -3,19 +3,29 @@ use hardy_bpv7::eid::Eid;
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-use super::metadata::{BundleMetadata, Origin};
+use super::{
+    metadata::{BundleMetadata, Origin},
+    status::BundleStatus,
+};
 
-/// A bundle together with its BPA-local processing metadata.
+/// A bundle together with its BPA-local processing metadata and status.
 ///
-/// Pairs the on-the-wire BPv7 bundle with [`BundleMetadata`] that tracks
-/// ingress context, processing status, and filter annotations.
+/// Pairs the on-the-wire BPv7 bundle with [`BundleMetadata`] (persisted facts:
+/// ingress context, decoded extension fields, filter annotations) and the
+/// bundle's current [`BundleStatus`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Bundle {
     /// The parsed BPv7 bundle (primary block + blocks map).
     pub bundle: hardy_bpv7::bundle::Bundle,
-    /// BPA-local metadata: ingress info, decoded extension fields, status, annotations.
+    /// BPA-local metadata: ingress info, decoded extension fields, annotations.
     pub metadata: BundleMetadata,
+    /// Current processing status within the BPA pipeline. Pipeline state, not
+    /// a persisted fact: excluded from the serialized record — metadata
+    /// backends persist it out-of-band in typed, queryable columns and set
+    /// this field when they decode.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub status: BundleStatus,
 }
 
 impl Bundle {
@@ -104,6 +114,7 @@ mod tests {
                 blocks: Default::default(),
             },
             metadata,
+            status: BundleStatus::New,
         }
     }
 

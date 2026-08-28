@@ -39,12 +39,10 @@ pub fn random_bundle() -> bundle::Bundle {
         core::time::Duration::from_secs(3600),
     );
 
-    let mut meta = BundleMetadata::originated();
-    meta.status = BundleStatus::Waiting;
-
     bundle::Bundle {
         bundle: bpv7,
-        metadata: meta,
+        metadata: BundleMetadata::originated(),
+        status: BundleStatus::Waiting,
     }
 }
 
@@ -64,12 +62,10 @@ pub fn bundle_with_status(
         core::time::Duration::from_secs(3600),
     );
 
-    let mut meta = BundleMetadata::new(received_at, hardy_bpa::bundle::Origin::Originated);
-    meta.status = status;
-
     bundle::Bundle {
         bundle: bpv7,
-        metadata: meta,
+        metadata: BundleMetadata::new(received_at, hardy_bpa::bundle::Origin::Originated),
+        status,
     }
 }
 
@@ -96,12 +92,10 @@ pub fn bundle_with_expiry(
         lifetime,
     );
 
-    let mut meta = BundleMetadata::originated();
-    meta.status = status;
-
     bundle::Bundle {
         bundle: bpv7,
-        metadata: meta,
+        metadata: BundleMetadata::originated(),
+        status,
     }
 }
 
@@ -125,12 +119,10 @@ pub fn bundle_with_fragment(
         core::time::Duration::from_secs(3600),
     );
 
-    let mut meta = BundleMetadata::originated();
-    meta.status = status;
-
     bundle::Bundle {
         bundle: bpv7,
-        metadata: meta,
+        metadata: BundleMetadata::originated(),
+        status,
     }
 }
 

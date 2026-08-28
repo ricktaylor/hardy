@@ -17,7 +17,7 @@ pub async fn meta_01_insert_and_get(store: Arc<dyn MetadataStorage>) {
     let got = got.expect("get should return Some after insert");
 
     assert_eq!(got.bundle.primary.id, bundle.bundle.primary.id);
-    assert_eq!(got.metadata.status, bundle.metadata.status);
+    assert_eq!(got.status, bundle.status);
 }
 
 /// META-02: Duplicate Insert
@@ -36,14 +36,14 @@ pub async fn meta_02_duplicate_insert(store: Arc<dyn MetadataStorage>) {
 /// META-03: Update (Replace)
 pub async fn meta_03_update_replace(store: Arc<dyn MetadataStorage>) {
     let mut bundle = fixtures::random_bundle();
-    bundle.metadata.status = BundleStatus::Waiting;
+    bundle.status = BundleStatus::Waiting;
     assert!(store.insert(&bundle).await.unwrap());
 
-    bundle.metadata.status = BundleStatus::Dispatching;
+    bundle.status = BundleStatus::Dispatching;
     store.replace(&bundle).await.unwrap();
 
     let got = store.get(&bundle.bundle.primary.id).await.unwrap().unwrap();
-    assert_eq!(got.metadata.status, BundleStatus::Dispatching);
+    assert_eq!(got.status, BundleStatus::Dispatching);
 }
 
 /// META-04: Tombstone
@@ -357,7 +357,7 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
         "first should be earlier bundle"
     );
     assert_eq!(
-        results[0].metadata.status, status_a,
+        results[0].status, status_a,
         "returned bundle should have correct WaitingForService status"
     );
     assert_eq!(
@@ -409,7 +409,7 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
         .unwrap()
         .unwrap();
     assert_eq!(
-        got_a.metadata.status,
+        got_a.status,
         BundleStatus::Waiting,
         "peer 100 bundle should become Waiting"
     );
@@ -420,7 +420,7 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
         .unwrap()
         .unwrap();
     assert_eq!(
-        got_b.metadata.status, status_200,
+        got_b.status, status_200,
         "peer 200 bundle should remain ForwardPending"
     );
 }

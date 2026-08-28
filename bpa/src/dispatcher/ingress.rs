@@ -155,7 +155,11 @@ impl Dispatcher {
             Err(parse::HeaderFailure::Invalid(report)) => {
                 let reason = match report {
                     Some((bundle, reason)) => {
-                        let bundle = bundle::Bundle { metadata, bundle };
+                        let bundle = bundle::Bundle {
+                            metadata,
+                            bundle,
+                            status: bundle::BundleStatus::New,
+                        };
                         self.report_bundle_reception(&bundle, reason).await;
                         reason
                     }
@@ -188,6 +192,7 @@ impl Dispatcher {
             let bundle = bundle::Bundle {
                 metadata,
                 bundle: hv.bundle,
+                status: bundle::BundleStatus::New,
             };
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
@@ -229,7 +234,11 @@ impl Dispatcher {
                 debug!("Invalid bundle received: {error}");
                 let reason = parse::status_report_reason_for(&error);
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                let bundle = bundle::Bundle { metadata, bundle };
+                let bundle = bundle::Bundle {
+                    metadata,
+                    bundle,
+                    status: bundle::BundleStatus::New,
+                };
                 self.report_bundle_reception(&bundle, reason).await;
                 return Ok(None);
             }
@@ -251,7 +260,11 @@ impl Dispatcher {
         } else {
             metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
-        let bundle = bundle::Bundle { metadata, bundle };
+        let bundle = bundle::Bundle {
+            metadata,
+            bundle,
+            status: bundle::BundleStatus::New,
+        };
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
@@ -310,7 +323,7 @@ impl Dispatcher {
     // filter execution details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
         // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
         match self
@@ -328,9 +341,9 @@ impl Dispatcher {
                 }
 
                 // Always checkpoint to Dispatching (crash safety)
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
-                bundle.metadata.status = bundle::BundleStatus::Dispatching;
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
+                bundle.status = bundle::BundleStatus::Dispatching;
+                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                 self.store.update_metadata(&bundle).await;
 
                 // Hand off to dispatch queue for fan-out via processing pool

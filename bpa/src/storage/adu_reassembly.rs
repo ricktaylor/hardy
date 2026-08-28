@@ -430,6 +430,7 @@ mod tests {
                 m.storage_name = Some(storage_name.clone());
                 m
             },
+            status: BundleStatus::New,
         };
         store.insert_metadata(&bundle).await;
     }
@@ -724,6 +725,7 @@ mod tests {
                 m.storage_name = Some(name0.clone());
                 m
             },
+            status: BundleStatus::New,
         };
         store.insert_metadata(&meta_bundle).await;
 

@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use super::{MetadataStorage, Result};
 use crate::{
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     stream::Sender,
 };
 
@@ -260,8 +260,21 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn update_status(&self, bundle: &Bundle) -> Result<()> {
-        self.replace(bundle).await
+    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()> {
+        let mut inner = self.inner.lock();
+        // peek_mut leaves the LRU order untouched on a miss; a concurrently
+        // deleted bundle (absent or tombstoned) quietly loses the update.
+        let updated = match inner.entries.peek_mut(bundle_id) {
+            Some(Entry::Live(bundle)) => {
+                bundle.status = status.clone();
+                true
+            }
+            _ => false,
+        };
+        if updated {
+            inner.entries.promote(bundle_id);
+        }
+        Ok(())
     }
 
     async fn swap_status(
@@ -274,8 +287,8 @@ impl MetadataStorage for MetadataMemStorage {
         // peek_mut leaves the LRU order untouched on a miss, so a lost swap
         // does not promote a tombstone off the LRU tail
         let swapped = match inner.entries.peek_mut(bundle_id) {
-            Some(Entry::Live(bundle)) if bundle.metadata.status == *expected => {
-                bundle.metadata.status = status.clone();
+            Some(Entry::Live(bundle)) if bundle.status == *expected => {
+                bundle.status = status.clone();
                 true
             }
             _ => false,
@@ -291,7 +304,7 @@ impl MetadataStorage for MetadataMemStorage {
             let mut inner = self.inner.lock();
             // peek() leaves the LRU order untouched on a miss
             let expiry = match inner.entries.peek(bundle_id) {
-                Some(Entry::Live(bundle)) if bundle.metadata.status == *expected => bundle.expiry(),
+                Some(Entry::Live(bundle)) if bundle.status == *expected => bundle.expiry(),
                 _ => return Ok(false),
             };
             inner.upsert(bundle_id.clone(), Entry::Tombstone(expiry));
@@ -325,7 +338,7 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<BundleMetadata>> {
+    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<Bundle>> {
         Ok(None)
     }
 
@@ -337,10 +350,10 @@ impl MetadataStorage for MetadataMemStorage {
         let mut updated = 0;
         for (_, v) in self.inner.lock().entries.iter_mut() {
             if let Entry::Live(v) = v
-                && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.metadata.status
+                && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.status
                 && p == peer
             {
-                v.metadata.status = BundleStatus::Waiting;
+                v.status = BundleStatus::Waiting;
                 updated += 1;
             }
         }
@@ -351,10 +364,10 @@ impl MetadataStorage for MetadataMemStorage {
         let mut updated = 0;
         for (_, v) in self.inner.lock().entries.iter_mut() {
             if let Entry::Live(v) = v
-                && let BundleStatus::ForwardAckPending { peer: p } = v.metadata.status
+                && let BundleStatus::ForwardAckPending { peer: p } = v.status
                 && p == peer
             {
-                v.metadata.status = BundleStatus::Waiting;
+                v.status = BundleStatus::Waiting;
                 updated += 1;
             }
         }
@@ -368,7 +381,7 @@ impl MetadataStorage for MetadataMemStorage {
             .entries
             .iter()
             .filter_map(|(_, v)| v.live())
-            .filter(|v| v.metadata.status != BundleStatus::New)
+            .filter(|v| v.status != BundleStatus::New)
             .cloned()
             .collect();
 
@@ -389,7 +402,7 @@ impl MetadataStorage for MetadataMemStorage {
             .entries
             .iter()
             .filter_map(|(_, v)| v.live())
-            .filter(|b| b.metadata.status == BundleStatus::Waiting)
+            .filter(|b| b.status == BundleStatus::Waiting)
             .cloned()
             .collect();
 
@@ -411,7 +424,7 @@ impl MetadataStorage for MetadataMemStorage {
             .iter()
             .filter_map(|(_, v)| v.live())
             .filter(|b| {
-                matches!(&b.metadata.status, BundleStatus::WaitingForService { service } if service == &source)
+                matches!(&b.status, BundleStatus::WaitingForService { service } if service == &source)
             })
             .cloned()
             .collect();
@@ -437,7 +450,7 @@ impl MetadataStorage for MetadataMemStorage {
             .entries
             .iter()
             .filter_map(|(_, v)| v.live())
-            .filter(|v| &v.metadata.status == status)
+            .filter(|v| &v.status == status)
             .filter_map(|v| {
                 v.bundle
                     .primary
@@ -470,7 +483,7 @@ impl MetadataStorage for MetadataMemStorage {
             .entries
             .iter()
             .filter_map(|(_, v)| v.live())
-            .filter(|v| &v.metadata.status == state)
+            .filter(|v| &v.status == state)
             .cloned()
             .collect();
 
@@ -511,6 +524,7 @@ mod tests {
                 blocks: Default::default(),
             },
             metadata: crate::bundle::BundleMetadata::originated(),
+            status: BundleStatus::New,
         }
     }
 
@@ -707,7 +721,7 @@ mod tests {
     async fn swap_status_is_conditional() {
         let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong expectation: no swap
@@ -739,7 +753,6 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .metadata
                 .status,
             BundleStatus::Dispatching
         );
@@ -777,7 +790,7 @@ mod tests {
     async fn tombstone_if_is_conditional() {
         let storage = MetadataMemStorage::new(None);
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong expectation: not tombstoned
@@ -830,12 +843,14 @@ mod tests {
     #[tokio::test]
     async fn tombstone_is_never_downgraded() {
         let storage = MetadataMemStorage::new(None);
-        let mut bundle = make_bundle(1);
+        let bundle = make_bundle(1);
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
 
-        bundle.metadata.status = BundleStatus::Dispatching;
-        storage.update_status(&bundle).await.unwrap();
+        storage
+            .update_status(&bundle.bundle.primary.id, &BundleStatus::Dispatching)
+            .await
+            .unwrap();
         assert!(
             storage
                 .get(&bundle.bundle.primary.id)
