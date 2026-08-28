@@ -20,7 +20,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-NODE_PORT=4570
 PING_COUNT=3
 
 RED='\033[0;31m'
@@ -33,6 +32,64 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $*"; }
+
+# Probe a TCP port with bash's /dev/tcp; success means something is listening.
+port_open() {
+    (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null
+}
+
+# Pick a TCP port nothing is listening on.
+find_free_port() {
+    local port
+    while :; do
+        port=$(( (RANDOM % 20000) + 20000 ))
+        if ! port_open 127.0.0.1 "$port" && ! port_open ::1 "$port"; then
+            echo "$port"
+            return 0
+        fi
+    done
+}
+
+# Poll until a TCP port accepts connections, with a deadline in seconds.
+# Fails fast when the given process dies first.
+wait_for_port() {
+    local host=$1 port=$2 deadline=$3 label=$4 pid=$5
+    local waited=0
+    while ! port_open "$host" "$port"; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            log_error "$label exited before listening on $host:$port"
+            return 1
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            log_error "Timed out waiting for $label on $host:$port"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
+# Poll until a file contains at least N occurrences of a pattern, with a
+# deadline in seconds.
+wait_for_log() {
+    local file=$1 pattern=$2 count=$3 deadline=$4
+    local waited=0 seen
+    while :; do
+        seen=$(grep -c "$pattern" "$file" 2>/dev/null) || true
+        if [ "${seen:-0}" -ge "$count" ]; then
+            return 0
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            log_error "Timed out waiting for ${count}x '$pattern' in $file"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+NODE_PORT=$(find_free_port)
 
 SKIP_BUILD=false
 while [[ $# -gt 0 ]]; do
@@ -76,14 +133,20 @@ trap cleanup EXIT INT TERM
 TEST_DIR=$(mktemp -d)
 log_info "Test directory: $TEST_DIR"
 
+# Set BUILD_PROFILE=debug for a faster local build.
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
 if [ "$SKIP_BUILD" = false ]; then
-    log_step "Building..."
+    log_step "Building ($BUILD_PROFILE)..."
     cd "$WORKSPACE_DIR"
-    cargo build --release -p hardy-tools -p hardy-bpa-server
+    if [ "$BUILD_PROFILE" = "release" ]; then
+        cargo build --release -p hardy-tools -p hardy-bpa-server
+    else
+        cargo build -p hardy-tools -p hardy-bpa-server
+    fi
 fi
 
-BP_BIN="$WORKSPACE_DIR/target/release/bp"
-BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
+BP_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/bp"
+BPA_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/hardy-bpa-server"
 
 for bin in "$BP_BIN" "$BPA_BIN"; do
     [ -x "$bin" ] || { log_error "Not found: $bin"; exit 1; }
@@ -97,15 +160,17 @@ cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 EOF
 
-# Start BPA with echo + static routes + watch
+# Start BPA with echo + static routes + watch. debug logging so route
+# installs/withdrawals ("Adding route"/"Removed route" from the RIB) are
+# observable in the log.
 cat > "$TEST_DIR/bpa.yaml" <<EOF
 node-ids: "ipn:1.0"
-log-level: warn
+log-level: debug
 built-in-services:
   echo: [7]
 static-routes:
   routes-file: "$ROUTES_FILE"
-  watch: true
+  watch: native
 storage:
   metadata:
     type: memory
@@ -114,41 +179,64 @@ storage:
 clas:
   - name: tcp0
     type: tcpclv4
-    address: "[::]:$NODE_PORT"
+    listeners: ["[::]:$NODE_PORT"]
 EOF
 
+BPA_LOG="$TEST_DIR/bpa.log"
+
 log_step "Starting BPA server..."
-"$BPA_BIN" --config "$TEST_DIR/bpa" &
+"$BPA_BIN" --config "$TEST_DIR/bpa" > "$BPA_LOG" 2>&1 &
 BPA_PID=$!
-sleep 1
-kill -0 "$BPA_PID" 2>/dev/null || { log_error "BPA failed to start"; exit 1; }
+wait_for_port 127.0.0.1 "$NODE_PORT" 20 "BPA TCPCLv4" "$BPA_PID" \
+    || { log_error "BPA failed to start"; cat "$BPA_LOG"; exit 1; }
 
-# TEST 1: Startup
+# TEST 1: Startup, and the initial route actually lands in the RIB
 log_step "TEST 1: Startup with routes file"
-log_info "TEST 1: PASSED"
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 1 15; then
+    log_info "TEST 1: PASSED"
+else
+    log_error "TEST 1: FAILED (initial static route not installed)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 2: Hot-reload
+# TEST 2: Hot-reload installs the new route
 log_step "TEST 2: Hot-reload — modify routes file"
 cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 ipn:99.*.* drop 3
 EOF
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 2: PASSED" || { log_error "TEST 2: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Reloading static routes" 1 15 \
+    && wait_for_log "$BPA_LOG" "Adding route ipn:99.*source 'static_routes'" 1 15 \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 2: PASSED"
+else
+    log_error "TEST 2: FAILED (reload did not install the new route)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 3: File removal
+# TEST 3: File removal withdraws both routes
 log_step "TEST 3: File removal"
 rm -f "$ROUTES_FILE"
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 3: PASSED" || { log_error "TEST 3: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Removed route .*source 'static_routes'" 2 15 \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 3: PASSED"
+else
+    log_error "TEST 3: FAILED (routes not withdrawn after file removal)"
+    FAILURES=$((FAILURES + 1))
+fi
 
-# TEST 4: File restore
+# TEST 4: File restore re-installs the route (second add of ipn:*.*.*)
 log_step "TEST 4: File restore"
 cat > "$ROUTES_FILE" <<EOF
 ipn:*.*.* drop
 EOF
-sleep 2
-kill -0 "$BPA_PID" 2>/dev/null && log_info "TEST 4: PASSED" || { log_error "TEST 4: FAILED"; FAILURES=$((FAILURES + 1)); }
+if wait_for_log "$BPA_LOG" "Adding route .*source 'static_routes'" 3 15 \
+    && kill -0 "$BPA_PID" 2>/dev/null; then
+    log_info "TEST 4: PASSED"
+else
+    log_error "TEST 4: FAILED (route not re-installed after restore)"
+    FAILURES=$((FAILURES + 1))
+fi
 
 # TEST 5: Ping echo — BPA still functional
 log_step "TEST 5: Ping echo service"

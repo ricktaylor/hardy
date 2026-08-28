@@ -2,14 +2,19 @@
 # Test script to process a bundle through the full BPA server
 #
 # Usage:
-#   ./bpa-server/tests/test_bundle_processing.sh [-o output_dir] [-n node_id] [bundle_file]
+#   ./bpa-server/tests/test_bundle_processing.sh [-o output_dir] [-n node_id] [-i] [bundle_file]
 #
 # Options:
 #   -o output_dir   Save output bundles (e.g., status reports) to this directory
 #   -n node_id      Set the BPA node ID (default: ipn:1.0)
+#   -i              Interactive mode: start the server and wait for manual input
 #
-# If no bundle file is specified, starts the server and waits for manual input.
-# The server watches an outbox directory - copy bundles there to process them.
+# By default a test bundle destined for the file-cla peer ipn:2.0 is
+# generated with the `bundle` tool and the script asserts it traverses the
+# BPA (consumed from the outbox, written to the peer inbox), exiting
+# nonzero on failure. Pass a bundle_file to process that bundle instead.
+# In interactive mode the server watches the outbox directory - copy
+# bundles there to process them.
 
 set -e
 
@@ -19,13 +24,17 @@ WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Parse options
 OUTPUT_DIR=""
 NODE_ID="ipn:1.0"
-while getopts "o:n:" opt; do
+INTERACTIVE=false
+while getopts "o:n:i" opt; do
     case $opt in
         o)
             OUTPUT_DIR="$OPTARG"
             ;;
         n)
             NODE_ID="$OPTARG"
+            ;;
+        i)
+            INTERACTIVE=true
             ;;
         \?)
             echo "Invalid option: -$OPTARG" >&2
@@ -67,13 +76,51 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Poll until a file contains at least N occurrences of a pattern, with a
+# deadline in seconds. Fails fast when the given process dies first.
+wait_for_log() {
+    local file=$1 pattern=$2 count=$3 deadline=$4 pid=${5:-}
+    local waited=0 seen
+    while :; do
+        seen=$(grep -c "$pattern" "$file" 2>/dev/null) || true
+        if [ "${seen:-0}" -ge "$count" ]; then
+            return 0
+        fi
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "ERROR: process $pid exited while waiting for '$pattern'"
+            return 1
+        fi
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            echo "ERROR: timed out waiting for ${count}x '$pattern' in $file"
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+}
+
+# Poll until a shell condition holds, with a deadline in seconds.
+wait_for() {
+    local deadline=$1
+    shift
+    local waited=0
+    while ! "$@"; do
+        if [ "$waited" -ge $((deadline * 10)) ]; then
+            return 1
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    return 0
+}
+
 # Create directories
 mkdir -p "$TEST_DIR/outbox"
 mkdir -p "$TEST_DIR/inbox"
 mkdir -p "$TEST_DIR/bundles"
 mkdir -p "$TEST_DIR/metadata"
 
-# Create static routes file - forward everything via file-cla or reflect
+# Create static routes file - reflect anything that has no peer route
 cat > "$TEST_DIR/static_routes" << 'EOF'
 # Forward all bundles - reflect back to sender for testing
 *:** reflect
@@ -89,7 +136,7 @@ node-ids = "$NODE_ID"
 
 [static-routes]
 routes-file = "$TEST_DIR/static_routes"
-watch = false
+watch = "none"
 
 [storage.metadata]
 type = "memory"
@@ -100,9 +147,8 @@ type = "memory"
 [[clas]]
 name = "file-test"
 type = "file-cla"
-[clas.config]
 outbox = "$TEST_DIR/outbox"
-[clas.config.peers]
+[clas.peers]
 "ipn:2.0" = "$TEST_DIR/inbox"
 EOF
 
@@ -113,39 +159,61 @@ echo "=== Static Routes ==="
 cat "$TEST_DIR/static_routes"
 echo ""
 
-# Build bpa-server with file-cla feature
-echo "=== Building bpa-server with file-cla ==="
-cd "$WORKSPACE_DIR"
-cargo build --release -p hardy-bpa-server --no-default-features --features file-cla
+# Build bpa-server with file-cla feature (and the bundle tool if we need
+# to generate the test bundle). Set BUILD_PROFILE=debug for a faster
+# local build.
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
+if [ "$BUILD_PROFILE" = "release" ]; then
+    CARGO_PROFILE_FLAG="--release"
+else
+    CARGO_PROFILE_FLAG=""
+fi
 
-BPA_BIN="$WORKSPACE_DIR/target/release/hardy-bpa-server"
+echo "=== Building bpa-server with file-cla ($BUILD_PROFILE) ==="
+cd "$WORKSPACE_DIR"
+# A minimal build: the config below selects the memory backends
+# explicitly, so no storage feature is needed.
+cargo build $CARGO_PROFILE_FLAG -p hardy-bpa-server --no-default-features --features file-cla
+
+BPA_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/hardy-bpa-server"
 
 if [ ! -x "$BPA_BIN" ]; then
     echo "ERROR: Failed to build hardy-bpa-server"
     exit 1
 fi
 
+# Determine bundle file to use
+BUNDLE_FILE="${1:-}"
+if [ -z "$BUNDLE_FILE" ] && [ "$INTERACTIVE" = false ]; then
+    echo ""
+    echo "=== Generating test bundle ==="
+    cargo build $CARGO_PROFILE_FLAG -p hardy-bpv7-tools
+    BUNDLE_BIN="$WORKSPACE_DIR/target/$BUILD_PROFILE/bundle"
+    BUNDLE_FILE="$TEST_DIR/test.bundle"
+    "$BUNDLE_BIN" create --source "ipn:3.1" --destination "ipn:2.0" \
+        --payload "Hello, bundle processing test" --output "$BUNDLE_FILE"
+fi
+
+BPA_LOG="$TEST_DIR/bpa.log"
+
 echo ""
 echo "=== Starting BPA Server ==="
-"$BPA_BIN" -c "$TEST_DIR/config.toml" &
+echo "Server log: $BPA_LOG"
+"$BPA_BIN" -c "$TEST_DIR/config.toml" > "$BPA_LOG" 2>&1 &
 BPA_PID=$!
 
-# Wait for server to start
-sleep 2
-
-if ! kill -0 "$BPA_PID" 2>/dev/null; then
+# Wait for the server to report readiness
+if ! wait_for_log "$BPA_LOG" "Started successfully" 1 20 "$BPA_PID"; then
     echo "ERROR: BPA server failed to start"
-    wait "$BPA_PID" || true
+    cat "$BPA_LOG"
     exit 1
 fi
 
 echo "BPA server started with PID $BPA_PID"
 
-# Determine bundle file to use
-BUNDLE_FILE="${1:-}"
-if [ -z "$BUNDLE_FILE" ]; then
+if [ "$INTERACTIVE" = true ]; then
     echo ""
-    echo "No bundle file specified."
+    echo "Interactive mode."
     echo "To test, copy a bundle file to: $TEST_DIR/outbox/"
     echo ""
     echo "Example:"
@@ -170,20 +238,23 @@ echo "=== Submitting bundle to BPA ==="
 echo "Bundle: $BUNDLE_FILE"
 cp "$BUNDLE_FILE" "$TEST_DIR/outbox/test_bundle.bin"
 
-# Wait for processing
-echo "Waiting for bundle to be processed..."
-sleep 3
+FAILED=0
 
-# Check if the bundle was processed (file should be removed from outbox)
-if [ -f "$TEST_DIR/outbox/test_bundle.bin" ]; then
-    echo "WARNING: Bundle file still in outbox - may not have been processed"
-else
+# The bundle must be consumed from the outbox
+echo "Waiting for bundle to be processed..."
+if wait_for 20 test ! -f "$TEST_DIR/outbox/test_bundle.bin"; then
     echo "Bundle file was consumed from outbox"
+else
+    echo "ERROR: Bundle file still in outbox - not processed"
+    FAILED=1
 fi
 
-# Check for any output in inbox
-OUTPUT_COUNT=$(find "$TEST_DIR/inbox" -type f 2>/dev/null | wc -l)
-if [ "$OUTPUT_COUNT" -gt 0 ]; then
+# ... and an output bundle must appear in the peer inbox
+inbox_has_output() {
+    [ "$(find "$TEST_DIR/inbox" -type f 2>/dev/null | wc -l)" -gt 0 ]
+}
+if wait_for 20 inbox_has_output; then
+    OUTPUT_COUNT=$(find "$TEST_DIR/inbox" -type f 2>/dev/null | wc -l)
     echo ""
     echo "=== Output Bundles ($OUTPUT_COUNT) ==="
     ls -la "$TEST_DIR/inbox"
@@ -193,11 +264,18 @@ if [ "$OUTPUT_COUNT" -gt 0 ]; then
         echo "Output bundles will be saved to: $OUTPUT_DIR"
     fi
 else
-    echo "No output bundles generated"
+    echo "ERROR: no output bundle appeared in the peer inbox"
+    FAILED=1
 fi
 
 echo ""
+if [ "$FAILED" -ne 0 ]; then
+    echo "=== Test FAILED ==="
+    echo "Last 50 lines of the server log:"
+    tail -n 50 "$BPA_LOG"
+    exit 1
+fi
+
 echo "=== Test Complete ==="
-echo "Check the log output above for any parsing errors."
 echo ""
 echo "Stopping BPA server..."
