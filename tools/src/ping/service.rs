@@ -722,3 +722,125 @@ impl hardy_bpa::services::Service for Service {
         // Status reports arrive via on_deliver when report_to = service EID
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use hardy_bpv7::eid::IpnNodeId;
+
+    use super::*;
+
+    // min/max/avg/stddev over a known sample set, recorded out of order to
+    // catch a swapped min/max fold.
+    #[test]
+    fn test_statistics_math() {
+        let mut stats = Statistics::default();
+        stats.record_rtt(Duration::from_millis(4));
+        stats.record_rtt(Duration::from_millis(2));
+        stats.record_rtt(Duration::from_millis(6));
+
+        assert_eq!(stats.received, 3);
+        assert_eq!(stats.min_rtt, Some(Duration::from_millis(2)));
+        assert_eq!(stats.max_rtt, Some(Duration::from_millis(6)));
+        assert_eq!(stats.avg_rtt(), Some(Duration::from_millis(4)));
+        // Population stddev of {2ms, 4ms, 6ms} is 1632.99us; the integer
+        // arithmetic truncates to 1632us.
+        assert_eq!(stats.stddev_rtt(), Some(Duration::from_micros(1632)));
+    }
+
+    // Identical samples have zero spread.
+    #[test]
+    fn test_statistics_identical_samples() {
+        let mut stats = Statistics::default();
+        for _ in 0..3 {
+            stats.record_rtt(Duration::from_millis(5));
+        }
+
+        assert_eq!(stats.min_rtt, Some(Duration::from_millis(5)));
+        assert_eq!(stats.max_rtt, Some(Duration::from_millis(5)));
+        assert_eq!(stats.avg_rtt(), Some(Duration::from_millis(5)));
+        assert_eq!(stats.stddev_rtt(), Some(Duration::ZERO));
+    }
+
+    // A single sample has an average but no defined deviation.
+    #[test]
+    fn test_statistics_single_sample() {
+        let mut stats = Statistics::default();
+        stats.record_rtt(Duration::from_millis(2));
+
+        assert_eq!(stats.avg_rtt(), Some(Duration::from_millis(2)));
+        assert_eq!(stats.stddev_rtt(), None);
+    }
+
+    // No samples: no averages, and 0% loss when nothing was sent.
+    #[test]
+    fn test_statistics_empty() {
+        let stats = Statistics::default();
+
+        assert_eq!(stats.avg_rtt(), None);
+        assert_eq!(stats.stddev_rtt(), None);
+        assert_eq!(stats.min_rtt, None);
+        assert_eq!(stats.max_rtt, None);
+        assert_eq!(stats.loss_percent(), 0.0);
+    }
+
+    #[test]
+    fn test_loss_percent() {
+        let mut stats = Statistics {
+            sent: 4,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            stats.record_rtt(Duration::from_millis(1));
+        }
+        assert_eq!(stats.loss_percent(), 25.0);
+
+        stats.record_rtt(Duration::from_millis(1));
+        assert_eq!(stats.loss_percent(), 0.0);
+    }
+
+    // Text always parses to the 3-element `Eid::Ipn` form; the legacy
+    // 2-element form only arises from CBOR decoding, so it is constructed
+    // directly here.
+    fn legacy_ipn(node_number: u32, service_number: u32) -> Eid {
+        Eid::LegacyIpn {
+            fqnn: IpnNodeId {
+                allocator_id: 0,
+                node_number,
+            },
+            service_number,
+        }
+    }
+
+    fn eid(s: &str) -> Eid {
+        s.parse().unwrap()
+    }
+
+    // RFC 9758: the legacy 2-element and 3-element encodings of the same ipn
+    // endpoint are distinct Eid variants but the same endpoint; anything else
+    // that differs is a different endpoint.
+    #[test]
+    fn test_same_endpoint() {
+        // 2-element vs 3-element encodings of ipn:0.1.2 collapse, both ways.
+        assert!(same_endpoint(&legacy_ipn(1, 2), &eid("ipn:0.1.2")));
+        assert!(same_endpoint(&eid("ipn:0.1.2"), &legacy_ipn(1, 2)));
+
+        // Structural equality still matches.
+        assert!(same_endpoint(&eid("ipn:1.2"), &eid("ipn:0.1.2")));
+        assert!(same_endpoint(&Eid::Null, &Eid::Null));
+
+        // Different service or node numbers do not match.
+        assert!(!same_endpoint(&legacy_ipn(1, 2), &eid("ipn:1.3")));
+        assert!(!same_endpoint(&legacy_ipn(1, 2), &eid("ipn:2.2")));
+
+        // dtn endpoints differing only in demux do not match.
+        assert!(!same_endpoint(&eid("dtn://node/a"), &eid("dtn://node/b")));
+
+        // Different schemes do not match.
+        assert!(!same_endpoint(&eid("dtn://node/a"), &eid("ipn:1.2")));
+
+        // The null endpoint has no node-id (the to_node_id Err arm).
+        assert!(!same_endpoint(&Eid::Null, &eid("ipn:1.2")));
+    }
+}
