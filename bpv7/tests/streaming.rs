@@ -22,15 +22,20 @@ fn large_payload_bundle() -> Box<[u8]> {
 }
 
 // Feed `full` to a fresh parser in `chunk`-byte pushes until it reports
-// `Partial`, returning (consumed-so-far, the tail continuation, bytes fed).
-fn drive_to_partial(full: &[u8], chunk: usize, parser_chunk: usize) -> (Bytes, PayloadTail, usize) {
+// `Partial`, returning (the parser, consumed-so-far, the tail continuation,
+// bytes fed). Callers that don't `finish()` bind the parser to `_`.
+fn drive_to_partial(
+    full: &[u8],
+    chunk: usize,
+    parser_chunk: usize,
+) -> (BundleParser, Bytes, PayloadTail, usize) {
     let mut parser = BundleParser::new(parser_chunk);
     let mut fed = 0;
     for c in full.chunks(chunk) {
         fed += c.len();
         match parser.push(Bytes::copy_from_slice(c)).unwrap() {
             ParserProgress::NeedMore(_) => {}
-            ParserProgress::Partial { consumed, tail } => return (consumed, tail, fed),
+            ParserProgress::Partial { consumed, tail } => return (parser, consumed, tail, fed),
             ParserProgress::Ready(_) => panic!("oversized payload must not parse as Ready"),
         }
     }
@@ -46,22 +51,7 @@ fn large_payload_partial_then_finish() {
 
     // 20-byte chunks so the primary block alone spans several pushes (exercises
     // the NeedMore caching + freeze path), with a 256-byte parser chunk size.
-    let mut parser = BundleParser::new(256);
-    let mut fed = 0;
-    let mut reached = None;
-    for c in full.chunks(20) {
-        fed += c.len();
-        match parser.push(Bytes::copy_from_slice(c)).unwrap() {
-            ParserProgress::NeedMore(_) => {}
-            ParserProgress::Partial { consumed, tail } => {
-                reached = Some((consumed, tail, fed));
-                break;
-            }
-            ParserProgress::Ready(_) => panic!("oversized payload must not parse as Ready"),
-        }
-    }
-
-    let (consumed, tail, fed) = reached.expect("parser should reach Partial");
+    let (parser, consumed, tail, fed) = drive_to_partial(&full, 20, 256);
     assert_eq!(consumed.len(), fed, "consumed is everything pushed so far");
     assert_eq!(
         consumed.as_ref(),
@@ -97,7 +87,7 @@ fn large_payload_partial_then_finish() {
 #[test]
 fn partial_tail_drains_and_verifies_crc() {
     let full = large_payload_bundle();
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
 
     let mut complete = false;
     for c in full[fed..].chunks(37) {
@@ -115,7 +105,7 @@ fn partial_tail_drains_and_verifies_crc() {
 #[test]
 fn partial_tail_detects_crc_corruption() {
     let full = large_payload_bundle();
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
 
     // Byte 0 of the tail is well inside the payload body.
     let mut corrupt = full[fed..].to_vec();
@@ -132,7 +122,7 @@ fn partial_tail_detects_crc_corruption() {
 #[test]
 fn partial_tail_detects_truncation() {
     let full = large_payload_bundle();
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
 
     // Feed all but the last 4 bytes (CRC tail + outer break never arrive).
     let tail_bytes = &full[fed..];
@@ -153,7 +143,7 @@ fn partial_tail_detects_truncation() {
 #[test]
 fn partial_tail_rejects_trailing_data() {
     let full = large_payload_bundle();
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
 
     assert!(tail.push(&full[fed..]).unwrap(), "tail should complete");
     let err = tail.push(&[0xFF]).unwrap_err();
@@ -169,7 +159,7 @@ fn partial_tail_rejects_trailing_data() {
 #[test]
 fn partial_tail_rejects_trailing_in_completing_push() {
     let full = large_payload_bundle();
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
 
     let mut tail_plus_smuggled = full[fed..].to_vec();
     tail_plus_smuggled.push(0xAB); // one extra byte past the outer break
@@ -267,7 +257,7 @@ fn crc_none_indefinite_payload() {
         "craft is a valid bundle"
     );
 
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
     assert!(tail.push(&full[fed..]).unwrap(), "tail should complete");
     tail.finish().unwrap();
 }
@@ -282,7 +272,7 @@ fn crc32_indefinite_payload() {
         "craft is a valid bundle"
     );
 
-    let (_consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
+    let (_, _consumed, mut tail, fed) = drive_to_partial(&full, 20, 256);
     assert!(
         tail.push(&full[fed..]).unwrap(),
         "tail should complete + verify CRC"

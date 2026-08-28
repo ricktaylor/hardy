@@ -1284,6 +1284,136 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     bpa.shutdown().await;
 }
 
+/// The gate's reporting split: a hop-exhausted arrival with the report flags
+/// set emits the §5.6/§5.10 reception + deletion report pair — the deletion
+/// citing `HopLimitExceeded` — while an already-expired arrival with the same
+/// flags emits nothing at all (anti-amplification: it is treated as if it
+/// never arrived). Swapping the two gate branches fails both halves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_reports_hop_exhaustion_but_not_expiry() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false);
+
+    // A CLA with a peer for the remote node — the route for the reports
+    // (report-to defaults to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+    let report_flags = Flags {
+        receipt_report_requested: true,
+        delete_report_requested: true,
+        ..Default::default()
+    };
+
+    // Hop-exhausted, report-requesting transit bundle.
+    let (_, data) = Builder::new(remote_source.clone(), dest.clone())
+        .with_flags(report_flags.clone())
+        .with_hop_count(&HopInfo { limit: 1, count: 2 })
+        .with_payload(Cow::Borrowed(b"opaque".as_slice()))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let mut inbound = Bytes::from(data);
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(Some(&remote_node), None, &mut inbound)
+        .await
+        .unwrap();
+
+    // Exactly the report pair comes out of the CLA — the bundle itself must
+    // not be forwarded. Both are admin records to the source.
+    let mut reception = None;
+    let mut deletion = None;
+    for _ in 0..2 {
+        // Event-driven wait; the timeout only bounds a regression.
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for a status report")
+        .expect("Channel closed");
+        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+        assert!(
+            parsed.bundle.primary.flags.is_admin_record,
+            "only status reports may leave the node for a gated bundle"
+        );
+        assert_eq!(parsed.bundle.primary.destination, remote_source);
+        let body = parsed
+            .bundle
+            .blocks
+            .get(&1)
+            .expect("report has a payload block")
+            .payload(&parsed.data)
+            .expect("report payload in bundle");
+        let AdministrativeRecord::BundleStatusReport(status) =
+            hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+        assert_eq!(status.bundle_id.source, remote_source);
+        if status.received.is_some() {
+            reception = Some(status);
+        } else if status.deleted.is_some() {
+            deletion = Some(status);
+        } else {
+            panic!("status report asserts neither reception nor deletion");
+        }
+    }
+    let reception = reception.expect("reception report emitted");
+    assert_eq!(reception.reason, ReasonCode::NoAdditionalInformation);
+    let deletion = deletion.expect("deletion report emitted");
+    assert_eq!(deletion.reason, ReasonCode::HopLimitExceeded);
+
+    // An already-expired arrival with the same report flags: total silence.
+    let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    let timestamp = CreationTimestamp::from_parts(Some(DtnTime::saturating_from(past)), 1);
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(report_flags)
+        .with_lifetime(Duration::from_secs(60))
+        .with_payload(Cow::Borrowed(b"opaque".as_slice()))
+        .build(timestamp)
+        .unwrap();
+    let mut inbound = Bytes::from(data);
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(Some(&remote_node), None, &mut inbound)
+        .await
+        .unwrap();
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "an expired-at-arrival bundle must produce no reports at all"
+    );
+}
+
 /// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
 /// truncated — the parser takes the streaming fallback (`Partial`) though the
 /// stream has already ended — must be an internal drop, not handed to the

@@ -721,6 +721,102 @@ mod tests {
         assert!(bundle.blocks.contains_key(&1), "payload survives");
     }
 
+    // The NoKey liveness policy through both real keyed pipelines: a
+    // BCB-encrypted Hop Count this node has no key for is fatal at ingress
+    // (the anti-loop defense cannot be enforced, so the bundle must not be
+    // forwarded), while the one-shot validate path returns it as a fact for
+    // the call site to adjudicate — `dispatcher::restart` ignores the list
+    // (tolerating a since-rotated key), and the accept/forward paths reject
+    // through `reject_undecryptable_liveness`.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn nokey_hop_count_fatal_at_ingress_a_fact_at_validate() {
+        use hardy_bpv7::{
+            bpsec::{
+                encryptor::{Context, Encryptor},
+                key::{EncAlgorithm, Key, Operation, Type},
+                no_keys,
+            },
+            builder::Builder,
+            creation_timestamp::CreationTimestamp,
+            hop_info::HopInfo,
+        };
+
+        let enc_k = Key {
+            key_type: Type::OctetSequence {
+                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
+            },
+            key_algorithm: None,
+            enc_algorithm: Some(EncAlgorithm::A256GCM),
+            operations: Some([Operation::Encrypt].into_iter().collect()),
+            id: Some("ipn:2.1".into()),
+            key_use: None,
+        };
+
+        let (built, data) =
+            Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.99".parse().unwrap())
+                .with_hop_count(&HopInfo {
+                    limit: 64,
+                    count: 1,
+                })
+                .with_payload(b"payload".as_slice().into())
+                .build(CreationTimestamp::now())
+                .unwrap();
+        let hop_block = *built
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::HopCount))
+            .expect("builder emitted the Hop Count block")
+            .0;
+
+        let encrypted = Bytes::from(
+            Encryptor::new(&built, &data)
+                .encrypt_block(
+                    hop_block,
+                    Context::AES_GCM(Default::default()),
+                    "ipn:0.2.1".parse().unwrap(),
+                    &enc_k,
+                )
+                .map_err(|(_, e)| e)
+                .expect("encrypt the Hop Count block")
+                .rebuild()
+                .expect("rebuild the encrypted bundle"),
+        );
+
+        // Ingress: fatal, with a recoverable bundle for the reception report.
+        // (NoKey has no RFC 9172 reason of its own; it maps to the generic
+        // BlockUnintelligible.)
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Final(encrypted.clone()))
+            .await
+            .expect("channel open");
+        match parse_headers(&mut rx, 1 << 20, no_keys).await {
+            Err(HeaderFailure::Invalid(Some((_, reason)))) => {
+                assert_eq!(reason, ReasonCode::BlockUnintelligible)
+            }
+            Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
+            Err(_) => panic!("expected Invalid with a recoverable bundle"),
+        }
+
+        // Validate: a fact, not a verdict — the Ok is what lets restart
+        // tolerate the bundle; the accept/forward call sites then reject it.
+        let (_, nokey) =
+            parse_validate_with_provider(encrypted, no_keys).expect("validate returns the facts");
+        assert_eq!(nokey, vec![(hop_block, block::Type::HopCount)]);
+        assert!(matches!(
+            reject_undecryptable_liveness(&nokey, true),
+            Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+        ));
+
+        // BundleAge is liveness-critical only on an unclocked node.
+        let age_fact = [(9, block::Type::BundleAge)];
+        assert!(reject_undecryptable_liveness(&age_fact, true).is_ok());
+        assert!(matches!(
+            reject_undecryptable_liveness(&age_fact, false),
+            Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
+        ));
+    }
+
     #[test]
     fn reception_reason_precedence() {
         let mut c = checks::Classification::default();
