@@ -368,6 +368,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     use super::*;
 
     // send() reports Closed, not success, when the writer task is gone.
@@ -380,5 +385,182 @@ mod tests {
             handle.send(codec::Message::Keepalive).await,
             Err(SendError::Closed)
         ));
+    }
+
+    // ---- SessionWriter::run ----
+
+    // What the transport observed, in order.
+    #[derive(Debug)]
+    enum SinkEvent {
+        Msg(codec::Message),
+        Flush,
+        Close,
+    }
+
+    // A futures::Sink that reports every operation to a channel the test
+    // awaits on, so every assertion is event-driven rather than timed.
+    struct RecordingSink {
+        events: tokio::sync::mpsc::UnboundedSender<SinkEvent>,
+        fail_send: bool,
+    }
+
+    fn recording_sink(
+        fail_send: bool,
+    ) -> (
+        RecordingSink,
+        tokio::sync::mpsc::UnboundedReceiver<SinkEvent>,
+    ) {
+        let (events, events_rx) = tokio::sync::mpsc::unbounded_channel();
+        (RecordingSink { events, fail_send }, events_rx)
+    }
+
+    impl futures::Sink<codec::Message> for RecordingSink {
+        type Error = codec::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: codec::Message) -> Result<(), Self::Error> {
+            if self.fail_send {
+                return Err(codec::Error::Io(std::io::Error::other("sink failed")));
+            }
+            _ = self.events.send(SinkEvent::Msg(item));
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            _ = self.events.send(SinkEvent::Flush);
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            _ = self.events.send(SinkEvent::Close);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    // Keepalives are emitted at exactly the negotiated interval when idle,
+    // and a Send resets the idle clock. Paused time makes the schedule
+    // deterministic: the runtime auto-advances the clock to the next timer
+    // whenever every task is blocked, so there is no real waiting.
+    #[tokio::test(start_paused = true)]
+    async fn run_emits_keepalives_when_idle_and_resets_on_send() {
+        let interval = tokio::time::Duration::from_secs(5);
+        let start = tokio::time::Instant::now();
+        let (sink, mut events) = recording_sink(false);
+        let (handle, writer) = create_writer(
+            sink,
+            Some(interval),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let task = tokio::spawn(writer.run());
+
+        // First keepalive after exactly one idle interval
+        assert!(matches!(
+            events.recv().await,
+            Some(SinkEvent::Msg(codec::Message::Keepalive))
+        ));
+        assert!(matches!(events.recv().await, Some(SinkEvent::Flush)));
+        assert_eq!(start.elapsed(), interval);
+
+        // A Send restarts the idle clock from the moment it was written
+        handle
+            .send(codec::Message::SessionTerm(
+                codec::SessionTermMessage::default(),
+            ))
+            .await
+            .expect("send must succeed");
+        let sent_at = tokio::time::Instant::now();
+        assert!(matches!(
+            events.recv().await,
+            Some(SinkEvent::Msg(codec::Message::SessionTerm(_)))
+        ));
+        assert!(matches!(events.recv().await, Some(SinkEvent::Flush)));
+
+        assert!(matches!(
+            events.recv().await,
+            Some(SinkEvent::Msg(codec::Message::Keepalive))
+        ));
+        assert_eq!(
+            sent_at.elapsed(),
+            interval,
+            "the send must reset the idle clock"
+        );
+
+        // Dropping every handle closes the command channel and the transport
+        drop(handle);
+        assert!(matches!(events.recv().await, Some(SinkEvent::Flush)));
+        assert!(matches!(events.recv().await, Some(SinkEvent::Close)));
+        task.await.unwrap();
+    }
+
+    // Consecutive Feeds stream into the transport and are flushed once,
+    // when the command queue runs dry.
+    #[tokio::test]
+    async fn run_flushes_once_when_feed_queue_runs_dry() {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        // Queue both feeds before the writer starts so the drain sees them
+        // back to back
+        for _ in 0..2 {
+            tx.send(WriteCommand::Feed {
+                msg: codec::Message::Keepalive,
+            })
+            .await
+            .unwrap();
+        }
+
+        let (sink, mut events) = recording_sink(false);
+        let writer = SessionWriter::new(sink, rx, None, tokio_util::sync::CancellationToken::new());
+        let task = tokio::spawn(writer.run());
+
+        // Both messages hit the transport before the single flush
+        assert!(matches!(events.recv().await, Some(SinkEvent::Msg(_))));
+        assert!(matches!(events.recv().await, Some(SinkEvent::Msg(_))));
+        assert!(matches!(events.recv().await, Some(SinkEvent::Flush)));
+
+        WriterHandle::new(tx).close().await;
+        assert!(matches!(events.recv().await, Some(SinkEvent::Close)));
+        task.await.unwrap();
+    }
+
+    // A failed transport write surfaces on the Send result and closes the
+    // writer; later commands observe the closed channel.
+    #[tokio::test]
+    async fn run_reports_transport_failure_and_closes() {
+        let (sink, mut events) = recording_sink(true);
+        let (handle, writer) =
+            create_writer(sink, None, tokio_util::sync::CancellationToken::new());
+        let task = tokio::spawn(writer.run());
+
+        assert!(matches!(
+            handle.send(codec::Message::Keepalive).await,
+            Err(SendError::Transport(_))
+        ));
+        task.await.unwrap();
+        assert!(!handle.feed(codec::Message::Keepalive).await);
+        assert!(matches!(events.recv().await, Some(SinkEvent::Close)));
+    }
+
+    // Cancellation stops an idle writer and closes the transport.
+    #[tokio::test]
+    async fn run_stops_on_cancellation() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let (sink, mut events) = recording_sink(false);
+        let (_handle, writer) = create_writer(sink, None, token.clone());
+        let task = tokio::spawn(writer.run());
+
+        token.cancel();
+        task.await.unwrap();
+        assert!(matches!(events.recv().await, Some(SinkEvent::Close)));
     }
 }

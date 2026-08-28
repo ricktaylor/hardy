@@ -245,4 +245,69 @@ mod tests {
             vec![Tcpclv4Builder::REGISTERED_LISTEN_ADDRESS]
         );
     }
+
+    // RFC 9174 Section 2.1: an entity may support zero or more passive
+    // listening elements; listen() accumulates one address per call.
+    #[test]
+    fn listen_accumulates_listening_elements() {
+        let one = crate::tests::loopback();
+        let two = crate::tests::loopback();
+        let builder = Tcpclv4Builder::new().listen(one).listen(two);
+        assert_eq!(builder.listeners, vec![one, two]);
+    }
+
+    // A socket that cannot be bound fails the build instead of a
+    // background accept task.
+    #[test]
+    fn bind_failures_surface_at_build() {
+        let occupied = TcpListener::bind(crate::tests::loopback()).unwrap();
+        let address = occupied.local_addr().unwrap();
+        let Err(err) = Tcpclv4Builder::new().listen(address).build() else {
+            panic!("binding an occupied port must fail");
+        };
+        assert!(matches!(err, Error::BindListener { .. }));
+    }
+
+    // Requiring TLS without an identity leaves listeners nothing they
+    // could serve, rejected before any socket is bound.
+    #[test]
+    fn required_tls_listeners_need_an_identity() {
+        let Err(err) = Tcpclv4Builder::new()
+            .listen(crate::tests::loopback())
+            .tls(
+                Tls::builder()
+                    .dangerous()
+                    .insecure_skip_verify()
+                    .required(true)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+        else {
+            panic!("listeners under identity-less required TLS must fail");
+        };
+        assert!(matches!(err, Error::RequiredTlsWithoutIdentity));
+    }
+
+    #[test]
+    fn no_keepalive_disables_keepalives() {
+        let builder = Tcpclv4Builder::new().no_keepalive();
+        assert!(builder.keepalive_interval.is_disabled());
+    }
+
+    // The insecure stage needs no files, so the Required policy is
+    // observable without touching disk.
+    #[test]
+    fn required_material_lands_as_the_required_policy() {
+        let builder = Tcpclv4Builder::new().tls(
+            Tls::builder()
+                .dangerous()
+                .insecure_skip_verify()
+                .required(true)
+                .build()
+                .unwrap(),
+        );
+        let tls = builder.tls.as_ref().expect("TLS material must be present");
+        assert!(tls.is_required());
+    }
 }

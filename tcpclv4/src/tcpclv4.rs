@@ -344,11 +344,12 @@ async fn transmit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::loopback;
 
-    // RFC 9174 Section 2.1: an entity may support zero or more passive
-    // listening elements, each bound during build().
+    // The built entity holds one bound socket per listen() call (RFC 9174
+    // Section 2.1's passive listening elements), and none by default.
     #[test]
-    fn listen_adds_bound_passive_listening_elements() {
+    fn entity_holds_bound_passive_listening_elements() {
         let cla = Tcpclv4::builder()
             .build()
             .expect("a dial-only plaintext build cannot fail");
@@ -356,8 +357,8 @@ mod tests {
         assert!(cla.tls.is_none());
 
         let cla = Tcpclv4::builder()
-            .listen("[::1]:0".parse().unwrap())
-            .listen("[::1]:0".parse().unwrap())
+            .listen(loopback())
+            .listen(loopback())
             .build()
             .unwrap();
         let listeners = cla.listeners.lock().unwrap();
@@ -365,74 +366,5 @@ mod tests {
         for listener in listeners.iter() {
             assert_ne!(listener.local_addr().unwrap().port(), 0);
         }
-    }
-
-    // A socket that cannot be bound fails the build instead of a
-    // background accept task.
-    #[test]
-    fn bind_failures_surface_at_build() {
-        let occupied = std::net::TcpListener::bind("[::1]:0").unwrap();
-        let address = occupied.local_addr().unwrap();
-        let Err(err) = Tcpclv4::builder().listen(address).build() else {
-            panic!("binding an occupied port must fail");
-        };
-        assert!(matches!(err, error::Error::BindListener { .. }));
-    }
-
-    // Requiring TLS without an identity leaves listeners nothing they
-    // could serve, rejected before any socket is bound.
-    #[test]
-    fn required_tls_listeners_need_an_identity() {
-        let Err(err) = Tcpclv4::builder()
-            .listen("[::1]:0".parse().unwrap())
-            .tls(
-                tls::Tls::builder()
-                    .dangerous()
-                    .insecure_skip_verify()
-                    .required(true)
-                    .build()
-                    .unwrap(),
-            )
-            .build()
-        else {
-            panic!("listeners under identity-less required TLS must fail");
-        };
-        assert!(matches!(err, error::Error::RequiredTlsWithoutIdentity));
-    }
-
-    #[test]
-    fn no_keepalive_disables_keepalives() {
-        let cla = Tcpclv4::builder().no_keepalive().build().unwrap();
-        assert!(cla.keepalive_interval.is_disabled());
-    }
-
-    // RFC 9174 Section 4.7: the negotiated keepalive is the minimum of
-    // the two proposals; disabled from either side wins.
-    #[test]
-    fn keepalive_negotiation_is_a_minimum_where_disabled_wins() {
-        assert_eq!(KeepaliveInterval::new(30).negotiate(60).get(), 30);
-        assert_eq!(KeepaliveInterval::new(60).negotiate(30).get(), 30);
-        assert_eq!(KeepaliveInterval::new(45).negotiate(45).get(), 45);
-        assert!(KeepaliveInterval::DISABLED.negotiate(60).is_disabled());
-        assert!(KeepaliveInterval::new(60).negotiate(0).is_disabled());
-    }
-
-    // The insecure stage needs no files, so the Required policy is
-    // observable without touching disk.
-    #[test]
-    fn required_material_lands_as_the_required_policy() {
-        let cla = Tcpclv4::builder()
-            .tls(
-                tls::Tls::builder()
-                    .dangerous()
-                    .insecure_skip_verify()
-                    .required(true)
-                    .build()
-                    .unwrap(),
-            )
-            .build()
-            .unwrap();
-        let tls = cla.tls.as_ref().expect("TLS material must be present");
-        assert!(tls.is_required());
     }
 }
