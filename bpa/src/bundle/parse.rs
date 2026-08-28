@@ -377,14 +377,13 @@ where
     } = parsed;
     let key_source = key_provider(&raw, &headers);
     match verify_headers(&headers, &*key_source, &mut raw, &bcb_ops, &mut bib_ops) {
-        Ok((extracted, to_remove, report_reason)) => Ok((
+        Ok((extracted, to_remove, report_reason, deferred_bibs)) => Ok((
             HeaderVerify {
                 raw,
                 extracted,
                 to_remove,
                 report_reason,
-                // After `verify`, the leftover `bib_ops` is exactly the block-1 set.
-                deferred_bibs: bib_ops,
+                deferred_bibs,
             },
             headers,
             tail,
@@ -402,17 +401,27 @@ where
 /// Header verification (§A classify → §B/§C8/§C7 verify → §D extract) against the
 /// resident `headers` buffer — the `consumed` prefix for an oversized streamed
 /// payload, or the whole bundle otherwise. Mutates `raw.blocks` (BIB coverage
-/// stamps) and drains `bib_ops` to the block-1 (payload) leftovers that
-/// [`finalize_with_provider`] re-verifies once the payload is resident; the §E
-/// removals are deferred there too. Returns the extracted extension fields, the
-/// blocks to remove, and the reception-report reason.
+/// stamps). Returns the extracted extension fields, the blocks to remove, the
+/// reception-report reason, and — drained out of `bib_ops` by the keyed verify —
+/// the deferred block-1 (payload) op-sets that [`finalize_with_provider`]
+/// re-verifies once the payload is resident; the §E removals are deferred there
+/// too.
+#[allow(clippy::type_complexity)]
 fn verify_headers(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     raw: &mut Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<(ExtractedExtensionFields, HashSet<u64>, ReasonCode), hardy_bpv7::Error> {
+) -> Result<
+    (
+        ExtractedExtensionFields,
+        HashSet<u64>,
+        ReasonCode,
+        HashMap<u64, bpsec::bib::OperationSet>,
+    ),
+    hardy_bpv7::Error,
+> {
     // §A — classify; collect deletables; the report_* facts feed the
     // reception-report reason below.
     let classification = checks::classify_unsupported(&raw.blocks, bcb_ops, bib_ops, &[])?;
@@ -474,12 +483,6 @@ fn verify_headers(
     // other undecipherable block is forwarded intact for a downstream acceptor.
     reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
 
-    // Drain `bib_ops` to exactly the op-sets `verify` left with a deferred
-    // block-1 (payload) target — the leftover map IS the deferred set
-    // `finalize_with_provider` re-verifies once the payload is resident. A no-op
-    // on an all-resident buffer (`deferred_bibs` empty).
-    bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
-
     // §D — decode the well-known extension fields into the rich view. Decode
     // only: no canonical re-emission is queued — `finalize_with_provider`
     // passes an empty rewrite map (see the §E note there; non-canonical CBOR
@@ -487,7 +490,7 @@ fn verify_headers(
     // header-resident.
     let extracted = extract_extension_block_fields(headers, &raw.blocks, &decrypted)?;
 
-    Ok((extracted, to_remove, report_reason))
+    Ok((extracted, to_remove, report_reason, facts.deferred_bibs))
 }
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
@@ -599,9 +602,8 @@ where
 {
     match decrypted {
         Some(plaintext) => Ok(Some(hardy_cbor::decode::parse_exact(plaintext)?)),
-        // BCB-encrypted with no plaintext from §C8 — the wire payload is
-        // ciphertext, so there's nothing to decode in place.
-        None if block.bcb.is_some() => Ok(None),
+        // No plaintext from §C8: `extract` itself returns `Ok(None)` for a
+        // BCB-covered block (ciphertext in place) or a non-resident payload.
         None => block.extract(source),
     }
 }

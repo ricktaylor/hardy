@@ -692,7 +692,7 @@ mod tests {
             &no_updates,
         )
         .expect("covered-BIB decrypt failed");
-        checks::verify_all_bibs(
+        let deferred = checks::verify_all_bibs(
             &data,
             source,
             &bundle.blocks,
@@ -701,6 +701,7 @@ mod tests {
             &no_updates,
         )
         .expect("BIB verify failed");
+        assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
         (data, bundle, bcbs)
     }

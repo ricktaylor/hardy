@@ -350,21 +350,23 @@ impl Block {
 
     /// Decode this block's payload (from `source`) as a single CBOR `T`, with a
     /// smuggling check — no trailing bytes after the item (see
-    /// [`hardy_cbor::decode::parse_exact`]). `Ok(None)` if the payload's bytes
-    /// aren't resident in `source` (an over-claiming extent in a headers-only
-    /// buffer).
+    /// [`hardy_cbor::decode::parse_exact`]). `Ok(None)` if there is no plaintext
+    /// to decode in place: the payload's bytes aren't resident in `source` (an
+    /// over-claiming extent in a headers-only buffer), or the block is
+    /// BCB-covered so its wire bytes are ciphertext — decode the decrypted
+    /// plaintext with [`hardy_cbor::decode::parse_exact`] instead.
     ///
-    /// The payload is assumed **plaintext**: it's the caller's contract to decrypt
-    /// a BCB-protected block first and decode the plaintext with
-    /// [`hardy_cbor::decode::parse_exact`] — calling this on ciphertext mis-decodes
-    /// or errors. A decode failure surfaces as `T`'s own error via [`Error`]'s
-    /// `From` conversions; the decode is canonical iff `T`'s `FromCbor` is.
+    /// A decode failure surfaces as `T`'s own error via [`Error`]'s `From`
+    /// conversions; the decode is canonical iff `T`'s `FromCbor` is.
     pub fn extract<T>(&self, source: &[u8]) -> Result<Option<T>, Error>
     where
         T: FromCbor,
         T::Error: From<hardy_cbor::decode::Error>,
         Error: From<T::Error>,
     {
+        if self.bcb.is_some() {
+            return Ok(None);
+        }
         self.payload(source)
             .map(parse_exact)
             .transpose()

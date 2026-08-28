@@ -1238,9 +1238,9 @@ mod cascade_reencryption_tests {
 
 // Deferred block-1 (payload) BIB verification — the streaming ingress gate path.
 // On a headers-only buffer (oversized payload not yet drained), `verify` can't
-// check a BIB that targets the payload, so it reports it via `deferred_bibs`
-// without draining `bib_ops`; the gate retains exactly those and re-checks them
-// with `verify_payload` once the full bundle is resident.
+// check a BIB that targets the payload, so it drains that op-set out of
+// `bib_ops` and hands it over owned in `deferred_bibs`; the gate re-checks the
+// handed-over map with `verify_payload` once the full bundle is resident.
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod deferred_payload_bib_tests {
     use super::*;
@@ -1301,8 +1301,8 @@ mod deferred_payload_bib_tests {
         panic!("parser never reached Partial");
     }
 
-    // Header pass defers the block-1 BIB (payload not resident) without draining
-    // `bib_ops`; the retained op-set then verifies against the full bundle.
+    // Header pass defers the block-1 BIB (payload not resident), handing its
+    // op-set over owned; the map then verifies against the full bundle.
     #[test]
     fn payload_bib_deferred_then_verified() {
         let full = signed_large_payload();
@@ -1332,21 +1332,26 @@ mod deferred_payload_bib_tests {
             &no_updates,
         )
         .unwrap();
-        assert_eq!(
-            facts.deferred_bibs.as_slice(),
-            &[bib_block],
+        assert!(
+            facts.deferred_bibs.contains_key(&bib_block) && facts.deferred_bibs.len() == 1,
             "the block-1 BIB is deferred, not checked inline"
         );
         assert!(
-            bib_ops.contains_key(&bib_block),
-            "verify borrows bib_ops — it must not drain it"
+            !bib_ops.contains_key(&bib_block),
+            "verify hands the deferred op-set over owned — drained out of bib_ops"
         );
 
-        // The gate retains exactly the deferred set, then verifies it against the
-        // full (now-resident) bundle.
-        bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
-        checks::verify_payload(&full, &keys, &raw.blocks, &bib_ops, &decrypted, &no_updates)
-            .expect("deferred payload BIB verifies against the full bundle");
+        // The gate passes the handed-over map straight to the payload pass
+        // against the full (now-resident) bundle.
+        checks::verify_payload(
+            &full,
+            &keys,
+            &raw.blocks,
+            &facts.deferred_bibs,
+            &decrypted,
+            &no_updates,
+        )
+        .expect("deferred payload BIB verifies against the full bundle");
     }
 
     // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
@@ -1373,7 +1378,6 @@ mod deferred_payload_bib_tests {
             &no_updates,
         )
         .unwrap();
-        bib_ops.retain(|n, _| facts.deferred_bibs.contains(n));
 
         // Flip a byte in the middle of the 50 KB payload body.
         let mut tampered = full.to_vec();
@@ -1382,7 +1386,7 @@ mod deferred_payload_bib_tests {
             &tampered,
             &keys,
             &raw.blocks,
-            &bib_ops,
+            &facts.deferred_bibs,
             &decrypted,
             &no_updates,
         )

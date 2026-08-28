@@ -61,9 +61,9 @@ pub(crate) fn parse_with_keys(
     }
 
     // §C7 — verify every BIB with the supplied keys. `verify_all_bibs` borrows
-    // the op-map (the buffer is complete, so it defers nothing), leaving
-    // `parsed.bibs` intact for the later per-block `verify_block`.
-    checks::verify_all_bibs(
+    // the op-map, leaving `parsed.bibs` intact for the later per-block
+    // `verify_block`.
+    let deferred = checks::verify_all_bibs(
         &parsed.data,
         keys,
         &parsed.bundle.blocks,
@@ -71,6 +71,7 @@ pub(crate) fn parse_with_keys(
         &decrypted_data,
         &no_updates,
     )?;
+    debug_assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok(parsed)
 }

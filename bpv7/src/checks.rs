@@ -324,19 +324,38 @@ pub fn decrypt_and_validate_covered_bibs(
 
 // ===== Section C7 — verify all BIBs =====
 
-/// C7: Verify every BIB OperationSet against its targets, returning the BIB
-/// block numbers whose op-set still has an **unchecked block-1 (payload)
-/// target** — which happens when run on a headers-only buffer (the streaming
+/// The C7 defer-set: BIB block numbers whose op-set still has an **unchecked
+/// block-1 (payload) target**. `#[must_use]`: an unchecked payload target is
+/// an unverified integrity statement — defer it to [`verify_payload`] or
+/// assert the set empty; silently dropping it skips verification.
+#[must_use = "an unchecked payload target is an unverified integrity statement — defer to verify_payload or assert empty"]
+#[derive(Debug, Default)]
+pub struct DeferredBibs(SmallVec<[u64; 4]>);
+
+impl DeferredBibs {
+    /// No BIB was deferred: every target was resident and checked.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The deferred BIB block numbers.
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+/// C7: Verify every BIB OperationSet against its targets, returning the
+/// [`DeferredBibs`] whose op-set still has an unchecked block-1 (payload)
+/// target — which happens when run on a headers-only buffer (the streaming
 /// ingress gate), where the payload's over-claiming extent isn't resident so
-/// its bytes can't be read yet. Those are the op-sets the caller must defer to
-/// [`verify_payload`] once the payload is resident; the gate uses the returned
-/// set to `retain` exactly them in its `bib_ops` map (the leftover map then *is*
-/// the deferred set). For an all-resident buffer every target is checked and the
-/// returned set is **empty** — nothing to defer.
+/// its bytes can't be read yet. Those are the op-sets to re-check with
+/// [`verify_payload`] once the payload is resident ([`verify`] hands them
+/// over, drained out of its `bib_ops`, in
+/// [`VerifyFacts::deferred_bibs`]). For an all-resident buffer every target
+/// is checked and the returned set is **empty** — nothing to defer.
 ///
 /// `bib_ops` is **borrowed**, not drained: this stays a reusable verifier for
 /// the all-resident callers (tools, tests) that still need the map afterwards.
-/// Only the gate drains, and it does so itself from the returned set.
 ///
 /// NoKey on verify is a policy skip (matches BIB-decrypt-NoKey semantics); any
 /// other verify error fails. Targets that are BCB-encrypted but absent from
@@ -349,7 +368,7 @@ pub fn verify_all_bibs(
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<SmallVec<[u64; 4]>, Error> {
+) -> Result<DeferredBibs, Error> {
     let mut deferred = SmallVec::new();
     for (&bib_block_number, ops) in bib_ops {
         let mut defer = false;
@@ -395,7 +414,7 @@ pub fn verify_all_bibs(
             deferred.push(bib_block_number);
         }
     }
-    Ok(deferred)
+    Ok(DeferredBibs(deferred))
 }
 
 /// Second-pass companion to [`verify_all_bibs`] for the streaming ingress
@@ -465,12 +484,13 @@ pub struct VerifyFacts {
     /// their block type — caller applies the per-type NoKey policy
     /// (Preserve-soft; strict for `HopCount` + unclocked `BundleAge`).
     pub nokey_ext: SmallVec<[(u64, block::Type); 4]>,
-    /// BIB OperationSets (by block number) with an unchecked block-1 (payload)
-    /// target — the payload wasn't resident in this buffer (the streaming
-    /// ingress gate ran on headers only). The gate retains exactly these in its
-    /// `bib_ops` and re-verifies them via [`verify_payload`] once the payload is
+    /// BIB OperationSets (keyed by block number) with an unchecked block-1
+    /// (payload) target — the payload wasn't resident in this buffer (the
+    /// streaming ingress gate ran on headers only). [`verify`] drains them
+    /// out of its `bib_ops` and hands them over **owned**, so the caller
+    /// passes this map straight to [`verify_payload`] once the payload is
     /// drained. Empty for an all-resident buffer.
-    pub deferred_bibs: SmallVec<[u64; 4]>,
+    pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
 }
 
 /// Composed keyed verification: §B → §C8 → §C7.
@@ -552,11 +572,18 @@ pub fn verify(
         }
     }
 
-    // §C7 — verify every BIB, recording the op-sets with a deferred block-1
-    // (payload) target so the gate can retain exactly them. (A block-1 BCB —
-    // payload confidentiality — is left untouched in `bcb_ops` by §B/§C8 and
-    // decrypted at delivery via `bpsec::block_data`.)
-    facts.deferred_bibs = verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?;
+    // §C7 — verify every BIB, draining the op-sets with a deferred block-1
+    // (payload) target out of `bib_ops` and handing them over owned in
+    // `facts.deferred_bibs` — the exact map `verify_payload` re-checks once
+    // the payload is resident. (A block-1 BCB — payload confidentiality — is
+    // left untouched in `bcb_ops` by §B/§C8 and decrypted at delivery via
+    // `bpsec::block_data`.)
+    for n in verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?.iter() {
+        let ops = bib_ops
+            .remove(&n)
+            .expect("deferred BIB numbers come from bib_ops keys");
+        facts.deferred_bibs.insert(n, ops);
+    }
 
     Ok(facts)
 }

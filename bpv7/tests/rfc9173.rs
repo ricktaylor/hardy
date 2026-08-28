@@ -78,9 +78,9 @@ fn validate_with_keys(
     }
 
     // §C7 — verify every BIB with the supplied keys (NoKey is soft).
-    // `verify_all_bibs` borrows the op-map (the buffer is complete, so it defers
-    // nothing), leaving `bib_ops` intact for the tests that inspect it.
-    checks::verify_all_bibs(
+    // `verify_all_bibs` borrows the op-map, leaving `bib_ops` intact for the
+    // tests that inspect it.
+    let deferred = checks::verify_all_bibs(
         &data,
         keys,
         &bundle.blocks,
@@ -88,6 +88,7 @@ fn validate_with_keys(
         &decrypted,
         &no_updates,
     )?;
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok((data, bundle, bcb_ops, bib_ops))
 }

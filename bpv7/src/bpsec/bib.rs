@@ -100,6 +100,7 @@ impl Operation {
 /// parser or by `Signer`, both of which guarantee it is non-empty (`to_cbor`
 /// relies on that invariant). External code builds BIBs via `Signer` and reads
 /// via the [`source`](Self::source)/[`operations`](Self::operations) accessors.
+#[derive(Debug)]
 pub struct OperationSet {
     // The EID of the security source.
     pub(crate) source: eid::Eid,

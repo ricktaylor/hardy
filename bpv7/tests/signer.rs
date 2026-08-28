@@ -73,7 +73,7 @@ fn sign_primary_removes_crc_and_verifies() {
 
     // Round-trip: the signature must verify.
     let (data, signed, bibs) = reparse(&signed_bytes);
-    checks::verify_all_bibs(
+    let deferred = checks::verify_all_bibs(
         &data,
         &keys,
         &signed.blocks,
@@ -82,6 +82,7 @@ fn sign_primary_removes_crc_and_verifies() {
         &HashMap::new(),
     )
     .expect("signed primary bundle must verify");
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     // §3.8.1: the primary's CRC must have been removed before signing.
     assert_eq!(
@@ -127,7 +128,7 @@ fn remove_integrity_clears_target_coverage() {
         .expect("Failed to rebuild");
 
     let (data, signed, bibs) = reparse(&signed_bytes);
-    checks::verify_all_bibs(
+    let deferred = checks::verify_all_bibs(
         &data,
         &keys,
         &signed.blocks,
@@ -136,6 +137,7 @@ fn remove_integrity_clears_target_coverage() {
         &HashMap::new(),
     )
     .expect("Failed to verify signed bundle");
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
     assert!(
         matches!(signed.blocks[&1].bib, block::BibCoverage::Some(_)),
         "payload block should report BIB coverage after signing"
