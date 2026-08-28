@@ -8,18 +8,21 @@
 //! concern (see `docs/streaming_pipeline_design.md` §5.2.2), not parser work.
 //!
 //! * [`parse_validate_with_provider`] — one-shot keyed validation of a complete
-//!   buffer, no block removal. It returns the list of liveness-critical
+//!   buffer, no block removal. It returns the list of BCB-protected well-known
 //!   extension blocks that couldn't be decrypted (no key); the caller decides
 //!   what to do with it. `dispatcher::restart` ignores it (re-check stored data
 //!   on startup, tolerating a since-rotated key), while `dispatcher::local` and
-//!   `filter::chain` pass it to [`reject_undecryptable_liveness`] (locally
-//!   originated / re-emitted bytes must be fully decryptable).
+//!   `filter::chain` pass it to [`reject_undecryptable_liveness`], which applies
+//!   the liveness policy (locally originated / re-emitted bytes must be fully
+//!   decryptable).
 //! * [`parse_headers`] + [`finalize_with_provider`] — the ingress pipeline,
 //!   split so the streaming gate can early-reject before the payload is spooled.
-//!   The header pass drops `delete_block_on_failure`-flagged unknowns, cascades
-//!   re-encryption of BCB-covered BIBs when their target list shrinks, and drains
-//!   BPSec down to the deferred block-1 (payload) targets; the finalize pass
-//!   verifies those and applies the block removals once the payload is resident.
+//!   The header pass classifies and *schedules* the removals — the
+//!   `delete_block_on_failure`-flagged unknowns and the §5.1.1 failure-drops
+//!   ([`HeaderVerify::to_remove`]) — and drains BPSec down to the deferred
+//!   block-1 (payload) targets; the finalize pass verifies those and applies
+//!   the removals — including the re-encryption cascade for BCB-covered BIBs
+//!   whose target list shrinks — once the payload is resident.
 //!   Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
 //!   bundle so the caller can emit a status report.
 
@@ -265,12 +268,6 @@ impl HeaderVerify {
     }
 }
 
-/// Drive the structural parser off the segment stream up to the parsed header
-/// chain (*without* draining an oversized payload), then run the keyed header
-/// verification against the resident bytes — the streaming gate's whole pre-drain
-/// stage in one call. `checks::verify` drains the payload-block BPSec into
-/// [`HeaderVerify::deferred_bibs`] for the post-drain [`finalize_with_provider`].
-///
 /// Why [`parse_headers`] failed. The first two are the CLA's business —
 /// the transfer must not be acknowledged ([`Cancelled`](Self::Cancelled)) or
 /// must be refused ([`TooLarge`](Self::TooLarge)) — while
@@ -290,6 +287,13 @@ pub enum HeaderFailure {
     Invalid(Option<(Bpv7Bundle, ReasonCode)>),
 }
 
+/// Drive the structural parser off the segment stream up to the parsed header
+/// chain (*without* draining an oversized payload), then run the keyed header
+/// verification against the resident bytes — the streaming gate's whole
+/// pre-drain stage in one call. The header verification drains the
+/// payload-block BPSec into [`HeaderVerify::deferred_bibs`] for the post-drain
+/// [`finalize_with_provider`].
+///
 /// `Ok` is the verified headers, the resident header `Bytes` (the whole bundle
 /// when it fit, else the `consumed` prefix), and the payload `tail` the caller
 /// drains — the drain continues the byte count this pass starts against

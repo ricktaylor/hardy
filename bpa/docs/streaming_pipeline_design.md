@@ -7,25 +7,27 @@
 | **Status** | Living doc — partially implemented (streaming parser + CLA segment delivery landed; storage / egress / spool-ingress pending) |
 | **Related** | `queue_architecture.md`, `storage_subsystem_design.md`, Editor (`bpv7/src/editor.rs`) |
 
-## Implementation status (2026-06-01)
+## Implementation status (2026-08-28)
 
 This is a living document: the sections below mix shipped behaviour with design targets. Current state on `refactor/parse` (now stacked on the streaming-CLA work).
 
 **Landed**
 
-- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`).
-- CLA segment delivery — `cla::Segment::{Next, Final}` and `Sink::dispatch_streamed(&dyn Receiver<Segment>)` alongside the retained `Sink::dispatch(Bytes)`. Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
+- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}` with the `PayloadTail` continuation for oversized streamed payloads (`finish` accepts the `Partial` `consumed` prefix), one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`).
+- CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
 - `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`; the rich decoded view now lives in `bpa::Bpv7Bundle`.
+- The parse-mode pipelines collapsed (§9.3, largely done): one-shot keyed validation is `bundle::parse::parse_validate_with_provider`, and ingress is the split pre-drain/post-drain pair `bundle::parse::parse_headers` + `finalize_with_provider`.
+- An interim in-memory form of the early gate: ingress header-parses directly off the segment stream (`parse_headers`), runs the pre-drain lifetime/hop early-reject gate (`HeaderVerify::gate_reason`), and drains an oversized payload tail through `PayloadTail` (`dispatcher::ingress::drain_payload`).
 
 **Interim (works, not yet the target shape)**
 
-- Ingress still concatenates the segment stream into one `Bytes` (`dispatcher::ingress::concat_stream`) and whole-buffer parses — the early-filter gate (§5.4), tee'd spool (§5.7), and payload-never-in-RAM property (§2.5) are not yet realised.
+- `drain_payload` spools the oversized tail into an in-memory `BytesMut` bounded by `max_bundle_size` — the single seam streaming storage will later replace; the tee'd spool (§5.7) and payload-never-in-RAM property (§2.5) are not yet realised. Only `dispatcher::local` still concatenates its stream (`stream::concat_stream`).
+- `checks::verify_payload`'s contiguous `whole: &[u8]` input and `finalize_with_provider`'s whole-buffer parameter are interim in the same way: they work only because the drain spools to RAM. When the storage-spool tranche lands, the deferred payload-BIB verification should move into the drain continuation as a streaming digest fed per-segment (the pattern `PayloadTail` already uses for the CRC), deleting `verify_payload` rather than adapting it. Note this carries keyed HMAC state across the drain's awaits — a deliberate departure from the header pass's key-material rule that the spool-tranche design must re-adjudicate explicitly. The deferral seam itself (`HeaderVerify::deferred_bibs`) is the durable half.
 - Decoded extension fields (`previous_node` / `age` / `hop_count`) have left `bpv7::Bundle` (§7.1 achieved) but currently live on `bpa::Bpv7Bundle` rather than `BundleMetadata`.
-- `bpa` still carries three parse-mode pipelines (`parse_{preserve,canonicalize,full}_with_provider`); the collapse to streaming-primitives-plus-filter-config (§9.3) is pending.
 
 **Pending**
 
-- Streaming storage (§3 — `BundleStorage::load` is still `-> Result<Option<Bytes>>`), egress `Cla::write` + Transformer chain (§6), early-filter gate and spool ingress (§5.4–5.7), Phases 0/3+ of §10.
+- Streaming storage (§3 — `BundleStorage::load` is still `-> Result<Option<Bytes>>`), egress `Cla::write` + Transformer chain (§6), the configurable early-filter hook and spool ingress (§5.4–5.7; the hard-coded lifetime/hop gate above is the interim form), Phases 0/3+ of §10.
 
 Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
@@ -280,7 +282,7 @@ The reconciler loop uses `Closeable` (§4) rather than a hand-rolled `select_bia
 
 #### 5.1.3. CLA Segment Delivery API
 
-The existing `Sink::dispatch()` method (which accepts complete `Bytes`) is retained for backwards compatibility. A new streaming variant uses the `Segment` pattern from §3.2 — ingress has the same commit-versus-abort requirement as storage write (end-of-bundle is `Segment::Final`; a mid-transfer abort such as TCPCLv4 XFER_REFUSE is a bare disconnect):
+Landed differently than sketched below: the buffered `Sink::dispatch(Bytes)` was **not** retained — the buffered/streamed trait pairs collapsed into a single streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (see the Implementation status block). The `Segment` pattern from §3.2 carries the same commit-versus-abort requirement as storage write (end-of-bundle is `Segment::Final`; a mid-transfer abort such as TCPCLv4 XFER_REFUSE is a bare disconnect). Original sketch:
 
 ```rust
 trait Sink {
@@ -362,7 +364,7 @@ The parser handles BIBs and BCBs asymmetrically during the walk (zero cost for b
 - **BCBs** are decoded inline during the block walk. The ASB (which describes what the BCB encrypts) is itself plaintext, so the parser parses each BCB's `OperationSet` as it sees it.
 - **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to a BPSec filter pass that has key access).
 
-`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the BPA aborts the spool write that ran in parallel. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `pub fn check_bib` and `pub fn check_bcb` in `bpv7::checks` so offline tooling can run the same checks without standing up a filter pipeline.
+`finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the BPA aborts the spool write that ran in parallel. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`) so offline tooling can run the same checks without standing up a filter pipeline.
 
 The early BPSec filter (running after the parser, with key access) has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — these are either deferred to a late filter or verified inline as a stream processor during payload spooling (§5.5).
 

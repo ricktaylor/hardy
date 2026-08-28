@@ -392,9 +392,9 @@ mod tests {
     /// Structural parse + reshape to the rich `crate::bundle::Bpv7Bundle`
     /// the BPA wrapper expects. Used by tests that build bundles via
     /// `Editor::flatten` and need to feed them back through the BPA's
-    /// `Bundle { bundle, metadata }` container; the keyed parse_preserve
-    /// pipeline would just do this same reshape after redundant BPSec
-    /// validation.
+    /// `Bundle { bundle, metadata }` container; the keyed validate pipeline
+    /// (`parse_validate_with_provider`) would just do this same reshape after
+    /// redundant BPSec validation.
     fn rich_from_bytes(data: &[u8]) -> crate::bundle::Bpv7Bundle {
         let hardy_bpv7::parse::Parsed { bundle: raw, .. } =
             hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();

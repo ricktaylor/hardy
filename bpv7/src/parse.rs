@@ -551,6 +551,11 @@ impl BundleParser {
     /// `extent` over-claims (its `end` lies beyond `data`). The keyless BPSec
     /// structural checks `finish` runs are header-only, so this is sound; the
     /// payload body — and its CRC — are the streaming caller's to validate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`push`](Self::push) has returned a terminal
+    /// [`ParserProgress::Ready`] or [`ParserProgress::Partial`] result.
     pub fn finish(mut self, data: Bytes) -> Result<Parsed, Error> {
         assert!(
             matches!(self.state, State::Done | State::Partial),

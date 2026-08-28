@@ -12,7 +12,7 @@ The pipeline turns untrusted wire bytes into a validated bundle while keeping th
 
 ## Architecture Overview
 
-A bundle moves through three layers, lowest to highest. The lower two are pure bpv7 mechanism; policy sits above them in the consumer, primarily `hardy_bpa::bp7_parse`.
+A bundle moves through three layers, lowest to highest. The lower two are pure bpv7 mechanism; policy sits above them in the consumer, primarily the BPA's keyed parse pipelines (`bpa/src/bundle/parse.rs`).
 
 1. **Structural parse** (`parse::parse`) — keyless. Decodes the CBOR into a `Bundle` (primary block plus a map of canonical blocks) and the BPSec OperationSets. Having no keys, it cannot read the target list of a BCB-encrypted BIB, so it conservatively marks every block such a BIB *might* cover as "maybe covered" (see *Coverage stamping*).
 2. **Keyed validation** (`checks`) — the §A–§C steps: keyless classification (§A) plus the keyed decrypt/verify steps (§B, §C8, §C7), composed by `checks::verify`.
@@ -48,15 +48,15 @@ Verification (§C7) reads plaintext recovered earlier: encrypted BIB bodies from
 
 ### Extension-field decode (§D) lives in the BPA, not bpv7
 
-`PreviousNode` / `BundleAge` / `HopCount` values are operational meaning, not wire truth, so they are decoded where they are consumed (`bpa/src/bp7_parse.rs`) rather than cached permanently on the bpv7 `Bundle`. Keeping them out of bpv7 avoids entrenching a typed field cache that the streaming refactor intends to remove, and matches its decode-on-demand seam (byte availability differs by phase: an in-memory header buffer early, a storage stream later).
+`PreviousNode` / `BundleAge` / `HopCount` values are operational meaning, not wire truth, so they are decoded where they are consumed (`bpa/src/bundle/parse.rs`) rather than cached permanently on the bpv7 `Bundle`. Keeping them out of bpv7 avoids entrenching a typed field cache that the streaming refactor intends to remove, and matches its decode-on-demand seam (byte availability differs by phase: an in-memory header buffer early, a storage stream later).
 
 ### The keyless / keyed seam
 
-Classification (§A) and the per-OperationSet structural checks (`check_bib` / `check_bcb`) need no keys and are shared with the structural parser; decrypt/verify (§B/§C7/§C8) and the edit cascade need a `KeySource`. Splitting helpers at that key boundary means a caller can run the keyless checks with no key material at all, and the structural parser and the keyed pass can share one source of truth for the structural rules.
+Classification (§A) and the per-OperationSet structural checks (`bpsec::{bib,bcb}::OperationSet::check`) need no keys and are shared with the structural parser; decrypt/verify (§B/§C7/§C8) and the edit cascade need a `KeySource`. Splitting helpers at that key boundary means a caller can run the keyless checks with no key material at all, and the structural parser and the keyed pass can share one source of truth for the structural rules.
 
 ## Integration
 
-bpv7 supplies the mechanism; `hardy_bpa::bp7_parse` composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
+bpv7 supplies the mechanism; the BPA's `bundle::parse` module (`bpa/src/bundle/parse.rs`) composes it with BPA policy — the NoKey disposition, which failures reject, the §D field cache, and the status-report reason mapping. The bpv7 CLI tools (`bpv7/tools`), the fuzz harness (`bpv7/fuzz`), and the integration tests (`bpv7/tests`) compose the same sections for their own purposes. The BPSec edit cascade that §E drives lives in `bpsec::edit`, layered over the keyless `editor`.
 
 ## Standards Compliance
 

@@ -263,7 +263,8 @@ impl Dispatcher {
         // duplicate is harmless. Tombstone-on-reject suppression is deferred — the
         // future compressed-status-report / custody work inverts the requirement (a
         // resend then means "report lost, please re-report"), so that design must
-        // own the semantics. See review_refactor_parse.md item 4.
+        // own the semantics. Ledgered in bpa/docs/TODO.md ("Tombstone-on-reject
+        // suppression").
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store.
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
