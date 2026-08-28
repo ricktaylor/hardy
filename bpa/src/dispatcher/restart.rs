@@ -37,15 +37,15 @@ impl Dispatcher {
         };
 
         // Reconcile with metadata store
-        if let Some(metadata) = self.store.confirm_exists(&bundle.primary.id).await {
-            if metadata.storage_name.as_ref() != Some(&storage_name) {
+        if let Some(stored) = self.store.confirm_exists(&bundle.primary.id).await {
+            if stored.metadata.storage_name.as_ref() != Some(&storage_name) {
                 // Metadata references a different copy — this one is a duplicate
-                if metadata.storage_name.is_none() {
+                if stored.metadata.storage_name.is_none() {
                     warn!("Duplicate copy of processed bundle data found: {storage_name}");
                 } else {
                     warn!(
                         "Duplicate bundle data found: {storage_name} != {:?}",
-                        metadata.storage_name.as_ref()
+                        stored.metadata.storage_name.as_ref()
                     );
                 }
                 self.store.delete_data(&storage_name).await;
@@ -53,16 +53,22 @@ impl Dispatcher {
                 return;
             }
 
-            // Resume processing based on checkpoint status
-            let bundle = bundle::Bundle { metadata, bundle };
-            match &bundle.metadata.status {
+            // Resume processing based on the checkpoint status, pairing the
+            // stored record with the freshly-parsed bundle — the bytes on
+            // disk stay authoritative for the wire half.
+            let bundle = bundle::Bundle {
+                metadata: stored.metadata,
+                bundle,
+                status: stored.status,
+            };
+            match &bundle.status {
                 bundle::BundleStatus::New => {
                     // Ingress filter not yet complete — run full ingress
                     self.ingress_bundle(bundle, data).await;
                 }
                 bundle::BundleStatus::Dispatching => {
                     // Ingress filter done — enqueue for routing
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
                 }
                 bundle::BundleStatus::ForwardPending { .. }
@@ -72,7 +78,7 @@ impl Dispatcher {
                     // outcome can never arrive (outcome-unknown) — reset to
                     // Waiting
                     let mut bundle = bundle;
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.store
                         .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
                         .await;
@@ -82,7 +88,7 @@ impl Dispatcher {
                 // - WaitingForService: poll_service_waiting on service re-registration
                 // - AduFragment: fragment reassembly polling
                 _ => {
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                 }
             }
         } else {
@@ -184,8 +190,12 @@ mod tests {
             self.0.replace(bundle).await
         }
 
-        async fn update_status(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.update_status(bundle).await
+        async fn update_status(
+            &self,
+            bundle_id: &Id,
+            status: &bundle::BundleStatus,
+        ) -> StorageResult<()> {
+            self.0.update_status(bundle_id, status).await
         }
 
         async fn swap_status(
@@ -211,11 +221,8 @@ mod tests {
 
         async fn start_recovery(&self) {}
 
-        async fn confirm_exists(
-            &self,
-            bundle_id: &Id,
-        ) -> StorageResult<Option<bundle::BundleMetadata>> {
-            Ok(self.0.get(bundle_id).await?.map(|b| b.metadata))
+        async fn confirm_exists(&self, bundle_id: &Id) -> StorageResult<Option<bundle::Bundle>> {
+            self.0.get(bundle_id).await
         }
 
         async fn remove_unconfirmed(
@@ -297,11 +304,11 @@ mod tests {
         )
         .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
-        metadata.status = bundle::BundleStatus::ForwardAckPending { peer: 7 };
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
             bundle: parsed,
             metadata,
+            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
         };
         let id = bundle.bundle.primary.id.clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
@@ -331,7 +338,6 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("Recovered bundle missing from metadata store")
-                .metadata
                 .status;
             if status == bundle::BundleStatus::Waiting {
                 break;

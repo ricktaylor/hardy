@@ -219,7 +219,7 @@ impl Reaper {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.metadata.status != BundleStatus::New {
+                            if bundle.status != BundleStatus::New {
                                 self.watch(&bundle, false);
                             }
                         },

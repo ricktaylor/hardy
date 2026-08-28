@@ -403,7 +403,7 @@ impl Store {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
                 // Just do some checks
-                if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
+                if !bundle.has_expired() && bundle.status == shared_cloned.status {
                     // Send into queue. A closeable send already parked on a full
                     // buffer is not woken by the channel's own close(), so race it
                     // against pool shutdown — otherwise store.shutdown() (which
@@ -466,6 +466,7 @@ mod tests {
                 blocks: Default::default(),
             },
             metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         }
     }
 
@@ -831,7 +832,7 @@ mod tests {
 
         // The bundle should arrive normally; verify it has the correct status
         let b = rx.recv().await.unwrap();
-        assert_eq!(b.metadata.status, STATUS);
+        assert_eq!(b.status, STATUS);
 
         drop(rx);
         tx.close();

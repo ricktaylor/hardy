@@ -6,10 +6,7 @@ impl Dispatcher {
     /// Queue a bundle for dispatch processing.
     /// The caller must ensure the bundle status is already `Dispatching`.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
-        debug_assert!(matches!(
-            bundle.metadata.status,
-            bundle::BundleStatus::Dispatching
-        ));
+        debug_assert!(matches!(bundle.status, bundle::BundleStatus::Dispatching));
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     storage::{self, MetadataStorage},
     stream::Sender,
 };
@@ -242,7 +242,7 @@ impl MetadataStorage for SqliteStorage {
 
         let mut bundle: Bundle = serde_json::from_slice(&bundle)?;
         if let Some(status) = to_status(status_code, p1, p2, p3) {
-            bundle.metadata.status = status;
+            bundle.status = status;
             Ok(Some(bundle))
         } else {
             warn!("Failed to unpack metadata status: code = {status_code}");
@@ -255,7 +255,7 @@ impl MetadataStorage for SqliteStorage {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.metadata.status);
+            from_status(&bundle.status);
         let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         self.write(move |conn| {
@@ -275,7 +275,7 @@ impl MetadataStorage for SqliteStorage {
         let expiry = bundle.expiry();
         let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.metadata.status);
+            from_status(&bundle.status);
         let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
         let bundle = serde_json::to_vec(bundle)?;
         if self
@@ -295,11 +295,14 @@ impl MetadataStorage for SqliteStorage {
         Ok(())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
-    async fn update_status(&self, bundle: &Bundle) -> storage::Result<()> {
-        let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.metadata.status);
-        let id = serde_json::to_vec(&bundle.bundle.primary.id)?;
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
+    async fn update_status(
+        &self,
+        bundle_id: &hardy_bpv7::bundle::Id,
+        status: &BundleStatus,
+    ) -> storage::Result<()> {
+        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
+        let id = serde_json::to_vec(bundle_id)?;
         if self
             .write(move |conn| {
                 conn.prepare_cached(
@@ -414,7 +417,7 @@ impl MetadataStorage for SqliteStorage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<BundleMetadata>> {
+    ) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {
@@ -445,8 +448,8 @@ impl MetadataStorage for SqliteStorage {
         match serde_json::from_slice::<Bundle>(&bundle) {
             Ok(mut bundle) => {
                 if let Some(status) = to_status(status_code, p1, p2, p3) {
-                    bundle.metadata.status = status;
-                    Ok(Some(bundle.metadata))
+                    bundle.status = status;
+                    Ok(Some(bundle))
                 } else {
                     error!("Failed to unpack metadata status: code = {status_code}");
                     self.tombstone(bundle_id).await.map(|_| None)
@@ -600,7 +603,7 @@ impl MetadataStorage for SqliteStorage {
             match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
                     if let Some(status) = to_status(status_code, p1, p2, p3) {
-                        bundle.metadata.status = status;
+                        bundle.status = status;
                         if stream.send(bundle).await.is_err() {
                             // The other end is shutting down - get out
                             break;
@@ -674,7 +677,7 @@ impl MetadataStorage for SqliteStorage {
             for bundle in bundles {
                 match serde_json::from_slice::<Bundle>(&bundle) {
                     Ok(mut bundle) => {
-                        bundle.metadata.status = BundleStatus::Waiting;
+                        bundle.status = BundleStatus::Waiting;
                         if stream.send(bundle).await.is_err() {
                             // The other end is shutting down - get out
                             return Ok(());
@@ -717,7 +720,7 @@ impl MetadataStorage for SqliteStorage {
         for bundle in bundles {
             match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
-                    bundle.metadata.status = BundleStatus::WaitingForService {
+                    bundle.status = BundleStatus::WaitingForService {
                         service: source.clone(),
                     };
                     if stream.send(bundle).await.is_err() {
@@ -757,7 +760,7 @@ impl MetadataStorage for SqliteStorage {
         for bundle in bundles {
             match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
-                    bundle.metadata.status = status.clone();
+                    bundle.status = status.clone();
                     if stream.send(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -798,7 +801,7 @@ impl MetadataStorage for SqliteStorage {
         for bundle in bundles {
             match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
-                    bundle.metadata.status = status.clone();
+                    bundle.status = status.clone();
                     if stream.send(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;
@@ -862,6 +865,7 @@ mod tests {
         hardy_bpa::bundle::Bundle {
             bundle: raw,
             metadata: hardy_bpa::bundle::BundleMetadata::originated(),
+            status: BundleStatus::New,
         }
     }
 
@@ -890,7 +894,7 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
         let got = storage
@@ -898,14 +902,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            got.metadata.status,
-            BundleStatus::ForwardAckPending { peer: 7 }
-        );
+        assert_eq!(got.status, BundleStatus::ForwardAckPending { peer: 7 });
 
         // A different peer's transfer is untouched by the reset
         let mut other = make_bundle(2);
-        other.metadata.status = BundleStatus::ForwardAckPending { peer: 8 };
+        other.status = BundleStatus::ForwardAckPending { peer: 8 };
         assert!(storage.insert(&other).await.unwrap());
 
         assert_eq!(storage.reset_peer_ack_pending(7).await.unwrap(), 1);
@@ -915,16 +916,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.metadata.status, BundleStatus::Waiting);
+        assert_eq!(got.status, BundleStatus::Waiting);
         let got = storage
             .get(&other.bundle.primary.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            got.metadata.status,
-            BundleStatus::ForwardAckPending { peer: 8 }
-        );
+        assert_eq!(got.status, BundleStatus::ForwardAckPending { peer: 8 });
     }
 
     // swap_status applies only when every status column matches the expected
@@ -936,7 +934,7 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong peer in the expectation: no swap
@@ -968,7 +966,6 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .metadata
                 .status,
             BundleStatus::Dispatching
         );
@@ -1008,7 +1005,7 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
 
         // Wrong peer in the expectation: not tombstoned
@@ -1070,12 +1067,14 @@ mod tests {
             SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
 
         let mut bundle = make_bundle(1);
-        bundle.metadata.status = BundleStatus::ForwardAckPending { peer: 7 };
+        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
 
-        bundle.metadata.status = BundleStatus::Waiting;
-        storage.update_status(&bundle).await.unwrap();
+        storage
+            .update_status(&bundle.bundle.primary.id, &BundleStatus::Waiting)
+            .await
+            .unwrap();
 
         assert!(
             storage
@@ -1202,7 +1201,7 @@ mod tests {
 
         // Insert a bundle with Waiting status
         let mut bundle = make_bundle(0);
-        bundle.metadata.status = BundleStatus::Waiting;
+        bundle.status = BundleStatus::Waiting;
         assert!(store.insert(&bundle).await.unwrap());
 
         // Poll waiting — should return the bundle (populates waiting_queue)
@@ -1211,7 +1210,7 @@ mod tests {
         assert_eq!(sink.into_inner().len(), 1, "should poll 1 waiting bundle");
 
         // Update status to Dispatching
-        bundle.metadata.status = BundleStatus::Dispatching;
+        bundle.status = BundleStatus::Dispatching;
         store.replace(&bundle).await.unwrap();
 
         // Poll waiting again — should return nothing

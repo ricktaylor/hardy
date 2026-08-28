@@ -136,6 +136,7 @@ mod tests {
         let bundle = Bundle {
             bundle: raw,
             metadata,
+            status: hardy_bpa::bundle::BundleStatus::New,
         };
         (bundle, data.into())
     }

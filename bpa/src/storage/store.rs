@@ -10,7 +10,7 @@ use tracing::instrument;
 use super::{BundleStorage, MetadataStorage, reaper::Reaper};
 use crate::{
     Arc, Bytes,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
     stream::Sender,
 };
@@ -176,7 +176,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<BundleMetadata> {
+    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<Bundle> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
@@ -193,13 +193,13 @@ impl Store {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
-        if bundle.metadata.status != *status {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+        if bundle.status != *status {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
 
-            bundle.metadata.status = status.clone();
+            bundle.status = status.clone();
             self.metadata_storage
-                .update_status(bundle)
+                .update_status(&bundle.bundle.primary.id, status)
                 .await
                 .trace_expect("Failed to update bundle status");
         }
@@ -212,15 +212,15 @@ impl Store {
     pub async fn swap_status(&self, bundle: &mut Bundle, status: &BundleStatus) -> bool {
         let swapped = self
             .metadata_storage
-            .swap_status(&bundle.bundle.primary.id, &bundle.metadata.status, status)
+            .swap_status(&bundle.bundle.primary.id, &bundle.status, status)
             .await
             .trace_expect("Failed to swap bundle status");
 
         if swapped {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
 
-            bundle.metadata.status = status.clone();
+            bundle.status = status.clone();
         }
 
         swapped
@@ -235,7 +235,7 @@ impl Store {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
     pub async fn tombstone_if(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
-            .tombstone_if(&bundle.bundle.primary.id, &bundle.metadata.status)
+            .tombstone_if(&bundle.bundle.primary.id, &bundle.status)
             .await
             .trace_expect("Failed to tombstone bundle metadata")
     }
@@ -324,6 +324,7 @@ mod tests {
                 blocks: Default::default(),
             },
             metadata: crate::bundle::BundleMetadata::originated(),
+            status: BundleStatus::New,
         }
     }
 

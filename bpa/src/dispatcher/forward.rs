@@ -95,7 +95,7 @@ impl Dispatcher {
                 // routing decision. Losing the swap means a sweep or the
                 // reaper resolved the bundle first.
                 if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.metadata.status == (bundle::BundleStatus::ForwardAckPending { peer })
+                    && bundle.status == (bundle::BundleStatus::ForwardAckPending { peer })
                     && self
                         .store
                         .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
@@ -202,10 +202,10 @@ impl Dispatcher {
             return;
         };
 
-        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.metadata.status else {
+        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.status else {
             debug!(
                 "Transfer outcome for bundle {bundle_id} that is not awaiting one ({:?}), ignored",
-                bundle.metadata.status
+                bundle.status
             );
             return;
         };

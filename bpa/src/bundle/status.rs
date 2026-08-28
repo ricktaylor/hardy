@@ -1,14 +1,13 @@
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// Processing status of a bundle within the BPA pipeline.
 ///
 /// Tracks where a bundle is in the dispatch/forward/deliver lifecycle.
-/// Persisted to metadata storage so processing can resume after restart.
+/// Persisted to metadata storage so processing can resume after restart —
+/// but never through serde: backends encode it in their own typed columns
+/// (it is `serde(skip)`ed on [`Bundle`](super::Bundle)).
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BundleStatus {
     /// Freshly received, not yet processed.
     #[default]

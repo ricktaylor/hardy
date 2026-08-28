@@ -147,11 +147,14 @@ impl Dispatcher {
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
         let mut metadata = bundle::BundleMetadata::originated();
-        metadata.status = bundle::BundleStatus::Dispatching;
         metadata.wire.previous_node = extracted.previous_node;
         metadata.wire.age = extracted.age;
         metadata.wire.hop_count = extracted.hop_count;
-        let bundle = bundle::Bundle { metadata, bundle };
+        let bundle = bundle::Bundle {
+            metadata,
+            bundle,
+            status: bundle::BundleStatus::Dispatching,
+        };
 
         // Run Originate filter (pure in-memory)
         let Some((mut bundle, data)) = self
@@ -171,7 +174,7 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
         let bundle_id = bundle.bundle.primary.id.clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
         self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }

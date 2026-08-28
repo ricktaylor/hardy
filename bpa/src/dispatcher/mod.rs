@@ -182,7 +182,7 @@ impl Dispatcher {
             .tombstone_metadata(&bundle.bundle.primary.id)
             .await;
 
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {
