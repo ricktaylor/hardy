@@ -276,7 +276,7 @@ fn bib_is_none(bib: &BibCoverage) -> bool {
 /// and CRC information. The actual data of the block is not stored directly but
 /// is referenced by the `extent` and `data` ranges, which point to slices
 /// within the full bundle's byte representation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Block {
     /// The type of the block.

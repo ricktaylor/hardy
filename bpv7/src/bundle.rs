@@ -17,7 +17,7 @@ use hardy_cbor::decode::{self, FromCbor};
 /// blocks keyed by block number. This is the crate's structural bundle
 /// representation, produced by [`parse`](crate::parse::parse) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
     /// The bundle's primary block, decoded into typed fields.

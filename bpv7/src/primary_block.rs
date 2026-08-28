@@ -11,7 +11,7 @@ use super::*;
 use crate::error::CaptureFieldErr;
 use hardy_cbor::decode::Error as CborError;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 /// The BPv7 primary block (RFC 9171 §4.2): the bundle's identifying header.
 pub struct PrimaryBlock {

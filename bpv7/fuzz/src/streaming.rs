@@ -34,8 +34,15 @@ fn drive_streamed(
                 for c in full[fed..].chunks(push_chunk) {
                     complete = tail.push(c)?;
                 }
-                let _ = complete;
                 tail.finish()?;
+                // The production drain loop breaks solely on push's boolean
+                // and never calls finish: a tail that reaches Done internally
+                // without reporting complete would stall every streamed
+                // bundle, so the two signals must agree.
+                assert!(
+                    complete,
+                    "tail finished Done but push never reported complete"
+                );
                 return parser.finish(consumed);
             }
         }
@@ -63,27 +70,28 @@ pub fn test_streaming(data: &[u8]) {
 
     match (streamed, oneshot) {
         (Ok(s), Ok(o)) => {
+            // Deep agreement: every PrimaryBlock field and every Block field
+            // (type, flags, crc_type, bib/bcb coverage, and the extent/data
+            // ranges — the offset bookkeeping the Partial route computes
+            // without the payload resident, which production slices by).
             assert_eq!(
-                s.bundle.primary.id, o.bundle.primary.id,
-                "streamed and one-shot disagree on the bundle id"
+                s.bundle, o.bundle,
+                "streamed and one-shot disagree on the parsed bundle"
+            );
+            fn keys<V>(m: &std::collections::HashMap<u64, V>) -> Vec<u64> {
+                let mut keys: Vec<u64> = m.keys().copied().collect();
+                keys.sort_unstable();
+                keys
+            }
+            assert_eq!(
+                keys(&s.bcbs),
+                keys(&o.bcbs),
+                "streamed and one-shot disagree on the decoded BCB set"
             );
             assert_eq!(
-                s.bundle.primary.destination, o.bundle.primary.destination,
-                "streamed and one-shot disagree on the destination"
-            );
-            let sorted = |bundle: &hardy_bpv7::Bundle| {
-                let mut blocks: Vec<_> = bundle
-                    .blocks
-                    .iter()
-                    .map(|(&n, b)| (n, b.block_type))
-                    .collect();
-                blocks.sort_unstable();
-                blocks
-            };
-            assert_eq!(
-                sorted(&s.bundle),
-                sorted(&o.bundle),
-                "streamed and one-shot disagree on the block map"
+                keys(&s.bibs),
+                keys(&o.bibs),
+                "streamed and one-shot disagree on the decoded BIB set"
             );
         }
         (Ok(_), Err(e)) => panic!("streamed accepted a bundle one-shot rejects: {e}"),

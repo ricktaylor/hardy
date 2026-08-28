@@ -744,9 +744,9 @@ async fn local_delivery() {
 // Reception report reason codes (RFC 9172 §7.1)
 // ---------------------------------------------------------------------------
 
-/// Splice a BCB with an unrecognised security context (id 99) targeting the
-/// payload into `data` as block number 2, flagged must-replicate (required
-/// for a payload target) + report-on-failure.
+// Splice a BCB with an unrecognised security context (id 99) targeting the
+// payload into `data` as block number 2, flagged must-replicate (required
+// for a payload target) + report-on-failure.
 fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
     // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
     // parameters), source EID, then one result list per target.
@@ -780,12 +780,12 @@ fn splice_unrecognised_bcb(data: &[u8]) -> Bytes {
     modified.into()
 }
 
-/// A transit bundle carrying a BCB this node cannot understand (unrecognised
-/// security context, `report_on_failure` set) is still forwarded, and the
-/// requested reception report carries the RFC 9172 `UnknownSecurityOperation`
-/// reason rather than the generic `BlockUnsupported`. The bundle is addressed
-/// to a remote node so it forwards — a payload-targeting BCB is only ever
-/// decrypted at delivery.
+// A transit bundle carrying a BCB this node cannot understand (unrecognised
+// security context, `report_on_failure` set) is still forwarded, and the
+// requested reception report carries the RFC 9172 `UnknownSecurityOperation`
+// reason rather than the generic `BlockUnsupported`. The bundle is addressed
+// to a remote node so it forwards — a payload-targeting BCB is only ever
+// decrypted at delivery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reception_report_carries_unknown_security_operation() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1083,8 +1083,8 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
 // `Partial` / `drain_tail` (dumb-spool) path end-to-end.
 // ---------------------------------------------------------------------------
 
-/// A `Receiver` that yields a fixed sequence of segments then reports the
-/// producer is gone — mimics a CLA reassembling a transfer into segments.
+// A `Receiver` that yields a fixed sequence of segments then reports the
+// producer is gone — mimics a CLA reassembling a transfer into segments.
 struct SegmentReceiver {
     segments: Mutex<VecDeque<cla::Segment>>,
 }
@@ -1128,8 +1128,8 @@ impl Receiver<cla::Segment> for SegmentReceiver {
     }
 }
 
-/// An inbound bundle with a payload far larger than the 4096-byte parser chunk
-/// size, delivered in 1000-byte segments, is reassembled and delivered intact.
+// An inbound bundle with a payload far larger than the 4096-byte parser chunk
+// size, delivered in 1000-byte segments, is reassembled and delivered intact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streamed_oversized_payload_local_delivery() {
     let node_id = IpnNodeId {
@@ -1209,10 +1209,10 @@ fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -
     Bytes::from(data)
 }
 
-/// The §5.4 early-reject gate: a streamed bundle that fails a header-only check
-/// (lifetime, hop count) is dropped *before* its payload tail is drained, so the
-/// CLA never has to spool a gigantic invalid payload. Asserted by counting the
-/// segments left un-pulled in the `SegmentReceiver`.
+// The §5.4 early-reject gate: a streamed bundle that fails a header-only check
+// (lifetime, hop count) is dropped *before* its payload tail is drained, so the
+// CLA never has to spool a gigantic invalid payload. Asserted by counting the
+// segments left un-pulled in the `SegmentReceiver`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streamed_oversized_gate_drops_before_draining_payload() {
     let node_id = IpnNodeId {
@@ -1284,11 +1284,11 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     bpa.shutdown().await;
 }
 
-/// The gate's reporting split: a hop-exhausted arrival with the report flags
-/// set emits the §5.6/§5.10 reception + deletion report pair — the deletion
-/// citing `HopLimitExceeded` — while an already-expired arrival with the same
-/// flags emits nothing at all (anti-amplification: it is treated as if it
-/// never arrived). Swapping the two gate branches fails both halves.
+// The gate's reporting split: a hop-exhausted arrival with the report flags
+// set emits the §5.6/§5.10 reception + deletion report pair — the deletion
+// citing `HopLimitExceeded` — while an already-expired arrival with the same
+// flags emits nothing at all (anti-amplification: it is treated as if it
+// never arrived). Swapping the two gate branches fails both halves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_reports_hop_exhaustion_but_not_expiry() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1414,12 +1414,12 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     );
 }
 
-/// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
-/// truncated — the parser takes the streaming fallback (`Partial`) though the
-/// stream has already ended — must be an internal drop, not handed to the
-/// payload drain (which would await an exhausted stream: a hang, or a spurious
-/// `StreamCancelled` driving unbounded peer retransmit of a permanently-invalid
-/// bundle).
+// R-01: a single `Segment::Final` carrying a bundle whose declared payload is
+// truncated — the parser takes the streaming fallback (`Partial`) though the
+// stream has already ended — must be an internal drop, not handed to the
+// payload drain (which would await an exhausted stream: a hang, or a spurious
+// `StreamCancelled` driving unbounded peer retransmit of a permanently-invalid
+// bundle).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     let node_ids = NodeIds::try_from(
@@ -1470,10 +1470,10 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     );
 }
 
-/// R-04: the ingress size cap refuses an over-cap bundle at both new
-/// enforcement points — header accumulation (`HeaderFailure::TooLarge`) and the
-/// payload drain (`DrainFailure::TooLarge`) — surfacing `PayloadTooLarge` so the
-/// CLA withholds the transfer ack.
+// R-04: the ingress size cap refuses an over-cap bundle at both new
+// enforcement points — header accumulation (`HeaderFailure::TooLarge`) and the
+// payload drain (`DrainFailure::TooLarge`) — surfacing `PayloadTooLarge` so the
+// CLA withholds the transfer ack.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_size_cap_refuses_oversized_bundle() {
     let node_ids = NodeIds::try_from(

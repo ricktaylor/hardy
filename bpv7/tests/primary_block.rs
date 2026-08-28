@@ -65,14 +65,20 @@ fn primary_block_validation() {
         .expect("version byte pattern [0x89, 0x07] not found — test fixture needs updating");
     bad_version[pos + 1] = 0x06; // change version to 6
     let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
+    // Downcast the source: rejection must be for the version itself, not some
+    // other primary-block failure the byte edit could provoke (e.g. the CRC).
+    let Err(Error::InvalidField {
+        field: "primary block",
+        source,
+    }) = result
+    else {
+        panic!("version 6 must fail as an InvalidField primary-block error");
+    };
     assert!(
         matches!(
-            result,
-            Err(Error::InvalidField {
-                field: "primary block",
-                ..
-            })
+            source.downcast_ref::<Error>(),
+            Some(Error::InvalidVersion(6))
         ),
-        "version 6 must fail as an InvalidField primary-block error"
+        "the primary-block failure must be InvalidVersion(6), got {source}"
     );
 }
