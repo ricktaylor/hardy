@@ -91,7 +91,7 @@ pub struct ExtensionFields {
 
 // Output of the classifier chain: persisted, cleared and re-derived at
 // restart re-admission. The class and route_key fields arrive with the
-// policy and routing tranches (see bpa/docs/filter_subsystem_redesign.md).
+// policy and routing tranches (see bpa/docs/filter_subsystem_design.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Classification {
@@ -110,14 +110,6 @@ struct Classification {
         serde(default, skip_serializing_if = "PolicyEpoch::is_initial")
     )]
     epoch: PolicyEpoch,
-}
-
-/// Mutable annotations that filters may modify during bundle processing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct WritableMetadata {
-    /// Optional flow label for QoS differentiation.
-    pub flow_label: Option<u32>,
 }
 
 /// A bundle's BPA-local processing metadata.
@@ -143,15 +135,6 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Next-hop EID for the transmission attempt in progress, populated
-    /// from the queue-assignment record ([`BundleStatus::ForwardPending`]'s
-    /// `next_hop`) for the legacy egress `WriteFilter` API, which reads it
-    /// here. Never persisted; retired with the filter engine swap.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub next_hop: Option<Eid>,
-    /// Mutable annotations that filters may update during processing.
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub writable: WritableMetadata,
 }
 
 impl BundleMetadata {
@@ -169,8 +152,6 @@ impl BundleMetadata {
             extensions: ExtensionFields::default(),
             classification: Classification::default(),
             storage_name: None,
-            next_hop: None,
-            writable: WritableMetadata::default(),
         }
     }
 
@@ -275,7 +256,6 @@ impl BundleMetadata {
     /// size bound is dropped with a warning — never stored — keeping
     /// metadata stores honest; an already-stored value survives the dropped
     /// write.
-    #[allow(dead_code)] // wired to the Classifier chain by the engine swap (C3)
     pub(crate) fn apply(&mut self, delta: MetadataDelta) {
         for write in delta.slots {
             if write.value.len() > write.max_size.get() {

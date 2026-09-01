@@ -1798,6 +1798,123 @@ async fn forwarding_latency() {
 }
 
 // ---------------------------------------------------------------------------
+// INT-BPA-06: Egress filter bundle/data consistency
+// ---------------------------------------------------------------------------
+
+/// Records any divergence between the Bundle's block extents and the wire
+/// data it is handed alongside, observed through the reader's extent-based
+/// block access: a stale block map over rewritten bytes reads back shifted
+/// garbage.
+struct ExtentCheckVerifier {
+    mismatch: Arc<Mutex<Option<String>>>,
+}
+
+impl hardy_bpa::filter::Verifier for ExtentCheckVerifier {
+    fn check(&self, reader: &hardy_bpa::filter::BundleReader<'_>) -> hardy_bpa::filter::Verdict {
+        let mut mismatch = self.mismatch.lock().unwrap();
+
+        // The payload extent must index the rewritten bytes.
+        match reader.block_data(1) {
+            Ok(Some(payload)) if payload.as_ref() == b"Hello remote" => {}
+            Ok(Some(payload)) => {
+                *mismatch = Some(format!("payload extent skewed: {:?}", payload.as_ref()))
+            }
+            Ok(None) => *mismatch = Some("payload not resident".to_string()),
+            Err(e) => *mismatch = Some(format!("payload unreadable: {e}")),
+        }
+
+        // The forward-time rewrite inserted a Previous Node block; its
+        // extent must decode as an EID from the same bytes.
+        let previous_node = (2u64..16).find(|n| {
+            reader
+                .block(*n)
+                .is_some_and(|b| b.block_type == hardy_bpv7::block::Type::PreviousNode)
+        });
+        match previous_node {
+            None => *mismatch = Some("no Previous Node block after the rewrite".to_string()),
+            Some(n) => {
+                if let Err(e) = reader.extract::<hardy_bpv7::eid::Eid>(n) {
+                    *mismatch = Some(format!("Previous Node extent skewed: {e}"));
+                }
+            }
+        }
+
+        hardy_bpa::filter::Verdict::Continue(())
+    }
+}
+
+/// Forwarding rewrites extension blocks (Previous Node insertion shifts every
+/// later block), and Egress filters receive (bundle, data) as a consistent
+/// pair: the Bundle's extents must index the rewritten bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn egress_filter_sees_consistent_extents() {
+    let mismatch = Arc::new(Mutex::new(None));
+    let mut pack = hardy_bpa::filter::pack::FilterPack::new("test");
+    pack.egress_verifier(
+        "extent-check",
+        ExtentCheckVerifier {
+            mismatch: mismatch.clone(),
+        },
+    );
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
+    bpa.start(false).await;
+
+    // Register CLA and add a peer for the remote node (ipn:0.2)
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, &[remote_node])
+        .await
+        .unwrap();
+
+    // Register an application and send a bundle to the remote node — a
+    // locally-originated bundle has no Previous Node block, so the
+    // forward-time rewrite inserts one and shifts the payload extent
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.99".parse().unwrap(),
+            Bytes::from_static(b"Hello remote"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    assert_eq!(
+        *mismatch.lock().unwrap(),
+        None,
+        "Egress filter saw an inconsistent (bundle, data) pair"
+    );
+
+    bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // Failing Application — always returns Err from on_deliver
 // ---------------------------------------------------------------------------
 

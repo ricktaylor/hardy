@@ -433,7 +433,7 @@ The committed semver surface enumerates precisely: `Bundle`'s two pub fields, `E
 
 Phasing: the **metadata-partition commit** takes the record shape — the four groups, private fields + accessors, the constructors, `Origin` with `cla` persisted, no `Default`, `next_hop` demoted to a transient — while `status` and the flat `writable` group survive as interim passengers until their tranches. The **queue items** and `MetadataDelta`/slots are Phase 2/queue-tranche material; the sketch fixes their shape so the partition commit cuts the record along the right seams.
 
-Open residue: whether `ForwardItem.bundle` stays a full `Bundle` or leans down once the queue tranche makes queues durable (start with `Bundle`, let the queue work argue for less), and the intra-chain classification read question in [Open questions](#open-questions).
+Open residue: whether `ForwardItem.bundle` stays a full `Bundle` or leans down once the queue tranche makes queues durable (start with `Bundle`, let the queue work argue for less), and the intra-chain classification read question in [Open questions](#open-questions). Refinement (2026-09-01): the `NextHop` associates with the **egress queue itself** rather than riding each item — a peer queue exists per dispatch decision, so once a bundle is in the queue its destination is a property of the queue; this also retires the interim `metadata.next_hop` transient and `forward_bundle`'s missing-hop re-dispatch guard (the hybrid channel's storage spill cannot carry a per-item transient, but queue-level state survives it).
 
 ## Worked example — segment routing
 

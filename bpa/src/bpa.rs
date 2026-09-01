@@ -8,7 +8,6 @@ use crate::{
     builder::BpaBuilder,
     cla::{self, Cla, registry::ClaRegistry},
     dispatcher::Dispatcher,
-    filter::{self, Filter, FilterEngine, Hook},
     otel_metrics,
     policy::FlowControllerFactory,
     routing::{self, Rib, RoutingAgent},
@@ -196,7 +195,7 @@ pub trait BpaRegistration: Send + Sync {
 
 /// The core Bundle Processing Agent (RFC 9171).
 ///
-/// Holds references to the store, RIB, CLA/service/filter registries, and
+/// Holds references to the store, RIB, CLA/service registries, and
 /// dispatcher. Construct via [`BpaBuilder`] (obtained from [`Bpa::builder()`]).
 ///
 /// After construction, call [`start()`](Bpa::start) to begin processing and
@@ -207,7 +206,6 @@ pub struct Bpa {
     rib: Arc<Rib>,
     cla_registry: Arc<ClaRegistry>,
     service_registry: Arc<ServiceRegistry>,
-    filter_engine: Arc<FilterEngine>,
     dispatcher: Arc<Dispatcher>,
 }
 
@@ -218,7 +216,6 @@ impl Bpa {
         rib: Arc<Rib>,
         cla_registry: Arc<ClaRegistry>,
         service_registry: Arc<ServiceRegistry>,
-        filter_engine: Arc<FilterEngine>,
         dispatcher: Arc<Dispatcher>,
     ) -> Self {
         Self {
@@ -227,7 +224,6 @@ impl Bpa {
             rib,
             cla_registry,
             service_registry,
-            filter_engine,
             dispatcher,
         }
     }
@@ -286,29 +282,6 @@ impl Bpa {
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;
-        self.filter_engine.clear();
-    }
-
-    /// Register a filter at a hook point
-    #[cfg_attr(feature = "instrument", instrument(skip(self, filter)))]
-    pub fn register_filter(
-        &self,
-        hook: Hook,
-        name: &str,
-        after: &[&str],
-        filter: Filter,
-    ) -> Result<(), filter::Error> {
-        self.filter_engine.register(hook, name, after, filter)
-    }
-
-    /// Unregister a filter by name from a hook point
-    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub fn unregister_filter(
-        &self,
-        hook: Hook,
-        name: &str,
-    ) -> Result<Option<Filter>, filter::Error> {
-        self.filter_engine.unregister(hook, name)
     }
 }
 

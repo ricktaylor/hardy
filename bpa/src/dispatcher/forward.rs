@@ -101,39 +101,32 @@ impl Dispatcher {
             }
         };
 
-        // Egress filter hook:
+        // Egress chain: registered Rewriters extend the fixed rewrite above,
+        // then Verifiers gate the final pre-BPSec wire form.
         // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
+        //   route to a different peer, so Egress runs again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                return OfferOutcome::Dropped(bundle, reason);
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
+        let (bundle, mut data) =
+            match self
+                .filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+                Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
+                    return OfferOutcome::Dropped(bundle, reason);
+                }
+                Err((bundle, e)) => {
+                    error!("Egress filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. A re-fetch that finds the bundle moved
-                // on means a sweep or the reaper resolved it first.
-                return match self.store.get_metadata(&bundle_id).await {
-                    Some(bundle)
-                        if bundle.status == (bundle::BundleStatus::ForwardAckPending { peer }) =>
-                    {
-                        OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
-                    }
-                    _ => OfferOutcome::Lost,
-                };
-            }
-        };
+                    // The chain hands the claimed bundle back: return the claim
+                    // to Waiting for a fresh routing decision. The park is
+                    // CAS-clean — losing it means a sweep or the reaper
+                    // resolved the bundle first.
+                    return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
+                }
+            };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
         // single Final segment.
@@ -465,6 +458,8 @@ mod tests {
             .build(node_ids.clone(), store.clone())
             .await
             .unwrap();
+        let (filters, slot_table) =
+            crate::filter::pack::chains::FilterChains::freeze(Vec::new()).unwrap();
         let (dispatcher, _start) = Dispatcher::new(
             Config {
                 status_reports: false,
@@ -479,7 +474,8 @@ mod tests {
             store,
             rib,
             Arc::new(crate::keys::NullKeyProvider),
-            Arc::new(filter::FilterEngine::new()),
+            filters,
+            slot_table,
         );
 
         // Seed the record exactly as the egress queue holds it: data

@@ -383,21 +383,8 @@ impl Dispatcher {
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
-        // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
-        match self
-            .filter_engine
-            .exec(filter::Hook::Ingress, bundle, data, self.key_provider())
-            .await
-            // TODO: Recover gracefully once filter error handling is redesigned
-            .trace_expect("Ingress filter execution failed")
-        {
-            filter::ExecResult::Continue(mutation, mut bundle, data) => {
-                if mutation.data
-                    && let Some(storage_name) = &bundle.metadata.storage_name
-                {
-                    self.store.replace_data(storage_name, data.clone()).await;
-                }
-
+        match self.filters.run_ingress(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(mut bundle, _)) => {
                 // Always checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
                 bundle.status = bundle::BundleStatus::Dispatching;
@@ -407,10 +394,19 @@ impl Dispatcher {
                 // Hand off to dispatch queue for fan-out via processing pool
                 self.dispatch_bundle(bundle).await
             }
-            filter::ExecResult::Drop(bundle, Some(reason)) => {
+            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                 self.drop_bundle(bundle, reason).await
             }
-            filter::ExecResult::Drop(bundle, None) => self.delete_bundle(bundle).await,
+            Ok(filter::ChainOutcome::Drop(bundle, None)) => self.delete_bundle(bundle).await,
+            Err((bundle, e)) => {
+                // The stored bytes failed the chain's own decode pass — an
+                // internal inconsistency, since they parsed at reception.
+                // Resolve the bundle as unintelligible rather than strand it
+                // in `New`.
+                error!("Ingress filter chain failed: {e}");
+                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
+                    .await
+            }
         }
     }
 }

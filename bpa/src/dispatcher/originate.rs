@@ -159,19 +159,18 @@ impl Dispatcher {
             return Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)));
         }
 
-        // Run the Originate filter hook (pure in-memory, pre-store); a Drop
+        // Run the Originate chain (pure in-memory, pre-store); a Drop
         // returns its reason to the originating service.
         let (mut bundle, data) = match self
-            .filter_engine
-            .exec(filter::Hook::Originate, bundle, data, self.key_provider())
-            .await
+            .filters
+            .run_originate(bundle, data, &*self.key_provider)
         {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(_, reason)) => {
+            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+            Ok(filter::ChainOutcome::Drop(_, reason)) => {
                 return Err(services::Error::Dropped(reason));
             }
-            Err(e) => {
-                error!("Originate filter execution failed: {e}");
+            Err((_, e)) => {
+                error!("Originate filter chain failed: {e}");
                 return Err(services::Error::Internal(e));
             }
         };
