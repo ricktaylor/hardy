@@ -6,7 +6,7 @@ impl Dispatcher {
         &self,
         cla: &dyn cla::Cla,
         peer: u32,
-        queue: Option<u32>,
+        lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         bundle: bundle::Bundle,
     ) {
@@ -111,7 +111,7 @@ impl Dispatcher {
         // single Final segment.
         let total_len = data.len() as u64;
         match cla
-            .forward(queue, cla_addr, bundle.id(), total_len, &mut data)
+            .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => {
