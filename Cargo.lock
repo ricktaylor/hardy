@@ -2110,17 +2110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hardy-ipn-legacy-filter"
-version = "0.2.0"
-dependencies = [
- "hardy-bpa",
- "hardy-bpv7",
- "hardy-eid-patterns",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "hardy-localdisk-storage"
 version = "0.6.0"
 dependencies = [

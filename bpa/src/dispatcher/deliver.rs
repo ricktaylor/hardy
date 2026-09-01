@@ -79,42 +79,25 @@ impl Dispatcher {
         data: Bytes,
         seen: routing::RibSnapshot,
     ) -> OfferOutcome {
-        let bundle_id = bundle.id().clone();
-
-        // Deliver filter hook
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
+        // Deliver chain: Rewriters (transport-block strip), then Verifiers.
+        let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+            Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
                 return OfferOutcome::Dropped(bundle, reason);
             }
-            Err(e) => {
-                error!("Deliver filter execution failed: {e}");
+            Err((bundle, e)) => {
+                error!("Deliver filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally park it for the next registration. A
-                // re-fetch that finds the bundle moved on means a sweep or
-                // the reaper resolved it first.
-                return match self.store.get_metadata(&bundle_id).await {
-                    Some(bundle)
-                        if bundle.status
-                            == (bundle::BundleStatus::DeliveryAckPending {
-                                service: service_eid.clone(),
-                            }) =>
-                    {
-                        OfferOutcome::Parked(
-                            bundle,
-                            bundle::BundleStatus::WaitingForService {
-                                service: service_eid,
-                            },
-                            seen,
-                        )
-                    }
-                    _ => OfferOutcome::Lost,
-                };
+                // The chain hands the claimed bundle back: park it for the
+                // next registration. The park is CAS-clean — losing it
+                // means a sweep or the reaper resolved the bundle first.
+                return OfferOutcome::Parked(
+                    bundle,
+                    bundle::BundleStatus::WaitingForService {
+                        service: service_eid,
+                    },
+                    seen,
+                );
             }
         };
 

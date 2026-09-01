@@ -126,13 +126,7 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// Configuration for built-in application services.
-// EID patterns for next hops requiring legacy 2-element IPN EID encoding,
-// applied by the BPA's built-in per-hop rewrite stage.
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct IpnLegacyNodes(pub Vec<EidPattern>);
-
-// The RFC9171 validity checks: absent keys defer to the BPA builder's own
+// The RFC9171 validity checks: absent keys defer to the BPA's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
@@ -226,9 +220,10 @@ pub struct Config {
     #[serde(default)]
     pub storage: storage::StorageConfig,
 
-    // IPN legacy node patterns for the egress per-hop re-encode.
+    // EID patterns for next hops requiring legacy 2-element IPN encoding
+    // (the BPA's per-hop re-encode built-in).
     #[serde(default)]
-    pub ipn_legacy_nodes: IpnLegacyNodes,
+    pub ipn_legacy_nodes: Vec<EidPattern>,
 
     // RFC9171 bundle validity checks.
     #[serde(default)]

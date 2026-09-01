@@ -197,7 +197,9 @@ impl BpaServer {
             builder = builder.no_cache();
         }
 
-        builder = builder.ipn_legacy_peers(config.ipn_legacy_nodes.0);
+        if !config.ipn_legacy_nodes.is_empty() {
+            builder = builder.ipn_legacy_peers(config.ipn_legacy_nodes);
+        }
 
         if let Some(sr_config) = config.static_routes {
             let routes_file = sr_config
