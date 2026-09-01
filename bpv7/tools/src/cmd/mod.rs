@@ -71,7 +71,10 @@ pub(crate) fn parse_with_keys(
         &decrypted_data,
         &no_updates,
     )?;
-    debug_assert!(deferred.is_empty(), "a complete buffer defers nothing");
+    // Hard assert: this is shipped code, and a silently dropped defer-set is
+    // an unverified integrity statement (the tool parses complete buffers via
+    // `parse::parse`, so the branch is a one-shot `is_empty` check).
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok(parsed)
 }
