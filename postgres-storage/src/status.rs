@@ -44,6 +44,8 @@ pub struct StatusFields {
     pub adu_ts_ms: Option<i64>,
     pub adu_ts_seq: Option<i64>,
     pub service_eid: Option<String>,
+    /// The adjacency EID a ForwardPending assignment resolved to.
+    pub next_hop: Option<String>,
 }
 
 impl StatusFields {
@@ -56,6 +58,7 @@ impl StatusFields {
             adu_ts_ms: None,
             adu_ts_seq: None,
             service_eid: None,
+            next_hop: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl StatusFields {
             BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
                 queue: u32::try_from(self.queue_id?).ok()?,
+                next_hop: self.next_hop?.parse().ok()?,
             }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
@@ -109,13 +113,18 @@ impl TryFrom<&BundleStatus> for StatusFields {
             BundleStatus::Waiting => Self::with_kind(BundleStatusKind::Waiting),
             BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
             BundleStatus::DispatchPending => Self::with_kind(BundleStatusKind::DispatchPending),
-            BundleStatus::ForwardPending { peer, queue } => Self {
+            BundleStatus::ForwardPending {
+                peer,
+                queue,
+                next_hop,
+            } => Self {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
                 queue_id: Some(
                     i32::try_from(*queue).map_err(|_| StatusConversionError::QueueId(*queue))?,
                 ),
+                next_hop: Some(next_hop.to_string()),
                 ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
             BundleStatus::AduFragment { source, timestamp } => {

@@ -10,10 +10,25 @@ impl Dispatcher {
         cla_addr: &cla::ClaAddress,
         bundle: bundle::Bundle,
     ) {
+        // The queue-assignment record carries the resolved adjacency, and
+        // the claim below overwrites the status — take it first. The egress
+        // channel only delivers this queue's assignments, so any other
+        // status here is a stale copy whose owner resolves it elsewhere.
+        let bundle::BundleStatus::ForwardPending { next_hop, .. } = &bundle.status else {
+            debug!("Bundle reached forwarding without a queue assignment, dropping copy");
+            return;
+        };
+        let next_hop = next_hop.clone();
+
         // Get bundle data from store, now we know we need it!
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
+
+        // Compatibility shim: the legacy egress `WriteFilter` API reads the
+        // adjacency from the metadata transient, so populate it from the
+        // queue-assignment record. Retired with the filter engine swap.
+        bundle.metadata.next_hop = Some(next_hop);
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -450,7 +465,11 @@ mod tests {
         let bundle = bundle::Bundle {
             bpv7: parsed,
             metadata,
-            status: bundle::BundleStatus::ForwardPending { peer: 7, queue: 0 },
+            status: bundle::BundleStatus::ForwardPending {
+                peer: 7,
+                queue: 0,
+                next_hop: "ipn:20.0".parse().unwrap(),
+            },
         };
         let bundle_id = bundle.id().clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
