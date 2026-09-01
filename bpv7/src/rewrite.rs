@@ -1,6 +1,6 @@
 /*!
 Applies queued rewrites (block removals and non-canonical re-emits) to a
-structurally-parsed bundle, returning a fresh [`Bundle`](crate::bundle::Bundle)
+structurally-parsed bundle, returning a fresh [`Bundle`]
 and the chunk plan describing the new wire bytes.
 
 This is the apply step that consumers reach for after composing the
@@ -9,11 +9,15 @@ classification / decrypt / verify primitives in [`crate::checks`] to decide
 BCB-encrypted BIBs) lives in [`crate::editor`] / `bpsec::edit`.
 */
 
-use super::*;
-use editor::{Chunk, Editor};
+use alloc::vec::Vec;
 
+use crate::{
+    Bundle, Error, HashMap, HashSet,
+    bpsec::{self, edit::BPSecEditor},
+    editor::{Chunk, Editor},
+};
 /// Apply queued rewrites. Bulk-removes via
-/// [`bpsec::edit::BPSecEditor::remove_blocks`] (which handles cascading
+/// [`BPSecEditor::remove_blocks`] (which handles cascading
 /// through BCB-encrypted BIBs internally), then applies non-canonical
 /// re-emits.
 ///
@@ -42,8 +46,6 @@ pub fn apply_rewrites<'a>(
     to_update: HashMap<u64, Vec<u8>>,
     to_remove: HashSet<u64>,
 ) -> Result<Option<(Bundle, Vec<Chunk>)>, Error> {
-    use bpsec::edit::BPSecEditor;
-
     let mut editor = Editor::new(bundle, data);
 
     // Bulk-remove with full BPSec cascade. Lenient: any covered BIB that

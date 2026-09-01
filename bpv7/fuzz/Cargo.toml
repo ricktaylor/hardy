@@ -41,3 +41,10 @@ path = "fuzz_targets/random_bundles.rs"
 test = false
 bench = false
 doc = false
+
+[[bin]]
+name = "streaming"
+path = "fuzz_targets/streaming.rs"
+test = false
+bench = false
+doc = false

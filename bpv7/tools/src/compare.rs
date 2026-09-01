@@ -23,7 +23,6 @@ use hardy_bpv7::{
 };
 use hardy_cbor::decode::{self, FromCbor};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
 /// Compare two bundles from their raw bytes.
 ///
 /// Returns a list of human-readable differences. Empty means identical.
@@ -58,7 +57,7 @@ struct BundleSide<'a> {
 
 impl<'a> BundleSide<'a> {
     fn new(bundle: &'a Bundle, data: &'a [u8]) -> Self {
-        let by_type = blocks_by_type(bundle);
+        let by_type = bundle.blocks_by_type();
         let mut index = BTreeMap::new();
         index.insert(0, (Type::Primary, 0));
         for (bt, bns) in by_type.values() {
@@ -227,20 +226,20 @@ fn compare_known_extension(
     }
 }
 
-/// Decode `T` from both bodies and compare the values. Uses the
-/// `(T, bool)` decode — which tolerates a non-shortest encoding and
-/// reports it via the (here discarded) flag — rather than the strict
-/// `parse::<T>`, so a non-canonically encoded value still compares by
-/// content. A decode failure or value mismatch is recorded as a diff.
+/// Decode `T` from both bodies and compare the values. A non-canonical
+/// encoding still compares by content — that tolerance lives in
+/// `T::from_cbor`, which accepts it — but trailing bytes after the item are
+/// rejected via [`decode::parse_exact`]. A decode failure or value mismatch
+/// is recorded as a diff.
 fn compare_decoded<T>(a_body: &[u8], b_body: &[u8], tag: &str, diffs: &mut Vec<String>)
 where
     T: FromCbor<Error: Display + From<decode::Error>> + PartialEq,
 {
     match (
-        decode::parse::<(T, bool)>(a_body),
-        decode::parse::<(T, bool)>(b_body),
+        decode::parse_exact::<T>(a_body),
+        decode::parse_exact::<T>(b_body),
     ) {
-        (Ok((a, _)), Ok((b, _))) => {
+        (Ok(a), Ok(b)) => {
             if a != b {
                 diffs.push(format!("{tag}: content differs"));
             }
@@ -248,25 +247,6 @@ where
         (Err(e), _) => diffs.push(format!("{tag}: failed to decode in A: {e}")),
         (_, Err(e)) => diffs.push(format!("{tag}: failed to decode in B: {e}")),
     }
-}
-
-/// Group block numbers by type code. Returns (Type, sorted block numbers).
-fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (Type, Vec<u64>)> {
-    let mut map: BTreeMap<u64, (Type, Vec<u64>)> = BTreeMap::new();
-    for (&bn, blk) in &bundle.blocks {
-        if bn == 0 {
-            continue;
-        }
-        let type_code: u64 = blk.block_type.into();
-        map.entry(type_code)
-            .or_insert_with(|| (blk.block_type, Vec::new()))
-            .1
-            .push(bn);
-    }
-    for v in map.values_mut() {
-        v.1.sort();
-    }
-    map
 }
 
 /// Resolve target block numbers to (block_type, index) tuples.

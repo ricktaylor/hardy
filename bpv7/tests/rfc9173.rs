@@ -1,5 +1,7 @@
+use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
+    block::{Block, Type},
     bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
     builder::Builder,
     checks,
@@ -7,9 +9,9 @@ use hardy_bpv7::{
     editor::{Chunk, Editor},
     parse,
 };
-
+use std::collections::HashMap;
 // Helper function to count blocks of a specific type
-fn count_blocks_of_type(bundle: &Bundle, block_type: hardy_bpv7::block::Type) -> usize {
+fn count_blocks_of_type(bundle: &Bundle, block_type: Type) -> usize {
     bundle
         .blocks
         .values()
@@ -43,8 +45,8 @@ fn validate_with_keys(
     (
         ::bytes::Bytes,
         Bundle,
-        std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
-        std::collections::HashMap<u64, bpsec::bib::OperationSet>,
+        HashMap<u64, bpsec::bcb::OperationSet>,
+        HashMap<u64, bpsec::bib::OperationSet>,
     ),
     hardy_bpv7::Error,
 > {
@@ -60,8 +62,8 @@ fn validate_with_keys(
 
     // §B — decrypt + validate BCB-covered BIBs (NoKey is soft;
     // DecryptionFailed is rejected — test helper is not a Verifier)
-    let mut decrypted = std::collections::HashMap::new();
-    let no_updates = std::collections::HashMap::new();
+    let mut decrypted = HashMap::new();
+    let no_updates = HashMap::new();
     let failed_bibs = checks::decrypt_and_validate_covered_bibs(
         &data,
         keys,
@@ -75,8 +77,10 @@ fn validate_with_keys(
         return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
-    // §C7 — verify every BIB with the supplied keys (NoKey is soft)
-    checks::verify_all_bibs(
+    // §C7 — verify every BIB with the supplied keys (NoKey is soft).
+    // `verify_all_bibs` borrows the op-map, leaving `bib_ops` intact for the
+    // tests that inspect it.
+    let deferred = checks::verify_all_bibs(
         &data,
         keys,
         &bundle.blocks,
@@ -84,6 +88,7 @@ fn validate_with_keys(
         &decrypted,
         &no_updates,
     )?;
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok((data, bundle, bcb_ops, bib_ops))
 }
@@ -96,9 +101,9 @@ fn validate_with_keys(
 /// this recursion is why the per-block `verify_block` helper below can't
 /// just use the plain one.
 struct DecryptingBlockSet<'a> {
-    blocks: &'a std::collections::HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &'a HashMap<u64, Block>,
     source_data: &'a [u8],
-    bcb_ops: &'a std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
+    bcb_ops: &'a HashMap<u64, bpsec::bcb::OperationSet>,
     keys: &'a key::KeySet,
     /// Block number currently being verified — skip BCB-decryption for
     /// it to avoid infinite recursion when the target is itself the
@@ -110,10 +115,7 @@ impl<'a> bpsec::BlockSet<'a> for DecryptingBlockSet<'a> {
     fn block(
         &'a self,
         block_number: u64,
-    ) -> Option<(
-        &'a hardy_bpv7::block::Block,
-        Option<hardy_bpv7::block::Payload<'a>>,
-    )> {
+    ) -> Option<(&'a Block, Option<hardy_bpv7::block::Payload<'a>>)> {
         let block = self.blocks.get(&block_number)?;
         let payload = if let Some(bcb_num) = block.bcb {
             if Some(block_number) == self.skip_decrypt {
@@ -160,10 +162,10 @@ impl<'a> bpsec::BlockSet<'a> for DecryptingBlockSet<'a> {
 /// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
 fn verify_block(
     block_number: u64,
-    blocks: &std::collections::HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &HashMap<u64, Block>,
     data: &[u8],
-    bcb_ops: &std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
-    bib_ops: &std::collections::HashMap<u64, bpsec::bib::OperationSet>,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     keys: &key::KeySet,
 ) -> Result<bool, hardy_bpv7::Error> {
     let target = blocks
@@ -208,9 +210,9 @@ fn verify_block(
 /// Per-block plaintext: slice when unencrypted, BCB-decrypt when not.
 fn block_data<'a>(
     block_number: u64,
-    blocks: &'a std::collections::HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &'a HashMap<u64, Block>,
     data: &'a [u8],
-    bcb_ops: &std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     keys: &key::KeySet,
 ) -> Result<hardy_bpv7::block::Payload<'a>, hardy_bpv7::Error> {
     let target = blocks
@@ -479,7 +481,7 @@ fn test_sign_then_encrypt() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"hello".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -601,7 +603,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"test payload data".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -667,14 +669,14 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         validate_with_keys(&encrypted_bytes, &all_keys).expect("Failed to parse encrypted bundle");
 
     // Verify we have 2 BCB blocks (separate BCBs for payload and BIB)
-    let bcb_count = count_blocks_of_type(&parsed_enc, hardy_bpv7::block::Type::BlockSecurity);
+    let bcb_count = count_blocks_of_type(&parsed_enc, Type::BlockSecurity);
     assert_eq!(
         bcb_count, 2,
         "BCB-AES-GCM should create 2 separate BCBs (one for payload, one for BIB)"
     );
 
     // Verify we have 1 BIB block (encrypted by its own BCB)
-    let bib_count = count_blocks_of_type(&parsed_enc, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&parsed_enc, Type::BlockIntegrity);
     assert_eq!(bib_count, 1, "Should have 1 BIB block");
 
     // 4. Remove BCB from payload only
@@ -692,16 +694,14 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
 
     // 5. Assert: 1 BCB remains (the BIB's BCB is still present)
     // This is expected RFC 9173 behavior - separate BCBs mean separate operations
-    let bcb_count_after =
-        count_blocks_of_type(&parsed_decrypted, hardy_bpv7::block::Type::BlockSecurity);
+    let bcb_count_after = count_blocks_of_type(&parsed_decrypted, Type::BlockSecurity);
     assert_eq!(
         bcb_count_after, 1,
         "BIB's BCB should remain (RFC 9173 creates separate BCBs due to IV uniqueness)"
     );
 
     // 6. Assert: 1 BIB remains (still encrypted by its BCB)
-    let bib_count_after =
-        count_blocks_of_type(&parsed_decrypted, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count_after = count_blocks_of_type(&parsed_decrypted, Type::BlockIntegrity);
     assert_eq!(
         bib_count_after, 1,
         "BIB should remain encrypted (RFC 9173 creates separate BCBs)"
@@ -733,7 +733,7 @@ fn test_bib_removal_and_readd() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"test payload".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -775,7 +775,7 @@ fn test_bib_removal_and_readd() {
     )
     .expect("Signature verification should succeed");
 
-    let bib_count = count_blocks_of_type(&parsed_signed, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&parsed_signed, Type::BlockIntegrity);
     assert_eq!(bib_count, 1, "Should have 1 BIB after signing");
 
     // 4. Remove BIB using Editor::remove_integrity
@@ -793,8 +793,7 @@ fn test_bib_removal_and_readd() {
         validate_with_keys(&unsigned_bytes, &keys).expect("Failed to parse unsigned bundle");
 
     // 5. Assert: No BIB blocks exist
-    let bib_count_after =
-        count_blocks_of_type(&parsed_unsigned, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count_after = count_blocks_of_type(&parsed_unsigned, Type::BlockIntegrity);
     assert_eq!(bib_count_after, 0, "Should have 0 BIBs after removal");
 
     // 6. Verify signature fails (no BIB)
@@ -851,7 +850,7 @@ fn test_encrypt_then_sign_fails() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"payload data".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -919,7 +918,7 @@ fn test_signature_tamper_detection() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"original payload".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -989,7 +988,7 @@ fn test_bcb_without_bib_removal() {
     let (_bundle, bundle_bytes) =
         Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
             .with_report_to("ipn:2.1".parse().unwrap())
-            .with_lifetime(core::time::Duration::from_millis(1000))
+            .with_lifetime(Duration::from_millis(1000))
             .with_payload(b"encrypted data".as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
@@ -1029,7 +1028,7 @@ fn test_bcb_without_bib_removal() {
         validate_with_keys(&encrypted_bytes, &keys).expect("Failed to parse encrypted bundle");
 
     // Verify BCB exists
-    let bcb_count = count_blocks_of_type(&parsed_enc, hardy_bpv7::block::Type::BlockSecurity);
+    let bcb_count = count_blocks_of_type(&parsed_enc, Type::BlockSecurity);
     assert_eq!(bcb_count, 1, "Should have 1 BCB after encryption");
 
     // 3. Remove BCB using Editor::remove_encryption
@@ -1046,8 +1045,7 @@ fn test_bcb_without_bib_removal() {
         validate_with_keys(&decrypted_bytes, &keys).expect("Failed to parse decrypted bundle");
 
     // 4. Assert: 0 BCBs, payload is decrypted
-    let bcb_count_after =
-        count_blocks_of_type(&parsed_decrypted, hardy_bpv7::block::Type::BlockSecurity);
+    let bcb_count_after = count_blocks_of_type(&parsed_decrypted, Type::BlockSecurity);
     assert_eq!(bcb_count_after, 0, "Should have 0 BCBs after removal");
 
     // 5. Payload content matches original
@@ -1091,7 +1089,7 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
     // Verify no BCBs exist (use the raw parse for inspection; the rich
     // `bundle` from Builder is consumed by Editor below).
     let raw = raw_of(&bundle_bytes);
-    let bcb_count = count_blocks_of_type(&raw, hardy_bpv7::block::Type::BlockSecurity);
+    let bcb_count = count_blocks_of_type(&raw, Type::BlockSecurity);
     assert_eq!(bcb_count, 0, "Should have 0 BCBs (bundle is not encrypted)");
     let _ = bundle;
 
@@ -1123,7 +1121,7 @@ fn test_remove_integrity_fails_on_unsigned_block() {
 
     // Verify no BIBs exist (use the raw parse for inspection).
     let raw = raw_of(&bundle_bytes);
-    let bib_count = count_blocks_of_type(&raw, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&raw, Type::BlockIntegrity);
     assert_eq!(bib_count, 0, "Should have 0 BIBs (bundle is not signed)");
     let _ = bundle;
 
@@ -1271,7 +1269,7 @@ fn test_sign_primary_block_with_crc() {
         validate_with_keys(&signed_bytes, &keys).expect("Failed to parse signed bundle");
 
     // 4. Verify BIB exists and targets block 0
-    let bib_count = count_blocks_of_type(&parsed, hardy_bpv7::block::Type::BlockIntegrity);
+    let bib_count = count_blocks_of_type(&parsed, Type::BlockIntegrity);
     assert_eq!(
         bib_count, 1,
         "Should have 1 BIB after signing primary block"

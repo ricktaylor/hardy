@@ -1,6 +1,8 @@
 use super::*;
-use hardy_bpv7::*;
-
+use core::time::Duration;
+use hardy_bpv7::{block, bpsec, bundle, bundle_age, crc, eid, hop_info};
+use hardy_cbor::decode::{parse_exact, parse_value};
+use std::collections::HashMap;
 #[derive(Parser, Debug)]
 #[command(
     about = "Inspect and display bundle information",
@@ -58,11 +60,11 @@ impl Command {
         } = parse_with_keys(bundle_data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
-        // Section A diagnostics — `report_unsupported` is the OR of the
-        // three classify_* outputs. (Errors propagate from parse_with_keys;
-        // here we re-run the classify pass to read the flag.)
+        // Section A diagnostics — OR of the block-kind and security-kind
+        // report facts. (Errors propagate from parse_with_keys; here we
+        // re-run the classify pass to read the flags.)
         let report_unsupported = checks::classify_unsupported(&raw.blocks, &bcb_ops, &bib_ops, &[])
-            .map(|c| c.report_unsupported)
+            .map(|c| c.report_unsupported_block || c.report_unsupported_security)
             .unwrap_or(false);
 
         // Decode the known extension blocks (PreviousNode / BundleAge /
@@ -101,8 +103,8 @@ impl Command {
 /// markdown path threads one value instead of three.
 struct BlockSecurity {
     keys: bpsec::key::KeySet,
-    bib_ops: std::collections::HashMap<u64, bpsec::bib::OperationSet>,
-    bcb_ops: std::collections::HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: HashMap<u64, bpsec::bib::OperationSet>,
+    bcb_ops: HashMap<u64, bpsec::bcb::OperationSet>,
 }
 
 /// The typed values decoded from a bundle's known extension blocks, plus
@@ -111,7 +113,7 @@ struct BlockSecurity {
 #[derive(Default)]
 struct ExtFields {
     previous_node: Option<eid::Eid>,
-    age: Option<core::time::Duration>,
+    age: Option<Duration>,
     hop_count: Option<hop_info::HopInfo>,
     non_canonical: bool,
 }
@@ -121,32 +123,33 @@ struct ExtFields {
 /// at their `None` default. Errors on a malformed body.
 fn extension_fields(
     data: &[u8],
-    blocks: &std::collections::HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, block::Block>,
 ) -> Result<ExtFields, hardy_bpv7::Error> {
     let mut out = ExtFields::default();
     for b in blocks.values() {
-        if b.bcb.is_some() {
-            continue;
-        }
-        // `data` is the full in-memory bundle from `parse_with_keys`.
-        let Some(body) = b.payload(data) else {
-            continue;
-        };
         match b.block_type {
             block::Type::PreviousNode => {
-                let (v, shortest) = parse_exact::<(eid::Eid, bool)>(body, "Previous Node Block")?;
-                out.non_canonical |= !shortest;
-                out.previous_node = Some(v);
+                if let Some((v, shortest)) =
+                    extract_known::<(eid::Eid, bool)>(b, data, "Previous Node Block")?
+                {
+                    out.non_canonical |= !shortest;
+                    out.previous_node = Some(v);
+                }
             }
             block::Type::BundleAge => {
-                let v = parse_exact::<bundle_age::BundleAge>(body, "Bundle Age Block")?;
-                out.age = Some(v.into());
+                if let Some(v) =
+                    extract_known::<bundle_age::BundleAge>(b, data, "Bundle Age Block")?
+                {
+                    out.age = Some(v.into());
+                }
             }
             block::Type::HopCount => {
-                let (v, shortest) =
-                    parse_exact::<(hop_info::HopInfo, bool)>(body, "Hop Count Block")?;
-                out.non_canonical |= !shortest;
-                out.hop_count = Some(v);
+                if let Some((v, shortest)) =
+                    extract_known::<(hop_info::HopInfo, bool)>(b, data, "Hop Count Block")?
+                {
+                    out.non_canonical |= !shortest;
+                    out.hop_count = Some(v);
+                }
             }
             _ => {}
         }
@@ -166,14 +169,14 @@ struct JsonBundle<'a> {
     crc_type: crc::CrcType,
     destination: &'a eid::Eid,
     report_to: &'a eid::Eid,
-    lifetime: core::time::Duration,
+    lifetime: Duration,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_node: Option<&'a eid::Eid>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    age: Option<core::time::Duration>,
+    age: Option<Duration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hop_count: Option<&'a hop_info::HopInfo>,
-    blocks: &'a std::collections::HashMap<u64, block::Block>,
+    blocks: &'a HashMap<u64, block::Block>,
 }
 
 fn dump_json(
@@ -360,7 +363,7 @@ fn dump_crc(crc: crc::CrcType, output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_block(
-    blocks: &std::collections::HashMap<u64, block::Block>,
+    blocks: &HashMap<u64, block::Block>,
     block_number: u64,
     block: &block::Block,
     data: &[u8],
@@ -517,7 +520,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
     }
 
     let mut results = Vec::new();
-    while let Ok((s, len)) = hardy_cbor::decode::parse_value(data, |mut v, _, _| {
+    while let Ok((s, len)) = parse_value(data, |mut v, _, _| {
         let s = format!("{v:?}");
         v.skip(16)?;
         Ok::<_, hardy_cbor::decode::Error>(s)
@@ -551,7 +554,7 @@ fn dump_unknown(mut data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    let ops = hardy_cbor::decode::parse_exact::<bpsec::bcb::OperationSet>(data)?;
+    let ops = parse_exact::<bpsec::bcb::OperationSet>(data)?;
     output.append_str(format!(
         "### BCB Data\n\nSecurity Source: {}\n\n",
         ops.source()
@@ -627,7 +630,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 }
 
 fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
-    let ops = hardy_cbor::decode::parse_exact::<bpsec::bib::OperationSet>(data)?;
+    let ops = parse_exact::<bpsec::bib::OperationSet>(data)?;
     output.append_str(format!(
         "### BIB Data\n\nSecurity Source: {}\n\n",
         ops.source()

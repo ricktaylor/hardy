@@ -1,7 +1,18 @@
-use super::*;
-use alloc::sync::Arc;
+use alloc::{boxed::Box, string::ToString, sync::Arc};
+use core::ops::Range;
+
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Array, Encoder, ToCbor, emit},
+};
 use hmac::{KeyInit, Mac};
 
+use super::{ScopeFlags, canonical_primary, key_wrap, rand_bytes};
+use crate::{
+    CaptureFieldErr, HashMap, block,
+    bpsec::{Context, Error, bib, key, parse},
+    eid,
+};
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -13,10 +24,10 @@ pub enum ShaVariant {
     Unrecognised(u64),
 }
 
-impl hardy_cbor::encode::ToCbor for ShaVariant {
+impl ToCbor for ShaVariant {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
             Self::HMAC_256_256 => encoder.emit(&5),
             Self::HMAC_384_384 => encoder.emit(&6),
@@ -26,7 +37,7 @@ impl hardy_cbor::encode::ToCbor for ShaVariant {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for ShaVariant {
+impl FromCbor for ShaVariant {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -68,10 +79,10 @@ impl Parameters {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Parameters {
+impl ToCbor for Parameters {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         let mut mask: u32 = 0;
         if self.variant != ShaVariant::default() {
             mask |= 1 << 1;
@@ -114,10 +125,10 @@ impl Results {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Results {
+impl ToCbor for Results {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(&self.0))]);
     }
 }
@@ -135,7 +146,7 @@ where
 
     // Build IPT
     mac.update(
-        &hardy_cbor::encode::emit(&ScopeFlags {
+        &emit(&ScopeFlags {
             include_primary_block: flags.include_primary_block,
             include_target_header: flags.include_target_header,
             include_security_header: flags.include_security_header,
@@ -152,17 +163,18 @@ where
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
-            mac.update(
-                args.blocks
-                    .block(0)
-                    .and_then(|v| v.1)
-                    .expect("Missing primary block!")
-                    .as_ref(),
-            );
+            let raw = args
+                .blocks
+                .block(0)
+                .and_then(|v| v.1)
+                .expect("Missing primary block!");
+            let raw = raw.as_ref();
+            // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
+            mac.update(&canonical_primary(raw)?);
         }
 
         if flags.include_target_header {
-            let mut encoder = hardy_cbor::encode::Encoder::new();
+            let mut encoder = Encoder::new();
             encoder.emit(&target_block.block_type);
             encoder.emit(&args.target);
             encoder.emit(&target_block.flags);
@@ -176,16 +188,26 @@ where
             .block(args.source)
             .ok_or(Error::MissingSecurityTarget)?
             .0;
-        let mut encoder = hardy_cbor::encode::Encoder::new();
+        let mut encoder = Encoder::new();
         encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
         encoder.emit(&source_block.flags);
         mac.update(&encoder.build());
     }
 
-    // Reduce copying here
-    mac.update(&hardy_cbor::encode::emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
-    mac.update(payload.as_ref());
+    // Step 5: CBOR byte-string encoding of the security target's canonical form
+    // (confirmed by RFC 9173 Appendix A.3 test vector: primary block is also
+    // byte-string-wrapped). For primary block targets, canonicalize before wrapping.
+    if matches!(target_block.block_type, block::Type::Primary) {
+        // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
+        let bytes = canonical_primary(payload.as_ref())?;
+        mac.update(&emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);
+        mac.update(&bytes);
+    } else {
+        // Reduce copying by emitting the byte-string header separately.
+        mac.update(&emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
+        mac.update(payload.as_ref());
+    }
 
     Ok(mac.finalize().into_bytes())
 }
@@ -269,32 +291,16 @@ impl Operation {
         let key_wrap = as_key_wrap(jwk.key_algorithm);
 
         let cek = if let Some(key_wrap) = &key_wrap {
-            match key_wrap {
-                KeyWrap::Aes128 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<32>()?))
-                }
-                KeyWrap::Aes192 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<48>()?))
-                }
-                KeyWrap::Aes256 => {
-                    if let Some(ops) = &jwk.operations
-                        && !ops.contains(&key::Operation::WrapKey)
-                    {
-                        return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
-                    }
-                    Some(zeroize::Zeroizing::from(rand_bytes::<64>()?))
-                }
+            if let Some(ops) = &jwk.operations
+                && !ops.contains(&key::Operation::WrapKey)
+            {
+                return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
             }
+            Some(zeroize::Zeroizing::from(match key_wrap {
+                KeyWrap::Aes128 => rand_bytes::<32>()?,
+                KeyWrap::Aes192 => rand_bytes::<48>()?,
+                KeyWrap::Aes256 => rand_bytes::<64>()?,
+            }))
         } else {
             None
         };
@@ -427,7 +433,7 @@ impl Operation {
         }
     }
 
-    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
+    pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         encoder.emit(&Context::BIB_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             encoder.emit(&0);
@@ -439,7 +445,7 @@ impl Operation {
         }
     }
 
-    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
+    pub fn emit_result(&self, array: &mut Array) {
         array.emit(&self.results);
     }
 }

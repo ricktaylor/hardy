@@ -1,8 +1,8 @@
 /*!
 The streaming wire parser for BPv7 bundles ([RFC 9171]). [`BundleParser`]
-drives the structural decode incrementally; [`parse`] is the one-shot
+drives the structural decode incrementally; [`parse()`] is the one-shot
 convenience over it. Both yield a [`Parsed`] — the authoritative byte
-buffer, the structural [`Bundle`](crate::bundle::Bundle), and the decoded
+buffer, the structural [`Bundle`], and the decoded
 BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 [`crate::checks`] and [`crate::rewrite`].
 
@@ -10,10 +10,12 @@ BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 */
 
 use super::*;
+
 use bytes::{Bytes, BytesMut};
-use error::CaptureFieldErr;
 use hardy_cbor::decode::{Error as CborError, Head, Marker};
-use primary_block::PrimaryBlock;
+use smallvec::SmallVec;
+
+use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -114,11 +116,11 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
 /// `Bytes` buffer the parser owns (the source of truth that the
 /// returned `Bundle::blocks` extent/data offsets index into) and its
 /// decoded BPSec OperationSet maps (BCBs and BIBs, keyed by block
-/// number). Returned by [`BundleParser::finish`] and [`parse`].
+/// number). Returned by [`BundleParser::finish`] and [`parse()`].
 ///
 /// Slice with `&parsed.data[block.payload_range()]` (or `block.extent`)
 /// using [`data`](Self::data) rather than a separate copy of the input —
-/// for the single-`push()` / one-shot [`parse`] path this is the input
+/// for the single-`push()` / one-shot [`parse()`] path this is the input
 /// verbatim, but the multi-`push()` streaming path freezes the
 /// concatenated staging buffer, so the offsets are only meaningful
 /// against *that* buffer.
@@ -138,15 +140,253 @@ enum State {
     PrimaryBlock(usize),
     Blocks(usize),
     Done,
+    /// Headers + all BPSec blocks parsed, but the payload body is larger than
+    /// the buffer (the streaming-fallback in `parse_blocks` fired). Terminal,
+    /// like `Done`, but `push` reports it as [`ParserProgress::Partial`].
+    Partial,
 }
 
+/// The outcome of a [`BundleParser::push`] call: either more input is needed,
+/// or parsing reached one of its terminal states.
 pub enum ParserProgress {
+    /// More input is required before parsing can continue; carries a
+    /// lower-bound hint for the number of additional bytes to feed next.
     NeedMore(usize),
     /// Parsing is complete. Carries the concatenation of all bytes received
     /// via `push()` as a single contiguous `Bytes`. Yielded exactly once.
     Ready(Bytes),
+    /// Headers and all BPSec blocks are parsed, but the payload body is larger
+    /// than the buffer. `consumed` is everything received so far (headers plus
+    /// any payload-body prefix); pass it to [`BundleParser::finish`] to obtain
+    /// the (header-only) [`Parsed`] index — in that `Parsed` the payload
+    /// block's `extent` over-claims and `data` holds only `consumed`.
+    ///
+    /// The caller owns the rest of the stream from here: it drains the
+    /// remaining bytes (e.g. from the CLA segment stream) and persists them.
+    /// `tail` is a synchronous continuation, already fed the header and the
+    /// body prefix in `consumed`; feed it each subsequent run of bytes via
+    /// [`PayloadTail::push`] to carry the payload CRC and the block/outer-break
+    /// checks to completion. Yielded at most once; do not `push` the parser
+    /// after it.
+    Partial { consumed: Bytes, tail: PayloadTail },
 }
 
+/// Synchronous continuation that carries an oversized payload block's CRC and
+/// termination checks across the streamed tail. Handed back in
+/// [`ParserProgress::Partial`], already fed the block header and the body
+/// prefix that were in `consumed`. The caller pushes each subsequent run of
+/// bytes through [`push`](Self::push); the continuation feeds the running CRC
+/// (entering the CRC-value field as zeros per RFC 9171 §4.2.2), validates the
+/// block-level and outer `0xFF` breaks, verifies the CRC, and reports when the
+/// bundle is complete. It performs no I/O and owns no storage — persisting the
+/// drained bytes is the caller's job.
+pub struct PayloadTail {
+    /// `None` when the payload block declared no CRC; otherwise pre-fed the
+    /// block header + body prefix, and consumed by `verify_crc`.
+    digest: Option<crc::Digest>,
+    crc_type: crc::CrcType,
+    is_indefinite: bool,
+    phase: TailPhase,
+    /// Body bytes not yet seen (decrements through the `Body` phase).
+    body_remaining: u64,
+    /// Total bytes still expected, through the outer `0xFF` break.
+    remaining: u64,
+    /// Captured wire CRC value bytes (`crc_value[..crc_value_len]`).
+    crc_value: [u8; 4],
+    crc_filled: usize,
+}
+
+/// Where in the post-`consumed` byte stream a [`PayloadTail`] currently is.
+enum TailPhase {
+    /// Consuming the rest of the payload body (fed to the digest).
+    Body,
+    /// Expecting the 1-byte CRC byte-string head (`0x42`/`0x44`).
+    CrcHead,
+    /// Capturing the CRC value bytes (not fed to the digest — zeros were).
+    CrcValue,
+    /// Expecting the block array's `0xFF` break (indefinite-length blocks only).
+    BlockBreak,
+    /// Expecting the bundle's outer `0xFF` break.
+    OuterBreak,
+    /// Bundle complete; any further bytes are trailing data.
+    Done,
+}
+
+/// Wire width of the CRC value for `crc_type` (0 if none).
+fn crc_value_len(crc_type: crc::CrcType) -> usize {
+    match crc_type {
+        crc::CrcType::CRC16_X25 => 2,
+        crc::CrcType::CRC32_CASTAGNOLI => 4,
+        _ => 0,
+    }
+}
+
+/// CBOR byte-string head for the CRC value (`0x42` for CRC-16, `0x44` for
+/// CRC-32). Only meaningful — and only consulted — when a CRC is present.
+fn crc_head_byte(crc_type: crc::CrcType) -> u8 {
+    match crc_type {
+        crc::CrcType::CRC16_X25 => 0x42,
+        crc::CrcType::CRC32_CASTAGNOLI => 0x44,
+        _ => 0,
+    }
+}
+
+/// The phase that follows the payload body, given the trailer shape.
+fn after_body(crc_type: crc::CrcType, is_indefinite: bool) -> TailPhase {
+    if !matches!(crc_type, crc::CrcType::None) {
+        TailPhase::CrcHead
+    } else if is_indefinite {
+        TailPhase::BlockBreak
+    } else {
+        TailPhase::OuterBreak
+    }
+}
+
+impl PayloadTail {
+    fn new(
+        digest: Option<crc::Digest>,
+        crc_type: crc::CrcType,
+        is_indefinite: bool,
+        body_remaining: u64,
+        remaining: u64,
+    ) -> Self {
+        let phase = if body_remaining > 0 {
+            TailPhase::Body
+        } else {
+            after_body(crc_type, is_indefinite)
+        };
+        Self {
+            digest,
+            crc_type,
+            is_indefinite,
+            phase,
+            body_remaining,
+            remaining,
+            crc_value: [0; 4],
+            crc_filled: 0,
+        }
+    }
+
+    /// Bytes still expected before the bundle is complete (through the outer
+    /// `0xFF` break).
+    pub fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Feed the next run of streamed bytes. Returns `true` once the bundle is
+    /// complete (body drained, CRC verified, breaks consumed). Errors on a CRC
+    /// mismatch ([`crc::Error::IncorrectCrc`]), a malformed trailer
+    /// ([`Error::NotCanonical`]), or bytes after the outer break
+    /// ([`Error::AdditionalData`]). On `Ok`, the whole run belonged to the
+    /// bundle and should be persisted by the caller.
+    pub fn push(&mut self, mut bytes: &[u8]) -> Result<bool, Error> {
+        let start = bytes.len();
+        while let Some(&b) = bytes.first() {
+            match self.phase {
+                TailPhase::Body => {
+                    // `Body` is only entered with `body_remaining > 0`, so this
+                    // consumes at least one byte and makes progress.
+                    let take = self.body_remaining.min(bytes.len() as u64) as usize;
+                    if let Some(d) = self.digest.as_mut() {
+                        d.push(&bytes[..take]);
+                    }
+                    self.body_remaining -= take as u64;
+                    bytes = &bytes[take..];
+                    if self.body_remaining == 0 {
+                        self.enter_after_body()?;
+                    }
+                }
+                TailPhase::CrcHead => {
+                    if b != crc_head_byte(self.crc_type) {
+                        return Err(Error::NotCanonical);
+                    }
+                    if let Some(d) = self.digest.as_mut() {
+                        // The head byte is CRC input; the value field that
+                        // follows is hashed as zeros (RFC 9171 §4.2.2).
+                        d.push(&[b]);
+                        d.push_zeros();
+                    }
+                    bytes = &bytes[1..];
+                    self.phase = TailPhase::CrcValue;
+                }
+                TailPhase::CrcValue => {
+                    let want = crc_value_len(self.crc_type) - self.crc_filled;
+                    let take = want.min(bytes.len());
+                    self.crc_value[self.crc_filled..self.crc_filled + take]
+                        .copy_from_slice(&bytes[..take]);
+                    self.crc_filled += take;
+                    bytes = &bytes[take..];
+                    if self.crc_filled == crc_value_len(self.crc_type) {
+                        if self.is_indefinite {
+                            self.phase = TailPhase::BlockBreak;
+                        } else {
+                            self.verify_crc()?;
+                            self.phase = TailPhase::OuterBreak;
+                        }
+                    }
+                }
+                TailPhase::BlockBreak => {
+                    if b != 0xFF {
+                        return Err(Error::NotCanonical);
+                    }
+                    if let Some(d) = self.digest.as_mut() {
+                        d.push(&[0xFF]);
+                    }
+                    bytes = &bytes[1..];
+                    self.verify_crc()?;
+                    self.phase = TailPhase::OuterBreak;
+                }
+                TailPhase::OuterBreak => {
+                    if b != 0xFF {
+                        return Err(Error::NotCanonical);
+                    }
+                    bytes = &bytes[1..];
+                    self.phase = TailPhase::Done;
+                }
+                TailPhase::Done => return Err(Error::AdditionalData),
+            }
+        }
+        self.remaining = self.remaining.saturating_sub((start - bytes.len()) as u64);
+        Ok(matches!(self.phase, TailPhase::Done))
+    }
+
+    /// Assert the bundle completed. Errors with `NeedMoreData` (the still-
+    /// outstanding count) if the stream ended before the outer break — i.e. the
+    /// bundle was truncated.
+    pub fn finish(self) -> Result<(), Error> {
+        if matches!(self.phase, TailPhase::Done) {
+            Ok(())
+        } else {
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(
+                usize::try_from(self.remaining).unwrap_or(usize::MAX),
+            )))
+        }
+    }
+
+    /// Transition out of the `Body` phase, running the CRC verification eagerly
+    /// when the next thing expected is the outer break (no CRC / no block break
+    /// between here and it).
+    fn enter_after_body(&mut self) -> Result<(), Error> {
+        self.phase = after_body(self.crc_type, self.is_indefinite);
+        if matches!(self.phase, TailPhase::OuterBreak) {
+            self.verify_crc()?;
+        }
+        Ok(())
+    }
+
+    /// Compare the accumulated digest against the captured wire value. A no-op
+    /// when the block declared no CRC. Consumes the digest so it runs once.
+    fn verify_crc(&mut self) -> Result<(), Error> {
+        if let Some(digest) = self.digest.take()
+            && !digest.verify(&self.crc_value[..crc_value_len(self.crc_type)])
+        {
+            return Err(crc::Error::IncorrectCrc.into());
+        }
+        Ok(())
+    }
+}
+
+/// Incremental, push-based parser for a BPv7 bundle arriving in chunks.
 pub struct BundleParser {
     chunk_size: usize,
     data: Option<BytesMut>,
@@ -169,7 +409,7 @@ pub struct BundleParser {
     /// BIBs are skipped and trigger a `BibCoverage::Maybe` sweep on
     /// the remaining blocks. Empty (no allocation) for bundles with
     /// no BIBs.
-    pending_bibs: Vec<u64>,
+    pending_bibs: SmallVec<[u64; 4]>,
 
     /// Parsed BCB OperationSets for every BCB encountered, keyed by
     /// BCB block number. BCB bodies are always plaintext (the ASB
@@ -178,6 +418,11 @@ pub struct BundleParser {
     /// `finish()` for BCB cross-block validation and to mark BCB
     /// coverage on target blocks before the BIB pass runs.
     bcbs: HashMap<u64, bpsec::bcb::OperationSet>,
+
+    /// Set when the streaming-fallback fires on an oversized payload: the CRC
+    /// continuation, pre-fed the header + body prefix, that `push` hands out in
+    /// [`ParserProgress::Partial`]. `None` on every other path.
+    deferred: Option<PayloadTail>,
 }
 
 impl Default for BundleParser {
@@ -187,6 +432,8 @@ impl Default for BundleParser {
 }
 
 impl BundleParser {
+    /// Creates a parser that grows its internal buffer in `chunk_size`-byte
+    /// increments. [`Default`] uses 4096.
     pub fn new(chunk_size: usize) -> Self {
         Self {
             chunk_size,
@@ -194,11 +441,19 @@ impl BundleParser {
             state: State::Start,
             bundle: None,
             unique_blocks: HashSet::with_capacity(3),
-            pending_bibs: Vec::new(),
+            pending_bibs: SmallVec::new(),
             bcbs: HashMap::new(),
+            deferred: None,
         }
     }
 
+    /// Feeds the next run of bytes and advances parsing, returning a
+    /// [`ParserProgress`]: `NeedMore` if more input is required, or a terminal
+    /// `Ready` / `Partial` result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called again after a terminal `Ready`/`Partial` result.
     pub fn push(&mut self, data_in: Bytes) -> Result<ParserProgress, Error> {
         // If we have a cached buffer, extend with data_in and take it out for parsing.
         // Otherwise leave cached = None and parse against data_in directly.
@@ -214,42 +469,66 @@ impl BundleParser {
             State::Start => self.parse_start(data),
             State::PrimaryBlock(offset) => self.parse_primary(data, offset),
             State::Blocks(offset) => self.parse_blocks(data, offset),
-            State::Done => {
-                panic!("push called after parser already reached Done state");
+            State::Done | State::Partial => {
+                panic!("push called after parser already reached a terminal state");
             }
         };
 
         match r {
             Ok(_) => {
-                // Parse complete (Ok only ever returned at Done). Hand back
-                // the consumed bytes as a single contiguous Bytes:
+                // Terminal state reached (Ok only ever returned at Done or
+                // Partial). Hand back the consumed bytes as a single contiguous
+                // Bytes:
                 //   - multi-chunk: freeze the cached BytesMut (zero-copy)
                 //   - single-chunk: the original data_in
                 let bytes = match cached {
                     Some(buf) => buf.freeze(),
                     None => data_in,
                 };
-                Ok(ParserProgress::Ready(bytes))
+                match self.state {
+                    // Oversized payload: the body didn't fit. Hand the caller
+                    // the CRC continuation `parse_blocks` stashed (pre-fed the
+                    // header + body prefix) so it can drain the tail.
+                    State::Partial => {
+                        let tail = self
+                            .deferred
+                            .take()
+                            .expect("Partial state guarantees a stashed PayloadTail");
+                        Ok(ParserProgress::Partial {
+                            consumed: bytes,
+                            tail,
+                        })
+                    }
+                    _ => Ok(ParserProgress::Ready(bytes)),
+                }
             }
-            Err(Error::InvalidCBOR(CborError::NeedMoreData(more))) => {
-                // First-time materialisation if we don't have a cache yet.
-                // try_into_mut is zero-copy when refcount=1.
-                let mut buf = cached.unwrap_or_else(|| match data_in.try_into_mut() {
-                    Ok(b) => b,
-                    Err(orig) => BytesMut::from(orig.as_ref()),
-                });
-                // `more` is a wire-derived shortfall (a block can claim a body
-                // far larger than any bundle we would accept), so it is only a
-                // growth hint — never an allocation size. Reserving it verbatim
-                // lets a hostile length abort the process (capacity overflow)
-                // before the caller's own size cap is consulted. Grow by at most
-                // one `chunk_size`; the buffer still fills from the bytes that
-                // actually arrive on later pushes.
-                buf.reserve(more.min(self.chunk_size));
-                self.data = Some(buf);
-                Ok(ParserProgress::NeedMore(more))
+            // `NeedMoreData` may surface directly (from `parse_start` /
+            // `parse_blocks`) or wrapped in `InvalidField` field labels (when a
+            // primary/extension field straddles a chunk boundary and bubbles up
+            // through `parse_canonical`). Either is "feed me more", not a hard
+            // error — `need_more` unwraps the field-label chain to find it.
+            Err(e) => {
+                if let Some(more) = need_more(&e) {
+                    // First-time materialisation if we don't have a cache yet.
+                    // try_into_mut is zero-copy when refcount=1.
+                    let mut buf = cached.unwrap_or_else(|| match data_in.try_into_mut() {
+                        Ok(b) => b,
+                        Err(orig) => BytesMut::from(orig.as_ref()),
+                    });
+                    // `more` is a wire-derived shortfall (a block can claim a
+                    // body far larger than any bundle we would accept), so it is
+                    // only a growth hint — never an allocation size. Reserving it
+                    // verbatim lets a hostile length abort the process before the
+                    // caller's own size cap is consulted. Grow by at most one
+                    // `chunk_size`; the buffer still fills from the bytes that
+                    // actually arrive on later pushes.
+                    buf.reserve(more.min(self.chunk_size));
+                    self.data = Some(buf);
+                    Ok(ParserProgress::NeedMore(more))
+                } else {
+                    Err(e)
+                }
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -259,16 +538,28 @@ impl BundleParser {
     /// re-decode of every BIB/BCB body (see `bpv7/docs/TODO.md` M1).
     /// Bundles with no BPSec return empty maps.
     ///
-    /// `data` should be the [`ParserProgress::Ready`] buffer this
-    /// parser handed back from [`push`](Self::push). It is moved
-    /// through `finish` and returned in the [`Parsed`] result so
-    /// callers have a single authoritative byte source for the returned
-    /// offsets — slicing their own copy of the input risks aliasing
-    /// against a different buffer in the streaming case.
+    /// `data` should be the buffer this parser handed back from
+    /// [`push`](Self::push) — the [`ParserProgress::Ready`] buffer, or the
+    /// [`ParserProgress::Partial`] `consumed` buffer. It is moved through
+    /// `finish` and returned in the [`Parsed`] result so callers have a single
+    /// authoritative byte source for the returned offsets — slicing their own
+    /// copy of the input risks aliasing against a different buffer in the
+    /// streaming case.
+    ///
+    /// After a [`ParserProgress::Partial`] the returned [`Parsed`] is
+    /// header-only: `data` holds just `consumed` and the payload block's
+    /// `extent` over-claims (its `end` lies beyond `data`). The keyless BPSec
+    /// structural checks `finish` runs are header-only, so this is sound; the
+    /// payload body — and its CRC — are the streaming caller's to validate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before [`push`](Self::push) has returned a terminal
+    /// [`ParserProgress::Ready`] or [`ParserProgress::Partial`] result.
     pub fn finish(mut self, data: Bytes) -> Result<Parsed, Error> {
         assert!(
-            matches!(self.state, State::Done),
-            "finish called before parser reached Done state"
+            matches!(self.state, State::Done | State::Partial),
+            "finish called before parser reached a terminal state"
         );
         let bibs = if !self.bcbs.is_empty() || !self.pending_bibs.is_empty() {
             self.validate_bpsec_structure(&data)?
@@ -277,7 +568,7 @@ impl BundleParser {
         };
         let bundle = self
             .bundle
-            .expect("Done state guarantees self.bundle is populated");
+            .expect("terminal state guarantees self.bundle is populated");
         Ok(Parsed {
             data,
             bundle,
@@ -287,13 +578,11 @@ impl BundleParser {
     }
 
     /// Cross-block structural validation of every BIB / BCB against
-    /// the keyless rules from RFC 9172 §3.7 and §3.9. Mirrors the
-    /// older parser's BCB→BIB ordering: BCBs first so each block's
-    /// BCB-coverage is known, then BIBs (skipping any that are
-    /// BCB-encrypted — their bodies are ciphertext and we can't
-    /// decode the OperationSet without keys). BCB-protected BIBs
-    /// trigger a `BibCoverage::Maybe` sweep on the remaining blocks,
-    /// matching the older parser's `mark_bib_coverage_unknown`.
+    /// the keyless rules from RFC 9172 §3.7 and §3.9. BCBs are processed
+    /// first so each block's BCB-coverage is known, then BIBs (skipping any
+    /// that are BCB-encrypted — their bodies are ciphertext and we can't
+    /// decode the OperationSet without keys). BCB-protected BIBs trigger a
+    /// `BibCoverage::Maybe` sweep on the remaining blocks.
     ///
     /// All errors map to existing `bpsec::Error` variants — no new
     /// error surface. As a side effect, populates `Block::bib` and
@@ -398,7 +687,7 @@ impl BundleParser {
 
         // Encrypted BIBs whose targets we couldn't read: every non-
         // security block whose BIB coverage is still `None` becomes
-        // `Maybe`. Mirrors the older parser's `mark_bib_coverage_unknown`.
+        // `Maybe`.
         if has_undecryptable_bibs {
             for block in bundle.blocks.values_mut() {
                 if !matches!(
@@ -475,14 +764,14 @@ impl BundleParser {
         }
 
         // Primary blocks have no inner byte-string wrapper — the CBOR
-        // array IS the block — and must be definite-length
-        // (`PrimaryBlock::from_cbor` rejects indefinite via
-        // `block.is_definite()`, which `parse_canonical` above turns
-        // into `NotCanonical`). §4.1's indefinite-length carveout
-        // applies only to the outer bundle array, not to individual
-        // blocks. So `data` always spans the full canonical extent —
-        // what BPSec hashes for primary AAD (RFC 9173 §3.7 / §4.5) and
-        // what Builder/Editor emit via `as_block`.
+        // array IS the block — and must be definite-length. §4.1's
+        // indefinite-length carveout applies only to the outer bundle
+        // array, not to individual blocks. `parse_canonical` above
+        // enforces this via its `!s` check: an indefinite-length primary
+        // array returns `s = false` from `from_cbor`, which `parse_canonical`
+        // turns into `NotCanonical`. So `data` always spans the full
+        // canonical extent — what BPSec hashes for primary AAD
+        // (RFC 9173 §3.7 / §4.5) and what Builder/Editor emit via `as_block`.
         self.bundle = Some(Bundle {
             blocks: [(
                 0,
@@ -528,13 +817,20 @@ impl BundleParser {
             // each appear at most once per bundle. (Payload uniqueness
             // is enforced indirectly: it must be block number 1, so a
             // second payload would trip `DuplicateBlockNumber` below.)
+            // Checked here but recorded only after the block's last
+            // fallible step: a `NeedMore` below re-parses this block from
+            // `block_start` on the next push, so bookkeeping written before
+            // that point would read as a duplicate on the retry.
             match header.block_type {
                 block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount
-                    if !self.unique_blocks.insert(header.block_type) =>
+                    if self.unique_blocks.contains(&header.block_type) =>
                 {
                     return Err(Error::DuplicateBlocks(header.block_type));
                 }
                 _ => {}
+            }
+            if bundle.blocks.contains_key(&header.number) {
+                return Err(Error::DuplicateBlockNumber(header.number));
             }
 
             // RFC 9171 §4.2.3-4 / §4.2.3-5: an admin-record or null-source
@@ -562,18 +858,29 @@ impl BundleParser {
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
             if (data.len() as u64) < body_end {
-                // Body doesn't fit in the buffer yet.
+                // Body doesn't fit in the buffer yet. Keep the shortfall in
+                // u64: the streaming-fallback path below must stay reachable on
+                // 32-bit for a payload whose missing byte count exceeds usize
+                // (`Block::extent` is u64 precisely so streamed bundles need
+                // not fit in usize), so the `usize` conversion is deferred into
+                // the two `NeedMoreData` returns that actually need it.
                 let shortfall = body_end - data.len() as u64;
-                let shortfall_usize = usize::try_from(shortfall).map_err(|_| CborError::TooBig)?;
 
                 if is_payload {
                     // For payloads, "small wait" vs "streaming fallback":
                     // the trailer is tiny, so if the remaining chunk
                     // capacity covers body + trailer, we prefer to wait
                     // one more chunk over falling back to streaming.
-                    let needed = shortfall_usize + trailer_len;
-                    if needed <= self.chunk_size.saturating_sub(offset) {
-                        return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
+                    // Compare in u64: on 32-bit a wire-derived shortfall of
+                    // usize::MAX would overflow the usize add and wrap the
+                    // threshold test onto the small-wait path.
+                    let needed = shortfall + trailer_len as u64;
+                    if needed <= self.chunk_size.saturating_sub(offset) as u64 {
+                        // The threshold bounds `shortfall` below `chunk_size`
+                        // (a usize), so this conversion is infallible; the
+                        // hint is only a lower bound `push` re-clamps anyway.
+                        let hint = usize::try_from(shortfall).unwrap_or(usize::MAX);
+                        return Err(Error::InvalidCBOR(CborError::NeedMoreData(hint)));
                     }
                     // Body too big to inline — streaming fallback for the
                     // payload. `offset` stays at the post-header position so
@@ -581,8 +888,10 @@ impl BundleParser {
                     // still known (computed above) — only the CRC over the
                     // body is deferred.
                 } else {
-                    // Extension blocks must fit fully in the buffer; bubble
-                    // up the exact shortfall and wait for more bytes.
+                    // Extension blocks must fit fully in the buffer; a shortfall
+                    // beyond usize is unrepresentable (and unaddressable) here.
+                    let shortfall_usize =
+                        usize::try_from(shortfall).map_err(|_| CborError::TooBig)?;
                     return Err(Error::InvalidCBOR(CborError::NeedMoreData(shortfall_usize)));
                 }
             } else {
@@ -611,23 +920,52 @@ impl BundleParser {
                 }
             }
 
-            if bundle
-                .blocks
-                .insert(
-                    header.number,
-                    block::Block {
-                        block_type: header.block_type,
-                        flags: header.flags,
-                        crc_type: header.crc_type,
-                        bib: block::BibCoverage::None,
-                        bcb: None,
-                        extent: block_start_u64..extent_end,
-                        data: header.data_start..header.data_end,
-                    },
-                )
-                .is_some()
-            {
-                return Err(Error::DuplicateBlockNumber(header.number));
+            // The payload block's terminal steps are fallible, so run them
+            // before the bookkeeping below (retry safety, as above).
+            let mut payload_tail = None;
+            if is_payload {
+                if offset as u64 == extent_end {
+                    // Inline payload (body fit in the buffer): consume the
+                    // outer indefinite-array `0xFF` break and reject any
+                    // trailing data after it. Bundle is complete.
+                    match data.get(offset) {
+                        Some(&0xFF) => offset += 1,
+                        Some(_) => return Err(Error::NotCanonical),
+                        None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
+                    }
+                    if offset != data.len() {
+                        return Err(Error::AdditionalData);
+                    }
+                } else {
+                    // Streaming-fallback fired above: the payload body exceeds
+                    // the buffer, so `offset` still sits at the post-header
+                    // position and the body, trailer, and outer break have not
+                    // arrived. The payload block's `extent` over-claims (its
+                    // `end` lies beyond the buffer). Build the CRC continuation
+                    // pre-fed with the header + body prefix already in `data`
+                    // (`Digest::new` also rejects an unrecognised CRC type here,
+                    // matching the body-fits path); `push` hands it to the
+                    // caller as `ParserProgress::Partial` to drain the tail.
+                    let digest = match header.crc_type {
+                        crc::CrcType::None => None,
+                        _ => {
+                            let mut digest = crc::Digest::new(header.crc_type)?;
+                            digest.push(&data[block_start..data.len()]);
+                            Some(digest)
+                        }
+                    };
+                    let body_remaining = body_end - data.len() as u64;
+                    let remaining = extent_end
+                        .saturating_add(1)
+                        .saturating_sub(data.len() as u64);
+                    payload_tail = Some(PayloadTail::new(
+                        digest,
+                        header.crc_type,
+                        header.is_indefinite,
+                        body_remaining,
+                        remaining,
+                    ));
+                }
             }
 
             // BPSec block handling. Non-payload blocks always reach
@@ -644,7 +982,27 @@ impl BundleParser {
             // on a chance CBOR shape match). We stash the body range
             // and let `finish()` decide after BCBs have been processed
             // and BCB-coverage on each block is known.
+            let bcb_ops = match header.block_type {
+                block::Type::BlockSecurity => {
+                    let mut o = block_start + header.data_start as usize;
+                    let body_end = block_start + header.data_end as usize;
+                    // See the BIB call in `finish()` for the slice-bound
+                    // rationale — `parse_sequence` requires consuming the
+                    // whole input.
+                    Some(parse_canonical::<bpsec::bcb::OperationSet>(
+                        &data[..body_end],
+                        &mut o,
+                        "BCB operation set",
+                    )?)
+                }
+                _ => None,
+            };
+
+            // Past every fallible step for this block — record it.
             match header.block_type {
+                block::Type::PreviousNode | block::Type::BundleAge | block::Type::HopCount => {
+                    self.unique_blocks.insert(header.block_type);
+                }
                 block::Type::BlockIntegrity => {
                     // Body range is recoverable from bundle.blocks[n]
                     // (extent + data) at finalize time — no need to
@@ -652,38 +1010,85 @@ impl BundleParser {
                     self.pending_bibs.push(header.number);
                 }
                 block::Type::BlockSecurity => {
-                    let mut o = block_start + header.data_start as usize;
-                    let body_end = block_start + header.data_end as usize;
-                    // See the BIB call in `finish()` for the slice-bound
-                    // rationale — `parse_sequence` requires consuming the
-                    // whole input.
-                    let ops: bpsec::bcb::OperationSet =
-                        parse_canonical(&data[..body_end], &mut o, "BCB operation set")?;
-                    self.bcbs.insert(header.number, ops);
+                    self.bcbs.insert(
+                        header.number,
+                        bcb_ops.expect("BlockSecurity always decodes ops above"),
+                    );
                 }
                 _ => {}
             }
+            bundle.blocks.insert(
+                header.number,
+                block::Block {
+                    block_type: header.block_type,
+                    flags: header.flags,
+                    crc_type: header.crc_type,
+                    bib: block::BibCoverage::None,
+                    bcb: None,
+                    extent: block_start_u64..extent_end,
+                    data: header.data_start..header.data_end,
+                },
+            );
 
             if is_payload {
-                // Inline payload: consume the outer indefinite-array
-                // `0xFF` break and reject any trailing data after it.
-                // For streaming-fallback payloads (body not in buffer),
-                // the BPA owns those checks downstream.
-                if offset as u64 == extent_end {
-                    match data.get(offset) {
-                        Some(&0xFF) => offset += 1,
-                        Some(_) => return Err(Error::NotCanonical),
-                        None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
-                    }
-                    if offset != data.len() {
-                        return Err(Error::AdditionalData);
+                match payload_tail {
+                    None => self.state = State::Done,
+                    Some(tail) => {
+                        self.deferred = Some(tail);
+                        self.state = State::Partial;
                     }
                 }
-                self.state = State::Done;
                 return Ok(offset);
             }
             self.state = State::Blocks(offset);
         }
+    }
+}
+
+/// Extract a `NeedMoreData` shortfall from an error, seeing through the
+/// `InvalidField` field-label chain that `parse_canonical` wraps around errors
+/// from nested field parses. `NeedMoreData` always means "the input is
+/// truncated here", never "this is malformed", so any occurrence in the chain
+/// is a genuine need-more signal for the streaming `push` loop. Returns the
+/// innermost shortfall (a lower-bound hint for buffer reservation).
+///
+/// The chain is not homogeneous: field wrappers box the *raw*
+/// [`CborError`] (`require_canonical`, scalar `block.parse()` sites) or an
+/// [`eid::Error`] (EID fields) just as readily as a nested [`Error`], so every
+/// wrapped type a chunk boundary can truncate inside must be seen through
+/// here — a missed one turns "feed me more" into a bogus structural reject.
+fn need_more(e: &Error) -> Option<usize> {
+    match e {
+        Error::InvalidCBOR(e) => cbor_need_more(e),
+        Error::InvalidField { source, .. } => boxed_need_more(source.as_ref()),
+        _ => None,
+    }
+}
+
+fn cbor_need_more(e: &CborError) -> Option<usize> {
+    match e {
+        CborError::NeedMoreData(more) => Some(*more),
+        _ => None,
+    }
+}
+
+fn eid_need_more(e: &eid::Error) -> Option<usize> {
+    match e {
+        eid::Error::InvalidCBOR(e) => cbor_need_more(e),
+        eid::Error::InvalidField { source, .. } => boxed_need_more(source.as_ref()),
+        _ => None,
+    }
+}
+
+fn boxed_need_more(source: &(dyn core::error::Error + 'static)) -> Option<usize> {
+    if let Some(e) = source.downcast_ref::<Error>() {
+        need_more(e)
+    } else if let Some(e) = source.downcast_ref::<CborError>() {
+        cbor_need_more(e)
+    } else if let Some(e) = source.downcast_ref::<eid::Error>() {
+        eid_need_more(e)
+    } else {
+        None
     }
 }
 
@@ -763,9 +1168,8 @@ fn consume_crc(
 /// by the bytes consumed (TooBig on overflow). Fails with `NotCanonical`
 /// if the encoding isn't shortest-form; labels both that failure and any
 /// underlying parse error with `field` (so the diagnostic carries the
-/// field name in either case). Strict-canonical counterpart of the old
-/// `parse_checked` — the shortest indicator from FromCbor becomes a
-/// yes/no gate rather than something to AND into a running flag.
+/// field name in either case). A non-shortest encoding is rejected
+/// outright as `NotCanonical`.
 fn parse_canonical<T>(data: &[u8], offset: &mut usize, field: &'static str) -> Result<T, Error>
 where
     T: hardy_cbor::decode::FromCbor,
@@ -808,6 +1212,23 @@ where
         });
     }
     Ok(v)
+}
+
+/// Like [`parse_canonical_item`] but accepts non-canonical encodings —
+/// for CBOR array fields (EIDs, timestamps) where RFC 9171 §4.1 permits
+/// indefinite-length encoding. Returns the value and its canonical flag;
+/// the caller accumulates the flag to decide whether re-encoding is needed.
+pub(super) fn parse_item<T>(
+    block: &mut hardy_cbor::decode::Array<'_>,
+    field: &'static str,
+) -> Result<(T, bool), Error>
+where
+    T: hardy_cbor::decode::FromCbor,
+    <T as hardy_cbor::decode::FromCbor>::Error:
+        From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    let (v, s): (T, bool) = block.parse().map_field_err::<Error>(field)?;
+    Ok((v, s))
 }
 
 /// Cold path: the outer-array first byte wasn't `0x9F`. Re-parse via
@@ -861,12 +1282,22 @@ fn slow_block_array_error(data: &[u8]) -> Error {
 ///
 /// For streamed input arriving in pieces, drive a [`BundleParser`]
 /// directly via [`BundleParser::push`] until it yields
-/// [`ParserProgress::Ready`].
+/// [`ParserProgress::Ready`] (complete) or [`ParserProgress::Partial`]
+/// (oversized payload — the caller drains the body tail).
 pub fn parse(data: Bytes) -> Result<Parsed, Error> {
     let mut parser = BundleParser::default();
     let data = match parser.push(data)? {
         ParserProgress::NeedMore(more) => {
             return Err(Error::InvalidCBOR(CborError::NeedMoreData(more)));
+        }
+        // A one-shot buffer that triggers the streaming fallback is, by
+        // definition, a truncated oversized payload (a complete one fits and
+        // takes the body-fits path). One-shot `parse` deals only in complete
+        // buffers, so surface it as truncation.
+        ParserProgress::Partial { tail, .. } => {
+            return Err(Error::InvalidCBOR(CborError::NeedMoreData(
+                usize::try_from(tail.remaining()).unwrap_or(usize::MAX),
+            )));
         }
         ParserProgress::Ready(data) => data,
     };

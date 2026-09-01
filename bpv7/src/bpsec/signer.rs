@@ -1,8 +1,18 @@
-use super::*;
-use editor::{Chunk, Editor};
+use alloc::boxed::Box;
+
+use hardy_cbor::encode::emit;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
+use crate::{
+    HashMap, block,
+    bpsec::{self, bib, key},
+    builder, bundle, crc,
+    editor::{self, Chunk, Editor},
+    eid,
+};
 /// Errors that can occur during bundle signing.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -87,9 +97,8 @@ impl<'a> Signer<'a> {
             return Err((self, Error::FragmentedBundle));
         }
 
-        let block = match self.original.blocks.get(&block_number) {
-            Some(b) => b,
-            None => return Err((self, editor::Error::NoSuchBlock(block_number).into())),
+        let Some(block) = self.original.blocks.get(&block_number) else {
+            return Err((self, editor::Error::NoSuchBlock(block_number).into()));
         };
 
         if let block::Type::BlockIntegrity | block::Type::BlockSecurity = block.block_type {
@@ -232,7 +241,7 @@ impl<'a> Signer<'a> {
                 .editor
                 .update_block_inner(source)
                 .map_err(|(_, e)| e)?
-                .with_data(hardy_cbor::encode::emit(&operation_set).0.into())
+                .with_data(emit(&operation_set).0.into())
                 .rebuild();
 
             // Set BIB coverage on target blocks
@@ -260,8 +269,8 @@ fn build_bib_data(
 
     // Reachable when no security context feature is enabled (e.g.
     // `--no-default-features` with no `rfc9173`), or when a caller
-    // somehow constructs `Context::__Reserved`. Type-safe by signature
-    // now rather than by an unreachable!() panic.
-    let _ = (context, args, key);
+    // constructs `Context::__Reserved`. Returns a typed error rather
+    // than panicking, so an unsupported context is a signature-level
+    // failure.
     Err(bpsec::Error::UnsupportedOperation)
 }

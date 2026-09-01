@@ -253,17 +253,19 @@ impl Level {
                         debug!("WriteFilter rewrote bundle data");
                         mutation.data = true;
                         let new_data = Bytes::from(new_data);
-                        let (parsed_bundle, chunks) =
-                            crate::bp7_parse::parse_canonicalize_with_provider(
-                                new_data.clone(),
-                                key_provider,
-                            )?;
-                        *data = if let Some(chunks) = chunks {
-                            hardy_bpv7::editor::Chunk::flatten_bytes(chunks, new_data)
-                        } else {
-                            new_data
-                        };
-                        bundle.bundle = parsed_bundle;
+                        // Re-validate the filter's output (non-canonical is
+                        // rejected, not rewritten); store its bytes as-is. We
+                        // forward it, so an undecryptable liveness block is fatal.
+                        let (rich, nokey) = crate::bundle::parse::parse_validate_with_provider(
+                            new_data.clone(),
+                            key_provider,
+                        )?;
+                        crate::bundle::parse::reject_undecryptable_liveness(
+                            &nokey,
+                            rich.id.timestamp.is_clocked(),
+                        )?;
+                        bundle.bundle = rich;
+                        *data = new_data;
                     }
                 }
                 WriteResult::Drop(reason) => {

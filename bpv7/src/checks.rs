@@ -13,10 +13,12 @@ The §A–§E pipeline these helpers implement — what each `A1` / `A2` /
 in `bpv7/docs/parser_design.md`.
 */
 
-use super::*;
-use error::HasInvalidField;
+use alloc::{boxed::Box, vec::Vec};
+
+use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
+use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a
@@ -55,16 +57,10 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
 
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match hardy_cbor::decode::parse::<(T, usize)>(data) {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, len)) if len != data.len() => {
-            Err(Error::invalid_field(field, Error::AdditionalData.into()))
-        }
-        Ok((t, _)) => Ok(t),
-    }
+    hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
 }
 
 /// Output of [`classify_unsupported`]: the blocks this node can't process,
@@ -79,18 +75,24 @@ pub struct Classification {
     /// removing each from its own `bib_ops` map and scheduling the block
     /// for removal.
     pub bib_deletable: SmallVec<[u64; 4]>,
-    /// At least one unrecognised block or unsupported-context BCB/BIB had
+    /// At least one unrecognised (non-security) block had
     /// `report_on_failure` set.
-    pub report_unsupported: bool,
+    pub report_unsupported_block: bool,
+    /// At least one BCB/BIB carrying an unsupported security operation had
+    /// `report_on_failure` set.
+    pub report_unsupported_security: bool,
 }
 
 // ===== Section A — unrecognised / unsupported classification =====
 
 /// §A: Classify the blocks this node can't process — `Type::Unrecognised`
-/// blocks (A1), BCBs with an unrecognised security context (A2), and
-/// plaintext BIBs with an unrecognised security context (A3) — into the
-/// per-flag [`Classification`] facts. Returns `Err(Error::Unsupported(n))`
-/// if any such block sets `delete_bundle_on_failure`.
+/// blocks (A1), BCBs with an unsupported security operation (A2), and
+/// plaintext BIBs with an unsupported security operation (A3) — into the
+/// per-flag [`Classification`] facts. If any such block sets
+/// `delete_bundle_on_failure`, returns `Err(Error::Unsupported(n))` for an
+/// A1 block, or the security block's
+/// [`unsupported_error`](bpsec::bib::OperationSet::unsupported_error) for
+/// an A2/A3 block — so the caller can tell the two kinds apart.
 ///
 /// `supported` lists block-type codes the caller actually understands
 /// (e.g. extension types it has registered handlers for); a
@@ -128,44 +130,44 @@ pub fn classify_unsupported(
             return Err(Error::Unsupported(block_number));
         }
         if block.flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_block = true;
         }
         if block.flags.delete_block_on_failure {
             out.unrecognised_deletable.push(block_number);
         }
     }
 
-    // A2 — BCBs with an unrecognised security context.
+    // A2 — BCBs with an unsupported security operation.
     for (&bcb_block_number, ops) in bcb_ops {
-        if !ops.is_unsupported() {
+        let Some(error) = ops.unsupported_error() else {
             continue;
-        }
+        };
         let flags = &blocks
             .get(&bcb_block_number)
             .expect("BCB number from bcb_ops must exist in blocks")
             .flags;
         if flags.delete_bundle_on_failure {
-            return Err(Error::Unsupported(bcb_block_number));
+            return Err(error.into());
         }
         if flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_security = true;
         }
     }
 
-    // A3 — plaintext BIBs with an unrecognised security context.
+    // A3 — plaintext BIBs with an unsupported security operation.
     for (&bib_block_number, ops) in bib_ops {
-        if !ops.is_unsupported() {
+        let Some(error) = ops.unsupported_error() else {
             continue;
-        }
+        };
         let flags = &blocks
             .get(&bib_block_number)
             .expect("BIB number from bib_ops must exist in blocks")
             .flags;
         if flags.delete_bundle_on_failure {
-            return Err(Error::Unsupported(bib_block_number));
+            return Err(error.into());
         }
         if flags.report_on_failure {
-            out.report_unsupported = true;
+            out.report_unsupported_security = true;
         }
         if flags.delete_block_on_failure {
             out.bib_deletable.push(bib_block_number);
@@ -207,7 +209,7 @@ pub fn decrypt_and_validate_covered_bibs(
     // Snapshot the encrypted-BIB block-number list up front so the loop
     // body can mutate `blocks` (coverage stamping) without conflicting
     // with the iteration.
-    let encrypted_bibs: Vec<u64> = blocks
+    let encrypted_bibs: SmallVec<[u64; 4]> = blocks
         .iter()
         .filter_map(|(&n, b)| {
             (matches!(b.block_type, block::Type::BlockIntegrity) && b.bcb.is_some()).then_some(n)
@@ -290,7 +292,7 @@ pub fn decrypt_and_validate_covered_bibs(
                 .keys()
                 .any(|t| bcb_op_set.operations.contains_key(t))
         {
-            return Err(bpsec::Error::InvalidBCBTarget.into());
+            return Err(bpsec::Error::BCBMustShareTarget.into());
         }
 
         // Stamp coverage. The parser stamped these targets as Maybe
@@ -322,11 +324,43 @@ pub fn decrypt_and_validate_covered_bibs(
 
 // ===== Section C7 — verify all BIBs =====
 
-/// C7: Verify every BIB OperationSet against its targets. NoKey on
-/// verify is a policy skip (matches BIB-decrypt-NoKey semantics); any
-/// other verify error fails. Targets that are BCB-encrypted but absent
-/// from `decrypted_data` (typically the payload) are skipped — the BPA
-/// layer can re-verify with its own policy.
+/// The C7 defer-set: BIB block numbers whose op-set still has an **unchecked
+/// block-1 (payload) target**. `#[must_use]`: an unchecked payload target is
+/// an unverified integrity statement — defer it to [`verify_payload`] or
+/// assert the set empty; silently dropping it skips verification.
+#[must_use = "an unchecked payload target is an unverified integrity statement — defer to verify_payload or assert empty"]
+#[derive(Debug, Default)]
+pub struct DeferredBibs(SmallVec<[u64; 4]>);
+
+impl DeferredBibs {
+    /// No BIB was deferred: every target was resident and checked.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The deferred BIB block numbers.
+    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+/// C7: Verify every BIB OperationSet against its targets, returning the
+/// [`DeferredBibs`] whose op-set still has an unchecked block-1 (payload)
+/// target — which happens when run on a headers-only buffer (the streaming
+/// ingress gate), where the payload's over-claiming extent isn't resident so
+/// its bytes can't be read yet. Those are the op-sets to re-check with
+/// [`verify_payload`] once the payload is resident ([`verify`] hands them
+/// over, drained out of its `bib_ops`, in
+/// [`VerifyFacts::deferred_bibs`]). For an all-resident buffer every target
+/// is checked and the returned set is **empty** — nothing to defer.
+///
+/// `bib_ops` is **borrowed**, not drained: this stays a reusable verifier for
+/// the all-resident callers (tools, tests) that still need the map afterwards.
+///
+/// NoKey on verify is a policy skip (matches BIB-decrypt-NoKey semantics); any
+/// other verify error fails. Targets that are BCB-encrypted but absent from
+/// `decrypted_data` (a confidentiality-protected payload) are skipped and *not*
+/// deferred — re-verified at delivery once decrypted.
 pub fn verify_all_bibs(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
@@ -334,13 +368,26 @@ pub fn verify_all_bibs(
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<(), Error> {
+) -> Result<DeferredBibs, Error> {
+    let mut deferred = SmallVec::new();
     for (&bib_block_number, ops) in bib_ops {
+        let mut defer = false;
         for (&target_number, op) in &ops.operations {
             let target_block = blocks
                 .get(&target_number)
                 .expect("OperationSet::check verified targets exist");
             if target_block.bcb.is_some() && !decrypted_data.contains_key(&target_number) {
+                continue;
+            }
+            // Target bytes not resident — the payload (block 1), whose
+            // over-claiming extent isn't in a headers-only buffer. Defer this
+            // op-set's block-1 target to `verify_payload` on the full bundle.
+            // Never taken for an all-resident buffer.
+            if !decrypted_data.contains_key(&target_number)
+                && !to_update.contains_key(&target_number)
+                && target_block.payload(data).is_none()
+            {
+                defer = true;
                 continue;
             }
             let block_set = BundleBlockSet {
@@ -363,6 +410,59 @@ pub fn verify_all_bibs(
                 Err(e) => return Err(e.into()),
             }
         }
+        if defer {
+            deferred.push(bib_block_number);
+        }
+    }
+    Ok(DeferredBibs(deferred))
+}
+
+/// Second-pass companion to [`verify_all_bibs`] for the streaming ingress
+/// gate: verify the **block-1 (payload)** target of every BIB in `bib_ops`
+/// against the now-resident full bundle `data`. The header pass
+/// ([`verify`] on a headers-only buffer) skips block-1 targets because the
+/// payload isn't yet resident, and hands the caller exactly the op-sets that
+/// still target block 1; this re-checks only those targets (header targets
+/// were already verified in the first pass — no re-checking).
+///
+/// `NoKey` is a soft skip, as in [`verify_all_bibs`]. A BCB-encrypted payload
+/// is skipped here too — its integrity is established at delivery, when the
+/// payload is decrypted ([`bpsec::block_data`]).
+pub fn verify_payload(
+    data: &[u8],
+    key_source: &dyn bpsec::key::KeySource,
+    blocks: &HashMap<u64, block::Block>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+    decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
+    to_update: &HashMap<u64, Vec<u8>>,
+) -> Result<(), Error> {
+    for (&bib_block_number, ops) in bib_ops {
+        let Some(op) = ops.operations.get(&1) else {
+            continue;
+        };
+        let target_block = blocks.get(&1).expect("payload block exists");
+        if target_block.bcb.is_some() && !decrypted_data.contains_key(&1) {
+            continue;
+        }
+        let block_set = BundleBlockSet {
+            blocks,
+            source_data: data,
+            decrypted_data,
+            to_update,
+        };
+        match op.verify(
+            key_source,
+            bpsec::bib::OperationArgs {
+                bpsec_source: &ops.source,
+                target: 1,
+                source: bib_block_number,
+                blocks: &block_set,
+            },
+        ) {
+            Ok(()) => {}
+            Err(bpsec::Error::NoKey) => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(())
 }
@@ -384,6 +484,13 @@ pub struct VerifyFacts {
     /// their block type — caller applies the per-type NoKey policy
     /// (Preserve-soft; strict for `HopCount` + unclocked `BundleAge`).
     pub nokey_ext: SmallVec<[(u64, block::Type); 4]>,
+    /// BIB OperationSets (keyed by block number) with an unchecked block-1
+    /// (payload) target — the payload wasn't resident in this buffer (the
+    /// streaming ingress gate ran on headers only). [`verify`] drains them
+    /// out of its `bib_ops` and hands them over **owned**, so the caller
+    /// passes this map straight to [`verify_payload`] once the payload is
+    /// drained. Empty for an all-resident buffer.
+    pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
 }
 
 /// Composed keyed verification: §B → §C8 → §C7.
@@ -419,7 +526,7 @@ pub fn verify(
     facts.failed.extend(failed_bibs);
 
     // §C8 — decrypt BCB-protected extension blocks.
-    let to_decrypt: Vec<(u64, block::Type, u64)> = blocks
+    let to_decrypt: SmallVec<[(u64, block::Type, u64); 4]> = blocks
         .iter()
         .filter_map(|(&n, b)| {
             matches!(
@@ -465,8 +572,18 @@ pub fn verify(
         }
     }
 
-    // §C7 — verify every BIB.
-    verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?;
+    // §C7 — verify every BIB, draining the op-sets with a deferred block-1
+    // (payload) target out of `bib_ops` and handing them over owned in
+    // `facts.deferred_bibs` — the exact map `verify_payload` re-checks once
+    // the payload is resident. (A block-1 BCB — payload confidentiality — is
+    // left untouched in `bcb_ops` by §B/§C8 and decrypted at delivery via
+    // `bpsec::block_data`.)
+    for n in verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?.iter() {
+        let ops = bib_ops
+            .remove(&n)
+            .expect("deferred BIB numbers come from bib_ops keys");
+        facts.deferred_bibs.insert(n, ops);
+    }
 
     Ok(facts)
 }

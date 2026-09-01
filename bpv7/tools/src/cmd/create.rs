@@ -1,6 +1,5 @@
 use super::*;
-use hardy_bpv7::eid::Eid;
-
+use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
 #[derive(Parser, Debug)]
 #[command(
     about = "Create a new bundle with payload",
@@ -66,8 +65,8 @@ impl Command {
             ));
         }
 
-        // Get payload data. `Input::read_all` now hands back a `Bytes`,
-        // so collapse both branches to `Vec<u8>` for the Builder.
+        // Collect the payload into a Vec<u8> for the Builder, from whichever
+        // source was given.
         let payload_data: Vec<u8> = if let Some(payload_str) = &self.payload {
             payload_str.as_bytes().to_vec()
         } else if let Some(input) = &self.payload_file {
@@ -78,7 +77,7 @@ impl Command {
             ));
         };
 
-        let builder: hardy_bpv7::builder::Builder = hardy_bpv7::builder::BundleTemplate {
+        let builder: Builder = hardy_bpv7::builder::BundleTemplate {
             source: self.source,
             destination: self.destination,
             report_to: self.report_to,
@@ -101,7 +100,7 @@ impl Command {
         self.output.write_all(
             &builder
                 .with_payload(payload_data.into())
-                .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+                .build(CreationTimestamp::now())
                 .map_err(|e| anyhow::anyhow!("Failed to build bundle: {e}"))?
                 .1,
         )

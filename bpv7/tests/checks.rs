@@ -1,6 +1,6 @@
 //! Integration tests for the BPSec validation/rewrite pipeline — composing
 //! the public `hardy_bpv7::{parse, checks, rewrite}` primitives the way a
-//! consumer would (mirrors the reference pipeline in `bpa::bp7_parse`).
+//! consumer would (mirrors the reference pipeline in `bpa::bundle::parse`).
 
 use bytes::Bytes;
 use hardy_bpv7::parse::Parsed;
@@ -86,7 +86,7 @@ fn empty_keys() -> bpsec::key::KeySet {
 }
 
 // Full-mode pipeline: composes the per-section helpers exactly as
-// `bpa::bp7_parse` does, so the cascade tests exercise the real
+// `bpa::bundle::parse` does, so the cascade tests exercise the real
 // composition. Returns the (possibly rewritten) bundle plus the chunk
 // plan when rewrites were applied.
 #[allow(clippy::result_large_err)]
@@ -117,25 +117,20 @@ fn parse_full_for_test(
         &to_update,
     )?;
     // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
-    // non-payload → remove the target and its security block.
+    // non-payload → remove the target only. The editor cascade strips it
+    // from its covering BCB and drops the BCB once it empties; naming the
+    // BCB here would strand a surviving co-target's ciphertext.
     for &target in &facts.failed {
         if target == 1 {
             return Err(bpsec::Error::DecryptionFailed.into());
         }
         to_remove.insert(target);
-        if let Some(bcb) = raw.blocks.get(&target).and_then(|b| b.bcb) {
-            to_remove.insert(bcb);
-        }
     }
-    for (_, block_type) in &facts.nokey_ext {
-        match block_type {
-            block::Type::HopCount => return Err(bpsec::Error::NoKey.into()),
-            block::Type::BundleAge if !raw.primary.id.timestamp.is_clocked() => {
-                return Err(bpsec::Error::NoKey.into());
-            }
-            _ => {}
-        }
-    }
+    // The NoKey liveness policy (fatal for encrypted HopCount / unclocked
+    // BundleAge) is exercised where it lives — the bpa ingress path — not
+    // mirrored here; the test style guide forbids re-implementing the
+    // algorithm under test, and no fixture in this file produces a
+    // non-empty `facts.nokey_ext`.
 
     // §D (extension-field extraction / canonical re-emit) is a BPA concern
     // and now lives in `hardy-bpa`; the cascade-test bundles carry no
@@ -356,7 +351,7 @@ fn build_parse_roundtrip() {
         "Builder has no unsupported BIBs"
     );
     assert!(
-        !classification.report_unsupported,
+        !classification.report_unsupported_block && !classification.report_unsupported_security,
         "Builder has no unsupported blocks"
     );
 }
@@ -448,6 +443,97 @@ fn unknown_block_discard() {
         bundle.blocks.contains_key(&1),
         "Payload block should still be present"
     );
+}
+
+// Splice an extension block (already encoded as a 5-element block array)
+// into `data` immediately after the primary block.
+fn splice_after_primary(data: &[u8], block: &[u8]) -> Vec<u8> {
+    assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
+    let (_, primary_len) =
+        hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
+    let insert_pos = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + block.len());
+    modified.extend_from_slice(&data[..insert_pos]);
+    modified.extend_from_slice(block);
+    modified.extend_from_slice(&data[insert_pos..]);
+    modified
+}
+
+// Splice a BCB carrying an unrecognised security context (id 99) targeting
+// the payload (block 1) into `data` as block number 2, with the given block
+// processing `flags`. `flags` must include must-replicate (0x01) — required
+// for a payload-targeting BCB.
+fn splice_unrecognised_bcb(data: &[u8], flags: u64) -> Vec<u8> {
+    // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
+    // parameters), source EID, then one result list per target.
+    let result_val = [0x41u8, 0xAA]; // result value: bytes(0xAA)
+    let mut asb = hardy_cbor::encode::emit(&[1u64]).0;
+    asb.extend(hardy_cbor::encode::emit(&99u64).0);
+    asb.extend(hardy_cbor::encode::emit(&0u64).0);
+    asb.extend(hardy_cbor::encode::emit(&"ipn:3.0".parse::<eid::Eid>().unwrap()).0);
+    asb.extend(hardy_cbor::encode::emit_array(Some(1), |results| {
+        results.emit_array(Some(1), |target_results| {
+            target_results.emit(&(1u64, hardy_cbor::encode::Raw(&result_val)));
+        });
+    }));
+
+    let bcb_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        a.emit(&12u64); // block type: BCB
+        a.emit(&2u64); // block number
+        a.emit(&flags);
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&asb));
+    });
+    splice_after_primary(data, &bcb_block)
+}
+
+// Requirement: RFC 9172 §7.1 — the §A facts distinguish an unsupported
+// security operation from an unrecognised plain block, so the caller can
+// select between the RFC 9172 and RFC 9171 report reasons.
+#[test]
+fn classify_distinguishes_security_kind() {
+    // Unrecognised-context BCB: must_replicate (payload target) +
+    // report_on_failure (0x03) → only the security fact fires.
+    let modified = splice_unrecognised_bcb(&build_minimal_bundle(), 0x03);
+    let (_, raw_bundle, bcb_ops, bib_ops) = raw_parse_tuple(Bytes::copy_from_slice(&modified))
+        .expect("parse accepts an unrecognised-context BCB");
+    let classification =
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]).unwrap();
+    assert!(classification.report_unsupported_security);
+    assert!(!classification.report_unsupported_block);
+
+    // Control: an unknown (non-security) block with report_on_failure (0x02)
+    // → only the block fact fires.
+    let unknown_block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        a.emit(&999u64); // block type
+        a.emit(&2u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    let modified = splice_after_primary(&build_minimal_bundle(), &unknown_block);
+    let (_, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+    let classification =
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]).unwrap();
+    assert!(classification.report_unsupported_block);
+    assert!(!classification.report_unsupported_security);
+}
+
+// Requirement: RFC 9172 §7.1 — a delete-bundle-on-failure block carrying an
+// unsupported security operation surfaces the security block's own error
+// (here `UnrecognisedContext`), not the plain-block `Unsupported`, so the
+// caller can report `UnknownSecurityOperation` instead of `BlockUnsupported`.
+#[test]
+fn unsupported_security_delete_bundle_errors() {
+    // must_replicate + delete_bundle_on_failure (0x05).
+    let modified = splice_unrecognised_bcb(&build_minimal_bundle(), 0x05);
+    let (_, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+    assert!(matches!(
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]),
+        Err(Error::InvalidBPSec(bpsec::Error::UnrecognisedContext(99)))
+    ));
 }
 
 // Requirement: LLR 1.1.22
@@ -815,6 +901,68 @@ mod cascade_reencryption_tests {
         assert!(bundle.blocks.contains_key(&1), "payload must survive");
     }
 
+    // RFC 9172 §5.1.1 with a *shared* BCB — the RFC 9173 Appendix A.4 wire
+    // vector, where one BCB (block 2) covers both the encrypted BIB (block
+    // 3) and the payload (block 1). Corrupting the BIB's ciphertext must
+    // failure-drop only the BIB: the cascade strips block 3 from the BCB's
+    // OperationSet and the BCB survives covering the payload. Queuing the
+    // shared BCB itself for removal would strand the payload ciphertext
+    // (`StrandsCiphertext`) and panic `apply_rewrites`.
+    #[test]
+    fn multi_target_bcb_failure_drop_spares_the_shared_bcb() {
+        // `hex_literal::hex!` is path-qualified rather than imported: a later
+        // leg moves the file-level `hex!` users into tests/parse.rs and drops
+        // the top-level `use`, but this test stays.
+        let mut data = hex_literal::hex!(
+            "9f88070000820282010282028202018202820201820018281a000f4240850b0300
+             005846438ed6208eb1c1ffb94d952175167df0902902064a2983910c4fb2340790bf
+             420a7d1921d5bf7c4721e02ab87a93ab1e0b75cf62e4948727c8b5dae46ed2af0543
+             9b88029191850c0201005849820301020182028202018382014c5477656c76653132
+             313231328202038204078281820150220ffc45c8a901999ecc60991dd78b29818201
+             50d2c51cb2481792dae8b21d848cede99b8501010000582390eab6457593379298a8
+             724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
+        )
+        .to_vec();
+        // Flip one byte of the BIB's ciphertext: the block-3 body is the
+        // 70-byte string right after its `58 46` bytes header.
+        let pos = data
+            .windows(2)
+            .position(|w| w == hex_literal::hex!("5846"))
+            .expect("BIB body header present")
+            + 2;
+        data[pos] ^= 0x01;
+
+        let keys: bpsec::key::KeySet = serde_json::from_value(serde_json::json!({
+            "keys": [
+                {
+                    "kid": "ipn:2.1",
+                    "kty": "oct",
+                    "alg": "HS384",
+                    "key_ops": ["verify"],
+                    "k": "GisaKxorGisaKxorGisaKw"
+                },
+                {
+                    "kid": "ipn:2.1",
+                    "kty": "oct",
+                    "enc": "A256GCM",
+                    "key_ops": ["decrypt"],
+                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let (bundle, chunks) = parse_full_for_test(&data, &keys)
+            .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
+        assert!(chunks.is_some(), "the bundle must be rewritten");
+        assert!(!bundle.blocks.contains_key(&3), "corrupt BIB dropped");
+        assert!(
+            bundle.blocks.contains_key(&2),
+            "shared BCB survives, still covering the payload"
+        );
+        assert!(bundle.blocks.contains_key(&1), "payload survives");
+    }
+
     // RFC 9172 §5.1.1: when remove_blocks is called on a target whose
     // covering BIB is BCB-encrypted with a wrong key, the cascade
     // leniently continues past the DecryptionFailed (instead of erroring)
@@ -1085,5 +1233,230 @@ mod cascade_reencryption_tests {
         let encrypted = encrypt(&signed, 1, &enc_key());
         parse::parse(Bytes::copy_from_slice(&encrypted))
             .expect("encryptor output must pass structural check");
+    }
+}
+
+// Deferred block-1 (payload) BIB verification — the streaming ingress gate path.
+// On a headers-only buffer (oversized payload not yet drained), `verify` can't
+// check a BIB that targets the payload, so it drains that op-set out of
+// `bib_ops` and hands it over owned in `deferred_bibs`; the gate re-checks the
+// handed-over map with `verify_payload` once the full bundle is resident.
+#[cfg(all(feature = "rfc9173", feature = "serde"))]
+mod deferred_payload_bib_tests {
+    use super::*;
+    use hardy_bpv7::parse::{BundleParser, ParserProgress};
+
+    fn sign_key() -> bpsec::key::Key {
+        serde_json::from_value(serde_json::json!({
+            "kid": "ipn:2.1",
+            "kty": "oct",
+            "alg": "HS256",
+            "key_ops": ["sign", "verify"],
+            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+        }))
+        .unwrap()
+    }
+
+    fn keys() -> bpsec::key::KeySet {
+        bpsec::key::KeySet::new(vec![sign_key()])
+    }
+
+    // A bundle whose payload (block 1) is signed under a BIB and is far larger
+    // than any sane parser chunk, so the streaming parser must report `Partial`
+    // before the payload body is resident.
+    fn signed_large_payload() -> Box<[u8]> {
+        let (_, base) =
+            builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+                .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+                .build(creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+        let (bytes, raw, _, _) = raw_parse_tuple(Bytes::copy_from_slice(&base)).expect("parse");
+        bpsec::signer::Signer::new(&raw, &bytes)
+            .sign_block(
+                1,
+                bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
+                "ipn:2.1".parse().unwrap(),
+                &sign_key(),
+            )
+            .map_err(|(_, e)| e)
+            .unwrap()
+            .rebuild()
+            .unwrap()
+    }
+
+    // Drive the streaming parser until the payload body overflows the buffer,
+    // returning the parsed headers — block 1's extent over-claims, its body
+    // isn't resident in `parsed.data`.
+    fn parse_headers_only(full: &[u8]) -> Parsed {
+        let mut parser = BundleParser::new(256);
+        for c in full.chunks(64) {
+            match parser.push(Bytes::copy_from_slice(c)).unwrap() {
+                ParserProgress::NeedMore(_) => {}
+                ParserProgress::Partial { consumed, .. } => {
+                    return parser.finish(consumed).unwrap();
+                }
+                ParserProgress::Ready(_) => panic!("oversized payload must Partial, not Ready"),
+            }
+        }
+        panic!("parser never reached Partial");
+    }
+
+    // Header pass defers the block-1 BIB (payload not resident), handing its
+    // op-set over owned; the map then verifies against the full bundle.
+    #[test]
+    fn payload_bib_deferred_then_verified() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: mut raw,
+            bcbs: bcb_ops,
+            bibs: mut bib_ops,
+        } = parse_headers_only(&full);
+        let bib_block = *bib_ops.keys().next().expect("a BIB op-set");
+        assert!(
+            raw.blocks.get(&1).unwrap().payload(&consumed).is_none(),
+            "payload body must not be resident in the headers-only buffer"
+        );
+
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &consumed,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+        assert!(
+            facts.deferred_bibs.contains_key(&bib_block) && facts.deferred_bibs.len() == 1,
+            "the block-1 BIB is deferred, not checked inline"
+        );
+        assert!(
+            !bib_ops.contains_key(&bib_block),
+            "verify hands the deferred op-set over owned — drained out of bib_ops"
+        );
+
+        // The gate passes the handed-over map straight to the payload pass
+        // against the full (now-resident) bundle.
+        checks::verify_payload(
+            &full,
+            &keys,
+            &raw.blocks,
+            &facts.deferred_bibs,
+            &decrypted,
+            &no_updates,
+        )
+        .expect("deferred payload BIB verifies against the full bundle");
+    }
+
+    // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
+    #[test]
+    fn payload_bib_tamper_fails() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: mut raw,
+            bcbs: bcb_ops,
+            bibs: mut bib_ops,
+        } = parse_headers_only(&full);
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &consumed,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+
+        // Flip a byte in the middle of the 50 KB payload body.
+        let mut tampered = full.to_vec();
+        tampered[full.len() / 2] ^= 0xFF;
+        let err = checks::verify_payload(
+            &tampered,
+            &keys,
+            &raw.blocks,
+            &facts.deferred_bibs,
+            &decrypted,
+            &no_updates,
+        )
+        .expect_err("tampered payload must fail the deferred BIB");
+        assert!(
+            matches!(err, Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)),
+            "expected IntegrityCheckFailed, got {err:?}"
+        );
+    }
+
+    // The `DeferredBibs` accessors must report the deferred set truthfully on
+    // the non-empty side: the assert-empty discharge sites at the all-resident
+    // callers enforce nothing if `is_empty` can lie. On the headers-only
+    // buffer the standalone verifier defers exactly the block-1 BIB — the set
+    // is non-empty and `iter` names that block.
+    #[test]
+    fn verify_all_bibs_defers_nonempty_on_headers_only_buffer() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: raw,
+            bibs: bib_ops,
+            ..
+        } = parse_headers_only(&full);
+        let bib_block = *bib_ops.keys().next().expect("a BIB op-set");
+
+        let no_decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let deferred = checks::verify_all_bibs(
+            &consumed,
+            &keys,
+            &raw.blocks,
+            &bib_ops,
+            &no_decrypted,
+            &no_updates,
+        )
+        .expect("the non-resident payload target defers, it does not fail");
+        assert!(
+            !deferred.is_empty(),
+            "the block-1 BIB must be reported as deferred"
+        );
+        assert_eq!(deferred.iter().collect::<Vec<_>>(), vec![bib_block]);
+    }
+
+    // With the whole bundle resident, `verify` checks the payload BIB inline and
+    // defers nothing — the non-streaming path is unchanged.
+    #[test]
+    fn all_resident_verifies_inline_without_deferring() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let (data, mut raw, bcb_ops, mut bib_ops) =
+            raw_parse_tuple(Bytes::copy_from_slice(&full)).unwrap();
+        let mut decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let facts = checks::verify(
+            &data,
+            &keys,
+            &mut raw.blocks,
+            &bcb_ops,
+            &mut bib_ops,
+            &mut decrypted,
+            &no_updates,
+        )
+        .unwrap();
+        assert!(
+            facts.deferred_bibs.is_empty(),
+            "nothing is deferred when the payload is resident"
+        );
     }
 }

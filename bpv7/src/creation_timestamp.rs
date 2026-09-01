@@ -5,7 +5,7 @@ given source node can be uniquely identified, even if created at the same time.
 */
 
 use super::*;
-use error::{CaptureFieldErr, require_canonical};
+use crate::error::{CaptureFieldErr, require_canonical};
 
 static GLOBAL_COUNTER: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
 

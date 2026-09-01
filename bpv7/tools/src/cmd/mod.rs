@@ -1,10 +1,19 @@
 use crate::{flags, io, keys};
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
-use hardy_bpv7::bpsec::{bib, key::KeySet};
-use hardy_bpv7::{Bundle, checks, parse};
-use std::collections::HashMap;
-
+use hardy_bpv7::{
+    Bundle, CaptureFieldErr,
+    block::{Block, Type},
+    bpsec::{bib, key::KeySet},
+    bundle_age::BundleAge,
+    checks,
+    editor::Chunk,
+    eid::Eid,
+    hop_info::HopInfo,
+    parse,
+};
+use hardy_cbor::{decode::FromCbor, encode::emit};
+use std::collections::{HashMap, HashSet};
 /// Structural parse + keyed BPSec validation in one pass: each tool runs
 /// the stages it needs and gets back a `parse::Parsed` (already
 /// coverage-stamped) ready to feed to Editor / Signer / Encryptor — no
@@ -13,7 +22,9 @@ use std::collections::HashMap;
 /// Stages run:
 /// * structural parse (`parse::parse`);
 /// * §A — `classify_unsupported`, which surfaces `Error::Unsupported(n)`
-///   if a block flagged `delete_bundle_on_failure` is unknown/unsupported;
+///   (unknown block) or the security block's `unsupported_error`
+///   (unsupported security operation) if a block flagged
+///   `delete_bundle_on_failure` can't be processed;
 /// * §B — `decrypt_and_validate_covered_bibs` with the supplied keys
 ///   (`NoKey` is a soft skip; `DecryptionFailed` is rejected here — tools
 ///   are not Verifiers and do not apply §5.1.1 failure-drop);
@@ -49,8 +60,10 @@ pub(crate) fn parse_with_keys(
         return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
     }
 
-    // §C7 — verify every BIB with the supplied keys.
-    checks::verify_all_bibs(
+    // §C7 — verify every BIB with the supplied keys. `verify_all_bibs` borrows
+    // the op-map, leaving `parsed.bibs` intact for the later per-block
+    // `verify_block`.
+    let deferred = checks::verify_all_bibs(
         &parsed.data,
         keys,
         &parsed.bundle.blocks,
@@ -58,6 +71,10 @@ pub(crate) fn parse_with_keys(
         &decrypted_data,
         &no_updates,
     )?;
+    // Hard assert: this is shipped code, and a silently dropped defer-set is
+    // an unverified integrity statement (the tool parses complete buffers via
+    // `parse::parse`, so the branch is a one-shot `is_empty` check).
+    assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok(parsed)
 }
@@ -67,20 +84,33 @@ pub(crate) fn parse_with_keys(
 /// helpers in `validate` / `inspect` / `full_rewrite`.
 pub(crate) fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, hardy_bpv7::Error>
 where
-    T: hardy_cbor::decode::FromCbor,
+    T: FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match hardy_cbor::decode::parse::<(T, usize)>(data) {
-        Err(e) => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: e.into(),
-        }),
-        Ok((_, len)) if len != data.len() => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: hardy_bpv7::Error::AdditionalData.into(),
-        }),
-        Ok((t, _)) => Ok(t),
+    hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
+}
+
+/// Decode a known plaintext extension block's body into `T`, tagging a parse
+/// failure with `field`. Returns `None` for a BCB-encrypted block or one whose
+/// payload isn't resident — the shared `bcb`-skip + `payload()` + field-tagged
+/// `parse_exact` behind the `inspect` / `validate` / `full_rewrite` extraction
+/// loops.
+pub(crate) fn extract_known<T>(
+    block: &Block,
+    data: &[u8],
+    field: &'static str,
+) -> Result<Option<T>, hardy_bpv7::Error>
+where
+    T: FromCbor,
+    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+{
+    if block.bcb.is_some() {
+        return Ok(None);
     }
+    block
+        .payload(data)
+        .map(|body| parse_exact::<T>(body, field))
+        .transpose()
 }
 
 /// Verify the BIB signature over `block_number` using the BIB
@@ -92,7 +122,7 @@ where
 /// per-block status).
 pub(crate) fn verify_block(
     block_number: u64,
-    blocks: &HashMap<u64, hardy_bpv7::block::Block>,
+    blocks: &HashMap<u64, Block>,
     data: &[u8],
     bib_ops: &HashMap<u64, bib::OperationSet>,
     keys: &KeySet,
@@ -147,9 +177,7 @@ pub(crate) fn verify_block(
 pub(crate) fn full_rewrite(
     data: Bytes,
     keys: &KeySet,
-) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
-    use std::collections::HashSet;
-
+) -> Result<Option<Vec<Chunk>>, hardy_bpv7::Error> {
     let parse::Parsed {
         data,
         mut bundle,
@@ -180,22 +208,21 @@ pub(crate) fn full_rewrite(
         &to_update,
     )?;
     // RFC 9172 §5.1.1: corrupt payload → discard bundle; corrupt
-    // non-payload → remove the target and its security block.
+    // non-payload → remove the target only. The editor cascade strips it
+    // from its covering BCB and drops the BCB once it empties; naming the
+    // BCB here would strand a surviving co-target's ciphertext.
     for &target in &facts.failed {
         if target == 1 {
             return Err(hardy_bpv7::bpsec::Error::DecryptionFailed.into());
         }
         to_remove.insert(target);
-        if let Some(bcb) = bundle.blocks.get(&target).and_then(|b| b.bcb) {
-            to_remove.insert(bcb);
-        }
     }
     for (_, block_type) in &facts.nokey_ext {
         match block_type {
-            hardy_bpv7::block::Type::HopCount => {
+            Type::HopCount => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
-            hardy_bpv7::block::Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
+            Type::BundleAge if !bundle.primary.id.timestamp.is_clocked() => {
                 return Err(hardy_bpv7::bpsec::Error::NoKey.into());
             }
             _ => {}
@@ -208,29 +235,24 @@ pub(crate) fn full_rewrite(
     // it (`b.bcb.is_some()`). BundleAge is always canonical — decoded
     // here only to reject a malformed body.
     for (&n, b) in &bundle.blocks {
-        if b.bcb.is_some() {
-            continue;
-        }
-        // `data` is the full in-memory bundle from `parse::parse`.
-        let Some(body) = b.payload(&data) else {
-            continue;
-        };
         match b.block_type {
-            hardy_bpv7::block::Type::PreviousNode => {
-                let (v, shortest) =
-                    parse_exact::<(hardy_bpv7::eid::Eid, bool)>(body, "Previous Node Block")?;
-                if !shortest {
-                    to_update.insert(n, hardy_cbor::encode::emit(&v).0);
+            Type::PreviousNode => {
+                if let Some((v, shortest)) =
+                    extract_known::<(Eid, bool)>(b, &data, "Previous Node Block")?
+                    && !shortest
+                {
+                    to_update.insert(n, emit(&v).0);
                 }
             }
-            hardy_bpv7::block::Type::BundleAge => {
-                parse_exact::<hardy_bpv7::bundle_age::BundleAge>(body, "Bundle Age Block")?;
+            Type::BundleAge => {
+                extract_known::<BundleAge>(b, &data, "Bundle Age Block")?;
             }
-            hardy_bpv7::block::Type::HopCount => {
-                let (v, shortest) =
-                    parse_exact::<(hardy_bpv7::hop_info::HopInfo, bool)>(body, "Hop Count Block")?;
-                if !shortest {
-                    to_update.insert(n, hardy_cbor::encode::emit(&v).0);
+            Type::HopCount => {
+                if let Some((v, shortest)) =
+                    extract_known::<(HopInfo, bool)>(b, &data, "Hop Count Block")?
+                    && !shortest
+                {
+                    to_update.insert(n, emit(&v).0);
                 }
             }
             _ => {}

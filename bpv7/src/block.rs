@@ -4,9 +4,15 @@ fundamental unit of a bundle. It includes definitions for block headers, flags,
 and the generic `Block` struct that represents all extension blocks.
 */
 
-use super::*;
-use core::ops::Range;
+use alloc::boxed::Box;
+use core::{fmt, ops::Range};
 
+use hardy_cbor::{
+    decode::{FromCbor, parse_exact},
+    encode::{Array, Encoder, Raw, ToCbor, emit_array},
+};
+
+use crate::{Error, crc};
 /// Represents the processing control flags for a BPv7 block.
 ///
 /// These flags, defined in RFC 9171 Section 4.2.2, control how a node should
@@ -95,15 +101,15 @@ impl From<u64> for Flags {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Flags {
+impl ToCbor for Flags {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&u64::from(self))
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Flags {
+impl FromCbor for Flags {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -178,15 +184,15 @@ impl From<u64> for Type {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Type {
+impl ToCbor for Type {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         encoder.emit(&u64::from(*self))
     }
 }
 
-impl hardy_cbor::decode::FromCbor for Type {
+impl FromCbor for Type {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -224,8 +230,8 @@ impl Payload<'_> {
     }
 }
 
-impl core::fmt::Debug for Payload<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Payload<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Just delegate to the underlying slice formatter
         self.as_ref().fmt(f)
     }
@@ -270,7 +276,7 @@ fn bib_is_none(bib: &BibCoverage) -> bool {
 /// and CRC information. The actual data of the block is not stored directly but
 /// is referenced by the `extent` and `data` ranges, which point to slices
 /// within the full bundle's byte representation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Block {
     /// The type of the block.
@@ -342,18 +348,43 @@ impl Block {
         source.get(start..end)
     }
 
+    /// Decode this block's payload (from `source`) as a single CBOR `T`, with a
+    /// smuggling check — no trailing bytes after the item (see
+    /// [`hardy_cbor::decode::parse_exact`]). `Ok(None)` if there is no plaintext
+    /// to decode in place: the payload's bytes aren't resident in `source` (an
+    /// over-claiming extent in a headers-only buffer), or the block is
+    /// BCB-covered so its wire bytes are ciphertext — decode the decrypted
+    /// plaintext with [`hardy_cbor::decode::parse_exact`] instead.
+    ///
+    /// A decode failure surfaces as `T`'s own error via [`Error`]'s `From`
+    /// conversions; the decode is canonical iff `T`'s `FromCbor` is.
+    pub fn extract<T>(&self, source: &[u8]) -> Result<Option<T>, Error>
+    where
+        T: FromCbor,
+        T::Error: From<hardy_cbor::decode::Error>,
+        Error: From<T::Error>,
+    {
+        if self.bcb.is_some() {
+            return Ok(None);
+        }
+        self.payload(source)
+            .map(parse_exact)
+            .transpose()
+            .map_err(Error::from)
+    }
+
     /// Emits the block as a CBOR-encoded byte array.
     /// This is an internal function used during bundle creation.
     pub(crate) fn emit(
         &mut self,
         block_number: u64,
         data: &[u8],
-        array: &mut hardy_cbor::encode::Array,
+        array: &mut Array,
     ) -> Result<(), Error> {
-        let extent = array.emit(&hardy_cbor::encode::Raw(&crc::append_crc_value(
+        let extent = array.emit(&Raw(&crc::append_crc_value(
             self.crc_type,
-            hardy_cbor::encode::emit_array(
-                Some(if let crc::CrcType::None = self.crc_type {
+            emit_array(
+                Some(if matches!(self.crc_type, crc::CrcType::None) {
                     5
                 } else {
                     6
@@ -368,8 +399,7 @@ impl Block {
                     self.data = data_range.start as u64..data_range.end as u64;
 
                     // CRC
-                    if let crc::CrcType::None = self.crc_type {
-                    } else {
+                    if !matches!(self.crc_type, crc::CrcType::None) {
                         a.skip_value();
                     }
                 },

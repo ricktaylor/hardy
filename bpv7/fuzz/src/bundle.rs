@@ -2,7 +2,6 @@ use bytes::Bytes;
 use hardy_bpv7::{bpsec::key, checks, parse, rewrite};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-
 /// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
 /// classify A1/A2/A3 (with the §A delete-block list), `checks::verify`
 /// (§B decrypt-and-validate BCB-covered BIBs, §C8 decrypt BCB-protected
@@ -81,17 +80,10 @@ where
     T: hardy_cbor::decode::FromCbor,
     T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match hardy_cbor::decode::parse::<(T, usize)>(data) {
-        Err(e) => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: e.into(),
-        }),
-        Ok((_, len)) if len != data.len() => Err(hardy_bpv7::Error::InvalidField {
-            field,
-            source: hardy_bpv7::Error::AdditionalData.into(),
-        }),
-        Ok((t, _)) => Ok(t),
-    }
+    hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| hardy_bpv7::Error::InvalidField {
+        field,
+        source: e.into(),
+    })
 }
 
 /// §D decode step: decode every known extension block

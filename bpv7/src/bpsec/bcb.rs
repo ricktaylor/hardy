@@ -1,6 +1,18 @@
-use super::*;
+use alloc::boxed::Box;
+
+use hardy_cbor::{
+    decode::{FromCbor, parse},
+    encode::{Array, Encoder, ToCbor},
+};
 use smallvec::SmallVec;
 
+#[cfg(feature = "rfc9173")]
+use crate::bpsec::rfc9173;
+use crate::{
+    HashMap, block,
+    bpsec::{BlockSet, Context, Error, key, parse},
+    crc, eid,
+};
 /// A parsed BCB (Block Confidentiality Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -28,10 +40,20 @@ pub struct OperationArgs<'a> {
 impl Operation {
     /// Returns `true` if this operation uses an unrecognised security context.
     pub fn is_unsupported(&self) -> bool {
+        self.unsupported_error().is_some()
+    }
+
+    /// The error describing why this operation is unsupported:
+    /// [`Error::UnrecognisedContext`] for an unrecognised security context
+    /// id, [`Error::UnsupportedOperation`] for a recognised context with
+    /// unrecognised parameters. `None` when the operation is supported.
+    pub fn unsupported_error(&self) -> Option<Error> {
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::AES_GCM(operation) => operation.is_unsupported(),
-            Self::Unrecognised(..) => true,
+            Self::AES_GCM(operation) => operation
+                .is_unsupported()
+                .then_some(Error::UnsupportedOperation),
+            Self::Unrecognised(id, ..) => Some(Error::UnrecognisedContext(*id)),
         }
     }
 
@@ -123,7 +145,7 @@ impl Operation {
         }
     }
 
-    fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
+    fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_context(encoder, source),
@@ -131,7 +153,7 @@ impl Operation {
         }
     }
 
-    fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
+    fn emit_result(&self, array: &mut Array) {
         match self {
             #[cfg(feature = "rfc9173")]
             Self::AES_GCM(o) => o.emit_result(array),
@@ -170,6 +192,15 @@ impl OperationSet {
     /// Returns `true` if any operation in this set uses an unrecognised context.
     pub fn is_unsupported(&self) -> bool {
         self.operations.values().any(|op| op.is_unsupported())
+    }
+
+    /// The error describing why this set is unsupported (the first
+    /// unsupported operation's [`Operation::unsupported_error`]), or `None`
+    /// when every operation is supported.
+    pub fn unsupported_error(&self) -> Option<Error> {
+        self.operations
+            .values()
+            .find_map(|op| op.unsupported_error())
     }
 
     /// Returns true if this BCB's context allows multiple targets to share
@@ -233,10 +264,10 @@ impl OperationSet {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for OperationSet {
+impl ToCbor for OperationSet {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         // Ensure we process operations in the same order
         let (targets, operations): (SmallVec<[&u64; 4]>, SmallVec<[&Operation; 4]>) =
             self.operations.iter().unzip();
@@ -260,14 +291,14 @@ impl hardy_cbor::encode::ToCbor for OperationSet {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for OperationSet {
+impl FromCbor for OperationSet {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         // ASB parsing is strict-canonical (errors on non-shortest, indefinite,
         // or tagged content) and likewise the rfc9173 context parsers below,
         // so any value returned here is canonical by construction.
-        let (asb, len) = hardy_cbor::decode::parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
+        let (asb, len) = parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
 
         // Unpack into strong types
         #[allow(unreachable_patterns)]

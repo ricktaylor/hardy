@@ -1,8 +1,7 @@
 //! Integration tests for primary-block parsing/validation via the public
 //! `hardy_bpv7` API (Builder → bytes → parse).
 
-use hardy_bpv7::{builder, crc, creation_timestamp, parse};
-
+use hardy_bpv7::{Error, builder, crc, creation_timestamp, parse};
 fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_crc_type(crc_type)
@@ -60,12 +59,26 @@ fn primary_block_validation() {
     // The version 7 is encoded as CBOR unsigned int 7 = 0x07
     // It appears after the primary block array header
     // Primary block: 0x89 (array of 9) then 0x07 (version 7)
-    if let Some(pos) = bad_version.windows(2).position(|w| w == [0x89, 0x07]) {
-        bad_version[pos + 1] = 0x06; // change version to 6
-        let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
-        assert!(
-            result.is_err(),
-            "Bundle with version 6 should fail to parse"
-        );
-    }
+    let pos = bad_version
+        .windows(2)
+        .position(|w| w == [0x89, 0x07])
+        .expect("version byte pattern [0x89, 0x07] not found — test fixture needs updating");
+    bad_version[pos + 1] = 0x06; // change version to 6
+    let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
+    // Downcast the source: rejection must be for the version itself, not some
+    // other primary-block failure the byte edit could provoke (e.g. the CRC).
+    let Err(Error::InvalidField {
+        field: "primary block",
+        source,
+    }) = result
+    else {
+        panic!("version 6 must fail as an InvalidField primary-block error");
+    };
+    assert!(
+        matches!(
+            source.downcast_ref::<Error>(),
+            Some(Error::InvalidVersion(6))
+        ),
+        "the primary-block failure must be InvalidVersion(6), got {source}"
+    );
 }

@@ -5,16 +5,16 @@ Layer 2 of bpv7's editing stack — adds key-aware operations to the
 BPSec-agnostic [`crate::editor::Editor`]. The [`BPSecEditor`] extension
 trait provides:
 
-- [`BPSecEditor::remove_blocks`] — bulk
+- [`BPSecEditor::remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks) — bulk
   cascade-through-encrypted-BIB block removal. Lenient: silently
   retains the covered targets of any BIB that would be partially shrunk
   without an available Encrypt key, and returns the actually-removed
   set. For naive single-block removal that errors on any BPSec
-  involvement, use [`Editor::remove_block`] instead.
-- [`BPSecEditor::remove_integrity`] — strip a target block's BIB
+  involvement, use [`Editor::remove_block`](crate::editor::Editor::remove_block) instead.
+- [`BPSecEditor::remove_integrity`](crate::bpsec::edit::BPSecEditor::remove_integrity) — strip a target block's BIB
   signature, restoring CRC if necessary. Keyless.
 
-and the free function [`remove_encryption`] decrypts a target block and
+and the free function [`remove_encryption`](crate::bpsec::edit::remove_encryption) decrypts a target block and
 rewrites it in plaintext, including the §3.8 share-target handshake with
 any BIB that covers the decrypted block.
 
@@ -29,13 +29,17 @@ tools / third-party callers go through this trait for anything that
 needs a [`key::KeySource`].
 */
 
-use super::*;
-use crate::editor::{Editor, EditorBlockSet, Error as EditorError};
+use alloc::{boxed::Box, vec::Vec};
+
+use hardy_cbor::{decode::parse_exact, encode::emit};
 use smallvec::SmallVec;
 
-// ===========================================================================
-// Extension trait — the public API
-// ===========================================================================
+use crate::{
+    HashMap, HashSet, block,
+    bpsec::{Error, bcb, bib, key},
+    crc,
+    editor::{Editor, EditorBlockSet, Error as EditorError},
+};
 
 /// BPSec-aware operations on an [`Editor`]. See module docs for the
 /// capability list. Implemented on [`Editor<'_>`] in this module.
@@ -44,7 +48,7 @@ pub trait BPSecEditor: Sized {
     /// editor and the set of block numbers actually removed.
     ///
     /// For naive single-block removal that errors on any BPSec
-    /// involvement, use [`Editor::remove_block`] (the inherent method).
+    /// involvement, use [`Editor::remove_block`](crate::editor::Editor::remove_block) (the inherent method).
     /// For cascade-aware single-block removal, call this with a
     /// 1-element set and inspect the returned set.
     ///
@@ -107,7 +111,7 @@ pub trait BPSecEditor: Sized {
     /// OpSet parse on ciphertext fails) — use [`remove_blocks`] for
     /// that case.
     ///
-    /// [`remove_blocks`]: BPSecEditor::remove_blocks
+    /// [`remove_blocks`]: crate::bpsec::edit::BPSecEditor::remove_blocks
     #[allow(clippy::result_large_err)]
     fn remove_integrity(self, block_number: u64) -> Result<Self, (Self, EditorError)>;
 }
@@ -465,7 +469,7 @@ fn decode_bcb_opset(
     let Some((_, Some(bcb_payload))) = editor.block(bcb_num) else {
         return Ok(None);
     };
-    match hardy_cbor::decode::parse_exact::<bcb::OperationSet>(bcb_payload) {
+    match parse_exact::<bcb::OperationSet>(bcb_payload) {
         Ok(opset) => Ok(Some(opset)),
         Err(e) => Err(crate::error::Error::InvalidField {
             field: "BCB Abstract Syntax Block",
@@ -521,7 +525,7 @@ where
         Ok(p) => p,
         Err(_) => return (editor, CoveredBib::DecryptFailed),
     };
-    match hardy_cbor::decode::parse_exact::<bib::OperationSet>(&plaintext) {
+    match parse_exact::<bib::OperationSet>(&plaintext) {
         Ok(opset) => (editor, CoveredBib::Decrypted(plaintext, opset)),
         Err(e) => (
             editor,
@@ -538,7 +542,7 @@ where
 
 /// Re-encrypt a BCB-covered BIB whose plaintext OperationSet has changed
 /// during the cascading block-delete in
-/// [`BPSecEditor::remove_blocks`].
+/// [`BPSecEditor::remove_blocks`](crate::bpsec::edit::BPSecEditor::remove_blocks).
 ///
 /// When the cascade drops a non-security block, any BIB referencing it
 /// has its OperationSet shrunk. A shrunk BIB that (a) survives the empty
@@ -629,7 +633,7 @@ where
             // Unreachable: BCB {bcb_block_number} is an existing block.
             panic!("update_block on existing BCB {bcb_block_number} cannot fail (logic bug): {e}")
         })
-        .with_data(hardy_cbor::encode::emit(&new_bcb_opset).0.into())
+        .with_data(emit(&new_bcb_opset).0.into())
         .rebuild();
 
     Ok(editor)

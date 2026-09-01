@@ -1,12 +1,21 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use core::ops::Range;
 
 use aes_gcm::{
     KeyInit,
     aes::cipher::consts::{U8, U9, U10, U11, U12, U13, U14, U15, U16},
 };
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{Array, Encoder, Raw, ToCbor},
+};
 
-use super::*;
-
+use super::{ScopeFlags, canonical_primary, key_wrap, rand_bytes};
+use crate::{
+    CaptureFieldErr, HashMap,
+    bpsec::{Context, Error, bcb, key, parse},
+    eid,
+};
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -17,10 +26,10 @@ pub enum AesVariant {
     Unrecognised(u64),
 }
 
-impl hardy_cbor::encode::ToCbor for AesVariant {
+impl ToCbor for AesVariant {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         match self {
             Self::A128GCM => encoder.emit(&1),
             Self::A256GCM => encoder.emit(&3),
@@ -29,7 +38,7 @@ impl hardy_cbor::encode::ToCbor for AesVariant {
     }
 }
 
-impl hardy_cbor::decode::FromCbor for AesVariant {
+impl FromCbor for AesVariant {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -93,10 +102,10 @@ impl Parameters {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Parameters {
+impl ToCbor for Parameters {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         let mut mask: u32 = 1 << 1;
         if self.variant != AesVariant::default() {
             mask |= 1 << 2;
@@ -140,10 +149,10 @@ impl Results {
     }
 }
 
-impl hardy_cbor::encode::ToCbor for Results {
+impl ToCbor for Results {
     type Result = ();
 
-    fn to_cbor(&self, encoder: &mut hardy_cbor::encode::Encoder) -> Self::Result {
+    fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
         if let Some(r) = self.0.as_ref() {
             encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(r))]);
         } else {
@@ -153,7 +162,7 @@ impl hardy_cbor::encode::ToCbor for Results {
 }
 
 fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, Error> {
-    let mut encoder = hardy_cbor::encode::Encoder::new();
+    let mut encoder = Encoder::new();
     encoder.emit(&ScopeFlags {
         include_primary_block: flags.include_primary_block,
         include_target_header: flags.include_target_header,
@@ -162,13 +171,14 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     });
 
     if flags.include_primary_block {
-        encoder.emit(&hardy_cbor::encode::Raw(
-            args.blocks
-                .block(0)
-                .and_then(|v| v.1)
-                .expect("Missing primary block!")
-                .as_ref(),
-        ));
+        let raw = args
+            .blocks
+            .block(0)
+            .and_then(|v| v.1)
+            .expect("Missing primary block!");
+        let raw = raw.as_ref();
+        // RFC 9172 §4: AAD requires the canonical (deterministic) form.
+        encoder.emit(&Raw(&canonical_primary(raw)?));
     }
 
     if flags.include_target_header {
@@ -485,14 +495,14 @@ impl Operation {
         }
     }
 
-    pub fn emit_context(&self, encoder: &mut hardy_cbor::encode::Encoder, source: &eid::Eid) {
+    pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
         encoder.emit(&Context::BCB_AES_GCM);
         encoder.emit(&1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());
     }
 
-    pub fn emit_result(&self, array: &mut hardy_cbor::encode::Array) {
+    pub fn emit_result(&self, array: &mut Array) {
         array.emit(&self.results);
     }
 }

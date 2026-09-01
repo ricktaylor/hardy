@@ -7,19 +7,30 @@ This module defines the core bundle data model: the [`Bundle`] structure
 */
 
 use super::*;
+use crate::primary_block::PrimaryBlock;
 use alloc::collections::{BTreeMap, BTreeSet};
 use base64::prelude::*;
 use bpsec::{bcb, bib};
 use hardy_cbor::decode::{self, FromCbor};
-use primary_block::PrimaryBlock;
 
 /// A parsed BPv7 bundle: the primary block plus the extension and payload
 /// blocks keyed by block number. This is the crate's structural bundle
 /// representation, produced by [`parse`](crate::parse::parse) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
-#[derive(Debug)]
+///
+/// The derived `==` is structural and offset-sensitive — block extents are
+/// buffer-relative, so re-encodings of the same bundle compare unequal. For
+/// data-aware, offset-insensitive equivalence use
+/// [`semantic_eq`](Self::semantic_eq).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
+    /// The bundle's primary block, decoded into typed fields.
     pub primary: PrimaryBlock,
+    /// All blocks keyed by wire block number (primary = 0, payload = 1,
+    /// extensions = 2+). `blocks[0]` is the primary block in raw form, kept for
+    /// byte-exact access (e.g. BPSec primary-block AAD); [`primary`](Self::primary)
+    /// above is the same block decoded.
     pub blocks: HashMap<u64, block::Block>,
 }
 
@@ -89,8 +100,8 @@ impl Bundle {
 
         // Block identity is by type + position, not block number, so group
         // each side by type code and pair the groups up.
-        let by_type_a = blocks_by_type(self);
-        let by_type_b = blocks_by_type(other);
+        let by_type_a = self.blocks_by_type();
+        let by_type_b = other.blocks_by_type();
         if !by_type_a.keys().eq(by_type_b.keys()) {
             return false;
         }
@@ -135,26 +146,26 @@ impl Bundle {
         }
         true
     }
-}
 
-/// Group block numbers by type code, each list sorted ascending. The
-/// primary block (number 0) is handled separately and excluded.
-fn blocks_by_type(bundle: &Bundle) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
-    let mut map: BTreeMap<u64, (block::Type, Vec<u64>)> = BTreeMap::new();
-    for (&bn, blk) in &bundle.blocks {
-        if bn == 0 {
-            continue;
+    /// Group block numbers by type code, each list sorted ascending. The
+    /// primary block (number 0) is handled separately and excluded.
+    pub fn blocks_by_type(&self) -> BTreeMap<u64, (block::Type, Vec<u64>)> {
+        let mut map: BTreeMap<u64, (block::Type, Vec<u64>)> = BTreeMap::new();
+        for (&bn, blk) in &self.blocks {
+            if bn == 0 {
+                continue;
+            }
+            let type_code: u64 = blk.block_type.into();
+            map.entry(type_code)
+                .or_insert_with(|| (blk.block_type, Vec::new()))
+                .1
+                .push(bn);
         }
-        let type_code: u64 = blk.block_type.into();
-        map.entry(type_code)
-            .or_insert_with(|| (blk.block_type, Vec::new()))
-            .1
-            .push(bn);
+        for v in map.values_mut() {
+            v.1.sort();
+        }
+        map
     }
-    for v in map.values_mut() {
-        v.1.sort();
-    }
-    map
 }
 
 /// Map each block number to its (type, position-within-type) so that
@@ -200,19 +211,20 @@ fn known_extension_eq(
     }
 }
 
-/// Decode `T` from both bodies and compare the values. Uses the
-/// `(T, bool)` decode, which tolerates a non-shortest encoding (the flag
-/// is discarded), so a non-canonically encoded value still compares by
-/// content. A decode failure on either side is treated as not equal.
+/// Decode `T` from both bodies and compare the values. A non-canonical
+/// encoding still compares by content — that tolerance lives in
+/// `T::from_cbor`, which accepts it — but trailing bytes after the item are
+/// rejected via [`decode::parse_exact`]. A decode failure on either side is
+/// treated as not equal.
 fn decoded_eq<T>(a_body: &[u8], b_body: &[u8]) -> bool
 where
     T: FromCbor<Error: From<decode::Error>> + PartialEq,
 {
     match (
-        decode::parse::<(T, bool)>(a_body),
-        decode::parse::<(T, bool)>(b_body),
+        decode::parse_exact::<T>(a_body),
+        decode::parse_exact::<T>(b_body),
     ) {
-        (Ok((a, _)), Ok((b, _))) => a == b,
+        (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
 }
