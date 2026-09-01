@@ -33,6 +33,18 @@ Duplicates: RFC 9171 specifies no duplicate-bundle processing at all (the word d
 
 Expired arrivals are the deliberate exception: a bundle that arrives already expired is treated as if it never arrived — no reception report, no deletion report, no metadata entry — rather than amplifying already-dead traffic into report bundles. The refactor/parse early gate implements this silence for the lifetime case (`fix(bpa): suppress status reports for expired-at-ingress bundles`), matching `fix/mem-storage-watermark`'s ingress expiry gate; hop-exhaustion still emits the conforming reception-then-deletion pair. Bundles that expire *in custody* are unaffected: the validity filter, reaper, and `drop_bundle` paths still generate §5.10 deletion reports citing "Lifetime expired".
 
+## Ingress parse-seam API shape (review items A-02/A-03/A-04)
+
+The caller-facing API review of `refactor/parse` (rounds 3–4, review log kept outside the tree) confirmed three minor shape findings against `bpa::bundle::parse`: A-02, the whole-vs-prefix meaning of the middle `Bytes` in `parse_headers`' `(HeaderVerify, Bytes, Option<PayloadTail>)` triple is a doc-contract correlated with the `Option` that `finalize_with_provider(whole: &[u8])` cannot check, so callers prove it by ritual (`tail.is_none()` before finalize); A-03, the reportable-rejection concept crosses the seam in two shapes (`HeaderFailure::Invalid` pre-maps the `ReasonCode`, finalize returns the raw error pair, and the ingress caller repeats the module's own mapping via `status_report_reason_for`); A-04, the `_with_provider` suffix marks 2 of the 3 equally-keyed functions with no unkeyed variants to disambiguate against.
+
+Ruling (2026-09-01): accepted as findings, absorbed into the streaming spool tranche rather than fixed in place — the recorded end-state deletes each finding's subject rather than reshaping it:
+
+- A-02: `finalize_with_provider`'s whole-buffer input is deleted along with `checks::verify_payload` (the deferred payload-BIB check becomes a streaming digest in the drain — see the `TailReceiver` bullet in [`streaming_pipeline_design.md`](streaming_pipeline_design.md)'s Interim block), and the resident bytes take the single §5.2.3 meaning: the first spool chunk, headers contiguous at its start.
+- A-03: the two shapes become two genuinely different events — a §5.4 pre-drain gate reject is pre-custody (return from dispatch, zero I/O, the CLA refuses the transfer mid-stream), while a post-gate failure is a §5.7 Phase-B decision about a bundle the BPA already owns (spool cancel, §5.1.1 failure-drop, report machinery).
+- A-04: `finalize_with_provider` is deleted outright and the remaining keyed callers converge on the one streamed pipeline (`local_dispatch_raw` runs the ingress parser + gate per §5.3; restart re-admission drives the streamed load per §3.1), leaving nothing for the suffix to mispartition.
+
+This ledger is falsifiable on purpose: if the spool tranche lands without deleting these surfaces, the three findings revive as filed.
+
 ## Storage backend metrics (common + bespoke)
 
 An audit (2026-07-10, while defaulting bpa-server to sqlite/localdisk) found the persistent storage backends emit no metrics at all — none of sqlite-storage, localdisk-storage, postgres-storage, or s3-storage even depends on the `metrics` crate. Their only observability is the `instrument`-feature tracing spans. Production nodes on the new persistent defaults therefore have no storage operation counts, error counters, or latencies; only the in-memory backends carry store-level metrics today (`bpa.mem_store.*`, `bpa.mem_metadata.*`, documented in `docs/user-docs/operations/observability.md`).
