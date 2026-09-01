@@ -1,6 +1,6 @@
 //! Integration tests for the BPSec validation/rewrite pipeline — composing
 //! the public `hardy_bpv7::{parse, checks, rewrite}` primitives the way a
-//! consumer would (mirrors the reference pipeline in `bpa::bp7_parse`).
+//! consumer would (mirrors the reference pipeline in `bpa::bundle::parse`).
 
 use bytes::Bytes;
 use hardy_bpv7::parse::Parsed;
@@ -86,7 +86,7 @@ fn empty_keys() -> bpsec::key::KeySet {
 }
 
 // Full-mode pipeline: composes the per-section helpers exactly as
-// `bpa::bp7_parse` does, so the cascade tests exercise the real
+// `bpa::bundle::parse` does, so the cascade tests exercise the real
 // composition. Returns the (possibly rewritten) bundle plus the chunk
 // plan when rewrites were applied.
 #[allow(clippy::result_large_err)]
@@ -445,8 +445,8 @@ fn unknown_block_discard() {
     );
 }
 
-/// Splice an extension block (already encoded as a 5-element block array)
-/// into `data` immediately after the primary block.
+// Splice an extension block (already encoded as a 5-element block array)
+// into `data` immediately after the primary block.
 fn splice_after_primary(data: &[u8], block: &[u8]) -> Vec<u8> {
     assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
     let (_, primary_len) =
@@ -459,10 +459,10 @@ fn splice_after_primary(data: &[u8], block: &[u8]) -> Vec<u8> {
     modified
 }
 
-/// Splice a BCB carrying an unrecognised security context (id 99) targeting
-/// the payload (block 1) into `data` as block number 2, with the given block
-/// processing `flags`. `flags` must include must-replicate (0x01) — required
-/// for a payload-targeting BCB.
+// Splice a BCB carrying an unrecognised security context (id 99) targeting
+// the payload (block 1) into `data` as block number 2, with the given block
+// processing `flags`. `flags` must include must-replicate (0x01) — required
+// for a payload-targeting BCB.
 fn splice_unrecognised_bcb(data: &[u8], flags: u64) -> Vec<u8> {
     // ASB CBOR sequence: targets [1], context id 99, context flags 0 (no
     // parameters), source EID, then one result list per target.
@@ -1395,6 +1395,42 @@ mod deferred_payload_bib_tests {
             matches!(err, Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)),
             "expected IntegrityCheckFailed, got {err:?}"
         );
+    }
+
+    // The `DeferredBibs` accessors must report the deferred set truthfully on
+    // the non-empty side: the assert-empty discharge sites at the all-resident
+    // callers enforce nothing if `is_empty` can lie. On the headers-only
+    // buffer the standalone verifier defers exactly the block-1 BIB — the set
+    // is non-empty and `iter` names that block.
+    #[test]
+    fn verify_all_bibs_defers_nonempty_on_headers_only_buffer() {
+        let full = signed_large_payload();
+        let keys = keys();
+
+        let Parsed {
+            data: consumed,
+            bundle: raw,
+            bibs: bib_ops,
+            ..
+        } = parse_headers_only(&full);
+        let bib_block = *bib_ops.keys().next().expect("a BIB op-set");
+
+        let no_decrypted = HashMap::new();
+        let no_updates = HashMap::new();
+        let deferred = checks::verify_all_bibs(
+            &consumed,
+            &keys,
+            &raw.blocks,
+            &bib_ops,
+            &no_decrypted,
+            &no_updates,
+        )
+        .expect("the non-resident payload target defers, it does not fail");
+        assert!(
+            !deferred.is_empty(),
+            "the block-1 BIB must be reported as deferred"
+        );
+        assert_eq!(deferred.iter().collect::<Vec<_>>(), vec![bib_block]);
     }
 
     // With the whole bundle resident, `verify` checks the payload BIB inline and

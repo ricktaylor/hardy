@@ -221,8 +221,8 @@ mod cbor_tests {
         ));
     }
 
-    /// RFC 9171 §4.1: the scheme uint MUST be encoded as a single byte (0x01
-    /// for dtn). A non-shortest encoding such as `0x18 0x01` is rejected.
+    // RFC 9171 §4.1: the scheme uint MUST be encoded as a single byte (0x01
+    // for dtn). A non-shortest encoding such as `0x18 0x01` is rejected.
     #[test]
     fn non_shortest_scheme_uint_rejected() {
         // [scheme=18 01 (non-shortest 1), "//node/"]
@@ -236,9 +236,9 @@ mod cbor_tests {
         ));
     }
 
-    /// RFC 9171 §4.1 carveout: an indefinite-length outer EID array is
-    /// permitted, but the returned `shortest` flag must be `false` so callers
-    /// can opt to re-emit in canonical form.
+    // RFC 9171 §4.1 carveout: an indefinite-length outer EID array is
+    // permitted, but the returned `shortest` flag must be `false` so callers
+    // can opt to re-emit in canonical form.
     #[test]
     fn indefinite_outer_array_accepted_but_flagged() {
         // 9f ... ff = indefinite-length array of [1, "//node/"]
@@ -251,9 +251,9 @@ mod cbor_tests {
         );
     }
 
-    /// RFC 9171 §4.2.5.1.1: dtn null MUST be encoded as `uint 0`. The legacy
-    /// `Text("none")` form is accepted but must flag `shortest = false` to
-    /// queue a rewrite; the canonical `uint 0` form must flag `shortest = true`.
+    // RFC 9171 §4.2.5.1.1: dtn null MUST be encoded as `uint 0`. The legacy
+    // `Text("none")` form is accepted but must flag `shortest = false` to
+    // queue a rewrite; the canonical `uint 0` form must flag `shortest = true`.
     #[test]
     fn dtn_null_canonicality() {
         // [1, "none"] — non-canonical form
@@ -269,9 +269,9 @@ mod cbor_tests {
         assert!(shortest, "uint 0 form should flag shortest=true");
     }
 
-    /// RFC 9171 §4.1: unexpected tags on a CBOR item are a canonicality
-    /// violation. A tagged dtn SSP (e.g. tag 0 wrapping the text) must be
-    /// rejected rather than accepted as a structural type error.
+    // RFC 9171 §4.1: unexpected tags on a CBOR item are a canonicality
+    // violation. A tagged dtn SSP (e.g. tag 0 wrapping the text) must be
+    // rejected rather than accepted as a structural type error.
     #[test]
     fn tagged_dtn_ssp_rejected_as_not_canonical() {
         // [1, tag-0("none")] — tag on the SSP

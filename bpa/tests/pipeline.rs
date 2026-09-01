@@ -1090,8 +1090,8 @@ struct SegmentReceiver {
 }
 
 impl SegmentReceiver {
-    /// Split `data` into `chunk`-byte segments: `Next` for all but the last,
-    /// which is `Final`.
+    // Split `data` into `chunk`-byte segments: `Next` for all but the last,
+    // which is `Final`.
     fn new(data: &[u8], chunk: usize) -> Self {
         let mut segments = VecDeque::new();
         let mut off = 0;
@@ -1110,8 +1110,8 @@ impl SegmentReceiver {
         }
     }
 
-    /// Segments not yet pulled by the parser. Non-zero after dispatch means the
-    /// payload tail was never drained.
+    // Segments not yet pulled by the parser. Non-zero after dispatch means the
+    // payload tail was never drained.
     fn remaining(&self) -> usize {
         self.segments.lock().unwrap().len()
     }

@@ -435,7 +435,9 @@ fn verify_headers(
 
     // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal for
     // HopCount and unclocked BundleAge; a §C8/§B decrypt failure is rejected.
-    // `verify` drains `bib_ops`/`bcb_ops` to the block-1 (payload) leftovers.
+    // `verify` drains the deferred block-1 (payload) op-sets out of `bib_ops`,
+    // handing them back owned in `facts.deferred_bibs`; `bcb_ops` is only
+    // borrowed.
     let mut decrypted = HashMap::new();
     let to_update_seed: HashMap<u64, Vec<u8>> = HashMap::new();
     let facts = checks::verify(
@@ -821,6 +823,144 @@ mod tests {
             reject_undecryptable_liveness(&age_fact, false),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
         ));
+    }
+
+    #[cfg(feature = "rfc9173")]
+    fn sign_key() -> bpsec::key::Key {
+        use bpsec::key::{Key, KeyAlgorithm, Operation, Type};
+        Key {
+            key_type: Type::OctetSequence {
+                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
+            },
+            key_algorithm: Some(KeyAlgorithm::HS256),
+            enc_algorithm: None,
+            operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+            id: Some("ipn:2.1".into()),
+            key_use: None,
+        }
+    }
+
+    // A bundle whose payload (block 1) is BIB-signed and far larger than the
+    // parser's default chunk, so `parse_headers` must take the `Partial`
+    // route and defer the block-1 op-set to `finalize_with_provider`.
+    #[cfg(feature = "rfc9173")]
+    fn signed_oversized_bundle() -> Bytes {
+        use hardy_bpv7::{
+            bpsec::signer::{Context, Signer},
+            builder::Builder,
+            creation_timestamp::CreationTimestamp,
+        };
+
+        let (_, base) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let parsed = parse::parse(Bytes::from(base)).expect("parse the built bundle");
+        Bytes::from(
+            Signer::new(&parsed.bundle, &parsed.data)
+                .sign_block(
+                    1,
+                    Context::HMAC_SHA2(Default::default()),
+                    "ipn:2.1".parse().unwrap(),
+                    &sign_key(),
+                )
+                .map_err(|(_, e)| e)
+                .expect("sign the payload block")
+                .rebuild()
+                .expect("rebuild the signed bundle"),
+        )
+    }
+
+    // Drive `parse_headers` down the `Partial` route in CLA-sized segments,
+    // then drain the tail the way `dispatcher::ingress` does, returning the
+    // header handover plus the reassembled whole bundle.
+    #[cfg(feature = "rfc9173")]
+    async fn headers_then_drain(full: &Bytes) -> (HeaderVerify, crate::BytesMut) {
+        use bpsec::key::KeySet;
+
+        let segments: Vec<Bytes> = full.chunks(1000).map(Bytes::copy_from_slice).collect();
+        let (tx, mut rx) = hardy_async::channel::bounded(segments.len());
+        let last = segments.len() - 1;
+        for (i, seg) in segments.into_iter().enumerate() {
+            let seg = if i == last {
+                Segment::Final(seg)
+            } else {
+                Segment::Next(seg)
+            };
+            tx.send(seg).await.expect("channel open");
+        }
+
+        let keys = |_: &Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![sign_key()]))
+        };
+        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, keys).await else {
+            panic!("the header pass must verify: the payload target is deferred");
+        };
+        let mut tail = tail.expect("an oversized payload must take the Partial route");
+
+        let mut whole = crate::BytesMut::from(headers.as_ref());
+        loop {
+            let bytes = match rx.recv().await.expect("segments were all sent") {
+                Segment::Next(b) | Segment::Final(b) => b,
+            };
+            let complete = tail.push(&bytes).expect("the drained tail is well-formed");
+            whole.extend_from_slice(&bytes);
+            if complete {
+                break;
+            }
+        }
+        (hv, whole)
+    }
+
+    // The deferred payload-BIB handover across the gate seams: the block-1
+    // op-set `parse_headers` defers must ride `HeaderVerify::deferred_bibs`
+    // into `finalize_with_provider`'s payload verify. Emptying the handover
+    // map (or skipping the finalize payload pass) must fail both this test
+    // and the tamper companion below.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn deferred_payload_bib_verified_at_finalize() {
+        let full = signed_oversized_bundle();
+        let (hv, whole) = headers_then_drain(&full).await;
+        assert_eq!(
+            hv.deferred_bibs.len(),
+            1,
+            "the block-1 BIB op-set must ride the handover"
+        );
+
+        let (bundle, chunks, _reason) = finalize_with_provider(&whole, hv, |_, _| {
+            Box::new(bpsec::key::KeySet::new(vec![sign_key()]))
+        })
+        .map_err(|(_, e)| e)
+        .expect("the deferred payload BIB verifies against the drained bundle");
+        assert!(chunks.is_none(), "nothing was scheduled for removal");
+        assert!(bundle.blocks.contains_key(&1), "payload survives");
+    }
+
+    // A payload byte flipped after the drain: the header pass never saw the
+    // payload and the tail's CRC check already passed on the clean bytes, so
+    // the deferred BIB at finalize is the only check that can catch it.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn deferred_payload_bib_tamper_fails_at_finalize() {
+        let full = signed_oversized_bundle();
+        let (hv, mut whole) = headers_then_drain(&full).await;
+
+        let mid = whole.len() / 2;
+        whole[mid] ^= 0xFF;
+        let error = match finalize_with_provider(&whole, hv, |_, _| {
+            Box::new(bpsec::key::KeySet::new(vec![sign_key()]))
+        }) {
+            Err((_, error)) => error,
+            Ok(_) => panic!("a tampered payload must fail the deferred BIB"),
+        };
+        assert!(
+            matches!(
+                error,
+                hardy_bpv7::Error::InvalidBPSec(bpsec::Error::IntegrityCheckFailed)
+            ),
+            "expected IntegrityCheckFailed, got {error:?}"
+        );
     }
 
     #[test]
