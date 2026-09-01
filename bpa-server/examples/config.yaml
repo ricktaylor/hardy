@@ -74,9 +74,9 @@ rfc9171-validity:
   # Ensures bundles can be properly aged and expired.
   # bundle-age-required: true
 
-# IPN Legacy Filter (requires `ipn-legacy-filter` feature)
-# This filter rewrites IPN 3-element EIDs to legacy 2-element format
-# for peers that require the older encoding.
+# IPN legacy re-encode: rewrites IPN 3-element EIDs to legacy 2-element
+# format for peers that require the older encoding, as part of the BPA's
+# per-hop rewrite stage.
 #
 # EID patterns matching next-hop peers that require legacy encoding.
 # Bundles forwarded to matching peers will have their IPN EIDs rewritten.

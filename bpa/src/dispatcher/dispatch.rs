@@ -116,7 +116,7 @@ impl Dispatcher {
                         let service_eid = self
                             .node_ids
                             .resolve_eid(&service.service_id)
-                            .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+                            .unwrap_or_else(|_| bundle.primary().destination.clone());
                         self.park_bundle(
                             bundle,
                             bundle::BundleStatus::WaitingForService {
@@ -148,7 +148,7 @@ impl Dispatcher {
 
                 let parked = match self
                     .node_ids
-                    .local_service_eid(&bundle.bundle.primary.destination)
+                    .local_service_eid(&bundle.primary().destination)
                 {
                     Some(service) => bundle::BundleStatus::WaitingForService { service },
                     None => bundle::BundleStatus::Waiting,

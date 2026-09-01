@@ -3,7 +3,7 @@ mod status;
 
 pub(crate) mod parse;
 
-pub use metadata::{BundleMetadata, ExtensionFields, Origin, WritableMetadata};
+pub use metadata::{BundleMetadata, ExtensionFields, Origin};
 pub use status::BundleStatus;
 
 use hardy_bpv7::{

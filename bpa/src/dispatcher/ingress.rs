@@ -1,4 +1,4 @@
-use hardy_bpv7::{parse::PayloadTail, status_report::ReasonCode};
+use hardy_bpv7::{block::BibCoverage, crc::CrcType, parse::PayloadTail, status_report::ReasonCode};
 
 use super::*;
 use crate::{bundle::parse, cla::Segment, stream::Receiver};
@@ -190,6 +190,20 @@ impl Dispatcher {
             return Ok(None);
         }
 
+        // Config-gated RFC 9171 validity checks, at the same pre-drain seat
+        // as the lifetime/hop gate: policy rejections that go beyond
+        // structural validity (deployments may relax them), reported like
+        // any other gated drop — reception per §5.6, then deletion.
+        if let Some(reason) = self.rfc9171_gate_reason(&hv) {
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+            metadata.extensions = hv.extracted;
+            let bundle = bundle::Bundle::new(hv.bundle, metadata);
+            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
+                .await;
+            self.report_bundle_deletion(&bundle, reason).await;
+            return Ok(None);
+        }
+
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
             None => headers,
@@ -284,42 +298,56 @@ impl Dispatcher {
         Ok(Some((bundle, data)))
     }
 
-    // Run the Ingress filter, checkpoint to `Dispatching`, and route the bundle.
+    // The config-gated RFC 9171 validity checks: policy requirements beyond
+    // structural validity, checked pre-drain — everything they read is
+    // header material the keyed verify pass has already established.
+    fn rfc9171_gate_reason(&self, hv: &parse::HeaderVerify) -> Option<ReasonCode> {
+        // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
+        // unless the bundle includes a BPSec Block Integrity Block whose
+        // target is the primary block". `Maybe` coverage (undecryptable
+        // BIBs) counts as protected, as the block-editing paths assume.
+        if self.primary_block_integrity
+            && let Some(primary_block) = hv.bundle.blocks.get(&0)
+            && matches!(hv.bundle.primary.crc_type, CrcType::None)
+            && matches!(primary_block.bib, BibCoverage::None)
+        {
+            debug!("Rejecting bundle: primary block has no integrity protection (no CRC, no BIB)");
+            return Some(ReasonCode::BlockUnintelligible);
+        }
+
+        // RFC 9171 §4.4.2: "If the bundle's creation time is zero, then the
+        // bundle MUST contain exactly one (1) occurrence of [Bundle Age]".
+        if self.bundle_age_required
+            && !hv.bundle.primary.id.timestamp.is_clocked()
+            && hv.extracted.age.is_none()
+        {
+            debug!("Rejecting bundle: no clock in creation timestamp and no Bundle Age block");
+            return Some(ReasonCode::LifetimeExpired);
+        }
+
+        None
+    }
+
+    // Run the Ingress chain, checkpoint to `Dispatching`, and route the bundle.
     //
     // # Processing Steps
     //
-    // 1. Execute Ingress filter hook
-    // 2. Persist any filter mutations (crash-safe ordering)
-    // 3. **Checkpoint**: Transition status to `Dispatching`
-    // 4. Call `process_bundle()` for routing decision
+    // 1. Run the Ingress chain (Verifiers, then Classifiers)
+    // 2. **Checkpoint**: Transition status to `Dispatching` — persisting any
+    //    classification the chain applied (crash-safe ordering)
+    // 3. Call `process_bundle()` for routing decision
     //
     // # Crash Safety
     //
     // The checkpoint to `Dispatching` is always persisted after the Ingress
-    // filter completes. On restart, bundles in `New` status re-run from this
+    // chain completes. On restart, bundles in `New` status re-run from this
     // function, while bundles in `Dispatching` skip directly to routing.
-    //
-    // See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
-    // filter execution details.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
-        // Ingress filter hook (includes bundle-validity: flags, lifetime, hop-count)
-        match self
-            .filter_engine
-            .exec(filter::Hook::Ingress, bundle, data, self.key_provider())
-            .await
-            // TODO: Recover gracefully once filter error handling is redesigned
-            .trace_expect("Ingress filter execution failed")
-        {
-            filter::ExecResult::Continue(mutation, mut bundle, data) => {
-                if mutation.data
-                    && let Some(storage_name) = &bundle.metadata.storage_name
-                {
-                    self.store.replace_data(storage_name, data.clone()).await;
-                }
-
+        match self.filters.run_ingress(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(mut bundle, _)) => {
                 // Always checkpoint to Dispatching (crash safety)
                 metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
                 bundle.status = bundle::BundleStatus::Dispatching;
@@ -329,10 +357,19 @@ impl Dispatcher {
                 // Hand off to dispatch queue for fan-out via processing pool
                 self.dispatch_bundle(bundle).await
             }
-            filter::ExecResult::Drop(bundle, Some(reason)) => {
+            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                 self.drop_bundle(bundle, reason).await
             }
-            filter::ExecResult::Drop(bundle, None) => self.delete_bundle(bundle).await,
+            Ok(filter::ChainOutcome::Drop(bundle, None)) => self.delete_bundle(bundle).await,
+            Err((bundle, e)) => {
+                // The stored bytes failed the chain's own decode pass — an
+                // internal inconsistency, since they parsed at reception.
+                // Resolve the bundle as unintelligible rather than strand it
+                // in `New`.
+                error!("Ingress filter chain failed: {e}");
+                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
+                    .await
+            }
         }
     }
 }

@@ -2,29 +2,6 @@ use super::*;
 use hardy_bpv7::status_report::ReasonCode;
 
 impl Dispatcher {
-    /// Run Originate filter on an in-memory bundle (not yet stored).
-    /// If the filter drops the bundle, Ok(None) is returned.
-    /// If the filter passes or no filter is registered, returns Ok(Some((bundle, data))).
-    ///
-    /// This is a pure in-memory operation - no persistence occurs here.
-    /// The caller is responsible for storing the bundle after filtering.
-    async fn run_originate_filter(
-        &self,
-        bundle: bundle::Bundle,
-        data: Bytes,
-    ) -> Result<Option<(bundle::Bundle, Bytes)>, crate::Error> {
-        match self
-            .filter_engine
-            .exec(filter::Hook::Originate, bundle, data, self.key_provider())
-            .await
-            .inspect_err(|_e| {
-                error!("Originate filter execution failed");
-            })? {
-            filter::ExecResult::Continue(_mutation, bundle, data) => Ok(Some((bundle, data))),
-            filter::ExecResult::Drop(_bundle, _reason) => Ok(None),
-        }
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
     pub async fn local_dispatch(
         self: &Arc<Self>,
@@ -34,7 +11,7 @@ impl Dispatcher {
         lifetime: core::time::Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
-        // Build bundle and run Originate filter before storing
+        // Build bundle and run the Originate chain before storing
         loop {
             let mut builder =
                 hardy_bpv7::builder::Builder::new(source.clone(), destination.clone())
@@ -144,8 +121,8 @@ impl Dispatcher {
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
-        // recovery skips the Ingress filter (originated bundles only run the
-        // Originate filter, never the Ingress filter).
+        // recovery skips the Ingress chain (originated bundles only run the
+        // Originate chain, never the Ingress chain).
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.extensions = extensions;
         let bundle = bundle::Bundle {
@@ -154,16 +131,37 @@ impl Dispatcher {
             status: bundle::BundleStatus::Dispatching,
         };
 
-        // Run Originate filter (pure in-memory)
-        let Some((mut bundle, data)) = self
-            .run_originate_filter(bundle, data)
-            .await
-            .inspect_err(|e| error!("Originate filter error: {e}"))?
-        else {
-            return Err(services::Error::Dropped(None));
+        // Inline lifetime/hop admission check for the raw-bytes path: the
+        // Builder cannot produce an expired or hop-exhausted bundle, but
+        // parse-validated service bytes can — the origination-side twin of
+        // ingress's pre-drain gate. Nothing is stored yet, so a rejection
+        // is purely an error to the caller.
+        if bundle.has_expired() {
+            return Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)));
+        }
+        if let Some(hop_info) = &bundle.metadata.extensions.hop_count
+            && hop_info.count > hop_info.limit
+        {
+            return Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)));
+        }
+
+        // Run the Originate chain (pure in-memory, pre-store); a Drop
+        // returns its reason to the originating service.
+        let (mut bundle, data) = match self
+            .filters
+            .run_originate(bundle, data, &*self.key_provider)
+        {
+            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+            Ok(filter::ChainOutcome::Drop(_, reason)) => {
+                return Err(services::Error::Dropped(reason));
+            }
+            Err((_, e)) => {
+                error!("Originate filter chain failed: {e}");
+                return Err(services::Error::Internal(e));
+            }
         };
 
-        // Now store (single persist operation, preserves filter-modified metadata)
+        // Now store (single persist operation, preserves filter-applied metadata)
         if !self.store.store(&mut bundle, &data).await {
             return Err(services::Error::DuplicateBundle);
         }
@@ -195,7 +193,7 @@ impl Dispatcher {
         let service_eid = self
             .node_ids
             .resolve_eid(&service.service_id)
-            .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+            .unwrap_or_else(|_| bundle.primary().destination.clone());
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
@@ -232,35 +230,24 @@ impl Dispatcher {
         // Every exit below this point must resolve the claim taken above:
         // DeliveryAckPending has no storage poller and the reaper defers it,
         // so a bundle left there is invisible until restart.
-        let bundle_id = bundle.bundle.primary.id.clone();
 
-        // Deliver filter hook
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
-                    return self.drop_bundle(bundle, reason).await;
-                } else {
-                    return self.delete_bundle(bundle).await;
-                }
+        // Deliver chain: Rewriters (transport-block strip), then Verifiers.
+        let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
+                return self.drop_bundle(bundle, reason).await;
             }
-            Err(e) => {
-                error!("Deliver filter execution failed: {e}");
+            Ok(filter::ChainOutcome::Drop(bundle, None)) => {
+                return self.delete_bundle(bundle).await;
+            }
+            Err((bundle, e)) => {
+                error!("Deliver filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally park it for the next registration. Losing
-                // the park means a sweep or the reaper resolved it first.
-                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.status
-                        == (bundle::BundleStatus::DeliveryAckPending {
-                            service: service_eid.clone(),
-                        })
-                {
-                    self.park_bundle(
+                // The chain hands the claimed bundle back: park it for the
+                // next registration, CAS-clean. Losing the park means a
+                // sweep or the reaper resolved it first.
+                return self
+                    .park_bundle(
                         bundle,
                         bundle::BundleStatus::WaitingForService {
                             service: service_eid,
@@ -268,8 +255,6 @@ impl Dispatcher {
                         &seen,
                     )
                     .await;
-                }
-                return;
             }
         };
 

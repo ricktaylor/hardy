@@ -112,14 +112,6 @@ struct Classification {
     epoch: PolicyEpoch,
 }
 
-/// Mutable annotations that filters may modify during bundle processing.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct WritableMetadata {
-    /// Optional flow label for QoS differentiation.
-    pub flow_label: Option<u32>,
-}
-
 /// A bundle's BPA-local processing metadata.
 ///
 /// Partitioned by write discipline: provenance (write-once arrival facts,
@@ -147,9 +139,6 @@ pub struct BundleMetadata {
     /// by the forwarding path, recomputed on re-dispatch. Never persisted.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub next_hop: Option<Eid>,
-    /// Mutable annotations that filters may update during processing.
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub writable: WritableMetadata,
 }
 
 impl BundleMetadata {
@@ -168,7 +157,6 @@ impl BundleMetadata {
             classification: Classification::default(),
             storage_name: None,
             next_hop: None,
-            writable: WritableMetadata::default(),
         }
     }
 
@@ -265,7 +253,6 @@ impl BundleMetadata {
     /// size bound is dropped with a warning — never stored — keeping
     /// metadata stores honest; an already-stored value survives the dropped
     /// write.
-    #[allow(dead_code)] // wired to the Classifier chain by the engine swap (C3)
     pub(crate) fn apply(&mut self, delta: MetadataDelta) {
         for write in delta.slots {
             if write.value.len() > write.max_size.get() {

@@ -8,8 +8,34 @@ impl Dispatcher {
         peer: u32,
         queue: Option<u32>,
         cla_addr: &cla::ClaAddress,
-        bundle: bundle::Bundle,
+        mut bundle: bundle::Bundle,
     ) {
+        // The rewrite stage and the Egress hooks run against the resolved
+        // next hop, but the field is a per-dispatch transient the peer
+        // queue's slow path cannot carry: under congestion the hybrid
+        // channel spills to storage and re-delivers a deserialized copy
+        // (restart never resumes these — recovery resets both transfer
+        // statuses to Waiting). Its routing decision is gone, so send it
+        // back for a fresh one rather than derive a wire form missing its
+        // context. An at-least-once duplicate of a claimed transfer loses
+        // this CAS exactly as it would lose the claim below.
+        //
+        // Interim guard: the queue tranche associates the NextHop with the
+        // egress queue itself — queue membership then implies the hop, and
+        // this check retires with the metadata transient (see
+        // filter_subsystem_redesign.md, "Open residue").
+        let Some(next_hop) = bundle.metadata.next_hop.clone() else {
+            debug!("Bundle reached forwarding without a resolved next hop, re-dispatching");
+            if self
+                .store
+                .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                .await
+            {
+                self.dispatch_bundle(bundle).await;
+            }
+            return;
+        };
+
         // Get bundle data from store, now we know we need it!
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
@@ -48,7 +74,7 @@ impl Dispatcher {
         // re-dispatch re-enters from the persisted representation (see
         // park_bundle), so no failure exit needs to restore the pre-rewrite
         // map.
-        let data = match self.update_extension_blocks(&bundle, data) {
+        let data = match self.update_extension_blocks(&bundle, data, &next_hop) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
                 return self
@@ -61,47 +87,41 @@ impl Dispatcher {
             }
         };
 
+        // Egress chain: registered Rewriters extend the fixed rewrite above,
+        // then Verifiers gate the final pre-BPSec wire form.
         // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
+        //   route to a different peer, so Egress runs again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        // - On Drop result: call drop_bundle() and return early
         //
         // Every exit below this point must resolve the claim taken above:
         // ForwardAckPending has no storage poller and the reaper defers its
         // expiry, so a bundle left there is invisible until the outcome
         // arrives, the peer is removed, or the BPA restarts.
-        let bundle_id = bundle.id().clone();
-        let (bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
+        let (bundle, mut data) =
+            match self
+                .filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+                Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                     return self.drop_bundle(bundle, reason).await;
-                } else {
+                }
+                Ok(filter::ChainOutcome::Drop(bundle, None)) => {
                     return self.delete_bundle(bundle).await;
                 }
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
+                Err((bundle, e)) => {
+                    error!("Egress filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. Losing the park means a sweep or the
-                // reaper resolved the bundle first.
-                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.status == (bundle::BundleStatus::ForwardAckPending { peer })
-                {
-                    self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    // The chain hands the claimed bundle back: return the claim
+                    // to Waiting for a fresh routing decision, CAS-clean. Losing
+                    // the park means a sweep or the reaper resolved it first.
+                    return self
+                        .park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
                         .await;
                 }
-                return;
-            }
-        };
+            };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
         // single Final segment.
@@ -258,6 +278,7 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
+        next_hop: &Eid,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
@@ -338,6 +359,40 @@ impl Dispatcher {
                 })
                 .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
                 .rebuild();
+        }
+
+        // Config-driven legacy-EID re-encode: a next hop matching the
+        // configured patterns requires 2-element IPN encoding, so Ipn
+        // source/destination re-encode as LegacyIpn. Wire adaptation only:
+        // the caller installs the rebuilt block map (extents index the
+        // re-encoded bytes) but never the rebuilt primary — the record's
+        // primary, and with it the bundle id every store operation is keyed
+        // on, keeps the canonical encoding.
+        if self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop)) {
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.id().source
+            {
+                editor = editor
+                    .with_source(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.primary().destination
+            {
+                editor = editor
+                    .with_destination(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
         }
 
         // rebuild_bundle() returns a Bundle whose block extents index the

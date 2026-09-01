@@ -13,21 +13,18 @@ use crate::{
 
 /// One frozen [`Verifier`] registration: the pack-prefixed diagnostic
 /// label and the filter.
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct VerifierEntry {
     pub label: Arc<str>,
     pub verifier: Box<dyn Verifier>,
 }
 
 /// One frozen [`Classifier`] registration.
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct ClassifierEntry {
     pub label: Arc<str>,
     pub classifier: Box<dyn Classifier>,
 }
 
 /// One frozen [`Rewriter`] registration.
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct RewriterEntry {
     pub label: Arc<str>,
     pub rewriter: Box<dyn Rewriter>,
@@ -35,7 +32,6 @@ pub struct RewriterEntry {
 
 /// An input hook's frozen chain: Verifiers (parallel) and Classifiers
 /// (sequential).
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct InputChain {
     pub verifiers: Box<[VerifierEntry]>,
     pub classifiers: Box<[ClassifierEntry]>,
@@ -43,7 +39,6 @@ pub struct InputChain {
 
 /// An output hook's frozen chain: Rewriters (sequential) then Verifiers
 /// (parallel).
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct OutputChain {
     pub rewriters: Box<[RewriterEntry]>,
     pub verifiers: Box<[VerifierEntry]>,
@@ -52,7 +47,6 @@ pub struct OutputChain {
 /// The four per-hook chains frozen by
 /// [`build()`](crate::builder::BpaBuilder::build), plus the node-wide
 /// payload peek.
-#[allow(dead_code)] // read by the engine when the C3 swap lands
 pub struct FilterChains {
     pub ingress: InputChain,
     pub originate: InputChain,
@@ -60,6 +54,7 @@ pub struct FilterChains {
     pub deliver: OutputChain,
     /// P: the maximum payload peek declared across every input-hook
     /// registration.
+    #[allow(dead_code)] // consumed by the pre-drain Ingress seat (Phase 3)
     pub max_peek: usize,
 }
 

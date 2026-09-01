@@ -1,236 +1,466 @@
-use arc_swap::ArcSwap;
-use hardy_async::sync::Mutex;
-use hardy_bpv7::bpsec::key::KeySource;
+//! The chain runner: executes the frozen per-hook chains inline.
+//!
+//! Filter invocations are synchronous and the decoded BCB OperationSets are
+//! not `Send`, so every chain runs inline on the calling task — "parallel"
+//! Verifiers is an independence contract (no ordering, no cross-talk), not a
+//! spawning strategy. An empty chain costs one branch: nothing is parsed and
+//! nothing is allocated.
+//!
+//! Every runner returns the bundle to the caller on both the verdict and the
+//! error path, so a claimed bundle's status is always resolved by the site
+//! that claimed it — no re-fetch, no restore path.
 
-use super::chain::{FilterChain, FilterChainBuilder};
-use super::{Error, ExecResult, Filter, Hook};
-use crate::bundle::Bundle;
-use crate::{Arc, Bytes};
+use hardy_bpv7::{editor::Chunk, eid::Eid, parse::Parsed, status_report::ReasonCode};
+use tracing::{debug, error};
 
-/// Built filter chains for all hooks, ready to execute.
-#[derive(Default)]
-struct Filters {
-    ingress: FilterChain,
-    deliver: FilterChain,
-    originate: FilterChain,
-    egress: FilterChain,
+use super::{
+    BundleReader, RewriteContext, Verdict,
+    editor::ScopedEditor,
+    pack::chains::{FilterChains, InputChain, OutputChain},
+};
+use crate::{Bytes, bundle::Bundle, keys::KeyProvider};
+
+/// A hook chain's verdict over a bundle. Errors travel separately — as
+/// `(Bundle, error)`, keeping the bundle with its claimant. The large `Err`
+/// variant is deliberate: boxing the bundle to shrink it would tax every
+/// call site (cf. `cla::peers::forward`).
+pub(crate) enum ChainOutcome {
+    /// The bundle passed the chain; the pair remains consistent (a Rewriter
+    /// pass returns the rewritten bytes and re-indexed block map).
+    Continue(Bundle, Bytes),
+    /// A filter dropped the bundle, optionally with a status-report reason.
+    Drop(Bundle, Option<ReasonCode>),
 }
 
-impl Filters {
-    fn chain(&self, hook: &Hook) -> &FilterChain {
-        match hook {
-            Hook::Ingress => &self.ingress,
-            Hook::Deliver => &self.deliver,
-            Hook::Originate => &self.originate,
-            Hook::Egress => &self.egress,
-        }
-    }
-}
+type RunResult = core::result::Result<ChainOutcome, (Bundle, crate::Error)>;
 
-#[derive(Default)]
-struct Builders {
-    ingress: FilterChainBuilder,
-    deliver: FilterChainBuilder,
-    originate: FilterChainBuilder,
-    egress: FilterChainBuilder,
-}
-
-impl Builders {
-    fn get_mut(&mut self, hook: &Hook) -> &mut FilterChainBuilder {
-        match hook {
-            Hook::Ingress => &mut self.ingress,
-            Hook::Deliver => &mut self.deliver,
-            Hook::Originate => &mut self.originate,
-            Hook::Egress => &mut self.egress,
-        }
-    }
-
-    fn build(&self) -> Filters {
-        Filters {
-            ingress: self.ingress.build(),
-            deliver: self.deliver.build(),
-            originate: self.originate.build(),
-            egress: self.egress.build(),
-        }
-    }
-}
-
-pub struct FilterEngine {
-    builders: Mutex<Builders>,
-    /// Lock-free access to the current built filter chains.
-    filters: ArcSwap<Filters>,
-    /// Dedicated unbounded pool for parallel ReadFilter execution, shared by
-    /// all chains. Deliberately NOT the dispatcher's processing pool:
-    /// exec() callers hold processing-pool permits (process_bundle →
-    /// reassembly/delivery → exec), and spawning filter tasks onto that pool
-    /// self-deadlocks once it saturates. Unbounded is safe here because
-    /// every spawned task is awaited within exec(), so concurrency is
-    /// transitively bounded by the callers and the pool is idle between
-    /// calls — and with no semaphore, no permit cycle can form at all.
-    pool: hardy_async::TaskPool,
-}
-
-impl FilterEngine {
-    pub fn new() -> Self {
-        let builders = Mutex::new(Builders::default());
-        let filters = ArcSwap::from_pointee(Filters::default());
-
-        Self {
-            builders,
-            filters,
-            pool: hardy_async::TaskPool::new(),
-        }
-    }
-
-    pub fn clear(&self) {
-        let builders = Builders::default();
-        self.filters.store(Arc::new(builders.build()));
-        *self.builders.lock() = builders;
-    }
-
-    pub fn register(
+impl FilterChains {
+    /// Runs the Ingress chain: Verifiers, then Classifiers sequentially.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn run_ingress(
         &self,
-        hook: Hook,
-        name: &str,
-        after: &[&str],
-        filter: Filter,
-    ) -> Result<(), Error> {
-        let mut builders = self.builders.lock();
-        builders.get_mut(&hook).add_filter(name, filter, after)?;
-        self.filters.store(Arc::new(builders.build()));
-
-        metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).increment(1.0);
-        Ok(())
-    }
-
-    pub fn unregister(&self, hook: Hook, name: &str) -> Result<Option<Filter>, Error> {
-        let mut builders = self.builders.lock();
-        let result = builders.get_mut(&hook).remove_filter(name)?;
-
-        if result.is_some() {
-            self.filters.store(Arc::new(builders.build()));
-            metrics::gauge!("bpa.filter.registered", "hook" => hook.label()).decrement(1.0);
-        }
-
-        Ok(result)
-    }
-
-    /// Load the current filters lock-free, then execute.
-    pub async fn exec<F>(
-        &self,
-        hook: Hook,
         bundle: Bundle,
         data: Bytes,
-        key_provider: F,
-    ) -> Result<ExecResult, crate::Error>
-    where
-        F: Fn(&hardy_bpv7::Bundle, &[u8]) -> Box<dyn KeySource> + Clone + Send,
-    {
-        let hook_label = hook.label();
-        let filters = self.filters.load();
-        let result = filters
-            .chain(&hook)
-            .exec(&self.pool, bundle, data, key_provider)
-            .await;
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        self.run_input(&self.ingress, "ingress", bundle, data, key_provider)
+    }
 
-        match &result {
-            Ok(ExecResult::Continue(mutation, _, _)) => {
-                if mutation.data || mutation.metadata {
-                    metrics::counter!("bpa.filter.modified", "hook" => hook_label).increment(1);
-                }
+    /// Runs the Originate chain: Verifiers, then Classifiers sequentially.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn run_originate(
+        &self,
+        bundle: Bundle,
+        data: Bytes,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        self.run_input(&self.originate, "originate", bundle, data, key_provider)
+    }
+
+    /// Runs the Egress chain: Rewriters sequentially — each invocation's
+    /// edits are materialised into the wire form before the next reads it —
+    /// then Verifiers gating the final pre-BPSec form.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn run_egress(
+        &self,
+        bundle: Bundle,
+        data: Bytes,
+        next_hop: &Eid,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        self.run_output(
+            &self.egress,
+            "egress",
+            RewriteContext::Egress { next_hop },
+            bundle,
+            data,
+            key_provider,
+        )
+    }
+
+    /// Runs the Deliver chain: Rewriters sequentially, then Verifiers.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn run_deliver(
+        &self,
+        bundle: Bundle,
+        data: Bytes,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        self.run_output(
+            &self.deliver,
+            "deliver",
+            RewriteContext::Deliver,
+            bundle,
+            data,
+            key_provider,
+        )
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn run_input(
+        &self,
+        chain: &InputChain,
+        hook: &'static str,
+        mut bundle: Bundle,
+        data: Bytes,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        if chain.verifiers.is_empty() && chain.classifiers.is_empty() {
+            return Ok(ChainOutcome::Continue(bundle, data));
+        }
+
+        // One decode pass per hook crossing: the OperationSets and the
+        // returned buffer feed every invocation of this pass.
+        let (buf, bcbs) = match hardy_bpv7::parse::parse(data) {
+            Ok(Parsed { data, bcbs, .. }) => (data, bcbs),
+            Err(e) => {
+                metrics::counter!("bpa.filter.error", "hook" => hook).increment(1);
+                return Err((bundle, e.into()));
             }
-            Ok(ExecResult::Drop(_, _)) => {
-                metrics::counter!("bpa.filter.filtered", "hook" => hook_label).increment(1);
-            }
-            Err(_) => {
-                metrics::counter!("bpa.filter.error", "hook" => hook_label).increment(1);
+        };
+        let keys = key_provider.key_source(&bundle.bpv7, &buf);
+
+        for entry in chain.verifiers.iter() {
+            let reader = BundleReader::new(&bundle, &buf, &bcbs, &*keys);
+            if let Verdict::Drop(reason) = entry.verifier.check(&reader) {
+                debug!("Verifier '{}' dropped bundle: {reason:?}", entry.label);
+                metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
+                return Ok(ChainOutcome::Drop(bundle, reason));
             }
         }
 
-        result
+        for entry in chain.classifiers.iter() {
+            // The reader's borrow ends before the delta is applied: a
+            // Classifier sees the deltas applied by preceding links.
+            let verdict = {
+                let reader = BundleReader::new(&bundle, &buf, &bcbs, &*keys);
+                entry.classifier.classify(&reader)
+            };
+            match verdict {
+                Verdict::Continue(delta) => bundle.metadata.apply(delta),
+                Verdict::Drop(reason) => {
+                    debug!("Classifier '{}' dropped bundle: {reason:?}", entry.label);
+                    metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
+                    return Ok(ChainOutcome::Drop(bundle, reason));
+                }
+            }
+        }
+
+        Ok(ChainOutcome::Continue(bundle, buf))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn run_output(
+        &self,
+        chain: &OutputChain,
+        hook: &'static str,
+        context: RewriteContext<'_>,
+        mut bundle: Bundle,
+        mut data: Bytes,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
+        if chain.rewriters.is_empty() && chain.verifiers.is_empty() {
+            return Ok(ChainOutcome::Continue(bundle, data));
+        }
+
+        for entry in chain.rewriters.iter() {
+            let (buf, bcbs) = match hardy_bpv7::parse::parse(data) {
+                Ok(Parsed { data, bcbs, .. }) => (data, bcbs),
+                Err(e) => {
+                    metrics::counter!("bpa.filter.error", "hook" => hook).increment(1);
+                    return Err((bundle, e.into()));
+                }
+            };
+            let keys = key_provider.key_source(&bundle.bpv7, &buf);
+
+            let mut editor = ScopedEditor::new(&bundle, &buf);
+            let verdict = {
+                let reader = BundleReader::new(&bundle, &buf, &bcbs, &*keys);
+                entry.rewriter.rewrite(&reader, context, &mut editor)
+            };
+            match verdict {
+                Verdict::Drop(reason) => {
+                    debug!("Rewriter '{}' dropped bundle: {reason:?}", entry.label);
+                    metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
+                    return Ok(ChainOutcome::Drop(bundle, reason));
+                }
+                Verdict::Continue(()) => match editor.finish() {
+                    Ok(None) => data = buf,
+                    Ok(Some((new_bundle, chunks))) => {
+                        // Keep the (bundle, data) pair consistent for the
+                        // next link: the rebuilt block map indexes the
+                        // rewritten bytes. The record's primary — and with
+                        // it the bundle id every store operation is keyed
+                        // on — is never replaced.
+                        data = Chunk::flatten_bytes(chunks, buf);
+                        bundle.bpv7.blocks = new_bundle.blocks;
+                        metrics::counter!("bpa.filter.modified", "hook" => hook).increment(1);
+                    }
+                    Err(e) => {
+                        error!("Rewriter '{}' produced an invalid edit: {e}", entry.label);
+                        metrics::counter!("bpa.filter.error", "hook" => hook).increment(1);
+                        return Err((bundle, e.into()));
+                    }
+                },
+            }
+        }
+
+        if chain.verifiers.is_empty() {
+            return Ok(ChainOutcome::Continue(bundle, data));
+        }
+
+        let (buf, bcbs) = match hardy_bpv7::parse::parse(data) {
+            Ok(Parsed { data, bcbs, .. }) => (data, bcbs),
+            Err(e) => {
+                metrics::counter!("bpa.filter.error", "hook" => hook).increment(1);
+                return Err((bundle, e.into()));
+            }
+        };
+        let keys = key_provider.key_source(&bundle.bpv7, &buf);
+
+        for entry in chain.verifiers.iter() {
+            let reader = BundleReader::new(&bundle, &buf, &bcbs, &*keys);
+            if let Verdict::Drop(reason) = entry.verifier.check(&reader) {
+                debug!("Verifier '{}' dropped bundle: {reason:?}", entry.label);
+                metrics::counter!("bpa.filter.filtered", "hook" => hook).increment(1);
+                return Ok(ChainOutcome::Drop(bundle, reason));
+            }
+        }
+
+        Ok(ChainOutcome::Continue(bundle, buf))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use hardy_async::async_trait;
+    use core::num::NonZeroUsize;
+
+    use hardy_bpv7::{block, crc::CrcType, status_report::ReasonCode};
 
     use super::*;
-    use crate::filter::ReadResult;
+    use crate::{
+        bundle::{BundleMetadata, BundleStatus},
+        filter::{
+            Classifier, Rewriter, Verifier,
+            pack::{FilterPack, chains::FilterChains},
+            slots::{MetadataDelta, SlotHandle},
+        },
+        keys::NullKeyProvider,
+    };
 
-    struct PassFilter;
+    fn test_bundle() -> (Bundle, Bytes) {
+        let (bundle, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:1.1".parse().unwrap(),
+            "ipn:99.1".parse().unwrap(),
+        )
+        .with_payload(alloc::borrow::Cow::Borrowed(b"engine-test"))
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+        (
+            Bundle {
+                bpv7: bundle,
+                metadata: BundleMetadata::originated(),
+                status: BundleStatus::New,
+            },
+            Bytes::from(data),
+        )
+    }
 
-    #[async_trait]
-    impl crate::filter::ReadFilter for PassFilter {
-        async fn filter(&self, _bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
-            Ok(ReadResult::Continue)
+    fn freeze(pack: FilterPack) -> FilterChains {
+        FilterChains::freeze(vec![pack]).unwrap().0
+    }
+
+    struct SlotWriter(SlotHandle<u32>, u32);
+
+    impl Classifier for SlotWriter {
+        fn classify(&self, _reader: &BundleReader<'_>) -> Verdict<MetadataDelta> {
+            let mut delta = MetadataDelta::default();
+            delta.set(&self.0, &self.1);
+            Verdict::Continue(delta)
         }
     }
 
-    // exec() must complete even when every caller holds a permit of a
-    // saturated BoundedTaskPool: filter tasks run on the engine's own
-    // dedicated pool, never the callers'. Spawning them on the callers'
-    // pool deadlocks this exact arrangement (all permits held by tasks
-    // parked waiting for another permit).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn exec_completes_from_saturated_caller_pool() {
-        let engine = Arc::new(FilterEngine::new());
-        engine
-            .register(Hook::Ingress, "a", &[], Filter::Read(Arc::new(PassFilter)))
-            .unwrap();
-        engine
-            .register(Hook::Ingress, "b", &[], Filter::Read(Arc::new(PassFilter)))
-            .unwrap();
+    // Drops unless the slot already carries the expected value — proves the
+    // preceding link's delta was applied before this invocation.
+    struct SlotExpecter(SlotHandle<u32>, u32);
 
-        let caller_pool =
-            hardy_async::BoundedTaskPool::new(core::num::NonZeroUsize::new(2).unwrap());
-
-        let mut handles = Vec::new();
-        for _ in 0..2 {
-            let engine = engine.clone();
-            handles.push(
-                hardy_async::spawn!(caller_pool, "outer_task", async move {
-                    let bundle = Bundle {
-                        bpv7: hardy_bpv7::bundle::Bundle {
-                            primary: hardy_bpv7::primary_block::PrimaryBlock {
-                                id: hardy_bpv7::bundle::Id {
-                                    source: "ipn:1.0".parse().unwrap(),
-                                    timestamp:
-                                        hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                                    fragment_info: None,
-                                },
-                                flags: Default::default(),
-                                crc_type: Default::default(),
-                                destination: "ipn:99.0".parse().unwrap(),
-                                report_to: Default::default(),
-                                lifetime: core::time::Duration::from_secs(3600),
-                            },
-                            blocks: Default::default(),
-                        },
-                        metadata: crate::bundle::BundleMetadata::originated(),
-                        status: crate::bundle::BundleStatus::New,
-                    };
-                    let result = engine
-                        .exec(
-                            Hook::Ingress,
-                            bundle,
-                            Bytes::new(),
-                            hardy_bpv7::bpsec::no_keys,
-                        )
-                        .await
-                        .unwrap();
-                    assert!(matches!(result, ExecResult::Continue(..)));
-                })
-                .await,
-            );
-        }
-
-        tokio::time::timeout(core::time::Duration::from_secs(5), async {
-            for handle in handles {
-                handle.await.unwrap();
+    impl Classifier for SlotExpecter {
+        fn classify(&self, reader: &BundleReader<'_>) -> Verdict<MetadataDelta> {
+            if reader.metadata().slot(&self.0) == Some(self.1) {
+                Verdict::Continue(MetadataDelta::default())
+            } else {
+                Verdict::Drop(Some(ReasonCode::NoAdditionalInformation))
             }
-        })
-        .await
-        .expect("exec() deadlocked while callers held all pool permits");
+        }
+    }
+
+    #[test]
+    fn classifier_sees_preceding_deltas_and_result_persists() {
+        let mut pack = FilterPack::new("test");
+        let slot = pack.annotation_slot::<u32>("mark", NonZeroUsize::new(16).unwrap());
+        pack.ingress_classifier("writer", SlotWriter(slot.clone(), 7));
+        pack.ingress_classifier("expecter", SlotExpecter(slot.clone(), 7));
+        let chains = freeze(pack);
+
+        let (bundle, data) = test_bundle();
+        let Ok(ChainOutcome::Continue(bundle, _)) =
+            chains.run_ingress(bundle, data, &NullKeyProvider)
+        else {
+            panic!("expecter must have seen the writer's delta");
+        };
+        assert_eq!(bundle.metadata.slot(&slot), Some(7));
+    }
+
+    struct DropVerifier;
+
+    impl Verifier for DropVerifier {
+        fn check(&self, _reader: &BundleReader<'_>) -> Verdict {
+            Verdict::Drop(Some(ReasonCode::BlockUnintelligible))
+        }
+    }
+
+    #[test]
+    fn verifier_drop_carries_its_reason() {
+        let mut pack = FilterPack::new("test");
+        pack.ingress_verifier("dropper", DropVerifier);
+        let chains = freeze(pack);
+
+        let (bundle, data) = test_bundle();
+        let Ok(ChainOutcome::Drop(_, reason)) = chains.run_ingress(bundle, data, &NullKeyProvider)
+        else {
+            panic!("verifier must drop the bundle");
+        };
+        assert_eq!(reason, Some(ReasonCode::BlockUnintelligible));
+    }
+
+    const CUSTOM_BLOCK: block::Type = block::Type::Unrecognised(192);
+
+    struct BlockInserter;
+
+    impl Rewriter for BlockInserter {
+        fn rewrite(
+            &self,
+            reader: &BundleReader<'_>,
+            context: RewriteContext<'_>,
+            editor: &mut ScopedEditor<'_>,
+        ) -> Verdict {
+            assert!(matches!(
+                context,
+                RewriteContext::Egress { next_hop } if next_hop == &"ipn:2.0".parse().unwrap()
+            ));
+            assert!(
+                reader
+                    .block(1)
+                    .is_some_and(|b| b.block_type == block::Type::Payload)
+            );
+            editor
+                .insert(
+                    CUSTOM_BLOCK,
+                    block::Flags::default(),
+                    CrcType::None,
+                    hardy_cbor::encode::emit(&42u64).0.into(),
+                )
+                .expect("insert of an extension block must be permitted");
+            Verdict::Continue(())
+        }
+    }
+
+    // Gates on the predecessor's edit being visible with consistent extents:
+    // the inserted block decodes from the rewritten bytes, and the payload
+    // still reads back intact.
+    struct BlockExpecter;
+
+    impl Verifier for BlockExpecter {
+        fn check(&self, reader: &BundleReader<'_>) -> Verdict {
+            let Some(number) = (2u64..16).find(|n| {
+                reader
+                    .block(*n)
+                    .is_some_and(|b| b.block_type == CUSTOM_BLOCK)
+            }) else {
+                return Verdict::Drop(None);
+            };
+            if reader.extract::<u64>(number).ok().flatten() != Some(42) {
+                return Verdict::Drop(None);
+            }
+            match reader.block_data(1) {
+                Ok(Some(payload)) if payload.as_ref() == b"engine-test" => Verdict::Continue(()),
+                _ => Verdict::Drop(None),
+            }
+        }
+    }
+
+    #[test]
+    fn rewriter_edit_reaches_the_gating_verifier_consistently() {
+        let mut pack = FilterPack::new("test");
+        pack.egress_rewriter("inserter", BlockInserter);
+        pack.egress_verifier("expecter", BlockExpecter);
+        let chains = freeze(pack);
+
+        let (bundle, data) = test_bundle();
+        let next_hop: Eid = "ipn:2.0".parse().unwrap();
+        let Ok(ChainOutcome::Continue(bundle, data)) =
+            chains.run_egress(bundle, data, &next_hop, &NullKeyProvider)
+        else {
+            panic!("the verifier must have seen the inserted block");
+        };
+
+        // The returned pair reparses: the rewrite really is on the wire.
+        let Parsed { bundle: raw, .. } = hardy_bpv7::parse::parse(data).unwrap();
+        assert!(raw.blocks.values().any(|b| b.block_type == CUSTOM_BLOCK));
+        assert!(
+            bundle
+                .bpv7
+                .blocks
+                .values()
+                .any(|b| b.block_type == CUSTOM_BLOCK)
+        );
+    }
+
+    struct PayloadAttacker;
+
+    impl Rewriter for PayloadAttacker {
+        fn rewrite(
+            &self,
+            _reader: &BundleReader<'_>,
+            _context: RewriteContext<'_>,
+            editor: &mut ScopedEditor<'_>,
+        ) -> Verdict {
+            use crate::filter::editor::Error;
+
+            let Err(Error::ReservedType(_)) = editor.insert(
+                block::Type::BlockIntegrity,
+                block::Flags::default(),
+                CrcType::None,
+                Box::from(&[0u8][..]),
+            ) else {
+                return Verdict::Drop(None);
+            };
+            let Err(Error::ReservedBlock(1)) = editor.remove(1) else {
+                return Verdict::Drop(None);
+            };
+            let Err(Error::ReservedBlock(0)) = editor.replace(0, Box::from(&[0u8][..])) else {
+                return Verdict::Drop(None);
+            };
+            let Err(Error::NoSuchBlock(9)) = editor.remove(9) else {
+                return Verdict::Drop(None);
+            };
+            Verdict::Continue(())
+        }
+    }
+
+    #[test]
+    fn scoped_editor_refuses_out_of_scope_edits() {
+        let mut pack = FilterPack::new("test");
+        pack.deliver_rewriter("attacker", PayloadAttacker);
+        let chains = freeze(pack);
+
+        let (bundle, data) = test_bundle();
+        let Ok(ChainOutcome::Continue(_, out)) =
+            chains.run_deliver(bundle, data.clone(), &NullKeyProvider)
+        else {
+            panic!("every out-of-scope edit must be refused, not applied");
+        };
+        // Nothing was edited: the bytes pass through unchanged.
+        assert_eq!(out, data);
     }
 }

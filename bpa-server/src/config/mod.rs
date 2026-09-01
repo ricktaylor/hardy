@@ -125,8 +125,7 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// Configuration for built-in application services.
-// The RFC9171 validity checks: absent keys defer to the filter's own
+// The RFC9171 validity checks: absent keys defer to the BPA's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
@@ -218,10 +217,10 @@ pub struct Config {
     #[serde(default)]
     pub storage: storage::StorageConfig,
 
-    // IPN legacy node patterns for the egress rewriting filter.
-    #[cfg(feature = "ipn-legacy-filter")]
+    // EID patterns for next hops requiring legacy 2-element IPN encoding
+    // (the BPA's per-hop re-encode built-in).
     #[serde(default)]
-    pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
+    pub ipn_legacy_nodes: Vec<hardy_eid_patterns::EidPattern>,
 
     // RFC9171 bundle validity checks.
     #[serde(default)]

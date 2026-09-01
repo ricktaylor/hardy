@@ -452,7 +452,7 @@ mod tests {
             metadata,
             status: bundle::BundleStatus::DispatchPending,
         };
-        let id = bundle.bundle.primary.id.clone();
+        let id = bundle.id().clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
 
         let node_ids = crate::node_ids::NodeIds::try_from(
@@ -595,7 +595,7 @@ mod tests {
                 metadata,
                 status,
             };
-            ids.push(bundle.bundle.primary.id.clone());
+            ids.push(bundle.id().clone());
             assert!(metadata_store.insert(&bundle).await.unwrap());
         }
 

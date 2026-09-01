@@ -13,7 +13,6 @@ use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
     cla::Cla,
-    filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
     policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
@@ -22,8 +21,6 @@ use hardy_bpa::{
 use hardy_echo_service::EchoService;
 #[cfg(feature = "file-cla")]
 use hardy_file_cla::Cla as FileCla;
-#[cfg(feature = "ipn-legacy-filter")]
-use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "localdisk-storage")]
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
@@ -149,22 +146,14 @@ impl BpaServer {
         let mut builder = Bpa::builder()
             .node_ids(config.node_ids)
             .metadata_storage(metadata_storage)
-            .bundle_storage(bundle_storage)
-            .filter(
-                Hook::Ingress,
-                "rfc9171-validity",
-                &[],
-                Filter::Read(Arc::new({
-                    let mut filter = Rfc9171ValidityFilter::new();
-                    if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
-                        filter = filter.primary_block_integrity(enabled);
-                    }
-                    if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
-                        filter = filter.bundle_age_required(enabled);
-                    }
-                    filter
-                })),
-            );
+            .bundle_storage(bundle_storage);
+
+        if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
+            builder = builder.primary_block_integrity(enabled);
+        }
+        if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
+            builder = builder.bundle_age_required(enabled);
+        }
 
         if let Some(status_reports) = config.status_reports {
             builder = builder.status_reports(status_reports);
@@ -201,15 +190,8 @@ impl BpaServer {
             builder = builder.no_cache();
         }
 
-        #[cfg(feature = "ipn-legacy-filter")]
-        if !config.ipn_legacy_nodes.0.is_empty() {
-            let filter = IpnLegacyFilter::new(config.ipn_legacy_nodes.0);
-            builder = builder.filter(
-                Hook::Egress,
-                "ipn-legacy",
-                &[],
-                Filter::Write(Arc::new(filter)),
-            );
+        if !config.ipn_legacy_nodes.is_empty() {
+            builder = builder.ipn_legacy_peers(config.ipn_legacy_nodes);
         }
 
         if let Some(sr_config) = config.static_routes {

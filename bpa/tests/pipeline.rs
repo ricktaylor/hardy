@@ -1751,37 +1751,44 @@ async fn forwarding_latency() {
 // ---------------------------------------------------------------------------
 
 /// Records any divergence between the Bundle's block extents and the wire
-/// data it is handed alongside.
-struct ExtentCheckFilter {
+/// data it is handed alongside, observed through the reader's extent-based
+/// block access: a stale block map over rewritten bytes reads back shifted
+/// garbage.
+struct ExtentCheckVerifier {
     mismatch: Arc<Mutex<Option<String>>>,
 }
 
-#[async_trait]
-impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
-    async fn filter(
-        &self,
-        bundle: &hardy_bpa::bundle::Bundle,
-        data: &[u8],
-    ) -> Result<hardy_bpa::filter::ReadResult, hardy_bpa::Error> {
+impl hardy_bpa::filter::Verifier for ExtentCheckVerifier {
+    fn check(&self, reader: &hardy_bpa::filter::BundleReader<'_>) -> hardy_bpa::filter::Verdict {
         let mut mismatch = self.mismatch.lock().unwrap();
-        match parse(hardy_bpa::Bytes::copy_from_slice(data)) {
-            Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
-            Ok(parsed) => {
-                for (number, block) in &parsed.bundle.blocks {
-                    match bundle.bpv7.blocks.get(number) {
-                        Some(b) if b.extent == block.extent => {}
-                        Some(b) => {
-                            *mismatch = Some(format!(
-                                "block {number}: extent {:?} != wire extent {:?}",
-                                b.extent, block.extent
-                            ))
-                        }
-                        None => *mismatch = Some(format!("block {number} missing from Bundle")),
-                    }
+
+        // The payload extent must index the rewritten bytes.
+        match reader.block_data(1) {
+            Ok(Some(payload)) if payload.as_ref() == b"Hello remote" => {}
+            Ok(Some(payload)) => {
+                *mismatch = Some(format!("payload extent skewed: {:?}", payload.as_ref()))
+            }
+            Ok(None) => *mismatch = Some("payload not resident".to_string()),
+            Err(e) => *mismatch = Some(format!("payload unreadable: {e}")),
+        }
+
+        // The forward-time rewrite inserted a Previous Node block; its
+        // extent must decode as an EID from the same bytes.
+        let previous_node = (2u64..16).find(|n| {
+            reader
+                .block(*n)
+                .is_some_and(|b| b.block_type == hardy_bpv7::block::Type::PreviousNode)
+        });
+        match previous_node {
+            None => *mismatch = Some("no Previous Node block after the rewrite".to_string()),
+            Some(n) => {
+                if let Err(e) = reader.extract::<hardy_bpv7::eid::Eid>(n) {
+                    *mismatch = Some(format!("Previous Node extent skewed: {e}"));
                 }
             }
         }
-        Ok(hardy_bpa::filter::ReadResult::Continue)
+
+        hardy_bpa::filter::Verdict::Continue(())
     }
 }
 
@@ -1791,18 +1798,14 @@ impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_filter_sees_consistent_extents() {
     let mismatch = Arc::new(Mutex::new(None));
-    let bpa = Bpa::builder()
-        .filter(
-            hardy_bpa::filter::Hook::Egress,
-            "extent-check",
-            &[],
-            hardy_bpa::filter::Filter::Read(Arc::new(ExtentCheckFilter {
-                mismatch: mismatch.clone(),
-            })),
-        )
-        .build()
-        .await
-        .unwrap();
+    let mut pack = hardy_bpa::filter::pack::FilterPack::new("test");
+    pack.egress_verifier(
+        "extent-check",
+        ExtentCheckVerifier {
+            mismatch: mismatch.clone(),
+        },
+    );
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
     bpa.start(false).await;
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
@@ -2530,4 +2533,146 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         live_rx.recv().await.is_err(),
         "a resolved bundle re-entered Waiting"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The config-gated RFC 9171 validity checks at the pre-drain gate
+// ---------------------------------------------------------------------------
+
+/// Feeds `data` to the BPA through the CLA sink as one Final segment.
+async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    let producer = tokio::spawn(async move {
+        hardy_async::channel::Sender::send(&tx, Segment::Final(data))
+            .await
+            .unwrap();
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut rx)
+        .await
+        .unwrap();
+    producer.await.unwrap();
+}
+
+/// Builds a strict-or-relaxed BPA around a local application at ipn:0.1.42,
+/// returning the delivery channel.
+async fn gate_fixture(
+    configure: impl FnOnce(hardy_bpa::builder::BpaBuilder) -> hardy_bpa::builder::BpaBuilder,
+) -> (Bpa, Arc<PipelineCla>, flume::Receiver<(Eid, Bytes)>) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = configure(Bpa::builder().node_ids(node_ids))
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    (bpa, cla, app_rx)
+}
+
+fn unprotected_primary_bundle() -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_crc_type(hardy_bpv7::crc::CrcType::None)
+        .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    Bytes::from(data)
+}
+
+fn clockless_ageless_bundle() -> Bytes {
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.42".parse().unwrap())
+        .with_payload(Cow::Borrowed(b"no clock".as_slice()))
+        .build(CreationTimestamp::default())
+        .expect("Failed to build bundle");
+    Bytes::from(data)
+}
+
+/// RFC 9171 §4.3.1: with the default strict config, a primary block with
+/// neither CRC nor BIB coverage is rejected at the pre-drain gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_rejects_unprotected_primary_block() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+
+    dispatch_inbound(&cla, unprotected_primary_bundle()).await;
+
+    // Shutdown is the barrier: an admitted bundle would have completed
+    // delivery before it returns.
+    bpa.shutdown().await;
+    assert!(
+        app_rx.is_empty(),
+        "an unprotected primary block must be rejected at the gate"
+    );
+}
+
+/// `primary_block_integrity(false)` relaxes the §4.3.1 check: the same
+/// bundle is admitted and delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relaxed_gate_admits_unprotected_primary_block() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b.primary_block_integrity(false)).await;
+
+    dispatch_inbound(&cla, unprotected_primary_bundle()).await;
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let (_, payload) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for delivery")
+            .expect("Channel closed");
+    assert_eq!(payload.as_ref(), b"no integrity");
+
+    bpa.shutdown().await;
+}
+
+/// RFC 9171 §4.4.2: with the default strict config, a clockless bundle
+/// without a Bundle Age block is rejected at the pre-drain gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_rejects_clockless_bundle_without_age() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b).await;
+
+    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
+
+    // Shutdown is the barrier: an admitted bundle would have completed
+    // delivery before it returns.
+    bpa.shutdown().await;
+    assert!(
+        app_rx.is_empty(),
+        "a clockless bundle without a Bundle Age block must be rejected at the gate"
+    );
+}
+
+/// `bundle_age_required(false)` relaxes the §4.4.2 check: the same bundle
+/// is admitted and delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relaxed_gate_admits_clockless_bundle_without_age() {
+    let (bpa, cla, app_rx) = gate_fixture(|b| b.bundle_age_required(false)).await;
+
+    dispatch_inbound(&cla, clockless_ageless_bundle()).await;
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let (_, payload) =
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+            .await
+            .expect("Timeout waiting for delivery")
+            .expect("Channel closed");
+    assert_eq!(payload.as_ref(), b"no clock");
+
+    bpa.shutdown().await;
 }

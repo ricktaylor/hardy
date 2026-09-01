@@ -208,11 +208,10 @@ impl Rib {
         trace!(peers = ?peers, "Forward to CLA peers");
 
         let idx = if peers.len() > 1 {
-            (self.ecmp_hash_state.hash_one((
-                &bundle.primary.id.source,
-                &bundle.primary.destination,
-                &metadata.writable.flow_label,
-            )) % (peers.len() as u64)) as usize
+            (self
+                .ecmp_hash_state
+                .hash_one((&bundle.primary.id.source, &bundle.primary.destination))
+                % (peers.len() as u64)) as usize
         } else {
             0
         };

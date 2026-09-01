@@ -1,4 +1,15 @@
-use hardy_async::async_trait;
+//! The filter subsystem — the embedder's extension seam on the bundle
+//! pipeline.
+//!
+//! Three payload-free kinds behind one verdict: read-only [`Verifier`]s
+//! (any hook), annotating [`Classifier`]s (input hooks, contributing a
+//! [`slots::MetadataDelta`]), and extension-block [`Rewriter`]s (output
+//! hooks, editing through the scoped [`ScopedEditor`] handle). Filters are
+//! registered in [`pack::FilterPack`]s, frozen at
+//! [`build()`](crate::builder::BpaBuilder::build), and run inline by the
+//! engine at the pipeline's hook positions. The BPA's own checks are
+//! pipeline code gated by configuration, never registered filters.
+
 use hardy_bpv7::{
     block,
     bpsec::{self, bcb, key::KeySource},
@@ -7,109 +18,25 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_cbor::decode::{FromCbor, parse_exact};
-use thiserror::Error;
 
-use crate::bundle::{Bundle, BundleMetadata, WritableMetadata};
-use crate::{Arc, Bytes, HashMap};
+use self::editor::ScopedEditor;
+use crate::{
+    HashMap,
+    bundle::{Bundle, BundleMetadata},
+};
 
-mod chain;
 mod engine;
 
-pub(crate) use engine::FilterEngine;
+pub(crate) use engine::ChainOutcome;
+
+/// The scoped extension-block editor and its operation errors.
+pub mod editor;
 
 /// Filter packs — the embedder registration surface spliced in by the builder.
 pub mod pack;
 
-/// RFC9171 validity filter - always available, auto-registered by default.
-/// Disable auto-registration with `no-rfc9171-autoregister` feature.
-pub mod rfc9171;
-
 /// Annotation slots — embedder-private metadata in the classification group.
 pub mod slots;
-
-/// Bundle validity filter - lifetime and hop-count checks.
-pub mod validity;
-
-/// Errors related to filter registration and dependency management.
-#[derive(Debug, Error)]
-pub enum Error {
-    /// A filter with the given name is already registered.
-    #[error("Filter with name '{0}' already exists")]
-    AlreadyExists(String),
-
-    /// A filter declares a dependency on another filter that has not been registered.
-    #[error("Filter dependency '{0}' not found")]
-    DependencyNotFound(String),
-
-    /// Cannot remove a filter because other filters depend on it.
-    #[error("Filter '{0}' has dependants: {1:?}")]
-    HasDependants(String, Vec<String>),
-}
-
-/// Outcome of a read-only filter evaluation.
-#[derive(Debug, Default)]
-pub enum ReadResult {
-    /// Allow the bundle to proceed to the next filter or processing stage.
-    #[default]
-    Continue,
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
-}
-
-/// Outcome of a read-write filter evaluation, which may modify the bundle.
-#[derive(Debug)]
-pub enum WriteResult {
-    /// Continue processing, optionally with modified metadata and/or bundle data
-    /// - (None, None): no change
-    /// - (Some(meta), None): metadata changed, bundle bytes unchanged
-    /// - (None, Some(data)): bundle bytes changed (rare)
-    /// - (Some(meta), Some(data)): both changed
-    Continue(Option<WritableMetadata>, Option<Vec<u8>>),
-    /// Drop the bundle, optionally providing a status-report reason code.
-    Drop(Option<ReasonCode>),
-}
-
-/// Tracks whether filters modified the bundle or its metadata.
-#[derive(Default)]
-pub struct Mutation {
-    pub data: bool,
-    pub metadata: bool,
-}
-
-/// Result of executing the filter chain on a bundle.
-#[allow(clippy::large_enum_variant)]
-pub enum ExecResult {
-    Continue(Mutation, Bundle, Bytes),
-    Drop(Bundle, Option<ReasonCode>),
-}
-
-// Filter traits
-
-/// Read-only filter: can run in parallel with other ReadFilters
-#[async_trait]
-pub trait ReadFilter: Send + Sync {
-    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<ReadResult, crate::Error>;
-}
-
-/// Read-write filter: runs sequentially, may modify metadata or bundle data
-#[async_trait]
-pub trait WriteFilter: Send + Sync {
-    async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<WriteResult, crate::Error>;
-}
-
-/// Filter wrapper enum for registration
-pub enum Filter {
-    Read(Arc<dyn ReadFilter>),
-    Write(Arc<dyn WriteFilter>),
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2 filter kinds — the committed extension-API traits and their verdict.
-//
-// These are the successors to `ReadFilter`/`WriteFilter`: three payload-free,
-// byte-pure kinds behind one verdict. Added here unconsumed — the engine still
-// runs the old traits until the C3 swap wires these into the dispatcher.
-// ---------------------------------------------------------------------------
 
 /// The outcome of a filter invocation, shared across all three kinds.
 ///
@@ -146,7 +73,6 @@ impl<'a> BundleReader<'a> {
     /// Builds a reader over a bundle, its resident bytes, the decoded BCB
     /// OperationSets, and the key source. Constructed by the engine at each
     /// hook from the pieces `parse()` produced.
-    #[allow(dead_code)] // wired by the engine when the C3 swap lands
     pub(crate) fn new(
         bundle: &'a Bundle,
         data: &'a [u8],
@@ -169,14 +95,14 @@ impl<'a> BundleReader<'a> {
 
     /// The bundle's primary block, decoded into typed fields.
     pub fn primary(&self) -> &'a PrimaryBlock {
-        &self.bundle.bundle.primary
+        self.bundle.primary()
     }
 
     /// The block header (type, flags, CRC, BPSec coverage, extents) for a block
     /// number, or `None` when the bundle has no such block. Block *bodies* come
     /// from [`block_data`](Self::block_data).
     pub fn block(&self, block_number: u64) -> Option<&'a block::Block> {
-        self.bundle.bundle.blocks.get(&block_number)
+        self.bundle.bpv7.blocks.get(&block_number)
     }
 
     /// A block's plaintext bytes: the raw body when unencrypted, or the
@@ -195,7 +121,7 @@ impl<'a> BundleReader<'a> {
         let bundle = self.bundle;
         match bpsec::block_data(
             block_number,
-            &bundle.bundle.blocks,
+            &bundle.bpv7.blocks,
             self.data,
             self.bcb_ops,
             self.keys,
@@ -267,7 +193,9 @@ pub trait Classifier: Send + Sync {
 ///
 /// It edits *extension* blocks, never the payload, so it runs before the
 /// payload's BPSec decrypt at Deliver; it holds the [`KeySource`] to decrypt
-/// any extension block it needs to inspect.
+/// any extension block it needs to inspect. Each Rewriter sees its
+/// predecessors' edits: the engine materialises every invocation's edits into
+/// the wire form before the next invocation reads it.
 pub trait Rewriter: Send + Sync {
     /// Edit extension blocks through `editor` — insert/replace/remove only,
     /// never the primary, payload, or BIB/BCB blocks, and never a block under
@@ -287,6 +215,7 @@ pub trait Rewriter: Send + Sync {
 /// Next-hop context is Egress-only — a delivering bundle terminates here and
 /// has no next hop — so it rides the variant rather than the method signature,
 /// letting one trait serve both boundaries.
+#[derive(Clone, Copy)]
 pub enum RewriteContext<'a> {
     /// Preparing the wire form for the resolved `next_hop`, per transmission
     /// attempt.
@@ -297,62 +226,4 @@ pub enum RewriteContext<'a> {
     /// Stripping transport-scoped extension blocks before local delivery to a
     /// raw-bundle [`Service`](crate::services::Service).
     Deliver,
-}
-
-/// The scoped extension-block editor handed to a [`Rewriter`].
-///
-/// It exposes insert/replace/remove of *extension* blocks only, making
-/// payload/primary/BIB/BCB immutability a compile-time property rather than a
-/// review promise, and refusing edits to blocks under existing BPSec coverage.
-/// The concrete operation set — and the plumbing that constructs one over the
-/// bundle being transmitted — lands with the engine swap (C3); this is the
-/// handle type the [`Rewriter`] trait is defined against.
-pub struct ScopedEditor<'a> {
-    // Placeholder: the operation surface and its backing editor land with the
-    // engine swap. Carries the borrow the real handle will hold.
-    #[allow(dead_code)]
-    bundle: core::marker::PhantomData<&'a mut Bundle>,
-}
-
-/// Hook points in bundle processing
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
-#[derive(Debug)]
-pub enum Hook {
-    Ingress,
-    Deliver,
-    Originate,
-    Egress,
-}
-
-impl Hook {
-    /// Returns the lowercase string label for this hook point (e.g. `"ingress"`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            Hook::Ingress => "ingress",
-            Hook::Deliver => "deliver",
-            Hook::Originate => "originate",
-            Hook::Egress => "egress",
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Hook {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.to_lowercase().as_str() {
-            "ingress" => Ok(Hook::Ingress),
-            "deliver" => Ok(Hook::Deliver),
-            "originate" => Ok(Hook::Originate),
-            "egress" => Ok(Hook::Egress),
-            _ => Err(serde::de::Error::unknown_variant(
-                &s,
-                &["ingress", "deliver", "originate", "egress"],
-            )),
-        }
-    }
 }
