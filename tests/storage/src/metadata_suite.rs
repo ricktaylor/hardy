@@ -247,10 +247,27 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     let earlier = now - time::Duration::seconds(100);
     let later = now + time::Duration::seconds(100);
 
-    let status = BundleStatus::ForwardPending { peer: 42, queue: 0 };
+    // The assignment records carry distinct per-bundle adjacencies; the
+    // poll key names the queue only (peer + queue), so both must match it
+    // and each must come back with its own recorded adjacency.
+    let status_a = BundleStatus::ForwardPending {
+        peer: 42,
+        queue: 0,
+        next_hop: "ipn:100.0".parse().unwrap(),
+    };
+    let status_b = BundleStatus::ForwardPending {
+        peer: 42,
+        queue: 0,
+        next_hop: "ipn:200.0".parse().unwrap(),
+    };
+    let status = BundleStatus::ForwardPending {
+        peer: 42,
+        queue: 0,
+        next_hop: hardy_bpv7::eid::Eid::Null,
+    };
 
-    let bundle_a = fixtures::bundle_with_status(status.clone(), earlier);
-    let bundle_b = fixtures::bundle_with_status(status.clone(), later);
+    let bundle_a = fixtures::bundle_with_status(status_a.clone(), earlier);
+    let bundle_b = fixtures::bundle_with_status(status_b.clone(), later);
 
     assert!(store.insert(&bundle_a).await.unwrap());
     assert!(store.insert(&bundle_b).await.unwrap());
@@ -266,6 +283,10 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
         bundle_a.id(),
         "should be FIFO (earlier first)"
     );
+    assert_eq!(
+        results[0].status, status_a,
+        "the record's own adjacency must survive the poll"
+    );
 
     // limit=2: should return both in FIFO order
     let sink = super::VecSink::<bundle::Bundle>::new();
@@ -275,15 +296,32 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     assert_eq!(results.len(), 2, "limit=2 should return both bundles");
     assert_eq!(results[0].id(), bundle_a.id(), "first should be earlier");
     assert_eq!(results[1].id(), bundle_b.id(), "second should be later");
+    assert_eq!(
+        results[1].status, status_b,
+        "the record's own adjacency must survive the poll"
+    );
 }
 
 /// META-09: Poll Pending (Exact Match)
 pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
     let now = time::OffsetDateTime::now_utc();
 
-    let status_a = BundleStatus::ForwardPending { peer: 1, queue: 0 };
-    let status_b = BundleStatus::ForwardPending { peer: 2, queue: 0 };
-    let status_c = BundleStatus::ForwardPending { peer: 1, queue: 1 };
+    let next_hop: hardy_bpv7::eid::Eid = "ipn:7.0".parse().unwrap();
+    let status_a = BundleStatus::ForwardPending {
+        peer: 1,
+        queue: 0,
+        next_hop: next_hop.clone(),
+    };
+    let status_b = BundleStatus::ForwardPending {
+        peer: 2,
+        queue: 0,
+        next_hop: next_hop.clone(),
+    };
+    let status_c = BundleStatus::ForwardPending {
+        peer: 1,
+        queue: 1,
+        next_hop,
+    };
 
     let bundle_a = fixtures::bundle_with_status(status_a.clone(), now);
     let bundle_b = fixtures::bundle_with_status(status_b, now);
@@ -423,10 +461,12 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
     let status_100 = BundleStatus::ForwardPending {
         peer: 100,
         queue: 0,
+        next_hop: "ipn:100.0".parse().unwrap(),
     };
     let status_200 = BundleStatus::ForwardPending {
         peer: 200,
         queue: 0,
+        next_hop: "ipn:200.0".parse().unwrap(),
     };
 
     let bundle_a = fixtures::bundle_with_status(status_100, now);

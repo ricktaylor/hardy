@@ -208,15 +208,36 @@ impl Sender {
     // SendError deliberately carries the bundle so the caller recovers
     // ownership; boxing it to shrink the Err variant would tax every send.
     #[allow(clippy::result_large_err)]
-    pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
+    pub async fn send(&self, bundle: Bundle) -> Result<(), SendError> {
+        let status = self.shared.status.clone();
+        self.send_to(bundle, status).await
+    }
+
+    /// The channel's target status — its queue identity. A queue whose
+    /// assignment record carries per-bundle payload (`ForwardPending`'s
+    /// `next_hop`) holds a placeholder there; [`send_to`](Self::send_to)
+    /// supplies each bundle's real record.
+    pub fn queue_status(&self) -> &BundleStatus {
+        &self.shared.status
+    }
+
+    /// Offer a bundle with its full per-bundle assignment record; `status`
+    /// must name this channel's queue
+    /// ([`same_queue`](BundleStatus::same_queue)). See
+    /// [`send`](Self::send), which uses the channel's own target status.
+    // SendError deliberately carries the bundle so the caller recovers
+    // ownership; boxing it to shrink the Err variant would tax every send.
+    #[allow(clippy::result_large_err)]
+    pub async fn send_to(&self, mut bundle: Bundle, status: BundleStatus) -> Result<(), SendError> {
+        debug_assert!(
+            status.same_queue(&self.shared.status),
+            "send_to status names a different queue"
+        );
+
         // Conditional move into this queue from the sender's snapshot: a
         // duplicate copy of a bundle that has already moved on must lose
         // here, not stomp the live assignment (see the delivery contract)
-        if !self
-            .store
-            .swap_status(&mut bundle, &self.shared.status)
-            .await
-        {
+        if !self.store.swap_status(&mut bundle, &status).await {
             debug!("Bundle already moved on, dropping duplicate send");
             return Ok(());
         }
@@ -408,8 +429,10 @@ impl Store {
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
-                // Just do some checks
-                if !bundle.has_expired() && bundle.status == shared_cloned.status {
+                // Just do some checks. Queue-identity match: a recovered
+                // bundle's record may carry per-bundle payload the channel's
+                // target status cannot name.
+                if !bundle.has_expired() && bundle.status.same_queue(&shared_cloned.status) {
                     // Send into queue. A closeable send already parked on a full
                     // buffer is not woken by the channel's own close(), so race it
                     // against pool shutdown — otherwise store.shutdown() (which
@@ -487,7 +510,13 @@ mod tests {
         b
     }
 
-    const STATUS: BundleStatus = BundleStatus::ForwardPending { peer: 1, queue: 0 };
+    // The channel key's adjacency is a placeholder, exactly as the peer
+    // queues configure it.
+    const STATUS: BundleStatus = BundleStatus::ForwardPending {
+        peer: 1,
+        queue: 0,
+        next_hop: hardy_bpv7::eid::Eid::Null,
+    };
 
     // The delivery contract requires the bundle to already exist in metadata
     // storage before it is offered to the channel; insert it with the

@@ -8,33 +8,17 @@ impl Dispatcher {
         peer: u32,
         queue: Option<u32>,
         cla_addr: &cla::ClaAddress,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
     ) {
-        // The rewrite stage and the Egress hooks run against the resolved
-        // next hop, but the field is a per-dispatch transient the peer
-        // queue's slow path cannot carry: under congestion the hybrid
-        // channel spills to storage and re-delivers a deserialized copy
-        // (restart never resumes these — recovery resets both transfer
-        // statuses to Waiting). Its routing decision is gone, so send it
-        // back for a fresh one rather than derive a wire form missing its
-        // context. An at-least-once duplicate of a claimed transfer loses
-        // this CAS exactly as it would lose the claim below.
-        //
-        // Interim guard: the queue tranche associates the NextHop with the
-        // egress queue itself — queue membership then implies the hop, and
-        // this check retires with the metadata transient (see
-        // filter_subsystem_redesign.md, "Open residue").
-        let Some(next_hop) = bundle.metadata.next_hop.clone() else {
-            debug!("Bundle reached forwarding without a resolved next hop, re-dispatching");
-            if self
-                .store
-                .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                .await
-            {
-                self.dispatch_bundle(bundle).await;
-            }
+        // The queue-assignment record carries the resolved adjacency, and
+        // the claim below overwrites the status — take it first. The egress
+        // channel only delivers this queue's assignments, so any other
+        // status here is a stale copy whose owner resolves it elsewhere.
+        let bundle::BundleStatus::ForwardPending { next_hop, .. } = &bundle.status else {
+            debug!("Bundle reached forwarding without a queue assignment, dropping copy");
             return;
         };
+        let next_hop = next_hop.clone();
 
         // Get bundle data from store, now we know we need it!
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {

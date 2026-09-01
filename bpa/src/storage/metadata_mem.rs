@@ -350,7 +350,7 @@ impl MetadataStorage for MetadataMemStorage {
         let mut updated = 0;
         for (_, v) in self.inner.lock().entries.iter_mut() {
             if let Entry::Live(v) = v
-                && let BundleStatus::ForwardPending { peer: p, queue: _ } = v.status
+                && let BundleStatus::ForwardPending { peer: p, .. } = v.status
                 && p == peer
             {
                 v.status = BundleStatus::Waiting;
@@ -499,7 +499,9 @@ impl MetadataStorage for MetadataMemStorage {
             .entries
             .iter()
             .filter_map(|(_, v)| v.live())
-            .filter(|v| &v.status == state)
+            // Queue-identity match: a ForwardPending record carries its own
+            // per-bundle adjacency, which the caller's key cannot name.
+            .filter(|v| v.status.same_queue(state))
             .cloned()
             .collect();
 

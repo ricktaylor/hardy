@@ -162,9 +162,16 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
     match status {
         BundleStatus::New => (0, None, None, None),
         BundleStatus::Waiting => (1, None, None, None),
-        BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer as i64), Some(*queue as i64), None)
-        }
+        BundleStatus::ForwardPending {
+            peer,
+            queue,
+            next_hop,
+        } => (
+            2,
+            Some(*peer as i64),
+            Some(*queue as i64),
+            Some(next_hop.to_string()),
+        ),
         BundleStatus::AduFragment { source, timestamp } => (
             3,
             Some(
@@ -196,6 +203,7 @@ fn to_status(
         2 => Some(BundleStatus::ForwardPending {
             peer: param1? as u32,
             queue: param2? as u32,
+            next_hop: param3?.parse().ok()?,
         }),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
@@ -541,14 +549,18 @@ impl MetadataStorage for SqliteStorage {
             "Status code mismatch"
         );
         debug_assert!(
-            from_status(&BundleStatus::ForwardPending { peer, queue: 0 })
-                == (2, Some(peer as i64), Some(0), None),
+            from_status(&BundleStatus::ForwardPending {
+                peer,
+                queue: 0,
+                next_hop: hardy_bpv7::eid::Eid::Null,
+            })
+            .0 == 2,
             "Status code mismatch"
         );
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
+                "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL, status_param3 = NULL WHERE status_code = 2 AND status_param1 = ?1",
             )?
             .execute((Some(peer),))
             .map(|c| c as u64)
@@ -824,26 +836,55 @@ impl MetadataStorage for SqliteStorage {
     ) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) = from_status(status);
 
+        // Queue-identity match (`BundleStatus::same_queue`): a ForwardPending
+        // record's param3 carries its own resolved adjacency, which the
+        // caller's queue key cannot name — so it is selected back rather
+        // than filtered on, and each bundle's own record is emitted.
+        let forward_pending = status_code == 2;
         let bundles = self
             .read(move |conn| {
-                conn.prepare_cached(
-                    "SELECT bundle FROM bundles
-                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
-                        ORDER BY received_at ASC
-                        LIMIT ?5",
-                )?
-                .query_map((status_code, status_param1, status_param2,status_param3, limit as isize), |row| {
-                    row.get::<_, Vec<u8>>(0)
-                })?
-                .collect::<Result<Vec<Vec<u8>>, _>>()
-                .map_err(Into::into)
+                if forward_pending {
+                    conn.prepare_cached(
+                        "SELECT bundle, status_param3 FROM bundles
+                            WHERE bundle IS NOT NULL AND status_code = 2 AND status_param1 IS ?1 AND status_param2 IS ?2
+                            ORDER BY received_at ASC
+                            LIMIT ?3",
+                    )?
+                    .query_map((status_param1, status_param2, limit as isize), |row| {
+                        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                    .map_err(Into::into)
+                } else {
+                    conn.prepare_cached(
+                        "SELECT bundle FROM bundles
+                            WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                            ORDER BY received_at ASC
+                            LIMIT ?5",
+                    )?
+                    .query_map((status_code, status_param1, status_param2, status_param3, limit as isize), |row| {
+                        Ok((row.get::<_, Vec<u8>>(0)?, None))
+                    })?
+                    .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                    .map_err(Into::into)
+                }
             })
             .await?;
 
-        for bundle in bundles {
+        for (bundle, row_param3) in bundles {
             match serde_json::from_slice::<Bundle>(&bundle) {
                 Ok(mut bundle) => {
-                    bundle.status = status.clone();
+                    let row_status = if forward_pending {
+                        let (_, p1, p2, _) = from_status(status);
+                        let Some(row_status) = to_status(2, p1, p2, row_param3) else {
+                            warn!("Garbage ForwardPending adjacency dropped from poll");
+                            continue;
+                        };
+                        row_status
+                    } else {
+                        status.clone()
+                    };
+                    bundle.status = row_status;
                     if stream.send(bundle).await.is_err() {
                         // The other end is shutting down - get out
                         break;

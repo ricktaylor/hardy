@@ -1,3 +1,4 @@
+use hardy_bpv7::eid::Eid;
 use tracing::warn;
 
 use super::*;
@@ -68,8 +69,15 @@ impl Peer {
         peer: u32,
         queue: u32,
     ) -> storage::channel::Sender {
+        // The channel key is the queue's identity; the adjacency is
+        // per-bundle payload, so the key carries a placeholder never
+        // matched (see BundleStatus::same_queue) and never stored.
         let (tx, rx) = store.channel(
-            bundle::BundleStatus::ForwardPending { peer, queue },
+            bundle::BundleStatus::ForwardPending {
+                peer,
+                queue,
+                next_hop: Eid::Null,
+            },
             poll_channel_depth,
         );
 
@@ -92,6 +100,7 @@ impl Peer {
     #[allow(clippy::result_large_err)]
     pub async fn forward(
         &self,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
         // The per-peer controller owns the queue assignment; nothing on
@@ -104,7 +113,20 @@ impl Peer {
             &self.queues[0]
         });
 
-        match queue.send(bundle).await {
+        // The full assignment record: this queue's identity (which the
+        // selection above may have fallen back on) plus the resolved
+        // adjacency, so the decision survives the channel's storage spill.
+        let bundle::BundleStatus::ForwardPending { peer, queue: q, .. } = queue.queue_status()
+        else {
+            unreachable!("Egress queue with a non-ForwardPending target status")
+        };
+        let status = bundle::BundleStatus::ForwardPending {
+            peer: *peer,
+            queue: *q,
+            next_hop,
+        };
+
+        match queue.send_to(bundle, status).await {
             Ok(_) => Ok(()),
             Err(storage::channel::SendError(b)) => Err(b),
         }
@@ -184,6 +206,7 @@ impl PeerTable {
     pub async fn forward(
         &self,
         peer_id: u32,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
         // sync::spin::RwLock::read() returns guard directly (no Result)
@@ -191,7 +214,7 @@ impl PeerTable {
             return Err(bundle);
         };
 
-        peer.forward(bundle).await
+        peer.forward(next_hop, bundle).await
     }
 }
 

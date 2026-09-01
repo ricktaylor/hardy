@@ -135,10 +135,6 @@ pub struct BundleMetadata {
     classification: Classification,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
-    /// Next-hop EID resolved by the RIB for the dispatch in progress; consumed
-    /// by the forwarding path, recomputed on re-dispatch. Never persisted.
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub next_hop: Option<Eid>,
 }
 
 impl BundleMetadata {
@@ -156,7 +152,6 @@ impl BundleMetadata {
             extensions: ExtensionFields::default(),
             classification: Classification::default(),
             storage_name: None,
-            next_hop: None,
         }
     }
 

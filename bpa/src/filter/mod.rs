@@ -220,7 +220,8 @@ pub enum RewriteContext<'a> {
     /// Preparing the wire form for the resolved `next_hop`, per transmission
     /// attempt.
     Egress {
-        /// The next hop the dispatch decision resolved for this attempt.
+        /// The adjacency this attempt transmits to — a property of the peer
+        /// queue the dispatch decision placed the bundle in.
         next_hop: &'a Eid,
     },
     /// Stripping transport-scoped extension blocks before local delivery to a

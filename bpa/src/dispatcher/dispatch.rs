@@ -73,7 +73,7 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn process_bundle(
         &self,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
         // Expiry checkpoint: the reaper defers the hand-off statuses
@@ -88,8 +88,9 @@ impl Dispatcher {
         // re-check it to close the park-vs-poll window (see park_bundle).
         let seen = self.rib.table_snapshot();
 
-        // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
-        match self.rib.find(&mut bundle) {
+        // Perform RIB lookup; a Forward result names the peer, whose egress
+        // queue carries the adjacency EID.
+        match self.rib.find(&bundle) {
             Some(routing::DispatchAction::Drop(reason)) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
@@ -128,9 +129,9 @@ impl Dispatcher {
                     }
                 }
             }
-            Some(routing::DispatchAction::Forward(peer)) => {
+            Some(routing::DispatchAction::Forward { peer, next_hop }) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
+                if let Err(bundle) = cla_registry.forward(peer, next_hop, bundle).await {
                     // The peer vanished between the RIB lookup and the
                     // forward: return the bundle to Waiting so the next route
                     // event re-dispatches it, rather than leaving it stranded

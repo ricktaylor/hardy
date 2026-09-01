@@ -28,6 +28,11 @@ pub enum BundleStatus {
         /// The policy queue index within the peer's egress queues
         /// (`0..FlowControllerFactory::queue_count()`; queue 0 always exists).
         queue: u32,
+        /// The adjacency EID the routing decision resolved. Part of the
+        /// queue-assignment record — not its identity (see
+        /// [`same_queue`](Self::same_queue)) — so the egress channel's
+        /// at-least-once recovery re-delivers the decision intact.
+        next_hop: Eid,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained
     /// until the CLA reports the outcome via `Sink::transfer_outcome` or the
@@ -72,4 +77,29 @@ pub enum BundleStatus {
         /// EID of the service that is processing this bundle.
         service: Eid,
     },
+}
+
+impl BundleStatus {
+    /// Queue-identity equality: whether two statuses name the same queue,
+    /// ignoring any per-bundle routing payload the assignment record
+    /// carries ([`ForwardPending::next_hop`](Self::ForwardPending)).
+    ///
+    /// The storage channels recover queued bundles by this relation — a
+    /// peer queue holds bundles whose resolved adjacencies differ — while
+    /// the conditional status swaps keep using full equality: a swap
+    /// arbitrates ownership of one bundle, whose snapshot carries its own
+    /// payload.
+    pub fn same_queue(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::ForwardPending {
+                    peer: a, queue: b, ..
+                },
+                Self::ForwardPending {
+                    peer: x, queue: y, ..
+                },
+            ) => a == x && b == y,
+            _ => self == other,
+        }
+    }
 }
