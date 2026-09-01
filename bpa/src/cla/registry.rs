@@ -1,6 +1,6 @@
 use core::num::NonZeroU32;
 
-use hardy_bpv7::eid::NodeId;
+use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
 
@@ -254,9 +254,10 @@ impl ClaRegistry {
     pub async fn forward(
         &self,
         peer_id: u32,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        self.peers.forward(peer_id, bundle).await
+        self.peers.forward(peer_id, next_hop, bundle).await
     }
 
     pub async fn shutdown(&self) {
