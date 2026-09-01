@@ -17,6 +17,11 @@ use hardy_cbor::decode::{self, FromCbor};
 /// blocks keyed by block number. This is the crate's structural bundle
 /// representation, produced by [`parse`](crate::parse::parse) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
+///
+/// The derived `==` is structural and offset-sensitive — block extents are
+/// buffer-relative, so re-encodings of the same bundle compare unequal. For
+/// data-aware, offset-insensitive equivalence use
+/// [`semantic_eq`](Self::semantic_eq).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bundle {
