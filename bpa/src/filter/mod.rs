@@ -16,6 +16,10 @@ mod chain;
 mod engine;
 
 pub(crate) use engine::FilterEngine;
+
+/// Filter packs — the embedder registration surface spliced in by the builder.
+pub mod pack;
+
 /// RFC9171 validity filter - always available, auto-registered by default.
 /// Disable auto-registration with `no-rfc9171-autoregister` feature.
 pub mod rfc9171;
@@ -301,12 +305,11 @@ pub enum RewriteContext<'a> {
 /// payload/primary/BIB/BCB immutability a compile-time property rather than a
 /// review promise, and refusing edits to blocks under existing BPSec coverage.
 /// The concrete operation set — and the plumbing that constructs one over the
-/// bundle being transmitted — lands with the filter registration surface (the
-/// remainder of C2); this is the handle type the [`Rewriter`] trait is defined
-/// against.
+/// bundle being transmitted — lands with the engine swap (C3); this is the
+/// handle type the [`Rewriter`] trait is defined against.
 pub struct ScopedEditor<'a> {
     // Placeholder: the operation surface and its backing editor land with the
-    // registration step. Carries the borrow the real handle will hold.
+    // engine swap. Carries the borrow the real handle will hold.
     #[allow(dead_code)]
     bundle: core::marker::PhantomData<&'a mut Bundle>,
 }

@@ -13,7 +13,10 @@ use tracing::warn;
 use crate::{
     Arc,
     cla::ClaAddress,
-    filter::slots::{Blob, MetadataDelta, PolicyEpoch, SlotHandle, SlotMap, SlotValue},
+    filter::slots::{
+        Blob, MetadataDelta, SlotHandle, SlotValue,
+        state::{PolicyEpoch, SlotMap},
+    },
 };
 
 /// How a bundle entered this BPA's custody.
@@ -292,7 +295,7 @@ impl BundleMetadata {
 mod tests {
     use core::num::NonZeroUsize;
 
-    use crate::filter::slots::{Blob, SlotRegistry};
+    use crate::filter::slots::{Blob, state::SlotRegistry};
 
     use super::*;
 
