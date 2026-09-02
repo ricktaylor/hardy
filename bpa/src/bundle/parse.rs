@@ -281,16 +281,26 @@ pub enum HeaderFailure {
 /// [`finalize_with_provider`].
 ///
 /// `Ok` is the verified headers, the resident header `Bytes` (the whole bundle
-/// when it fit, else the `consumed` prefix), and the payload `tail` the caller
+/// when it fit, else the `consumed` prefix), the payload `tail` the caller
 /// drains — the drain continues the byte count this pass starts against
-/// `max_size`, which here bounds hostile unbounded header chains. `Err` is a
+/// `max_size`, which here bounds hostile unbounded header chains — and the
+/// header-region BCB OperationSets for the caller's Ingress gate chain, handed
+/// back from the one decode rather than re-derived. `Err` is a
 /// [`HeaderFailure`]; see its variants for who handles what.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
 pub async fn parse_headers<F>(
     stream: &mut dyn Receiver<Segment>,
     max_size: usize,
     key_provider: F,
-) -> Result<(HeaderVerify, Bytes, Option<parse::PayloadTail>), HeaderFailure>
+) -> Result<
+    (
+        HeaderVerify,
+        Bytes,
+        Option<parse::PayloadTail>,
+        HashMap<u64, bpsec::bcb::OperationSet>,
+    ),
+    HeaderFailure,
+>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -373,6 +383,10 @@ where
             },
             headers,
             tail,
+            // The header-region BCB OperationSets ride back to the caller for
+            // the Ingress gate chain, handed back from this one decode rather
+            // than re-derived from the prefix later.
+            bcb_ops,
         )),
         Err(error) => {
             debug!("Invalid bundle received: {error}");
@@ -658,7 +672,8 @@ mod tests {
             .await
             .expect("channel open");
 
-        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, |_, _| keys()).await else {
+        let Ok((hv, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, |_, _| keys()).await
+        else {
             panic!("headers must verify: only the corrupt BIB target fails");
         };
         assert!(tail.is_none(), "the small bundle is fully resident");
@@ -846,7 +861,7 @@ mod tests {
         let keys = |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![sign_key()]))
         };
-        let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, keys).await else {
+        let Ok((hv, headers, tail, _)) = parse_headers(&mut rx, 1 << 20, keys).await else {
             panic!("the header pass must verify: the payload target is deferred");
         };
         let mut tail = tail.expect("an oversized payload must take the Partial route");

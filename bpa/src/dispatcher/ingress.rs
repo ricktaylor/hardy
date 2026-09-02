@@ -172,7 +172,7 @@ impl Dispatcher {
         // The cap as an in-memory bound: on a 32-bit target a cap beyond the
         // address space saturates — nothing larger could be buffered anyway.
         let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
-        let (mut hv, headers, tail) = match parse::parse_headers(
+        let (mut hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
             max_size,
             self.key_provider(),
@@ -240,6 +240,57 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
+        // Move the decoded extension fields into metadata before the gate chain
+        // (a Classifier may read them); `take` leaves `hv` intact for the
+        // post-drain finalize, which ignores `extracted`.
+        metadata.extensions = core::mem::take(&mut hv.extracted);
+
+        // Ingress chain at the pre-drain gate, on the resident header prefix.
+        // It runs synchronously on a throwaway record: the wire bundle is
+        // cloned so `hv` stays whole for finalize, while the real metadata
+        // moves through so a Classifier's deltas survive. A chain drop here is
+        // pre-store — nothing was spooled — and is reported reception-then-
+        // deletion like the sibling gates above. A filter reading the
+        // not-yet-resident payload gets the reader's not-resident `None`. The
+        // clone and this whole block dissolve in the streaming leg, where the
+        // chain reads the live prefix directly.
+        let (mut metadata, headers) = if self.filters.has_ingress() {
+            let record = bundle::Bundle {
+                metadata,
+                bundle: hv.bundle.clone(),
+                status: bundle::BundleStatus::New,
+            };
+            match self
+                .filters
+                .run_ingress(record, headers, &bcb_ops, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(record, prefix)) => (record.metadata, prefix),
+                Ok(filter::ChainOutcome::Drop(record, reason)) => {
+                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
+                    self.report_bundle_reception(&record, ReasonCode::NoAdditionalInformation)
+                        .await;
+                    if let Some(reason) = reason {
+                        self.report_bundle_deletion(&record, reason).await;
+                    }
+                    return Received::Disposed;
+                }
+                Err((record, e)) => {
+                    // The resident prefix failed the chain's own decode pass —
+                    // an internal inconsistency, since it parsed at reception.
+                    error!("Ingress filter chain failed: {e}");
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    self.report_bundle_reception(&record, ReasonCode::NoAdditionalInformation)
+                        .await;
+                    self.report_bundle_deletion(&record, ReasonCode::BlockUnintelligible)
+                        .await;
+                    return Received::Disposed;
+                }
+            }
+        } else {
+            (metadata, headers)
+        };
+
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
             None => headers,
@@ -258,10 +309,8 @@ impl Dispatcher {
         };
 
         // Post-drain finalize: verify the deferred block-1 BIB targets and
-        // collect the §E removals. The decoded extension fields were captured at
-        // header time, so move `hv.extracted` into the metadata now (`take`
-        // leaves `hv` intact for finalize, which ignores it).
-        metadata.extensions = core::mem::take(&mut hv.extracted);
+        // collect the §E removals. The decoded extension fields already moved
+        // into metadata at the gate above.
         let (bundle, to_remove, report_reason) = match parse::finalize_with_provider(
             &whole,
             hv,
@@ -286,7 +335,7 @@ impl Dispatcher {
         // The caller pre-stored the data (reassembly / restart) and owns its
         // cleanup; on any non-dispatched outcome the caller deletes it. We only
         // delete storage *we* create (the CLA `save_data` path below), on the
-        // chain-drop and duplicate paths.
+        // duplicate path.
         let mut caller_stored = false;
         if let Some(storage_name) = &metadata.storage_name {
             self.store.replace_data(storage_name, data.clone()).await;
@@ -294,55 +343,26 @@ impl Dispatcher {
         } else {
             metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
-        let bundle = bundle::Bundle::new(bundle, metadata);
+        let mut bundle = bundle::Bundle {
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::New,
+        };
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
         metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
-        // Reception happened, so report it (when requested) before both the
-        // Ingress chain and the duplicate check: RFC 9171 §5.6 reports on
-        // reception, so a replayed/duplicate bundle — or one the chain then
-        // drops — is still reported as received.
+        // Reception happened, so report it (when requested) before the duplicate
+        // check: RFC 9171 §5.6 reports on reception, so a replayed/duplicate
+        // bundle is still reported as received. (The Ingress chain already ran
+        // at the pre-drain gate; a chain drop reported itself there.)
         self.report_bundle_reception(&bundle, report_reason).await;
 
-        // Run the Ingress chain (Verifiers, then Classifiers) on the resident
-        // bundle *before* the single metadata write, so the one `insert_metadata`
-        // below persists any classification the chain applied. A chain that drops
-        // the bundle does so pre-insert: no record was ever created, so the drop
-        // is reported here directly (reception is already out) rather than via
-        // `drop_bundle`, which would try to tombstone a bundle that was never
-        // admitted.
-        let mut bundle = match self.filters.run_ingress(bundle, data, &*self.key_provider) {
-            Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
-            Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                    self.report_bundle_deletion(&bundle, reason).await;
-                }
-                if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.store.delete_data(storage_name).await;
-                }
-                return Received::Disposed;
-            }
-            Err((bundle, e)) => {
-                // The stored bytes failed the chain's own decode pass — an
-                // internal inconsistency, since they parsed at reception.
-                error!("Ingress filter chain failed: {e}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                self.report_bundle_deletion(&bundle, ReasonCode::BlockUnintelligible)
-                    .await;
-                if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.store.delete_data(storage_name).await;
-                }
-                return Received::Disposed;
-            }
-        };
-
         // Promote to the queued checkpoint before the single write. `New` is a
-        // purely in-memory "under construction" marker: the chain ran on the
-        // resident bundle above, and only the finished, classified record is
-        // ever persisted — directly at `Dispatching`. This one write replaces
+        // purely in-memory "under construction" marker: the chain ran at the
+        // gate above, and only the finished, classified record is ever
+        // persisted — directly at `Dispatching`. This one write replaces
         // the old insert-`New`-then-checkpoint pair (P1); the dispatch send's
         // conditional swap to `DispatchPending` is the queue commit, and a
         // crash between the two recovers via the `Dispatching` restart arm. No

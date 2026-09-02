@@ -339,7 +339,7 @@ mod tests {
             Box::new(KeySet::new(vec![sign_key()]))
         };
         let mut rx = segment_stream(full).await;
-        let (hv, headers, tail) = super::super::parse::parse_headers(&mut rx, 1 << 20, keys)
+        let (hv, headers, tail, _) = super::super::parse::parse_headers(&mut rx, 1 << 20, keys)
             .await
             .map_err(|_| ())
             .expect("header pass verifies (payload deferred)");
