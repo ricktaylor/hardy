@@ -316,6 +316,16 @@ impl PayloadTail {
         self.remaining
     }
 
+    /// Payload block-type-specific data bytes not yet seen — the target's
+    /// own content, excluding the CRC and break trailer. A caller feeding a
+    /// per-target digest (e.g. a deferred payload BIB) reads this before and
+    /// after each [`push`](Self::push) to slice the body prefix of the run
+    /// out from the trailer: the body is always consumed from the front, so
+    /// `body_remaining` before minus after is the run's leading body length.
+    pub fn body_remaining(&self) -> u64 {
+        self.body_remaining
+    }
+
     /// Feed the next run of streamed bytes. Returns `true` once the bundle is
     /// complete (body drained, CRC verified, breaks consumed). Errors on a CRC
     /// mismatch ([`crc::Error::IncorrectCrc`]), a malformed trailer
