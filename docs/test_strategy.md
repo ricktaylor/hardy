@@ -48,7 +48,6 @@ This Strategy is the parent document. Verification is executed according to the 
 | **TVR** | Component | [`COMP-TVR-01`](../tvr/docs/component_test_plan.md) | gRPC session lifecycle, file hot-reload, system integration. |
 | **Async** | Unit | [`UTP-ASYNC-01`](../async/docs/unit_test_plan.md) | TaskPool, sync primitives, cancellation. |
 | **Echo Service** | Component | [`PLAN-ECHO-01`](../echo-service/docs/test_plan.md) | Bundle echo service diagnostics. |
-| **IPN Legacy Filter** | Unit | [`UTP-IPN-LEGACY-01`](../ipn-legacy-filter/docs/unit_test_plan.md) | Legacy 2-element IPN EID encoding. |
 | **Tools** | Component | [`PLAN-TOOLS-01`](../tools/docs/test_plan.md) | CLI tools (`bp ping`, bundle operations). |
 | **System** | System | [`PLAN-SERVER-01`](../bpa-server/docs/test_plan.md) | Application lifecycle, config, OpenTelemetry. |
 | **System** | Interop | [`PLAN-INTEROP-01`](../tests/interop/docs/test_plan.md) | Interoperability with ION/DTNME/etc. (REQ-20). |
