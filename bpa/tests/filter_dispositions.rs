@@ -143,10 +143,6 @@ impl BundleStorage for ObservedStorage {
         self.inner.save(data).await
     }
 
-    async fn replace(&self, storage_name: &str, data: Bytes) -> StorageResult<()> {
-        self.inner.replace(storage_name, data).await
-    }
-
     async fn delete(&self, storage_name: &str) -> StorageResult<()> {
         self.inner.delete(storage_name).await
     }

@@ -821,7 +821,7 @@ With sequential-only storage access, the cache simplifies back to what Hardy alr
 | Small (< threshold) | LRU cache, take() on load (single refcount, `try_into_mut()`) |
 | Large (> threshold) | Not cached; stream from backend on each access |
 
-The cache is populated only on `store()` / `replace()` — never on `load()`. Load takes from the cache (single refcount for in-place mutation). This write-on-store, take-on-load model means the cache acts as a single-use buffer bridging the `store()` → `load()` handoff.
+The cache is populated only on `store()` — never on `load()`. Load takes from the cache (single refcount for in-place mutation). This write-on-store, take-on-load model means the cache acts as a single-use buffer bridging the `store()` → `load()` handoff.
 
 No header segment caching is needed — the Transformer model does not require random access to headers. Headers flow through the Transformer sequentially, captured as needed.
 

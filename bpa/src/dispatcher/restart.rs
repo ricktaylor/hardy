@@ -216,10 +216,6 @@ mod tests {
             self.0.insert(bundle).await
         }
 
-        async fn replace(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.replace(bundle).await
-        }
-
         async fn swap_status(
             &self,
             bundle_id: &Id,

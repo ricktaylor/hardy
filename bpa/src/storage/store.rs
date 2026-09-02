@@ -122,14 +122,6 @@ impl Store {
             .trace_expect("Failed to save bundle data")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
-        self.bundle_storage
-            .replace(storage_name, data)
-            .await
-            .trace_expect("Failed to replace bundle data")
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
         self.bundle_storage
@@ -387,9 +379,6 @@ mod tests {
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
                 Err("backend down".into())
-            }
-            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
             }
             async fn swap_status(
                 &self,

@@ -322,15 +322,13 @@ impl Dispatcher {
         // the output doors (egress rewrite, deliver strip).
         let data = whole;
         metadata.to_remove = to_remove;
-        // The caller pre-stored the data (reassembly / restart) and owns its
-        // cleanup; on any non-dispatched outcome the caller deletes it. We only
-        // delete storage *we* create (the CLA `save_data` path below), on the
+        // The caller pre-stored the data (reassembly / restart): stored as
+        // received, it stands as is, and the caller owns its cleanup — on any
+        // non-dispatched outcome the caller deletes it. We only delete
+        // storage *we* create (the CLA `save_data` path below), on the
         // duplicate path.
-        let mut caller_stored = false;
-        if let Some(storage_name) = &metadata.storage_name {
-            self.store.replace_data(storage_name, data.clone()).await;
-            caller_stored = true;
-        } else {
+        let caller_stored = metadata.storage_name.is_some();
+        if !caller_stored {
             metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
         let mut bundle = bundle::Bundle {

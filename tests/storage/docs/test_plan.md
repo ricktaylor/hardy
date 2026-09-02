@@ -41,7 +41,7 @@ The harness defines two test suites, one per storage trait:
 
 | Suite | Trait | Source | Tests |
 | :--- | :--- | :--- | :--- |
-| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 17 (`meta_01` .. `meta_17`) |
+| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 16 (`meta_01` .. `meta_16`) |
 | Bundle | `BundleStorage` | `src/bundle_suite.rs` | 4 (`blob_01` .. `blob_04`) |
 
 Each test function takes an `Arc<dyn MetadataStorage>` or `Arc<dyn BundleStorage>` — the suite has no knowledge of which backend it is testing.
@@ -102,9 +102,8 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | :--- | :--- | :--- | :--- |
 | **META-01** | **Insert & Get** | 1. Create a random `Bundle`.<br>2. Call `insert()`.<br>3. Call `get()` with the ID. | 1. `insert` returns `true`.<br>2. `get` returns `Some(bundle)`.<br>3. Fields match original. |
 | **META-02** | **Duplicate Insert** | 1. Insert a bundle.<br>2. Insert the same bundle again. | 1. First `insert` returns `true`.<br>2. Second `insert` returns `false`. |
-| **META-03** | **Update (Replace)** | 1. Insert a bundle (Status=`Waiting`).<br>2. Modify status to `Dispatching`.<br>3. Call `replace()`.<br>4. Call `get()`. | 1. `replace` returns `Ok`.<br>2. `get` returns bundle with `Dispatching` status. |
+| **META-03** | **Update Status (Compare-and-Swap)** | 1. Insert a bundle (Status=`Waiting`).<br>2. Call `swap_status(id, Waiting, Dispatching)`.<br>3. Call `get()`. | 1. `swap_status` returns `true` (a swap from the live snapshot wins).<br>2. `get` returns bundle with `Dispatching` status. |
 | **META-04** | **Tombstone** | 1. Insert a bundle.<br>2. Call `tombstone()`.<br>3. Call `get()`.<br>4. Call `insert()` again. | 1. `tombstone` returns `Ok`.<br>2. `get` returns `None`.<br>3. `insert` returns `false` (prevents resurrection). |
-| **META-17** | **Replace Does Not Resurrect a Tombstone** | 1. Insert a bundle.<br>2. Call `tombstone()`.<br>3. Modify the snapshot's status and call `replace()`.<br>4. Call `get()`, then `insert()` again. | 1. `replace` returns `Ok` (a lost race is not an error).<br>2. `get` returns `None`.<br>3. `insert` returns `false`: the tombstone still blocks re-insertion. |
 | **META-15** | **Metadata Round-Trip** | 1. Insert a bundle with every persisted metadata group populated (`Origin::Ingress` provenance, decoded extension fields).<br>2. Call `get()`. | 1. The whole record round-trips: wire bundle, metadata body (origin, received_at, extension fields), and status all match the original. |
 
 ### Suite B: Polling & Ordering
@@ -153,7 +152,7 @@ This section defines the boundary between generic harness coverage and backend-s
 
 | Area | Test IDs | What is verified |
 | :--- | :--- | :--- |
-| CRUD lifecycle | META-01..04, META-15, META-17, BLOB-01..03 | Insert, get, update, tombstone, tombstone durability under a racing write, save, load, delete |
+| CRUD lifecycle | META-01..04, META-15, BLOB-01..03 | Insert, get, status update, tombstone, save, load, delete |
 | Polling & ordering | META-06..10, META-14 | FIFO ordering, expiry filtering, pending limits, peer matching, fragment ordering, service filtering |
 | State transitions | META-05, META-11..13, META-16 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup, service queue sweep |
 | Recovery scan | BLOB-04 | Discovers all stored bundles on restart |

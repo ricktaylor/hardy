@@ -244,33 +244,6 @@ impl BundleStorage for BundleMemStorage {
         Ok(storage_name.into())
     }
 
-    async fn replace(&self, storage_name: &str, data: Bytes) -> Result<()> {
-        let new_len = data.len();
-        let (e1, e2) = {
-            let mut inner = self.inner.lock();
-            let old_len = inner
-                .cache
-                .put(storage_name.to_string(), (OffsetDateTime::now_utc(), data))
-                .map(|(_, d)| d.len())
-                .unwrap_or(0);
-            inner.capacity = inner
-                .capacity
-                .saturating_sub(old_len)
-                .saturating_add(new_len);
-
-            let e1 = inner.check_watermark(self.high_watermark, self.low_watermark);
-            inner.evict_to_capacity(self.max_capacity.into(), self.min_bundles);
-            let e2 = inner.check_watermark(self.high_watermark, self.low_watermark);
-
-            metrics::gauge!("bpa.mem_store.bundles").set(inner.cache.len() as f64);
-            metrics::gauge!("bpa.mem_store.bytes").set(inner.capacity as f64);
-            (e1, e2)
-        };
-        self.log_edge(e1);
-        self.log_edge(e2);
-        Ok(())
-    }
-
     async fn delete(&self, storage_name: &str) -> Result<()> {
         let edge = {
             let mut inner = self.inner.lock();
@@ -389,24 +362,6 @@ mod tests {
             storage.load(&name2).await.unwrap().is_some(),
             "The just-saved bundle must survive its own eviction pass"
         );
-    }
-
-    // replace() must enforce the byte capacity, not just account for it.
-    #[tokio::test]
-    async fn replace_evicts_over_capacity() {
-        let storage = small(100, 1);
-
-        let name1 = storage.save(Bytes::from(vec![1u8; 50])).await.unwrap();
-        let name2 = storage.save(Bytes::from(vec![2u8; 50])).await.unwrap();
-
-        // Growing name2 to 90 bytes pushes usage to 140: name1 (LRU) must go
-        storage
-            .replace(&name2, Bytes::from(vec![3u8; 90]))
-            .await
-            .unwrap();
-
-        assert!(storage.load(&name1).await.unwrap().is_none());
-        assert_eq!(storage.load(&name2).await.unwrap().unwrap().len(), 90);
     }
 
     // The episode is entered once at the high watermark and left once below
