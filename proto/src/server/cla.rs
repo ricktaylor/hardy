@@ -7,6 +7,9 @@ struct Cla {
     sink: Mutex<Option<ClaSink>>,
     proxy: Once<RpcProxy<Result<BpaToCla, tonic::Status>, ClaToBpa>>,
     address_type: std::sync::OnceLock<Option<hardy_bpa::cla::ClaAddressType>>,
+    // The effective cap from the BPA at on_register, relayed to the remote
+    // CLA in the RegisterClaResponse.
+    max_bundle_size: std::sync::OnceLock<u64>,
 }
 
 impl Cla {
@@ -47,11 +50,20 @@ impl Cla {
             request.peer_addr.map(|a| a.try_into()).transpose()?;
 
         // The unary wire message already delivered the whole bundle, so it
-        // enters the BPA as a one-segment stream.
+        // enters the BPA as a one-segment stream. The verdict rides the
+        // response; only sink faults become gRPC errors.
         self.sink()?
             .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut request.bundle)
             .await
-            .map(|_| bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {}))
+            .map(|verdict| {
+                bpa_to_cla::Msg::Dispatch(DispatchBundleResponse {
+                    verdict: match verdict {
+                        hardy_bpa::cla::Acceptance::Accepted => DispatchVerdict::Accepted,
+                        hardy_bpa::cla::Acceptance::Refused => DispatchVerdict::Refused,
+                    }
+                    .into(),
+                })
+            })
             .map_err(|e| tonic::Status::from_error(e.into()))
     }
 
@@ -132,7 +144,9 @@ impl hardy_bpa::cla::Cla for Cla {
         &self,
         sink: Box<dyn hardy_bpa::cla::Sink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
+        max_bundle_size: core::num::NonZeroU64,
     ) {
+        let _ = self.max_bundle_size.set(max_bundle_size.get());
         *self.sink.lock() = Some(Arc::from(sink));
     }
 
@@ -276,6 +290,7 @@ async fn run_cla_session(
         sink: Mutex::new(None),
         proxy: Once::new(),
         address_type: std::sync::OnceLock::new(),
+        max_bundle_size: std::sync::OnceLock::new(),
     });
 
     // Wait for the client's registration message and process it
@@ -293,14 +308,25 @@ async fn run_cla_session(
                         });
                 let _ = cla.address_type.set(address_type);
                 let node_ids = bpa
-                    .register_cla(request.name, cla.clone(), None)
+                    .register_cla(
+                        request.name,
+                        cla.clone(),
+                        None,
+                        // 0 = no CLA-side limit declared.
+                        core::num::NonZeroU64::new(request.max_bundle_size),
+                    )
                     .await
                     .map_err(|e| tonic::Status::from_error(e.into()))?
                     .into_iter()
                     .map(|node_id| node_id.to_string())
                     .collect();
 
-                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse { node_ids }))
+                Ok(bpa_to_cla::Msg::Register(RegisterClaResponse {
+                    node_ids,
+                    // Stored by on_register, which register_cla drove above;
+                    // 0 = no specific cap declared.
+                    max_bundle_size: cla.max_bundle_size.get().copied().unwrap_or(0),
+                }))
             }
             _ => {
                 warn!("CLA sent incorrect message: {msg:?}");

@@ -17,7 +17,14 @@ impl Cla {
     ///
     /// * `sink` - The sink to dispatch bundles to the BPA.
     /// * `outbox` - The path to the directory to watch for outgoing bundles.
-    pub async fn start_watcher(&self, sink: Arc<dyn hardy_bpa::cla::Sink>, outbox: String) {
+    /// * `max_bundle_size` - The BPA's dispatch size cap; files larger than
+    ///   it are skipped rather than offered to a certain refusal.
+    pub async fn start_watcher(
+        &self,
+        sink: Arc<dyn hardy_bpa::cla::Sink>,
+        outbox: String,
+        max_bundle_size: core::num::NonZeroU64,
+    ) {
         let (path_tx, path_rx) = flume::unbounded::<PathBuf>();
 
         let cancel_token = self.tasks.cancel_token().clone();
@@ -27,7 +34,7 @@ impl Cla {
 
         let cancel_token = self.tasks.cancel_token().clone();
         hardy_async::spawn!(self.tasks, "forwarder_task", async move {
-            forwarder_task(sink, path_rx, cancel_token).await
+            forwarder_task(sink, path_rx, max_bundle_size, cancel_token).await
         });
     }
 }
@@ -89,6 +96,7 @@ async fn watcher_task(
 async fn forwarder_task(
     sink: Arc<dyn hardy_bpa::cla::Sink>,
     rx: flume::Receiver<PathBuf>,
+    max_bundle_size: core::num::NonZeroU64,
     cancel_token: tokio_util::sync::CancellationToken,
 ) {
     loop {
@@ -96,22 +104,41 @@ async fn forwarder_task(
             res = rx.recv_async() => match res {
                 Err(_) => break,
                 Ok(path) => {
+                    // Pre-check against the BPA's dispatch size cap: an
+                    // over-cap file would be refused deterministically, so
+                    // don't even read it. Skipped (not deleted) — the
+                    // operator's file, the operator's cleanup.
+                    if let Ok(meta) = tokio::fs::metadata(&path).await
+                        && meta.len() > max_bundle_size.get()
+                    {
+                        warn!("'{}' exceeds the BPA's max bundle size ({} > {max_bundle_size}), skipped", path.display(), meta.len());
+                        continue;
+                    }
+
                     // INTERIM BUFFERING: the whole file is read into memory and
                     // dispatched as a one-segment stream (`Bytes` is a `stream::Receiver`). This
                     // is a deliberate stepping stone toward the full streaming
                     // pipeline (a native implementation would stream the file in
                     // chunks); see bpa/docs/streaming_pipeline_design.md.
                     if let Ok(buffer) = tokio::fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
+                        // The file is consumed only on acceptance: a refused
+                        // or failed dispatch leaves it in place for the next
+                        // scan, since the BPA has not taken responsibility
+                        // for the bundle.
+                        // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
                         match sink.dispatch(None, None, &mut hardy_bpa::Bytes::from(buffer)).await {
-                            Err(e) => warn!("Failed to dispatch bundle: {e}"),
-                            Ok(_) => debug!("Dispatched '{}'",path.display()),
+                            Ok(hardy_bpa::cla::Acceptance::Accepted) => {
+                                debug!("Dispatched '{}'", path.display());
+                                tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
+                                    warn!("Failed to remove file '{}': {e}", path.display());
+                                });
+                            }
+                            Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                                warn!("Bundle '{}' refused by the BPA, file left in place", path.display());
+                            }
+                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}", path.display()),
                         }
                     }
-
-                    // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
-                    tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
-                        warn!("Failed to remove file '{}': {e}", path.display());
-                    });
                 }
             },
             _ = cancel_token.cancelled() => {

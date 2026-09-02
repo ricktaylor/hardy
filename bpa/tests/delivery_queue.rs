@@ -102,7 +102,12 @@ struct IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -175,7 +180,7 @@ async fn unregister_sweeps_queued_deliveries() {
     let cla = Arc::new(IngressCla {
         sink: hardy_async::sync::spin::Once::new(),
     });
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -193,12 +198,15 @@ async fn unregister_sweeps_queued_deliveries() {
     // Bundle 1 is delivered and held open, occupying the service's
     // (serialized) delivery consumer.
     let (_id1, data1) = dispatch(b"held");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut data1.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data1.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(tokio::time::Duration::from_secs(5), started_rx.recv_async())
         .await
         .expect("Timeout waiting for the held delivery")
@@ -206,12 +214,15 @@ async fn unregister_sweeps_queued_deliveries() {
 
     // Bundle 2 queues behind it in DeliverPending.
     let (id2, data2) = dispatch(b"queued");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut data2.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut data2.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     await_status(
         &metadata_store,
         &id2,

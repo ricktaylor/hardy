@@ -875,13 +875,6 @@ impl MetadataStorage for SqliteStorage {
                 Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
             }
         }
-                        // The other end is shutting down - get out
-                        break;
-                    }
-                }
-                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
-            }
-        }
 
         Ok(())
     }

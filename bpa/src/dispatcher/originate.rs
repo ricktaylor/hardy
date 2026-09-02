@@ -36,8 +36,7 @@ impl Dispatcher {
         // pre-restart bundle after a backward clock step, made vanishingly
         // unlikely by the nanosecond-seeded sequence floor) — and only
         // that: a metadata-storage failure aborts inside `Store::store`.
-        let mut builder =
-            Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
 
         // Set flags
         if let Some(flags) = &flags {
@@ -87,15 +86,16 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let data = concat_stream(stream, self.max_bundle_size)
-            .await
-            .map_err(|e| match e {
-                ConcatError::Cancelled => services::Error::StreamCancelled,
-                ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge {
-                    size: size as u64,
-                    max: max as u64,
-                },
-            })?;
+        // 32-bit: a cap beyond the address space saturates — nothing larger
+        // could be buffered anyway.
+        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
+        let data = concat_stream(stream, max_size).await.map_err(|e| match e {
+            ConcatError::Cancelled => services::Error::StreamCancelled,
+            ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge {
+                size: size as u64,
+                max: max as u64,
+            },
+        })?;
         self.local_dispatch_raw(expected_source, data).await
     }
 
@@ -112,8 +112,7 @@ impl Dispatcher {
         // the bytes are stored and forwarded as received. As the origin we must be
         // able to process HopCount / unclocked BundleAge, so an undecryptable one
         // is fatal.
-        let validated =
-            parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
+        let validated = parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
         crate::bundle::parse::reject_undecryptable_liveness(
             &validated.nokey_ext,
             validated.bundle.primary.id.timestamp.is_clocked(),

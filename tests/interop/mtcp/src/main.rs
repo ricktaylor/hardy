@@ -55,7 +55,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
 
     let node_ids = remote_bpa
-        .register_cla(config.cla_name.clone(), cla.clone(), None)
+        .register_cla(config.cla_name.clone(), cla.clone(), None, None)
         .await
         .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 

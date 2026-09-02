@@ -127,15 +127,16 @@ impl Dispatcher {
                 .trace_expect("New stream push failed?!?");
 
             match self.process_received_bundle(&mut rx, metadata).await {
-                Ok(Some((bundle, data))) => self.ingress_bundle(bundle, data).await,
+                ingress::Received::Bundle(bundle, data) => self.ingress_bundle(bundle, data).await,
                 // Re-validation rejected the orphan — delete its stranded data.
-                Ok(None) => {
+                ingress::Received::Disposed => {
                     self.store.delete_data(&storage_name).await;
                 }
-                // A stored orphan that trips the gate has no live transfer to
-                // refuse — log, and delete its stranded data.
-                Err(e) => {
-                    warn!("Restart orphan rejected: {e}");
+                // A stored orphan has no live transfer to refuse (reachable
+                // only when the size cap tightened across the restart);
+                // delete its stranded data.
+                ingress::Received::Refused => {
+                    warn!("Restart orphan refused, deleted");
                     self.store.delete_data(&storage_name).await;
                 }
             }
@@ -172,7 +173,12 @@ mod tests {
             None
         }
 
-        async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        async fn on_register(
+            &self,
+            sink: Box<dyn cla::Sink>,
+            _node_ids: &[NodeId],
+            _max_bundle_size: core::num::NonZeroU64,
+        ) {
             self.sink.call_once(|| sink);
         }
 
@@ -368,7 +374,7 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-2".to_string(), cla.clone(), None)
+        bpa.register_cla("recording-2".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         cla.sink
@@ -454,7 +460,7 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-3".to_string(), cla.clone(), None)
+        bpa.register_cla("recording-3".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         cla.sink
