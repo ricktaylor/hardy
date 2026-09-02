@@ -82,7 +82,6 @@ Cargo features control which components are compiled:
 - **tcpclv4** - Inline TCPCLv4 CLA (no separate process needed)
 - **file-cla** - File-based CLA for testing and air-gapped transfers
 - **echo** - Built-in echo service for testing
-- **ipn-legacy-filter** - Filter for legacy two-element IPN encoding
 - **otel** - OpenTelemetry observability integration
 - **packaged-installation** - Adjusts default configuration paths for system package installations (e.g., `/etc/hardy-bpa-server/` instead of `/etc/opt/hardy-bpa-server/` on Linux)
 
@@ -108,13 +107,13 @@ Operators can raise or lower this value to control whether routing rules from ag
 
 File-based static routing with hot-reload support. See [Static Routes Design](static_routes_design.md) for details.
 
-## Filter Configuration
+## Validity and Re-encode Configuration
 
-The server registers filters with the BPA based on configuration. Filters provide hook points for validation, policy enforcement, and bundle modification.
+These config sections map onto the BPA's own configuration-gated pipeline checks and built-ins (they are not registered filters — see the bpa crate's [Filter Subsystem Design](../../bpa/docs/filter_subsystem_design.md)).
 
-### RFC 9171 Validity Filter
+### RFC 9171 Validity Checks
 
-The server registers the RFC 9171 validity filter at the Ingress hook with configurable checks:
+The server maps the `rfc9171-validity` section onto the BPA's builder toggles, enforced at the ingress gate before anything is stored:
 
 ```yaml
 rfc9171-validity:
@@ -124,9 +123,9 @@ rfc9171-validity:
 
 Both options default to `true`, enforcing RFC 9171 recommendations. Disable `primary-block-integrity` for interoperability with implementations that omit primary block CRCs (e.g., dtn7-rs).
 
-### IPN Legacy Filter
+### IPN Legacy Re-encode
 
-When the `ipn-legacy-filter` feature is enabled and `ipn-legacy-nodes` is configured, the IPN legacy filter rewrites bundle EIDs at the Egress hook to use legacy two-element IPN encoding for specified nodes:
+When `ipn-legacy-nodes` is configured, the BPA's per-hop rewrite stage re-encodes IPN EIDs to the legacy two-element form on bundles forwarded to matching next hops:
 
 ```yaml
 ipn-legacy-nodes:

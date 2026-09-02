@@ -91,7 +91,7 @@ pub struct ExtensionFields {
 
 // Output of the classifier chain: persisted, cleared and re-derived at
 // restart re-admission. The class and route_key fields arrive with the
-// policy and routing tranches (see bpa/docs/filter_subsystem_redesign.md).
+// policy and routing tranches (see bpa/docs/filter_subsystem_design.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Classification {

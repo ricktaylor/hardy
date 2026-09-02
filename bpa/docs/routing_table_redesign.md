@@ -1,6 +1,6 @@
 # Routing Table Redesign (DRAFT / RFC)
 
-> **Status: draft for review.** Captures the routing-key-selection and multi-topology-routing design settled in the design dialogue of 2026-07-17, split out of the filter-redesign discussion ([`filter_subsystem_redesign.md`](filter_subsystem_redesign.md)). Companion split: the filter tranche commits the classification-delta *seam* (the delta ships with annotation slots only — `route_key` itself arrives additively with this tranche, `class` with the policy tranche, both non-breaking on the `#[non_exhaustive]` delta); everything in this document is the routing tranche. Once implemented this folds into [`routing_subsystem_design.md`](routing_subsystem_design.md) and the draft is retired. Nothing here is implemented yet.
+> **Status: draft for review.** Captures the routing-key-selection and multi-topology-routing design settled in the design dialogue of 2026-07-17, split out of the filter-redesign discussion (now folded into [`filter_subsystem_design.md`](filter_subsystem_design.md)). Companion split: the filter tranche commits the classification-delta *seam* (the delta shipped with annotation slots only — `route_key` itself arrives additively with this tranche, `class` with the policy tranche, both non-breaking on the `#[non_exhaustive]` delta); everything in this document is the routing tranche. Once implemented this folds into [`routing_subsystem_design.md`](routing_subsystem_design.md) and the draft is retired. Nothing here is implemented yet.
 >
 > **Terminology.** This document uses **RIB** for the BPA's routing component (as the code does — `bpa/src/routing`, `rib.find`) and **FIB** for the compiled lookup structure internal to it. The wider "TVR holds the RIB, the BPA holds the FIB" framing lives one level up and is unchanged by this design.
 
@@ -26,7 +26,7 @@ This design makes each one right: key and table selection become Classifier conc
 
 ## Key selection — the filter seam
 
-The RIB lookup generalises to `route_key.unwrap_or(destination)`, where `route_key: Option<Eid>` is a Classifier-set `MetadataDelta` field (see [`filter_subsystem_redesign.md`](filter_subsystem_redesign.md)). This is the Linux fwmark shape: classification feeds routing through metadata; the lookup itself stays fixed machinery, and Dispatch stays hook-free.
+The RIB lookup generalises to `route_key.unwrap_or(destination)`, where `route_key: Option<Eid>` is a Classifier-set `MetadataDelta` field (see [`filter_subsystem_design.md`](filter_subsystem_design.md)). This is the Linux fwmark shape: classification feeds routing through metadata; the lookup itself stays fixed machinery, and Dispatch stays hook-free.
 
 The key is per-node-stable (a function of the bundle's wire state, derivable once at the input boundary), persists across Waiting sweeps, and is re-derived by restart re-admission — so key-derivation policy changes are covered by the same restart story as every other filter.
 
@@ -103,7 +103,7 @@ The three pieces are decoupled, and the FIB compilation — being a pure perform
 
 ## Related documents
 
-- [`filter_subsystem_redesign.md`](filter_subsystem_redesign.md) — the `MetadataDelta` (`class` + `route_key`), Classifier/Rewriter kinds, the segment-routing worked example, restart re-admission
+- [`filter_subsystem_design.md`](filter_subsystem_design.md) — the `MetadataDelta` (`class` + `route_key`), Classifier/Rewriter kinds, the segment-routing worked example, restart re-admission
 - [`policy_subsystem_redesign.md`](policy_subsystem_redesign.md) — the `ClassPolicy` owning the `table` property; multi-topology tables as per-intent topologies; the centralized policy manager
 - [`routing_subsystem_design.md`](routing_subsystem_design.md) — the current routing design and this draft's eventual home
 - [`queue_architecture.md`](queue_architecture.md) — processing blocks and queues; Waiting/gated queues (its flow-label section is superseded by the filter doc's `MetadataDelta`)

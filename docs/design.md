@@ -146,7 +146,6 @@ For detailed pipeline and subsystem documentation, see [bpa/docs/design.md](../b
 | hardy-file-cla | Library | File-based CLA | [file-cla/docs/design.md](../file-cla/docs/design.md) |
 | hardy-echo-service | Library | Echo service | [echo-service/docs/design.md](../echo-service/docs/design.md) |
 | hardy-otel | Library | OpenTelemetry integration | [otel/docs/design.md](../otel/docs/design.md) |
-| hardy-ipn-legacy-filter | Library | Legacy IPN filter | [ipn-legacy-filter/docs/design.md](../ipn-legacy-filter/docs/design.md) |
 | hardy-bibe | Library | BIBE implementation | [bibe/docs/design.md](../bibe/docs/design.md) |
 | hardy-tvr | Application | Time-Variant Routing agent | [tvr/docs/design.md](../tvr/docs/design.md) |
 | hardy-bpa-server | Application | BPA server | [bpa-server/docs/design.md](../bpa-server/docs/design.md) |

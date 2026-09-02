@@ -2,11 +2,13 @@
 
 This document describes the egress policy subsystem in the BPA, covering flow classification, queue management, and the integration with CLA forwarding.
 
+> **Status.** The flow label's *write path* has moved: the filter-writable `WritableMetadata::flow_label` field has been removed from the code, and the label will instead be derived from ingress classification (the filter subsystem's `MetadataDelta` — see [Filter Subsystem Design](filter_subsystem_design.md)) when the policy tranche lands ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md)). The label as this subsystem's *input* is unchanged and in scope — `EgressPolicy::classify` keeps its `Option<u32>` label parameter for ECMP and HTB-style policies — but is invoked with `None` in the interim, so every bundle currently takes the best-effort queue.
+
 ## Related Documents
 
-- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and peer selection (ECMP uses flow_label)
-- **[Bundle State Machine Design](bundle_state_machine_design.md)**: `ForwardPending { peer, queue }` status
-- **[Filter Subsystem Design](filter_subsystem_design.md)**: Ingress filters can set flow_label
+- **[Routing Design](routing_subsystem_design.md)**: RIB lookup and peer selection
+- **[Bundle State Machine Design](bundle_state_machine_design.md)**: `ForwardPending { peer, queue, next_hop }` status
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: ingress classification (the annotation seam that replaced flow_label)
 - **[Storage Subsystem Design](storage_subsystem_design.md)**: Hybrid channel implementation and bundle persistence
 
 ## Overview
@@ -15,7 +17,7 @@ The policy subsystem controls **how** and **when** bundles are transmitted to pe
 
 | Aspect | Purpose |
 |--------|---------|
-| **Flow Classification** | Map flow_label to queue index |
+| **Flow Classification** | Map a bundle's flow label to a queue index |
 | **Queue Management** | Priority-based queue hierarchy |
 | **Rate Control** | Backpressure and rate limiting via controllers |
 | **CLA Integration** | Policy wraps CLA transmission |
@@ -42,9 +44,9 @@ The policy subsystem controls **how** and **when** bundles are transmitted to pe
 ┌─────────────────────────────────────────────────────────────────────┐
 │                          Peer                                       │
 │                                                                     │
-│  1. Extract flow_label from bundle.metadata.writable.flow_label     │
-│  2. policy.classify(flow_label) → queue index                       │
-│  3. Send to queue channel                                           │
+│  1. policy.classify(flow_label) → queue index                       │
+│     (the label is `None` until classification derives it)           │
+│  2. Send to queue channel                                           │
 │                                                                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
 │  │  Queue 0    │  │  Queue 1    │  │  Queue None │                  │
@@ -96,17 +98,17 @@ The policy subsystem defines three traits. See rustdoc for full API details.
 
 ### Flow Label Source
 
-The `flow_label` is stored in bundle metadata (`WritableMetadata`) and can be set by Ingress filters. See [Filter Subsystem Design](filter_subsystem_design.md) for filter implementation details.
+The flow label is derived from the bundle's ingress classification (see the status note above and [Filter Subsystem Design](filter_subsystem_design.md) for the classification seam); the derivation lands with the policy tranche, so the label is currently always `None`.
 
 ### Classification Process
 
-When a bundle reaches a peer for forwarding, the policy's `classify()` method maps the flow_label to a queue index. Bundles without a flow_label default to the best-effort queue (`None`). If classification returns an invalid queue index, it falls back to the best-effort queue.
+When a bundle reaches a peer for forwarding, the policy's `classify()` method maps the flow label to a queue index. Bundles without a label default to the best-effort queue (`None`). If classification returns an invalid queue index, it falls back to the best-effort queue.
 
 ### ECMP Peer Selection
 
-Flow labels also affect peer selection during routing. See [Routing Design](routing_subsystem_design.md) for details.
+The flow label also affects peer selection during routing. See [Routing Design](routing_subsystem_design.md) for details.
 
-When multiple peers can reach a destination, the RIB uses a hash of bundle source, destination, and flow_label for deterministic peer selection. This ensures bundles with the same flow_label always route to the same peer, preventing out-of-order delivery.
+When multiple peers can reach a destination, the RIB uses a hash of bundle source and destination (the flow label rejoins the hash when classification derives it) for deterministic peer selection. This ensures bundles of the same flow always route to the same peer, preventing out-of-order delivery.
 
 ## Queue Management
 
@@ -293,12 +295,15 @@ The egress path has three conceptually distinct stages. The current null
 policy collapses all three, but an advanced policy implementation must
 separate them.
 
-### Stage 1: Label (Filter)
+### Stage 1: Label (Classification)
 
-Ingress or originate filters tag bundles with a `flow_label: Option<u32>`
-in `WritableMetadata`. The label is an opaque application-level identifier
-— it carries no scheduling semantics itself. Examples: DSCP value from
-the payload, application priority, mission phase identifier.
+Ingress or originate classification tags bundles; the `flow_label:
+Option<u32>` the policy consumes is derived from that classification
+(the derivation lands with the policy tranche — the old filter-writable
+`WritableMetadata` field is gone). The label is an opaque
+application-level identifier — it carries no scheduling semantics
+itself. Examples: DSCP value from the payload, application priority,
+mission phase identifier.
 
 ### Stage 2: Classify (EgressPolicy)
 

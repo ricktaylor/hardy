@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- The nullable `next_hop` column (migration `0006_forward_pending_next_hop`), tracking the `hardy-bpa` forwarding-queue change: a `forward_pending` status persists the resolved next-hop adjacency EID, the pending-poll for a forwarding queue matches on queue identity (`peer_id`/`queue_id`) and emits each row's own adjacency, and the peer-queue sweeps clear it. A `forward_pending` row written before the column existed has no adjacency and no longer decodes.
 - `forward_ack_pending` bundle status (migration 0002), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
 - `dispatch_pending`, `deliver_pending`, and `delivery_ack_pending` bundle statuses (migration 0004) with the `deliver_pending` per-service partial index (migration 0005), and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
 
