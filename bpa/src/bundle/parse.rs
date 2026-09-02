@@ -510,12 +510,9 @@ where
         let key_source = key_source
             .as_deref()
             .expect("built when a BPSec branch runs");
-        if let Err(e) = checks::verify_payload(
-            whole,
-            key_source,
-            &hv.bundle.blocks,
-            &hv.deferred_bibs,
-        ) {
+        if let Err(e) =
+            checks::verify_payload(whole, key_source, &hv.bundle.blocks, &hv.deferred_bibs)
+        {
             return Err((hv.bundle, e));
         }
     }
