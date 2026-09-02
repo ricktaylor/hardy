@@ -114,6 +114,25 @@ macro_rules! impl_cancel {
     };
 }
 
+// [`stream::Ack`]: the in-band acknowledgement that commits a collection.
+macro_rules! impl_ack {
+    ($msg:ty, $field:ident, $oneof:ty, $ack:ident) => {
+        impl $crate::stream::Ack for $msg {
+            fn ack() -> Self {
+                type Oneof = $oneof;
+                Self {
+                    $field: Some(Oneof::$ack(())),
+                }
+            }
+
+            fn is_ack(&self) -> bool {
+                type Oneof = $oneof;
+                matches!(self.$field, Some(Oneof::$ack(_)))
+            }
+        }
+    };
+}
+
 // [`stream::Unregister`]: the graceful end of a session.
 macro_rules! impl_unregister {
     ($msg:ty, $field:ident, $oneof:ty) => {
@@ -150,6 +169,9 @@ pub mod application {
 
     // The abandonment of a collection.
     impl_cancel!(ReceiveRequest, request, receive_request::Request, Cancel);
+
+    // The acknowledgement that commits a collection.
+    impl_ack!(ReceiveRequest, request, receive_request::Request, Ack);
 
     // The graceful end of a session.
     impl_unregister!(SubscribeRequest, request, subscribe_request::Request);
@@ -232,6 +254,9 @@ pub mod service {
 
     // The abandonment of a collection.
     impl_cancel!(ReceiveRequest, request, receive_request::Request, Cancel);
+
+    // The acknowledgement that commits a collection.
+    impl_ack!(ReceiveRequest, request, receive_request::Request, Ack);
 
     // The graceful end of a session.
     impl_unregister!(SubscribeRequest, request, subscribe_request::Request);

@@ -160,30 +160,40 @@ async fn deliver(
     bundle_id: Id,
     expiry: OffsetDateTime,
     delivery: Delivery,
-    mut stream: adapter::Reader<ReceiveResponse, ReceiveRequest>,
+    mut reader: adapter::Reader<ReceiveResponse, ReceiveRequest>,
 ) {
-    let on_deliver = application.on_deliver(
-        &bundle_id,
-        expiry,
-        delivery.ack_requested,
-        delivery.adu_size,
-        &mut stream,
-    );
-    // Completion is polled first so a delivery that finished in the same
-    // instant the session ended is honoured; a pending one yields to the
-    // teardown immediately.
     let result = tokio::select! {
         biased;
-        result = on_deliver => result,
+        result = application.on_deliver(&bundle_id, expiry, delivery.ack_requested, delivery.adu_size, &mut reader) => result,
         _ = cancel.cancelled() => Err(services::Error::StreamCancelled),
     };
-    let Err(e) = result else {
-        return;
-    };
-    // Dropping `stream` short of completion abandons the collection with
-    // the wire's in-band cancel (see `adapter::Reader`'s Drop), and the
-    // bundle stays parked for a later attempt.
-    log_declined("Application", &delivery.bundle_id, stream.is_complete(), &e);
+    match result {
+        // Accepted without receiving to completion: an application bug.
+        // No ack goes out (an early ack is a protocol violation), so the
+        // bundle stays parked for re-delivery.
+        Ok(()) if !reader.is_complete() => {
+            warn!(
+                "Application accepted delivery {} without receiving it in full; it will be re-delivered",
+                delivery.bundle_id
+            );
+        }
+        // The application received the whole ADU; acknowledge to commit the
+        // delivery (the server finalizes the bundle on this). The handshake
+        // still yields to teardown: an ack lost that way only parks the
+        // bundle for a duplicate re-delivery, and must not stall shutdown
+        // on a server that never closes the response.
+        Ok(()) => {
+            tokio::select! {
+                biased;
+                _ = reader.acknowledge() => {}
+                _ = cancel.cancelled() => {}
+            }
+        }
+        // Dropping `reader` short of completion abandons the collection
+        // with the wire's in-band cancel (see `adapter::Reader`'s Drop),
+        // and the bundle stays parked for a later attempt.
+        Err(e) => log_declined("Application", &delivery.bundle_id, reader.is_complete(), &e),
+    }
 }
 
 // The session's event loop: wire events land on the local trait, and
@@ -221,11 +231,11 @@ pub async fn run_session(
                     warn!("Ignoring delivery with invalid expiry: {delivery:?}");
                     continue;
                 };
-                let stream = collector.open(delivery.bundle_id.clone());
+                let reader = collector.open(delivery.bundle_id.clone());
                 let application = application.clone();
                 let cancel = session_cancel.clone();
                 hardy_async::spawn!(deliveries, "application_delivery", async move {
-                    deliver(application, cancel, bundle_id, expiry, delivery, stream).await
+                    deliver(application, cancel, bundle_id, expiry, delivery, reader).await
                 })
                 .await;
             }

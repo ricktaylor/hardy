@@ -41,19 +41,22 @@ service ServiceService {
 
   // Collect a pending delivery: the metadata first (the only message
   // carrying the session token), then the bundle bytes stream back in
-  // chunks; completing the stream completes the delivery. Each
-  // Delivery announcement authorises exactly one Receive: a repeat
-  // Receive for the same bundle answers NOT_FOUND. A cancel message
-  // abandons the collection: the call ends with status CANCELLED and
-  // the bundle stays held, re-announced to this endpoint's next
-  // registration, as is a delivery never collected before the session
-  // ends. A cancel that arrives after the final chunk was committed
-  // is too late: the delivery has completed. Completion commits on the
-  // BPA's side as the final chunk is queued for transmission, not on
-  // client receipt: a client that loses its session between that
-  // commit and reading last_chunk has lost the collection's bytes,
-  // and the bundle is gone. An acknowledgement-gated completion is a
-  // possible future extension of this wire.
+  // chunks. Receiving last_chunk does not complete the delivery: the
+  // client commits it with an in-band ack, sent only after last_chunk,
+  // once it has taken responsibility for the bundle. The server
+  // finalizes the bundle on the ack and then closes the response; the
+  // client should read the response to that end, since dropping the
+  // call may discard an ack still in flight. Each Delivery announcement
+  // authorises exactly one Receive: a repeat Receive for the same
+  // bundle answers NOT_FOUND. Anything short of the ack abandons the
+  // collection and the bundle stays held, re-announced to this
+  // endpoint's next registration: a cancel message, before or after
+  // last_chunk, ends the call with status CANCELLED, as does a request
+  // stream that ends without an ack; a failed stream or a dead session
+  // parks it too, as does a delivery never collected before the
+  // session ends. An ack sent before last_chunk is a protocol
+  // violation: the call ends with status INVALID_ARGUMENT and the
+  // bundle stays held.
   rpc Receive(stream ReceiveRequest) returns (stream ReceiveResponse);
 }
 
@@ -175,13 +178,19 @@ message SendResponse {
   string bundle_id = 1;
 }
 
-// One item of a Receive call: the first message is the metadata;
-// cancel abandons the collection.
+// One item of a Receive call: the first message is the metadata; ack
+// completes the collection, cancel abandons it.
 message ReceiveRequest {
   oneof request {
     ReceiveMetadata       metadata = 1;
     // Abandon: the bundle stays held for a later attempt.
     google.protobuf.Empty cancel   = 2;
+    // Acknowledge receipt of the whole bundle (through last_chunk): the
+    // collection completes and the bundle is finalized. Valid only
+    // after last_chunk (earlier is a protocol violation: the call ends
+    // with status INVALID_ARGUMENT); without it the bundle stays held
+    // for a later attempt.
+    google.protobuf.Empty ack      = 3;
   }
 }
 

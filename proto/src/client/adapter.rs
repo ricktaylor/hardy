@@ -20,7 +20,7 @@ use tokio::sync::mpsc::Sender;
 use tonic::Streaming;
 use tracing::debug;
 
-use crate::stream::{Cancel, Chunk, chunks};
+use crate::stream::{Ack, Cancel, Chunk, chunks};
 
 // -------------------------------------------------------------------
 // Reader: wire -> Segment
@@ -67,13 +67,15 @@ enum State<Response, Request> {
 // flow control stalls the BPA beyond its window if the consumer pauses),
 // and the wire's last chunk is the final segment. A withdrawal, a
 // failure, or a stream ending without the last chunk ends it as
-// truncation, never completion; dropping an unfinished collection
-// abandons it with the wire's in-band cancel, and the bundle stays held
-// for a later attempt.
+// truncation, never completion. A collection commits only through
+// [`acknowledge`](Self::acknowledge): dropping it unacknowledged
+// abandons it, whether or not the last chunk was pulled, and the bundle
+// stays held for a later attempt.
 pub struct Reader<Response, Request: Cancel> {
     state: State<Response, Request>,
-    // Set once the last chunk arrives, so dropping a completed
-    // collection does not send a pointless cancel.
+    // Set once the last chunk arrives: an unfinished drop still owes the
+    // wire an explicit in-band cancel, a finished one abandons by the
+    // call ending without an ack.
     completed: bool,
 }
 
@@ -103,12 +105,38 @@ impl<Response, Request: Cancel> Reader<Response, Request> {
         }
     }
 
-    // Whether the wire's last chunk has been pulled. Over the wire that
-    // pull is the commit point of the transfer: a completed collection
-    // is recorded server-side and can no longer be abandoned (Drop sends
-    // no cancel).
+    // Whether the wire's last chunk has been pulled. A completed
+    // collection is committed by [`acknowledge`](Self::acknowledge), not
+    // by the pull itself, and Drop sends no cancel for one.
     pub fn is_complete(&self) -> bool {
         self.completed
+    }
+
+    // Acknowledges a completed collection and waits for the server to
+    // take the ack. The ack goes on the request side; the server records
+    // it, commits the bundle, then closes the response. Draining the
+    // response to that end is the client's half of the commit handshake:
+    // it keeps the call alive so the ack demonstrably reaches the server
+    // (dropping a still-open call instead resets it and may discard the
+    // ack in flight); the commit itself can still lose a shutdown or
+    // expiry race server-side, costing only a duplicate re-delivery. A
+    // collection short of its last chunk is never acknowledged: an early
+    // ack is a protocol violation, so a component that accepts without
+    // receiving to completion abandons the delivery instead. Only the
+    // collection Readers have an ack-capable request type, hence the
+    // method-level bound.
+    pub async fn acknowledge(&mut self)
+    where
+        Request: Ack,
+    {
+        if !self.completed {
+            return;
+        }
+        let State::Open { chunks, requests } = &mut self.state else {
+            return;
+        };
+        let _ = requests.try_send(Request::ack());
+        while matches!(chunks.message().await, Ok(Some(_))) {}
     }
 }
 
@@ -166,9 +194,12 @@ where
 }
 
 impl<Response, Request: Cancel> Drop for Reader<Response, Request> {
-    // Unlike the session, a Receive half-close is not an ending (a
-    // client may send only the metadata), so abandonment needs the
-    // explicit in-band cancel. A collection never opened has no request
+    // Dropping an unacknowledged collection abandons it. Short of the
+    // last chunk the abandonment is the explicit in-band cancel; past it
+    // no cancel is sent, because the drop already ends the call without
+    // an ack, which the server reads as the same abandonment, and a
+    // transfer reader (a Forward, a Dispatch) that ran to completion
+    // owes no message at all. A collection never opened has no request
     // side to cancel, and one dropped mid-open abandons the whole call
     // (the in-flight future owns the request sender), which the server
     // sees as a transport-level cancellation.
