@@ -417,6 +417,218 @@ async fn app_to_cla_routing() {
     bpa.shutdown().await;
 }
 
+// A block the ingress gate schedules for §E removal (here an unrecognised
+// extension block flagged `delete_block_on_failure`) is kept in the stored
+// bundle — no editing on input — and stripped per attempt at the egress
+// rewrite head, so the transmitted wire form no longer carries it while the
+// payload survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_applied_at_egress() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, &[remote])
+        .await
+        .unwrap();
+
+    // Craft a bundle to the remote node carrying an unrecognised block (type
+    // 999, block 2) flagged delete_block_on_failure, inserted between the
+    // primary and the payload.
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+    let base = build_bundle(&source, &dest, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x10u64); // flags: delete_block_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(base[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let inbound = Bytes::from(modified);
+
+    // The crafted bundle really carries the unrecognised block as it arrives.
+    let Parsed { bundle: pre, .. } = parse(inbound.clone()).expect("crafted bundle parses");
+    assert!(
+        pre.blocks
+            .values()
+            .any(|b| b.block_type == Type::Unrecognised(999)),
+        "the unknown block is present as ingressed"
+    );
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "an unknown deletable block is accepted, not refused"
+    );
+
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the forwarded bundle")
+    .expect("channel closed");
+
+    let Parsed { bundle: fwd, .. } = parse(forwarded).expect("forwarded bundle parses");
+    assert!(
+        fwd.blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the deferred removal is applied at the egress door"
+    );
+    assert!(fwd.blocks.contains_key(&1), "the payload survives");
+
+    bpa.shutdown().await;
+}
+
+// A low-level (raw-bundle) service that captures each delivered bundle's
+// wire bytes.
+struct CapturingService {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    delivered_tx: flume::Sender<Bytes>,
+}
+
+impl CapturingService {
+    fn new() -> (Arc<Self>, flume::Receiver<Bytes>) {
+        let (delivered_tx, rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                delivered_tx,
+            }),
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl services::Service for CapturingService {
+    async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
+        self.sink.call_once(|| sink);
+    }
+    async fn on_unregister(&self) {}
+    async fn on_deliver(
+        &self,
+        _bundle_id: &Id,
+        _expiry: time::OffsetDateTime,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        let data = buffer_stream(stream, total_len).await?;
+        let _ = self.delivered_tx.send(data);
+        Ok(())
+    }
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+// The deliver-side twin of `deferred_removal_applied_at_egress`: a bundle
+// addressed to a local raw-bundle service, carrying an unrecognised
+// `delete_block_on_failure` block, is delivered with that block stripped —
+// the stored bundle stays as received.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_removal_applied_at_delivery() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (svc, delivered_rx) = CapturingService::new();
+    let endpoint = bpa.register_service(Service::Ipn(7), svc).await.unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+
+    // A bundle to the local service, carrying an unrecognised block (type
+    // 999, block 2) flagged delete_block_on_failure.
+    let source: Eid = "ipn:0.9.1".parse().unwrap();
+    let base = build_bundle(&source, &endpoint, b"payload");
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64);
+        a.emit(&2u64);
+        a.emit(&0x10u64); // delete_block_on_failure
+        a.emit(&0u64);
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    let (_, primary_len) = skip_value(&base[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(base.len() + unknown.len());
+    modified.extend_from_slice(&base[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&base[insert..]);
+    let inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    let delivered = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        delivered_rx.recv_async(),
+    )
+    .await
+    .expect("timeout waiting for the delivered bundle")
+    .expect("channel closed");
+
+    let Parsed { bundle: del, .. } = parse(delivered).expect("delivered bundle parses");
+    assert!(
+        del.blocks
+            .values()
+            .all(|b| b.block_type != Type::Unrecognised(999)),
+        "the deferred removal is applied at the deliver door"
+    );
+    assert!(del.blocks.contains_key(&1), "the payload survives");
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // INT-BPA-02: Echo Round-Trip
 // ---------------------------------------------------------------------------
