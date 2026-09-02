@@ -37,7 +37,9 @@ impl FromCbor for HopInfo {
 
     /// Strict-canonical decode per RFC 9171 §4.1 plus §4.4.3 range check:
     ///   * Non-shortest array head, non-shortest sub-field encoding, and
-    ///     unexpected tags are rejected with `NotCanonical`.
+    ///     unexpected tags are rejected with `NotCanonical` (a tag on a
+    ///     sub-field is refused from its first byte, without reading the
+    ///     run).
     ///   * Indefinite-length array encoding is accepted (§4.1 carveout)
     ///     and reflected in the returned `shortest` flag as `false` so
     ///     callers can opt to re-emit in canonical form.
@@ -49,11 +51,11 @@ impl FromCbor for HopInfo {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
-            let limit = require_canonical(a, "hop limit")?;
+            let limit = require_canonical(a, "hop limit", Error::NotCanonical)?;
             if limit == 0 || limit > 255 {
                 return Err(Error::InvalidHopLimit(limit));
             }
-            let count = require_canonical(a, "hop count")?;
+            let count = require_canonical(a, "hop count", Error::NotCanonical)?;
             // `shortest` here means "would round-trip to identical bytes
             // under canonical emission" — i.e. the array was definite-
             // length. Indefinite arrays are RFC-permitted but trigger

@@ -159,6 +159,11 @@ pub enum Error {
     #[error("Incorrect type, expecting {0}, found {1}")]
     IncorrectType(&'static str, ItemType),
 
+    /// A CBOR tag preceded an item decoded as [`Untagged`], which permits
+    /// none. Raised from the first byte of the tag run, without reading it.
+    #[error("Unexpected CBOR tag")]
+    UnexpectedTag,
+
     /// An indefinite-length string contains an invalid chunk (e.g., not a string type).
     #[error("Chunked string contains an invalid chunk")]
     InvalidChunk,
@@ -228,6 +233,43 @@ pub trait FromCbor: Sized {
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error>;
 }
 
+/// Decodes a `T` while rejecting any preceding CBOR semantic tags —
+/// without reading them.
+///
+/// Most protocol fields permit no tags at all, yet a decoder that
+/// discovers this only after collecting the tag list hands adversarial
+/// input free work: a run of tag bytes is walked in full (spilling the
+/// tag list to the heap at two) before the item underneath is even
+/// looked at. `Untagged` moves the rejection to the first byte: a tag
+/// head is recognised structurally and refused as
+/// [`Error::UnexpectedTag`] in constant time, so the reject path costs
+/// no per-tag work and no allocation.
+///
+/// On success the inner decode never saw a tag, so the canonical flag
+/// reflects the encoding of the item alone instead of folding in tag
+/// presence the way the bare scalar impls do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Untagged<T>(pub T);
+
+impl<T> FromCbor for Untagged<T>
+where
+    T: FromCbor,
+    T::Error: From<Error>,
+{
+    type Error = T::Error;
+
+    #[inline]
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        // 0xC0..=0xDB is every well-formed tag head: major type 6, minors
+        // 0-27. Malformed minors 28-31 are not tags and fall through to
+        // the inner decode, which rejects them as `InvalidMinorValue`.
+        if matches!(data.first(), Some(0xC0..=0xDB)) {
+            return Err(Error::UnexpectedTag.into());
+        }
+        T::from_cbor(data).map(|(value, shortest, len)| (Untagged(value), shortest, len))
+    }
+}
+
 /// A type alias for a generic, untyped CBOR sequence.
 pub type Sequence<'a> = series::Series<'a, 0>;
 /// A type alias for a [`Series`] that represents a CBOR array.
@@ -273,9 +315,9 @@ pub enum Value<'a, 'b: 'a> {
 
 impl<'a, 'b: 'a> Value<'a, 'b> {
     /// The wire-level [`ItemType`] of this value, for building
-    /// [`Error::IncorrectType`] without allocating. Tag status is supplied
-    /// by the caller — a `Value` does not carry its preceding tags.
-    pub fn item_type(&self, tagged: bool) -> ItemType {
+    /// [`Error::IncorrectType`] without allocating. Pass the tags slice the
+    /// parse callback received — a `Value` does not carry its preceding tags.
+    pub fn item_type(&self, tags: &[u64]) -> ItemType {
         let kind = match self {
             Value::UnsignedInteger(_) => ItemKind::UnsignedInteger,
             Value::NegativeInteger(_) => ItemKind::NegativeInteger,
@@ -294,7 +336,10 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
             Value::Simple(v) => ItemKind::Simple(*v),
             Value::Float(_) => ItemKind::Float,
         };
-        ItemType { tagged, kind }
+        ItemType {
+            tagged: !tags.is_empty(),
+            kind,
+        }
     }
 
     /// Finishes consuming this value, advancing the cursor past any nested
@@ -595,7 +640,7 @@ where
             let r = f(&mut a, shortest, &marker.tags)?;
             a.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Array", (&marker).into()).into()),
+        _ => Err(Error::IncorrectType("Array", marker.item_type()).into()),
     }
 }
 
@@ -616,7 +661,7 @@ where
             let r = f(&mut m, shortest, &marker.tags)?;
             m.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Map", (&marker).into()).into()),
+        _ => Err(Error::IncorrectType("Map", marker.item_type()).into()),
     }
 }
 

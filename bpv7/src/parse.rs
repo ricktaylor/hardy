@@ -12,7 +12,7 @@ BPSec OperationSets. Keyed BPSec validation is layered on top by composing
 use super::*;
 
 use bytes::{Bytes, BytesMut};
-use hardy_cbor::decode::{Error as CborError, Head, Marker};
+use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
 use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
@@ -41,7 +41,9 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
         // 5 items (no CRC) or 6 items (with CRC); §4.1 carve-out permits
         // indefinite-length. The three legal head bytes are 0x85, 0x86, 0x9F.
         // Anything else is either a non-shortest definite-length form
-        // (NotCanonical) or not an array at all.
+        // (NotCanonical) or not an array at all. (A tag head never gets
+        // this far: the caller's `parse_canonical` rejects it from the
+        // first byte.)
         let (is_indefinite, mut offset) = match data.first() {
             Some(&0x85) => (false, 1),
             Some(&0x86) => (false, 1),
@@ -92,8 +94,33 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
         // `tests/parse.rs`.
         //
         // Appendix B permits an optional `#6.24` tag (CBOR-embedded
-        // content); no other tags are allowed.
-        let marker: Head = parse_canonical(data, &mut offset, "block data")?;
+        // content); no other tags are allowed. This is the one grammar
+        // position where a tag is legal at all, so it cannot ride the
+        // `Untagged`-based `parse_canonical`; the tag-run guard is
+        // hand-rolled instead. The only shortest-form encoding of tag 24
+        // is `D8 18` (non-shortest forms fail the `!s` check below), so
+        // any other tag head — or a second consecutive tag — is rejected
+        // from at most three bytes, never reading an adversarial tag run.
+        if let Some(first @ 0xC0..=0xDB) = data.get(offset)
+            && (*first != 0xD8
+                || data.get(offset + 1) != Some(&0x18)
+                || matches!(data.get(offset + 2), Some(0xC0..=0xDB)))
+        {
+            return Err(Error::NotCanonical);
+        }
+        let (marker, s, l): (Head, bool, usize) =
+            hardy_cbor::decode::parse(&data[offset..]).map_field_err::<Error>("block data")?;
+        if !s {
+            return Err(Error::InvalidField {
+                field: "block data",
+                source: Box::new(Error::NotCanonical),
+            });
+        }
+        offset = offset
+            .checked_add(l)
+            .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
+        // The guard above already narrows the tags to `[]` or `[24]`;
+        // this stays as the normative statement of what is accepted.
         if !matches!(marker.tags.as_slice(), [] | [24]) {
             return Err(Error::NotCanonical);
         }
@@ -103,7 +130,7 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
             _ => {
                 return Err(Error::InvalidCBOR(CborError::IncorrectType(
                     "Definite-length Byte String",
-                    (&marker).into(),
+                    marker.item_type(),
                 )))
                 .map_field_err::<Error>("block data");
             }
@@ -722,7 +749,7 @@ impl BundleParser {
         // conformant first byte is 0x9F. A definite-length outer array is
         // therefore non-conformant — and §4.1 explicitly lets an
         // implementation "MAY discard any sequence of bytes that does not
-        // conform", which is what we do (slow_bundle_array_error maps the
+        // conform", which is what we do (the match below maps a
         // definite-length head to NotCanonical).
         //
         // §4.1 also grants a MAY-*accept* carve-out (definite-length arrays
@@ -745,10 +772,24 @@ impl BundleParser {
         // Appendix B's CDDL `bpv7_start = bundle / #6.55799(bundle)` is
         // informational and "the textual representation rules" on conflict,
         // so the self-describing CBOR tag (0xD9D9F7) is rejected here too.
+        //
+        // This is the first gate every datagram crosses, so under
+        // adversarial traffic each malformed packet is rejected here: the
+        // classification works from the single byte and the error variants
+        // carry no owned data, keeping the reject path free of heap
+        // allocation.
         let offset = match data.first() {
-            Some(&0x9F) => 1,
             None => return Err(Error::InvalidCBOR(CborError::NeedMoreData(1))),
-            Some(&first) => return Err(slow_bundle_array_error(first)),
+            Some(0x9F) => 1,
+            // Major type 4, definite length: a canonical-encoding violation
+            // of §4.1's indefinite-length requirement, not a non-bundle.
+            Some(0x80..=0x9B) => return Err(Error::NotCanonical),
+            // CBOR unsigned integer 6 == the version byte opening an
+            // RFC 5050 primary block.
+            Some(0x06) => return Err(Error::PossibleBpv6),
+            // Anything else — including a tag wrapper — cannot start a
+            // bundle at all.
+            Some(first) => return Err(Error::NotABundle(*first)),
         };
         self.state = State::PrimaryBlock(offset);
         self.parse_primary(data, offset)
@@ -1183,14 +1224,22 @@ fn consume_crc(
 /// underlying parse error with `field` (so the diagnostic carries the
 /// field name in either case). A non-shortest encoding is rejected
 /// outright as `NotCanonical`.
+/// Decodes through [`Untagged`], so a tag run in front of the item is
+/// rejected from its first byte without being read, surfacing as a
+/// field-labelled `NotCanonical` (the `Error::from` conversion below is
+/// what translates the cbor-level rejection into the domain error). The
+/// one grammar position where a tag is legal (`#6.24` on block data) has
+/// its own hand-rolled guard in `BlockHeader::from_cbor` instead.
 fn parse_canonical<T>(data: &[u8], offset: &mut usize, field: &'static str) -> Result<T, Error>
 where
     T: hardy_cbor::decode::FromCbor,
-    <T as hardy_cbor::decode::FromCbor>::Error:
-        From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    <T as hardy_cbor::decode::FromCbor>::Error: From<CborError>,
+    Error: From<<T as hardy_cbor::decode::FromCbor>::Error>,
 {
-    let (v, s, l): (T, bool, usize) =
-        hardy_cbor::decode::parse(&data[*offset..]).map_field_err::<Error>(field)?;
+    let (Untagged(v), s, l): (Untagged<T>, bool, usize) =
+        hardy_cbor::decode::parse(&data[*offset..])
+            .map_err(Error::from)
+            .map_field_err::<Error>(field)?;
     if !s {
         return Err(Error::InvalidField {
             field,
@@ -1203,34 +1252,13 @@ where
     Ok(v)
 }
 
-/// Sequence-aware counterpart of [`parse_canonical`] for parsing the
-/// next item inside a nested CBOR array — the array tracks its own
-/// cursor and adds array-boundary handling on top of the same parse +
-/// shortest-form check + field-label-on-error machinery (including
-/// labelling `NotCanonical` with the field name).
-pub(super) fn parse_canonical_item<T>(
-    block: &mut hardy_cbor::decode::Array<'_>,
-    field: &'static str,
-) -> Result<T, Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    <T as hardy_cbor::decode::FromCbor>::Error:
-        From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    let (v, s): (T, bool) = block.parse().map_field_err::<Error>(field)?;
-    if !s {
-        return Err(Error::InvalidField {
-            field,
-            source: Box::new(Error::NotCanonical),
-        });
-    }
-    Ok(v)
-}
-
-/// Like [`parse_canonical_item`] but accepts non-canonical encodings —
+/// Array-element decode that accepts non-canonical encodings —
 /// for CBOR array fields (EIDs, timestamps) where RFC 9171 §4.1 permits
 /// indefinite-length encoding. Returns the value and its canonical flag;
-/// the caller accumulates the flag to decide whether re-encoding is needed.
+/// the caller accumulates the flag to decide whether re-encoding is
+/// needed. Still decodes through [`Untagged`] — §4.1 has no carveout for
+/// tags. The strict counterpart (shortest-form required) is
+/// [`crate::error::require_canonical`].
 pub(super) fn parse_item<T>(
     block: &mut hardy_cbor::decode::Array<'_>,
     field: &'static str,
@@ -1240,46 +1268,28 @@ where
     <T as hardy_cbor::decode::FromCbor>::Error:
         From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    let (v, s): (T, bool) = block.parse().map_field_err::<Error>(field)?;
+    let (Untagged(v), s): (Untagged<T>, bool) = block.parse().map_field_err::<Error>(field)?;
     Ok((v, s))
 }
 
-/// Cold path: the outer-array first byte wasn't `0x9F`. Classify the head
-/// byte directly (definite-length arrays = `NotCanonical`; an unsigned
-/// integer 6 = "looks like BPv6"; anything else — including a tag wrapper —
-/// cannot start a bundle at all). This is the first gate every datagram
-/// crosses, so under adversarial traffic each malformed packet is rejected
-/// here: the classification works from the single byte and the error
-/// variants carry no owned data, keeping the reject path free of heap
-/// allocation.
-#[cold]
-fn slow_bundle_array_error(first: u8) -> Error {
-    match first {
-        // Major type 4, definite length: a canonical-encoding violation of
-        // §4.1's indefinite-length requirement rather than a non-bundle.
-        0x80..=0x9B => Error::NotCanonical,
-        // CBOR unsigned integer 6 == the version byte opening an RFC 5050
-        // primary block.
-        0x06 => Error::PossibleBpv6,
-        _ => Error::NotABundle,
-    }
-}
-
 /// Cold path: the block-array first byte wasn't `0x85`, `0x86`, or
-/// `0x9F`. Re-parse via `Head` to distinguish "not an array"
-/// from "definite-length array with the wrong item count" (the latter
-/// is still a canonical violation, but we map it to `InvalidCBOR` for
-/// diagnostic continuity with the underlying CBOR machinery).
+/// `0x9F`. Re-parse via `Head` to distinguish "not an array" from
+/// "definite-length array with the wrong item count" (the latter is
+/// still a canonical violation, but we map it to `InvalidCBOR` for
+/// diagnostic continuity with the underlying CBOR machinery). The
+/// re-parse is bounded: a tag head never reaches here — the caller's
+/// `parse_canonical` rejects a tag run from its first byte — and for any
+/// non-tag first byte the `Head` tag scan exits immediately, so this
+/// reject path stays free of attacker-driven work and allocation.
 #[cold]
 fn slow_block_array_error(data: &[u8]) -> Error {
-    let parsed = hardy_cbor::decode::parse::<(Head, bool, usize)>(data);
-    match parsed {
+    match hardy_cbor::decode::parse::<(Head, bool, usize)>(data) {
         Ok((marker, _, _)) => match marker.marker {
             Marker::Array(Some(7..)) => Error::InvalidCBOR(CborError::AdditionalItems),
             Marker::Array(Some(_)) => Error::InvalidCBOR(CborError::NoMoreItems),
             _ => Error::InvalidCBOR(CborError::IncorrectType(
                 "Definite length array",
-                (&marker).into(),
+                marker.item_type(),
             )),
         },
         Err(e) => Error::InvalidCBOR(e),

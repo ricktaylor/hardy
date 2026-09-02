@@ -3,24 +3,10 @@ use super::*;
 use alloc::{boxed::Box, sync::Arc};
 use core::ops::Range;
 
+use hardy_cbor::decode::Untagged;
 use smallvec::SmallVec;
 
-use crate::{HashMap, eid, error::HasInvalidField};
-
-fn require_canonical<T, const D: usize>(
-    seq: &mut hardy_cbor::decode::Series<D>,
-    field: &'static str,
-) -> Result<T, Error>
-where
-    T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    match seq.parse::<(T, bool)>() {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
-        Ok((t, true)) => Ok(t),
-    }
-}
+use crate::{HashMap, eid, error::require_canonical};
 
 /// Strict-canonical helper per RFC 9172 §4 — no §4.1 carveout for ASB
 /// content, so every encoding violation (non-shortest, indefinite-
@@ -47,7 +33,7 @@ fn parse_ranges<const D: usize>(
                     return Err(Error::NotCanonical);
                 }
 
-                let id = require_canonical(a, "id")?;
+                let id = require_canonical(a, "id", Error::NotCanonical)?;
                 let data_start = offset + outer_offset + a.offset();
                 a.skip_value(16).map_field_err::<Error>("value")?;
                 Ok::<_, Error>((id, data_start..offset + outer_offset + a.offset()))
@@ -167,11 +153,12 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                     }
                     let mut targets: SmallVec<[u64; 4]> = SmallVec::new();
                     // The third tuple element from try_parse on a
-                    // FromCbor 3-tuple is the consumed `usize` length;
-                    // u64's FromCbor folds tag-emptiness into the
-                    // `shortest` flag, so checking `!s` here covers
-                    // both non-shortest and unexpected tags.
-                    while let Some((block, s, _)) = a.try_parse::<(u64, bool, usize)>()? {
+                    // FromCbor 3-tuple is the consumed `usize` length.
+                    // `Untagged` refuses a tagged target id from its
+                    // first byte; `!s` covers non-shortest encoding.
+                    while let Some((Untagged(block), s, _)) =
+                        a.try_parse::<(Untagged<u64>, bool, usize)>()?
+                    {
                         if !s {
                             return Err(Error::NotCanonical);
                         }
@@ -189,13 +176,13 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
             }
 
             // Context
-            let context = require_canonical(seq, "security context id")?;
+            let context = require_canonical(seq, "security context id", Error::NotCanonical)?;
 
             // Flags
-            let flags: u64 = require_canonical(seq, "security context flags")?;
+            let flags: u64 = require_canonical(seq, "security context flags", Error::NotCanonical)?;
 
             // Source
-            let source = require_canonical(seq, "security source")?;
+            let source = require_canonical(seq, "security source", Error::NotCanonical)?;
             if let eid::Eid::Null | eid::Eid::LocalNode { .. } = source {
                 return Err(Error::InvalidSecuritySource);
             }
@@ -262,7 +249,7 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
         }
         value => Err(hardy_cbor::decode::Error::IncorrectType(
             "Untagged definite-length byte string",
-            value.item_type(!tags.is_empty()),
+            value.item_type(tags),
         )
         .into()),
     })

@@ -124,10 +124,23 @@ pub enum Error {
     },
 
     #[error(transparent)]
-    InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    InvalidCBOR(hardy_cbor::decode::Error),
 
     #[error("Underlying cryptographic operation failed: {0}")]
     Algorithm(String),
+}
+
+// Manual rather than `#[from]`: an `UnexpectedTag` from an `Untagged`
+// decode is an RFC 9172 §4 canonical-encoding violation in this domain,
+// so it surfaces as `NotCanonical` (see `crate::error` for the
+// rationale).
+impl From<hardy_cbor::decode::Error> for Error {
+    fn from(e: hardy_cbor::decode::Error) -> Self {
+        match e {
+            hardy_cbor::decode::Error::UnexpectedTag => Self::NotCanonical,
+            e => Self::InvalidCBOR(e),
+        }
+    }
 }
 
 impl crate::error::HasInvalidField for Error {

@@ -31,7 +31,7 @@ impl FromCbor for u64 {
         } else {
             Err(Error::IncorrectType(
                 "Untagged Unsigned Integer",
-                (&marker).into(),
+                marker.item_type(),
             ))
         }
     }
@@ -72,7 +72,7 @@ impl FromCbor for i64 {
                 shortest && marker.tags.is_empty(),
                 offset,
             )),
-            _ => Err(Error::IncorrectType("Untagged Integer", (&marker).into())),
+            _ => Err(Error::IncorrectType("Untagged Integer", marker.item_type())),
         }
     }
 }
@@ -113,7 +113,7 @@ impl FromCbor for f64 {
         if let Marker::Float(v) = marker.marker {
             Ok((v, shortest && marker.tags.is_empty(), offset))
         } else {
-            Err(Error::IncorrectType("Untagged Float", (&marker).into()))
+            Err(Error::IncorrectType("Untagged Float", marker.item_type()))
         }
     }
 }
@@ -127,7 +127,7 @@ impl FromCbor for bool {
         match marker.marker {
             Marker::False => Ok((false, shortest && marker.tags.is_empty(), offset)),
             Marker::True => Ok((true, shortest && marker.tags.is_empty(), offset)),
-            _ => Err(Error::IncorrectType("Untagged Boolean", (&marker).into())),
+            _ => Err(Error::IncorrectType("Untagged Boolean", marker.item_type())),
         }
     }
 }
@@ -142,17 +142,17 @@ impl FromCbor for String {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
+        parse_value(data, |value, shortest, tags| match value {
             Value::Text(t) => Ok((String::from(t), shortest && tags.is_empty())),
             // Indefinite-length text is RFC-permitted but never canonical;
             // the chunk gather is the copy the owned return type announces.
             Value::TextStream(chunks) => Ok((chunks.concat(), false)),
             value => Err(Error::IncorrectType(
                 "Untagged Text String",
-                value.item_type(!tags.is_empty()),
+                value.item_type(tags),
             )),
-        })?;
-        Ok((value, shortest, len))
+        })
+        .map(|((value, shortest), len)| (value, shortest, len))
     }
 }
 
@@ -167,7 +167,7 @@ impl FromCbor for Box<[u8]> {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let ((value, shortest), len) = parse_value(data, |value, shortest, tags| match value {
+        parse_value(data, |value, shortest, tags| match value {
             Value::Bytes(r) => Ok((Box::from(&data[r]), shortest && tags.is_empty())),
             // Indefinite-length bytes are RFC-permitted but never canonical;
             // the chunk gather is the copy the owned return type announces.
@@ -180,10 +180,10 @@ impl FromCbor for Box<[u8]> {
             }
             value => Err(Error::IncorrectType(
                 "Untagged Byte String",
-                value.item_type(!tags.is_empty()),
+                value.item_type(tags),
             )),
-        })?;
-        Ok((value, shortest, len))
+        })
+        .map(|((value, shortest), len)| (value, shortest, len))
     }
 }
 

@@ -135,6 +135,16 @@ pub struct Head {
     pub marker: Marker,
 }
 
+impl Head {
+    /// The wire-level [`ItemType`] of this head, for building
+    /// [`Error::IncorrectType`][super::Error::IncorrectType] without
+    /// allocating. The inherent mirror of the `From<&Head>` conversion,
+    /// matching [`Value::item_type`][super::Value::item_type].
+    pub fn item_type(&self) -> ItemType {
+        self.into()
+    }
+}
+
 impl fmt::Display for Head {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ItemType::from(self).fmt(f)
@@ -176,7 +186,8 @@ pub enum ItemKind {
     Null,
     /// The undefined value (CBOR simple value 23).
     Undefined,
-    /// An unassigned simple value (CBOR simple values 0–19, 24–31).
+    /// An unassigned simple value (CBOR simple values 0–19 and 32–255;
+    /// 24–31 are reserved and unencodable per RFC 8949 §3.3).
     Simple(u8),
     /// A floating-point value (CBOR major type 7).
     Float,
@@ -234,7 +245,7 @@ impl From<&Marker> for ItemKind {
 /// owns nothing, so constructing a type-mismatch error never allocates and
 /// the message is only formatted if the error is actually displayed.
 ///
-/// Build one from a decoded [`Head`] with `From`, or from a
+/// Build one from a decoded [`Head`] with [`Head::item_type`], or from a
 /// [`Value`][super::Value] with [`Value::item_type`][super::Value::item_type].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemType {
@@ -263,6 +274,11 @@ impl From<&Head> for ItemType {
 impl FromCbor for Head {
     type Error = Error;
 
+    // The non-generic workhorse every generic `parse` wrapper bottoms out
+    // in: without the hint, cross-crate callers pay a call per field decode
+    // and lose constant propagation into the major-type match they nearly
+    // always perform immediately.
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let mut tags = Tags::new();
         let (mut shortest, mut offset) = parse_tags(data, &mut tags)?;

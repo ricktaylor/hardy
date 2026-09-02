@@ -5,8 +5,10 @@ The `Error` enum covers a wide range of issues that can occur during bundle
 processing, from parsing errors to semantic validation failures.
 */
 
-use super::*;
+use hardy_cbor::decode::{Error as CborError, Untagged};
 use thiserror::Error;
+
+use super::*;
 
 /// The primary error type for the `bpv7` crate.
 #[derive(Error, Debug)]
@@ -27,9 +29,9 @@ pub enum Error {
 
     /// Indicates that the data begins with a byte that cannot start a BPv7
     /// bundle: the outer item is not the RFC 9171 §4.1 indefinite-length
-    /// CBOR array.
-    #[error("Not a BPv7 bundle")]
-    NotABundle,
+    /// CBOR array. Carries the offending first byte.
+    #[error("Not a BPv7 bundle (first byte {0:#04x})")]
+    NotABundle(u8),
 
     /// Indicates that a bundle is missing the required payload block.
     #[error("Bundle has no payload block")]
@@ -72,7 +74,8 @@ pub enum Error {
     /// rules required by RFC 9171 (§4.1, §4.2.2, §4.3.2): non-deterministic
     /// field encoding, definite-length outer bundle array, indefinite-length
     /// block-type-specific data byte string, malformed CRC byte string head,
-    /// or unexpected CBOR tags.
+    /// or unexpected CBOR tags (refused from the tag's first byte, without
+    /// reading the run).
     #[error("Bundle violates RFC 9171 canonical CBOR encoding requirements")]
     NotCanonical,
 
@@ -95,7 +98,7 @@ pub enum Error {
 
     /// An error related to CBOR decoding.
     #[error(transparent)]
-    InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    InvalidCBOR(hardy_cbor::decode::Error),
 
     /// A generic error for when parsing a specific field fails.
     #[error("Failed to parse {field}: {source}")]
@@ -105,6 +108,21 @@ pub enum Error {
         /// The underlying error that caused the failure.
         source: Box<dyn core::error::Error + Send + Sync>,
     },
+}
+
+// Manual rather than `#[from]`: `UnexpectedTag` is the cbor-level signal
+// from an `Untagged` decode, and within bpv7 a tag where none is permitted
+// is an RFC 9171 §4.1 canonical-encoding violation — so it surfaces as
+// `NotCanonical` like every other framing violation, never as a raw cbor
+// error. The other error-domain enums (`eid`, `bpsec`, `status_report`)
+// make the same translation.
+impl From<CborError> for Error {
+    fn from(e: CborError) -> Self {
+        match e {
+            CborError::UnexpectedTag => Self::NotCanonical,
+            e => Self::InvalidCBOR(e),
+        }
+    }
 }
 
 /// Trait for error types that can represent an invalid field error.
@@ -147,22 +165,43 @@ where
     }
 }
 
-/// Decode the next element of a CBOR array as `T`, rejecting any non-shortest
-/// encoding with [`Error::NotCanonical`]. The shared helper for fixed bpv7
-/// array fields (e.g. `HopInfo`, `CreationTimestamp`); BPSec has its own
-/// `Series`-based variant in `bpsec::parse`.
-pub(crate) fn require_canonical<T>(
-    a: &mut hardy_cbor::decode::Array,
+/// Decode the next element of a CBOR series as `T`, rejecting any
+/// non-shortest encoding with the caller's `not_canonical` error. Generic
+/// over the error domain — each domain passes its own `NotCanonical`
+/// variant, mirroring [`parse_canonical`] — and over the series arity, so
+/// bpv7 array fields, BPSec ASB sequences, and status-report fields all
+/// share the one implementation. Decodes through [`Untagged`], so a tag
+/// run in front of the element is rejected from its first byte without
+/// being read; the rejection surfaces as `not_canonical`, never as the
+/// raw cbor `UnexpectedTag`.
+pub(crate) fn require_canonical<T, E, const D: usize>(
+    seq: &mut hardy_cbor::decode::Series<D>,
     field: &'static str,
-) -> Result<T, Error>
+    not_canonical: E,
+) -> Result<T, E>
 where
     T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    T::Error: From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    E: HasInvalidField + Into<Box<dyn core::error::Error + Send + Sync>>,
 {
-    match a.parse::<(T, bool)>() {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
-        Ok((t, true)) => Ok(t),
+    match seq.parse::<(Untagged<T>, bool)>() {
+        Err(e) => {
+            // Scalar `T`s surface the `Untagged` rejection as a raw cbor
+            // `UnexpectedTag`; translate it to the domain's canonical
+            // error, as the domain `From<CborError>` impls already do
+            // for composite `T`s.
+            let e: Box<dyn core::error::Error + Send + Sync> = e.into();
+            if matches!(
+                e.downcast_ref::<CborError>(),
+                Some(CborError::UnexpectedTag)
+            ) {
+                Err(E::invalid_field(field, not_canonical.into()))
+            } else {
+                Err(E::invalid_field(field, e))
+            }
+        }
+        Ok((_, false)) => Err(E::invalid_field(field, not_canonical.into())),
+        Ok((Untagged(t), true)) => Ok(t),
     }
 }
 
@@ -173,14 +212,18 @@ where
 /// decodes an array element), shared by leaf `FromCbor` impls whose wire form is
 /// a single bare value: block/CRC type codes, lifetimes, DTN times, BPSec
 /// context and variant ids. Generic over the caller's error so each keeps its
-/// own `NotCanonical`.
+/// own `NotCanonical`. Decodes through [`Untagged`], so a tag run in front
+/// of the value is rejected from its first byte without being read; the
+/// rejection flows through `E`'s `From<T::Error>` conversion, which every
+/// bpv7 error domain translates to its own `NotCanonical`.
 pub(crate) fn parse_canonical<T, E>(data: &[u8], not_canonical: E) -> Result<(T, usize), E>
 where
     T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error>,
+    T::Error: From<CborError>,
     E: From<T::Error>,
 {
-    let (value, shortest, len) = hardy_cbor::decode::parse::<(T, bool, usize)>(data)?;
+    let (Untagged(value), shortest, len) =
+        hardy_cbor::decode::parse::<(Untagged<T>, bool, usize)>(data)?;
     if shortest {
         Ok((value, len))
     } else {

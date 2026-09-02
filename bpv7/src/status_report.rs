@@ -8,14 +8,14 @@ on the status of a bundle. This can include events like bundle reception, forwar
 use alloc::boxed::Box;
 
 use hardy_cbor::{
-    decode::{FromCbor, parse, parse_array},
+    decode::{FromCbor, Untagged, parse_array},
     encode::{Array, Encoder, ToCbor},
 };
 use thiserror::Error;
 
 use crate::{
     bundle, dtn_time,
-    error::{CaptureFieldErr, HasInvalidField},
+    error::{CaptureFieldErr, HasInvalidField, require_canonical},
 };
 /// Errors that can occur when working with status reports.
 #[derive(Error, Debug)]
@@ -37,13 +37,26 @@ pub enum Error {
 
     /// Indicates a violation of the canonical CBOR encoding requirements
     /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
-    /// array head, or unexpected tags in a status-report field.
+    /// array head, or unexpected tags in a status-report field (refused
+    /// from the tag's first byte, without reading the run).
     #[error("Status report violates RFC 9171 canonical CBOR encoding requirements")]
     NotCanonical,
 
     /// Error resulting from invalid CBOR data.
     #[error(transparent)]
-    InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    InvalidCBOR(hardy_cbor::decode::Error),
+}
+
+// Manual rather than `#[from]`: an `UnexpectedTag` from an `Untagged`
+// decode is an RFC 9171 §4.1 violation in this domain, so it surfaces as
+// `NotCanonical` (see `crate::error` for the rationale).
+impl From<hardy_cbor::decode::Error> for Error {
+    fn from(e: hardy_cbor::decode::Error) -> Self {
+        match e {
+            hardy_cbor::decode::Error::UnexpectedTag => Self::NotCanonical,
+            e => Self::InvalidCBOR(e),
+        }
+    }
 }
 
 impl crate::error::HasInvalidField for Error {
@@ -164,10 +177,7 @@ impl FromCbor for ReasonCode {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
-        let (v, shortest, len) = parse::<(u64, bool, usize)>(data)?;
-        if !shortest {
-            return Err(Error::NotCanonical);
-        }
+        let (v, len) = crate::error::parse_canonical::<u64, Error>(data, Error::NotCanonical)?;
         Ok((v.try_into()?, true, len))
     }
 }
@@ -190,18 +200,6 @@ fn emit_status_assertion(a: &mut Array, sa: &Option<StatusAssertion>) {
     }
 }
 
-fn require_canonical<T>(a: &mut hardy_cbor::decode::Array, field: &'static str) -> Result<T, Error>
-where
-    T: FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    match a.parse::<(T, bool)>() {
-        Err(e) => Err(Error::invalid_field(field, e.into())),
-        Ok((_, false)) => Err(Error::invalid_field(field, Error::NotCanonical.into())),
-        Ok((t, true)) => Ok(t),
-    }
-}
-
 fn parse_status_assertion(
     a: &mut hardy_cbor::decode::Array,
     canonical: &mut bool,
@@ -214,7 +212,10 @@ fn parse_status_assertion(
         }
         *canonical = *canonical && a.is_definite();
 
-        let status = a.parse().map_field_err::<Error>("status")?;
+        // `require_canonical` rather than a bare parse: a bare `bool`
+        // decode folds tag presence into the (discarded) canonical flag,
+        // silently accepting a tagged status.
+        let status: bool = require_canonical(a, "status", Error::NotCanonical)?;
         if status {
             if let Some(timestamp) = a
                 .try_parse::<dtn_time::DtnTime>()
@@ -324,9 +325,9 @@ impl FromCbor for BundleStatusReport {
             })
             .map_field_err::<Error>("bundle status information")?;
 
-            report.reason = require_canonical(a, "reason")?;
-            let source = require_canonical(a, "source")?;
-            let timestamp = require_canonical(a, "timestamp")?;
+            report.reason = require_canonical(a, "reason", Error::NotCanonical)?;
+            let source = require_canonical(a, "source", Error::NotCanonical)?;
+            let timestamp = require_canonical(a, "timestamp", Error::NotCanonical)?;
 
             report.bundle_id = bundle::Id {
                 source,
@@ -334,8 +335,12 @@ impl FromCbor for BundleStatusReport {
                 fragment_info: None,
             };
 
-            if let Some((offset, s, _)) = a
-                .try_parse::<(u64, bool, usize)>()
+            // `Error::from` first, so a tag refused by `Untagged` is
+            // labelled as this domain's `NotCanonical`, not the raw cbor
+            // error.
+            if let Some((Untagged(offset), s, _)) = a
+                .try_parse::<(Untagged<u64>, bool, usize)>()
+                .map_err(Error::from)
                 .map_field_err::<Error>("fragment offset")?
             {
                 if !s {
@@ -344,7 +349,8 @@ impl FromCbor for BundleStatusReport {
                         Box::new(Error::NotCanonical),
                     ));
                 }
-                let total_adu_length = require_canonical(a, "fragment total ADU length")?;
+                let total_adu_length =
+                    require_canonical(a, "fragment total ADU length", Error::NotCanonical)?;
                 report.bundle_id.fragment_info = Some(bundle::FragmentInfo {
                     offset,
                     total_adu_length,
@@ -391,10 +397,11 @@ impl FromCbor for AdministrativeRecord {
             }
             let canonical = a.is_definite();
 
-            let code = require_canonical(a, "record type code")?;
+            let code = require_canonical(a, "record type code", Error::NotCanonical)?;
             match code {
                 1u64 => {
-                    let (r, s) = a.parse().map_field_err::<Error>("bundle status report")?;
+                    let (Untagged(r), s): (Untagged<BundleStatusReport>, bool) =
+                        a.parse().map_field_err::<Error>("bundle status report")?;
                     Ok((Self::BundleStatusReport(r), canonical && s))
                 }
                 v => Err(Error::UnknownAdminRecordType(v)),

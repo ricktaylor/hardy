@@ -56,11 +56,11 @@ impl DecapService {
                 let _total_length: u64 = a.parse()?;
                 let _segmented_offset: u64 = a.parse()?;
                 // Parse byte string and get the range within payload
-                a.parse_value(|value, _shortest, _tags| match value {
+                a.parse_value(|value, _shortest, tags| match value {
                     hardy_cbor::decode::Value::Bytes(range) => Ok(range),
                     _ => Err(hardy_cbor::decode::Error::IncorrectType(
                         "Byte String",
-                        value.item_type(false),
+                        value.item_type(tags),
                     )),
                 })
             },

@@ -47,14 +47,14 @@ impl tokio_util::codec::Decoder for MtcpCodec {
             if !tags.is_empty() {
                 return Err(hardy_cbor::decode::Error::IncorrectType(
                     "Untagged Byte String",
-                    value.item_type(true),
+                    value.item_type(tags),
                 ));
             }
             match value {
                 hardy_cbor::decode::Value::Bytes(range) => Ok(range),
                 other => Err(hardy_cbor::decode::Error::IncorrectType(
                     "Byte String",
-                    other.item_type(false),
+                    other.item_type(tags),
                 )),
             }
         }) {

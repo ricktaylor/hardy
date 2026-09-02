@@ -806,7 +806,6 @@ dependencies = [
 name = "hardy-proto"
 version = "0.2.0"
 dependencies = [
- "bytes",
  "hardy-async",
  "hardy-bpa",
  "hardy-bpv7",

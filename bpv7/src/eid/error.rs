@@ -32,12 +32,25 @@ pub enum Error {
 
     /// Indicates a violation of the canonical CBOR encoding requirements
     /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
-    /// array head, or unexpected tags in an EID field.
+    /// array head, or unexpected tags in an EID field (refused from the
+    /// tag's first byte, without reading the run).
     #[error("EID violates RFC 9171 canonical CBOR encoding requirements")]
     NotCanonical,
 
     #[error(transparent)]
-    InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    InvalidCBOR(hardy_cbor::decode::Error),
+}
+
+// Manual rather than `#[from]`: an `UnexpectedTag` from an `Untagged`
+// decode is an RFC 9171 §4.1 violation in this domain, so it surfaces as
+// `NotCanonical` (see `crate::error` for the rationale).
+impl From<hardy_cbor::decode::Error> for Error {
+    fn from(e: hardy_cbor::decode::Error) -> Self {
+        match e {
+            hardy_cbor::decode::Error::UnexpectedTag => Self::NotCanonical,
+            e => Self::InvalidCBOR(e),
+        }
+    }
 }
 
 impl crate::error::HasInvalidField for Error {
