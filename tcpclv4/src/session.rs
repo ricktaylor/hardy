@@ -162,12 +162,17 @@ pub enum Ingest {
 // acknowledgments of our own transfers, and keepalives keep flowing, bounded
 // by the ingest queue depth.
 //
-// Exits on dispatch or writer failure, cancelling the session's token so the
-// session tears down promptly rather than discovering the closed queue on the
-// next inbound segment — with keepalives negotiated off, a quiet peer waiting
-// for its final ack and a stalled session could otherwise both wait forever.
-// An undispatched transfer is then never acknowledged: the peer retains
-// responsibility for the bundle and will retransmit.
+// A transfer the BPA refuses is answered with XFER_REFUSE in place of its
+// final acknowledgement — a per-bundle outcome, so the session stays up and
+// the peer retains responsibility for the bundle.
+//
+// Exits on dispatch fault or writer failure, cancelling the session's token
+// so the session tears down promptly rather than discovering the closed
+// queue on the next inbound segment — with keepalives negotiated off, a
+// quiet peer waiting for its final ack and a stalled session could
+// otherwise both wait forever. An undispatched transfer is then never
+// acknowledged: the peer retains responsibility for the bundle and will
+// retransmit.
 async fn run_ingest(
     mut queue: tokio::sync::mpsc::Receiver<Ingest>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
@@ -190,17 +195,41 @@ async fn run_ingest(
                 // stepping stone toward the full streaming pipeline (a native
                 // implementation would dispatch segments as they arrive); see
                 // bpa/docs/streaming_pipeline_design.md.
-                if let Err(e) = sink
+                match sink
                     .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut bundle)
                     .await
                 {
-                    warn!("CLA dispatch failed: {e:?}");
-                    cancel_token.cancel();
-                    return;
+                    Ok(hardy_bpa::cla::Acceptance::Accepted) => {
+                        metrics::counter!("tcpclv4.transfers.received").increment(1);
+                        ack
+                    }
+                    Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                        // Withhold the final ack and refuse the transfer
+                        // instead; the peer retains responsibility for the
+                        // bundle.
+                        debug!("BPA refused bundle acceptance, refusing transfer");
+                        metrics::counter!("tcpclv4.transfers.dispatch_refused").increment(1);
+                        if !writer
+                            .feed(codec::Message::TransferRefuse(
+                                codec::TransferRefuseMessage {
+                                    transfer_id: ack.transfer_id,
+                                    reason_code: codec::TransferRefuseReasonCode::NotAcceptable,
+                                },
+                            ))
+                            .await
+                        {
+                            debug!("Writer closed, stopping ingest");
+                            cancel_token.cancel();
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("CLA dispatch failed: {e:?}");
+                        cancel_token.cancel();
+                        return;
+                    }
                 }
-
-                metrics::counter!("tcpclv4.transfers.received").increment(1);
-                ack
             }
         };
 
@@ -1026,10 +1055,10 @@ mod tests {
             _peer_node: Option<&hardy_bpv7::eid::NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
             stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-        ) -> hardy_bpa::cla::Result<()> {
-            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
-                .await
-                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
+        ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
+            let Ok(bundle) = hardy_bpa::stream::concat_stream(stream, usize::MAX).await else {
+                return Ok(hardy_bpa::cla::Acceptance::Refused);
+            };
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
@@ -1037,7 +1066,7 @@ mod tests {
                 return Err(hardy_bpa::cla::Error::Disconnected);
             }
             self.dispatched.lock().unwrap().push(bundle);
-            Ok(())
+            Ok(hardy_bpa::cla::Acceptance::Accepted)
         }
 
         async fn add_peer(

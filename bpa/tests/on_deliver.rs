@@ -264,7 +264,12 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -349,15 +354,18 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     );
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut inbound.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     (bpa, inbound)
 }
@@ -387,23 +395,26 @@ async fn streaming_service_receives_single_final_segment() {
         .unwrap();
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.2.1".parse().unwrap(),
-                &"ipn:0.1.7".parse().unwrap(),
-                b"ping",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.2.1".parse().unwrap(),
+                    &"ipn:0.1.7".parse().unwrap(),
+                    b"ping",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let Event::Streamed {
         bundle_id,
@@ -573,15 +584,18 @@ async fn expiry_mid_delivery_rig(
         .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
 
     // Re-register with a service that holds the redelivery open across
@@ -610,12 +624,15 @@ async fn expiry_mid_delivery_rig(
         .with_payload(Cow::Borrowed(b"reap me".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The reaper's expiry pass: B — delivery never commenced — is reaped
     // honestly, while held A, in DeliveryAckPending since before the pass,

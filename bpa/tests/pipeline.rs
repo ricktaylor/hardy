@@ -4,7 +4,7 @@
 //! covering the component test plan (PLAN-BPA-01) Suites A and B.
 
 use core::{
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU32, NonZeroU64},
     time::Duration,
 };
 use hardy_bpa::{
@@ -70,7 +70,12 @@ impl cla::Cla for PipelineCla {
         None
     }
 
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -241,7 +246,12 @@ impl cla::Cla for TimedCla {
         None
     }
 
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -348,7 +358,7 @@ async fn app_to_cla_routing() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -430,7 +440,7 @@ async fn echo_round_trip() {
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -452,12 +462,15 @@ async fn echo_round_trip() {
     let mut inbound = build_bundle(&remote_source, &echo_dest, b"ping");
 
     // Dispatch it as if received from the CLA
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The echo service should reflect the bundle back:
     // source=ipn:0.1.7 (echo), dest=ipn:0.2.1 (remote)
@@ -513,7 +526,7 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
         .unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -706,7 +719,7 @@ async fn local_delivery() {
 
     // Register CLA (needed for dispatch)
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -716,12 +729,15 @@ async fn local_delivery() {
     let mut inbound = build_bundle(&remote_source, &local_dest, b"Hello local");
 
     // Dispatch via CLA
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Application should receive the payload
     let (source, payload) =
@@ -809,7 +825,7 @@ async fn reception_report_carries_unknown_security_operation() {
     // both the forwarded bundle and the reception report (report-to defaults
     // to the source).
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
@@ -837,12 +853,15 @@ async fn reception_report_carries_unknown_security_operation() {
         .unwrap();
     let mut inbound = splice_unrecognised_bcb(&data);
 
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Two bundles come back out of the CLA in either order: the reception
     // report (to ipn:0.2.1) and the forwarded original (to ipn:0.2.99).
@@ -922,7 +941,7 @@ async fn cla_streamed_ingress_delivers() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -947,12 +966,15 @@ async fn cla_streamed_ingress_delivers() {
         }
     });
 
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut rx)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     producer.await.unwrap();
 
     let (source, payload) =
@@ -982,7 +1004,7 @@ async fn cla_unregister_cancels_parked_stream() {
     bpa.start(false).await;
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1012,25 +1034,23 @@ async fn cla_unregister_cancels_parked_stream() {
     cla.sink.get().unwrap().unregister().await;
 
     // The parked pull must fail promptly — the assertion is event-driven;
-    // the timeout only bounds a regression.
+    // the timeout only bounds a regression. The teardown is reported as the
+    // dead registration, not a per-bundle refusal.
     let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), parked)
         .await
         .expect("parked stream was not woken by unregistration")
         .expect("task panicked");
-    assert!(matches!(
-        result,
-        Err(hardy_bpa::cla::Error::StreamCancelled)
-    ));
+    assert!(matches!(result, Err(hardy_bpa::cla::Error::Disconnected)));
     drop(tx);
 
     bpa.shutdown().await;
 }
 
-/// A producer that dies before `Final` is a truncation: the sink surfaces
-/// `StreamCancelled` (so a CLA withholds its transfer ack) and nothing is
+/// A producer that dies before `Final` is a truncation: the sink refuses
+/// acceptance (so a CLA withholds its transfer ack) and nothing is
 /// delivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cla_streamed_ingress_truncation_is_an_error() {
+async fn cla_streamed_ingress_truncation_is_refused() {
     let node_id = IpnNodeId {
         allocator_id: 0,
         node_number: 1,
@@ -1046,7 +1066,7 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1061,10 +1081,7 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
     drop(tx); // no Final
 
     let result = cla.sink.get().unwrap().dispatch(None, None, &mut rx).await;
-    assert!(matches!(
-        result,
-        Err(hardy_bpa::cla::Error::StreamCancelled)
-    ));
+    assert!(matches!(result, Ok(cla::Acceptance::Refused)));
 
     // Known test-guide deviation (quiet-window absence assert):
     // scheduled for the dedicated pipeline de-flake pass (see bpa/docs/TODO.md).
@@ -1147,7 +1164,7 @@ async fn streamed_oversized_payload_local_delivery() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1162,12 +1179,15 @@ async fn streamed_oversized_payload_local_delivery() {
 
     // Deliver the bundle as a stream of 1000-byte segments (forces Partial).
     let mut stream = SegmentReceiver::new(&inbound, 1000);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut stream)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let (source, delivered) =
         // Event-driven wait; the timeout only bounds a regression.
@@ -1230,7 +1250,7 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     let sink = || cla.sink.get().unwrap();
@@ -1243,7 +1263,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     let expired = build_expired_bundle(&remote_source, &local_dest, &payload);
     assert!(expired.len() > 4096, "payload must exceed the parser chunk");
     let mut stream = SegmentReceiver::new(&expired, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(
         stream.remaining() > 0,
         "expired bundle must be dropped before the payload tail is drained"
@@ -1252,7 +1275,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     // Hop-exhausted — gated on hop count; same expectation.
     let hopped = build_hop_exhausted_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&hopped, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(
         stream.remaining() > 0,
         "hop-exhausted bundle must be dropped before the payload tail is drained"
@@ -1263,7 +1289,10 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
     // not a stalled stream.
     let valid = build_bundle(&remote_source, &local_dest, &payload);
     let mut stream = SegmentReceiver::new(&valid, 1000);
-    sink().dispatch(None, None, &mut stream).await.unwrap();
+    assert_eq!(
+        sink().dispatch(None, None, &mut stream).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert_eq!(
         stream.remaining(),
         0,
@@ -1310,7 +1339,7 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
@@ -1341,12 +1370,15 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         .build(CreationTimestamp::now())
         .unwrap();
     let mut inbound = Bytes::from(data);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Exactly the report pair comes out of the CLA — the bundle itself must
     // not be forwarded. Both are admin records to the source.
@@ -1400,12 +1432,15 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         .build(timestamp)
         .unwrap();
     let mut inbound = Bytes::from(data);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(Some(&remote_node), None, &mut inbound)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
@@ -1438,7 +1473,7 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
         .await
         .unwrap();
     let (cla, _fwd) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1471,10 +1506,10 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
     );
 }
 
-// R-04: the ingress size cap refuses an over-cap bundle at both new
+// R-04: the ingress size cap refuses an over-cap bundle at both
 // enforcement points — header accumulation (`HeaderFailure::TooLarge`) and the
-// payload drain (`DrainFailure::TooLarge`) — surfacing `PayloadTooLarge` so the
-// CLA withholds the transfer ack.
+// payload drain (`DrainFailure::TooLarge`) — surfacing `Acceptance::Refused`
+// so the CLA withholds the transfer ack.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ingress_size_cap_refuses_oversized_bundle() {
     let node_ids = NodeIds::try_from(
@@ -1494,26 +1529,25 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
-            .max_bundle_size(NonZeroUsize::new(256).unwrap())
+            .max_bundle_size(NonZeroU64::new(256).unwrap())
             .build()
             .await
             .unwrap();
         bpa.start(false).await;
         let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla("test".to_string(), cla.clone(), None)
+        bpa.register_cla("test".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
-        let err = cla
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .expect_err("an over-cap bundle must be refused");
-        assert!(
-            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 256),
-            "header-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut stream)
+                .await
+                .unwrap(),
+            cla::Acceptance::Refused,
+            "header-phase over-cap must be refused"
         );
         bpa.shutdown().await;
     }
@@ -1523,26 +1557,25 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
-            .max_bundle_size(NonZeroUsize::new(10_000).unwrap())
+            .max_bundle_size(NonZeroU64::new(10_000).unwrap())
             .build()
             .await
             .unwrap();
         bpa.start(false).await;
         let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla("test".to_string(), cla.clone(), None)
+        bpa.register_cla("test".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
-        let err = cla
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut stream)
-            .await
-            .expect_err("an over-cap payload tail must be refused");
-        assert!(
-            matches!(err, cla::Error::PayloadTooLarge { max, .. } if max == 10_000),
-            "drain-phase over-cap must refuse with PayloadTooLarge, got {err:?}"
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut stream)
+                .await
+                .unwrap(),
+            cla::Acceptance::Refused,
+            "drain-phase over-cap must be refused"
         );
         bpa.shutdown().await;
     }
@@ -1567,7 +1600,7 @@ async fn throughput() {
     bpa.start(false).await;
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1597,12 +1630,15 @@ async fn throughput() {
 
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
@@ -1615,12 +1651,15 @@ async fn throughput() {
     let start = tokio::time::Instant::now();
     let mut last_arrival = start;
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         last_arrival =
             // Event-driven wait; the timeout only bounds a regression.
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -1669,7 +1708,7 @@ async fn forwarding_latency() {
     bpa.start(false).await;
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -1699,12 +1738,15 @@ async fn forwarding_latency() {
 
     // Warm up
     for (i, mut bundle) in warmup_bundles.into_iter().enumerate() {
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         // Event-driven wait; the timeout only bounds a regression.
         tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
             .await
@@ -1719,12 +1761,15 @@ async fn forwarding_latency() {
 
     for (i, mut bundle) in test_bundles.into_iter().enumerate() {
         let dispatched = tokio::time::Instant::now();
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut bundle)
-            .await
-            .unwrap();
+        assert_eq!(
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut bundle)
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         let arrived =
             // Event-driven wait; the timeout only bounds a regression.
             tokio::time::timeout(tokio::time::Duration::from_secs(5), arrival_rx.recv_async())
@@ -1810,7 +1855,7 @@ async fn egress_filter_sees_consistent_extents() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 
@@ -2027,7 +2072,12 @@ impl cla::Cla for DeferringCla {
         None
     }
 
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -2071,9 +2121,14 @@ async fn deferring_setup(
     bpa.start(false).await;
 
     let (cla, offers_rx) = DeferringCla::new(accepts);
-    bpa.register_cla(format!("deferring-{peer_node_number}"), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        format!("deferring-{peer_node_number}"),
+        cla.clone(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     cla.sink()
         .add_peer(
             cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
@@ -2118,18 +2173,21 @@ async fn expect_no_offer(rx: &flume::Receiver<Id>) {
 async fn deferred_outcome_failed_redispatches() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
-    cla.sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"deferred-fail",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"deferred-fail",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
@@ -2161,10 +2219,13 @@ async fn deferred_outcome_completed_resolves() {
         &"ipn:0.2.99".parse().unwrap(),
         b"deferred-ok",
     );
-    cla.sink()
-        .dispatch(None, None, &mut data.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(None, None, &mut data.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
     cla.sink()
@@ -2181,7 +2242,10 @@ async fn deferred_outcome_completed_resolves() {
 
     // The completed bundle was deleted with a tombstone: a re-arrival of the
     // same bundle is dropped as a duplicate rather than re-forwarded.
-    cla.sink().dispatch(None, None, &mut data).await.unwrap();
+    assert_eq!(
+        cla.sink().dispatch(None, None, &mut data).await.unwrap(),
+        cla::Acceptance::Accepted
+    );
     expect_no_offer(&offers_rx).await;
 
     bpa.shutdown().await;
@@ -2198,18 +2262,21 @@ async fn deferred_outcome_completed_resolves() {
 async fn deferred_outcome_peer_removal_resolves_unknown() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
 
-    cla.sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"outcome-unknown",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"outcome-unknown",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_rx).await;
 
@@ -2247,7 +2314,7 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
     // A second CLA with its own peer on a different node
     let (cla_b, offers_b) = DeferringCla::new(0);
-    bpa.register_cla("deferring-b".to_string(), cla_b.clone(), None)
+    bpa.register_cla("deferring-b".to_string(), cla_b.clone(), None, None)
         .await
         .unwrap();
     cla_b
@@ -2262,19 +2329,22 @@ async fn deferred_outcome_ignores_wrong_cla() {
         .await
         .unwrap();
 
-    cla_a
-        .sink()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.3.1".parse().unwrap(),
-                &"ipn:0.2.99".parse().unwrap(),
-                b"wrong-cla",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla_a
+            .sink()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.3.1".parse().unwrap(),
+                    &"ipn:0.2.99".parse().unwrap(),
+                    b"wrong-cla",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let id = expect_offer(&offers_a).await;
 
@@ -2350,7 +2420,12 @@ impl BlockingCla {
 
 #[async_trait]
 impl cla::Cla for BlockingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -2388,7 +2463,7 @@ async fn forward_failure_park_recheck_redispatches() {
     bpa.start(false).await;
 
     let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla("blocking".to_string(), cla.clone(), None)
+    bpa.register_cla("blocking".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -2470,7 +2545,7 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     bpa.start(false).await;
 
     let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla("blocking".to_string(), cla.clone(), None)
+    bpa.register_cla("blocking".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -2547,12 +2622,15 @@ async fn dispatch_inbound(cla: &PipelineCla, data: Bytes) {
             .await
             .unwrap();
     });
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut rx)
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     producer.await.unwrap();
 }
 
@@ -2581,7 +2659,7 @@ async fn gate_fixture(
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
 

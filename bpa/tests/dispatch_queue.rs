@@ -17,7 +17,7 @@ use std::{
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
     node_ids::NodeIds,
     services,
@@ -139,7 +139,10 @@ impl MetadataStorage for InjectingStorage {
         self.inner.start_recovery().await
     }
 
-    async fn confirm_exists(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
         self.inner.confirm_exists(bundle_id).await
     }
 
@@ -297,7 +300,12 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -366,15 +374,18 @@ async fn stale_poller_duplicate_never_redelivers() {
         .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The dispatch send parks the bundle in DispatchPending on the storage
     // slow path — the initial recovery poll is still blocked on the arm
@@ -414,12 +425,15 @@ async fn stale_poller_duplicate_never_redelivers() {
         .with_payload(Cow::Borrowed(b"marker".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(marker_data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(marker_data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         marker_started_rx.recv_async(),

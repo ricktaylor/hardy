@@ -87,14 +87,13 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let data = concat_stream(stream, self.max_bundle_size)
-            .await
-            .map_err(|e| match e {
-                ConcatError::Cancelled => services::Error::StreamCancelled,
-                ConcatError::TooLarge { size, max } => {
-                    services::Error::PayloadTooLarge { size, max }
-                }
-            })?;
+        // 32-bit: a cap beyond the address space saturates — nothing larger
+        // could be buffered anyway.
+        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
+        let data = concat_stream(stream, max_size).await.map_err(|e| match e {
+            ConcatError::Cancelled => services::Error::StreamCancelled,
+            ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge { size, max },
+        })?;
         self.local_dispatch_raw(expected_source, data).await
     }
 

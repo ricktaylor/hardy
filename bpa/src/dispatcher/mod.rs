@@ -1,3 +1,5 @@
+use core::num::NonZeroU64;
+
 use futures::join;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
@@ -19,15 +21,14 @@ mod restart;
 // dissolved the transport-level caps that used to bound ingress implicitly,
 // so the concat chokepoint enforces one; sized generously above the old
 // 16 MiB wire cap to leave room for large ADUs.
-const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+const DEFAULT_MAX_BUNDLE_SIZE: NonZeroU64 = NonZeroU64::new(64 * 1024 * 1024).unwrap();
 
 /// The dispatcher's plain configuration values, gathered by the builder.
 pub struct Config {
     pub status_reports: bool,
     pub poll_channel_depth: core::num::NonZeroUsize,
     pub processing_pool_size: core::num::NonZeroUsize,
-    pub max_bundle_size: Option<core::num::NonZeroUsize>,
+    pub max_bundle_size: Option<NonZeroU64>,
     /// Pre-drain gate: require primary-block integrity protection
     /// (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
@@ -59,7 +60,7 @@ pub(crate) struct Dispatcher {
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
-    max_bundle_size: usize,
+    max_bundle_size: NonZeroU64,
     primary_block_integrity: bool,
     bundle_age_required: bool,
     ipn_legacy_peers: Vec<EidPattern>,
@@ -113,10 +114,7 @@ impl Dispatcher {
             status_reports: config.status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
-            max_bundle_size: config
-                .max_bundle_size
-                .unwrap_or(DEFAULT_MAX_BUNDLE_SIZE)
-                .get(),
+            max_bundle_size: config.max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE),
             primary_block_integrity: config.primary_block_integrity,
             bundle_age_required: config.bundle_age_required,
             ipn_legacy_peers: config.ipn_legacy_peers,
@@ -128,6 +126,11 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
+    }
+
+    // The dispatch size cap, advertised to CLAs at registration.
+    pub(crate) fn max_bundle_size(&self) -> NonZeroU64 {
+        self.max_bundle_size
     }
 
     pub fn set_cla_registry(&self, cla_registry: Arc<cla::registry::ClaRegistry>) {

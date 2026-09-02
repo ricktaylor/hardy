@@ -3,13 +3,35 @@ use hardy_bpv7::{block::BibCoverage, crc::CrcType, parse::PayloadTail, status_re
 use super::*;
 use crate::{bundle::parse, cla::Segment, stream::Receiver};
 
-// Why the payload drain failed. `Cancelled` and `TooLarge` are the CLA's to
-// hear about (the transfer ack must be withheld / the transfer refused);
-// `Rejected` is an internal drop of an invalid-but-complete stream.
+// Why the payload drain failed. `Cancelled` and `TooLarge` refuse the
+// transfer (the CLA must not acknowledge it); `Rejected` is an internal
+// drop of an invalid-but-complete stream — accepted, then disposed of.
 enum DrainFailure {
     Cancelled,
     TooLarge { size: usize, max: usize },
     Rejected,
+}
+
+// The outcome of the shared receive pipeline, for the three in-feeds.
+//
+// `Bundle` and `Disposed` are both *acceptance* (the bundle proceeds to
+// ingress, or was dropped internally with reports); `Refused` is the one
+// non-acceptance outcome — the transfer could not be taken at all
+// (truncation, the size cap) and its custodian keeps responsibility.
+//
+// The large `Bundle` variant is deliberate (cf. `ChainOutcome`): the bundle
+// moves through by value on the hot path, and boxing it to shrink the enum
+// would tax every received bundle with an allocation.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum Received {
+    /// A valid bundle, stored and ready for `ingress_bundle`.
+    Bundle(bundle::Bundle, Bytes),
+    /// Accepted and disposed of internally (invalid, gate-rejected,
+    /// duplicate) — reports emitted where possible; nothing to ingress.
+    Disposed,
+    /// Acceptance refused: truncated stream or over the size cap. The
+    /// refusal site logs the specifics.
+    Refused,
 }
 
 /// Dumb-spool an oversized payload's tail in memory after the gate has accepted
@@ -75,8 +97,16 @@ async fn drain_payload(
 impl Dispatcher {
     // Entry point for bundles received from CLAs.
     //
-    // Bundle validation errors are handled internally (logged and dropped) rather
-    // than returned to the CLA, since the CLA cannot fix invalid bundle content.
+    // The return value is the acceptance verdict (the `cla::Sink::dispatch`
+    // contract): `Accepted` covers every internally-disposed case (invalid,
+    // gate-rejected, duplicate) too — refusing an invalid bundle would
+    // invite the previous node's custody/retransmission machinery to resend
+    // identical bytes forever, so the first BPA to detect a content problem
+    // accepts and terminates the bundle. `Refused` is reserved for transfers
+    // this node could not take at all (truncation, the size cap). Returning
+    // without draining `stream` is deliberately meaningless on its own: the
+    // producer learns the verdict from this return, never from the stream
+    // closing.
     //
     // # Bundle State
     //
@@ -92,65 +122,72 @@ impl Dispatcher {
         ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
         stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<()> {
+    ) -> cla::Acceptance {
         let metadata = bundle::BundleMetadata::ingress(
             ingress_cla,
             ingress_peer_node.cloned(),
             ingress_peer_addr.cloned(),
         );
 
-        // Truncation and the size bound surface as errors to the CLA — the
-        // transfer must not be acknowledged, so the peer retransmits — while
-        // invalid-but-complete bundles are handled internally: the CLA cannot
-        // fix invalid content, and the transfer itself succeeded.
+        // Truncation and the size bound refuse the transfer — the CLA must
+        // not acknowledge it, so the peer retransmits — while
+        // invalid-but-complete bundles are accepted and handled internally:
+        // the CLA cannot fix invalid content, and the transfer itself
+        // succeeded.
         //
         // Drop sites inside `process_received_bundle` count themselves under
         // `bpa.bundle.received.dropped` with a `reason` label. Nothing was
         // stored on the CLA path before a drop, so there's no data to clean up.
-        if let Some((bundle, data)) = self.process_received_bundle(stream, metadata).await? {
-            self.ingress_bundle(bundle, data).await;
+        match self.process_received_bundle(stream, metadata).await {
+            Received::Bundle(bundle, data) => {
+                self.ingress_bundle(bundle, data).await;
+                cla::Acceptance::Accepted
+            }
+            Received::Disposed => cla::Acceptance::Accepted,
+            Received::Refused => cla::Acceptance::Refused,
         }
-        Ok(())
     }
 
     // Shared bundle processing: parse, validate, store, and report.
     //
-    // Called from both the CLA ingress path (`receive_bundle`) and the ADU
-    // reassembly path (`reassemble`). Handles all bundle validation internally
-    // — invalid bundles are logged, counted, and dropped with status reports
-    // where possible.
+    // Called from the CLA ingress path (`receive_bundle`), the ADU
+    // reassembly path (`reassemble`), and restart orphan recovery. Handles
+    // all bundle validation internally — invalid bundles are logged,
+    // counted, and dropped with status reports where possible (`Disposed`);
+    // only truncation and the size cap refuse (`Refused`).
     //
-    // Returns `Some((bundle, data))` for valid bundles ready for ingress,
-    // or `None` if the bundle was dropped (invalid, duplicate, etc.).
-    //
-    // If `metadata.storage_name` is already set (reassembly case), the existing
-    // stored data is used. Otherwise (CLA case), the data is saved after parsing.
+    // If `metadata.storage_name` is already set (reassembly/restart case),
+    // the existing stored data is used. Otherwise (CLA case), the data is
+    // saved after parsing.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub(super) async fn process_received_bundle(
         &self,
         stream: &mut dyn Receiver<Segment>,
         mut metadata: bundle::BundleMetadata,
-    ) -> cla::Result<Option<(bundle::Bundle, Bytes)>> {
+    ) -> Received {
         // Pre-drain header pass: parse the header chain off the stream and run
         // keyed header verification — both in `bundle::parse`, before an oversized
         // payload is spooled. `Err` carries an optional reception report to emit
         // before dropping (reporting stays here — we own the machinery); a
         // structural / truncation drop carries no recoverable bundle.
+        // The cap as an in-memory bound: on a 32-bit target a cap beyond the
+        // address space saturates — nothing larger could be buffered anyway.
+        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
         let (mut hv, headers, tail) = match parse::parse_headers(
             stream,
-            self.max_bundle_size,
+            max_size,
             self.key_provider(),
         )
         .await
         {
             Ok(parts) => parts,
             Err(parse::HeaderFailure::Cancelled) => {
-                debug!("Bundle stream cancelled mid-header");
-                return Err(cla::Error::StreamCancelled);
+                debug!("Bundle stream cancelled mid-header; refused");
+                return Received::Refused;
             }
             Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                return Err(cla::Error::PayloadTooLarge { size, max });
+                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
+                return Received::Refused;
             }
             Err(parse::HeaderFailure::Invalid(report)) => {
                 let reason = match report {
@@ -162,7 +199,7 @@ impl Dispatcher {
                     None => ReasonCode::BlockUnintelligible,
                 };
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                return Ok(None);
+                return Received::Disposed;
             }
         };
 
@@ -180,14 +217,14 @@ impl Dispatcher {
                 // is stored also keeps expired traffic from churning the
                 // metadata store's dedup LRU.
                 debug!("Bundle arrived already expired; dropped");
-                return Ok(None);
+                return Received::Disposed;
             }
             metadata.extensions = hv.extracted;
             let bundle = bundle::Bundle::new(hv.bundle, metadata);
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
             self.report_bundle_deletion(&bundle, reason).await;
-            return Ok(None);
+            return Received::Disposed;
         }
 
         // Config-gated RFC 9171 validity checks, at the same pre-drain seat
@@ -201,22 +238,22 @@ impl Dispatcher {
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
             self.report_bundle_deletion(&bundle, reason).await;
-            return Ok(None);
+            return Received::Disposed;
         }
 
         // Gate passed — drain the payload (oversized case), then finalize.
         let whole = match tail {
             None => headers,
-            Some(tail) => match drain_payload(stream, headers, tail, self.max_bundle_size).await {
+            Some(tail) => match drain_payload(stream, headers, tail, max_size).await {
                 Ok(whole) => whole,
-                Err(DrainFailure::Cancelled) => return Err(cla::Error::StreamCancelled),
+                Err(DrainFailure::Cancelled) => return Received::Refused,
                 Err(DrainFailure::TooLarge { size, max }) => {
-                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                    return Err(cla::Error::PayloadTooLarge { size, max });
+                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
+                    return Received::Refused;
                 }
                 Err(DrainFailure::Rejected) => {
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                    return Ok(None);
+                    return Received::Disposed;
                 }
             },
         };
@@ -238,7 +275,7 @@ impl Dispatcher {
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
                 let bundle = bundle::Bundle::new(bundle, metadata);
                 self.report_bundle_reception(&bundle, reason).await;
-                return Ok(None);
+                return Received::Disposed;
             }
         };
 
@@ -248,9 +285,9 @@ impl Dispatcher {
             Some(chunks) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, whole),
         };
         // `Some` here = the caller pre-stored the data (reassembly / restart) and
-        // owns its cleanup; on any drop we just return `None` and the caller
-        // deletes it. We only delete storage *we* create (the CLA `save_data`
-        // path below), and only on the post-store duplicate path.
+        // owns its cleanup; on any non-`Bundle` outcome the caller deletes it.
+        // We only delete storage *we* create (the CLA `save_data` path below),
+        // and only on the post-store duplicate path.
         let mut caller_stored = false;
         if let Some(storage_name) = &metadata.storage_name {
             self.store.replace_data(storage_name, data.clone()).await;
@@ -287,15 +324,15 @@ impl Dispatcher {
         if !self.store.insert_metadata(&bundle).await {
             // Bundle with matching id already exists in the metadata store.
             metrics::counter!("bpa.bundle.received.duplicate").increment(1);
-            // Delete the data only if we saved it here (CLA path); a caller that
-            // pre-stored deletes its own on the `None` return.
+            // Delete the data only if we saved it here (CLA path); a caller
+            // that pre-stored deletes its own on the `Disposed` return.
             if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
                 self.store.delete_data(storage_name).await;
             }
-            return Ok(None);
+            return Received::Disposed;
         }
 
-        Ok(Some((bundle, data)))
+        Received::Bundle(bundle, data)
     }
 
     // The config-gated RFC 9171 validity checks: policy requirements beyond

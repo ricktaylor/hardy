@@ -144,6 +144,7 @@ pub trait BpaRegistration: Send + Sync {
         name: String,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        max_bundle_size: Option<core::num::NonZeroU64>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -320,9 +321,10 @@ impl BpaRegistration for Bpa {
         name: String,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        max_bundle_size: Option<core::num::NonZeroU64>,
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
-            .register(name, cla, &self.dispatcher, policy)
+            .register(name, cla, &self.dispatcher, policy, max_bundle_size)
             .await
     }
 

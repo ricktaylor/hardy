@@ -78,8 +78,10 @@ impl Bibe {
     /// bibe.register(&bpa).await?;
     /// ```
     pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
-        // Register CLA (uses Private address type)
-        bpa.register_cla("bibe".into(), self.cla.clone(), None)
+        // Register CLA (uses Private address type). No declared size limit:
+        // the encapsulation overhead is per-bundle, so the outer-vs-cap
+        // check happens per forward instead.
+        bpa.register_cla("bibe".into(), self.cla.clone(), None, None)
             .await?;
 
         // Register decapsulation service

@@ -1,4 +1,4 @@
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU64, NonZeroUsize};
 
 use hardy_eid_patterns::EidPattern;
 
@@ -35,7 +35,7 @@ pub struct BpaBuilder {
     processing_pool_size: NonZeroUsize,
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
-    max_bundle_size: Option<NonZeroUsize>,
+    max_bundle_size: Option<NonZeroU64>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -122,7 +122,7 @@ impl BpaBuilder {
     /// hostile producer growing BPA memory without limit. Streams exceeding
     /// it are rejected with an error to the producer. Defaults privately at
     /// the point of use.
-    pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
+    pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
         self
     }
@@ -154,9 +154,10 @@ impl BpaBuilder {
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
         policy: Option<Arc<dyn FlowControllerFactory>>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> Self {
         self.cla_registry_builder
-            .insert(name.into(), cla, policy)
+            .insert(name.into(), cla, policy, max_bundle_size)
             .expect("Failed to insert CLA");
         self
     }

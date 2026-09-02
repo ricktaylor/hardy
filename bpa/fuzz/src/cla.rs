@@ -59,7 +59,10 @@ impl NullCla {
     pub fn new() -> Self {
         Self { sink: Once::new() }
     }
-    pub async fn dispatch(&self, mut bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
+    pub async fn dispatch(
+        &self,
+        mut bundle: hardy_bpa::Bytes,
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         self.sink
             .get()
             .expect("dispatch called before registration")
@@ -70,7 +73,12 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         sink.add_peer(
             hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {

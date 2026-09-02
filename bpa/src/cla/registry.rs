@@ -9,8 +9,13 @@ use super::*;
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
 
 pub struct Cla {
-    pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::FlowControllerFactory>,
+    pub cla: Arc<dyn cla::Cla>,
+    pub policy: Arc<dyn policy::FlowControllerFactory>,
+    // Snapshotted at registration.
+    pub address_type: Option<ClaAddressType>,
+    // The effective dispatch size cap reported to the CLA at registration:
+    // the BPA's configured cap folded with the limit the CLA declared.
+    pub max_bundle_size: NonZeroU64,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -87,7 +92,7 @@ impl cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<()> {
+    ) -> Result<cla::Acceptance> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
         // A CLA that unregisters mid-stream must not land its bundle: the
@@ -99,9 +104,18 @@ impl cla::Sink for Sink {
             inner: stream,
             token: cla.cancel.clone(),
         };
-        self.dispatcher
+        let verdict = self
+            .dispatcher
             .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
-            .await
+            .await;
+
+        // A refusal caused by that teardown is not a verdict on the bundle
+        // — the registration died. Report the dead sink instead, so the CLA
+        // does not mistake its own unregistration for a per-bundle refusal.
+        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
+        Ok(verdict)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -146,9 +160,16 @@ impl Drop for Sink {
     }
 }
 
+// A CLA awaiting registration, held by the building-phase registry.
+struct PendingCla {
+    cla: Arc<dyn cla::Cla>,
+    policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+    max_bundle_size: Option<NonZeroU64>,
+}
+
 // CLA registry in the building phase — only insert() is available.
 pub struct ClaRegistryBuilder {
-    clas: ClaMap,
+    clas: HashMap<String, PendingCla>,
 }
 
 impl ClaRegistryBuilder {
@@ -163,19 +184,17 @@ impl ClaRegistryBuilder {
         name: String,
         cla: Arc<dyn cla::Cla>,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> cla::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
             return Err(cla::Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
-        e.insert(Arc::new(Cla {
-            cancel: hardy_async::CancellationToken::new(),
+        e.insert(PendingCla {
             cla,
-            peers: Default::default(),
-            name: Arc::from(name.as_str()),
-            policy: policy
-                .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
-        }));
+            policy,
+            max_bundle_size,
+        });
         Ok(())
     }
 
@@ -199,13 +218,14 @@ impl ClaRegistryBuilder {
             tasks: hardy_async::TaskPool::new(),
         });
 
-        for (_, cla) in self.clas {
+        for (name, pending) in self.clas {
             registry
                 .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
+                    name,
+                    pending.cla,
                     dispatcher,
-                    Some(cla.policy.clone()),
+                    pending.policy,
+                    pending.max_bundle_size,
                 )
                 .await?;
         }
@@ -259,7 +279,14 @@ impl ClaRegistry {
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
         policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> cla::Result<Vec<NodeId>> {
+        // The effective cap: the BPA's configured max folded with whatever
+        // limit the CLA declared at registration.
+        let max_bundle_size = max_bundle_size.map_or(dispatcher.max_bundle_size(), |cla_cap| {
+            dispatcher.max_bundle_size().min(cla_cap)
+        });
+
         let address_type = cla.address_type();
         let entry = {
             let mut clas = self.clas.lock();
@@ -269,6 +296,8 @@ impl ClaRegistry {
             e.insert(Arc::new(Cla {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
+                address_type,
+                max_bundle_size,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
@@ -278,11 +307,12 @@ impl ClaRegistry {
         };
 
         // Register that the CLA is a handler for the address type
-        if let Some(address_type) = address_type {
+        if let Some(address_type) = entry.address_type {
             self.rib.add_address_type(address_type, entry.clone());
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
         entry
             .cla
             .on_register(
@@ -292,6 +322,7 @@ impl ClaRegistry {
                     dispatcher: dispatcher.clone(),
                 }),
                 &node_ids,
+                entry.max_bundle_size,
             )
             .await;
 
@@ -316,7 +347,7 @@ impl ClaRegistry {
 
         cla.cla.on_unregister().await;
 
-        if let Some(address_type) = cla.cla.address_type() {
+        if let Some(address_type) = cla.address_type {
             self.rib.remove_address_type(&address_type);
         }
 
@@ -440,6 +471,7 @@ mod tests {
             &self,
             sink: Box<dyn cla::Sink>,
             _node_ids: &[hardy_bpv7::eid::NodeId],
+            _max_bundle_size: core::num::NonZeroU64,
         ) {
             self.sink.call_once(|| sink);
         }
@@ -463,11 +495,15 @@ mod tests {
         bpa.start(false).await;
 
         let cla1 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
+        let result = bpa
+            .register_cla("test-cla".to_string(), cla1, None, None)
+            .await;
         assert!(result.is_ok(), "First CLA registration should succeed");
 
         let cla2 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla2, None).await;
+        let result = bpa
+            .register_cla("test-cla".to_string(), cla2, None, None)
+            .await;
         assert!(
             matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
             "Duplicate CLA name should return AlreadyExists, got: {result:?}"
@@ -483,7 +519,7 @@ mod tests {
         bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
 
@@ -519,7 +555,7 @@ mod tests {
         bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
 
@@ -546,7 +582,7 @@ mod tests {
         // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());
         let result = bpa
-            .register_cla("cascade-cla".to_string(), cla2, None)
+            .register_cla("cascade-cla".to_string(), cla2, None, None)
             .await;
         assert!(
             result.is_ok(),

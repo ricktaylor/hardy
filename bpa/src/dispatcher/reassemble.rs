@@ -1,7 +1,7 @@
 use trace_err::TraceErrResult;
 use tracing::{debug, warn};
 
-use super::Dispatcher;
+use super::{Dispatcher, ingress::Received};
 use crate::{
     bundle::{Bundle, BundleMetadata, BundleStatus},
     storage::adu_reassembly::ReassemblyResult,
@@ -46,15 +46,16 @@ impl Dispatcher {
             // Box::pin breaks the recursive async type cycle:
             //   ingress_bundle → process_bundle → reassemble →
             //   process_received_bundle → ingress_bundle
-            Ok(Some((bundle, data))) => Box::pin(self.ingress_bundle(bundle, data)).await,
+            Received::Bundle(bundle, data) => Box::pin(self.ingress_bundle(bundle, data)).await,
             // The reassembled data we pre-stored is now orphaned — delete it.
-            Ok(None) => {
+            Received::Disposed => {
                 self.store.delete_data(&storage_name).await;
             }
-            // A reassembled ADU that trips the gate has no live transfer to
-            // refuse — log, and delete the orphaned pre-stored data.
-            Err(e) => {
-                warn!("Reassembled bundle rejected: {e}");
+            // A reassembled ADU has no live transfer to refuse (the one
+            // reachable refusal is the size cap — the refusal site logs it);
+            // delete the orphaned pre-stored data.
+            Received::Refused => {
+                warn!("Reassembled bundle refused, deleted");
                 self.store.delete_data(&storage_name).await;
             }
         }

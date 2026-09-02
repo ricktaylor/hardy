@@ -106,7 +106,8 @@ async fn exec_builtin_cla(
             .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
     );
 
-    bpa.register_cla(args.cla.clone(), cla.clone(), None)
+    let max_bundle_size = Some(cla.max_bundle_size());
+    bpa.register_cla(args.cla.clone(), cla.clone(), None, max_bundle_size)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start CLA '{}': {e}", args.cla))?;
 

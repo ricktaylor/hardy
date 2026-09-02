@@ -267,7 +267,9 @@ impl BpaServer {
             .collect();
 
         for cla_config in config.clas {
-            let cla: Option<Arc<dyn Cla>> = match &cla_config.cla_type {
+            let cla: Option<(Arc<dyn Cla>, Option<core::num::NonZeroU64>)> = match &cla_config
+                .cla_type
+            {
                 #[cfg(feature = "tcpclv4")]
                 ClaType::TcpClv4(tcpcl) => {
                     let name = &cla_config.name;
@@ -328,16 +330,22 @@ impl BpaServer {
                         );
                     }
 
-                    Some(Arc::new(
-                        cla_builder
-                            .build()
-                            .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                    let cla = cla_builder
+                        .build()
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?;
+                    let max_bundle_size = Some(cla.max_bundle_size());
+                    Some((
+                        Arc::new(cla) as Arc<dyn hardy_bpa::cla::Cla>,
+                        max_bundle_size,
                     ))
                 }
                 #[cfg(feature = "file-cla")]
-                ClaType::File(file) => Some(Arc::new(FileCla::new(file).map_err(|e| {
-                    anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                })?)),
+                ClaType::File(file) => Some((
+                    Arc::new(FileCla::new(file).map_err(|e| {
+                        anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
+                    })?) as Arc<dyn hardy_bpa::cla::Cla>,
+                    None,
+                )),
                 ClaType::Other { cla_type, .. } => {
                     warn!(
                         "Ignoring CLA '{}' with unknown type '{cla_type}'",
@@ -346,7 +354,7 @@ impl BpaServer {
                     None
                 }
             };
-            let Some(cla) = cla else {
+            let Some((cla, max_bundle_size)) = cla else {
                 continue;
             };
 
@@ -363,7 +371,7 @@ impl BpaServer {
                 })
                 .transpose()?;
 
-            builder = builder.cla(cla_config.name, cla, egress_policy);
+            builder = builder.cla(cla_config.name, cla, egress_policy, max_bundle_size);
         }
 
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);

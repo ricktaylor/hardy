@@ -62,12 +62,17 @@ impl BpaRegistration for MockBpa {
         _name: String,
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
+        _max_bundle_size: Option<core::num::NonZeroU64>,
     ) -> cla::Result<Vec<NodeId>> {
         let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());
         *self.last_cla_sink.lock() = Some(sink.clone());
-        cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
-            .await;
+        cla.on_register(
+            Box::new(ClaSinkWrapper(sink)),
+            &self.node_ids,
+            core::num::NonZeroU64::MAX,
+        )
+        .await;
         Ok(self.node_ids.clone())
     }
 
@@ -172,7 +177,7 @@ impl cla::Sink for ClaSinkWrapper {
         pn: Option<&NodeId>,
         pa: Option<&cla::ClaAddress>,
         s: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<()> {
+    ) -> cla::Result<cla::Acceptance> {
         self.0.dispatch(pn, pa, s).await
     }
     async fn add_peer(&self, a: cla::ClaAddress, n: &[NodeId]) -> cla::Result<bool> {
