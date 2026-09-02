@@ -69,22 +69,23 @@ impl hardy_bpa::cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-    ) -> hardy_bpa::cla::Result<()> {
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         // The transport cap doubles as the pre-check from
-        // `client::application::Sink::send`: an oversized bundle returns a
-        // typed error here instead of letting tonic break the gRPC stream,
-        // which would cascade into `on_close` and unregister this CLA.
-        let bundle = hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE)
-            .await
-            .map_err(|e| match e {
-                hardy_bpa::stream::ConcatError::Cancelled => hardy_bpa::cla::Error::StreamCancelled,
-                hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::cla::Error::PayloadTooLarge {
-                        size: size as u64,
-                        max: max as u64,
-                    }
-                }
-            })?;
+        // `client::application::Sink::send`: an oversized bundle is refused
+        // here instead of letting tonic break the gRPC stream, which would
+        // cascade into `on_close` and unregister this CLA. Both pre-flight
+        // failures are local refusals — normal verdicts, not sink faults.
+        let bundle = match hardy_bpa::stream::concat_stream(stream, crate::MAX_PAYLOAD_SIZE).await {
+            Ok(bundle) => bundle,
+            Err(hardy_bpa::stream::ConcatError::Cancelled) => {
+                debug!("Bundle stream cancelled mid-transfer, refused");
+                return Ok(hardy_bpa::cla::Acceptance::Refused);
+            }
+            Err(hardy_bpa::stream::ConcatError::TooLarge { size, max }) => {
+                debug!("Bundle exceeds the transport cap ({size} > {max}), refused");
+                return Ok(hardy_bpa::cla::Acceptance::Refused);
+            }
+        };
         match self
             .call(cla_to_bpa::Msg::Dispatch(DispatchBundleRequest {
                 bundle,
@@ -93,7 +94,14 @@ impl hardy_bpa::cla::Sink for Sink {
             }))
             .await?
         {
-            bpa_to_cla::Msg::Dispatch(_) => Ok(()),
+            bpa_to_cla::Msg::Dispatch(response) => Ok(match response.verdict() {
+                // Unspecified = a BPA predating the verdict field, which
+                // only responded on acceptance.
+                DispatchVerdict::Accepted | DispatchVerdict::Unspecified => {
+                    hardy_bpa::cla::Acceptance::Accepted
+                }
+                DispatchVerdict::Refused => hardy_bpa::cla::Acceptance::Refused,
+            }),
             msg => {
                 warn!("Unexpected response: {msg:?}");
                 Err(hardy_bpa::cla::Error::Internal(

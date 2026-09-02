@@ -374,12 +374,15 @@ async fn stale_poller_duplicate_never_redelivers() {
     )
     .await
     .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The dispatch send parks the bundle in DispatchPending on the storage
     // slow path — the initial recovery poll is still blocked on the arm
@@ -420,12 +423,15 @@ async fn stale_poller_duplicate_never_redelivers() {
         .with_payload(Cow::Borrowed(b"marker".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(marker_data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(marker_data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         marker_started_rx.recv_async(),
@@ -643,12 +649,15 @@ async fn slow_claim_does_not_serialize_dispatch() {
             .build(CreationTimestamp::now())
             .expect("Failed to build bundle");
     *metadata_store.gated.lock().unwrap() = Some(bundle_a.primary.id);
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data_a))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data_a))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         claim_entered_rx.recv_async(),
@@ -665,12 +674,15 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .with_payload(Cow::Borrowed(b"overtakes".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data_b))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data_b))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         b_started_rx.recv_async(),

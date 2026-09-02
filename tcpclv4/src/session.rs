@@ -162,12 +162,17 @@ pub enum Ingest {
 // acknowledgments of our own transfers, and keepalives keep flowing, bounded
 // by the ingest queue depth.
 //
-// Exits on dispatch or writer failure, cancelling the session's token so the
-// session tears down promptly rather than discovering the closed queue on the
-// next inbound segment — with keepalives negotiated off, a quiet peer waiting
-// for its final ack and a stalled session could otherwise both wait forever.
-// An undispatched transfer is then never acknowledged: the peer retains
-// responsibility for the bundle and will retransmit.
+// A transfer the BPA refuses is answered with XFER_REFUSE in place of its
+// final acknowledgement — a per-bundle outcome, so the session stays up and
+// the peer retains responsibility for the bundle.
+//
+// Exits on dispatch fault or writer failure, cancelling the session's token
+// so the session tears down promptly rather than discovering the closed
+// queue on the next inbound segment — with keepalives negotiated off, a
+// quiet peer waiting for its final ack and a stalled session could
+// otherwise both wait forever. An undispatched transfer is then never
+// acknowledged: the peer retains responsibility for the bundle and will
+// retransmit.
 async fn run_ingest(
     mut queue: tokio::sync::mpsc::Receiver<Ingest>,
     sink: Arc<dyn hardy_bpa::cla::Sink>,
@@ -190,17 +195,41 @@ async fn run_ingest(
                 // stepping stone toward the full streaming pipeline (a native
                 // implementation would dispatch segments as they arrive); see
                 // bpa/docs/streaming_pipeline_design.md.
-                if let Err(e) = sink
+                match sink
                     .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut bundle)
                     .await
                 {
-                    warn!("CLA dispatch failed: {e:?}");
-                    cancel_token.cancel();
-                    return;
+                    Ok(hardy_bpa::cla::Acceptance::Accepted) => {
+                        metrics::counter!("tcpclv4.transfers.received").increment(1);
+                        ack
+                    }
+                    Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                        // Withhold the final ack and refuse the transfer
+                        // instead; the peer retains responsibility for the
+                        // bundle.
+                        debug!("BPA refused bundle acceptance, refusing transfer");
+                        metrics::counter!("tcpclv4.transfers.dispatch_refused").increment(1);
+                        if !writer
+                            .feed(codec::Message::TransferRefuse(
+                                codec::TransferRefuseMessage {
+                                    transfer_id: ack.transfer_id,
+                                    reason_code: codec::TransferRefuseReasonCode::NotAcceptable,
+                                },
+                            ))
+                            .await
+                        {
+                            debug!("Writer closed, stopping ingest");
+                            cancel_token.cancel();
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!("CLA dispatch failed: {e:?}");
+                        cancel_token.cancel();
+                        return;
+                    }
                 }
-
-                metrics::counter!("tcpclv4.transfers.received").increment(1);
-                ack
             }
         };
 
@@ -1003,6 +1032,7 @@ mod tests {
 
     struct MockSink {
         fail: bool,
+        refuse: bool,
         delay: Option<tokio::time::Duration>,
         dispatched: Mutex<Vec<hardy_bpa::Bytes>>,
     }
@@ -1011,7 +1041,18 @@ mod tests {
         fn new(fail: bool, delay: Option<tokio::time::Duration>) -> Arc<Self> {
             Arc::new(Self {
                 fail,
+                refuse: false,
                 delay,
+                dispatched: Mutex::new(Vec::new()),
+            })
+        }
+
+        // A sink that answers every complete transfer with a Refused verdict.
+        fn refusing() -> Arc<Self> {
+            Arc::new(Self {
+                fail: false,
+                refuse: true,
+                delay: None,
                 dispatched: Mutex::new(Vec::new()),
             })
         }
@@ -1026,18 +1067,21 @@ mod tests {
             _peer_node: Option<&hardy_bpv7::eid::NodeId>,
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
             stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
-        ) -> hardy_bpa::cla::Result<()> {
-            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
-                .await
-                .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
+        ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
+            let Ok(bundle) = hardy_bpa::stream::concat_stream(stream, usize::MAX).await else {
+                return Ok(hardy_bpa::cla::Acceptance::Refused);
+            };
             if let Some(delay) = self.delay {
                 tokio::time::sleep(delay).await;
             }
             if self.fail {
                 return Err(hardy_bpa::cla::Error::Disconnected);
             }
+            if self.refuse {
+                return Ok(hardy_bpa::cla::Acceptance::Refused);
+            }
             self.dispatched.lock().unwrap().push(bundle);
-            Ok(())
+            Ok(hardy_bpa::cla::Acceptance::Accepted)
         }
 
         async fn add_peer(
@@ -1220,6 +1264,69 @@ mod tests {
 
         // No acknowledgment was emitted for the failed transfer
         assert!(writer_rx.recv().await.is_none());
+    }
+
+    // A BPA refusal answers the transfer with XFER_REFUSE (NotAcceptable) and
+    // withholds the final acknowledgment, but the session stays up: the token
+    // is not cancelled and later traffic still flows — refusing per bundle
+    // without tearing the session down is what ends the over-cap
+    // reconnect/retransmit loop.
+    #[tokio::test]
+    async fn ingest_refusal_withholds_ack_without_teardown() {
+        let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel(16);
+        let writer = writer::WriterHandle::<codec::Error>::new(writer_tx);
+        let sink = MockSink::refusing();
+        let permits = Arc::new(tokio::sync::Semaphore::new(INGEST_MAX_PENDING_DISPATCH));
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(INGEST_QUEUE_DEPTH);
+        let task = tokio::spawn(run_ingest(
+            rx,
+            sink.clone(),
+            None,
+            None,
+            writer,
+            cancel_token.clone(),
+        ));
+
+        tx.send(Ingest::Dispatch {
+            bundle: hardy_bpa::Bytes::from_static(b"over-cap"),
+            ack: ack(0, true, true, 8),
+            _permit: permits.clone().acquire_owned().await.unwrap(),
+        })
+        .await
+        .unwrap();
+        // A later transfer's ack queues behind the refusal and still flows:
+        // the refusal closes nothing.
+        tx.send(Ingest::Ack(ack(1, true, false, 1))).await.unwrap();
+        drop(tx);
+        task.await.unwrap();
+
+        assert!(!cancel_token.is_cancelled());
+        assert!(sink.dispatched.lock().unwrap().is_empty());
+
+        let mut msgs = Vec::new();
+        while let Some(cmd) = writer_rx.recv().await {
+            if let writer::WriteCommand::Feed { msg } = cmd {
+                msgs.push(msg);
+            }
+        }
+        let [
+            codec::Message::TransferRefuse(refuse),
+            codec::Message::TransferAck(later_ack),
+        ] = msgs.as_slice()
+        else {
+            panic!("expected exactly XFER_REFUSE then the later ack, got {msgs:?}");
+        };
+        assert_eq!(refuse.transfer_id, 0);
+        assert!(matches!(
+            refuse.reason_code,
+            codec::TransferRefuseReasonCode::NotAcceptable
+        ));
+        assert_eq!(
+            (later_ack.transfer_id, later_ack.acknowledged_length),
+            (1, 1)
+        );
     }
 
     // ---- Error taxonomy ----
