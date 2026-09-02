@@ -33,14 +33,16 @@ pub async fn meta_02_duplicate_insert(store: Arc<dyn MetadataStorage>) {
     );
 }
 
-/// META-03: Update (Replace)
-pub async fn meta_03_update_replace(store: Arc<dyn MetadataStorage>) {
+/// META-03: Update status
+pub async fn meta_03_update_status(store: Arc<dyn MetadataStorage>) {
     let mut bundle = fixtures::random_bundle();
     bundle.status = BundleStatus::Waiting;
     assert!(store.insert(&bundle).await.unwrap());
 
-    bundle.status = BundleStatus::Dispatching;
-    store.replace(&bundle).await.unwrap();
+    store
+        .update_status(bundle.id(), &BundleStatus::Dispatching)
+        .await
+        .unwrap();
 
     let got = store.get(bundle.id()).await.unwrap().unwrap();
     assert_eq!(got.status, BundleStatus::Dispatching);

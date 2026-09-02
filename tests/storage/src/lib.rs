@@ -241,7 +241,7 @@ macro_rules! storage_meta_tests {
             meta_test!(meta_01_insert_and_get);
             meta_test!(meta_15_metadata_roundtrip);
             meta_test!(meta_02_duplicate_insert);
-            meta_test!(meta_03_update_replace);
+            meta_test!(meta_03_update_status);
             meta_test!(meta_04_tombstone);
             meta_test!(meta_06_poll_waiting_fifo);
             meta_test!(meta_07_poll_expiry);
@@ -302,7 +302,7 @@ macro_rules! storage_meta_tests_async {
             meta_test!(meta_01_insert_and_get);
             meta_test!(meta_15_metadata_roundtrip);
             meta_test!(meta_02_duplicate_insert);
-            meta_test!(meta_03_update_replace);
+            meta_test!(meta_03_update_status);
             meta_test!(meta_04_tombstone);
             meta_test!(meta_06_poll_waiting_fifo);
             meta_test!(meta_07_poll_expiry);

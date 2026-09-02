@@ -106,10 +106,6 @@ impl MetadataStorage for InjectingStorage {
         self.inner.insert(bundle).await
     }
 
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
-    }
-
     async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> storage::Result<()> {
         self.inner.update_status(bundle_id, status).await
     }

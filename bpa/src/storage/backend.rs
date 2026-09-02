@@ -52,14 +52,12 @@ pub trait MetadataStorage: Send + Sync {
     /// inserted (`false` if an entry already exists).
     async fn insert(&self, bundle: &Bundle) -> Result<bool>;
 
-    /// Replaces an existing bundle's metadata.
-    async fn replace(&self, bundle: &Bundle) -> Result<()>;
-
     /// Unconditionally sets the status of the bundle with the given
     /// `bundle_id` — the typed status columns only.
     ///
-    /// Cheaper than `replace` because the bundle blob is not written. Use this
-    /// for pure state-machine transitions where no other metadata has changed.
+    /// The bundle blob is never rewritten: a record's non-status metadata is
+    /// fixed at `insert`, and thereafter only its status moves. Use this for
+    /// pure state-machine transitions.
     ///
     /// A bundle deleted concurrently is not an error: delete is terminal, and
     /// the update quietly loses. Backends must neither resurrect the bundle
