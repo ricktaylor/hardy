@@ -1,12 +1,12 @@
-// The rpc services, one file per wire surface, and the shared
-// engines: [`stream_delivery`] pumps the BPA's segments out as wire
-// chunks, generic only over the response message it emits (the up
-// engine is `crate::server::adapter`); [`watch_session`] parks on a
-// session stream until it ends; [`Deliveries`] holds a session's
-// announced streams for its Receive door. Each surface keeps its
-// doors next to the schema they implement; `application.rs` is the
-// template, and the messages' `Chunk`/`Cancel`/`Unregister`
-// capabilities live with the wire contract in `crate::stream`.
+// The rpc services, one file per wire surface, and the shared session
+// machinery: [`watch_session`] parks on a session stream until it ends,
+// and [`Deliveries`] holds a session's announced streams for its Receive
+// door. A delivery's two ends are [`Deliveries::serve`] (the on-deliver
+// side, forwarding into the rendezvous) and `adapter::Writer` (the
+// Receive side, draining it onto the wire). Each surface keeps its doors
+// next to the schema they implement; `application.rs` is the template,
+// and the messages' `Chunk`/`Cancel`/`Unregister` capabilities live with
+// the wire contract in `crate::stream`.
 
 pub mod application;
 pub mod cla;
@@ -14,7 +14,7 @@ pub mod routing;
 pub mod service;
 
 use core::{
-    future::{self, Future},
+    future::{Future, pending},
     time::Duration,
 };
 use std::{
@@ -33,14 +33,18 @@ use prost_types::Timestamp;
 use time::OffsetDateTime;
 // The mpsc `Receiver` collides with the stream `Receiver` trait above, so the
 // event channel's receiving half is aliased where it is the less central name.
-use tokio::sync::mpsc::{Receiver as EventReceiver, Sender};
+use tokio::sync::mpsc::{self, Receiver as EventReceiver};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Status, Streaming};
 use tracing::{debug, error, warn};
 
 use crate::{
     error_status::embed_service_error,
-    server::session::{Session, SessionStream, Sessions},
-    stream::{Cancel, Chunk, Unregister, chunks},
+    server::{
+        DATA_CHANNEL_DEPTH, adapter,
+        session::{Session, SessionStream, Sessions},
+    },
+    stream::{Cancel, Chunk, Unregister},
 };
 
 // Both types are foreign, so this is a free function rather than a
@@ -99,6 +103,40 @@ async fn watch_session<Req: Unregister>(
                 Ok(Some(_)) => warn!("Ignoring unexpected message on the session stream"),
                 Ok(None) | Err(_) => return,
             },
+        }
+    }
+}
+
+// Forwards one delivery segment into the rendezvous the Receive door
+// drains, per the commit-marker protocol: a `Next` travels as-is, and the
+// terminal `Final` splits into its data (a `Next`) then an empty `Final`
+// marker. The door's claim-time probe pulls the data without committing,
+// so a client that takes the bytes and then abandons (the receiver
+// dropped before the marker) fails the marker send, deferring the bundle
+// to the next registration; an already-empty terminal segment is just the
+// marker. Returns whether that marker was sent (the delivery is
+// complete); a closed rendezvous is [`Error::StreamCancelled`].
+async fn forward_segment(
+    tx: &channel::Sender<Segment>,
+    segment: Segment,
+) -> services::Result<bool> {
+    match segment {
+        Segment::Next(b) => {
+            tx.send(Segment::Next(b))
+                .await
+                .map_err(|_| Error::StreamCancelled)?;
+            Ok(false)
+        }
+        Segment::Final(b) => {
+            if !b.is_empty() {
+                tx.send(Segment::Next(b))
+                    .await
+                    .map_err(|_| Error::StreamCancelled)?;
+            }
+            tx.send(Segment::Final(Bytes::new()))
+                .await
+                .map_err(|_| Error::StreamCancelled)?;
+            Ok(true)
         }
     }
 }
@@ -324,196 +362,138 @@ impl Deliveries {
             .remove(key)
             .map(|(_, stream)| stream)
     }
-}
 
-// The request side of one Receive call, reduced to the only thing
-// that matters about it: its terminal status. A cancel message is the
-// abandonment, and a failed request stream is treated the same way (a
-// partial collection must never look complete). Half-close is neither
-// (normal for a client that sends only the metadata) and unexpected
-// messages are ignored, so on those this future parks instead of
-// resolving: it only ever resolves to end the collection.
-async fn abandonment<Req: Cancel>(mut requests: Streaming<Req>) -> Status {
-    loop {
-        match requests.message().await {
-            Ok(Some(req)) if req.is_cancel() => {
-                return Status::cancelled("Collection abandoned");
-            }
-            // Not Debug-formatted: a stray metadata message carries the
-            // session token, which must never reach the logs.
-            Ok(Some(_)) => warn!("Ignoring unexpected message on the Receive request side"),
-            // Nothing can follow a half-close: the request side goes
-            // inert for the rest of the call.
-            Ok(None) => future::pending().await,
-            Err(e) => {
-                debug!("Receive stream failed: {e}");
-                return Status::aborted("Receive stream failed");
-            }
+    // The whole `on_deliver` side of a delivery: hold a rendezvous under
+    // `key`, run `announce` to emit the surface's Delivery event, then
+    // relay `stream` to the client. Returns `Ok` once the client has taken
+    // the whole bundle (the wire's commit point) and `Err` when it
+    // abandoned the collection, the session died, or the hold expired,
+    // parking the bundle for a later registration. The rendezvous and its
+    // commit-marker protocol are private to this type; a surface supplies
+    // only the event.
+    async fn serve<A, F>(
+        &self,
+        key: String,
+        expiry: OffsetDateTime,
+        cancel: CancellationToken,
+        stream: &mut dyn Receiver<Segment>,
+        announce: A,
+    ) -> services::Result<()>
+    where
+        A: FnOnce() -> F,
+        F: Future<Output = bool>,
+    {
+        let (tx, rx) = channel::bounded(0);
+        // Held before the event goes out so a client racing its Receive
+        // against the announcement always finds the entry.
+        self.hold(key.clone(), expiry, Box::new(rx));
+        if !announce().await {
+            self.withdraw(&key);
+            return Err(Error::Disconnected);
         }
-    }
-}
 
-// The down half of one Receive call: pulls the delivery's segments
-// from the BPA and streams them as chunks, starting from `first`, the
-// segment the door's probe already pulled. Pulling the final segment
-// is the completion signal: it is pulled only after the previous
-// segment's chunks are queued and no abandonment is pending, so every
-// abandonment resolved before that pull leaves the bundle parked in
-// the BPA, which is RFC 9171 delivery deferral; once the final
-// segment is pulled the delivery has completed, and its chunks are
-// sent through regardless of a late cancel. A withdrawn delivery ends
-// the stream with the wire's in-band cancel.
-//
-// `abandoned` is the request side already reduced by [`abandonment`]:
-// the door hands the future in, so the engine is generic only over
-// the response message it emits.
-// Pumps the BPA's delivery stream into the rendezvous the collector
-// pulls from, bounded by the bundle's expiry. A `bounded(0)` send
-// completes only when the collector takes the segment, so returning
-// `Ok` after the collector takes `Final` is the wire's commit point,
-// and a dropped collector (client abandoned, or expiry elapsed with no
-// collection) surfaces as `Err`, parking the bundle for re-announcement.
-// The BPA cannot see the wire's announce/collect split, so bounding the
-// hold by expiry is this layer's responsibility.
-async fn pump_to_collector(
-    cancelled: CancellationToken,
-    expiry: OffsetDateTime,
-    stream: &mut dyn Receiver<Segment>,
-    tx: channel::Sender<Segment>,
-) -> services::Result<()> {
-    let hold = (expiry - OffsetDateTime::now_utc())
-        .try_into()
-        .unwrap_or(Duration::ZERO);
-    let pump = tokio::time::timeout(hold, async {
-        loop {
-            match stream.recv().await {
-                Ok(Segment::Next(b)) => tx
-                    .send(Segment::Next(b))
-                    .await
-                    .map_err(|_| services::Error::StreamCancelled)?,
-                Ok(Segment::Final(b)) => {
-                    // Split the terminal segment: the data travels as a
-                    // `Next`, then an empty `Final` is the commit marker.
-                    // The collector's claim-time probe pulls the data
-                    // without committing, so a client that receives the
-                    // bytes and then abandons (dropping the collector
-                    // before the marker) fails this final send, which
-                    // defers the bundle for the next registration. An
-                    // empty terminal segment is already just the marker.
-                    if !b.is_empty() {
-                        tx.send(Segment::Next(b))
-                            .await
-                            .map_err(|_| services::Error::StreamCancelled)?;
+        // Relay the delivery into the rendezvous, bounded by the bundle's
+        // expiry: the BPA cannot see the wire's announce/collect split, so
+        // capping the hold is this layer's job. The rendezvous is
+        // `bounded(0)`, so forwarding the terminal marker completes only
+        // when the client takes it (the wire's commit point). Any failure
+        // parks the bundle for a later registration: the session's cancel
+        // (a lost connection), a far end that went away (client abandoned,
+        // or the hold expired) failing a send, or a stalled source.
+        let hold = (expiry - OffsetDateTime::now_utc())
+            .try_into()
+            .unwrap_or(Duration::ZERO);
+        let relay = tokio::time::timeout(hold, async {
+            loop {
+                match stream.recv().await {
+                    // Forwarding the terminal segment's marker completes
+                    // the relay; every other segment continues it.
+                    Ok(segment) => {
+                        if forward_segment(&tx, segment).await? {
+                            break Ok(());
+                        }
                     }
-                    break tx
-                        .send(Segment::Final(Bytes::new()))
-                        .await
-                        .map_err(|_| services::Error::StreamCancelled);
-                }
-                Err(_) => break Err(services::Error::StreamCancelled),
-            }
-        }
-    });
-    // A lost connection (the session's cancel firing) unblocks the
-    // rendezvous with an error, so the delivery call returns Err and the
-    // BPA parks the bundle to re-dispatch to the next registration,
-    // rather than the pump blocking on a collector that will never pull.
-    tokio::select! {
-        biased;
-        _ = cancelled.cancelled() => Err(services::Error::Disconnected),
-        r = pump => r.unwrap_or(Err(services::Error::StreamCancelled)),
-    }
-}
-
-async fn stream_delivery<Resp: Chunk + Cancel + Send + 'static>(
-    cancelled: CancellationToken,
-    first: Segment,
-    mut stream: Box<dyn Receiver<Segment>>,
-    tx: Sender<Result<Resp, Status>>,
-    abandoned: impl Future<Output = Status>,
-) {
-    // One abandonment future for the whole call, polled from both
-    // waits: its half-close state lives inside it, and a cancel
-    // arriving between segments or between chunks is never lost.
-    //
-    // Terminal statuses are try_send, best effort: they only matter to
-    // a client that is reading, and awaiting a full channel after the
-    // session died would park this task past pool shutdown.
-    let mut abandoned = core::pin::pin!(abandoned);
-    let mut probed = Some(first);
-    loop {
-        let segment = if let Some(segment) = probed.take() {
-            segment
-        } else {
-            let segment = tokio::select! {
-                biased;
-                _ = cancelled.cancelled() => {
-                    let _ = tx.try_send(Err(Status::aborted("Session closed")));
-                    return;
-                }
-                status = &mut abandoned => {
-                    let _ = tx.try_send(Err(status));
-                    return;
-                }
-                segment = stream.recv() => segment,
-            };
-            match segment {
-                Ok(segment) => segment,
-                // Withdrawn mid-collection (expiry, shutdown): the
-                // wire's in-band signal, then a clean end. Nothing
-                // follows.
-                Err(_) => {
-                    let _ = tx.try_send(Ok(Resp::cancel()));
-                    return;
+                    Err(_) => break Err(Error::StreamCancelled),
                 }
             }
+        });
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(Error::Disconnected),
+            r = relay => r.unwrap_or(Err(Error::StreamCancelled)),
         };
-
-        if matches!(segment, Segment::Final(_)) {
-            // Pulling the final segment completed the delivery in the
-            // BPA, so an abandonment arriving now is too late to
-            // honour: the remaining chunks must reach the wire, or the
-            // client is told CANCELLED (the bundle stays held) about a
-            // bundle that is already gone. Only session death ends the
-            // sends early: those bytes have no reader, the irreducible
-            // window.
-            for segment in chunks(segment) {
-                let permit = tokio::select! {
-                    biased;
-                    _ = cancelled.cancelled() => {
-                        let _ = tx.try_send(Err(Status::aborted("Session closed")));
-                        return;
-                    }
-                    permit = tx.reserve() => {
-                        let Ok(permit) = permit else { return };
-                        permit
-                    }
-                };
-                permit.send(Ok(Resp::chunk(segment)));
-            }
-            return;
+        if result.is_err() {
+            self.withdraw(&key);
         }
+        result
+    }
 
-        for segment in chunks(segment) {
-            // Wait for send room, servicing cancellation and
-            // abandonment while the client reads.
-            let permit = tokio::select! {
+    // The whole Receive-door side: claim the rendezvous for `key`, probe it
+    // (a delivery that died while parked answers not-found here, before the
+    // response stream opens), then spawn the drain that streams it to the
+    // client as `Resp` chunks while watching `requests` for an in-band
+    // abandonment. Returns the response stream.
+    async fn collect<Req, Resp>(
+        &self,
+        tasks: &TaskPool,
+        cancel: CancellationToken,
+        key: &str,
+        requests: Streaming<Req>,
+    ) -> Result<ReceiverStream<Result<Resp, Status>>, Status>
+    where
+        Req: Cancel + Send + 'static,
+        Resp: Chunk + Cancel + Send + 'static,
+    {
+        let mut stream = self
+            .claim(key)
+            .ok_or_else(|| Status::not_found("No such delivery"))?;
+        let first = stream
+            .recv()
+            .await
+            .map_err(|_| Status::not_found("No such delivery"))?;
+
+        let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
+        let writer = adapter::Writer::new(tx.clone(), cancel);
+        hardy_async::spawn!(tasks, "delivery_receive", async move {
+            // The client can abandon the collection in-band while it
+            // drains. Its request side reduces to a terminal status: a
+            // cancel is the abandonment, a failed stream is treated the
+            // same (a partial collection must never look complete), and a
+            // half-close or unexpected message leaves it inert (a client
+            // may send only the metadata). Checked first, it preempts the
+            // drain, ends the call, and parks the bundle for a later
+            // registration; it races the whole write, so a cancel landing
+            // during the final flush (once the delivery has committed in
+            // the BPA) still ends the call here.
+            tokio::select! {
                 biased;
-                _ = cancelled.cancelled() => {
-                    let _ = tx.try_send(Err(Status::aborted("Session closed")));
-                    return;
-                }
-                status = &mut abandoned => {
+                status = async move {
+                    let mut requests = requests;
+                    loop {
+                        match requests.message().await {
+                            Ok(Some(req)) if req.is_cancel() => {
+                                break Status::cancelled("Collection abandoned");
+                            }
+                            // Not Debug-formatted: a stray metadata message
+                            // carries the session token, which must never
+                            // reach the logs.
+                            Ok(Some(_)) => {
+                                warn!("Ignoring unexpected message on the Receive request side")
+                            }
+                            Ok(None) => pending().await,
+                            Err(e) => {
+                                debug!("Receive stream failed: {e}");
+                                break Status::aborted("Receive stream failed");
+                            }
+                        }
+                    }
+                } => {
                     let _ = tx.try_send(Err(status));
-                    return;
                 }
-                permit = tx.reserve() => {
-                    let Ok(permit) = permit else { return };
-                    permit
-                }
-            };
-            permit.send(Ok(Resp::chunk(segment)));
-        }
+                _ = writer.write_all(first, stream) => {}
+            }
+        });
+        Ok(ReceiverStream::new(rx))
     }
 }
 

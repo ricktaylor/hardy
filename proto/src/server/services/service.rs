@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use hardy_async::{TaskPool, channel};
+use hardy_async::TaskPool;
 use hardy_bpa::{
     async_trait,
     bpa::BpaRegistration,
@@ -28,13 +28,10 @@ use tonic::{Request, Response, Status, Streaming};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{
-    Bridge, Component, Deliveries, SinkSlot, abandonment, pump_to_collector, service_status,
-    stream_delivery, to_timestamp,
-};
+use super::{Bridge, Component, Deliveries, SinkSlot, service_status, to_timestamp};
 use crate::{
     server::{
-        CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
+        CHANNEL_DEPTH, adapter,
         session::{Session, SessionStream},
     },
     service::{
@@ -107,39 +104,21 @@ impl services::Service for GrpcService {
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
         let key = bundle_id.to_key();
-
-        // Rendezvous the delivery call with the client's Receive: a
-        // bounded(0) send completes only when the collector takes the
-        // segment, so an Ok return means the client took Final (the
-        // wire's commit point) and an Err means it abandoned the
-        // collection, so the BPA parks the bundle and re-announces it to
-        // the next registration. Held before the event goes out so a
-        // client racing its Receive against the announcement always
-        // finds the entry.
-        let (tx, rx) = channel::bounded(0);
-        // `hold` keeps the map's copy; the original key moves out onto the
-        // wire in the event below. The cold withdraw paths recompute the
-        // (deterministic) key rather than hold a third copy on every
-        // delivery.
-        self.deliveries.hold(key.clone(), expiry, Box::new(rx));
-
-        if !self
-            .event(subscribe_response::Event::Delivery(Delivery {
-                bundle_id: key,
-                expire_time: Some(to_timestamp(expiry)),
-                bundle_size,
-            }))
+        self.deliveries
+            .serve(
+                key.clone(),
+                expiry,
+                self.session.cancellation(),
+                stream,
+                || {
+                    self.event(subscribe_response::Event::Delivery(Delivery {
+                        bundle_id: key,
+                        expire_time: Some(to_timestamp(expiry)),
+                        bundle_size,
+                    }))
+                },
+            )
             .await
-        {
-            self.deliveries.withdraw(&bundle_id.to_key());
-            return Err(services::Error::Disconnected);
-        }
-
-        let result = pump_to_collector(self.session.cancellation(), expiry, stream, tx).await;
-        if result.is_err() {
-            self.deliveries.withdraw(&bundle_id.to_key());
-        }
-        result
     }
 
     async fn on_status_notify(
@@ -213,7 +192,7 @@ impl ServiceService for ServiceServiceImpl {
 
         // The token is minted before the BPA sees the component: the
         // session must be able to carry events the moment registration
-        // completes. The JWT `sub` is the requested identity,
+        // completes. The token's `sub` prefix is the requested identity,
         // observability only; the reply carries the resolved endpoint.
         let sub = match &service_id {
             Some(Service::Ipn(n)) => format!("ipn:{n}"),
@@ -313,25 +292,16 @@ impl ServiceService for ServiceServiceImpl {
             ));
         };
         let service = self.bridge.sessions.resolve(session_token)?;
-        let Some(mut stream) = service.deliveries.claim(&bundle_id) else {
-            return Err(Status::not_found("No such delivery"));
-        };
-
-        // First-pull probe: a delivery that died while parked (expired,
-        // withdrawn, shut down) answers at the door, before the
-        // response stream opens.
-        let first = stream
-            .recv()
-            .await
-            .map_err(|_| Status::not_found("No such delivery"))?;
-
-        let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
-        let cancelled = service.session.cancellation();
-        hardy_async::spawn!(self.bridge.tasks, "service_receive", async move {
-            stream_delivery(cancelled, first, stream, tx, abandonment(requests)).await;
-        });
-
-        Ok(Response::new(ReceiverStream::new(rx)))
+        let response = service
+            .deliveries
+            .collect(
+                &self.bridge.tasks,
+                service.session.cancellation(),
+                &bundle_id,
+                requests,
+            )
+            .await?;
+        Ok(Response::new(response))
     }
 }
 
