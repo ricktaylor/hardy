@@ -39,30 +39,37 @@ sleep 5
 # rename masqueraded as a "cFS did not start listening" failure.
 CMD_SEND="$(command -v cmd_send || command -v cmdUtil)" \
     || { echo "ERROR: neither cmd_send nor cmdUtil found in PATH" >&2; exit 1; }
-CMDUTIL="$CMD_SEND --port 1234 --endian=LE --pktid=0x1838"
+CMDUTIL_ARGS=(--port 1234 --endian=LE --pktid=0x1838)
+
+# A failed setup command is the difference between a working contact and a
+# silent "cFS did not start listening", so warn loudly rather than `|| true`.
+send_bpnode_cmd() {
+    local description="$1"
+    shift
+
+    echo "$description"
+    if ! "$CMD_SEND" "${CMDUTIL_ARGS[@]}" "$@"; then
+        echo "WARNING: $CMD_SEND failed while sending: $description" >&2
+    fi
+}
 
 # Channel 0 is auto-added and auto-started during init, but the auto-start
 # does not activate SB subscriptions.  Stop it, then restart so the ADU
 # proxy table (and the loaded app's subscription) takes full effect.
-echo "Adding BPNode application for channel 1..."
-$CMDUTIL --cmdcode=14 --uint32=1 || true
+send_bpnode_cmd "Adding BPNode application for channel 1..." --cmdcode=14 --uint32=1
 sleep 1
 
-echo "Stopping auto-started Channel 0..."
-$CMDUTIL --cmdcode=18 --uint32=0 || true
+send_bpnode_cmd "Stopping auto-started Channel 0..." --cmdcode=18 --uint32=0
 sleep 1
 
-echo "Starting BPNode applications..."
-$CMDUTIL --cmdcode=17 --uint32=0 || true
-$CMDUTIL --cmdcode=17 --uint32=1 || true
+send_bpnode_cmd "Starting BPNode application for channel 0..." --cmdcode=17 --uint32=0
+send_bpnode_cmd "Starting BPNode application for channel 1..." --cmdcode=17 --uint32=1
 sleep 1
 
-echo "Setting up BPNode contact 0..."
-$CMDUTIL --cmdcode=29 --uint32=0 || true
+send_bpnode_cmd "Setting up BPNode contact 0..." --cmdcode=29 --uint32=0
 sleep 1
 
-echo "Starting BPNode contact 0..."
-$CMDUTIL --cmdcode=30 --uint32=0 || true
+send_bpnode_cmd "Starting BPNode contact 0..." --cmdcode=30 --uint32=0
 sleep 2
 
 echo "BPNode startup commands sent."
