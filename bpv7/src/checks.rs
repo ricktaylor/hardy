@@ -417,52 +417,88 @@ pub fn verify_all_bibs(
     Ok(DeferredBibs(deferred))
 }
 
-/// Second-pass companion to [`verify_all_bibs`] for the streaming ingress
-/// gate: verify the **block-1 (payload)** target of every BIB in `bib_ops`
-/// against the now-resident full bundle `data`. The header pass
-/// ([`verify`] on a headers-only buffer) skips block-1 targets because the
-/// payload isn't yet resident, and hands the caller exactly the op-sets that
-/// still target block 1; this re-checks only those targets (header targets
-/// were already verified in the first pass — no re-checking).
+/// Streaming companion to [`verify_all_bibs`] for the ingress drain: begin
+/// incremental verification of the **block-1 (payload)** target of every
+/// BIB in `bib_ops` (the [`VerifyFacts::deferred_bibs`] hand-over), against
+/// a headers-only buffer. The caller feeds each returned verifier the
+/// payload's block-type-specific data as it streams past, then settles it
+/// with [`bpsec::bib::Verifier::finish`] — no resident payload is
+/// ever required, which is the point.
 ///
-/// `NoKey` is a soft skip, as in [`verify_all_bibs`]. A BCB-encrypted payload
-/// is skipped here too — its integrity is established at delivery, when the
-/// payload is decrypted ([`bpsec::block_data`]).
-pub fn verify_payload(
+/// Skip rules mirror [`verify_payload`]: a BCB-encrypted payload is not
+/// verified here (its integrity is established at delivery, once
+/// decrypted), and `NoKey` is a soft policy skip. The result pairs each
+/// verifier with its BIB's block number so the caller can attribute a
+/// failure to the block that made the claim.
+pub fn begin_payload_verification(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     blocks: &HashMap<u64, block::Block>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
-    decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
-    to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<(), Error> {
+) -> Result<Vec<(u64, bpsec::bib::Verifier)>, Error> {
+    let empty_decrypted = HashMap::default();
+    let empty_updates = HashMap::default();
+
+    let mut verifiers = Vec::new();
     for (&bib_block_number, ops) in bib_ops {
         let Some(op) = ops.operations.get(&1) else {
             continue;
         };
         let target_block = blocks.get(&1).expect("payload block exists");
-        if target_block.bcb.is_some() && !decrypted_data.contains_key(&1) {
+        if target_block.bcb.is_some() {
             continue;
         }
         let block_set = BundleBlockSet {
             blocks,
             source_data: data,
-            decrypted_data,
-            to_update,
+            decrypted_data: &empty_decrypted,
+            to_update: &empty_updates,
         };
-        match op.verify(
+        match op.begin_verify(
             key_source,
-            bpsec::bib::OperationArgs {
+            &bpsec::bib::OperationArgs {
                 bpsec_source: &ops.source,
                 target: 1,
                 source: bib_block_number,
                 blocks: &block_set,
             },
         ) {
-            Ok(()) => {}
+            Ok(verifier) => verifiers.push((bib_block_number, verifier)),
             Err(bpsec::Error::NoKey) => {}
             Err(e) => return Err(e.into()),
         }
+    }
+    Ok(verifiers)
+}
+
+/// Second-pass companion to [`verify_all_bibs`] for the ingress gate on a
+/// now-resident full bundle: verify the **block-1 (payload)** target of
+/// every deferred BIB. A convenience driver over
+/// [`begin_payload_verification`] — it feeds each returned verifier the
+/// resident payload in one step and settles it — so the iterate/skip rules
+/// live in one place. (The streaming ingress drain uses
+/// [`begin_payload_verification`] directly, feeding the payload segment by
+/// segment.)
+///
+/// `NoKey` is a soft skip and a BCB-encrypted payload is skipped (verified
+/// at delivery once decrypted), both inherited from
+/// [`begin_payload_verification`].
+pub fn verify_payload(
+    data: &[u8],
+    key_source: &dyn bpsec::key::KeySource,
+    blocks: &HashMap<u64, block::Block>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+) -> Result<(), Error> {
+    for (_, mut verifier) in begin_payload_verification(data, key_source, blocks, bib_ops)? {
+        // The whole bundle is resident, so the payload's block-type-specific
+        // data can be fed in one step. `begin_payload_verification` skipped
+        // any non-resident or BCB-covered payload, so this slice is present.
+        let payload = blocks
+            .get(&1)
+            .and_then(|b| b.payload(data))
+            .expect("a returned verifier's payload target is resident");
+        verifier.update(payload);
+        verifier.finish()?;
     }
     Ok(())
 }

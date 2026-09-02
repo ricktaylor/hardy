@@ -510,15 +510,11 @@ where
         let key_source = key_source
             .as_deref()
             .expect("built when a BPSec branch runs");
-        let no_decrypted = HashMap::new();
-        let no_updates = HashMap::new();
         if let Err(e) = checks::verify_payload(
             whole,
             key_source,
             &hv.bundle.blocks,
             &hv.deferred_bibs,
-            &no_decrypted,
-            &no_updates,
         ) {
             return Err((hv.bundle, e));
         }

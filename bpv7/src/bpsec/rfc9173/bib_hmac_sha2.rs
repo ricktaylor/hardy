@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, string::ToString, sync::Arc};
+use alloc::{borrow::Cow, boxed::Box, string::ToString, sync::Arc};
 use core::ops::Range;
 
 use hardy_cbor::{
@@ -133,18 +133,125 @@ impl ToCbor for Results {
     }
 }
 
-fn calculate_hmac<D>(
-    flags: &ScopeFlags,
-    key: &[u8],
-    args: &bib::OperationArgs,
-) -> Result<hmac::digest::Output<hmac::Hmac<D>>, Error>
-where
-    D: hmac::EagerHash,
-{
-    let mut mac =
-        hmac::Hmac::<D>::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?;
+/// Incremental verifier for one HMAC-SHA2 payload-target operation.
+///
+/// Created by [`Operation::begin_verify`] with every header-resident IPPT
+/// part already absorbed; the caller feeds the target's block-type-specific
+/// data through [`update`](Self::update) as it streams past, then settles
+/// the operation with [`finish`](Self::finish).
+///
+/// The verifier owns everything it needs — including a copy of the resolved
+/// content-encryption key inside the MAC state — so it is deliberately
+/// `Send` and may cross `await` points and task boundaries: the streamed
+/// target's bytes are not resident, so the keyed state must live for the
+/// duration of the drain. This is a recorded exception to the header pass's
+/// no-key-material-across-awaits rule.
+#[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
+pub struct Verifier {
+    mac: MacInner,
+    expected: Box<[u8]>,
+}
 
-    // Build IPT
+enum MacInner {
+    S256(hmac::Hmac<sha2::Sha256>),
+    S384(hmac::Hmac<sha2::Sha384>),
+    S512(hmac::Hmac<sha2::Sha512>),
+}
+
+impl MacInner {
+    fn new(variant: ShaVariant, key: &[u8]) -> Result<Self, Error> {
+        match variant {
+            ShaVariant::HMAC_256_256 => Ok(Self::S256(
+                hmac::Hmac::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?,
+            )),
+            ShaVariant::HMAC_384_384 => Ok(Self::S384(
+                hmac::Hmac::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?,
+            )),
+            ShaVariant::HMAC_512_512 => Ok(Self::S512(
+                hmac::Hmac::new_from_slice(key).map_err(|e| Error::Algorithm(e.to_string()))?,
+            )),
+            ShaVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        match self {
+            Self::S256(mac) => mac.update(bytes),
+            Self::S384(mac) => mac.update(bytes),
+            Self::S512(mac) => mac.update(bytes),
+        }
+    }
+
+    // Constant-time comparison against an expected tag.
+    fn verify_tag(self, expected: &[u8]) -> bool {
+        match self {
+            Self::S256(mac) => mac.verify_slice(expected).is_ok(),
+            Self::S384(mac) => mac.verify_slice(expected).is_ok(),
+            Self::S512(mac) => mac.verify_slice(expected).is_ok(),
+        }
+    }
+
+    // The finished tag, for signing.
+    fn finalize_tag(self) -> Box<[u8]> {
+        match self {
+            Self::S256(mac) => Box::from(mac.finalize().into_bytes().as_ref()),
+            Self::S384(mac) => Box::from(mac.finalize().into_bytes().as_ref()),
+            Self::S512(mac) => Box::from(mac.finalize().into_bytes().as_ref()),
+        }
+    }
+}
+
+impl Verifier {
+    /// Absorb the next run of the target's block-type-specific data.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.mac.update(bytes);
+    }
+
+    /// Settle the operation: every byte of the target's data has been
+    /// absorbed. Fails with [`Error::IntegrityCheckFailed`] on tag mismatch
+    /// (constant-time comparison).
+    pub fn finish(self) -> Result<(), Error> {
+        if self.mac.verify_tag(&self.expected) {
+            Ok(())
+        } else {
+            Err(Error::IntegrityCheckFailed)
+        }
+    }
+}
+
+// Absorb a fully-resident target's byte-string head and body: the target's
+// canonical form for a primary-block target (RFC 9172 §4), its
+// block-type-specific data otherwise. The head is sized from the resident
+// payload's own length, not the block's parsed extent — the editor's
+// in-flight template carries a placeholder `Block.data` range. Shared by
+// `sign` and the verify wrapper's `Verifier::update_resident`.
+fn absorb_resident_target(mac: &mut MacInner, args: &bib::OperationArgs) -> Result<(), Error> {
+    let (target_block, payload) = args
+        .blocks
+        .block(args.target)
+        .ok_or(Error::MissingSecurityTarget)?;
+    let payload = payload.ok_or(Error::MissingSecurityTarget)?;
+    let bytes: Cow<[u8]> = if matches!(target_block.block_type, block::Type::Primary) {
+        canonical_primary(payload.as_ref())?
+    } else {
+        Cow::Borrowed(payload.as_ref())
+    };
+    mac.update(&emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);
+    mac.update(&bytes);
+    Ok(())
+}
+
+// Absorb the IPPT parts that precede the target's byte-string: the scope
+// flags and the optional header parts (which RFC 9173 §3.7 omits for a
+// primary-block target). The single source of the IPPT header rules; each
+// caller then emits the target's byte-string head + body — the resident
+// path in one step (`absorb_resident_target`), the streaming `begin_verify`
+// path by emitting the head then feeding the body through `Verifier::update`.
+fn ippt_prefix(
+    mac: &mut MacInner,
+    flags: &ScopeFlags,
+    args: &bib::OperationArgs,
+) -> Result<(), Error> {
     mac.update(
         &emit(&ScopeFlags {
             include_primary_block: flags.include_primary_block,
@@ -155,11 +262,10 @@ where
         .0,
     );
 
-    let (target_block, payload) = args
+    let target_block = args
         .blocks
-        .block(args.target)
+        .block_header(args.target)
         .ok_or(Error::MissingSecurityTarget)?;
-    let payload = payload.ok_or(Error::MissingSecurityTarget)?;
 
     if !matches!(target_block.block_type, block::Type::Primary) {
         if flags.include_primary_block {
@@ -168,9 +274,8 @@ where
                 .block(0)
                 .and_then(|v| v.1)
                 .expect("Missing primary block!");
-            let raw = raw.as_ref();
             // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
-            mac.update(&canonical_primary(raw)?);
+            mac.update(&canonical_primary(raw.as_ref())?);
         }
 
         if flags.include_target_header {
@@ -185,9 +290,8 @@ where
     if flags.include_security_header {
         let source_block = args
             .blocks
-            .block(args.source)
-            .ok_or(Error::MissingSecurityTarget)?
-            .0;
+            .block_header(args.source)
+            .ok_or(Error::MissingSecurityTarget)?;
         let mut encoder = Encoder::new();
         encoder.emit(&source_block.block_type);
         encoder.emit(&args.source);
@@ -195,21 +299,7 @@ where
         mac.update(&encoder.build());
     }
 
-    // Step 5: CBOR byte-string encoding of the security target's canonical form
-    // (confirmed by RFC 9173 Appendix A.3 test vector: primary block is also
-    // byte-string-wrapped). For primary block targets, canonicalize before wrapping.
-    if matches!(target_block.block_type, block::Type::Primary) {
-        // RFC 9172 §4: IPPT requires the canonical (deterministic) form.
-        let bytes = canonical_primary(payload.as_ref())?;
-        mac.update(&emit(&hardy_cbor::encode::BytesHeader(bytes.len() as u64)).0);
-        mac.update(&bytes);
-    } else {
-        // Reduce copying by emitting the byte-string header separately.
-        mac.update(&emit(&hardy_cbor::encode::BytesHeader(payload.len() as u64)).0);
-        mac.update(payload.as_ref());
-    }
-
-    Ok(mac.finalize().into_bytes())
+    Ok(())
 }
 
 enum KeyWrap {
@@ -315,20 +405,10 @@ impl Operation {
                 cek.as_ref()
             });
 
-        let results = Results(match variant {
-            ShaVariant::HMAC_256_256 => {
-                Box::from(calculate_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?.as_ref())
-            }
-            ShaVariant::HMAC_384_384 => {
-                Box::from(calculate_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?.as_ref())
-            }
-            ShaVariant::HMAC_512_512 => {
-                Box::from(calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?.as_ref())
-            }
-            ShaVariant::Unrecognised(_) => {
-                unreachable!("Unrecognised variants filtered before signing")
-            }
-        });
+        let mut mac = MacInner::new(variant, active_cek)?;
+        ippt_prefix(&mut mac, &scope_flags, &args)?;
+        absorb_resident_target(&mut mac, &args)?;
+        let results = Results(mac.finalize_tag());
 
         let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
             let key = match key_wrap {
@@ -352,15 +432,95 @@ impl Operation {
         })
     }
 
-    pub fn verify<K>(&self, key_source: &K, args: bib::OperationArgs) -> Result<(), Error>
+    /// Begin incremental verification of this operation against a target
+    /// whose block-type-specific data is not resident (the streaming
+    /// ingress drain). Absorbs every header-resident IPPT part — the
+    /// target's data length comes from its parsed extent — and returns the
+    /// [`Verifier`] the caller feeds as the data streams past.
+    ///
+    /// The resolved key material is *copied* into the returned MAC state
+    /// (see [`Verifier`] for the recorded key-handling exception).
+    /// [`Error::NoKey`] means no usable key: the caller's policy skip.
+    pub fn begin_verify<K>(
+        &self,
+        key_source: &K,
+        args: &bib::OperationArgs,
+    ) -> Result<Verifier, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        let mut mac = self.prepared_mac(key_source, args)?;
+
+        // The streamed target's bytes are not resident, so the byte-string
+        // head sizes from the parsed extent — the drain feeds exactly that
+        // many bytes through `Verifier::update`. (The resident `verify` path
+        // sizes its head from the payload's own length in
+        // `absorb_resident_target`, because the editor's in-flight template
+        // carries a placeholder `Block.data` range.)
+        let target_block = args
+            .blocks
+            .block_header(args.target)
+            .ok_or(Error::MissingSecurityTarget)?;
+        let extent_len = target_block.data.end - target_block.data.start;
+        mac.update(&emit(&hardy_cbor::encode::BytesHeader(extent_len)).0);
+
+        Ok(Verifier {
+            mac,
+            expected: self.results.0.clone(),
+        })
+    }
+
+    /// Verify a fully-resident target block. The all-in-one counterpart to
+    /// [`begin_verify`](Self::begin_verify): it can't reuse that path
+    /// (which sizes the byte-string head from the parsed extent and streams
+    /// raw bytes — wrong for a primary-block target's canonical form, and
+    /// for the editor's placeholder extent during signing), but it shares
+    /// every other primitive — [`prepared_mac`](Self::prepared_mac) for the
+    /// IPPT header, `absorb_resident_target` for the resident head + body,
+    /// and [`Verifier::finish`] for the constant-time settle.
+    pub fn verify<K>(&self, key_source: &K, args: &bib::OperationArgs) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        let mut verifier = Verifier {
+            mac: self.prepared_mac(key_source, args)?,
+            expected: self.results.0.clone(),
+        };
+        absorb_resident_target(&mut verifier.mac, args)?;
+        verifier.finish()
+    }
+
+    // The setup both verification paths share: resolve the key, build the
+    // MAC, and absorb the IPPT header parts (`ippt_prefix`). Each path then
+    // emits the target's byte-string head + body its own way — the one step
+    // that legitimately differs (resident length vs streamed extent).
+    fn prepared_mac<K>(&self, key_source: &K, args: &bib::OperationArgs) -> Result<MacInner, Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        let cek = self.resolve_cek_owned(key_source, args.bpsec_source)?;
+        let mut mac = MacInner::new(self.parameters.variant, &cek)?;
+        ippt_prefix(&mut mac, &self.parameters.flags, args)?;
+        Ok(mac)
+    }
+
+    // The single verification-key resolver, shared by `verify` and
+    // `begin_verify`: the unwrapped CEK in key-wrap mode, a copy of the
+    // KeySource's key in direct mode — owned, because a streaming verifier
+    // outlives the KeySource borrow (the resident path pays one small key
+    // copy for the shared code path).
+    fn resolve_cek_owned<K>(
+        &self,
+        key_source: &K,
+        bpsec_source: &eid::Eid,
+    ) -> Result<zeroize::Zeroizing<Box<[u8]>>, Error>
     where
         K: key::KeySource + ?Sized,
     {
         if let Some(wrapped_cek) = &self.parameters.key {
-            // Key wrapping mode - need a KEK to unwrap
             let jwk = key_source
                 .key(
-                    args.bpsec_source,
+                    bpsec_source,
                     &[key::Operation::UnwrapKey, key::Operation::Verify],
                 )
                 .ok_or(Error::NoKey)?;
@@ -373,7 +533,7 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            let cek = match as_key_wrap(jwk.key_algorithm) {
+            match as_key_wrap(jwk.key_algorithm) {
                 Some(KeyWrap::Aes128) => {
                     key_wrap::unwrap::<aes_kw::aes::Aes128>(key.as_ref(), wrapped_cek)
                 }
@@ -385,18 +545,11 @@ impl Operation {
                 }
                 None => return Err(Error::IntegrityCheckFailed),
             }
-            .map_err(|_| Error::IntegrityCheckFailed)?;
-            let cek = zeroize::Zeroizing::from(Box::from(cek));
-
-            if self.verify_inner(&cek, &args)? {
-                Ok(())
-            } else {
-                Err(Error::IntegrityCheckFailed)
-            }
+            .map(|cek| zeroize::Zeroizing::from(Box::from(cek)))
+            .map_err(|_| Error::IntegrityCheckFailed)
         } else {
-            // Direct mode - need a verification key
             let jwk = key_source
-                .key(args.bpsec_source, &[key::Operation::Verify])
+                .key(bpsec_source, &[key::Operation::Verify])
                 .ok_or(Error::NoKey)?;
 
             if Some(self.parameters.variant) != as_variant(jwk.key_algorithm) {
@@ -407,29 +560,7 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            if self.verify_inner(key, &args)? {
-                Ok(())
-            } else {
-                Err(Error::IntegrityCheckFailed)
-            }
-        }
-    }
-
-    fn verify_inner(&self, cek: &[u8], args: &bib::OperationArgs) -> Result<bool, Error> {
-        match self.parameters.variant {
-            ShaVariant::HMAC_256_256 => {
-                let mac = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::HMAC_384_384 => {
-                let mac = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::HMAC_512_512 => {
-                let mac = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
+            Ok(zeroize::Zeroizing::from(key.clone()))
         }
     }
 
