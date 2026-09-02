@@ -135,16 +135,24 @@ async fn forwarder_task(
                     // pipeline (a native implementation would stream the file in
                     // chunks); see bpa/docs/streaming_pipeline_design.md.
                     if let Ok(buffer) = tokio::fs::read(&path).await.inspect_err(|e| error!("Failed to read from '{}': {e}", path.display())) {
+                        // The file is consumed only on acceptance: a refused
+                        // or failed dispatch leaves it in place for the next
+                        // scan, since the BPA has not taken responsibility
+                        // for the bundle.
+                        // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
                         match sink.dispatch(None, None, &mut hardy_bpa::Bytes::from(buffer)).await {
-                            Err(e) => warn!("Failed to dispatch bundle: {e}"),
-                            Ok(_) => debug!("Dispatched '{}'",path.display()),
+                            Ok(hardy_bpa::cla::Acceptance::Accepted) => {
+                                debug!("Dispatched '{}'", path.display());
+                                tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
+                                    warn!("Failed to remove file '{}': {e}", path.display());
+                                });
+                            }
+                            Ok(hardy_bpa::cla::Acceptance::Refused) => {
+                                warn!("Bundle '{}' refused by the BPA, file left in place", path.display());
+                            }
+                            Err(e) => warn!("Failed to dispatch bundle '{}': {e}", path.display()),
                         }
                     }
-
-                    // TODO:  We could implement a "Sent Items" folder instead of deleting, but not sure...
-                    tokio::fs::remove_file(&path).await.unwrap_or_else(|e| {
-                        warn!("Failed to remove file '{}': {e}", path.display());
-                    });
                 }
             },
             _ = cancel_token.cancelled() => {

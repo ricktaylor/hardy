@@ -6,6 +6,7 @@
 // runtime types construct themselves from config (`PatternKeySource::load`,
 // `StaticRoutesAgent`).
 
+use core::num::NonZeroUsize;
 use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
@@ -173,7 +174,14 @@ impl BpaServer {
             builder = builder.poll_channel_depth(depth);
         }
         if let Some(size) = config.max_bundle_size {
-            builder = builder.max_bundle_size(size);
+            // On a 32-bit target a configured cap beyond the address space
+            // saturates: nothing larger could be buffered anyway.
+            builder = builder.max_bundle_size(
+                usize::try_from(size.get())
+                    .ok()
+                    .and_then(NonZeroUsize::new)
+                    .unwrap_or(NonZeroUsize::MAX),
+            );
         }
         if let Some(pool_size) = config.processing_pool_size {
             builder = builder.processing_pool_size(pool_size);
@@ -346,16 +354,15 @@ impl BpaServer {
                         );
                     }
 
-                    Some(Arc::new(
-                        cla_builder
-                            .build()
-                            .with_context(|| format!("Failed to create CLA '{name}'"))?,
-                    ))
+                    let cla = cla_builder
+                        .build()
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?;
+                    Some(Arc::new(cla) as Arc<dyn hardy_bpa::cla::Cla>)
                 }
                 #[cfg(feature = "file-cla")]
                 ClaType::File(file) => Some(Arc::new(FileCla::new(file).map_err(|e| {
                     anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                })?)),
+                })?) as Arc<dyn hardy_bpa::cla::Cla>),
                 ClaType::Other { cla_type, .. } => {
                     warn!(
                         "Ignoring CLA '{}' with unknown type '{cla_type}'",

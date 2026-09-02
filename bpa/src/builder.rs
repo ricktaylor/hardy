@@ -1,10 +1,12 @@
 use core::num::NonZeroUsize;
 
+use hardy_eid_patterns::EidPattern;
+
 use crate::{
     Arc,
     bpa::Bpa,
     cla::{Cla, registry::ClaRegistryBuilder},
-    dispatcher::Dispatcher,
+    dispatcher::{self, Dispatcher},
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
     node_ids::NodeIds,
@@ -34,6 +36,9 @@ pub struct BpaBuilder {
     lru_capacity: Option<NonZeroUsize>,
     max_cached_bundle_size: Option<NonZeroUsize>,
     max_bundle_size: Option<NonZeroUsize>,
+    primary_block_integrity: bool,
+    bundle_age_required: bool,
+    ipn_legacy_peers: Vec<EidPattern>,
     cache_disabled: bool,
     node_ids: NodeIds,
     metadata_storage: Option<Arc<dyn MetadataStorage>>,
@@ -97,6 +102,9 @@ impl BpaBuilder {
             lru_capacity: None,
             max_cached_bundle_size: None,
             max_bundle_size: None,
+            primary_block_integrity: true,
+            bundle_age_required: true,
+            ipn_legacy_peers: Vec::new(),
             cache_disabled: false,
             node_ids: NodeIds::default(),
             metadata_storage: None,
@@ -152,6 +160,28 @@ impl BpaBuilder {
     /// the point of use.
     pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_bundle_size = Some(v);
+        self
+    }
+
+    /// Sets whether ingress requires primary-block integrity protection
+    /// (RFC 9171 §4.3.1). Strict by default.
+    pub fn primary_block_integrity(mut self, enabled: bool) -> Self {
+        self.primary_block_integrity = enabled;
+        self
+    }
+
+    /// Sets whether ingress requires a Bundle Age block on bundles from
+    /// clockless sources (RFC 9171 §4.4.2). Strict by default.
+    pub fn bundle_age_required(mut self, enabled: bool) -> Self {
+        self.bundle_age_required = enabled;
+        self
+    }
+
+    /// Declares peers whose next hop requires legacy 2-element IPN EID
+    /// encoding in the per-hop rewrite stage. Empty by default (the rewrite
+    /// stage is inert).
+    pub fn ipn_legacy_peers(mut self, peers: Vec<EidPattern>) -> Self {
+        self.ipn_legacy_peers = peers;
         self
     }
 
@@ -260,10 +290,15 @@ impl BpaBuilder {
         let filter_engine = self.filter_engine;
 
         let (dispatcher, start_dispatcher) = Dispatcher::new(
-            self.status_reports,
-            self.poll_channel_depth,
-            self.processing_pool_size,
-            self.max_bundle_size,
+            dispatcher::Config {
+                status_reports: self.status_reports,
+                poll_channel_depth: self.poll_channel_depth,
+                processing_pool_size: self.processing_pool_size,
+                max_bundle_size: self.max_bundle_size,
+                primary_block_integrity: self.primary_block_integrity,
+                bundle_age_required: self.bundle_age_required,
+                ipn_legacy_peers: self.ipn_legacy_peers,
+            },
             node_ids.clone(),
             store.clone(),
             rib.clone(),

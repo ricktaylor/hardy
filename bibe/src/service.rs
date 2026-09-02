@@ -3,6 +3,7 @@ use alloc::{boxed::Box, sync::Arc};
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     async_trait,
+    cla::Acceptance,
     services::{
         Error as ServiceError, Result as ServiceResult, Service, ServiceSink, StatusNotify,
     },
@@ -75,14 +76,24 @@ impl Service for DecapService {
             }
         };
 
-        // A dispatch failure is transient: propagate it so the outer bundle is
-        // parked and retried rather than dropped.
         debug!("BIBE decapsulated bundle, dispatching");
-        self.cla
-            .dispatch(inner)
-            .await
-            .inspect_err(|e| warn!("Failed to dispatch decapsulated bundle: {e}"))
-            .map_err(|e| ServiceError::Internal(e.into()))
+        match self.cla.dispatch(inner).await {
+            Ok(Acceptance::Accepted) => Ok(()),
+            // A refusal is deterministic for these bytes (the inner cannot
+            // outgrow the outer, so this is not a size race): accept the
+            // outer bundle rather than park it for a retry that could never
+            // succeed — the same rule as a malformed outer.
+            Ok(Acceptance::Refused) => {
+                warn!("Decapsulated bundle refused by the BPA, outer bundle consumed");
+                Ok(())
+            }
+            // A dispatch fault is transient: propagate it so the outer
+            // bundle is parked and retried rather than dropped.
+            Err(e) => {
+                warn!("Failed to dispatch decapsulated bundle: {e}");
+                Err(ServiceError::Internal(e.into()))
+            }
+        }
     }
 
     async fn on_status_notify(

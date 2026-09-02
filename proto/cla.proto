@@ -116,8 +116,26 @@ message DispatchBundleRequest {
   optional ClaAddress peer_addr = 3;
 }
 
+// The BPA's acceptance verdict for a dispatched bundle.
+// See `bpa::cla::Acceptance` for the Rust implementation and the full
+// contract: accepted means the CLA may acknowledge the transfer to its
+// peer; refused means it must not (the peer retains responsibility).
+enum DispatchVerdict {
+  // Not stated: the response comes from a BPA that predates this field,
+  // which only responded on acceptance — treat as DISPATCH_VERDICT_ACCEPTED.
+  DISPATCH_VERDICT_UNSPECIFIED = 0;
+  // The BPA accepted the bundle (including accepted-then-disposed cases
+  // such as invalid content or duplicates).
+  DISPATCH_VERDICT_ACCEPTED    = 1;
+  // The BPA refused acceptance (truncated stream, or over its size cap).
+  DISPATCH_VERDICT_REFUSED     = 2;
+}
+
 // A response to a dispatch bundle request.
-message DispatchBundleResponse {}
+message DispatchBundleResponse {
+  // The BPA's acceptance verdict for the transfer.
+  DispatchVerdict verdict = 1;
+}
 
 // A request to add a peer to the CLA.
 message AddPeerRequest {

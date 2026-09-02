@@ -25,11 +25,6 @@ impl Dispatcher {
             return;
         };
 
-        // Compatibility shim: the legacy egress `WriteFilter` API reads the
-        // adjacency from the metadata transient, so populate it from the
-        // queue-assignment record. Retired with the filter engine swap.
-        bundle.metadata.next_hop = Some(next_hop);
-
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).
         let seen = self.rib.table_snapshot();
@@ -67,7 +62,7 @@ impl Dispatcher {
         // claim's resolution.
         self.resolve_offer(
             OfferKind::Forward,
-            self.offer_to_cla(cla, peer, lane, cla_addr, bundle, data, seen)
+            self.offer_to_cla(cla, peer, lane, cla_addr, next_hop, bundle, data, seen)
                 .await,
         )
         .await
@@ -83,6 +78,7 @@ impl Dispatcher {
         peer: u32,
         lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
+        next_hop: Eid,
         mut bundle: bundle::Bundle,
         data: Bytes,
         seen: routing::RibSnapshot,
@@ -94,7 +90,7 @@ impl Dispatcher {
         // re-dispatch re-enters from the persisted representation (see
         // park_bundle), so no failure exit needs to restore the pre-rewrite
         // map.
-        let data = match self.update_extension_blocks(&bundle, data) {
+        let data = match self.update_extension_blocks(&bundle, data, &next_hop) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
                 return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
@@ -105,6 +101,7 @@ impl Dispatcher {
             }
         };
 
+        // Egress filter hook:
         // - Runs after dequeue from ForwardPending, just before CLA send
         // - Modifications are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
@@ -260,6 +257,7 @@ impl Dispatcher {
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
+        next_hop: &Eid,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
@@ -340,6 +338,40 @@ impl Dispatcher {
                 })
                 .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
                 .rebuild();
+        }
+
+        // Config-driven legacy-EID re-encode: a next hop matching the
+        // configured patterns requires 2-element IPN encoding, so Ipn
+        // source/destination re-encode as LegacyIpn. Wire adaptation only:
+        // the caller installs the rebuilt block map (extents index the
+        // re-encoded bytes) but never the rebuilt primary — the record's
+        // primary, and with it the bundle id every store operation is keyed
+        // on, keeps the canonical encoding.
+        if self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop)) {
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.id().source
+            {
+                editor = editor
+                    .with_source(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.primary().destination
+            {
+                editor = editor
+                    .with_destination(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
         }
 
         // rebuild_bundle() returns a Bundle whose block extents index the
@@ -428,10 +460,15 @@ mod tests {
             .await
             .unwrap();
         let (dispatcher, _start) = Dispatcher::new(
-            false,
-            NonZeroUsize::new(16).unwrap(),
-            NonZeroUsize::new(4).unwrap(),
-            None,
+            Config {
+                status_reports: false,
+                poll_channel_depth: NonZeroUsize::new(16).unwrap(),
+                processing_pool_size: NonZeroUsize::new(4).unwrap(),
+                max_bundle_size: None,
+                primary_block_integrity: false,
+                bundle_age_required: false,
+                ipn_legacy_peers: Vec::new(),
+            },
             node_ids,
             store,
             rib,
@@ -468,7 +505,7 @@ mod tests {
             status: bundle::BundleStatus::ForwardPending {
                 peer: 7,
                 queue: 0,
-                next_hop: "ipn:20.0".parse().unwrap(),
+                next_hop: "ipn:0.3.0".parse().unwrap(),
             },
         };
         let bundle_id = bundle.id().clone();

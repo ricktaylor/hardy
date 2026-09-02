@@ -195,7 +195,7 @@ pub struct Config {
     // Maximum size in bytes of a single reassembled bundle at ingress or
     // origination; absent defers to the BPA default.
     #[serde(default)]
-    pub max_bundle_size: Option<NonZeroUsize>,
+    pub max_bundle_size: Option<core::num::NonZeroU64>,
 
     // The node's administrative endpoints, at most one per scheme
     // (e.g. "ipn:1.0", "dtn://my-node/"); every other EID identifying the
