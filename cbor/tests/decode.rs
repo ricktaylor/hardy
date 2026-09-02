@@ -1361,6 +1361,16 @@ fn untagged_rejects_tags_from_the_first_byte() {
 }
 
 #[test]
+fn untagged_empty_input_needs_more_data() {
+    // An empty buffer has no first byte to classify, so it falls through
+    // to the inner decode's shortfall — never a premature tag verdict.
+    assert!(matches!(
+        parse::<Untagged<u64>>(&[]),
+        Err(Error::NeedMoreData(1))
+    ));
+}
+
+#[test]
 fn owned_containers_respect_parse_exact() {
     // Trailing bytes after the item must be rejected by parse_exact.
     let Err(Error::AdditionalItems) = parse_exact::<String>(&hex!("61 61 00")) else {

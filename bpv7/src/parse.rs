@@ -101,9 +101,12 @@ impl hardy_cbor::decode::FromCbor for BlockHeader {
         // is `D8 18` (non-shortest forms fail the `!s` check below), so
         // any other tag head — or a second consecutive tag — is rejected
         // from at most three bytes, never reading an adversarial tag run.
+        // A buffer truncated inside a possible `D8 18` prefix must fall
+        // through to the `Head` parse below so a streamed caller gets
+        // `NeedMoreData`, not a premature `NotCanonical`.
         if let Some(first @ 0xC0..=0xDB) = data.get(offset)
             && (*first != 0xD8
-                || data.get(offset + 1) != Some(&0x18)
+                || matches!(data.get(offset + 1), Some(b) if *b != 0x18)
                 || matches!(data.get(offset + 2), Some(0xC0..=0xDB)))
         {
             return Err(Error::NotCanonical);

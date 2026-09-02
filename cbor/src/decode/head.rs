@@ -96,7 +96,8 @@ pub enum Marker {
     Null,
     /// The undefined value (CBOR simple value 23).
     Undefined,
-    /// An unassigned simple value (CBOR simple values 0–19, 24–31).
+    /// An unassigned simple value (CBOR simple values 0–19 and 32–255;
+    /// 24–31 are reserved and unencodable per RFC 8949 §3.3).
     Simple(u8),
     /// A floating-point value (CBOR major type 7).
     Float(f64),

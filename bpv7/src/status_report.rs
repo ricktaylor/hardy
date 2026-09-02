@@ -593,6 +593,57 @@ mod tests {
         assert_eq!(decoded, code);
     }
 
+    // The status flag routes through `require_canonical` because a bare
+    // `bool` decode folds tag presence into the (discarded) canonical
+    // flag, silently accepting a tagged status. Pin the rejection so it
+    // cannot silently regress to the bare decode.
+    #[test]
+    fn tagged_status_flag_is_rejected_as_not_canonical() {
+        let report = BundleStatusReport {
+            bundle_id: bundle::Id {
+                source: "ipn:1.0".parse().unwrap(),
+                timestamp: creation_timestamp::CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            reason: ReasonCode::NoAdditionalInformation,
+            ..Default::default()
+        };
+        let encoded = emit(&report);
+        // [4-array [4-array [1-array false ... — the received-status flag
+        // is the fourth byte.
+        assert_eq!(&encoded.0[..4], &[0x84, 0x84, 0x81, 0xF4]);
+
+        // Tag the flag: `[false]` becomes `[#6.0(false)]`.
+        let mut evil = encoded.0.to_vec();
+        evil.insert(3, 0xC0);
+
+        let Err(Error::InvalidField {
+            field: "bundle status information",
+            source,
+        }) = BundleStatusReport::from_cbor(&evil)
+        else {
+            panic!("a tagged status flag must fail the status-information parse");
+        };
+        let Some(Error::InvalidField {
+            field: "received status",
+            source,
+        }) = source.downcast_ref::<Error>()
+        else {
+            panic!("expected the error to name the received status, got {source:?}");
+        };
+        let Some(Error::InvalidField {
+            field: "status",
+            source,
+        }) = source.downcast_ref::<Error>()
+        else {
+            panic!("expected the inner error to name the status flag, got {source:?}");
+        };
+        assert!(
+            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            "expected NotCanonical, got {source:?}"
+        );
+    }
+
     #[test]
     fn unknown_admin_record_type() {
         // Encode an admin record with type code 99 (unknown)

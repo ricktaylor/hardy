@@ -316,8 +316,9 @@ fn first_byte_gate_classifies_non_bundles() {
 // RFC 9171 §4.1 permits no CBOR tags on a block array, so a tag head at a
 // block position can never become valid input. The block gate refuses a
 // tag run from its first byte without reading it — adversarial garbage at
-// the BPA's core ingress must not buy per-tag work or a heap allocation
-// on the reject path — and classifies it as the §4.1 violation it is.
+// the BPA's core ingress must not buy per-tag work or a per-tag
+// allocation on the reject path (the one constant field-label box
+// aside) — and classifies it as the §4.1 violation it is.
 // (The bounded-work property itself is not observable from here; this
 // pins the classification that provides it.)
 #[test]
@@ -393,6 +394,86 @@ fn tagged_block_field_is_rejected_as_not_canonical() {
     assert!(
         matches!(inner.downcast_ref::<Error>(), Some(Error::NotCanonical)),
         "expected NotCanonical, got {inner:?}"
+    );
+}
+
+// RFC 9171 Appendix B permits an optional `#6.24` tag (CBOR-embedded
+// content) on block-type-specific data — the one grammar position where a
+// tag is legal at all. `D8 18` is the only shortest-form head for tag 24,
+// so a legally tagged block body must parse, with the data extent
+// covering the byte-string contents alone.
+#[test]
+fn tag24_block_data_is_accepted() {
+    // The same primary block as `indefinite_length_block_data_is_rejected`
+    // (ipn EIDs, no CRC anywhere, so the payload block can be crafted
+    // without recomputing a CRC), with the payload data tagged `#6.24`.
+    let tagged = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "8501010000d8184548454c4c4f" // data = #6.24(bstr "HELLO")
+        "ff"
+    );
+
+    let parsed = parse::parse(Bytes::copy_from_slice(&tagged))
+        .expect("a #6.24-tagged block body must parse");
+    let payload = parsed.bundle.blocks.get(&1).expect("payload block");
+    assert_eq!(
+        payload.payload(&parsed.data).expect("payload in bundle"),
+        b"HELLO",
+        "the data extent must cover the byte-string contents, not the tag"
+    );
+}
+
+// Appendix B permits `#6.24` and nothing else on block data: any other
+// tag head — including tag 24 in a non-shortest form — and any second
+// consecutive tag is a §4.1 canonical violation, classified from at most
+// three bytes without reading a tag run.
+#[test]
+fn non_tag24_block_data_head_is_rejected() {
+    for (bad_head, why) in [
+        (hex!("c0").as_slice(), "#6.0"),
+        (hex!("d817").as_slice(), "#6.23 in non-shortest form"),
+        (hex!("d90018").as_slice(), "#6.24 in non-shortest form"),
+        (hex!("d818c0").as_slice(), "#6.24 followed by a second tag"),
+    ] {
+        let mut evil = hex!(
+            "9f88070000820282010282028202018202820201820018281a000f4240"
+            "8501010000" // payload block up to the data field
+        )
+        .to_vec();
+        evil.extend_from_slice(bad_head);
+        evil.extend_from_slice(&hex!("4548454c4c4f")); // bstr "HELLO"
+        evil.push(0xFF);
+
+        let Err(Error::InvalidField {
+            field: "block",
+            source,
+        }) = parse::parse(Bytes::from(evil))
+        else {
+            panic!("{why} on block data must fail the block-data gate");
+        };
+        assert!(
+            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            "{why}: expected NotCanonical, got {source:?}"
+        );
+    }
+}
+
+// A buffer ending exactly on the lone `0xD8` of a possible `D8 18`
+// (#6.24) block-data head is a truncation, not a canonicality verdict:
+// the byte that decides between the two has not arrived yet, so the
+// classification must be `NeedMoreData` for a streamed caller to resume.
+#[test]
+fn truncated_tag24_block_data_head_needs_more() {
+    let truncated = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "8501010000d8" // payload block cut after the first tag-head byte
+    );
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&truncated)),
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+        ),
+        "a lone trailing 0xD8 must report a CBOR shortfall, not NotCanonical"
     );
 }
 
