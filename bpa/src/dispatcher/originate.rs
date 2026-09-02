@@ -36,8 +36,7 @@ impl Dispatcher {
         // pre-restart bundle after a backward clock step, made vanishingly
         // unlikely by the nanosecond-seeded sequence floor) — and only
         // that: a metadata-storage failure aborts inside `Store::store`.
-        let mut builder =
-            Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
 
         // Set flags
         if let Some(flags) = &flags {
@@ -112,8 +111,7 @@ impl Dispatcher {
         // the bytes are stored and forwarded as received. As the origin we must be
         // able to process HopCount / unclocked BundleAge, so an undecryptable one
         // is fatal.
-        let validated =
-            parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
+        let validated = parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
         crate::bundle::parse::reject_undecryptable_liveness(
             &validated.nokey_ext,
             validated.bundle.primary.id.timestamp.is_clocked(),

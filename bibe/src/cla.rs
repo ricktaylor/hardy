@@ -5,7 +5,8 @@ use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     Bytes, async_trait,
     cla::{
-        Cla, ClaAddress, Error as ClaError, ForwardBundleResult, Result as ClaResult, Segment, Sink,
+        Acceptance, Cla, ClaAddress, Error as ClaError, ForwardBundleResult, Result as ClaResult,
+        Segment, Sink,
     },
     stream::{Receiver, buffer_stream},
 };
@@ -80,14 +81,14 @@ impl BibeCla {
     // a complete bundle in memory, so it enters the BPA as a one-segment
     // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
     // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
-    pub async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
-        self.inner
+    pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<Acceptance, Error> {
+        Ok(self
+            .inner
             .get()
             .ok_or(Error::NotRegistered)?
             .sink
             .dispatch(None, None, &mut bundle)
-            .await?;
-        Ok(())
+            .await?)
     }
 }
 
@@ -169,7 +170,11 @@ impl Cla for BibeCla {
 
         // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
-            Ok(()) => Ok(ForwardBundleResult::Sent),
+            Ok(Acceptance::Accepted) => Ok(ForwardBundleResult::Sent),
+            Ok(Acceptance::Refused) => {
+                warn!("BIBE outer bundle refused by the BPA");
+                Ok(ForwardBundleResult::NoNeighbour)
+            }
             Err(e) => {
                 warn!("BIBE dispatch failed: {e}");
                 Ok(ForwardBundleResult::NoNeighbour)

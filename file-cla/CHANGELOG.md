@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 - Files already sitting in the outbox when the CLA starts are dispatched instead of ignored until something touches them again. Filesystem notifications only cover files created after the watch is installed, so a bundle queued while the CLA was down (removable media, a restart) stayed there indefinitely. The watcher now scans the outbox once, after installing the watch so nothing arriving mid-scan is missed, and resolves symlinks so the scan and the notification path agree about the same directory entry.
+- An outbox file is consumed only when the BPA accepts the bundle (`Acceptance::Accepted`): a refused or failed dispatch now leaves the file in place for a later scan, where previously it was deleted regardless — destroying the bundle on a transient failure.
 
 ## [0.2.0]
 

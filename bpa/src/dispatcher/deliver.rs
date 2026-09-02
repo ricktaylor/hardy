@@ -13,11 +13,7 @@ use crate::services::registry::{Service, ServiceImpl};
 
 impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub(super) async fn deliver_bundle(
-        &self,
-        service: Arc<Service>,
-        bundle: bundle::Bundle,
-    ) {
+    pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
@@ -149,17 +145,9 @@ impl Dispatcher {
                         ..
                     }) => {
                         let key_source = self.key_source(&raw, &buf);
-                        match bpsec::block_data(
-                            1,
-                            &raw.blocks,
-                            &buf,
-                            &bcb_ops,
-                            &*key_source,
-                        ) {
+                        match bpsec::block_data(1, &raw.blocks, &buf, &bcb_ops, &*key_source) {
                             Ok(Payload::Borrowed(s)) => Ok(buf.slice_ref(s)),
-                            Ok(Payload::Decrypted(d)) => {
-                                Ok(Bytes::from_owner(d))
-                            }
+                            Ok(Payload::Decrypted(d)) => Ok(Bytes::from_owner(d)),
                             Err(e) => Err(e),
                         }
                     }

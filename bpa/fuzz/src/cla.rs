@@ -61,7 +61,10 @@ impl NullCla {
     pub fn new() -> Self {
         Self { sink: Once::new() }
     }
-    pub async fn dispatch(&self, mut bundle: hardy_bpa::Bytes) -> hardy_bpa::cla::Result<()> {
+    pub async fn dispatch(
+        &self,
+        mut bundle: hardy_bpa::Bytes,
+    ) -> hardy_bpa::cla::Result<hardy_bpa::cla::Acceptance> {
         self.sink
             .get()
             .expect("dispatch called before registration")
