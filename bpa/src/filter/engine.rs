@@ -1,8 +1,10 @@
 //! The chain runner: executes the frozen per-hook chains inline.
 //!
-//! Filter invocations are synchronous and the decoded BCB OperationSets are
-//! not `Send`, so every chain runs inline on the calling task. An empty
-//! chain costs one branch: nothing is parsed and nothing is allocated.
+//! Filter invocations are synchronous and the reader borrows the caller's
+//! decoded bundle, buffer, BCB OperationSets, and key source — borrows that
+//! cannot cross a spawn boundary — so every chain runs inline on the calling
+//! task. An empty chain costs one branch: nothing is parsed and nothing is
+//! allocated.
 //!
 //! Every runner returns the bundle to the caller on both the verdict and the
 //! error path, so a claimed bundle's status is always resolved by the site
@@ -14,7 +16,10 @@
 use core::mem::take;
 
 use hardy_bpv7::{
-    bpsec::key::{KeySet, KeySource},
+    bpsec::{
+        bcb,
+        key::{KeySet, KeySource},
+    },
     editor::Chunk,
     eid::Eid,
     parse::{Parsed, parse},
@@ -29,7 +34,7 @@ use super::{
     pack::chains::{FilterChains, InputChain, OutputChain, VerifierEntry},
 };
 use crate::{
-    Bytes,
+    Bytes, HashMap,
     bundle::{Bundle, BundleMetadata},
     keys::KeyProvider,
 };
@@ -73,15 +78,30 @@ fn check_verifiers(
 }
 
 impl FilterChains {
-    /// Runs the Ingress chain: Verifiers, then Classifiers sequentially.
+    /// Runs the Ingress chain (Verifiers, then Classifiers) on the resident
+    /// buffer `data` and its already-decoded BCB OperationSets. At the
+    /// streaming gate `data` is the header prefix — the payload is not yet
+    /// resident, so a filter reading it gets the reader's not-resident `None` —
+    /// and the caller threads in `bcbs` re-derived from that prefix.
     #[allow(clippy::result_large_err)]
     pub(crate) fn run_ingress(
         &self,
         bundle: Bundle,
         data: Bytes,
+        bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
     ) -> RunResult {
-        self.run_input(&self.ingress, INGRESS, bundle, data, key_provider)
+        if self.ingress.verifiers.is_empty() && self.ingress.classifiers.is_empty() {
+            return Ok(ChainOutcome::Continue(bundle, data));
+        }
+        self.run_input_decoded(&self.ingress, INGRESS, bundle, data, bcbs, key_provider)
+    }
+
+    /// Whether the Ingress chain has any registered links. The streaming gate
+    /// checks this to skip the pre-drain header re-decode and clone entirely
+    /// when nothing would run.
+    pub(crate) fn has_ingress(&self) -> bool {
+        !self.ingress.verifiers.is_empty() || !self.ingress.classifiers.is_empty()
     }
 
     /// Runs the Originate chain: Verifiers, then Classifiers sequentially.
@@ -139,7 +159,7 @@ impl FilterChains {
         &self,
         chain: &InputChain,
         hook: &'static str,
-        mut bundle: Bundle,
+        bundle: Bundle,
         data: Bytes,
         key_provider: &dyn KeyProvider,
     ) -> RunResult {
@@ -156,6 +176,23 @@ impl FilterChains {
                 return Err((bundle, e.into()));
             }
         };
+        self.run_input_decoded(chain, hook, bundle, buf, &bcbs, key_provider)
+    }
+
+    // The Verifier-then-Classifier pass over a resident buffer whose BCB
+    // OperationSets are already decoded — both input doors thread in the set
+    // from their one header decode (`buf` is the header prefix, and payload
+    // reads return the reader's not-resident `None`).
+    #[allow(clippy::result_large_err)]
+    fn run_input_decoded(
+        &self,
+        chain: &InputChain,
+        hook: &'static str,
+        mut bundle: Bundle,
+        buf: Bytes,
+        bcbs: &HashMap<u64, bcb::OperationSet>,
+        key_provider: &dyn KeyProvider,
+    ) -> RunResult {
         // A BPSec-free bundle never consults keys (decrypted reads exist
         // only for blocks under a BCB), so skip the provider round-trip.
         let keys: Box<dyn KeySource> = if bcbs.is_empty() {
@@ -167,7 +204,7 @@ impl FilterChains {
         // The reader lends the *wire* view only, so it is the whole pass's
         // invariant: the delta applications below touch `bundle.metadata`,
         // a disjoint borrow.
-        let reader = BundleReader::new(&bundle.bpv7, &buf, &bcbs, &*keys);
+        let reader = BundleReader::new(&bundle.bpv7, &buf, bcbs, &*keys);
 
         if let Some(reason) = check_verifiers(&chain.verifiers, hook, &reader, &bundle.metadata) {
             return Ok(ChainOutcome::Drop(bundle, reason));
@@ -302,18 +339,24 @@ mod tests {
         keys::NullKeyProvider,
     };
 
-    fn test_bundle() -> (Bundle, Bytes) {
-        let (bundle, data) = Builder::new("ipn:1.1".parse().unwrap(), "ipn:99.1".parse().unwrap())
+    fn test_bundle() -> (Bundle, Bytes, HashMap<u64, bcb::OperationSet>) {
+        let (_, data) = Builder::new("ipn:1.1".parse().unwrap(), "ipn:99.1".parse().unwrap())
             .with_payload(Cow::Borrowed(b"engine-test"))
             .build(CreationTimestamp::now())
             .unwrap();
+        // Parse so the bundle, its resident bytes, and the BCB OperationSets
+        // all come from one decode pass — as they do at every real hook.
+        let Parsed {
+            bundle, data, bcbs, ..
+        } = parse(Bytes::from(data)).unwrap();
         (
             Bundle {
                 bpv7: bundle,
                 metadata: BundleMetadata::originated(),
                 status: BundleStatus::New,
             },
-            Bytes::from(data),
+            data,
+            bcbs,
         )
     }
 
@@ -361,9 +404,9 @@ mod tests {
         pack.ingress_classifier("expecter", SlotExpecter(slot.clone(), 7));
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
+        let (bundle, data, bcbs) = test_bundle();
         let Ok(ChainOutcome::Continue(bundle, _)) =
-            chains.run_ingress(bundle, data, &NullKeyProvider)
+            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("expecter must have seen the writer's delta");
         };
@@ -384,8 +427,9 @@ mod tests {
         pack.ingress_verifier("dropper", DropVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
-        let Ok(ChainOutcome::Drop(_, reason)) = chains.run_ingress(bundle, data, &NullKeyProvider)
+        let (bundle, data, bcbs) = test_bundle();
+        let Ok(ChainOutcome::Drop(_, reason)) =
+            chains.run_ingress(bundle, data, &bcbs, &NullKeyProvider)
         else {
             panic!("verifier must drop the bundle");
         };
@@ -456,7 +500,7 @@ mod tests {
         pack.egress_verifier("expecter", BlockExpecter);
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
+        let (bundle, data, _) = test_bundle();
         let next_hop: Eid = "ipn:2.0".parse().unwrap();
         let Ok(ChainOutcome::Continue(bundle, data)) =
             chains.run_egress(bundle, data, &next_hop, &NullKeyProvider)
@@ -515,7 +559,7 @@ mod tests {
         pack.deliver_rewriter("attacker", PayloadAttacker);
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
+        let (bundle, data, _) = test_bundle();
         let Ok(ChainOutcome::Continue(_, out)) =
             chains.run_deliver(bundle, data.clone(), &NullKeyProvider)
         else {
@@ -567,7 +611,7 @@ mod tests {
         pack.egress_verifier("pass", PassVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
+        let (bundle, data, _) = test_bundle();
         let provider = CountingProvider(AtomicUsize::new(0));
         let next_hop: Eid = "ipn:2.0".parse().unwrap();
         let Ok(ChainOutcome::Continue(..)) = chains.run_egress(bundle, data, &next_hop, &provider)
@@ -587,9 +631,11 @@ mod tests {
         pack.ingress_verifier("pass", PassVerifier);
         let chains = freeze(pack);
 
-        let (bundle, data) = test_bundle();
+        let (bundle, data, bcbs) = test_bundle();
+        assert!(bcbs.is_empty(), "the fixture bundle carries no BCB");
         let provider = CountingProvider(AtomicUsize::new(0));
-        let Ok(ChainOutcome::Continue(..)) = chains.run_ingress(bundle, data, &provider) else {
+        let Ok(ChainOutcome::Continue(..)) = chains.run_ingress(bundle, data, &bcbs, &provider)
+        else {
             panic!("a passing Verifier must continue");
         };
         assert_eq!(
