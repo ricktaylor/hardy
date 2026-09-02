@@ -20,16 +20,28 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status, Streaming, transport::Channel};
 use tracing::warn;
 
-use crate::MAX_MESSAGE_SIZE;
-use crate::routing::{
-    AddRouteRequest, Register, RemoveRouteRequest, SubscribeRequest, SubscribeResponse,
-    routing_agent_service_client::RoutingAgentServiceClient, subscribe_request, subscribe_response,
+use super::super::SUBSCRIBE_REQUEST_CAPACITY;
+use super::next_event;
+use crate::{
+    MAX_MESSAGE_SIZE,
+    error_status::recover_routing_error,
+    routing::{
+        AddRouteRequest, Register, RemoveRouteRequest, SubscribeRequest, SubscribeResponse,
+        Unregister, routing_agent_service_client::RoutingAgentServiceClient, subscribe_request,
+        subscribe_response,
+    },
 };
 
-// Wire statuses become routing errors: a dead token or an unreachable
-// BPA is the sink's disconnection, a duplicate name is the local
-// registry's error, everything else carries through.
+// Wire statuses become routing errors. A status carrying the wire's
+// typed-error discriminator recovers as the exact domain error the
+// server raised; otherwise (a non-Hardy server, or a kind whose payload
+// cannot travel) the status code classifies it: a dead token or an
+// unreachable BPA is the sink's disconnection, a duplicate name is the
+// local registry's error, everything else carries through.
 fn routing_error(status: Status) -> routing::Error {
+    if let Some(e) = recover_routing_error(&status) {
+        return e;
+    }
     match status.code() {
         Code::Unauthenticated | Code::Unavailable => routing::Error::Disconnected,
         Code::AlreadyExists => routing::Error::AlreadyExists(status.message().to_string()),
@@ -53,9 +65,7 @@ impl RoutingSink for GrpcRoutingSink {
         let _ = self
             .requests
             .send(SubscribeRequest {
-                request: Some(subscribe_request::Request::Unregister(
-                    crate::routing::Unregister {},
-                )),
+                request: Some(subscribe_request::Request::Unregister(Unregister {})),
             })
             .await;
     }
@@ -112,18 +122,11 @@ pub async fn run_session(
     agent: Arc<dyn RoutingAgent>,
     cancel: CancellationToken,
 ) {
-    loop {
-        let message = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => break,
-            message = events.message() => message,
-        };
-        match message {
-            Ok(Some(SubscribeResponse { event: Some(event) })) => {
-                warn!("Ignoring unexpected routing event: {event:?}");
-            }
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
+    // Routing agents receive no events: the session's down direction only
+    // anchors liveness, so anything on it is a contract violation, logged.
+    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
+        if let Some(event) = event {
+            warn!("Ignoring unexpected routing event: {event:?}");
         }
     }
     agent.on_unregister().await;
@@ -142,7 +145,7 @@ pub async fn subscribe(
 
     // The wire requires Register first, sent without waiting for
     // response headers.
-    let (requests, rx) = mpsc::channel(4);
+    let (requests, rx) = mpsc::channel(SUBSCRIBE_REQUEST_CAPACITY);
     requests
         .send(SubscribeRequest {
             request: Some(subscribe_request::Request::Register(Register { name })),

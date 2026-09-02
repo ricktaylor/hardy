@@ -16,6 +16,12 @@ import "google/protobuf/empty.proto";
 // with Forward, which streams the bundle down and carries the result
 // back up. Closing the stream, or sending Unregister, terminates the
 // registration and invalidates the token.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
 service ClaService {
   // -- Control plane ---------------------------------------------------
 
@@ -112,7 +118,8 @@ message Registration {
 // Forward.
 message Forwarding {
   // The RFC 9171 id of the bundle awaiting forwarding; fetch it with
-  // Forward.
+  // Forward. Encoded as documented on application.v1
+  // SendResponse.bundle_id.
   string          bundle_id   = 1;
   // The address to forward the bundle to.
   ClaAddress      address     = 2;
@@ -174,7 +181,8 @@ message ForwardRequest {
 message ForwardMetadata {
   // The session token from Registration.
   bytes  session_token = 1;
-  // The bundle to forward, from Forwarding.
+  // The bundle to forward, from Forwarding. Encoded as documented on
+  // application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
 }
 
@@ -241,7 +249,8 @@ message RemovePeerResponse {
 message ReportTransferOutcomeRequest {
   // The session token from Registration.
   bytes  session_token = 1;
-  // The bundle id from the accepted Forwarding.
+  // The bundle id from the accepted Forwarding. Encoded as documented
+  // on application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
   oneof outcome {
     // The bundle was handed to the far bundle node.

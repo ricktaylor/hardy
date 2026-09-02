@@ -17,25 +17,39 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-client = []
+client = [
+    "dep:hardy-async",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:time",
+    "dep:hardy-eid-patterns",
+]
 instrument = ["tracing/attributes"]
-server = ["dep:dashmap", "dep:foldhash", "dep:jsonwebtoken", "dep:rand", "dep:serde"]
+server = [
+    "dep:dashmap",
+    "dep:foldhash",
+    "dep:rand",
+    "dep:hardy-async",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:time",
+    "dep:hardy-eid-patterns",
+]
 
 [dependencies]
 dashmap = { version = "6", optional = true }
 foldhash = { version = "0.2", optional = true }
-hardy-async = { version = "0.2", path = "../async" }
+hardy-async = { version = "0.2", path = "../async", optional = true }
 hardy-bpa = { version = "0.2", path = "../bpa", default-features = false, features = ["tokio"] }
 hardy-bpv7 = { version = "0.6", path = "../bpv7" }
-hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item", "std"] }
-jsonwebtoken = { version = "9", optional = true }
+hardy-eid-patterns = { version = "0.4", path = "../eid-patterns", default-features = false, features = ["dtn-pat-item", "std"], optional = true }
 prost = "0.14"
 prost-types = "0.14"
 rand = { version = "0.10", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-time = "0.3"
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
-tokio-stream = "0.1"
+thiserror = "2"
+time = { version = "0.3", optional = true }
+tokio = { version = "1", features = ["macros", "rt", "sync"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
 tonic = "0.14"
 tonic-prost = "0.14"
 tracing = { version = "0.1", default-features = false }

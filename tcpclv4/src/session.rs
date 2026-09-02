@@ -1027,7 +1027,7 @@ mod tests {
             _peer_addr: Option<&hardy_bpa::cla::ClaAddress>,
             stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
         ) -> hardy_bpa::cla::Result<()> {
-            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX, None)
                 .await
                 .map_err(|_| hardy_bpa::cla::Error::StreamCancelled)?;
             if let Some(delay) = self.delay {

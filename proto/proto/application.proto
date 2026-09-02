@@ -19,6 +19,12 @@ import "google/protobuf/timestamp.proto";
 // collected with Receive (success completes it); outgoing ADUs go with
 // Send. Closing the stream, or sending Unregister, terminates the
 // registration and invalidates the token.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
 service ApplicationService {
   // -- Control plane ---------------------------------------------------
 
@@ -106,7 +112,7 @@ message Registration {
 // The delivery of an ADU: collect it with Receive.
 message Delivery {
   // The RFC 9171 id of the bundle awaiting delivery; fetch it with
-  // Receive.
+  // Receive. Encoded as documented on SendResponse.bundle_id.
   string                    bundle_id     = 1;
   // The source endpoint of the bundle.
   string                    source        = 2;
@@ -114,15 +120,16 @@ message Delivery {
   google.protobuf.Timestamp expire_time   = 3;
   // Whether the sender requested an application acknowledgement.
   bool                      ack_requested = 4;
-  // The size in bytes of the ADU as carried in the bundle (before
-  // any BPSec decryption).
+  // The exact size in bytes the Receive stream delivers: the ADU as
+  // the application receives it, after any BPSec processing.
   uint64                    adu_size      = 5;
 }
 
 // A bundle status report arrived for a bundle this application sent.
 // Informational: no outcome is expected.
 message BundleStatusReport {
-  // The RFC 9171 bundle id the report is about.
+  // The RFC 9171 id of the bundle the report is about. Encoded as
+  // documented on SendResponse.bundle_id.
   string                             bundle_id      = 1;
   // The endpoint of the reporting node.
   string                             reporting_node = 2;
@@ -195,6 +202,14 @@ message SendOptions {
 message SendResponse {
   // The RFC 9171 id of the sent bundle; correlated by
   // BundleStatusReport events.
+  //
+  // Every bundle_id string on this wire (all four v1 surfaces) uses
+  // the same encoding: the bundle id's canonical CBOR array — the
+  // source EID and creation timestamp, plus the fragment offset and
+  // total ADU length when the bundle is a fragment — encoded with
+  // URL-safe base64 without padding (RFC 4648 section 5). RFC 9171
+  // defines no textual encoding of its own. The string is opaque to
+  // clients: compare it byte-for-byte and echo it back unchanged.
   string bundle_id = 1;
 }
 
@@ -211,7 +226,8 @@ message ReceiveRequest {
 message ReceiveMetadata {
   // The session token from Registration.
   bytes  session_token = 1;
-  // The bundle to collect, from Delivery.
+  // The bundle to collect, from Delivery. Encoded as documented on
+  // SendResponse.bundle_id.
   string bundle_id     = 2;
 }
 

@@ -13,20 +13,35 @@ pub mod cla;
 pub mod routing;
 pub mod service;
 
-use std::{collections::HashMap, sync::Mutex};
+use core::{
+    future::{self, Future},
+    time::Duration,
+};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
-use hardy_async::CancellationToken;
+use hardy_async::{CancellationToken, TaskPool, channel, sync::spin::Once};
 use hardy_bpa::{
-    Bytes, services,
+    Bytes,
+    bpa::BpaRegistration,
+    services::{self, Error},
     stream::{Receiver, Segment},
 };
 use prost_types::Timestamp;
 use time::OffsetDateTime;
-use tokio::sync::mpsc::Sender;
+// The mpsc `Receiver` collides with the stream `Receiver` trait above, so the
+// event channel's receiving half is aliased where it is the less central name.
+use tokio::sync::mpsc::{Receiver as EventReceiver, Sender};
 use tonic::{Status, Streaming};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
-use crate::stream::{Cancel, Chunk, Unregister, chunks};
+use crate::{
+    error_status::embed_service_error,
+    server::session::{Session, SessionStream, Sessions},
+    stream::{Cancel, Chunk, Unregister, chunks},
+};
 
 // Both types are foreign, so this is a free function rather than a
 // `From`; shared by the surfaces that emit status-report timestamps.
@@ -38,10 +53,10 @@ fn to_timestamp(t: OffsetDateTime) -> Timestamp {
 }
 
 // The one point where BPA service errors become gRPC statuses, shared
-// by every surface's doors.
-fn service_status(error: services::Error) -> Status {
-    use services::Error;
-    match error {
+// by every surface's doors. The typed discriminator is embedded on the
+// way out so the SDK can recover the exact variant past the coarse code.
+fn service_status(error: Error) -> Status {
+    let status = match &error {
         Error::ServiceIdInUse(_) | Error::DuplicateBundle => {
             Status::already_exists(error.to_string())
         }
@@ -56,8 +71,15 @@ fn service_status(error: services::Error) -> Status {
         Error::Disconnected => Status::unavailable("Unregistered"),
         Error::StreamCancelled => Status::cancelled(error.to_string()),
         Error::Dropped(_) => Status::aborted(error.to_string()),
-        Error::Internal(e) => Status::from_error(e),
-    }
+        // The internal chain may carry host detail an untrusted peer
+        // must never see: log it server-side and ship a generic status.
+        // The kind is still embedded, so the SDK learns it was internal.
+        Error::Internal(e) => {
+            error!("internal service error: {e}");
+            Status::internal("internal error")
+        }
+    };
+    embed_service_error(status, &error)
 }
 
 // One session's watch: parks until the session ends, however it ends
@@ -81,6 +103,157 @@ async fn watch_session<Req: Unregister>(
     }
 }
 
+// One gRPC surface's component as the BPA sees it, reduced to what the
+// generic session machinery needs: its session state, and how to
+// unregister its sink on teardown. The concrete component keeps its
+// surface-specific event doors; only the lifecycle is shared.
+pub(super) trait Component: Send + Sync + 'static {
+    type Event: Send + 'static;
+
+    fn session(&self) -> &Session<Self::Event>;
+
+    // Unregisters the component's sink from the BPA, if it ever
+    // registered one. The sink type is surface-specific, so the call is
+    // the component's; a repeat unregister no-ops inside the sink. The
+    // future is `Send`: the bridge drives it from a spawned session task.
+    fn unregister_sink(&self) -> impl Future<Output = ()> + Send;
+}
+
+// A `Once`-cell holding one surface's sink: set once at registration,
+// read on every data-plane door. `T` is the surface's sink trait
+// object, so the cell is written as a `Box` and shared as an `Arc`.
+pub(super) struct SinkSlot<T: ?Sized>(Once<Arc<T>>);
+
+impl<T: ?Sized> SinkSlot<T> {
+    pub(super) fn new() -> Self {
+        Self(Once::new())
+    }
+
+    // Records the sink handed in at registration; the BPA calls this
+    // exactly once, so a second set is ignored.
+    pub(super) fn set(&self, sink: Box<T>) {
+        self.0.call_once(|| Arc::from(sink));
+    }
+
+    // The sink for a data-plane door, or the unregistered status a call
+    // arriving before (or racing) registration must answer.
+    pub(super) fn get(&self) -> Result<Arc<T>, Status> {
+        self.0
+            .get()
+            .cloned()
+            .ok_or_else(|| Status::unavailable("Unregistered"))
+    }
+
+    // The sink for the teardown path, absent if none ever registered.
+    pub(super) fn peek(&self) -> Option<Arc<T>> {
+        self.0.get().cloned()
+    }
+}
+
+impl<T: ?Sized> Default for SinkSlot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One surface's session bridge: the BPA handle, the pool the sessions
+/// run on, and the live-session index. Shutting down the pool tears the
+/// sessions and drives unregistration, so shut it down only after the
+/// transport has stopped accepting.
+pub(super) struct Bridge<C: Component> {
+    pub bpa: Arc<dyn BpaRegistration>,
+    pub tasks: TaskPool,
+    pub sessions: Arc<Sessions<C>>,
+}
+
+impl<C: Component> Bridge<C> {
+    pub(super) fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
+        Self {
+            bpa,
+            tasks,
+            sessions: Arc::new(Sessions::new()),
+        }
+    }
+
+    // Publishes a freshly registered component's session and spawns the
+    // one task it owns: the task waits out the session's life, then
+    // unregisters it. Returns the response stream the handler answers
+    // with. `requests` is the Subscribe request side, watched for the
+    // client's Unregister or half-close; `label` names the task.
+    pub(super) fn open_session<Req>(
+        &self,
+        component: Arc<C>,
+        registration: C::Event,
+        events: EventReceiver<Result<C::Event, Status>>,
+        requests: Streaming<Req>,
+        label: &'static str,
+    ) -> SessionStream<C::Event>
+    where
+        Req: Unregister + Send + 'static,
+        C::Event: Unpin,
+    {
+        // Published before the client can know its token.
+        self.sessions
+            .publish(component.session().token().clone(), component.clone());
+
+        // The session ends on Unregister or half-close, or on the
+        // trigger: the stream's guard (the rpc dying), `on_unregister`,
+        // or pool shutdown.
+        let cancelled = component.session().cancellation();
+        let stream = component.session().stream(registration, events);
+
+        let bridge = self.clone();
+        let task = async move {
+            watch_session(cancelled, requests).await;
+            bridge.unregister_session(component).await;
+        };
+        #[cfg(feature = "instrument")]
+        {
+            let span = tracing::trace_span!(parent: None, "grpc_session", surface = label);
+            span.follows_from(tracing::Span::current());
+            self.tasks
+                .spawn(tracing::Instrument::instrument(task, span));
+        }
+        #[cfg(not(feature = "instrument"))]
+        {
+            let _ = label;
+            self.tasks.spawn(task);
+        }
+        stream
+    }
+
+    // Unregisters one session, however it ended. Work the component was
+    // holding (parked deliveries, in-flight forwardings) stays queued in
+    // the BPA for a later registration; a repeat unregister no-ops
+    // inside the sink.
+    async fn unregister_session(&self, component: Arc<C>) {
+        // Ordered by what the client must observe as done. Retire the
+        // token, then unregister from the BPA (which frees the
+        // registration's identity before firing on_unregister), then
+        // close the stream last: the client sees teardown via the stream
+        // closing, so once it does the token is dead and the identity is
+        // reusable.
+        self.sessions.remove(component.session().token());
+        component.unregister_sink().await;
+        component.session().abort();
+        // The teardown barrier for tests: the session is fully retired.
+        #[cfg(test)]
+        self.sessions.signal_torn_down(component.session().token());
+    }
+}
+
+// Manual, so the derive does not demand `C: Clone`: only the three
+// handles are cloned, never the component.
+impl<C: Component> Clone for Bridge<C> {
+    fn clone(&self) -> Self {
+        Self {
+            bpa: self.bpa.clone(),
+            tasks: self.tasks.clone(),
+            sessions: self.sessions.clone(),
+        }
+    }
+}
+
 // Dead-entry sweep threshold for [`Deliveries`]: below it the map is
 // too small to matter, above it each hold first reclaims entries
 // whose bundle has certainly died (expiry passed), so the map tracks
@@ -89,12 +262,26 @@ const DELIVERIES_SWEEP_THRESHOLD: usize = 64;
 
 type HeldStream = (OffsetDateTime, Box<dyn Receiver<Segment>>);
 
+#[derive(Default)]
+struct DeliveriesState {
+    held: HashMap<String, HeldStream>,
+    // The map's size at the last dead-entry sweep. The next sweep waits
+    // until the map has doubled since, so a burst of still-live holds is
+    // scanned O(1) amortised (O(n) total) instead of the whole map on
+    // every insert.
+    last_swept_len: usize,
+}
+
 // One session's announced-but-uncollected deliveries: the stream each
 // `on_deliver` carried, with its bundle's expiry, keyed by the wire
 // form of its bundle id. Dropping the map on session death leaves the
 // bundles parked in the BPA.
+//
+// A `std::sync::Mutex`, not the spin lock cla.rs uses for its
+// forwardings map: the sweep below holds the lock across an O(n) retain,
+// which a spin lock must never do. The asymmetry is deliberate.
 #[derive(Default)]
-struct Deliveries(Mutex<HashMap<String, HeldStream>>);
+struct Deliveries(Mutex<DeliveriesState>);
 
 impl Deliveries {
     // Holds an announced stream for the Receive door. A bundle can die
@@ -102,19 +289,29 @@ impl Deliveries {
     // withdraw signal to the bridge, so dead entries are reclaimed
     // here, amortised against holds.
     fn hold(&self, key: String, expiry: OffsetDateTime, stream: Box<dyn Receiver<Segment>>) {
-        let mut deliveries = self.0.lock().expect("deliveries lock poisoned");
-        if deliveries.len() >= DELIVERIES_SWEEP_THRESHOLD {
+        let mut state = self.0.lock().expect("deliveries lock poisoned");
+        // Sweep only once the map is both large enough to matter and has
+        // doubled since the last sweep: doubling keeps the total scan
+        // work linear in the number of holds.
+        if state.held.len() >= DELIVERIES_SWEEP_THRESHOLD
+            && state.held.len() >= state.last_swept_len * 2
+        {
             let now = OffsetDateTime::now_utc();
-            deliveries.retain(|_, (expiry, _)| *expiry > now);
+            state.held.retain(|_, (expiry, _)| *expiry > now);
+            state.last_swept_len = state.held.len();
         }
-        deliveries.insert(key, (expiry, stream));
+        state.held.insert(key, (expiry, stream));
     }
 
     // Withdraws a held stream: a dead session dropping its
     // announcement, so the BPA announces the parked bundle again to a
     // later registration.
     fn withdraw(&self, key: &str) {
-        self.0.lock().expect("deliveries lock poisoned").remove(key);
+        self.0
+            .lock()
+            .expect("deliveries lock poisoned")
+            .held
+            .remove(key);
     }
 
     // Takes the single collection capability for an announcement; a
@@ -123,6 +320,7 @@ impl Deliveries {
         self.0
             .lock()
             .expect("deliveries lock poisoned")
+            .held
             .remove(key)
             .map(|(_, stream)| stream)
     }
@@ -146,7 +344,7 @@ async fn abandonment<Req: Cancel>(mut requests: Streaming<Req>) -> Status {
             Ok(Some(_)) => warn!("Ignoring unexpected message on the Receive request side"),
             // Nothing can follow a half-close: the request side goes
             // inert for the rest of the call.
-            Ok(None) => core::future::pending().await,
+            Ok(None) => future::pending().await,
             Err(e) => {
                 debug!("Receive stream failed: {e}");
                 return Status::aborted("Receive stream failed");
@@ -181,11 +379,11 @@ async fn pump_to_collector(
     cancelled: CancellationToken,
     expiry: OffsetDateTime,
     stream: &mut dyn Receiver<Segment>,
-    tx: hardy_async::channel::Sender<Segment>,
+    tx: channel::Sender<Segment>,
 ) -> services::Result<()> {
     let hold = (expiry - OffsetDateTime::now_utc())
         .try_into()
-        .unwrap_or(core::time::Duration::ZERO);
+        .unwrap_or(Duration::ZERO);
     let pump = tokio::time::timeout(hold, async {
         loop {
             match stream.recv().await {
@@ -319,11 +517,91 @@ async fn stream_delivery<Resp: Chunk + Cancel + Send + 'static>(
     }
 }
 
+// The shared halves of every surface's inline wire test: the generic
+// harness plumbing (a running BPA, the port-0 serve dance, the regression
+// timeout, the teardown barrier), cross-imported by the four surface test
+// modules. Surface-specific fixtures (the typed client, `register`,
+// `send`, `collect`) stay local to each surface.
 #[cfg(test)]
-mod tests {
-    use hardy_bpa::Bytes;
+pub mod tests {
+    use std::{net::SocketAddr, time::Duration};
+
+    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
+    use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    // `broadcast::Receiver` collides with the stream `Receiver` trait that
+    // `super::*` brings in, so the teardown receiver is aliased.
+    use tokio::{net::TcpListener, sync::broadcast::Receiver as TornReceiver};
+    use tonic::transport::server::{Router, TcpIncoming};
 
     use super::*;
+    use crate::server::token::SessionToken;
+
+    // A generous hang failsafe on an event-driven wait; the timeout only
+    // bounds a regression.
+    pub async fn timeout<F: Future>(future: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(10), future)
+            .await
+            .expect("test timed out")
+    }
+
+    // The single-node ipn:1 configuration every surface's default harness
+    // uses.
+    pub fn ipn1() -> NodeIds {
+        NodeIds::try_from(
+            [NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 1,
+            })]
+            .as_slice(),
+        )
+        .unwrap()
+    }
+
+    pub fn build_bundle(source: &str, destination: &str, payload: &[u8]) -> Bytes {
+        let (_, data) = hardy_bpv7::builder::Builder::new(
+            source.parse().unwrap(),
+            destination.parse().unwrap(),
+        )
+        .with_payload(std::borrow::Cow::Borrowed(payload))
+        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+        Bytes::from(data)
+    }
+
+    // A started BPA behind the bridge; `status_reports` is on only for the
+    // surfaces whose report round-trip tests need it.
+    pub async fn build_bpa(node_ids: NodeIds, status_reports: bool) -> Arc<Bpa> {
+        let bpa = Arc::new(
+            Bpa::builder()
+                .node_ids(node_ids)
+                .status_reports(status_reports)
+                .build()
+                .await
+                .unwrap(),
+        );
+        bpa.start(false);
+        bpa
+    }
+
+    // Serves `router` on a fresh port-0 listener and returns its address:
+    // the shared listener + serve_with_incoming dance, parameterised by
+    // the surface's already-built tonic service router.
+    pub async fn serve(router: Router) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
+        tokio::spawn(router.serve_with_incoming(incoming));
+        address
+    }
+
+    // Awaits the teardown barrier for `token`: once its teardown signal
+    // fires, the session is fully retired (the token no longer resolves
+    // and its registration is unregistered), so a later call is rejected
+    // without a race. Subscribe before triggering teardown. The timeout
+    // only bounds a regression.
+    pub async fn wait_torn_down(torn: &mut TornReceiver<SessionToken>, token: &Bytes) {
+        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != *token {} }).await;
+    }
 
     fn held(seconds_from_now: i64) -> (OffsetDateTime, Box<dyn Receiver<Segment>>) {
         (
@@ -332,8 +610,8 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn a_claim_is_single_use_and_withdraw_removes() {
+    #[test]
+    fn a_claim_is_single_use_and_withdraw_removes() {
         let deliveries = Deliveries::default();
         let (expiry, stream) = held(60);
         deliveries.hold("a".to_string(), expiry, stream);
@@ -347,8 +625,8 @@ mod tests {
         assert!(deliveries.claim("b").is_none());
     }
 
-    #[tokio::test]
-    async fn dead_entries_are_swept_once_the_threshold_is_reached() {
+    #[test]
+    fn dead_entries_are_swept_once_the_threshold_is_reached() {
         let deliveries = Deliveries::default();
         for i in 0..DELIVERIES_SWEEP_THRESHOLD {
             let (expiry, stream) = held(-60);
@@ -359,7 +637,12 @@ mod tests {
         deliveries.hold("live".to_string(), expiry, stream);
 
         assert_eq!(
-            deliveries.0.lock().expect("deliveries lock poisoned").len(),
+            deliveries
+                .0
+                .lock()
+                .expect("deliveries lock poisoned")
+                .held
+                .len(),
             1,
             "expired entries must be reclaimed, not accumulated"
         );

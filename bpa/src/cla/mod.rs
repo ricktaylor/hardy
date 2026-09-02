@@ -159,8 +159,7 @@ impl core::fmt::Display for ClaAddress {
     }
 }
 
-/// The result of a bundle forwarding attempt by a CLA.
-/// The most explicit egress lanes a CLA may declare.
+/// The maximum number of explicit egress lanes a CLA may declare.
 ///
 /// Lane declarations size per-peer egress queue sets, so the count is
 /// bounded to keep an erroneous or hostile declaration from driving
@@ -168,6 +167,7 @@ impl core::fmt::Display for ClaAddress {
 /// clamped, and wire registrations must reject them.
 pub const MAX_LANE_COUNT: u32 = 256;
 
+/// The result of a bundle forwarding attempt by a CLA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForwardBundleResult {
     /// The bundle was successfully sent.

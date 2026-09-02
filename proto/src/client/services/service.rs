@@ -2,14 +2,15 @@
 // registration, its events translated onto the local
 // [`Service`](services::Service) trait, and a sink whose calls are
 // the wire's token-gated RPCs. Declarations are ordered
-// define-before-reference: the collection stream, the sink, the event
-// loop, then the handshake. The registration itself lives on
+// define-before-reference: the collection stream, the sink, the
+// delivery runner, the event loop, then the handshake. The registration itself lives on
 // `BpaClient`: it opens the session here, hands the sink to the
 // service, and drives the event loop.
 
+use core::num::NonZeroUsize;
 use std::sync::Arc;
 
-use hardy_async::CancellationToken;
+use hardy_async::{BoundedTaskPool, CancellationToken};
 use hardy_bpa::{
     Bytes, async_trait, services,
     stream::{Receiver, Segment},
@@ -18,21 +19,26 @@ use hardy_bpv7::{
     bundle,
     eid::{self, Eid, Service},
 };
+use time::OffsetDateTime;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Streaming, transport::Channel};
 use tracing::{debug, warn};
 
-use crate::MAX_MESSAGE_SIZE;
-use crate::service::{
-    ReceiveMetadata, ReceiveRequest, ReceiveResponse, Register, SendMetadata, SendRequest,
-    SubscribeRequest, SubscribeResponse, Unregister, receive_request, register, send_request,
-    service_service_client::ServiceServiceClient, subscribe_request, subscribe_response,
+use super::super::{
+    SUBSCRIBE_REQUEST_CAPACITY, TRANSFER_REQUEST_CAPACITY, adapter,
+    collector::{Collector, ReceiveDoor},
 };
-
-use super::super::adapter;
-use super::super::collector::{Collector, ReceiveDoor};
-use super::{decode_status_report, from_timestamp, service_error};
+use super::{decode_status_report, from_timestamp, log_declined, next_event, service_error};
+use crate::{
+    MAX_MESSAGE_SIZE,
+    service::{
+        Delivery, ReceiveMetadata, ReceiveRequest, ReceiveResponse, Register, SendMetadata,
+        SendRequest, SubscribeRequest, SubscribeResponse, Unregister, receive_request, register,
+        send_request, service_service_client::ServiceServiceClient, subscribe_request,
+        subscribe_response,
+    },
+};
 
 // The registration's sink: every call is a token-gated RPC of the
 // session. No Drop impl is needed: dropping the sink drops the
@@ -61,7 +67,7 @@ impl services::ServiceSink for GrpcServiceSink {
         // segments and pushing wire chunks while the call runs, both
         // driven by the same join. Dropping the sender after the last
         // chunk half-closes the request side.
-        let (requests, rx) = mpsc::channel::<SendRequest>(2);
+        let (requests, rx) = mpsc::channel::<SendRequest>(TRANSFER_REQUEST_CAPACITY);
         let pump = async move {
             if requests
                 .send(SendRequest {
@@ -111,39 +117,72 @@ impl ReceiveDoor for ServiceServiceClient<Channel> {
         &self,
         requests: ReceiverStream<ReceiveRequest>,
     ) -> Option<Streaming<ReceiveResponse>> {
-        self.clone()
-            .receive(requests)
-            .await
-            .ok()
-            .map(|response| response.into_inner())
+        match self.clone().receive(requests).await {
+            Ok(response) => Some(response.into_inner()),
+            Err(e) => {
+                debug!("Receive stream failed: {e}");
+                None
+            }
+        }
     }
+}
+
+// How many announced deliveries one registration collects at once: enough
+// that one slow collection does not serialise the rest, small enough that
+// a single registration cannot monopolise its connection. Beyond the
+// bound, the announcement loop waits for a slot, which backpressures the
+// session stream and through it the BPA, by design.
+const MAX_CONCURRENT_DELIVERIES: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+// Runs one announced delivery to its end, racing the session's teardown
+// so a stuck collection cannot hang the client's shutdown.
+async fn deliver(
+    service: Arc<dyn services::Service>,
+    cancel: CancellationToken,
+    bundle_id: bundle::Id,
+    expiry: OffsetDateTime,
+    delivery: Delivery,
+    mut stream: adapter::Reader<ReceiveResponse, ReceiveRequest>,
+) {
+    let on_deliver = service.on_deliver(&bundle_id, expiry, delivery.bundle_size, &mut stream);
+    // Completion is polled first so a delivery that finished in the same
+    // instant the session ended is honoured; a pending one yields to the
+    // teardown immediately.
+    let result = tokio::select! {
+        biased;
+        result = on_deliver => result,
+        _ = cancel.cancelled() => Err(services::Error::StreamCancelled),
+    };
+    let Err(e) = result else {
+        return;
+    };
+    // Dropping `stream` short of completion abandons the collection with
+    // the wire's in-band cancel (see `adapter::Reader`'s Drop), and the
+    // bundle stays parked for a later attempt.
+    log_declined("Service", &delivery.bundle_id, stream.is_complete(), &e);
 }
 
 // The session's event loop: wire events land on the local trait, and
 // the session ending, however it ends (the stream closing or the
 // client's shutdown), is the unregistration; malformed events are
-// logged and skipped. Events are handled sequentially: a slow
-// `on_deliver` backpressures the session stream, and through it the
-// BPA, by design.
+// logged and skipped. Each delivery collects on its own task, bounded
+// by [`MAX_CONCURRENT_DELIVERIES`], so the announcement loop keeps
+// pulling while collections run.
 pub async fn run_session(
     mut events: Streaming<SubscribeResponse>,
     collector: Collector<ServiceServiceClient<Channel>>,
     service: Arc<dyn services::Service>,
     cancel: CancellationToken,
 ) {
-    loop {
-        let message = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => break,
-            message = events.message() => message,
-        };
-        let event = match message {
-            Ok(Some(SubscribeResponse { event: Some(event) })) => event,
-            Ok(Some(msg)) => {
-                warn!("Ignoring empty event: {msg:?}");
-                continue;
-            }
-            Ok(None) | Err(_) => break,
+    // Every in-flight delivery races `session_cancel`, which fires on the
+    // client's shutdown (it is a child of `cancel`) and at this session's
+    // own end.
+    let session_cancel = cancel.child_token();
+    let deliveries = BoundedTaskPool::new(MAX_CONCURRENT_DELIVERIES);
+    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
+        let Some(event) = event else {
+            warn!("Ignoring event with no payload");
+            continue;
         };
         match event {
             subscribe_response::Event::Registration(registration) => {
@@ -158,13 +197,13 @@ pub async fn run_session(
                     warn!("Ignoring delivery with invalid expiry: {delivery:?}");
                     continue;
                 };
-                let mut stream = collector.open(delivery.bundle_id.clone());
-                if let Err(e) = service
-                    .on_deliver(&bundle_id, expiry, delivery.bundle_size, &mut stream)
-                    .await
-                {
-                    debug!("Service declined delivery {}: {e}", delivery.bundle_id);
-                }
+                let stream = collector.open(delivery.bundle_id.clone());
+                let service = service.clone();
+                let cancel = session_cancel.clone();
+                hardy_async::spawn!(deliveries, "service_delivery", async move {
+                    deliver(service, cancel, bundle_id, expiry, delivery, stream).await
+                })
+                .await;
             }
             subscribe_response::Event::BundleStatusReport(report) => {
                 let Some(kind) = Option::<services::StatusNotify>::from(report.assertion()) else {
@@ -186,6 +225,10 @@ pub async fn run_session(
             }
         }
     }
+    // In-flight deliveries end before the component learns it is
+    // unregistered, so no `on_deliver` call outlives `on_unregister`.
+    session_cancel.cancel();
+    deliveries.shutdown().await;
     service.on_unregister().await;
 }
 
@@ -208,7 +251,7 @@ pub async fn subscribe(
 
     // The wire requires Register first, sent without waiting for
     // response headers.
-    let (requests, rx) = mpsc::channel(4);
+    let (requests, rx) = mpsc::channel(SUBSCRIBE_REQUEST_CAPACITY);
     let register = Register {
         service_id: service_id.map(|id| match id {
             Service::Ipn(n) => register::ServiceId::Ipn(n),

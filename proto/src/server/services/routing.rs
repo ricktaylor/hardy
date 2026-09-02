@@ -8,36 +8,44 @@
 
 use std::sync::Arc;
 
-use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_async::TaskPool;
 use hardy_bpa::{
     async_trait,
     bpa::BpaRegistration,
-    routing::{self, RoutingAgent, RoutingSink},
+    routing::{self, Error, RoutingAgent, RoutingSink},
 };
 use hardy_eid_patterns::EidPattern;
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::watch_session;
+use super::{Bridge, Component, SinkSlot};
+use crate::error_status::embed_routing_error;
 use crate::routing::{
     AddRouteRequest, AddRouteResponse, Registration, RemoveRouteRequest, RemoveRouteResponse,
     SubscribeRequest, SubscribeResponse, routing_agent_service_server::RoutingAgentService,
     subscribe_request, subscribe_response,
 };
-use crate::server::session::{Session, SessionStream, Sessions};
-use crate::server::token::Signer;
+use crate::server::session::{Session, SessionStream};
 
-// The one point where BPA routing errors become gRPC statuses.
-fn routing_status(error: routing::Error) -> Status {
-    use routing::Error;
-    match error {
+// The one point where BPA routing errors become gRPC statuses. The typed
+// discriminator is embedded on the way out so the SDK can recover the
+// exact variant past the coarse code.
+fn routing_status(error: Error) -> Status {
+    let status = match &error {
         Error::AlreadyExists(_) => Status::already_exists(error.to_string()),
         Error::Disconnected => Status::unavailable("Unregistered"),
         Error::NullNextHop | Error::ViaOwnNode(_) => Status::invalid_argument(error.to_string()),
-        Error::Internal(e) => Status::from_error(e),
-    }
+        // The internal chain may carry host detail an untrusted peer
+        // must never see: log it server-side and ship a generic status.
+        Error::Internal(e) => {
+            error!("internal routing error: {e}");
+            Status::internal("internal error")
+        }
+    };
+    embed_routing_error(status, &error)
 }
 
 // -------------------------------------------------------------------
@@ -50,29 +58,36 @@ fn routing_status(error: routing::Error) -> Status {
 // drive.
 struct GrpcRoutingAgent {
     session: Session<SubscribeResponse>,
-    sink: Once<Arc<dyn RoutingSink>>,
+    sink: SinkSlot<dyn RoutingSink>,
 }
 
 impl GrpcRoutingAgent {
     fn new(session: Session<SubscribeResponse>) -> Self {
         Self {
             session,
-            sink: Once::new(),
+            sink: SinkSlot::new(),
         }
     }
+}
 
-    fn sink(&self) -> Result<Arc<dyn RoutingSink>, Status> {
-        self.sink
-            .get()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Unregistered"))
+impl Component for GrpcRoutingAgent {
+    type Event = SubscribeResponse;
+
+    fn session(&self) -> &Session<SubscribeResponse> {
+        &self.session
+    }
+
+    async fn unregister_sink(&self) {
+        if let Some(sink) = self.sink.peek() {
+            sink.unregister().await;
+        }
     }
 }
 
 #[async_trait]
 impl RoutingAgent for GrpcRoutingAgent {
     async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[hardy_bpv7::eid::NodeId]) {
-        self.sink.call_once(|| Arc::from(sink));
+        self.sink.set(sink);
     }
 
     async fn on_unregister(&self) {
@@ -91,39 +106,15 @@ impl RoutingAgent for GrpcRoutingAgent {
 /// shut it down only after the transport has stopped accepting.
 #[derive(Clone)]
 pub struct RoutingAgentServiceImpl {
-    bpa: Arc<dyn BpaRegistration>,
-    tasks: TaskPool,
-    sessions: Arc<Sessions<GrpcRoutingAgent>>,
+    bridge: Bridge<GrpcRoutingAgent>,
 }
 
 impl RoutingAgentServiceImpl {
-    /// Bridges the routing surface of `bpa`, minting session tokens with
-    /// the server-wide `signer`.
-    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool, signer: Signer) -> Self {
+    /// Bridges the routing surface of `bpa`.
+    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
         Self {
-            bpa,
-            tasks,
-            sessions: Arc::new(Sessions::new(signer)),
+            bridge: Bridge::new(bpa, tasks),
         }
-    }
-
-    // Unregisters one session, however it ended. The BPA withdraws the
-    // agent's routes when the sink unregisters; a repeat unregister
-    // no-ops inside the sink.
-    async fn unregister_session(&self, agent: Arc<GrpcRoutingAgent>) {
-        // Ordered by what the client must observe as done. Retire the
-        // token, then unregister from the BPA (which frees the name
-        // before firing on_unregister), then close the stream last: the
-        // client sees teardown via the stream closing, so once it does
-        // the token is dead and the name is reusable.
-        self.sessions.remove(agent.session.token());
-        if let Some(sink) = agent.sink.get() {
-            sink.unregister().await;
-        }
-        agent.session.abort();
-        // The teardown barrier for tests: the session is fully retired.
-        #[cfg(test)]
-        self.sessions.signal_torn_down(agent.session.token());
     }
 }
 
@@ -152,30 +143,25 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
         // The token is minted before the BPA sees the component: the
         // session must be able to carry the Registration event the moment
         // registration completes.
-        let token = self.sessions.mint(&format!("routing:{}", register.name));
+        let token = self
+            .bridge
+            .sessions
+            .mint(&format!("routing:{}", register.name));
         // A routing agent receives no down-events, so the channel only has
         // to carry the one Registration the stream yields structurally.
         let (events_tx, events_rx) = mpsc::channel(1);
         let agent = Arc::new(GrpcRoutingAgent::new(Session::new(
             token.clone(),
-            self.tasks.child_token(),
+            self.bridge.tasks.child_token(),
             events_tx,
         )));
 
         let node_ids = self
+            .bridge
             .bpa
             .register_routing_agent(register.name, agent.clone())
             .await
             .map_err(routing_status)?;
-
-        // Published before the client can know its token.
-        self.sessions.publish(token.clone(), agent.clone());
-
-        // The one task a session owns: it waits out the session's life,
-        // then unregisters it. The session ends on Unregister or
-        // half-close, or on the trigger: the stream's guard (the rpc
-        // dying), `on_unregister`, or pool shutdown.
-        let cancelled = agent.session.cancellation();
 
         // The stream yields the Registration first, then anchors the
         // session's liveness: routing agents receive no further events.
@@ -185,14 +171,13 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
                 session_token: token.into(),
             })),
         };
-        let stream = agent.session.stream(registration, events_rx);
-        let service_impl = self.clone();
-        hardy_async::spawn!(self.tasks, "routing_session", async move {
-            watch_session(cancelled, requests).await;
-            service_impl.unregister_session(agent).await;
-        });
-
-        Ok(Response::new(stream))
+        Ok(Response::new(self.bridge.open_session(
+            agent,
+            registration,
+            events_rx,
+            requests,
+            "routing_session",
+        )))
     }
 
     // ---------------------------------------------------------------
@@ -210,7 +195,7 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
             action,
             priority,
         } = request.into_inner();
-        let agent = self.sessions.resolve(session_token)?;
+        let agent = self.bridge.sessions.resolve(session_token)?;
         let pattern: EidPattern = pattern
             .parse()
             .map_err(|e| Status::invalid_argument(format!("Invalid pattern: {e}")))?;
@@ -220,7 +205,8 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
             .try_into()?;
 
         let added = agent
-            .sink()?
+            .sink
+            .get()?
             .add_route(pattern, action, priority)
             .await
             .map_err(routing_status)?;
@@ -238,7 +224,7 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
             action,
             priority,
         } = request.into_inner();
-        let agent = self.sessions.resolve(session_token)?;
+        let agent = self.bridge.sessions.resolve(session_token)?;
         let pattern: EidPattern = pattern
             .parse()
             .map_err(|e| Status::invalid_argument(format!("Invalid pattern: {e}")))?;
@@ -248,7 +234,8 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
             .try_into()?;
 
         let removed = agent
-            .sink()?
+            .sink
+            .get()?
             .remove_route(&pattern, &action, priority)
             .await
             .map_err(routing_status)?;
@@ -260,31 +247,28 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
 // and the route doors exercised end to end.
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    use hardy_bpa::{Bytes, bpa::Bpa};
+    #[cfg(feature = "client")]
+    use hardy_bpv7::eid::NodeId;
     #[cfg(feature = "client")]
     use hardy_eid_patterns::EidPattern;
-    use tokio::net::TcpListener;
     use tokio::sync::mpsc::Sender;
     use tokio_stream::wrappers::ReceiverStream;
-    use tonic::Code;
-    use tonic::transport::{Channel, Server, server::TcpIncoming};
+    use tonic::{
+        Code,
+        transport::{Channel, Server},
+    };
 
+    use super::{
+        super::tests::{build_bpa, ipn1, serve, timeout, wait_torn_down},
+        *,
+    };
     use crate::routing::{
         Register, RouteAction, Unregister, route_action::Action,
         routing_agent_service_client::RoutingAgentServiceClient,
         routing_agent_service_server::RoutingAgentServiceServer,
     };
-
-    use super::*;
-
-    async fn timeout<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(10), future)
-            .await
-            .expect("test timed out")
-    }
+    use crate::server::session::Sessions;
 
     struct Harness {
         bpa: Arc<Bpa>,
@@ -304,30 +288,13 @@ mod tests {
     // A running BPA (node ipn:1) behind the bridge on a port-0 listener,
     // plus a connected generated client.
     async fn harness() -> Harness {
-        let node_ids = NodeIds::try_from(
-            [NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            })]
-            .as_slice(),
-        )
-        .unwrap();
-        let bpa = Arc::new(Bpa::builder().node_ids(node_ids).build().await.unwrap());
-        bpa.start(false);
+        let bpa = build_bpa(ipn1(), false).await;
 
         let tasks = TaskPool::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
-
-        let service_impl = RoutingAgentServiceImpl::new(bpa.clone(), tasks.clone(), Signer::new());
-        let sessions = service_impl.sessions.clone();
+        let service_impl = RoutingAgentServiceImpl::new(bpa.clone(), tasks.clone());
+        let sessions = service_impl.bridge.sessions.clone();
         let service = RoutingAgentServiceServer::new(service_impl);
-        tokio::spawn(
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming),
-        );
+        let address = serve(Server::builder().add_service(service)).await;
 
         let client = RoutingAgentServiceClient::connect(format!("http://{address}"))
             .await
@@ -578,12 +545,11 @@ mod tests {
         // half-close, and the session tears down. The teardown signal
         // fires once the token is gone AND the agent is unregistered from
         // the BPA, so both the rejection and the re-registration below
-        // are race-free (the timeout only bounds a regression).
+        // are race-free.
         let mut torn = harness.sessions.torn_down();
         drop(registered.events);
         drop(registered.requests);
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        wait_torn_down(&mut torn, &registered.token).await;
 
         // The token is dead.
         let status = add_route(
@@ -641,10 +607,8 @@ mod tests {
 
         // The token dies in the session task's teardown, which runs after
         // the stream closes; wait for the teardown signal, so the
-        // rejection below is asserted without a race. The timeout only
-        // bounds a regression.
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        // rejection below is asserted without a race.
+        wait_torn_down(&mut torn, &registered.token).await;
         let status = add_route(
             &mut harness.client,
             registered.token.clone(),

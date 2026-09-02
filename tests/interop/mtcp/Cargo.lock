@@ -814,6 +814,7 @@ dependencies = [
  "hardy-eid-patterns",
  "prost",
  "prost-types",
+ "thiserror",
  "time",
  "tokio",
  "tokio-stream",

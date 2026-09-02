@@ -14,6 +14,12 @@ import "google/protobuf/empty.proto";
 // the session. Closing it, or sending Unregister, terminates the
 // registration, invalidates the token, and withdraws the agent's
 // routes.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
 service RoutingAgentService {
   // -- Control plane ---------------------------------------------------
 

@@ -5,8 +5,7 @@
 //
 // There is deliberately no extension seam for foreign gRPC services: the
 // BPA's extension point is `hardy_bpa`'s registration traits, of which
-// these four surfaces are already the clients, and a foreign service would
-// need this crate's `Signer` (the wire-auth internal). Extensions register
+// these four surfaces are already the clients. Extensions register
 // against the BPA, not against this transport.
 
 use std::{
@@ -22,9 +21,7 @@ use hardy_proto::{
     application::application_service_server::ApplicationServiceServer,
     cla::cla_service_server::ClaServiceServer,
     routing::routing_agent_service_server::RoutingAgentServiceServer,
-    server::{
-        ApplicationServiceImpl, ClaServiceImpl, RoutingAgentServiceImpl, ServiceServiceImpl, Signer,
-    },
+    server::{ApplicationServiceImpl, ClaServiceImpl, RoutingAgentServiceImpl, ServiceServiceImpl},
     service::service_service_server::ServiceServiceServer,
 };
 use tonic::{
@@ -76,13 +73,11 @@ impl GrpcServer {
         bpa: &Arc<Bpa>,
         tasks: &TaskPool,
     ) -> Result<Self, Error> {
-        // One signing identity for the whole server: every surface's
-        // sessions mint their tokens with it.
-        let signer = Signer::new();
-
         // Mount each listed surface: the caller guarantees the list is
         // non-empty with no repeats, and the exhaustive match means a new
         // `GrpcService` variant fails to compile here until it is wired.
+        // The message-size caps are part of the wire contract (the client
+        // SDK sizes its ends identically), so every mount carries them.
         let mut routes = Routes::builder();
         for service in &services {
             match service {
@@ -90,34 +85,24 @@ impl GrpcServer {
                     ApplicationServiceServer::new(ApplicationServiceImpl::new(
                         bpa.clone(),
                         tasks.clone(),
-                        signer.clone(),
                     ))
                     .max_encoding_message_size(MAX_MESSAGE_SIZE)
                     .max_decoding_message_size(MAX_MESSAGE_SIZE),
                 ),
                 GrpcService::Service => routes.add_service(
-                    ServiceServiceServer::new(ServiceServiceImpl::new(
-                        bpa.clone(),
-                        tasks.clone(),
-                        signer.clone(),
-                    ))
-                    .max_encoding_message_size(MAX_MESSAGE_SIZE)
-                    .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                    ServiceServiceServer::new(ServiceServiceImpl::new(bpa.clone(), tasks.clone()))
+                        .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                        .max_decoding_message_size(MAX_MESSAGE_SIZE),
                 ),
                 GrpcService::Cla => routes.add_service(
-                    ClaServiceServer::new(ClaServiceImpl::new(
-                        bpa.clone(),
-                        tasks.clone(),
-                        signer.clone(),
-                    ))
-                    .max_encoding_message_size(MAX_MESSAGE_SIZE)
-                    .max_decoding_message_size(MAX_MESSAGE_SIZE),
+                    ClaServiceServer::new(ClaServiceImpl::new(bpa.clone(), tasks.clone()))
+                        .max_encoding_message_size(MAX_MESSAGE_SIZE)
+                        .max_decoding_message_size(MAX_MESSAGE_SIZE),
                 ),
                 GrpcService::Routing => routes.add_service(
                     RoutingAgentServiceServer::new(RoutingAgentServiceImpl::new(
                         bpa.clone(),
                         tasks.clone(),
-                        signer.clone(),
                     ))
                     .max_encoding_message_size(MAX_MESSAGE_SIZE)
                     .max_decoding_message_size(MAX_MESSAGE_SIZE),
@@ -215,7 +200,8 @@ impl GrpcServer {
             biased;
             result = &mut server => {
                 if let Err(e) = result {
-                    error!("gRPC server failed: {e}");
+                    error!("gRPC server failed: {e}, shutting down");
+                    cancel.cancel();
                 }
             }
             // The graceful drain is shutdown's one unbounded wait: a client

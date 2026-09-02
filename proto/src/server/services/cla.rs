@@ -13,19 +13,17 @@
 // ReportTransferOutcome.
 
 use core::{
+    num::NonZeroU32,
     ops::ControlFlow,
     sync::atomic::{AtomicU64, Ordering},
 };
 use std::{collections::HashMap, sync::Arc};
 
-use hardy_async::{
-    TaskPool,
-    sync::spin::{Mutex, Once},
-};
+use hardy_async::{TaskPool, sync::spin::Mutex};
 use hardy_bpa::{
     async_trait,
     bpa::BpaRegistration,
-    cla::{self, Cla, ForwardBundleResult, TransferOutcome},
+    cla::{self, Cla, Error, ForwardBundleResult, TransferOutcome},
     stream::{Receiver, Segment},
 };
 use hardy_bpv7::{bundle, eid::NodeId};
@@ -37,9 +35,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
-use super::watch_session;
+use super::{Bridge, Component, SinkSlot};
 use crate::{
     cla::{
         AddPeerRequest, AddPeerResponse, ClaAddressType, DispatchMetadata, DispatchRequest,
@@ -49,27 +47,37 @@ use crate::{
         cla_service_server::ClaService, dispatch_request, forward_request, forward_result,
         report_transfer_outcome_request, subscribe_request, subscribe_response,
     },
+    error_status::embed_cla_error,
     server::{
         CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
-        session::{Session, SessionStream, Sessions},
-        token::Signer,
+        session::{Session, SessionStream},
     },
     stream::{self, Cancel, Chunk},
 };
 
-// The one point where BPA cla errors become gRPC statuses.
-fn cla_status(error: cla::Error) -> Status {
-    use cla::Error;
-    match error {
+// The one point where BPA cla errors become gRPC statuses. The typed
+// discriminator is embedded on the way out so the SDK can recover the
+// exact variant past the coarse code.
+fn cla_status(error: Error) -> Status {
+    let status = match &error {
         Error::AlreadyExists(_) => Status::already_exists(error.to_string()),
         Error::Disconnected => Status::unavailable("Unregistered"),
         Error::StreamCancelled => Status::cancelled(error.to_string()),
-        Error::PayloadTooLarge { .. } => Status::resource_exhausted(error.to_string()),
-        Error::PayloadUnderrun { .. } | Error::PayloadUnaddressable { .. } => {
-            Status::aborted(error.to_string())
+        // Aligned with the services map: an under-delivering producer is
+        // an invalid argument, an unaddressable declaration exhausts a
+        // resource.
+        Error::PayloadTooLarge { .. } | Error::PayloadUnaddressable { .. } => {
+            Status::resource_exhausted(error.to_string())
         }
-        Error::Internal(e) => Status::from_error(e),
-    }
+        Error::PayloadUnderrun { .. } => Status::invalid_argument(error.to_string()),
+        // The internal chain may carry host detail an untrusted peer
+        // must never see: log it server-side and ship a generic status.
+        Error::Internal(e) => {
+            error!("internal cla error: {e}");
+            Status::internal("internal error")
+        }
+    };
+    embed_cla_error(status, &error)
 }
 
 // -------------------------------------------------------------------
@@ -115,10 +123,10 @@ impl Drop for ForwardingGuard<'_> {
 
 struct GrpcCla {
     session: Session<SubscribeResponse>,
-    sink: Once<Arc<dyn cla::Sink>>,
+    sink: SinkSlot<dyn cla::Sink>,
     // The CLA's shape, declared at registration.
     address_type: Option<cla::ClaAddressType>,
-    lane_count: Option<core::num::NonZeroU32>,
+    lane_count: Option<NonZeroU32>,
     // Announced forwardings awaiting their Forward call, keyed by the
     // wire's bundle id: the rendezvous the door answers. The sequence
     // number is the entry's identity, for the guard's conditional
@@ -131,23 +139,16 @@ impl GrpcCla {
     fn new(
         session: Session<SubscribeResponse>,
         address_type: Option<cla::ClaAddressType>,
-        lane_count: Option<core::num::NonZeroU32>,
+        lane_count: Option<NonZeroU32>,
     ) -> Self {
         Self {
             session,
-            sink: Once::new(),
+            sink: SinkSlot::new(),
             address_type,
             lane_count,
             forwardings: Mutex::new(HashMap::new()),
             forwarding_seq: AtomicU64::new(0),
         }
-    }
-
-    fn sink(&self) -> Result<Arc<dyn cla::Sink>, Status> {
-        self.sink
-            .get()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Unregistered"))
     }
 
     async fn event(&self, event: subscribe_response::Event) -> bool {
@@ -157,10 +158,24 @@ impl GrpcCla {
     }
 }
 
+impl Component for GrpcCla {
+    type Event = SubscribeResponse;
+
+    fn session(&self) -> &Session<SubscribeResponse> {
+        &self.session
+    }
+
+    async fn unregister_sink(&self) {
+        if let Some(sink) = self.sink.peek() {
+            sink.unregister().await;
+        }
+    }
+}
+
 #[async_trait]
 impl Cla for GrpcCla {
     async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| Arc::from(sink));
+        self.sink.set(sink);
     }
 
     async fn on_unregister(&self) {
@@ -173,7 +188,7 @@ impl Cla for GrpcCla {
         self.address_type
     }
 
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+    fn lane_count(&self) -> Option<NonZeroU32> {
         self.lane_count
     }
 
@@ -384,40 +399,15 @@ fn on_forward_request(
 /// after the transport has stopped accepting.
 #[derive(Clone)]
 pub struct ClaServiceImpl {
-    bpa: Arc<dyn BpaRegistration>,
-    tasks: TaskPool,
-    sessions: Arc<Sessions<GrpcCla>>,
+    bridge: Bridge<GrpcCla>,
 }
 
 impl ClaServiceImpl {
-    /// Bridges the convergence-layer surface of `bpa`, minting session
-    /// tokens with the server-wide `signer`.
-    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool, signer: Signer) -> Self {
+    /// Bridges the convergence-layer surface of `bpa`.
+    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
         Self {
-            bpa,
-            tasks,
-            sessions: Arc::new(Sessions::new(signer)),
+            bridge: Bridge::new(bpa, tasks),
         }
-    }
-
-    // Unregisters one session, however it ended. Forwardings in flight
-    // resolve as disconnection through the session trigger, and their
-    // bundles stay queued in the BPA; a repeat unregister no-ops
-    // inside the sink.
-    async fn unregister_session(&self, cla: Arc<GrpcCla>) {
-        // Ordered by what the client must observe as done. Retire the
-        // token, then unregister from the BPA (which frees the name
-        // before firing on_unregister), then close the stream last: the
-        // client sees teardown via the stream closing, so once it does
-        // the token is dead and the name is reusable.
-        self.sessions.remove(cla.session.token());
-        if let Some(sink) = cla.sink.get() {
-            sink.unregister().await;
-        }
-        cla.session.abort();
-        // The teardown barrier for tests: the session is fully retired.
-        #[cfg(test)]
-        self.sessions.signal_torn_down(cla.session.token());
     }
 }
 
@@ -456,7 +446,7 @@ impl ClaService for ClaServiceImpl {
                     cla::MAX_LANE_COUNT
                 )));
             }
-            Some(n) => core::num::NonZeroU32::new(n),
+            Some(n) => NonZeroU32::new(n),
             None => None,
         };
 
@@ -464,28 +454,20 @@ impl ClaService for ClaServiceImpl {
         // session must be able to carry events the moment registration
         // completes. The JWT `sub` is the requested identity,
         // observability only.
-        let token = self.sessions.mint(&format!("cla:{}", register.name));
+        let token = self.bridge.sessions.mint(&format!("cla:{}", register.name));
         let (events_tx, events_rx) = mpsc::channel(CHANNEL_DEPTH);
         let cla = Arc::new(GrpcCla::new(
-            Session::new(token.clone(), self.tasks.child_token(), events_tx),
+            Session::new(token.clone(), self.bridge.tasks.child_token(), events_tx),
             address_type,
             lane_count,
         ));
 
         let node_ids = self
+            .bridge
             .bpa
             .register_cla(register.name, cla.clone(), None)
             .await
             .map_err(cla_status)?;
-
-        // Published before the client can know its token.
-        self.sessions.publish(token.clone(), cla.clone());
-
-        // The one task a session owns: it waits out the session's
-        // life, then unregisters it. The session ends on Unregister or
-        // half-close, or on the trigger: the stream's guard (the rpc
-        // dying), `on_unregister`, or pool shutdown.
-        let cancelled = cla.session.cancellation();
 
         // The stream yields the Registration first, by construction.
         let registration = SubscribeResponse {
@@ -494,14 +476,13 @@ impl ClaService for ClaServiceImpl {
                 session_token: token.into(),
             })),
         };
-        let stream = cla.session.stream(registration, events_rx);
-        let service_impl = self.clone();
-        hardy_async::spawn!(self.tasks, "cla_session", async move {
-            watch_session(cancelled, requests).await;
-            service_impl.unregister_session(cla).await;
-        });
-
-        Ok(Response::new(stream))
+        Ok(Response::new(self.bridge.open_session(
+            cla,
+            registration,
+            events_rx,
+            requests,
+            "cla_session",
+        )))
     }
 
     // ---------------------------------------------------------------
@@ -525,7 +506,7 @@ impl ClaService for ClaServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let cla = self.sessions.resolve(session_token)?;
+        let cla = self.bridge.sessions.resolve(session_token)?;
         let peer_node = peer_node_id
             .map(|s| s.parse::<NodeId>())
             .transpose()
@@ -537,7 +518,8 @@ impl ClaService for ClaServiceImpl {
         // its own bundle size limit.
         let mut reader = adapter::Reader::new(requests, cla.session.cancellation(), "Dispatch");
         match cla
-            .sink()?
+            .sink
+            .get()?
             .dispatch(peer_node.as_ref(), peer_addr.as_ref(), &mut reader)
             .await
         {
@@ -564,7 +546,7 @@ impl ClaService for ClaServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let cla = self.sessions.resolve(session_token)?;
+        let cla = self.bridge.sessions.resolve(session_token)?;
 
         // Claim the announced forwarding: removing the rendezvous makes
         // this call its sole executor, and a second Forward for the
@@ -599,7 +581,7 @@ impl ClaService for ClaServiceImpl {
             node_ids,
             address,
         } = request.into_inner();
-        let cla = self.sessions.resolve(session_token)?;
+        let cla = self.bridge.sessions.resolve(session_token)?;
         let address: cla::ClaAddress = address
             .ok_or_else(|| Status::invalid_argument("Missing address"))?
             .try_into()?;
@@ -610,7 +592,8 @@ impl ClaService for ClaServiceImpl {
             .map_err(|e| Status::invalid_argument(format!("Invalid node id: {e}")))?;
 
         let added = cla
-            .sink()?
+            .sink
+            .get()?
             .add_peer(address, &node_ids)
             .await
             .map_err(cla_status)?;
@@ -626,13 +609,14 @@ impl ClaService for ClaServiceImpl {
             session_token,
             address,
         } = request.into_inner();
-        let cla = self.sessions.resolve(session_token)?;
+        let cla = self.bridge.sessions.resolve(session_token)?;
         let address: cla::ClaAddress = address
             .ok_or_else(|| Status::invalid_argument("Missing address"))?
             .try_into()?;
 
         let removed = cla
-            .sink()?
+            .sink
+            .get()?
             .remove_peer(&address)
             .await
             .map_err(cla_status)?;
@@ -649,7 +633,7 @@ impl ClaService for ClaServiceImpl {
             bundle_id,
             outcome,
         } = request.into_inner();
-        let cla = self.sessions.resolve(session_token)?;
+        let cla = self.bridge.sessions.resolve(session_token)?;
         let bundle_id = bundle::Id::from_key(&bundle_id)
             .map_err(|e| Status::invalid_argument(format!("Invalid bundle_id: {e}")))?;
         let outcome = match outcome {
@@ -660,7 +644,8 @@ impl ClaService for ClaServiceImpl {
             None => return Err(Status::invalid_argument("Missing outcome")),
         };
 
-        cla.sink()?
+        cla.sink
+            .get()?
             .transfer_outcome(&bundle_id, outcome)
             .await
             .map_err(cla_status)?;
@@ -672,25 +657,27 @@ impl ClaService for ClaServiceImpl {
 // listener, and event-driven waits.
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    // Only the client-gated mock CLAs declare lane counts.
+    #[cfg(feature = "client")]
+    use core::num::NonZeroU32;
 
+    #[cfg(feature = "client")]
+    use hardy_async::sync::spin::Once;
+    use hardy_bpa::{Bytes, bpa::Bpa};
+    use tonic::{
+        Code,
+        transport::{Channel, Server},
+    };
+
+    use super::{
+        super::tests::{build_bpa, build_bundle, ipn1, serve, timeout, wait_torn_down},
+        *,
+    };
     use crate::cla::{
         ClaAddress, ForwardResult, Register, Unregister, cla_service_client::ClaServiceClient,
         cla_service_server::ClaServiceServer, forward_response,
     };
-    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
-    use tokio::net::TcpListener;
-    use tonic::Code;
-    use tonic::transport::{Channel, Server, server::TcpIncoming};
-
-    use super::*;
-
-    async fn timeout<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(10), future)
-            .await
-            .expect("test timed out")
-    }
+    use crate::server::session::Sessions;
 
     struct Harness {
         bpa: Arc<Bpa>,
@@ -710,30 +697,13 @@ mod tests {
     // A running BPA (node ipn:1) behind the bridge on a port-0
     // listener, plus a connected generated client.
     async fn harness() -> Harness {
-        let node_ids = NodeIds::try_from(
-            [NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            })]
-            .as_slice(),
-        )
-        .unwrap();
-        let bpa = Arc::new(Bpa::builder().node_ids(node_ids).build().await.unwrap());
-        bpa.start(false);
+        let bpa = build_bpa(ipn1(), false).await;
 
         let tasks = TaskPool::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
-
-        let service_impl = ClaServiceImpl::new(bpa.clone(), tasks.clone(), Signer::new());
-        let sessions = service_impl.sessions.clone();
+        let service_impl = ClaServiceImpl::new(bpa.clone(), tasks.clone());
+        let sessions = service_impl.bridge.sessions.clone();
         let service = ClaServiceServer::new(service_impl);
-        tokio::spawn(
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming),
-        );
+        let address = serve(Server::builder().add_service(service)).await;
 
         let client = ClaServiceClient::connect(format!("http://{address}"))
             .await
@@ -795,17 +765,6 @@ mod tests {
     }
 
     // A canonical BPv7 bundle as raw bytes, as received from a link.
-    fn build_bundle(source: &str, destination: &str, payload: &[u8]) -> Bytes {
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            source.parse().unwrap(),
-            destination.parse().unwrap(),
-        )
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        Bytes::from(data)
-    }
-
     async fn add_peer(
         client: &mut ClaServiceClient<Channel>,
         token: Bytes,
@@ -1133,12 +1092,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Aborted);
 
-        // Nothing was dispatched: no forwarding is announced.
-        let raced =
-            tokio::time::timeout(Duration::from_millis(500), registered.events.message()).await;
-        assert!(raced.is_err(), "a truncated dispatch must not forward");
-
+        // The BPA shutdown joins its worker pool, so anything it would
+        // announce has been announced and the session stream then ends;
+        // draining it to that end must surface no Forwarding.
         harness.bpa.shutdown().await;
+        while let Some(event) = registered.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Forwarding(_))),
+                "a truncated dispatch must not forward"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1180,13 +1143,17 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Cancelled);
 
-        // Discarded means discarded: nothing was committed, so no
-        // Forwarding is ever announced for the route that exists.
-        let raced =
-            tokio::time::timeout(Duration::from_millis(500), registered.events.message()).await;
-        assert!(raced.is_err(), "a cancelled dispatch must not commit");
-
+        // Discarded means discarded: nothing was committed. The BPA
+        // shutdown joins its worker pool and ends the session stream, so
+        // draining it to that end must surface no Forwarding for the
+        // route that exists.
         harness.bpa.shutdown().await;
+        while let Some(event) = registered.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Forwarding(_))),
+                "a cancelled dispatch must not commit"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1272,12 +1239,11 @@ mod tests {
         // half-close, and the session tears down. The teardown signal
         // fires once the token is gone AND the CLA is unregistered from
         // the BPA, so both the rejection and the re-registration below
-        // are race-free (the timeout only bounds a regression).
+        // are race-free.
         let mut torn = harness.sessions.torn_down();
         drop(registered.events);
         drop(registered.requests);
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        wait_torn_down(&mut torn, &registered.token).await;
 
         // The token is dead.
         let status = add_peer(
@@ -1335,10 +1301,8 @@ mod tests {
 
         // The token dies in the session task's teardown, which runs
         // after the stream closes; wait for the teardown signal, so the
-        // rejection below is asserted without a race. The timeout only
-        // bounds a regression.
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        // rejection below is asserted without a race.
+        wait_torn_down(&mut torn, &registered.token).await;
         let status = add_peer(
             &mut harness.client,
             registered.token.clone(),
@@ -1574,7 +1538,7 @@ mod tests {
 
         async fn on_unregister(&self) {}
 
-        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        fn lane_count(&self) -> Option<NonZeroU32> {
             None
         }
 
@@ -1586,7 +1550,7 @@ mod tests {
             _total_len: u64,
             stream: &mut dyn Receiver<Segment>,
         ) -> cla::Result<ForwardBundleResult> {
-            hardy_bpa::stream::concat_stream(stream, usize::MAX)
+            hardy_bpa::stream::concat_stream(stream, usize::MAX, None)
                 .await
                 .map_err(|e| cla::Error::Internal(e.into()))?;
             let _ = self.forwarded.send(bundle_id.clone()).await;
@@ -1632,14 +1596,20 @@ mod tests {
             .await
             .unwrap();
 
-        // Completed means resolved: no re-offer follows.
-        let raced = tokio::time::timeout(Duration::from_millis(700), forwarded_rx.recv()).await;
-        assert!(
-            raced.is_err(),
-            "a completed transfer must not be re-offered"
-        );
-
+        // Completed means resolved: no re-offer follows. The shutdown
+        // joins the BPA worker pool, so any re-offer it would make has
+        // been made and the SDK's session ends, dropping its CLA handle;
+        // dropping the test's handle then closes the forward channel, and
+        // draining it to its end must find no re-offer.
         harness.bpa.shutdown().await;
+        drop(cla);
+        timeout(async {
+            assert!(
+                forwarded_rx.recv().await.is_none(),
+                "a completed transfer must not be re-offered"
+            );
+        })
+        .await;
     }
 
     // The SDK refuses to register a CLA whose declared lane count
@@ -1656,8 +1626,8 @@ mod tests {
 
         async fn on_unregister(&self) {}
 
-        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-            core::num::NonZeroU32::new(cla::MAX_LANE_COUNT + 1)
+        fn lane_count(&self) -> Option<NonZeroU32> {
+            NonZeroU32::new(cla::MAX_LANE_COUNT + 1)
         }
 
         async fn forward(
@@ -1716,7 +1686,7 @@ mod tests {
             Some(cla::ClaAddressType::Tcp)
         }
 
-        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        fn lane_count(&self) -> Option<NonZeroU32> {
             None
         }
 
@@ -1728,7 +1698,7 @@ mod tests {
             _total_len: u64,
             stream: &mut dyn Receiver<Segment>,
         ) -> cla::Result<ForwardBundleResult> {
-            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX)
+            let bundle = hardy_bpa::stream::concat_stream(stream, usize::MAX, None)
                 .await
                 .map_err(|e| cla::Error::Internal(e.into()))?;
             let _ = self.forwarded.send(bundle).await;

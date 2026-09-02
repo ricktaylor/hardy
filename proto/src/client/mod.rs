@@ -21,11 +21,37 @@ use std::sync::Arc;
 use hardy_async::TaskPool;
 use hardy_bpa::{cla, routing};
 use hardy_bpv7::eid::{Eid, NodeId, Service};
+use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
 use crate::DEFAULT_MAX_FRAME_SIZE;
+
+// The request channel of one data-plane transfer (Send/Dispatch/Receive/
+// Forward): the metadata message, then chunks written one at a time under
+// backpressure. The capacity is load-bearing, not a tuning knob:
+// [`adapter::Reader`]'s drop relies on there being room for every message
+// this side queues plus the in-band cancel, so `try_send(cancel)` on drop
+// is reliable rather than best-effort. Do not lower it below `queued + 1`.
+pub(crate) const TRANSFER_REQUEST_CAPACITY: usize = 2;
+
+// The request channel of a Subscribe session: the Register handshake plus
+// a later Unregister, with headroom.
+pub(crate) const SUBSCRIBE_REQUEST_CAPACITY: usize = 4;
+
+/// Errors constructing a [`BpaClient`]. Construction only configures the
+/// endpoint (connections are established lazily), so this is distinct
+/// from the per-surface registration errors the `register_*` methods
+/// return.
+#[derive(Debug, Error)]
+pub enum ConnectError {
+    /// The endpoint does not convert to a tonic
+    /// [`Endpoint`](tonic::transport::Endpoint): an invalid URI, or an
+    /// unsupported scheme.
+    #[error("Invalid endpoint: {0}")]
+    InvalidEndpoint(#[source] Box<dyn core::error::Error + Send + Sync>),
+}
 
 /// A client of a remote BPA: components register against it with the
 /// same traits a local `Bpa` takes, and unregister by dropping their
@@ -52,7 +78,7 @@ use crate::DEFAULT_MAX_FRAME_SIZE;
 /// let eid = bpa.register_application(Service::Ipn(42), app.clone()).await?;
 ///
 /// // The application acts through its stored sink:
-/// app.sink().send(destination, lifetime, None, &mut payload).await?;
+/// app.sink().send(destination, lifetime, None, None, &mut payload).await?;
 ///
 /// // and unregisters explicitly through it,
 /// app.sink().unregister().await;
@@ -109,7 +135,7 @@ impl BpaClient {
     ///
     /// [`new_pool`]: BpaClient::new_pool
     /// [`with_endpoint`]: BpaClient::with_endpoint
-    pub fn new<D>(endpoint: D, tasks: TaskPool) -> hardy_bpa::services::Result<Self>
+    pub fn new<D>(endpoint: D, tasks: TaskPool) -> Result<Self, ConnectError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
@@ -130,14 +156,14 @@ impl BpaClient {
         endpoint: D,
         connections: NonZeroUsize,
         tasks: TaskPool,
-    ) -> hardy_bpa::services::Result<Self>
+    ) -> Result<Self, ConnectError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         let endpoint = endpoint
             .try_into()
-            .map_err(|e| hardy_bpa::services::Error::Internal(e.into()))?
+            .map_err(|e| ConnectError::InvalidEndpoint(e.into()))?
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10))
             .keep_alive_while_idle(true)
@@ -203,6 +229,17 @@ impl BpaClient {
     /// The application holds the sink it is given for its active
     /// lifetime; dropping the sink, or calling its `unregister`,
     /// terminates the registration.
+    ///
+    /// # Delivery commitment over the wire
+    ///
+    /// Over the wire, a delivery commits on the BPA the moment its
+    /// stream is received to completion. Returning `Err` from
+    /// [`on_deliver`](hardy_bpa::services::Application::on_deliver)
+    /// therefore only defers a delivery whose stream was **not** fully
+    /// received: the SDK abandons the collection and the bundle stays
+    /// parked for a later registration. An `Err` returned after the
+    /// stream was received in full cannot un-commit the delivery; the
+    /// SDK logs the decline and the BPA counts the bundle delivered.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_application(
         &self,
@@ -223,7 +260,9 @@ impl BpaClient {
         Ok(eid)
     }
 
-    /// Registers an application under a BPA-assigned service id.
+    /// Registers an application under a BPA-assigned service id. The
+    /// delivery-commitment contract of
+    /// [`register_application`](Self::register_application) applies.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_dynamic_application(
         &self,
@@ -247,6 +286,17 @@ impl BpaClient {
     /// exchanges whole BPv7 bundles, built and parsed by the service
     /// itself. The returned EID is the endpoint the registration is
     /// bound to.
+    ///
+    /// # Delivery commitment over the wire
+    ///
+    /// Over the wire, a delivery commits on the BPA the moment its
+    /// stream is received to completion. Returning `Err` from
+    /// [`on_deliver`](hardy_bpa::services::Service::on_deliver)
+    /// therefore only defers a delivery whose stream was **not** fully
+    /// received: the SDK abandons the collection and the bundle stays
+    /// parked for a later registration. An `Err` returned after the
+    /// stream was received in full cannot un-commit the delivery; the
+    /// SDK logs the decline and the BPA counts the bundle delivered.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_service(
         &self,
@@ -268,6 +318,8 @@ impl BpaClient {
     }
 
     /// Registers a low-level service under a BPA-assigned service id.
+    /// The delivery-commitment contract of
+    /// [`register_service`](Self::register_service) applies.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_dynamic_service(
         &self,
@@ -346,10 +398,8 @@ impl BpaClient {
             .await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let tasks = self.tasks.clone();
         hardy_async::spawn!(self.tasks, "cla_session", async move {
-            services::cla::run_session(events, convergence_layer, cancel, client, token, tasks)
-                .await
+            services::cla::run_session(events, convergence_layer, cancel, client, token).await
         });
         Ok(node_ids)
     }

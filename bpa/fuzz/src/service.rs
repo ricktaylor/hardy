@@ -55,7 +55,7 @@ impl PipeService {
         self.sink
             .get()
             .expect("send called before registration")
-            .send(destination, lifetime, options, &mut data)
+            .send(destination, lifetime, options, None, &mut data)
             .await
     }
 }
@@ -85,7 +85,7 @@ impl hardy_bpa::services::Application for PipeService {
         stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::stream::Segment>,
     ) -> hardy_bpa::services::Result<()> {
         // Receive to completion and discard the payload.
-        let _ = hardy_bpa::stream::concat_stream(stream, usize::MAX).await;
+        let _ = hardy_bpa::stream::concat_stream(stream, usize::MAX, None).await;
         Ok(())
     }
 

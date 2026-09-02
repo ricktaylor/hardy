@@ -1,9 +1,11 @@
 /*!
 The gRPC front door of a BPA: one bridge per component surface,
 implementing the v1 wire contract against the public registration
-traits of `hardy_bpa`. A host wires them up with one [`Signer`] and
-its own `TaskPool`, one `<Surface>ServiceImpl` per enabled surface,
-each wrapped in its generated `<Surface>ServiceServer`.
+traits of `hardy_bpa`. A host wires them up with its own `TaskPool`,
+one `<Surface>ServiceImpl` per enabled surface, each wrapped in its
+generated `<Surface>ServiceServer` and sized to the wire's message
+caps ([`MAX_MESSAGE_SIZE`](crate::MAX_MESSAGE_SIZE) in both
+directions, matching the client SDK's ends).
 
 Each bridge follows the same design: `Subscribe` is the session (a
 registration handshake, then a pure event stream), and every other
@@ -23,7 +25,6 @@ pub use self::services::application::ApplicationServiceImpl;
 pub use self::services::cla::ClaServiceImpl;
 pub use self::services::routing::RoutingAgentServiceImpl;
 pub use self::services::service::ServiceServiceImpl;
-pub use self::token::Signer;
 
 // The outbound buffer per session stream: events are small, so this
 // only smooths bursts.

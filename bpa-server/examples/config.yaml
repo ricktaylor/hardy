@@ -48,11 +48,17 @@ grpc:
   #   # Auto-size the flow-control windows to the connection's
   #   # bandwidth-delay product (default true). When on, the fixed
   #   # initial-*-window-size keys below are ignored; set false to pin them.
+  #   # Note: with adaptive windows, one stalled consumer can hold the
+  #   # connection-window budget it has grown on its connection
+  #   # (head-of-line blocking); pinning fixed windows bounds that.
   #   adaptive-window: true
   #   # Fixed windows (only when adaptive-window is false).
   #   initial-stream-window-size: 16777216       # 16 MiB
   #   initial-connection-window-size: 134217728  # 128 MiB
-  #   # Bound per-connection memory (window x streams).
+  #   # Bound per-connection memory (window x streams). Also a throughput
+  #   # knob: each transfer is its own RPC, so one connection caps at
+  #   # ~200 concurrent in-flight transfers by default. Raise this, or
+  #   # pool connections client-side, to push more transfers in parallel.
   #   max-concurrent-streams: 1024
   #   # Larger DATA frames cut per-frame bookkeeping for big transfers.
   #   max-frame-size: 1048576                    # 1 MiB

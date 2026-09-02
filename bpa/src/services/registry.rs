@@ -1,12 +1,15 @@
 use core::time::Duration;
 
-use hardy_bpv7::bundle::Id;
-use hardy_bpv7::eid::Eid;
-use hardy_bpv7::status_report::ReasonCode;
+use hardy_async::async_trait;
+use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 use time::OffsetDateTime;
+use tracing::{error, info};
 
-use super::*;
-use crate::stream::{CancellableReceiver, Receiver, Segment};
+use crate::{
+    Arc, HashMap, Weak, dispatcher, node_ids, routing,
+    services::{self, StatusNotify},
+    stream::{CancellableReceiver, Receiver, Segment},
+};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -44,7 +47,7 @@ impl Service {
                 svc.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
-            services::registry::ServiceImpl::Application(app) => {
+            ServiceImpl::Application(app) => {
                 app.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
@@ -154,6 +157,7 @@ impl services::ApplicationSink for Sink {
         destination: Eid,
         lifetime: Duration,
         options: Option<services::SendOptions>,
+        size_hint: Option<u64>,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<Id> {
         let mut stream = self.cancellable(stream)?;
@@ -163,6 +167,7 @@ impl services::ApplicationSink for Sink {
                 destination,
                 lifetime,
                 options,
+                size_hint,
                 &mut stream,
             )
             .await
@@ -186,6 +191,7 @@ impl Drop for Sink {
 
 type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
+/// Inserts a fresh [`Service`] into `services`, rejecting a duplicate id.
 pub(crate) struct ServiceRegistryBuilder {
     services: ServiceMap,
 }
@@ -339,7 +345,7 @@ impl ServiceRegistry {
             service_id: service_id.clone(),
             cancel: hardy_async::CancellationToken::new(),
         });
-        services.insert(service_id.clone(), service);
+        services.insert(service_id, service);
         Ok(())
     }
 

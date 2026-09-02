@@ -55,7 +55,12 @@ impl<M: Chunk + Cancel + Send + 'static> Receiver<Segment> for Reader<M> {
         let message = tokio::select! {
             biased;
             _ = self.cancelled.cancelled() => {
-                self.status.call_once(|| Status::aborted("Session closed"));
+                // Session death mid-transfer is a disconnect, not a
+                // failed stream: UNAVAILABLE folds into the SDK's
+                // Disconnected, matching the "BPA shuts down →
+                // Disconnected" contract. Genuine truncation and failed
+                // streams below stay ABORTED.
+                self.status.call_once(|| Status::unavailable("Session closed"));
                 return Err(RecvError);
             }
             message = self.requests.message() => message,
