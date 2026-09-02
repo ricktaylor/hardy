@@ -58,16 +58,16 @@ async fn next_event<M>(events: &mut Streaming<M>, cancel: &CancellationToken) ->
 }
 
 // Reports a delivery the component declined (its `on_deliver` returned
-// `Err`). The wire's commit point is receiving the stream to completion,
-// so a decline after full receipt cannot park the bundle — the server has
-// already recorded it — and is a warning, not the routine deferral of a
-// decline that left the stream incomplete. `surface` names the trait for
-// the log ("Application"/"Service"); the caller abandons the still-open
-// stream by dropping it.
+// `Err`). The commit point is the client's ack, so a decline never acks:
+// the server parks the bundle for a later registration either way. A
+// decline after full receipt is still notable (the component took the
+// whole ADU and refused it) so it warns; an incomplete one is the routine
+// deferral. `surface` names the trait for the log ("Application"/
+// "Service"); the caller abandons the collection by dropping it.
 fn log_declined(surface: &str, id: &str, stream_completed: bool, e: &services::Error) {
     if stream_completed {
         warn!(
-            "{surface} declined delivery {id} after receiving it in full: the delivery is already committed and the bundle cannot be parked: {e}"
+            "{surface} declined delivery {id} after receiving it in full; it will be re-delivered: {e}"
         );
     } else {
         debug!("{surface} declined delivery {id}: {e}");

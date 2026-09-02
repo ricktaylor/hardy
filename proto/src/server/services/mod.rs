@@ -13,10 +13,7 @@ pub mod cla;
 pub mod routing;
 pub mod service;
 
-use core::{
-    future::{Future, pending},
-    time::Duration,
-};
+use core::{future::Future, pin::pin, time::Duration};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -24,7 +21,6 @@ use std::{
 
 use hardy_async::{CancellationToken, TaskPool, channel, sync::spin::Once};
 use hardy_bpa::{
-    Bytes,
     bpa::BpaRegistration,
     services::{self, Error},
     stream::{Receiver, Segment},
@@ -44,7 +40,7 @@ use crate::{
         DATA_CHANNEL_DEPTH, adapter,
         session::{Session, SessionStream, Sessions},
     },
-    stream::{Cancel, Chunk, Unregister},
+    stream::{Ack, Cancel, Chunk, Unregister},
 };
 
 // Both types are foreign, so this is a free function rather than a
@@ -103,40 +99,6 @@ async fn watch_session<Req: Unregister>(
                 Ok(Some(_)) => warn!("Ignoring unexpected message on the session stream"),
                 Ok(None) | Err(_) => return,
             },
-        }
-    }
-}
-
-// Forwards one delivery segment into the rendezvous the Receive door
-// drains, per the commit-marker protocol: a `Next` travels as-is, and the
-// terminal `Final` splits into its data (a `Next`) then an empty `Final`
-// marker. The door's claim-time probe pulls the data without committing,
-// so a client that takes the bytes and then abandons (the receiver
-// dropped before the marker) fails the marker send, deferring the bundle
-// to the next registration; an already-empty terminal segment is just the
-// marker. Returns whether that marker was sent (the delivery is
-// complete); a closed rendezvous is [`Error::StreamCancelled`].
-async fn forward_segment(
-    tx: &channel::Sender<Segment>,
-    segment: Segment,
-) -> services::Result<bool> {
-    match segment {
-        Segment::Next(b) => {
-            tx.send(Segment::Next(b))
-                .await
-                .map_err(|_| Error::StreamCancelled)?;
-            Ok(false)
-        }
-        Segment::Final(b) => {
-            if !b.is_empty() {
-                tx.send(Segment::Next(b))
-                    .await
-                    .map_err(|_| Error::StreamCancelled)?;
-            }
-            tx.send(Segment::Final(Bytes::new()))
-                .await
-                .map_err(|_| Error::StreamCancelled)?;
-            Ok(true)
         }
     }
 }
@@ -298,11 +260,19 @@ impl<C: Component> Clone for Bridge<C> {
 // the parked set rather than the session's announcement history.
 const DELIVERIES_SWEEP_THRESHOLD: usize = 64;
 
-type HeldStream = (OffsetDateTime, Box<dyn Receiver<Segment>>);
+// A held delivery awaiting its Receive: the bundle's expiry (for the
+// dead-entry sweep), the rendezvous the door drains, and the channel the
+// door reports the client's verdict back through (a `()` sent =
+// committed, the sender dropped = abandoned).
+struct Held {
+    expiry: OffsetDateTime,
+    stream: Box<dyn Receiver<Segment>>,
+    commit: channel::Sender<()>,
+}
 
 #[derive(Default)]
 struct DeliveriesState {
-    held: HashMap<String, HeldStream>,
+    held: HashMap<String, Held>,
     // The map's size at the last dead-entry sweep. The next sweep waits
     // until the map has doubled since, so a burst of still-live holds is
     // scanned O(1) amortised (O(n) total) instead of the whole map on
@@ -326,7 +296,7 @@ impl Deliveries {
     // while parked (expiry is the latest that can happen) with no
     // withdraw signal to the bridge, so dead entries are reclaimed
     // here, amortised against holds.
-    fn hold(&self, key: String, expiry: OffsetDateTime, stream: Box<dyn Receiver<Segment>>) {
+    fn hold(&self, key: String, held: Held) {
         let mut state = self.0.lock().expect("deliveries lock poisoned");
         // Sweep only once the map is both large enough to matter and has
         // doubled since the last sweep: doubling keeps the total scan
@@ -335,10 +305,10 @@ impl Deliveries {
             && state.held.len() >= state.last_swept_len * 2
         {
             let now = OffsetDateTime::now_utc();
-            state.held.retain(|_, (expiry, _)| *expiry > now);
+            state.held.retain(|_, held| held.expiry > now);
             state.last_swept_len = state.held.len();
         }
-        state.held.insert(key, (expiry, stream));
+        state.held.insert(key, held);
     }
 
     // Withdraws a held stream: a dead session dropping its
@@ -352,25 +322,26 @@ impl Deliveries {
             .remove(key);
     }
 
-    // Takes the single collection capability for an announcement; a
-    // repeat claim reads as not-found.
-    fn claim(&self, key: &str) -> Option<Box<dyn Receiver<Segment>>> {
+    // Takes the single collection capability for an announcement, the
+    // rendezvous and the verdict channel included. A repeat claim reads
+    // as not-found.
+    fn claim(&self, key: &str) -> Option<Held> {
         self.0
             .lock()
             .expect("deliveries lock poisoned")
             .held
             .remove(key)
-            .map(|(_, stream)| stream)
     }
 
     // The whole `on_deliver` side of a delivery: hold a rendezvous under
-    // `key`, run `announce` to emit the surface's Delivery event, then
-    // relay `stream` to the client. Returns `Ok` once the client has taken
-    // the whole bundle (the wire's commit point) and `Err` when it
-    // abandoned the collection, the session died, or the hold expired,
-    // parking the bundle for a later registration. The rendezvous and its
-    // commit-marker protocol are private to this type; a surface supplies
-    // only the event.
+    // `key`, run `announce` to emit the surface's Delivery event, relay
+    // `stream` into the rendezvous, then wait for the client's verdict.
+    // Returns `Ok` once the client has received the whole bundle and
+    // acknowledged it with an in-band `Ack` (the wire's commit point), and
+    // `Err` when it abandoned the collection, the session died, or the
+    // hold expired, parking the bundle for a later registration. The
+    // rendezvous and the commit one-shot are private to this type; a
+    // surface supplies only the event.
     async fn serve<A, F>(
         &self,
         key: String,
@@ -384,43 +355,47 @@ impl Deliveries {
         F: Future<Output = bool>,
     {
         let (tx, rx) = channel::bounded(0);
+        let (commit_tx, commit_rx) = channel::bounded::<()>(1);
         // Held before the event goes out so a client racing its Receive
         // against the announcement always finds the entry.
-        self.hold(key.clone(), expiry, Box::new(rx));
+        self.hold(
+            key.clone(),
+            Held {
+                expiry,
+                stream: Box::new(rx),
+                commit: commit_tx,
+            },
+        );
         if !announce().await {
             self.withdraw(&key);
             return Err(Error::Disconnected);
         }
 
-        // Relay the delivery into the rendezvous, bounded by the bundle's
-        // expiry: the BPA cannot see the wire's announce/collect split, so
-        // capping the hold is this layer's job. The rendezvous is
-        // `bounded(0)`, so forwarding the terminal marker completes only
-        // when the client takes it (the wire's commit point). Any failure
-        // parks the bundle for a later registration: the session's cancel
-        // (a lost connection), a far end that went away (client abandoned,
-        // or the hold expired) failing a send, or a stalled source.
+        // Relay the delivery into the rendezvous the Receive door drains,
+        // then wait for the client's verdict on `commit_rx`: an in-band
+        // `Ack` (having received the whole bundle) commits, everything else
+        // parks. The whole exchange is bounded by the bundle's expiry (the
+        // BPA cannot see the wire's announce/collect split, so capping the
+        // hold is this layer's job); a lost connection is the session's
+        // cancel; and a rendezvous send failing means the door went away.
         let hold = (expiry - OffsetDateTime::now_utc())
             .try_into()
             .unwrap_or(Duration::ZERO);
-        let relay = tokio::time::timeout(hold, async {
+        let delivery = tokio::time::timeout(hold, async {
             loop {
-                match stream.recv().await {
-                    // Forwarding the terminal segment's marker completes
-                    // the relay; every other segment continues it.
-                    Ok(segment) => {
-                        if forward_segment(&tx, segment).await? {
-                            break Ok(());
-                        }
-                    }
-                    Err(_) => break Err(Error::StreamCancelled),
+                let segment = stream.recv().await.map_err(|_| Error::StreamCancelled)?;
+                let last = matches!(segment, Segment::Final(_));
+                tx.send(segment).await.map_err(|_| Error::StreamCancelled)?;
+                if last {
+                    break;
                 }
             }
+            commit_rx.recv().await.map_err(|_| Error::StreamCancelled)
         });
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(Error::Disconnected),
-            r = relay => r.unwrap_or(Err(Error::StreamCancelled)),
+            r = delivery => r.unwrap_or(Err(Error::StreamCancelled)),
         };
         if result.is_err() {
             self.withdraw(&key);
@@ -431,8 +406,8 @@ impl Deliveries {
     // The whole Receive-door side: claim the rendezvous for `key`, probe it
     // (a delivery that died while parked answers not-found here, before the
     // response stream opens), then spawn the drain that streams it to the
-    // client as `Resp` chunks while watching `requests` for an in-band
-    // abandonment. Returns the response stream.
+    // client as `Resp` chunks and reports the verdict back to `serve`.
+    // Returns the response stream.
     async fn collect<Req, Resp>(
         &self,
         tasks: &TaskPool,
@@ -441,10 +416,12 @@ impl Deliveries {
         requests: Streaming<Req>,
     ) -> Result<ReceiverStream<Result<Resp, Status>>, Status>
     where
-        Req: Cancel + Send + 'static,
+        Req: Ack + Cancel + Send + 'static,
         Resp: Chunk + Cancel + Send + 'static,
     {
-        let mut stream = self
+        let Held {
+            mut stream, commit, ..
+        } = self
             .claim(key)
             .ok_or_else(|| Status::not_found("No such delivery"))?;
         let first = stream
@@ -453,47 +430,89 @@ impl Deliveries {
             .map_err(|_| Status::not_found("No such delivery"))?;
 
         let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
-        let writer = adapter::Writer::new(tx.clone(), cancel);
+        let writer = adapter::Writer::new(tx.clone(), cancel.clone());
         hardy_async::spawn!(tasks, "delivery_receive", async move {
-            // The client can abandon the collection in-band while it
-            // drains. Its request side reduces to a terminal status: a
-            // cancel is the abandonment, a failed stream is treated the
-            // same (a partial collection must never look complete), and a
-            // half-close or unexpected message leaves it inert (a client
-            // may send only the metadata). Checked first, it preempts the
-            // drain, ends the call, and parks the bundle for a later
-            // registration; it races the whole write, so a cancel landing
-            // during the final flush (once the delivery has committed in
-            // the BPA) still ends the call here.
-            tokio::select! {
+            // Push the whole delivery, then let the client's in-band `Ack`
+            // commit it: the commit point is the client acknowledging
+            // receipt, not the in-process handoff. The whole collection
+            // reduces to one `Result`: `Ok` commits (the drain reached the
+            // last chunk and the client then acked); `Err` parks the
+            // bundle, carrying the status ending the call, absent when the
+            // writer already ended the response itself. A verdict
+            // overtaking the drain can never commit, so its arm drops the
+            // drain (which is the abandonment `serve` observes): an
+            // abandonment is honoured at once, and an early ack is a
+            // protocol violation, since a conforming client cannot ack
+            // data it has not received and honouring one would finalize a
+            // bundle the client provably does not hold.
+            let mut verdict = pin!(verdict(requests, cancel));
+            let outcome = tokio::select! {
                 biased;
-                status = async move {
-                    let mut requests = requests;
-                    loop {
-                        match requests.message().await {
-                            Ok(Some(req)) if req.is_cancel() => {
-                                break Status::cancelled("Collection abandoned");
-                            }
-                            // Not Debug-formatted: a stray metadata message
-                            // carries the session token, which must never
-                            // reach the logs.
-                            Ok(Some(_)) => {
-                                warn!("Ignoring unexpected message on the Receive request side")
-                            }
-                            Ok(None) => pending().await,
-                            Err(e) => {
-                                debug!("Receive stream failed: {e}");
-                                break Status::aborted("Receive stream failed");
-                            }
-                        }
-                    }
-                } => {
+                early = &mut verdict => Err(Some(match early {
+                    // An ack racing the drain is the protocol violation;
+                    // an abandonment keeps its own status.
+                    Ok(()) => Status::invalid_argument("Ack before the final chunk"),
+                    Err(status) => status,
+                })),
+                pushed = writer.write_all(first, stream) => if pushed.is_continue() {
+                    // The final chunk is on the wire; the verdict decides.
+                    verdict.await.map_err(Some)
+                } else {
+                    Err(None)
+                },
+            };
+            match outcome {
+                // Parking is the `Err` paths dropping `commit` without
+                // this send, which `serve` reads as abandoned.
+                Ok(()) => {
+                    let _ = commit.send(()).await;
+                }
+                Err(Some(status)) => {
                     let _ = tx.try_send(Err(status));
                 }
-                _ = writer.write_all(first, stream) => {}
+                // The writer already terminated the response (session
+                // cancel, a withdrawn stream, or a gone client).
+                Err(None) => {}
             }
+            // The response stayed open until the verdict so the client's
+            // `Ack` (sent after the last chunk) was observable; closing it
+            // earlier would finalize the RPC. Let it close now.
+            drop(tx);
         });
         Ok(ReceiverStream::new(rx))
+    }
+}
+
+// The client's verdict on a collection, read from its request side: an
+// in-band `Ack` (the SDK's signal that it received the whole delivery)
+// commits it; everything else abandons it, parking the bundle, with the
+// status the call should end with. Silence must never commit (a crashed
+// client is silent), so a half-close without an ack is an abandonment
+// too, not the inert ending it is on the session stream. Unexpected
+// messages are ignored.
+async fn verdict<Req: Ack + Cancel>(
+    mut requests: Streaming<Req>,
+    cancelled: CancellationToken,
+) -> Result<(), Status> {
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => return Err(Status::aborted("Session closed")),
+            message = requests.message() => match message {
+                Ok(Some(req)) if req.is_ack() => return Ok(()),
+                Ok(Some(req)) if req.is_cancel() => {
+                    return Err(Status::cancelled("Collection abandoned"));
+                }
+                // Not Debug-formatted: a stray metadata message carries the
+                // session token, which must never reach the logs.
+                Ok(Some(_)) => warn!("Ignoring unexpected message on the Receive request side"),
+                Ok(None) => return Err(Status::cancelled("Collection abandoned")),
+                Err(e) => {
+                    debug!("Receive stream failed: {e}");
+                    return Err(Status::aborted("Receive stream failed"));
+                }
+            },
+        }
     }
 }
 
@@ -583,24 +602,24 @@ pub mod tests {
         timeout(async { while Bytes::from(torn.recv().await.unwrap()) != *token {} }).await;
     }
 
-    fn held(seconds_from_now: i64) -> (OffsetDateTime, Box<dyn Receiver<Segment>>) {
-        (
-            OffsetDateTime::now_utc() + time::Duration::seconds(seconds_from_now),
-            Box::new(Bytes::from_static(b"x")),
-        )
+    fn held(seconds_from_now: i64) -> Held {
+        let (commit, _verdict) = channel::bounded::<()>(1);
+        Held {
+            expiry: OffsetDateTime::now_utc() + time::Duration::seconds(seconds_from_now),
+            stream: Box::new(Bytes::from_static(b"x")),
+            commit,
+        }
     }
 
     #[test]
     fn a_claim_is_single_use_and_withdraw_removes() {
         let deliveries = Deliveries::default();
-        let (expiry, stream) = held(60);
-        deliveries.hold("a".to_string(), expiry, stream);
+        deliveries.hold("a".to_string(), held(60));
 
         assert!(deliveries.claim("a").is_some());
         assert!(deliveries.claim("a").is_none(), "a claim is single-use");
 
-        let (expiry, stream) = held(60);
-        deliveries.hold("b".to_string(), expiry, stream);
+        deliveries.hold("b".to_string(), held(60));
         deliveries.withdraw("b");
         assert!(deliveries.claim("b").is_none());
     }
@@ -609,12 +628,10 @@ pub mod tests {
     fn dead_entries_are_swept_once_the_threshold_is_reached() {
         let deliveries = Deliveries::default();
         for i in 0..DELIVERIES_SWEEP_THRESHOLD {
-            let (expiry, stream) = held(-60);
-            deliveries.hold(format!("dead-{i}"), expiry, stream);
+            deliveries.hold(format!("dead-{i}"), held(-60));
         }
         // The hold at the threshold reclaims every expired entry first.
-        let (expiry, stream) = held(60);
-        deliveries.hold("live".to_string(), expiry, stream);
+        deliveries.hold("live".to_string(), held(60));
 
         assert_eq!(
             deliveries

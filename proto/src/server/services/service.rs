@@ -430,38 +430,65 @@ mod tests {
             .map(|response| response.into_inner())
     }
 
-    // Collects one announced delivery; `abandon` follows the metadata
-    // with an immediate in-stream cancel.
+    // Collects one announced delivery, committing it with the in-band
+    // ack; `abandon` instead answers the first chunk with an in-stream
+    // cancel and surfaces the terminal status.
     async fn collect(
         client: &mut ServiceServiceClient<Channel>,
         token: Bytes,
         bundle_id: &str,
         abandon: bool,
     ) -> Result<Vec<u8>, Status> {
-        let mut messages = vec![ReceiveRequest {
-            request: Some(receive_request::Request::Metadata(ReceiveMetadata {
-                session_token: token,
-                bundle_id: bundle_id.to_string(),
-            })),
-        }];
-        if abandon {
-            messages.push(ReceiveRequest {
-                request: Some(receive_request::Request::Cancel(())),
-            });
-        }
+        // Keep the request stream open for the whole collection, as the
+        // SDK's Reader does: metadata first, then Ack on completion (which
+        // commits) or Cancel to abandon.
+        let (requests, rx) = tokio::sync::mpsc::channel(4);
+        requests
+            .send(ReceiveRequest {
+                request: Some(receive_request::Request::Metadata(ReceiveMetadata {
+                    session_token: token,
+                    bundle_id: bundle_id.to_string(),
+                })),
+            })
+            .await
+            .unwrap();
 
         let mut stream = client
-            .receive(tokio_stream::iter(messages))
+            .receive(tokio_stream::wrappers::ReceiverStream::new(rx))
             .await?
             .into_inner();
         let mut collected = Vec::new();
+        let mut cancelled = false;
         loop {
             match stream.message().await?.and_then(|r| r.response) {
                 Some(receive_response::Response::Chunk(chunk)) => {
-                    collected.extend_from_slice(&chunk)
+                    collected.extend_from_slice(&chunk);
+                    if abandon && !cancelled {
+                        cancelled = true;
+                        let _ = requests
+                            .send(ReceiveRequest {
+                                request: Some(receive_request::Request::Cancel(())),
+                            })
+                            .await;
+                    }
                 }
                 Some(receive_response::Response::LastChunk(chunk)) => {
                     collected.extend_from_slice(&chunk);
+                    if abandon {
+                        // The final chunk may already be queued when the
+                        // cancel lands; only the terminal status ends an
+                        // abandonment, so keep reading for it.
+                        continue;
+                    }
+                    let _ = requests
+                        .send(ReceiveRequest {
+                            request: Some(receive_request::Request::Ack(())),
+                        })
+                        .await;
+                    // Drain to EOS so the ack reaches the server (which
+                    // commits, then closes the response) before the call
+                    // is dropped.
+                    while stream.message().await?.is_some() {}
                     return Ok(collected);
                 }
                 other => panic!("expected a chunk, got {other:?}"),
@@ -649,8 +676,6 @@ mod tests {
         let mut harness = harness().await;
         let mut registered = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
 
-        // A bundle bigger than one wire chunk, so the transfer cannot
-        // complete before the cancel is seen.
         let payload = vec![0x5a; crate::CHUNK_SIZE + 3];
         let bundle = build_bundle(&registered.endpoint_id, &registered.endpoint_id, &payload);
         send(
@@ -662,6 +687,9 @@ mod tests {
         .unwrap();
         let first = delivery(&mut registered, bundle.len() as u64).await;
 
+        // Abandoning with an in-band cancel ends the collection without
+        // acknowledging it, with the abandonment status; the bundle is
+        // parked, not finalized.
         let abandoned = collect(
             &mut harness.client,
             registered.token.clone(),

@@ -491,38 +491,65 @@ mod tests {
             .map(|response| response.into_inner())
     }
 
-    // Collects one announced delivery; `abandon` follows the metadata
-    // with an immediate in-stream cancel.
+    // Collects one announced delivery, committing it with the in-band
+    // ack; `abandon` instead answers the first chunk with an in-stream
+    // cancel and surfaces the terminal status.
     async fn collect(
         client: &mut ApplicationServiceClient<Channel>,
         token: Bytes,
         bundle_id: &str,
         abandon: bool,
     ) -> Result<Vec<u8>, Status> {
-        let mut messages = vec![ReceiveRequest {
-            request: Some(receive_request::Request::Metadata(ReceiveMetadata {
-                session_token: token,
-                bundle_id: bundle_id.to_string(),
-            })),
-        }];
-        if abandon {
-            messages.push(ReceiveRequest {
-                request: Some(receive_request::Request::Cancel(())),
-            });
-        }
+        // Keep the request stream open for the whole collection, as the
+        // SDK's Reader does: metadata first, then Ack on completion (which
+        // commits) or Cancel to abandon.
+        let (requests, rx) = tokio::sync::mpsc::channel(4);
+        requests
+            .send(ReceiveRequest {
+                request: Some(receive_request::Request::Metadata(ReceiveMetadata {
+                    session_token: token,
+                    bundle_id: bundle_id.to_string(),
+                })),
+            })
+            .await
+            .unwrap();
 
         let mut stream = client
-            .receive(tokio_stream::iter(messages))
+            .receive(tokio_stream::wrappers::ReceiverStream::new(rx))
             .await?
             .into_inner();
         let mut collected = Vec::new();
+        let mut cancelled = false;
         loop {
             match stream.message().await?.and_then(|r| r.response) {
                 Some(receive_response::Response::Chunk(chunk)) => {
-                    collected.extend_from_slice(&chunk)
+                    collected.extend_from_slice(&chunk);
+                    if abandon && !cancelled {
+                        cancelled = true;
+                        let _ = requests
+                            .send(ReceiveRequest {
+                                request: Some(receive_request::Request::Cancel(())),
+                            })
+                            .await;
+                    }
                 }
                 Some(receive_response::Response::LastChunk(chunk)) => {
                     collected.extend_from_slice(&chunk);
+                    if abandon {
+                        // The final chunk may already be queued when the
+                        // cancel lands; only the terminal status ends an
+                        // abandonment, so keep reading for it.
+                        continue;
+                    }
+                    let _ = requests
+                        .send(ReceiveRequest {
+                            request: Some(receive_request::Request::Ack(())),
+                        })
+                        .await;
+                    // Drain to EOS so the ack reaches the server (which
+                    // commits, then closes the response) before the call
+                    // is dropped.
+                    while stream.message().await?.is_some() {}
                     return Ok(collected);
                 }
                 other => panic!("expected a chunk, got {other:?}"),
@@ -545,6 +572,127 @@ mod tests {
                 other => panic!("expected a Delivery, got {other:?}"),
             }
         }
+    }
+
+    // Sends `adu` as a chunked transfer (metadata, one chunk per
+    // CHUNK_SIZE slice, an empty last_chunk), for the tests that need
+    // several wire chunks in flight.
+    async fn send_chunked(
+        client: &mut ApplicationServiceClient<Channel>,
+        token: Bytes,
+        destination: String,
+        adu: &[u8],
+    ) {
+        let mut messages = vec![SendRequest {
+            request: Some(send_request::Request::Metadata(SendMetadata {
+                session_token: token,
+                destination,
+                lifetime: Some(prost_types::Duration {
+                    seconds: 3600,
+                    nanos: 0,
+                }),
+                options: None,
+                adu_size: None,
+            })),
+        }];
+        for chunk in adu.chunks(crate::CHUNK_SIZE) {
+            messages.push(SendRequest {
+                request: Some(send_request::Request::Chunk(Bytes::copy_from_slice(chunk))),
+            });
+        }
+        messages.push(SendRequest {
+            request: Some(send_request::Request::LastChunk(Bytes::new())),
+        });
+        client.send(tokio_stream::iter(messages)).await.unwrap();
+    }
+
+    // Opens a Receive by hand and takes the transfer through its last
+    // chunk without acknowledging, keeping the request side open: the
+    // caller delivers the verdict.
+    async fn take_all(
+        client: &mut ApplicationServiceClient<Channel>,
+        token: Bytes,
+        bundle_id: &str,
+    ) -> (
+        mpsc::Sender<ReceiveRequest>,
+        Streaming<ReceiveResponse>,
+        Vec<u8>,
+    ) {
+        let (requests, rx) = mpsc::channel(2);
+        requests
+            .send(ReceiveRequest {
+                request: Some(receive_request::Request::Metadata(ReceiveMetadata {
+                    session_token: token,
+                    bundle_id: bundle_id.to_string(),
+                })),
+            })
+            .await
+            .unwrap();
+        let mut stream = client
+            .receive(ReceiverStream::new(rx))
+            .await
+            .unwrap()
+            .into_inner();
+        let mut collected = Vec::new();
+        loop {
+            match timeout(stream.message())
+                .await
+                .unwrap()
+                .unwrap()
+                .response
+                .unwrap()
+            {
+                receive_response::Response::Chunk(chunk) => collected.extend_from_slice(&chunk),
+                receive_response::Response::LastChunk(chunk) => {
+                    collected.extend_from_slice(&chunk);
+                    break;
+                }
+                other => panic!("expected a chunk, got {other:?}"),
+            }
+        }
+        (requests, stream, collected)
+    }
+
+    // Reads the response to its terminal status: an abandonment must end
+    // the call with one, never a clean close.
+    async fn terminal_status(stream: &mut Streaming<ReceiveResponse>) -> Status {
+        loop {
+            match timeout(stream.message()).await {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("an abandonment must end with a status"),
+                Err(status) => break status,
+            }
+        }
+    }
+
+    // Ends `app`'s session, then asserts the parked bundle is announced
+    // afresh to the next ipn:7 registration and collects (and commits)
+    // whole: the deferred-not-lost tail every parking test shares.
+    async fn recollected_after_reregistration(harness: &mut Harness, app: App, adu: &[u8]) {
+        let App {
+            requests,
+            mut events,
+            ..
+        } = app;
+        requests
+            .send(SubscribeRequest {
+                request: Some(subscribe_request::Request::Unregister(Unregister {})),
+            })
+            .await
+            .unwrap();
+        assert!(timeout(events.message()).await.unwrap().is_none());
+
+        let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+        let announced = delivery(&mut app, adu.len() as u64).await;
+        let collected = collect(
+            &mut harness.client,
+            app.token.clone(),
+            &announced.bundle_id,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(collected, adu);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -712,8 +860,6 @@ mod tests {
         let mut harness = harness().await;
         let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
 
-        // Two wire chunks down, so the transfer cannot complete before
-        // the cancel is seen.
         let adu = vec![0x5a; crate::CHUNK_SIZE + 3];
         let destination = app.endpoint_id.clone();
         send(&mut harness.client, app.token.clone(), &destination, &adu)
@@ -721,6 +867,9 @@ mod tests {
             .unwrap();
         let first = delivery(&mut app, adu.len() as u64).await;
 
+        // Abandoning with an in-band cancel ends the collection without
+        // acknowledging it, with the abandonment status; the bundle is
+        // parked, not finalized.
         let abandoned = collect(
             &mut harness.client,
             app.token.clone(),
@@ -743,27 +892,8 @@ mod tests {
         .unwrap_err();
         assert_eq!(spent.code(), Code::NotFound);
 
-        // Deferred, not lost: the next registration is announced the
-        // parked bundle afresh and collects the whole ADU.
-        app.requests
-            .send(SubscribeRequest {
-                request: Some(subscribe_request::Request::Unregister(Unregister {})),
-            })
-            .await
-            .unwrap();
-        assert!(timeout(app.events.message()).await.unwrap().is_none());
-
-        let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
-        let announced = delivery(&mut app, adu.len() as u64).await;
-        let collected = collect(
-            &mut harness.client,
-            app.token.clone(),
-            &announced.bundle_id,
-            false,
-        )
-        .await
-        .unwrap();
-        assert_eq!(collected, adu);
+        // Deferred, not lost.
+        recollected_after_reregistration(&mut harness, app, &adu).await;
 
         harness.bpa.shutdown().await;
     }
@@ -985,31 +1115,7 @@ mod tests {
         // final segment.
         let adu = vec![0x5a; 16 * crate::CHUNK_SIZE];
         let destination = app.endpoint_id.clone();
-        let mut messages = vec![SendRequest {
-            request: Some(send_request::Request::Metadata(SendMetadata {
-                session_token: app.token.clone(),
-                destination,
-                lifetime: Some(prost_types::Duration {
-                    seconds: 3600,
-                    nanos: 0,
-                }),
-                options: None,
-                adu_size: None,
-            })),
-        }];
-        for chunk in adu.chunks(crate::CHUNK_SIZE) {
-            messages.push(SendRequest {
-                request: Some(send_request::Request::Chunk(Bytes::copy_from_slice(chunk))),
-            });
-        }
-        messages.push(SendRequest {
-            request: Some(send_request::Request::LastChunk(Bytes::new())),
-        });
-        harness
-            .client
-            .send(tokio_stream::iter(messages))
-            .await
-            .unwrap();
+        send_chunked(&mut harness.client, app.token.clone(), destination, &adu).await;
         let announced = delivery(&mut app, adu.len() as u64).await;
 
         // Claim the Receive (awaiting the call means the handler ran:
@@ -1071,23 +1177,93 @@ mod tests {
         harness.bpa.shutdown().await;
     }
 
-    // A cancel arriving after the final chunk was committed is too
-    // late: the delivery completed, the collection stays complete, and
-    // the late cancel changes nothing.
+    // Completion is the ack, not the last chunk: a cancel arriving after
+    // the final chunk, with no ack sent, abandons the collection and the
+    // bundle is re-announced to the next registration.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_cancel_after_the_last_chunk_is_too_late() {
+    async fn a_cancel_after_the_last_chunk_parks_the_delivery() {
         let mut harness = harness().await;
         let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
 
-        let adu = b"committed";
+        let adu = b"taken but not committed";
         let destination = app.endpoint_id.clone();
         send(&mut harness.client, app.token.clone(), &destination, adu)
             .await
             .unwrap();
         let announced = delivery(&mut app, adu.len() as u64).await;
 
-        // Collect by hand, keeping the request side open for the late
-        // cancel.
+        let (requests, mut stream, collected) =
+            take_all(&mut harness.client, app.token.clone(), &announced.bundle_id).await;
+        assert_eq!(collected, adu);
+
+        // The last chunk is in hand but no ack was sent: the cancel is
+        // the verdict, and the call ends with the abandonment status.
+        requests
+            .send(ReceiveRequest {
+                request: Some(receive_request::Request::Cancel(())),
+            })
+            .await
+            .unwrap();
+        assert_eq!(terminal_status(&mut stream).await.code(), Code::Cancelled);
+
+        // Parked, not finalized.
+        recollected_after_reregistration(&mut harness, app, adu).await;
+
+        harness.bpa.shutdown().await;
+    }
+
+    // A client that takes the whole ADU and then goes silent (its
+    // application declined the delivery, or it died before
+    // acknowledging) commits nothing: silence never acks, and the bundle
+    // is re-announced to the next registration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_receipt_without_an_ack_parks_the_delivery() {
+        let mut harness = harness().await;
+        let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+        let adu = b"taken then declined";
+        let destination = app.endpoint_id.clone();
+        send(&mut harness.client, app.token.clone(), &destination, adu)
+            .await
+            .unwrap();
+        let announced = delivery(&mut app, adu.len() as u64).await;
+
+        let (requests, mut stream, collected) =
+            take_all(&mut harness.client, app.token.clone(), &announced.bundle_id).await;
+        assert_eq!(collected, adu);
+
+        // The whole ADU is in hand, but a request stream that ends
+        // without an ack is an abandonment, not the inert half-close it
+        // is on the session stream.
+        drop(requests);
+        assert_eq!(terminal_status(&mut stream).await.code(), Code::Cancelled);
+
+        // Parked, not finalized.
+        recollected_after_reregistration(&mut harness, app, adu).await;
+
+        harness.bpa.shutdown().await;
+    }
+
+    // An ack racing the drain is a protocol violation, never a commit: a
+    // conforming client cannot ack before it holds the last chunk, and a
+    // misbehaving one must not be able to finalize a bundle it has not
+    // received. The collection ends without its last chunk and the
+    // bundle is re-announced to the next registration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ack_before_the_final_chunk_never_commits() {
+        let mut harness = harness().await;
+        let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
+
+        // Sixteen wire chunks of data: far more than the bridge's
+        // shallow buffer plus transport windows can absorb, so the drain
+        // cannot complete before the early ack (sent ahead of any read)
+        // is seen.
+        let adu = vec![0x5a; 16 * crate::CHUNK_SIZE];
+        let destination = app.endpoint_id.clone();
+        send_chunked(&mut harness.client, app.token.clone(), destination, &adu).await;
+        let announced = delivery(&mut app, adu.len() as u64).await;
+
+        // Ack straight after the metadata, before reading a single chunk.
         let (requests, rx) = mpsc::channel(2);
         requests
             .send(ReceiveRequest {
@@ -1098,52 +1274,37 @@ mod tests {
             })
             .await
             .unwrap();
+        requests
+            .send(ReceiveRequest {
+                request: Some(receive_request::Request::Ack(())),
+            })
+            .await
+            .unwrap();
         let mut stream = harness
             .client
             .receive(ReceiverStream::new(rx))
             .await
             .unwrap()
             .into_inner();
-        let mut collected = Vec::new();
+
+        // The stream must end without its last chunk: truncation, never
+        // completion. (The INVALID_ARGUMENT status is best-effort: the
+        // violation fires against a full response channel, so the
+        // refusal may surface as a bare truncation instead.)
         loop {
-            match timeout(stream.message())
-                .await
-                .unwrap()
-                .unwrap()
-                .response
-                .unwrap()
-            {
-                receive_response::Response::Chunk(chunk) => collected.extend_from_slice(&chunk),
-                receive_response::Response::LastChunk(chunk) => {
-                    collected.extend_from_slice(&chunk);
-                    break;
-                }
-                other => panic!("expected a chunk, got {other:?}"),
+            match timeout(stream.message()).await {
+                Ok(Some(ReceiveResponse {
+                    response: Some(receive_response::Response::Chunk(_)),
+                })) => continue,
+                Ok(Some(ReceiveResponse {
+                    response: Some(receive_response::Response::LastChunk(_)),
+                })) => panic!("an early ack must never commit"),
+                Ok(Some(_)) | Ok(None) | Err(_) => break,
             }
         }
-        assert_eq!(collected, adu);
 
-        // The last chunk is in hand: a cancel now is too late to
-        // honour. How the already-completed rpc winds down under the
-        // late message is transport timing; what matters is below —
-        // the delivery stays completed.
-        let _ = requests
-            .send(ReceiveRequest {
-                request: Some(receive_request::Request::Cancel(())),
-            })
-            .await;
-        let _ = timeout(stream.message()).await;
-
-        // Completed means completed: the delivery is gone.
-        let gone = collect(
-            &mut harness.client,
-            app.token.clone(),
-            &announced.bundle_id,
-            false,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(gone.code(), Code::NotFound);
+        // Parked, not finalized.
+        recollected_after_reregistration(&mut harness, app, &adu).await;
 
         harness.bpa.shutdown().await;
     }
@@ -1159,31 +1320,7 @@ mod tests {
 
         let adu = vec![0x5a; 16 * crate::CHUNK_SIZE];
         let destination = app.endpoint_id.clone();
-        let mut messages = vec![SendRequest {
-            request: Some(send_request::Request::Metadata(SendMetadata {
-                session_token: app.token.clone(),
-                destination,
-                lifetime: Some(prost_types::Duration {
-                    seconds: 3600,
-                    nanos: 0,
-                }),
-                options: None,
-                adu_size: None,
-            })),
-        }];
-        for chunk in adu.chunks(crate::CHUNK_SIZE) {
-            messages.push(SendRequest {
-                request: Some(send_request::Request::Chunk(Bytes::copy_from_slice(chunk))),
-            });
-        }
-        messages.push(SendRequest {
-            request: Some(send_request::Request::LastChunk(Bytes::new())),
-        });
-        harness
-            .client
-            .send(tokio_stream::iter(messages))
-            .await
-            .unwrap();
+        send_chunked(&mut harness.client, app.token.clone(), destination, &adu).await;
         let announced = delivery(&mut app, adu.len() as u64).await;
 
         // Claim the collection and read nothing, keeping the call (and
@@ -1401,6 +1538,118 @@ mod tests {
         assert_eq!(payload, adu);
 
         sink.unregister().await;
+        harness.bpa.shutdown().await;
+    }
+
+    // An application that receives each delivery whole, then declines it.
+    #[cfg(feature = "client")]
+    struct DecliningApp {
+        sink: Once<Box<dyn services::ApplicationSink>>,
+        // Carries the fully received payload of each declined delivery.
+        declined: mpsc::Sender<Bytes>,
+        unregistered: mpsc::Sender<()>,
+    }
+
+    #[cfg(feature = "client")]
+    #[async_trait]
+    impl services::Application for DecliningApp {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {
+            let _ = self.unregistered.send(()).await;
+        }
+
+        async fn on_deliver(
+            &self,
+            _bundle_id: &bundle::Id,
+            _expiry: OffsetDateTime,
+            _ack_requested: bool,
+            _adu_size: u64,
+            stream: &mut dyn Receiver<Segment>,
+        ) -> services::Result<()> {
+            let payload = hardy_bpa::stream::concat_stream(stream, usize::MAX, None).await?;
+            let _ = self.declined.send(payload).await;
+            Err(services::Error::Internal("declined".into()))
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &bundle::Id,
+            _from: &Eid,
+            _kind: services::StatusNotify,
+            _reason: status_report::ReasonCode,
+            _timestamp: Option<OffsetDateTime>,
+        ) {
+        }
+    }
+
+    // The contract across the wire: an application that buffers the
+    // whole ADU and then returns `Err` from its `on_deliver` never
+    // commits the delivery. The SDK sends no ack, the bundle stays
+    // parked, and the endpoint's next registration receives it.
+    #[cfg(feature = "client")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_sdk_decline_after_full_receipt_is_redelivered() {
+        let harness = harness().await;
+        let remote = crate::client::BpaClient::new(
+            format!("http://{}", harness.address),
+            hardy_async::TaskPool::new(),
+        )
+        .unwrap();
+
+        let (declined_tx, mut declined_rx) = mpsc::channel(4);
+        let (unregistered_tx, mut unregistered_rx) = mpsc::channel(1);
+        let decliner = Arc::new(DecliningApp {
+            sink: Once::new(),
+            declined: declined_tx,
+            unregistered: unregistered_tx,
+        });
+        let eid = remote
+            .register_application(Service::Ipn(9), decliner.clone())
+            .await
+            .unwrap();
+
+        let adu = Bytes::from_static(b"declined then redelivered");
+        let sink = decliner.sink.get().unwrap();
+        sink.send(
+            eid.clone(),
+            Duration::from_secs(3600),
+            None,
+            None,
+            &mut adu.clone(),
+        )
+        .await
+        .unwrap();
+
+        // The decliner received the whole ADU before refusing it.
+        let payload = timeout(declined_rx.recv()).await.unwrap();
+        assert_eq!(payload, adu);
+
+        // End the declining registration. Its `on_unregister` fires only
+        // after the server has freed the identity, so the re-registration
+        // below cannot race it.
+        sink.unregister().await;
+        timeout(unregistered_rx.recv()).await.unwrap();
+
+        // The accepting registration is announced the parked bundle and
+        // collects (and commits) it whole.
+        let (delivered_tx, mut delivered_rx) = mpsc::channel(4);
+        let (statuses_tx, _statuses_rx) = mpsc::channel(4);
+        let app = Arc::new(SdkApp {
+            sink: Once::new(),
+            delivered: delivered_tx,
+            statuses: statuses_tx,
+        });
+        remote
+            .register_application(Service::Ipn(9), app.clone())
+            .await
+            .unwrap();
+        let (_, payload) = timeout(delivered_rx.recv()).await.unwrap();
+        assert_eq!(payload, adu);
+
+        app.sink.get().unwrap().unregister().await;
         harness.bpa.shutdown().await;
     }
 

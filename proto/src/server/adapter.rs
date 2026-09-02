@@ -11,6 +11,8 @@
 //
 // The client's counterparts are `client::adapter::{Reader, Writer}`.
 
+use core::ops::ControlFlow;
+
 use hardy_async::{CancellationToken, sync::spin::Once};
 use hardy_bpa::{
     async_trait,
@@ -125,13 +127,22 @@ impl<Resp: Chunk + Cancel + Send + 'static> Writer<Resp> {
     }
 
     // Drains the delivery from `first` (the segment the door's probe
-    // already pulled) then `stream`, emitting wire chunks until the final
-    // segment. A withdrawn stream ends the response with the wire's in-band
-    // cancel; the session cancel ends it with an aborted status. Terminal
-    // statuses are try_send, best effort: they reach only a client still
-    // reading, and awaiting a full channel past session death would
-    // outlive pool shutdown.
-    pub async fn write_all(self, first: Segment, mut stream: Box<dyn Receiver<Segment>>) {
+    // already pulled) then `stream`, emitting wire chunks. Returns
+    // `Continue` once the final chunk is sent (the caller then waits for
+    // the client's verdict), and `Break` if it stopped early: the session
+    // cancel (a best-effort aborted status goes out first), a gone client
+    // (the response channel closed), or a withdrawn stream (serve
+    // truncated or the hold expired) which ends the response with the
+    // wire's in-band cancel. The caller decides whether the delivery
+    // commits, from this and the client's verdict. Terminal statuses are
+    // try_send, best effort: they reach only a client still reading, and
+    // awaiting a full channel past session death would outlive pool
+    // shutdown.
+    pub async fn write_all(
+        self,
+        first: Segment,
+        mut stream: Box<dyn Receiver<Segment>>,
+    ) -> ControlFlow<()> {
         let Self { tx, cancelled } = self;
         let mut segment = first;
         loop {
@@ -141,23 +152,23 @@ impl<Resp: Chunk + Cancel + Send + 'static> Writer<Resp> {
                     biased;
                     _ = cancelled.cancelled() => {
                         let _ = tx.try_send(Err(Status::aborted("Session closed")));
-                        return;
+                        return ControlFlow::Break(());
                     }
                     permit = tx.reserve() => {
-                        let Ok(permit) = permit else { return };
+                        let Ok(permit) = permit else { return ControlFlow::Break(()) };
                         permit
                     }
                 };
                 permit.send(Ok(Resp::chunk(chunk)));
             }
             if last {
-                return;
+                return ControlFlow::Continue(());
             }
             segment = tokio::select! {
                 biased;
                 _ = cancelled.cancelled() => {
                     let _ = tx.try_send(Err(Status::aborted("Session closed")));
-                    return;
+                    return ControlFlow::Break(());
                 }
                 segment = stream.recv() => match segment {
                     Ok(segment) => segment,
@@ -165,7 +176,7 @@ impl<Resp: Chunk + Cancel + Send + 'static> Writer<Resp> {
                     // wire's in-band cancel, then a clean end.
                     Err(_) => {
                         let _ = tx.try_send(Ok(Resp::cancel()));
-                        return;
+                        return ControlFlow::Break(());
                     }
                 },
             };
