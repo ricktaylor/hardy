@@ -89,14 +89,25 @@ impl IpnPatternItem {
         }
     }
 
+    /// Converts an exact pattern to the canonical [`Eid`] it matches, mirroring
+    /// the `hardy-bpv7` parser: `0.0.0` is the null endpoint, `0.<u32::MAX>.s`
+    /// is the LocalNode sentinel, and `0.0.s` (s != 0) denotes no valid EID.
     pub(super) fn try_to_eid(&self) -> Option<Eid> {
-        Some(Eid::Ipn {
-            fqnn: IpnNodeId {
-                allocator_id: self.allocator_id.try_to_eid()?,
-                node_number: self.node_number.try_to_eid()?,
-            },
-            service_number: self.service_number.try_to_eid()?,
-        })
+        let allocator_id = self.allocator_id.try_to_eid()?;
+        let node_number = self.node_number.try_to_eid()?;
+        let service_number = self.service_number.try_to_eid()?;
+        match (allocator_id, node_number, service_number) {
+            (0, 0, 0) => Some(Eid::Null),
+            (0, 0, _) => None,
+            (0, u32::MAX, service_number) => Some(Eid::LocalNode(service_number)),
+            (allocator_id, node_number, service_number) => Some(Eid::Ipn {
+                fqnn: IpnNodeId {
+                    allocator_id,
+                    node_number,
+                },
+                service_number,
+            }),
+        }
     }
 
     /// Harmonized Specificity Score.
@@ -404,7 +415,16 @@ fn parse_ipn_range(input: &mut &str) -> ModalResult<IpnPattern> {
                 } else {
                     merged.push(IpnInterval::Range(current_interval));
                 }
-                IpnPattern::Range(merged)
+
+                // A range that collapses to one exact value (e.g. `[5]` or
+                // `[5,5]`) is the same pattern as the bare number, so
+                // normalise it to `Single`: `Eq`/`Hash`/`Display` then agree
+                // with the equivalent `ipn:a.n.5` spelling.
+                if let [IpnInterval::Number(n)] = merged[..] {
+                    IpnPattern::Single(n)
+                } else {
+                    IpnPattern::Range(merged)
+                }
             }
         })
         .parse_next(input)
@@ -421,4 +441,155 @@ fn parse_ipn_interval(input: &mut &str) -> ModalResult<RangeInclusive<u32>> {
             start.min(end)..=start.max(end)
         })
         .parse_next(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    // Parses `s` and asserts it is a set of exactly one ipn pattern item equal
+    // to `expected`.
+    fn ipn_parse(s: &str, expected: IpnPatternItem) {
+        let EidPattern::Set(v) = s
+            .parse()
+            .unwrap_or_else(|e| panic!("failed to parse pattern {s}: {e}"))
+        else {
+            panic!("{s}: expected a pattern set");
+        };
+        let [EidPatternItem::IpnPatternItem(item)] = &v[..] else {
+            panic!("{s}: expected exactly one ipn pattern item, got {v:?}");
+        };
+        assert_eq!(item, &expected);
+    }
+
+    #[test]
+    fn exact() {
+        ipn_parse("ipn:0.3.4", IpnPatternItem::new(0, 3, Some(4)));
+    }
+
+    #[test]
+    fn service_wildcard() {
+        ipn_parse(
+            "ipn:0.3.*",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Wildcard,
+            },
+        );
+    }
+
+    #[test]
+    fn node_wildcard() {
+        ipn_parse(
+            "ipn:0.*.4",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Wildcard,
+                service_number: IpnPattern::Single(4),
+            },
+        );
+    }
+
+    #[test]
+    fn service_range() {
+        ipn_parse(
+            "ipn:0.3.[0-19]",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
+            },
+        );
+        ipn_parse(
+            "ipn:0.3.[10-19]",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=19)]),
+            },
+        );
+    }
+
+    #[test]
+    fn range_union() {
+        // Disjoint intervals are kept, sorted ascending regardless of input order.
+        ipn_parse(
+            "ipn:0.3.[0-4,10-19]",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Range(vec![
+                    IpnInterval::Range(0..=4),
+                    IpnInterval::Range(10..=19),
+                ]),
+            },
+        );
+        ipn_parse(
+            "ipn:0.3.[10-19,0-4]",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Range(vec![
+                    IpnInterval::Range(0..=4),
+                    IpnInterval::Range(10..=19),
+                ]),
+            },
+        );
+    }
+
+    #[test]
+    fn range_merge() {
+        // Adjacent or overlapping intervals merge into one.
+        let merged = IpnPatternItem {
+            allocator_id: IpnPattern::Single(0),
+            node_number: IpnPattern::Single(3),
+            service_number: IpnPattern::Range(vec![IpnInterval::Range(0..=19)]),
+        };
+        ipn_parse("ipn:0.3.[0-9,10-19]", merged.clone());
+        ipn_parse("ipn:0.3.[0-15,10-19]", merged.clone());
+        ipn_parse("ipn:0.3.[10-19,0-9]", merged);
+    }
+
+    #[test]
+    fn single_value_range_normalises_to_single() {
+        // A range that collapses to one exact value is the same pattern as the
+        // bare number, so it parses to `Single` and is `Eq`-equal to it.
+        let single = IpnPatternItem::new(0, 3, Some(5));
+        ipn_parse("ipn:0.3.[5]", single.clone());
+        ipn_parse("ipn:0.3.[5,5]", single.clone());
+        ipn_parse("ipn:0.3.[5-5]", single);
+    }
+
+    #[test]
+    fn open_range() {
+        ipn_parse(
+            "ipn:0.3.[10+]",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(3),
+                service_number: IpnPattern::Range(vec![IpnInterval::Range(10..=u32::MAX)]),
+            },
+        );
+    }
+
+    #[test]
+    fn bang_local_node() {
+        ipn_parse(
+            "ipn:!.*",
+            IpnPatternItem {
+                allocator_id: IpnPattern::Single(0),
+                node_number: IpnPattern::Single(u32::MAX),
+                service_number: IpnPattern::Wildcard,
+            },
+        );
+    }
+
+    #[test]
+    fn scheme_wildcard() {
+        ipn_parse("ipn:**", ANY);
+        ipn_parse("2:**", ANY);
+    }
 }
