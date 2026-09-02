@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `decode::ItemType` and `decode::ItemKind` (both `Copy`): the wire-level classification of an item — tag status plus payload-free marker shape. `ItemType` converts from `&Head` (also via the inherent `Head::item_type()`); `ItemKind` converts from `&Marker`. `Display` output matches the strings `Head`'s `Display` (unchanged) has always produced.
+- `decode::Untagged<T>` wrapper: decodes a `T` while rejecting any preceding CBOR semantic tags from the first byte of the run — the run is never read, so refusing adversarial tag spam costs no per-tag work and no allocation. Rejection surfaces as the new `decode::Error::UnexpectedTag`.
+- `FromCbor` implementations for `String` and `Box<[u8]>` — the two owned-container decodes. Each copies by construction (the requested type announces the allocation), gathers indefinite-length chunks, and folds tags and indefinite encodings into the canonical flag; decoding otherwise remains zero-copy through the borrowed `Value` forms, whose docs now state that contract. The `Box<[u8]>` impl is decode-only by design: encoding byte strings stays explicit via `encode::Bytes`, since the blanket `[T]` encode already gives `[u8]` array semantics.
+
+### Changed
+- **BREAKING:** `decode::Error::IncorrectType` carries `(&'static str, ItemType)` instead of `(String, String)`, so constructing a type-mismatch error never heap-allocates; message formatting is deferred to `Display` and the rendered text is unchanged.
+- **BREAKING:** new variant `decode::Error::UnexpectedTag` (raised only by `Untagged` decodes) can break exhaustive `match` arms on the non-`#[non_exhaustive]` error enum.
+- **BREAKING:** `decode::Value::type_name(tagged: bool) -> String` is replaced by `decode::Value::item_type(tags: &[u64]) -> ItemType` — pass the tags slice the parse callback received; the tagged flag is derived from it.
+
 ## [2.0.0]
 
 ### Added

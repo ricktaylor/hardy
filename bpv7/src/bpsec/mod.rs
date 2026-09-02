@@ -1,8 +1,5 @@
 use alloc::boxed::Box;
 
-#[cfg(feature = "rfc9173")]
-use alloc::string::ToString;
-
 use hardy_cbor::{
     decode::FromCbor,
     encode::{Encoder, ToCbor},

@@ -2,6 +2,7 @@ use super::*;
 
 use alloc::{boxed::Box, string::ToString};
 
+use hardy_cbor::decode::Untagged;
 use percent_encoding::percent_decode_str;
 use winnow::{
     ModalResult, Parser,
@@ -178,22 +179,23 @@ fn ipn_from_cbor(
     value: &mut hardy_cbor::decode::Array,
     canonical: bool,
 ) -> Result<(Eid, bool), Error> {
-    let (a, s1): (u64, bool) = value.parse()?;
+    let (Untagged(a), s1): (Untagged<u64>, bool) = value.parse()?;
     if !s1 {
         return Err(Error::NotCanonical);
     }
-    let (b, s2): (u64, bool) = value.parse()?;
+    let (Untagged(b), s2): (Untagged<u64>, bool) = value.parse()?;
     if !s2 {
         return Err(Error::NotCanonical);
     }
-    let c: Option<u64> = if let Some((c, s3, _)) = value.try_parse::<(u64, bool, usize)>()? {
-        if !s3 {
-            return Err(Error::NotCanonical);
-        }
-        Some(c)
-    } else {
-        None
-    };
+    let c: Option<u64> =
+        if let Some((Untagged(c), s3, _)) = value.try_parse::<(Untagged<u64>, bool, usize)>()? {
+            if !s3 {
+                return Err(Error::NotCanonical);
+            }
+            Some(c)
+        } else {
+            None
+        };
 
     const U32_MAX: u64 = u32::MAX as u64;
 
@@ -258,7 +260,8 @@ impl hardy_cbor::decode::FromCbor for Eid {
     /// Rejected as `NotCanonical`:
     ///   * non-shortest outer array head, non-shortest scheme uint,
     ///     non-shortest SSP scalars (uints, text head)
-    ///   * unexpected tags on any item
+    ///   * unexpected tags on any item (a tag on a scalar sub-field is
+    ///     refused from its first byte, without reading the run)
     ///
     /// Accepted but flagged `shortest == false` (caller may re-emit
     /// canonical):
@@ -281,7 +284,13 @@ impl hardy_cbor::decode::FromCbor for Eid {
             // this up so the returned `shortest` flag reflects it.
             let canonical = a.is_definite();
 
-            let (scheme, s): (u64, bool) = a.parse().map_field_err::<Error>("EID scheme")?;
+            // `Error::from` first, so a tag refused by `Untagged` is
+            // labelled as this domain's `NotCanonical`, not the raw cbor
+            // error.
+            let (Untagged(scheme), s): (Untagged<u64>, bool) =
+                a.parse()
+                    .map_err(Error::from)
+                    .map_field_err::<Error>("EID scheme")?;
             if !s {
                 return Err(Error::invalid_field(
                     "EID scheme",
@@ -329,8 +338,8 @@ impl hardy_cbor::decode::FromCbor for Eid {
                                     .map_err(|e| Error::ParseError(e.to_string()))
                             }
                             value => Err(hardy_cbor::decode::Error::IncorrectType(
-                                "Untagged Text String or Unsigned Integer 0".to_string(),
-                                value.type_name(false),
+                                "Untagged Text String or Unsigned Integer 0",
+                                value.item_type(tags),
                             )
                             .into()),
                         }
@@ -344,8 +353,8 @@ impl hardy_cbor::decode::FromCbor for Eid {
                         ipn_from_cbor(arr, canonical && arr.is_definite())
                     }
                     value => Err(hardy_cbor::decode::Error::IncorrectType(
-                        "Untagged Array".to_string(),
-                        value.type_name(!tags.is_empty()),
+                        "Untagged Array",
+                        value.item_type(tags),
                     )
                     .into()),
                 }) {

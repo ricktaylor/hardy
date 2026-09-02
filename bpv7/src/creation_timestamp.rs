@@ -142,9 +142,10 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
 
     /// Strict-canonical decode per RFC 9171 §4.1: non-shortest array
     /// head, non-shortest sub-field encoding, and unexpected tags are
-    /// rejected with `NotCanonical`. Indefinite-length array encoding
-    /// is accepted (§4.1 carveout) and reflected in the returned
-    /// `shortest` flag as `false`.
+    /// rejected with `NotCanonical` (a tag on a sub-field is refused
+    /// from its first byte, without reading the run). Indefinite-length
+    /// array encoding is accepted (§4.1 carveout) and reflected in the
+    /// returned `shortest` flag as `false`.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         hardy_cbor::decode::parse_array(data, |a, shortest, tags| {
             if !shortest || !tags.is_empty() {
@@ -154,7 +155,7 @@ impl hardy_cbor::decode::FromCbor for CreationTimestamp {
             // rather than re-checking via `require_canonical`.
             let creation_time: dtn_time::DtnTime =
                 a.parse().map_field_err::<Error>("bundle creation time")?;
-            let sequence_number = require_canonical(a, "sequence number")?;
+            let sequence_number = require_canonical(a, "sequence number", Error::NotCanonical)?;
             Ok((
                 CreationTimestamp {
                     // A zero DTN time signals the source had no usable clock.

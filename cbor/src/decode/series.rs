@@ -1,5 +1,9 @@
-use super::*;
+use alloc::{format, string::String, vec::Vec};
+use core::fmt;
+
 use thiserror::Error;
+
+use super::*;
 
 /// A stateful iterator for decoding a sequence of CBOR items, such as an array or a map.
 ///
@@ -111,13 +115,13 @@ impl<'a, const D: usize> Series<'a, D> {
     ///
     /// More efficient than parsing into a [`Value`] and calling [`Value::skip`]
     /// — no chunk lists or nested [`Series`] are constructed. Delegates to
-    /// [`decode::skip_value`]; see that function for the canonical-form
+    /// [`skip_value`]; see that function for the canonical-form
     /// reporting rules.
     pub fn skip_value(&mut self, max_recursion: usize) -> Result<bool, Error> {
         if self.at_end()? {
             return Err(Error::NoMoreItems);
         }
-        let (shortest, len) = decode::skip_value(&self.data[*self.offset..], max_recursion)?;
+        let (shortest, len) = skip_value(&self.data[*self.offset..], max_recursion)?;
         self.parsed += 1;
         *self.offset += len;
         Ok(shortest)
@@ -191,7 +195,7 @@ impl<'a, const D: usize> Series<'a, D> {
     pub fn parse<T>(&mut self) -> Result<T, T::Error>
     where
         T: FromCbor,
-        T::Error: From<self::Error>,
+        T::Error: From<Error>,
     {
         // Check for end of array
         if self.at_end()? {
@@ -212,7 +216,7 @@ impl<'a, const D: usize> Series<'a, D> {
     pub fn try_parse<T>(&mut self) -> Result<Option<T>, T::Error>
     where
         T: FromCbor,
-        T::Error: From<self::Error>,
+        T::Error: From<Error>,
     {
         // Check for end of array
         if self.at_end()? {
@@ -245,10 +249,7 @@ impl<'a, const D: usize> Series<'a, D> {
                 let r = f(&mut a, shortest, &marker.tags)?;
                 a.complete(r)
             }
-            _ => Err(Error::IncorrectType(
-                "Array".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Array", marker.item_type())),
         }?;
 
         self.parsed += 1;
@@ -279,7 +280,7 @@ impl<'a, const D: usize> Series<'a, D> {
                 let r = f(&mut m, shortest, &marker.tags)?;
                 m.complete(r)
             }
-            _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string())),
+            _ => Err(Error::IncorrectType("Map", marker.item_type())),
         }?;
 
         self.parsed += 1;
@@ -295,8 +296,8 @@ enum SequenceDebugInfo {
     Map(Vec<(SequenceDebugInfo, SequenceDebugInfo)>),
 }
 
-impl core::fmt::Debug for SequenceDebugInfo {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for SequenceDebugInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown => f.write_str("..."),
             Self::Value(s) => f.write_str(s),
@@ -443,8 +444,8 @@ fn sequence_debug_fmt<const D: usize>(
     }
 }
 
-impl<const D: usize> core::fmt::Debug for Series<'_, D> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<const D: usize> fmt::Debug for Series<'_, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Debug needs to advance through the remaining items to format them,
         // but `fmt` takes `&self` and can't mutate `*self.offset`. Build a
         // throwaway `Series` that walks the same logical position without

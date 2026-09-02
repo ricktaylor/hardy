@@ -62,7 +62,8 @@ impl hardy_cbor::decode::FromCbor for Lifetime {
     ///   * Field is a bare unsigned integer. Bare uints have no
     ///     indefinite-length form, so the §4.1 carveout does not apply
     ///     and any non-shortest encoding is rejected with `NotCanonical`.
-    ///   * Unexpected tags are rejected with `NotCanonical`.
+    ///   * Unexpected tags are rejected with `NotCanonical`, refused
+    ///     from the tag's first byte without reading the run.
     ///   * Returns `shortest = true` on success (no encoder discretion
     ///     left to surface), so callers can drop the flag check.
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -122,7 +123,8 @@ mod tests {
     }
 
     /// Tagged encoding is rejected (RFC 9171 §4.1 disallows unexpected
-    /// tags on canonical bodies).
+    /// tags on canonical bodies), refused from the tag's first byte
+    /// without reading the run.
     #[test]
     fn rejects_tagged() {
         let body = hex!("C0 00"); // tag(0) on a uint

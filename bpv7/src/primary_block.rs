@@ -8,7 +8,7 @@ decode and emit. Reachable from [`Bundle::primary`](crate::bundle::Bundle).
 */
 
 use super::*;
-use crate::error::CaptureFieldErr;
+use crate::error::{CaptureFieldErr, require_canonical};
 use hardy_cbor::decode::Error as CborError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,15 +95,18 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
             let mut canonical = block.is_definite();
 
             // Version: always 7; enforce canonical encoding of the integer.
-            let version: u64 = parse::parse_canonical_item(block, "version")?;
+            let version: u64 = require_canonical(block, "version", Error::NotCanonical)?;
             if version != 7 {
                 return Err(Error::InvalidVersion(version));
             }
 
             // Newtypes (Flags, CrcType) self-enforce canonical in their own from_cbor.
-            let flags: bundle::Flags =
-                parse::parse_canonical_item(block, "bundle processing control flags")?;
-            let crc_type: crc::CrcType = parse::parse_canonical_item(block, "crc type")?;
+            let flags: bundle::Flags = require_canonical(
+                block,
+                "bundle processing control flags",
+                Error::NotCanonical,
+            )?;
+            let crc_type: crc::CrcType = require_canonical(block, "crc type", Error::NotCanonical)?;
 
             // EIDs and timestamp are CBOR arrays; RFC 9171 §4.1 permits
             // indefinite-length encoding. Use parse_item and accumulate the flag.
@@ -115,17 +118,19 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                 parse::parse_item::<creation_timestamp::CreationTimestamp>(block, "timestamp")?;
             canonical &= dest_s & src_s & rpt_s & ts_s;
 
-            let lifetime = core::time::Duration::from_millis(parse::parse_canonical_item::<u64>(
-                block, "lifetime",
+            let lifetime = core::time::Duration::from_millis(require_canonical(
+                block,
+                "lifetime",
+                Error::NotCanonical,
             )?);
 
             // Parse fragment parts
             let fragment_info = if !flags.is_fragment {
                 None
             } else {
-                let offset = parse::parse_canonical_item::<u64>(block, "fragment offset")?;
+                let offset = require_canonical(block, "fragment offset", Error::NotCanonical)?;
                 let total_adu_length =
-                    parse::parse_canonical_item::<u64>(block, "total adu length")?;
+                    require_canonical(block, "total adu length", Error::NotCanonical)?;
                 if offset > total_adu_length {
                     return Err(Error::InvalidFragmentInfo(offset, total_adu_length));
                 }
@@ -147,8 +152,8 @@ impl hardy_cbor::decode::FromCbor for PrimaryBlock {
                         Ok(crc.start + crc_start..crc.end + crc_start)
                     } else {
                         Err(Error::InvalidCBOR(CborError::IncorrectType(
-                            "Definite-length Byte String".to_string(),
-                            value.type_name(!tags.is_empty()),
+                            "Definite-length Byte String",
+                            value.item_type(tags),
                         )))
                     }
                 })?;

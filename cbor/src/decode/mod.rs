@@ -113,8 +113,14 @@ match head.marker {
 
 [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949.html
 */
-use super::*;
-use core::{ops::Range, str::Utf8Error};
+use alloc::vec::Vec;
+use core::{
+    fmt,
+    num::TryFromIntError,
+    ops::Range,
+    str::{Utf8Error, from_utf8},
+};
+
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
@@ -146,9 +152,17 @@ pub enum Error {
     #[error("Invalid minor-type value {0}")]
     InvalidMinorValue(u8),
 
-    /// The CBOR item's type does not match the expected type.
+    /// The CBOR item's type does not match the expected type. Carries the
+    /// caller's static description of what was expected and the [`ItemType`]
+    /// found; formatting is deferred to `Display`, so constructing the error
+    /// never allocates.
     #[error("Incorrect type, expecting {0}, found {1}")]
-    IncorrectType(String, String),
+    IncorrectType(&'static str, ItemType),
+
+    /// A CBOR tag preceded an item decoded as [`Untagged`], which permits
+    /// none. Raised from the first byte of the tag run, without reading it.
+    #[error("Unexpected CBOR tag")]
+    UnexpectedTag,
 
     /// An indefinite-length string contains an invalid chunk (e.g., not a string type).
     #[error("Chunked string contains an invalid chunk")]
@@ -172,7 +186,7 @@ pub enum Error {
 
     /// An integer conversion failed, typically due to an out-of-range value.
     #[error(transparent)]
-    TryFromIntError(#[from] core::num::TryFromIntError),
+    TryFromIntError(#[from] TryFromIntError),
 
     /// A floating-point conversion would result in a loss of precision.
     #[error("Loss of floating-point precision")]
@@ -183,8 +197,16 @@ pub enum Error {
 ///
 /// This trait is the foundation of the decoding system. By implementing `FromCbor`
 /// for a type, you define how it can be constructed from a CBOR representation.
-/// The library provides implementations for most primitive types, `String`, `Box<[u8]>`,
-/// and tuples.
+/// The library provides implementations for most primitive types, `Option`,
+/// tuples, and the two owned containers `String` and `Box<[u8]>`.
+///
+/// Decoding is otherwise deliberately zero-copy: text and byte strings
+/// surface as borrowed [`Value::Text`] / [`Value::Bytes`] through
+/// [`parse_value`], and no impl hides an allocation behind a borrowed
+/// return type. The two owned-container impls are the sanctioned way to
+/// *request* a copy — the type at the call site announces the allocation —
+/// and each gathers indefinite-length chunks correctly. On hot paths,
+/// prefer the borrowed `Value` forms.
 pub trait FromCbor: Sized {
     /// The error type returned when decoding fails.
     type Error;
@@ -211,6 +233,43 @@ pub trait FromCbor: Sized {
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error>;
 }
 
+/// Decodes a `T` while rejecting any preceding CBOR semantic tags —
+/// without reading them.
+///
+/// Most protocol fields permit no tags at all, yet a decoder that
+/// discovers this only after collecting the tag list hands adversarial
+/// input free work: a run of tag bytes is walked in full (spilling the
+/// tag list to the heap at two) before the item underneath is even
+/// looked at. `Untagged` moves the rejection to the first byte: a tag
+/// head is recognised structurally and refused as
+/// [`Error::UnexpectedTag`] in constant time, so the reject path costs
+/// no per-tag work and no allocation.
+///
+/// On success the inner decode never saw a tag, so the canonical flag
+/// reflects the encoding of the item alone instead of folding in tag
+/// presence the way the bare scalar impls do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Untagged<T>(pub T);
+
+impl<T> FromCbor for Untagged<T>
+where
+    T: FromCbor,
+    T::Error: From<Error>,
+{
+    type Error = T::Error;
+
+    #[inline]
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        // 0xC0..=0xDB is every well-formed tag head: major type 6, minors
+        // 0-27. Malformed minors 28-31 are not tags and fall through to
+        // the inner decode, which rejects them as `InvalidMinorValue`.
+        if matches!(data.first(), Some(0xC0..=0xDB)) {
+            return Err(Error::UnexpectedTag.into());
+        }
+        T::from_cbor(data).map(|(value, shortest, len)| (Untagged(value), shortest, len))
+    }
+}
+
 /// A type alias for a generic, untyped CBOR sequence.
 pub type Sequence<'a> = series::Series<'a, 0>;
 /// A type alias for a [`Series`] that represents a CBOR array.
@@ -218,7 +277,7 @@ pub type Array<'a> = series::Series<'a, 1>;
 /// A type alias for a [`Series`] that represents a CBOR map.
 pub type Map<'a> = series::Series<'a, 2>;
 /// The head of a single CBOR data item.
-pub use head::{Head, Marker};
+pub use head::{Head, ItemKind, ItemType, Marker};
 /// A stateful iterator for decoding a sequence of CBOR items (e.g., an array or map).
 pub use series::Series;
 
@@ -255,26 +314,31 @@ pub enum Value<'a, 'b: 'a> {
 }
 
 impl<'a, 'b: 'a> Value<'a, 'b> {
-    /// Returns a human-readable string describing the type of the CBOR value.
-    pub fn type_name(&self, tagged: bool) -> String {
-        let prefix = if tagged { "Tagged" } else { "Untagged" };
-        match self {
-            Value::UnsignedInteger(_) => format!("{prefix} Unsigned Integer"),
-            Value::NegativeInteger(_) => format!("{prefix} Negative Integer"),
-            Value::Bytes(_) => format!("{prefix} Definite-length Byte String"),
-            Value::ByteStream(_) => format!("{prefix} Indefinite-length Byte String"),
-            Value::Text(_) => format!("{prefix} Definite-length Text String"),
-            Value::TextStream(_) => format!("{prefix} Indefinite-length Text String"),
-            Value::Array(a) if a.is_definite() => format!("{prefix} Definite-length Array"),
-            Value::Array(_) => format!("{prefix} Indefinite-length Array"),
-            Value::Map(m) if m.is_definite() => format!("{prefix} Definite-length Map"),
-            Value::Map(_) => format!("{prefix} Indefinite-length Map"),
-            Value::False => format!("{prefix} False"),
-            Value::True => format!("{prefix} True"),
-            Value::Null => format!("{prefix} Null"),
-            Value::Undefined => format!("{prefix} Undefined"),
-            Value::Simple(v) => format!("{prefix} Simple Value {v}"),
-            Value::Float(_) => format!("{prefix} Float"),
+    /// The wire-level [`ItemType`] of this value, for building
+    /// [`Error::IncorrectType`] without allocating. Pass the tags slice the
+    /// parse callback received — a `Value` does not carry its preceding tags.
+    pub fn item_type(&self, tags: &[u64]) -> ItemType {
+        let kind = match self {
+            Value::UnsignedInteger(_) => ItemKind::UnsignedInteger,
+            Value::NegativeInteger(_) => ItemKind::NegativeInteger,
+            Value::Bytes(_) => ItemKind::DefiniteBytes,
+            Value::ByteStream(_) => ItemKind::IndefiniteBytes,
+            Value::Text(_) => ItemKind::DefiniteText,
+            Value::TextStream(_) => ItemKind::IndefiniteText,
+            Value::Array(a) if a.is_definite() => ItemKind::DefiniteArray,
+            Value::Array(_) => ItemKind::IndefiniteArray,
+            Value::Map(m) if m.is_definite() => ItemKind::DefiniteMap,
+            Value::Map(_) => ItemKind::IndefiniteMap,
+            Value::False => ItemKind::False,
+            Value::True => ItemKind::True,
+            Value::Null => ItemKind::Null,
+            Value::Undefined => ItemKind::Undefined,
+            Value::Simple(v) => ItemKind::Simple(*v),
+            Value::Float(_) => ItemKind::Float,
+        };
+        ItemType {
+            tagged: !tags.is_empty(),
+            kind,
         }
     }
 
@@ -289,12 +353,12 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     ///
     /// # Which skip to use
     ///
-    /// - If you do **not** need the [`Value`], call [`decode::skip_value`]
+    /// - If you do **not** need the [`Value`], call [`skip_value`]
     ///   on the byte slice. It walks the wire format directly and pays no
     ///   chunk-list or `Series` allocation.
     /// - If you are inside a sequence and want to skip a single item
     ///   without parsing it, call [`Series::skip_value`].
-    /// - If you have already called [`decode::parse_value`] (typically
+    /// - If you have already called [`parse_value`] (typically
     ///   because you needed the `Value` to inspect or format it) and now
     ///   need to advance the cursor past the rest of that value, use this
     ///   method. The allocations have already been paid; this just
@@ -320,8 +384,8 @@ impl<'a, 'b: 'a> Value<'a, 'b> {
     }
 }
 
-impl<'a, 'b: 'a> core::fmt::Debug for Value<'a, 'b> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<'a, 'b: 'a> fmt::Debug for Value<'a, 'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::UnsignedInteger(n) => write!(f, "{n:?}"),
             Value::NegativeInteger(n) => write!(f, "-{n:?}"),
@@ -492,7 +556,7 @@ where
             let extent = offset_extent(data, offset, len)?;
             offset = extent.end;
             f(
-                Value::Text(core::str::from_utf8(&data[extent]).map_err(Into::into)?),
+                Value::Text(from_utf8(&data[extent]).map_err(Into::into)?),
                 shortest,
                 &marker.tags,
             )
@@ -513,7 +577,7 @@ where
                     Marker::Text(Some(len)) if inner_marker.tags.is_empty() => {
                         let extent = offset_extent(data, offset, len)?;
                         offset = extent.end;
-                        chunks.push(core::str::from_utf8(&data[extent]).map_err(Into::into)?);
+                        chunks.push(from_utf8(&data[extent]).map_err(Into::into)?);
                         shortest &= inner_shortest;
                     }
                     _ => {
@@ -576,7 +640,7 @@ where
             let r = f(&mut a, shortest, &marker.tags)?;
             a.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Array".to_string(), marker.to_string()).into()),
+        _ => Err(Error::IncorrectType("Array", marker.item_type()).into()),
     }
 }
 
@@ -597,7 +661,7 @@ where
             let r = f(&mut m, shortest, &marker.tags)?;
             m.complete(r).map(|r| (r, offset)).map_err(Into::into)
         }
-        _ => Err(Error::IncorrectType("Map".to_string(), marker.to_string()).into()),
+        _ => Err(Error::IncorrectType("Map", marker.item_type()).into()),
     }
 }
 
@@ -614,7 +678,7 @@ where
 pub fn parse<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     T::from_cbor(data).map(|v| v.0)
 }
@@ -630,12 +694,12 @@ where
 pub fn parse_exact<T>(data: &[u8]) -> Result<T, T::Error>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     let (value, _, len) = T::from_cbor(data)?;
     if len == data.len() {
         Ok(value)
     } else {
-        Err(self::Error::AdditionalItems.into())
+        Err(Error::AdditionalItems.into())
     }
 }

@@ -1,5 +1,8 @@
-use super::*;
+use core::{cmp::Ordering, fmt, num::FpCategory};
+
 use smallvec::SmallVec;
+
+use super::*;
 
 /// Tag list carried inside a [`Head`].
 ///
@@ -93,7 +96,8 @@ pub enum Marker {
     Null,
     /// The undefined value (CBOR simple value 23).
     Undefined,
-    /// An unassigned simple value (CBOR simple values 0–19, 24–31).
+    /// An unassigned simple value (CBOR simple values 0–19 and 32–255;
+    /// 24–31 are reserved and unencodable per RFC 8949 §3.3).
     Simple(u8),
     /// A floating-point value (CBOR major type 7).
     Float(f64),
@@ -132,30 +136,138 @@ pub struct Head {
     pub marker: Marker,
 }
 
-impl core::fmt::Display for Head {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let prefix = if self.tags.is_empty() {
-            "Untagged"
-        } else {
-            "Tagged"
-        };
-        match self.marker {
-            Marker::UnsignedInteger(_) => write!(f, "{prefix} Unsigned Integer"),
-            Marker::NegativeInteger(_) => write!(f, "{prefix} Negative Integer"),
-            Marker::Bytes(Some(_)) => write!(f, "{prefix} Definite-length Byte String"),
-            Marker::Bytes(None) => write!(f, "{prefix} Indefinite-length Byte String"),
-            Marker::Text(Some(_)) => write!(f, "{prefix} Definite-length Text String"),
-            Marker::Text(None) => write!(f, "{prefix} Indefinite-length Text String"),
-            Marker::Array(Some(_)) => write!(f, "{prefix} Definite-length Array"),
-            Marker::Array(None) => write!(f, "{prefix} Indefinite-length Array"),
-            Marker::Map(Some(_)) => write!(f, "{prefix} Definite-length Map"),
-            Marker::Map(None) => write!(f, "{prefix} Indefinite-length Map"),
-            Marker::False => write!(f, "{prefix} False"),
-            Marker::True => write!(f, "{prefix} True"),
-            Marker::Null => write!(f, "{prefix} Null"),
-            Marker::Undefined => write!(f, "{prefix} Undefined"),
-            Marker::Simple(v) => write!(f, "{prefix} Simple Value {v}"),
-            Marker::Float(_) => write!(f, "{prefix} Float"),
+impl Head {
+    /// The wire-level [`ItemType`] of this head, for building
+    /// [`Error::IncorrectType`][super::Error::IncorrectType] without
+    /// allocating. The inherent mirror of the `From<&Head>` conversion,
+    /// matching [`Value::item_type`][super::Value::item_type].
+    pub fn item_type(&self) -> ItemType {
+        self.into()
+    }
+}
+
+impl fmt::Display for Head {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ItemType::from(self).fmt(f)
+    }
+}
+
+/// The payload-free shape of a CBOR item: its major type plus the
+/// definite/indefinite-length distinction for strings, arrays, and maps.
+/// Lengths, counts, and values are discarded — except the simple-value
+/// number, which *is* the type. See [`ItemType`] for the tagged/untagged
+/// wrapper used in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    /// An unsigned integer (CBOR major type 0).
+    UnsignedInteger,
+    /// A negative integer (CBOR major type 1).
+    NegativeInteger,
+    /// A definite-length byte string (CBOR major type 2).
+    DefiniteBytes,
+    /// An indefinite-length byte string (CBOR major type 2).
+    IndefiniteBytes,
+    /// A definite-length text string (CBOR major type 3).
+    DefiniteText,
+    /// An indefinite-length text string (CBOR major type 3).
+    IndefiniteText,
+    /// A definite-length array (CBOR major type 4).
+    DefiniteArray,
+    /// An indefinite-length array (CBOR major type 4).
+    IndefiniteArray,
+    /// A definite-length map (CBOR major type 5).
+    DefiniteMap,
+    /// An indefinite-length map (CBOR major type 5).
+    IndefiniteMap,
+    /// The boolean value `false` (CBOR simple value 20).
+    False,
+    /// The boolean value `true` (CBOR simple value 21).
+    True,
+    /// The null value (CBOR simple value 22).
+    Null,
+    /// The undefined value (CBOR simple value 23).
+    Undefined,
+    /// An unassigned simple value (CBOR simple values 0–19 and 32–255;
+    /// 24–31 are reserved and unencodable per RFC 8949 §3.3).
+    Simple(u8),
+    /// A floating-point value (CBOR major type 7).
+    Float,
+}
+
+impl fmt::Display for ItemKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsignedInteger => f.write_str("Unsigned Integer"),
+            Self::NegativeInteger => f.write_str("Negative Integer"),
+            Self::DefiniteBytes => f.write_str("Definite-length Byte String"),
+            Self::IndefiniteBytes => f.write_str("Indefinite-length Byte String"),
+            Self::DefiniteText => f.write_str("Definite-length Text String"),
+            Self::IndefiniteText => f.write_str("Indefinite-length Text String"),
+            Self::DefiniteArray => f.write_str("Definite-length Array"),
+            Self::IndefiniteArray => f.write_str("Indefinite-length Array"),
+            Self::DefiniteMap => f.write_str("Definite-length Map"),
+            Self::IndefiniteMap => f.write_str("Indefinite-length Map"),
+            Self::False => f.write_str("False"),
+            Self::True => f.write_str("True"),
+            Self::Null => f.write_str("Null"),
+            Self::Undefined => f.write_str("Undefined"),
+            Self::Simple(v) => write!(f, "Simple Value {v}"),
+            Self::Float => f.write_str("Float"),
+        }
+    }
+}
+
+impl From<&Marker> for ItemKind {
+    fn from(marker: &Marker) -> Self {
+        match marker {
+            Marker::UnsignedInteger(_) => Self::UnsignedInteger,
+            Marker::NegativeInteger(_) => Self::NegativeInteger,
+            Marker::Bytes(Some(_)) => Self::DefiniteBytes,
+            Marker::Bytes(None) => Self::IndefiniteBytes,
+            Marker::Text(Some(_)) => Self::DefiniteText,
+            Marker::Text(None) => Self::IndefiniteText,
+            Marker::Array(Some(_)) => Self::DefiniteArray,
+            Marker::Array(None) => Self::IndefiniteArray,
+            Marker::Map(Some(_)) => Self::DefiniteMap,
+            Marker::Map(None) => Self::IndefiniteMap,
+            Marker::False => Self::False,
+            Marker::True => Self::True,
+            Marker::Null => Self::Null,
+            Marker::Undefined => Self::Undefined,
+            Marker::Simple(v) => Self::Simple(*v),
+            Marker::Float(_) => Self::Float,
+        }
+    }
+}
+
+/// The wire-level classification of a CBOR item: whether tags preceded it,
+/// and its payload-free [`ItemKind`]. This is the "found" half of
+/// [`Error::IncorrectType`][super::Error::IncorrectType] — it is `Copy` and
+/// owns nothing, so constructing a type-mismatch error never allocates and
+/// the message is only formatted if the error is actually displayed.
+///
+/// Build one from a decoded [`Head`] with [`Head::item_type`], or from a
+/// [`Value`][super::Value] with [`Value::item_type`][super::Value::item_type].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemType {
+    /// Whether one or more CBOR semantic tags preceded the item.
+    pub tagged: bool,
+    /// The shape of the item itself.
+    pub kind: ItemKind,
+}
+
+impl fmt::Display for ItemType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = if self.tagged { "Tagged" } else { "Untagged" };
+        write!(f, "{prefix} {}", self.kind)
+    }
+}
+
+impl From<&Head> for ItemType {
+    fn from(head: &Head) -> Self {
+        Self {
+            tagged: !head.tags.is_empty(),
+            kind: (&head.marker).into(),
         }
     }
 }
@@ -163,6 +275,11 @@ impl core::fmt::Display for Head {
 impl FromCbor for Head {
     type Error = Error;
 
+    // The non-generic workhorse every generic `parse` wrapper bottoms out
+    // in: without the hint, cross-crate callers pay a call per field decode
+    // and lose constant propagation into the major-type match they nearly
+    // always perform immediately.
+    #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         let mut tags = Tags::new();
         let (mut shortest, mut offset) = parse_tags(data, &mut tags)?;
@@ -296,13 +413,11 @@ impl FromCbor for Head {
                 let v = f32::from_be_bytes(to_array(data)?);
                 if shortest {
                     match v.classify() {
-                        core::num::FpCategory::Nan
-                        | core::num::FpCategory::Infinite
-                        | core::num::FpCategory::Zero => {
+                        FpCategory::Nan | FpCategory::Infinite | FpCategory::Zero => {
                             // There is an FP16 representation that is shorter
                             shortest = false;
                         }
-                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        FpCategory::Subnormal | FpCategory::Normal => {
                             if let Some(v16) = <half::f16 as num_traits::FromPrimitive>::from_f32(v)
                                 && <half::f16 as num_traits::ToPrimitive>::to_f32(&v16) == Some(v)
                             {
@@ -318,13 +433,11 @@ impl FromCbor for Head {
                 let v = f64::from_be_bytes(to_array(data)?);
                 if shortest {
                     match v.classify() {
-                        core::num::FpCategory::Nan
-                        | core::num::FpCategory::Infinite
-                        | core::num::FpCategory::Zero => {
+                        FpCategory::Nan | FpCategory::Infinite | FpCategory::Zero => {
                             // There is an FP16 representation that is shorter
                             shortest = false;
                         }
-                        core::num::FpCategory::Subnormal | core::num::FpCategory::Normal => {
+                        FpCategory::Subnormal | FpCategory::Normal => {
                             if let Some(v32) = f32::from_f64(v) {
                                 if v32.to_f64() == Some(v) {
                                     shortest = false;
@@ -387,9 +500,9 @@ fn parse_tags(data: &[u8], tags: &mut Tags) -> Result<(bool, usize), Error> {
 #[inline]
 fn to_array<const N: usize>(data: &[u8]) -> Result<[u8; N], Error> {
     match data.len().cmp(&N) {
-        core::cmp::Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
-        core::cmp::Ordering::Equal => Ok(data.try_into().unwrap()),
-        core::cmp::Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
+        Ordering::Less => Err(Error::NeedMoreData(N - data.len())),
+        Ordering::Equal => Ok(data.try_into().unwrap()),
+        Ordering::Greater => Ok(data[0..N].try_into().unwrap()),
     }
 }
 

@@ -1,4 +1,7 @@
-use hardy_cbor::decode::*;
+use hardy_cbor::decode::{
+    Array, Error, FromCbor, Head, ItemKind, ItemType, Map, Marker, Series, Untagged, Value, parse,
+    parse_array, parse_exact, parse_map, parse_sequence, parse_value, skip_value,
+};
 use hex_literal::hex;
 
 fn test_simple<T>(expected: T, data: &[u8])
@@ -1228,4 +1231,150 @@ fn head_fast_path_preserves_tags_shortest() {
         "non-canonical tag encoding must propagate shortest=false through fast path"
     );
     assert_eq!(len, 3);
+}
+
+// The owned-container impls: each copies by construction, gathers
+// indefinite-length chunks, and reports indefinite form as non-canonical.
+#[test]
+fn owned_string_decodes_definite_and_chunked() {
+    // Definite: 0x63 "abc" — canonical.
+    test_simple(String::from("abc"), &hex!("63 616263"));
+
+    // Indefinite: 0x7F, chunks "hi" + "!", break — legal, never canonical.
+    let (v, s, len) = parse::<(String, bool, usize)>(&hex!("7F 62 6869 61 21 FF")).unwrap();
+    assert_eq!(v, "hi!");
+    assert!(!s, "indefinite-length text must report non-canonical");
+    assert_eq!(len, 7);
+}
+
+#[test]
+fn owned_string_folds_tag_into_canonical_flag() {
+    // Tagged text decodes but is non-canonical here (tag folded into `s`).
+    let (v, s, _) = parse::<(String, bool, usize)>(&hex!("C1 61 61")).unwrap();
+    assert_eq!(v, "a");
+    assert!(!s, "tagged text must fold the tag into the canonical flag");
+}
+
+#[test]
+fn owned_bytes_decode_definite_and_chunked() {
+    // Definite: 0x43 [1, 2, 3] — canonical.
+    test_simple(Box::<[u8]>::from(&hex!("010203")[..]), &hex!("43 010203"));
+
+    // Indefinite: 0x5F, chunks [1] + [2, 3], break — legal, never canonical.
+    let (v, s, len) = parse::<(Box<[u8]>, bool, usize)>(&hex!("5F 41 01 42 0203 FF")).unwrap();
+    assert_eq!(&*v, &hex!("010203"));
+    assert!(!s, "indefinite-length bytes must report non-canonical");
+    assert_eq!(len, 7);
+}
+
+#[test]
+fn owned_containers_reject_wrong_types() {
+    // A uint is neither text nor bytes. `ItemType` is `Copy + PartialEq`,
+    // so pin the exact found classification, not just the variant.
+    let Err(Error::IncorrectType(expected, found)) = parse::<String>(&hex!("01")) else {
+        panic!("String from a uint must be IncorrectType");
+    };
+    assert_eq!(expected, "Untagged Text String");
+    assert_eq!(
+        found,
+        ItemType {
+            tagged: false,
+            kind: ItemKind::UnsignedInteger
+        }
+    );
+
+    let Err(Error::IncorrectType(expected, found)) = parse::<Box<[u8]>>(&hex!("01")) else {
+        panic!("Box<[u8]> from a uint must be IncorrectType");
+    };
+    assert_eq!(expected, "Untagged Byte String");
+    assert_eq!(
+        found,
+        ItemType {
+            tagged: false,
+            kind: ItemKind::UnsignedInteger
+        }
+    );
+
+    // Text is not bytes, and vice versa.
+    assert!(matches!(
+        parse::<Box<[u8]>>(&hex!("61 61")),
+        Err(Error::IncorrectType(
+            "Untagged Byte String",
+            ItemType {
+                tagged: false,
+                kind: ItemKind::DefiniteText
+            }
+        ))
+    ));
+    assert!(matches!(
+        parse::<String>(&hex!("41 01")),
+        Err(Error::IncorrectType(
+            "Untagged Text String",
+            ItemType {
+                tagged: false,
+                kind: ItemKind::DefiniteBytes
+            }
+        ))
+    ));
+}
+
+// `Untagged<T>` decodes exactly like `T` for untagged input, and refuses
+// tagged input from the first byte of the run. (That the run is never
+// read is not observable here; these pin the classification and the
+// pass-through behaviour that provide it.)
+#[test]
+fn untagged_passes_through_untagged_items() {
+    let (Untagged(v), s, len) = parse::<(Untagged<u64>, bool, usize)>(&hex!("05")).unwrap();
+    assert_eq!(v, 5);
+    assert!(s);
+    assert_eq!(len, 1);
+
+    // Non-shortest encodings still surface through the canonical flag.
+    let (Untagged(v), s, _) = parse::<(Untagged<u64>, bool, usize)>(&hex!("18 05")).unwrap();
+    assert_eq!(v, 5);
+    assert!(!s, "non-shortest inner encoding must report non-canonical");
+}
+
+#[test]
+fn untagged_rejects_tags_from_the_first_byte() {
+    // A single tag and a long run classify identically: the run is never
+    // entered. (The bare `u64` decode accepts both, folding the tag into
+    // the canonical flag — that is the behaviour `Untagged` opts out of.)
+    assert!(matches!(
+        parse::<Untagged<u64>>(&hex!("C1 05")),
+        Err(Error::UnexpectedTag)
+    ));
+
+    let mut run = vec![0xC0u8; 65_536];
+    run.push(0x05);
+    assert!(matches!(
+        parse::<Untagged<u64>>(&run),
+        Err(Error::UnexpectedTag)
+    ));
+
+    // Malformed major-6 heads (minors 28-31) are not tags: they fall
+    // through to the inner decode's own rejection.
+    assert!(matches!(
+        parse::<Untagged<u64>>(&hex!("DC 05")),
+        Err(Error::InvalidMinorValue(28))
+    ));
+}
+
+#[test]
+fn untagged_empty_input_needs_more_data() {
+    // An empty buffer has no first byte to classify, so it falls through
+    // to the inner decode's shortfall — never a premature tag verdict.
+    assert!(matches!(
+        parse::<Untagged<u64>>(&[]),
+        Err(Error::NeedMoreData(1))
+    ));
+}
+
+#[test]
+fn owned_containers_respect_parse_exact() {
+    // Trailing bytes after the item must be rejected by parse_exact.
+    let Err(Error::AdditionalItems) = parse_exact::<String>(&hex!("61 61 00")) else {
+        panic!("trailing bytes must be AdditionalItems");
+    };
+    assert_eq!(parse_exact::<String>(&hex!("61 61")).unwrap(), "a");
 }

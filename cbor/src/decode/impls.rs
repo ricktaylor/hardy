@@ -1,10 +1,12 @@
+use alloc::{boxed::Box, string::String, vec::Vec};
+
 use super::*;
 
 macro_rules! impl_uint_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -19,7 +21,7 @@ macro_rules! impl_uint_from_cbor {
 impl_uint_from_cbor!(u8, u16, u32, usize);
 
 impl FromCbor for u64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -28,8 +30,8 @@ impl FromCbor for u64 {
             Ok((v, shortest && marker.tags.is_empty(), offset))
         } else {
             Err(Error::IncorrectType(
-                "Untagged Unsigned Integer".to_string(),
-                marker.to_string(),
+                "Untagged Unsigned Integer",
+                marker.item_type(),
             ))
         }
     }
@@ -39,7 +41,7 @@ macro_rules! impl_int_from_cbor {
     ($($ty:ty),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -54,7 +56,7 @@ macro_rules! impl_int_from_cbor {
 impl_int_from_cbor!(i8, i16, i32, isize);
 
 impl FromCbor for i64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -70,10 +72,7 @@ impl FromCbor for i64 {
                 shortest && marker.tags.is_empty(),
                 offset,
             )),
-            _ => Err(Error::IncorrectType(
-                "Untagged Integer".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Untagged Integer", marker.item_type())),
         }
     }
 }
@@ -82,7 +81,7 @@ macro_rules! impl_float_from_cbor {
     ($(($ty:ty, $convert_expr:expr)),*) => {
         $(
             impl FromCbor for $ty {
-                type Error = self::Error;
+                type Error = Error;
 
                 #[inline]
                 fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -106,7 +105,7 @@ impl_float_from_cbor!(
 );
 
 impl FromCbor for f64 {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -114,16 +113,13 @@ impl FromCbor for f64 {
         if let Marker::Float(v) = marker.marker {
             Ok((v, shortest && marker.tags.is_empty(), offset))
         } else {
-            Err(Error::IncorrectType(
-                "Untagged Float".to_string(),
-                marker.to_string(),
-            ))
+            Err(Error::IncorrectType("Untagged Float", marker.item_type()))
         }
     }
 }
 
 impl FromCbor for bool {
-    type Error = self::Error;
+    type Error = Error;
 
     #[inline]
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
@@ -131,18 +127,70 @@ impl FromCbor for bool {
         match marker.marker {
             Marker::False => Ok((false, shortest && marker.tags.is_empty(), offset)),
             Marker::True => Ok((true, shortest && marker.tags.is_empty(), offset)),
-            _ => Err(Error::IncorrectType(
-                "Untagged Boolean".to_string(),
-                marker.to_string(),
-            )),
+            _ => Err(Error::IncorrectType("Untagged Boolean", marker.item_type())),
         }
+    }
+}
+
+// The two owned-container impls. Each copies by construction — the requested
+// type announces the allocation at the call site, which is what keeps the
+// codec's zero-copy discipline honest (see the `FromCbor` trait docs). On
+// hot paths, borrow through `parse_value` and `Value::Text`/`Value::Bytes`
+// instead.
+
+impl FromCbor for String {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
+            Value::Text(t) => Ok((String::from(t), shortest && tags.is_empty())),
+            // Indefinite-length text is RFC-permitted but never canonical;
+            // the chunk gather is the copy the owned return type announces.
+            Value::TextStream(chunks) => Ok((chunks.concat(), false)),
+            value => Err(Error::IncorrectType(
+                "Untagged Text String",
+                value.item_type(tags),
+            )),
+        })
+        .map(|((value, shortest), len)| (value, shortest, len))
+    }
+}
+
+/// Decode-only by design: there is deliberately no matching `ToCbor` for
+/// `Box<[u8]>`. The blanket `[T]` encode gives `[u8]` *array* semantics
+/// (major type 4), so a byte-string impl here would make `x.to_cbor()` and
+/// `(&*x).to_cbor()` emit different wire types for the same bytes. Encode
+/// byte strings explicitly through [`encode::Bytes`](crate::encode::Bytes);
+/// an owned blob type wraps that for encoding and delegates to this impl
+/// for decoding.
+impl FromCbor for Box<[u8]> {
+    type Error = Error;
+
+    fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
+        parse_value(data, |value, shortest, tags| match value {
+            Value::Bytes(r) => Ok((Box::from(&data[r]), shortest && tags.is_empty())),
+            // Indefinite-length bytes are RFC-permitted but never canonical;
+            // the chunk gather is the copy the owned return type announces.
+            Value::ByteStream(ranges) => {
+                let mut gathered = Vec::with_capacity(ranges.iter().map(|r| r.len()).sum());
+                for r in ranges {
+                    gathered.extend_from_slice(&data[r]);
+                }
+                Ok((gathered.into_boxed_slice(), false))
+            }
+            value => Err(Error::IncorrectType(
+                "Untagged Byte String",
+                value.item_type(tags),
+            )),
+        })
+        .map(|((value, shortest), len)| (value, shortest, len))
     }
 }
 
 impl<T> FromCbor for Option<T>
 where
     T: FromCbor,
-    T::Error: From<self::Error>,
+    T::Error: From<Error>,
 {
     type Error = T::Error;
 
@@ -169,7 +217,7 @@ macro_rules! impl_tuple_from_cbor {
             impl<T> FromCbor for $tuple_ty
             where
                 T: FromCbor,
-                T::Error: From<self::Error>,
+                T::Error: From<Error>,
             {
                 type Error = T::Error;
 
