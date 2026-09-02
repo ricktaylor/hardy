@@ -14,20 +14,18 @@ enum DrainFailure {
 
 // The outcome of the shared receive pipeline, for the three in-feeds.
 //
-// `Bundle` and `Disposed` are both *acceptance* (the bundle proceeds to
-// ingress, or was dropped internally with reports); `Refused` is the one
-// non-acceptance outcome — the transfer could not be taken at all
-// (truncation, the size cap) and its custodian keeps responsibility.
-//
-// The large `Bundle` variant is deliberate (cf. `ChainOutcome`): the bundle
-// moves through by value on the hot path, and boxing it to shrink the enum
-// would tax every received bundle with an allocation.
-#[allow(clippy::large_enum_variant)]
+// `Dispatched` and `Disposed` are both *acceptance* (the bundle ran the
+// Ingress chain and was handed to the dispatch queue, or was dropped
+// internally with reports); `Refused` is the one non-acceptance outcome — the
+// transfer could not be taken at all (truncation, the size cap) and its
+// custodian keeps responsibility.
 pub(super) enum Received {
-    /// A valid bundle, stored and ready for `ingress_bundle`.
-    Bundle(bundle::Bundle, Bytes),
+    /// Admitted: the bundle ran the Ingress chain, was written once to the
+    /// metadata store, and was handed to the dispatch queue.
+    Dispatched,
     /// Accepted and disposed of internally (invalid, gate-rejected,
-    /// duplicate) — reports emitted where possible; nothing to ingress.
+    /// chain-dropped, duplicate) — reports emitted where possible; nothing
+    /// dispatched.
     Disposed,
     /// Acceptance refused: truncated stream or over the size cap. The
     /// refusal site logs the specifics.
@@ -111,7 +109,9 @@ impl Dispatcher {
     // # Bundle State
     //
     // - Initial status: `New`
-    // - Next: `process_received_bundle()` → `ingress_bundle()` → Ingress filter → `Dispatching`
+    // - Next: `process_received_bundle()` runs the Ingress filter, writes the
+    //   record once at `Dispatching`, and hands it to the dispatch queue
+    //   (whose send swaps it to `DispatchPending`).
     //
     // See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
     // for the complete state transition diagram.
@@ -139,22 +139,21 @@ impl Dispatcher {
         // `bpa.bundle.received.dropped` with a `reason` label. Nothing was
         // stored on the CLA path before a drop, so there's no data to clean up.
         match self.process_received_bundle(stream, metadata).await {
-            Received::Bundle(bundle, data) => {
-                self.ingress_bundle(bundle, data).await;
-                cla::Acceptance::Accepted
-            }
-            Received::Disposed => cla::Acceptance::Accepted,
+            Received::Dispatched | Received::Disposed => cla::Acceptance::Accepted,
             Received::Refused => cla::Acceptance::Refused,
         }
     }
 
-    // Shared bundle processing: parse, validate, store, and report.
+    // Shared bundle processing: parse, validate, store, report, run the
+    // Ingress chain, and hand off to the dispatch queue.
     //
     // Called from the CLA ingress path (`receive_bundle`), the ADU
     // reassembly path (`reassemble`), and restart orphan recovery. Handles
     // all bundle validation internally — invalid bundles are logged,
     // counted, and dropped with status reports where possible (`Disposed`);
-    // only truncation and the size cap refuse (`Refused`).
+    // only truncation and the size cap refuse (`Refused`). An admitted
+    // bundle runs the Ingress chain, is written once to the metadata store
+    // (the P1 checkpoint), and is queued for dispatch (`Dispatched`).
     //
     // If `metadata.storage_name` is already set (reassembly/restart case),
     // the existing stored data is used. Otherwise (CLA case), the data is
@@ -285,9 +284,9 @@ impl Dispatcher {
         let data = whole;
         metadata.to_remove = to_remove;
         // The caller pre-stored the data (reassembly / restart) and owns its
-        // cleanup; on any non-`Bundle` outcome the caller deletes it. We only
-        // delete storage *we* create (the CLA `save_data` path below), and only
-        // on the post-store duplicate path.
+        // cleanup; on any non-dispatched outcome the caller deletes it. We only
+        // delete storage *we* create (the CLA `save_data` path below), on the
+        // chain-drop and duplicate paths.
         let mut caller_stored = false;
         if let Some(storage_name) = &metadata.storage_name {
             self.store.replace_data(storage_name, data.clone()).await;
@@ -301,17 +300,60 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.received").increment(1);
         metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
 
-        // Reception happened, so report it (when requested) before the duplicate
-        // check: RFC 9171 §5.6 reports on reception, and dedup belongs to the
-        // later dispatch step — so a replayed/duplicate bundle is still reported
-        // as received.
+        // Reception happened, so report it (when requested) before both the
+        // Ingress chain and the duplicate check: RFC 9171 §5.6 reports on
+        // reception, so a replayed/duplicate bundle — or one the chain then
+        // drops — is still reported as received.
         self.report_bundle_reception(&bundle, report_reason).await;
+
+        // Run the Ingress chain (Verifiers, then Classifiers) on the resident
+        // bundle *before* the single metadata write, so the one `insert_metadata`
+        // below persists any classification the chain applied. A chain that drops
+        // the bundle does so pre-insert: no record was ever created, so the drop
+        // is reported here directly (reception is already out) rather than via
+        // `drop_bundle`, which would try to tombstone a bundle that was never
+        // admitted.
+        let mut bundle = match self.filters.run_ingress(bundle, data, &*self.key_provider) {
+            Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
+            Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
+                if let Some(reason) = reason {
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                    self.report_bundle_deletion(&bundle, reason).await;
+                }
+                if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.store.delete_data(storage_name).await;
+                }
+                return Received::Disposed;
+            }
+            Err((bundle, e)) => {
+                // The stored bytes failed the chain's own decode pass — an
+                // internal inconsistency, since they parsed at reception.
+                error!("Ingress filter chain failed: {e}");
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                self.report_bundle_deletion(&bundle, ReasonCode::BlockUnintelligible)
+                    .await;
+                if !caller_stored && let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.store.delete_data(storage_name).await;
+                }
+                return Received::Disposed;
+            }
+        };
+
+        // Promote to the queued checkpoint before the single write. `New` is a
+        // purely in-memory "under construction" marker: the chain ran on the
+        // resident bundle above, and only the finished, classified record is
+        // ever persisted — directly at `Dispatching`. This one write replaces
+        // the old insert-`New`-then-checkpoint pair (P1); the dispatch send's
+        // conditional swap to `DispatchPending` is the queue commit, and a
+        // crash between the two recovers via the `Dispatching` restart arm. No
+        // chain-incomplete record ever reaches storage.
+        bundle.status = bundle::BundleStatus::Dispatching;
 
         // `insert_metadata` is the authoritative atomic dup check — the one place
         // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
-        // never double-dispatched. We don't pre-check existence earlier: that would
-        // add a metadata read to every received bundle to catch a comparatively
-        // rare replay.
+        // never dispatched. We don't pre-check existence earlier: that would add a
+        // metadata read to every received bundle to catch a comparatively rare
+        // replay.
         //
         // A duplicate *invalid* bundle (rejected before reaching here) isn't
         // deduplicated — a replay re-parses and may re-report. Accepted, not fixed:
@@ -332,7 +374,12 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
-        Received::Bundle(bundle, data)
+        // Account the admitted bundle in the status gauge; the dispatch send's
+        // swap moves it on to `DispatchPending`.
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
+
+        self.dispatch_bundle(bundle).await;
+        Received::Dispatched
     }
 
     // The config-gated RFC 9171 validity checks: policy requirements beyond
@@ -363,50 +410,5 @@ impl Dispatcher {
         }
 
         None
-    }
-
-    // Run the Ingress chain, checkpoint to `Dispatching`, and route the bundle.
-    //
-    // # Processing Steps
-    //
-    // 1. Run the Ingress chain (Verifiers, then Classifiers)
-    // 2. **Checkpoint**: Transition status to `Dispatching` — persisting any
-    //    classification the chain applied (crash-safe ordering)
-    // 3. Call `process_bundle()` for routing decision
-    //
-    // # Crash Safety
-    //
-    // The checkpoint to `Dispatching` is always persisted after the Ingress
-    // chain completes. On restart, bundles in `New` status re-run from this
-    // function, while bundles in `Dispatching` skip directly to routing.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-
-        match self.filters.run_ingress(bundle, data, &*self.key_provider) {
-            Ok(filter::ChainOutcome::Continue(mut bundle, _)) => {
-                // Always checkpoint to Dispatching (crash safety)
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
-                bundle.status = bundle::BundleStatus::Dispatching;
-                metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-                self.store.update_metadata(&bundle).await;
-
-                // Hand off to dispatch queue for fan-out via processing pool
-                self.dispatch_bundle(bundle).await
-            }
-            Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
-                self.drop_bundle(bundle, reason).await
-            }
-            Ok(filter::ChainOutcome::Drop(bundle, None)) => self.delete_bundle(bundle).await,
-            Err((bundle, e)) => {
-                // The stored bytes failed the chain's own decode pass — an
-                // internal inconsistency, since they parsed at reception.
-                // Resolve the bundle as unintelligible rather than strand it
-                // in `New`.
-                error!("Ingress filter chain failed: {e}");
-                self.drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                    .await
-            }
-        }
     }
 }

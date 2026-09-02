@@ -62,14 +62,14 @@ impl Dispatcher {
                 status,
             };
             match &bundle.status {
-                bundle::BundleStatus::New => {
-                    // Ingress filter not yet complete — run full ingress
-                    self.ingress_bundle(bundle, data).await;
-                }
+                // `New` never reaches storage — fresh ingress runs the chain in
+                // memory and writes a single `Dispatching` checkpoint — so it is
+                // not a recoverable state and falls to the no-op arm below.
+                //
                 // Dispatching: claimed by the consumer but processing never
-                // completed; DispatchPending: still queued. Both re-enqueue.
+                // completed; DispatchPending: still queued. Both re-enqueue —
+                // the chain already ran, so re-dispatch rather than re-run it.
                 bundle::BundleStatus::Dispatching | bundle::BundleStatus::DispatchPending => {
-                    // Ingress filter done — enqueue for routing
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
                 }
@@ -123,8 +123,8 @@ impl Dispatcher {
             }
         } else {
             // Orphan — data exists but no metadata. Run the full receive
-            // pipeline (process_received_bundle: parse, block removal,
-            // canonicalization, storage, reporting, and Ingress filter).
+            // pipeline (process_received_bundle: parse, validate, report, run
+            // the Ingress filter, and queue for dispatch).
             let mut metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
             metadata.storage_name = Some(storage_name.clone());
 
@@ -135,7 +135,8 @@ impl Dispatcher {
                 .trace_expect("New stream push failed?!?");
 
             match self.process_received_bundle(&mut rx, metadata).await {
-                ingress::Received::Bundle(bundle, data) => self.ingress_bundle(bundle, data).await,
+                // Admitted and queued for dispatch — its stored data is live.
+                ingress::Received::Dispatched => {}
                 // Re-validation rejected the orphan — delete its stranded data.
                 ingress::Received::Disposed => {
                     self.store.delete_data(&storage_name).await;

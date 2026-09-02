@@ -185,14 +185,6 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub async fn update_metadata(&self, bundle: &Bundle) {
-        self.metadata_storage
-            .replace(bundle)
-            .await
-            .trace_expect("Failed to replace metadata")
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
         if bundle.status != *status {

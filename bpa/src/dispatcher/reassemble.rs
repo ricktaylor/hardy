@@ -43,10 +43,9 @@ impl Dispatcher {
             .trace_expect("New stream push failed?!?");
 
         match self.process_received_bundle(&mut rx, metadata).await {
-            // Box::pin breaks the recursive async type cycle:
-            //   ingress_bundle → process_bundle → reassemble →
-            //   process_received_bundle → ingress_bundle
-            Received::Bundle(bundle, data) => Box::pin(self.ingress_bundle(bundle, data)).await,
+            // Admitted and queued for dispatch — the pre-stored data is now
+            // live, so leave it in place.
+            Received::Dispatched => {}
             // The reassembled data we pre-stored is now orphaned — delete it.
             Received::Disposed => {
                 self.store.delete_data(&storage_name).await;
