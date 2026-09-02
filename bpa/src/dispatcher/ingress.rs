@@ -1,16 +1,11 @@
-use hardy_bpv7::{block::BibCoverage, crc::CrcType, parse::PayloadTail, status_report::ReasonCode};
+use hardy_bpv7::{block::BibCoverage, checks, crc::CrcType, status_report::ReasonCode};
 
 use super::*;
-use crate::{bundle::parse, cla::Segment, stream::Receiver};
-
-// Why the payload drain failed. `Cancelled` and `TooLarge` refuse the
-// transfer (the CLA must not acknowledge it); `Rejected` is an internal
-// drop of an invalid-but-complete stream — accepted, then disposed of.
-enum DrainFailure {
-    Cancelled,
-    TooLarge { size: usize, max: usize },
-    Rejected,
-}
+use crate::{
+    bundle::{parse, tail},
+    cla::Segment,
+    stream::Receiver,
+};
 
 // The outcome of the shared receive pipeline, for the three in-feeds.
 //
@@ -30,66 +25,6 @@ pub(super) enum Received {
     /// Acceptance refused: truncated stream or over the size cap. The
     /// refusal site logs the specifics.
     Refused,
-}
-
-/// Dumb-spool an oversized payload's tail in memory after the gate has accepted
-/// the bundle: feed each remaining segment through [`PayloadTail`] (carrying the
-/// payload CRC, the block/outer-break checks, and trailing-data rejection) while
-/// accumulating the bytes — bounded by `max_size`, continuing the count the
-/// header pass started — then return the assembled bundle. The `BytesMut`
-/// accumulator is the single seam streaming storage will later replace.
-async fn drain_payload(
-    stream: &mut dyn Receiver<Segment>,
-    consumed: Bytes,
-    mut tail: PayloadTail,
-    max_size: usize,
-) -> core::result::Result<Bytes, DrainFailure> {
-    // Reuse the consumed prefix's allocation when we hold the only reference —
-    // the common multi-segment case, where the parser already dropped its
-    // clone — instead of deep-copying it; fall back to a copy only if a CLA
-    // still holds the `Bytes`. We deliberately do *not* `reserve`
-    // `tail.remaining()`: that count is wire-declared, so pre-allocating it
-    // would let a peer force a `max_size` allocation from a tiny transfer
-    // (the same amplification the parser's `reserve` clamp guards against).
-    // Growth tracks the bytes that actually arrive, bounded by `max_size`.
-    let mut whole = consumed
-        .try_into_mut()
-        .unwrap_or_else(|b| crate::BytesMut::from(b.as_ref()));
-    loop {
-        let (bytes, last) = match stream.recv().await {
-            Ok(Segment::Next(b)) => (b, false),
-            Ok(Segment::Final(b)) => (b, true),
-            Err(_) => {
-                debug!("Truncated payload (stream cancelled mid-tail)");
-                return Err(DrainFailure::Cancelled);
-            }
-        };
-
-        let size = whole.len().saturating_add(bytes.len());
-        if size > max_size {
-            return Err(DrainFailure::TooLarge {
-                size,
-                max: max_size,
-            });
-        }
-
-        let complete = match tail.push(&bytes) {
-            Ok(complete) => complete,
-            Err(e) => {
-                debug!("Streamed payload rejected: {e}");
-                return Err(DrainFailure::Rejected);
-            }
-        };
-        whole.extend_from_slice(&bytes);
-        if complete {
-            break;
-        }
-        if last {
-            debug!("Truncated payload");
-            return Err(DrainFailure::Rejected);
-        }
-    }
-    Ok(whole.freeze())
 }
 
 impl Dispatcher {
@@ -172,7 +107,7 @@ impl Dispatcher {
         // The cap as an in-memory bound: on a 32-bit target a cap beyond the
         // address space saturates — nothing larger could be buffered anyway.
         let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
-        let (mut hv, headers, tail, bcb_ops) = match parse::parse_headers(
+        let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
             max_size,
             self.key_provider(),
@@ -240,10 +175,19 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
-        // Move the decoded extension fields into metadata before the gate chain
-        // (a Classifier may read them); `take` leaves `hv` intact for the
-        // post-drain finalize, which ignores `extracted`.
-        metadata.extensions = core::mem::take(&mut hv.extracted);
+        // Destructure the verified headers once, here at the gate: move the
+        // decoded extension fields into metadata (a Classifier may read them),
+        // and keep the wire bundle, the deferred payload-BIB op-sets, the
+        // scheduled §E removals, and the reception reason for the drain and
+        // store below. Nothing downstream needs `hv` whole any more.
+        let parse::HeaderVerify {
+            bundle,
+            extracted,
+            to_remove,
+            report_reason,
+            deferred_bibs,
+        } = hv;
+        metadata.extensions = extracted;
 
         // Ingress chain at the pre-drain gate, on the resident header prefix.
         // It runs synchronously on a throwaway record: the wire bundle is
@@ -257,7 +201,7 @@ impl Dispatcher {
         let (mut metadata, headers) = if self.filters.has_ingress() {
             let record = bundle::Bundle {
                 metadata,
-                bundle: hv.bundle.clone(),
+                bundle: bundle.clone(),
                 status: bundle::BundleStatus::New,
             };
             match self
@@ -291,41 +235,107 @@ impl Dispatcher {
             (metadata, headers)
         };
 
-        // Gate passed — drain the payload (oversized case), then finalize.
+        // Drain the payload tail (oversized case) through the validating
+        // TailReceiver: it feeds the payload CRC / block+outer breaks and each
+        // deferred BIB digest as the bytes stream past, accumulating the whole
+        // bundle bounded by `max_size` (the amplification guard — the declared
+        // length is not trusted). A resident bundle (`tail` None) was already
+        // fully validated by the header pass: the payload was present, so no
+        // BIB was deferred and its CRC was checked inline.
         let whole = match tail {
             None => headers,
-            Some(tail) => match drain_payload(stream, headers, tail, max_size).await {
-                Ok(whole) => whole,
-                Err(DrainFailure::Cancelled) => return Received::Refused,
-                Err(DrainFailure::TooLarge { size, max }) => {
-                    debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
-                    return Received::Refused;
-                }
-                Err(DrainFailure::Rejected) => {
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                    return Received::Disposed;
-                }
-            },
-        };
+            Some(tail) => {
+                // One incremental verifier per deferred payload BIB, from the
+                // header material; the resident payload prefix is absorbed by
+                // `TailReceiver::new`, the streamed remainder as it arrives.
+                let verifiers = if deferred_bibs.is_empty() {
+                    Vec::new()
+                } else {
+                    // The key source is `!Send`; build it and the verifiers in
+                    // one sync block so it never crosses the `await` below.
+                    let result = {
+                        let key_source = self.key_provider()(&bundle, &headers);
+                        checks::begin_payload_verification(
+                            &headers,
+                            key_source.as_ref(),
+                            &bundle.blocks,
+                            &deferred_bibs,
+                        )
+                    };
+                    match result {
+                        Ok(verifiers) => verifiers,
+                        Err(error) => {
+                            debug!("Invalid bundle received: {error}");
+                            let reason = parse::status_report_reason_for(&error);
+                            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                            let bundle = bundle::Bundle {
+                                metadata,
+                                bundle,
+                                status: bundle::BundleStatus::New,
+                            };
+                            self.report_bundle_reception(&bundle, reason).await;
+                            return Received::Disposed;
+                        }
+                    }
+                };
+                let payload_start = bundle
+                    .blocks
+                    .get(&1)
+                    .map_or(headers.len(), |b| b.payload_range().start as usize);
+                let mut tail_rx = tail::TailReceiver::new(
+                    stream,
+                    tail,
+                    verifiers,
+                    &headers.slice(payload_start..),
+                );
 
-        // Post-drain finalize: verify the deferred block-1 BIB targets and
-        // collect the §E removals. The decoded extension fields already moved
-        // into metadata at the gate above.
-        let (bundle, to_remove, report_reason) = match parse::finalize_with_provider(
-            &whole,
-            hv,
-            self.key_provider(),
-        ) {
-            Ok(x) => x,
-            Err((bundle, error)) => {
-                debug!("Invalid bundle received: {error}");
-                let reason = parse::status_report_reason_for(&error);
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                let bundle = bundle::Bundle::new(bundle, metadata);
-                self.report_bundle_reception(&bundle, reason).await;
-                return Received::Disposed;
+                // Accumulate onto the resident prefix, reusing its allocation
+                // when unshared (a CLA still holding the `Bytes` forces a copy).
+                let mut whole = headers
+                    .try_into_mut()
+                    .unwrap_or_else(|b| crate::BytesMut::from(b.as_ref()));
+                loop {
+                    let (bytes, last) = match tail_rx.recv().await {
+                        Ok(Segment::Next(b)) => (b, false),
+                        Ok(Segment::Final(b)) => (b, true),
+                        // A failing pull records the reason in `tail_rx`;
+                        // `finish` categorises it below.
+                        Err(_) => break,
+                    };
+                    if whole.len().saturating_add(bytes.len()) > max_size {
+                        debug!("Streamed bundle exceeds max_bundle_size; refused");
+                        return Received::Refused;
+                    }
+                    whole.extend_from_slice(&bytes);
+                    if last {
+                        break;
+                    }
+                }
+
+                match tail_rx.finish() {
+                    Ok(()) => whole.freeze(),
+                    Err(tail::TailFailure::Truncated) => {
+                        debug!("Truncated payload; refused");
+                        return Received::Refused;
+                    }
+                    Err(tail::TailFailure::Invalid(e)) => {
+                        debug!("Streamed payload rejected: {e}");
+                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                        return Received::Disposed;
+                    }
+                    Err(tail::TailFailure::IntegrityFailed { bib }) => {
+                        debug!("Deferred payload BIB {bib} failed integrity; dropped");
+                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::FailedSecurityOperation)).increment(1);
+                        return Received::Disposed;
+                    }
+                }
             }
         };
+
+        // The §E removals travel with the bundle to the output doors, sorted
+        // for a deterministic persisted order.
+        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
+        to_remove.sort_unstable();
 
         // The bundle is stored exactly as received — no editing on input.
         // The §E removals ride the metadata and are applied per-attempt at

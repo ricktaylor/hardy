@@ -26,9 +26,6 @@ use super::super::{
 };
 
 /// Why a [`TailReceiver`] rejected the drained bytes.
-// Wired into the ingress pipeline by a later commit; until then it is
-// reachable only from tests.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum TailFailure {
     /// The stream ended before the bundle's outer break: the producer went
@@ -48,13 +45,12 @@ pub enum TailFailure {
 /// A [`Receiver<Segment>`] decorator that validates a bundle's payload tail
 /// as it streams through — see the [module docs](self).
 ///
-/// Owns its inner receiver so it can live wherever the drain runs (the
-/// spawned spool task): construct with [`new`](Self::new), drive it as an
-/// ordinary [`Receiver`], then settle with [`finish`](Self::finish).
-// Wired into the ingress pipeline by a later commit.
-#[allow(dead_code)]
-pub struct TailReceiver<R> {
-    inner: R,
+/// Borrows the stream it drains for the duration of the drain: construct with
+/// [`new`](Self::new), drive it as an ordinary [`Receiver`], then settle with
+/// [`finish`](Self::finish). Held by reference while the drain runs inline in
+/// the ingress pipeline; the spawned-spool phase revisits ownership.
+pub struct TailReceiver<'a> {
+    inner: &'a mut dyn Receiver<Segment>,
     tail: PayloadTail,
     // Each deferred payload BIB, paired with its block number for failure
     // attribution.
@@ -62,12 +58,9 @@ pub struct TailReceiver<R> {
     // Set by the first failing pull; a later pull short-circuits and
     // `finish` reports it.
     failure: Option<TailFailure>,
-    // The `PayloadTail` reported the bundle complete (outer break consumed).
-    complete: bool,
 }
 
-#[allow(dead_code)]
-impl<R> TailReceiver<R> {
+impl<'a> TailReceiver<'a> {
     /// Wraps `inner`, marrying the `tail` continuation and the deferred-BIB
     /// `verifiers` to the stream. `initial_body` is the payload's
     /// block-type-specific data prefix already resident in the header pass's
@@ -75,7 +68,7 @@ impl<R> TailReceiver<R> {
     /// but the verifiers were not, so it is absorbed here before the stream
     /// supplies the rest.
     pub fn new(
-        inner: R,
+        inner: &'a mut dyn Receiver<Segment>,
         tail: PayloadTail,
         mut verifiers: Vec<(u64, bib::Verifier)>,
         initial_body: &[u8],
@@ -88,7 +81,6 @@ impl<R> TailReceiver<R> {
             tail,
             verifiers,
             failure: None,
-            complete: false,
         }
     }
 
@@ -117,7 +109,7 @@ impl<R> TailReceiver<R> {
     // the run's body-prefix length.
     fn absorb(&mut self, bytes: &[u8]) -> Result<(), TailFailure> {
         let before = self.tail.body_remaining();
-        self.complete = self.tail.push(bytes).map_err(TailFailure::Invalid)?;
+        self.tail.push(bytes).map_err(TailFailure::Invalid)?;
         let body_len = (before - self.tail.body_remaining()) as usize;
         if body_len > 0 {
             for (_, verifier) in &mut self.verifiers {
@@ -129,7 +121,7 @@ impl<R> TailReceiver<R> {
 }
 
 #[async_trait]
-impl<R: Receiver<Segment>> Receiver<Segment> for TailReceiver<R> {
+impl Receiver<Segment> for TailReceiver<'_> {
     async fn recv(&mut self) -> Result<Segment, RecvError> {
         // A prior failure is terminal: never yield more bytes downstream.
         if self.failure.is_some() {
@@ -258,8 +250,8 @@ mod tests {
         let (consumed, tail) = to_partial(&full);
         let rest = full.slice(consumed.len()..);
 
-        let inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(inner, tail, Vec::new(), &[]);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
         let yielded = drain(&mut tr).await.expect("valid tail drains");
         assert_eq!(yielded, rest, "every byte is yielded onward unchanged");
         tr.finish().expect("a well-formed tail settles Ok");
@@ -274,8 +266,8 @@ mod tests {
         let mut rest = full.slice(consumed.len()..).to_vec();
         rest[10] ^= 0xFF; // inside the streamed body, before the CRC/breaks
 
-        let inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(inner, tail, Vec::new(), &[]);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
         // The corruption surfaces at the CRC check (end of body) as a failed
         // pull; finish categorises it.
         let _ = drain(&mut tr).await;
@@ -293,13 +285,13 @@ mod tests {
         let rest = full.slice(consumed.len()..);
 
         // Send only the first chunk, then drop the sender (no `Final`).
-        let (tx, rx) = hardy_async::channel::bounded(1);
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
         tx.send(Segment::Next(rest.slice(..CHUNK)))
             .await
             .expect("channel open");
         drop(tx);
 
-        let mut tr = TailReceiver::new(rx, tail, Vec::new(), &[]);
+        let mut tr = TailReceiver::new(&mut rx, tail, Vec::new(), &[]);
         assert!(
             matches!(tr.recv().await, Ok(Segment::Next(_))),
             "first pull yields"
@@ -322,8 +314,8 @@ mod tests {
         let mut rest = full.slice(consumed.len()..).to_vec();
         rest.push(0x00); // one byte past the bundle's outer break
 
-        let inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(inner, tail, Vec::new(), &[]);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
         let _ = drain(&mut tr).await;
         assert!(
             matches!(tr.finish(), Err(TailFailure::Invalid(_))),
@@ -371,8 +363,8 @@ mod tests {
         assert_eq!(verifiers.len(), 1);
 
         let rest = full.slice(headers.len()..);
-        let inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(inner, tail, verifiers, &initial_body);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, &initial_body);
         drain(&mut tr).await.expect("valid signed tail drains");
         tr.finish().expect("the deferred payload BIB verifies");
     }
@@ -390,8 +382,8 @@ mod tests {
         // ordering, then require it is not Ok.
         let mut rest = full.slice(headers.len()..).to_vec();
         rest[5] ^= 0xFF;
-        let inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(inner, tail, verifiers, &initial_body);
+        let mut inner = segment_stream(&rest).await;
+        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, &initial_body);
         let _ = drain(&mut tr).await;
         assert!(
             tr.finish().is_err(),
@@ -402,6 +394,6 @@ mod tests {
     #[test]
     fn tail_receiver_is_send() {
         fn assert_send<T: Send>() {}
-        assert_send::<TailReceiver<hardy_async::channel::Receiver<Segment>>>();
+        assert_send::<TailReceiver<'static>>();
     }
 }
