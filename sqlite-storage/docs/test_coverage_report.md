@@ -13,8 +13,8 @@ The `MetadataStorage` trait contract is verified by the shared storage harness (
 
 | Part 4 Ref | Requirement | Result | Verified By |
 | :--- | :--- | :--- | :--- |
-| 7.2 | Metadata storage | **Pass** | META-01..17 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
-| 7.2.1 | Store/retrieve metadata | **Pass** | META-01 (insert and get), META-03 (update/replace), META-17 (replace never resurrects a tombstone) |
+| 7.2 | Metadata storage | **Pass** | META-01..16 ([`PLAN-STORE-01`](../../tests/storage/docs/test_plan.md) §4) |
+| 7.2.1 | Store/retrieve metadata | **Pass** | META-01 (insert and get), META-03 (status update by compare-and-swap) |
 | 7.2.2 | Configurable database location | **Pass** | SQL-01 (`test_configuration_custom_db_dir`) |
 | 7.3 | Recovery after restart | **Pass** | META-05 (confirm_exists) + META-12 (start_recovery) + META-13 (remove_unconfirmed) |
 

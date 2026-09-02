@@ -203,10 +203,6 @@ impl MetadataStorage for ObservedMetadata {
         self.inner.insert(bundle).await
     }
 
-    async fn replace(&self, bundle: &Bundle) -> StorageResult<()> {
-        self.inner.replace(bundle).await
-    }
-
     async fn swap_status(
         &self,
         bundle_id: &Id,

@@ -66,7 +66,7 @@ The `BundleStorage` trait manages binary bundle data as opaque blobs. Implementa
 
 The `MetadataStorage` trait manages bundle lifecycle state with indexed queries. Key operations include:
 
-- **CRUD**: get, insert, replace, tombstone (prevents re-insertion)
+- **CRUD**: get, insert, tombstone (prevents re-insertion)
 - **Recovery**: start_recovery, confirm_exists, remove_unconfirmed
 - **Queue management**: reset_peer_queue (ForwardPending → Waiting)
 - **Polling**: poll_expiry, poll_waiting, poll_pending for background processing

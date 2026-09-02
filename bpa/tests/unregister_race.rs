@@ -120,10 +120,6 @@ impl MetadataStorage for SweepGate {
         self.inner.insert(bundle).await
     }
 
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
-    }
-
     async fn swap_status(
         &self,
         bundle_id: &Id,
