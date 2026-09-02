@@ -258,12 +258,12 @@ impl Dispatcher {
             },
         };
 
-        // Post-drain finalize: verify the deferred block-1 BIB targets and apply
-        // §E rewrites. The decoded extension fields were captured at header time
-        // and the §E rewrite only removes blocks, so move `hv.extracted` into the
-        // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
+        // Post-drain finalize: verify the deferred block-1 BIB targets and
+        // collect the §E removals. The decoded extension fields were captured at
+        // header time, so move `hv.extracted` into the metadata now (`take`
+        // leaves `hv` intact for finalize, which ignores it).
         metadata.extensions = core::mem::take(&mut hv.extracted);
-        let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
+        let (bundle, to_remove, report_reason) = match parse::finalize_with_provider(
             &whole,
             hv,
             self.key_provider(),
@@ -279,15 +279,15 @@ impl Dispatcher {
             }
         };
 
-        // Persist (flatten any rewrite chunks first).
-        let data = match chunks {
-            None => whole,
-            Some(chunks) => hardy_bpv7::editor::Chunk::flatten_bytes(chunks, whole),
-        };
-        // `Some` here = the caller pre-stored the data (reassembly / restart) and
-        // owns its cleanup; on any non-`Bundle` outcome the caller deletes it.
-        // We only delete storage *we* create (the CLA `save_data` path below),
-        // and only on the post-store duplicate path.
+        // The bundle is stored exactly as received — no editing on input.
+        // The §E removals ride the metadata and are applied per-attempt at
+        // the output doors (egress rewrite, deliver strip).
+        let data = whole;
+        metadata.to_remove = to_remove;
+        // The caller pre-stored the data (reassembly / restart) and owns its
+        // cleanup; on any non-`Bundle` outcome the caller deletes it. We only
+        // delete storage *we* create (the CLA `save_data` path below), and only
+        // on the post-store duplicate path.
         let mut caller_stored = false;
         if let Some(storage_name) = &metadata.storage_name {
             self.store.replace_data(storage_name, data.clone()).await;

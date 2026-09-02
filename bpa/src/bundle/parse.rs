@@ -1,7 +1,7 @@
 //! BPA-local keyed Bundle parse pipelines. Each composes the per-section
-//! [`hardy_bpv7::checks`] helpers (and [`rewrite::apply_rewrites`]) and returns
-//! the structurally-parsed `Bundle` together with the §D-decoded extension
-//! fields the BPA records in metadata.
+//! [`hardy_bpv7::checks`] helpers and returns the structurally-parsed
+//! `Bundle` together with the §D-decoded extension fields the BPA records in
+//! metadata.
 //!
 //! Two entry points. Neither canonicalises: non-canonical CBOR is rejected at
 //! parse (RFC 9171 §4.1), and rewriting it is a configurable mutating-filter
@@ -20,16 +20,18 @@
 //!   The header pass classifies and *schedules* the removals — the
 //!   `delete_block_on_failure`-flagged unknowns and the §5.1.1 failure-drops
 //!   ([`HeaderVerify::to_remove`]) — and drains BPSec down to the deferred
-//!   block-1 (payload) targets; the finalize pass verifies those and applies
-//!   the removals — including the re-encryption cascade for BCB-covered BIBs
-//!   whose target list shrinks — once the payload is resident.
-//!   Used by `dispatcher::ingress`; on a keyed failure returns the recoverable
-//!   bundle so the caller can emit a status report.
+//!   block-1 (payload) targets; the finalize pass verifies those once the
+//!   payload is resident and hands back the scheduled removals. The bundle is
+//!   **stored as received** — no editing on input — so the removals ride the
+//!   metadata and are applied per attempt at the output doors (the egress
+//!   rewrite head, the deliver strip), where the BPSec cascade for a
+//!   BCB-covered BIB whose target list shrinks runs. Used by
+//!   `dispatcher::ingress`; on a keyed failure returns the recoverable bundle
+//!   so the caller can emit a status report.
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, editor::Chunk, parse, rewrite,
-    status_report::ReasonCode,
+    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, parse, status_report::ReasonCode,
 };
 use tracing::debug;
 
@@ -479,66 +481,47 @@ fn verify_headers(
     Ok((extracted, to_remove, report_reason, facts.deferred_bibs))
 }
 
-/// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
-/// queued §E block removals — both against the now-resident full bundle `whole`.
-/// Returns the (possibly-rewritten) structural [`Bpv7Bundle`]. The decoded extension
-/// fields are *not* returned: they were captured at header time
-/// ([`HeaderVerify::extracted`]) and the §E rewrite only removes blocks (never
-/// a still-decodable well-known extension block), so the caller pairs the bundle
-/// with the `extracted` it already holds. The key source is rebuilt here
-/// (synchronously, never held across the drain's `await`) from the structural
-/// `bundle`. On a keyed failure returns the structural bundle for a status report.
-#[allow(clippy::result_large_err, clippy::type_complexity)]
+/// Post-drain finalize: verify the deferred block-1 BIB targets against the
+/// now-resident full bundle `whole`, and hand back the §E block removals to
+/// persist. Returns the structural [`Bpv7Bundle`] unchanged — the bundle is
+/// **stored as received** (no editing on input): the §5.1.1 failure-drops and
+/// honoured `delete_block_on_failure` removals ride the bundle's metadata and
+/// are applied per transmission/delivery attempt at the output doors. The
+/// decoded extension fields are *not* returned: they were captured at header
+/// time ([`HeaderVerify::extracted`]), so the caller pairs the bundle with the
+/// `extracted` it already holds. The key source is rebuilt here (synchronously,
+/// never held across the drain's `await`) only for the deferred-payload verify.
+/// On a keyed failure returns the structural bundle for a status report.
+#[allow(clippy::result_large_err)]
 pub fn finalize_with_provider<F>(
     whole: &[u8],
-    mut hv: HeaderVerify,
+    hv: HeaderVerify,
     key_provider: F,
-) -> Result<(Bpv7Bundle, Option<Vec<Chunk>>, ReasonCode), (Bpv7Bundle, hardy_bpv7::Error)>
+) -> Result<(Bpv7Bundle, Vec<u64>, ReasonCode), (Bpv7Bundle, hardy_bpv7::Error)>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
-    // Only the deferred-payload verify and the §E rewrite below consume keys.
-    // The common no-BPSec, no-removal bundle must not pay a second
-    // KeyProvider call and KeySource allocation (the header pass already
-    // built one), so construct it lazily, once, iff a branch needs it.
-    let key_source = (!hv.deferred_bibs.is_empty() || !hv.to_remove.is_empty())
-        .then(|| key_provider(&hv.bundle, whole));
-
     // Deferred payload pass: verify exactly the block-1 BIB targets (header
     // targets were already checked in the header pass — no repeated crypto).
+    // The common no-BPSec bundle must not pay a second KeyProvider call and
+    // KeySource allocation, so build it lazily, once, only when deferred.
     if !hv.deferred_bibs.is_empty() {
-        let key_source = key_source
-            .as_deref()
-            .expect("built when a BPSec branch runs");
-        if let Err(e) =
-            checks::verify_payload(whole, key_source, &hv.bundle.blocks, &hv.deferred_bibs)
-        {
+        let key_source = key_provider(&hv.bundle, whole);
+        if let Err(e) = checks::verify_payload(
+            whole,
+            key_source.as_ref(),
+            &hv.bundle.blocks,
+            &hv.deferred_bibs,
+        ) {
             return Err((hv.bundle, e));
         }
     }
 
-    // §E — apply block removals (`delete_block_on_failure` unknowns + dropped
-    // BIBs) if any. Needs the whole bundle: the Editor copies/references every
-    // block, including the payload. Canonical re-emits are not done here (see the
-    // module docs) — only removals, hence the empty rewrite map.
-    let chunks = if hv.to_remove.is_empty() {
-        None
-    } else {
-        let key_source = key_source
-            .as_deref()
-            .expect("built when a BPSec branch runs");
-        match rewrite::apply_rewrites(whole, &hv.bundle, key_source, HashMap::new(), hv.to_remove) {
-            Ok(rewritten) => rewritten.map(|(new_bundle, chunks)| {
-                hv.bundle = new_bundle;
-                chunks
-            }),
-            Err(e) => {
-                return Err((hv.bundle, e));
-            }
-        }
-    };
-
-    Ok((hv.bundle, chunks, hv.report_reason))
+    // The §E removals travel with the bundle to the output doors, sorted for
+    // a deterministic persisted order.
+    let mut to_remove: Vec<u64> = hv.to_remove.into_iter().collect();
+    to_remove.sort_unstable();
+    Ok((hv.bundle, to_remove, hv.report_reason))
 }
 
 // ---------------------------------------------------------------------------
@@ -680,14 +663,21 @@ mod tests {
         };
         assert!(tail.is_none(), "the small bundle is fully resident");
 
-        let (bundle, chunks, _reason) = finalize_with_provider(&headers, hv, |_, _| keys())
+        // §5.1.1 failure-drop is now *scheduled* at ingress, not applied:
+        // the bundle is stored as received and the corrupt target rides the
+        // removal set to the output doors, where the BPSec cascade runs per
+        // attempt (the shared BCB survives there, still covering the payload).
+        let (bundle, to_remove, _reason) = finalize_with_provider(&headers, hv, |_, _| keys())
             .map_err(|(_, e)| e)
             .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
-        assert!(chunks.is_some(), "the bundle must be rewritten");
-        assert!(!bundle.blocks.contains_key(&3), "corrupt BIB dropped");
+        assert_eq!(to_remove, vec![3], "only the corrupt target is scheduled");
+        assert!(
+            bundle.blocks.contains_key(&3),
+            "no editing on input: the corrupt block is still present in the stored bundle"
+        );
         assert!(
             bundle.blocks.contains_key(&2),
-            "shared BCB survives, still covering the payload"
+            "shared BCB retained as received"
         );
         assert!(bundle.blocks.contains_key(&1), "payload survives");
     }
@@ -891,12 +881,12 @@ mod tests {
             "the block-1 BIB op-set must ride the handover"
         );
 
-        let (bundle, chunks, _reason) = finalize_with_provider(&whole, hv, |_, _| {
+        let (bundle, to_remove, _reason) = finalize_with_provider(&whole, hv, |_, _| {
             Box::new(bpsec::key::KeySet::new(vec![sign_key()]))
         })
         .map_err(|(_, e)| e)
         .expect("the deferred payload BIB verifies against the drained bundle");
-        assert!(chunks.is_none(), "nothing was scheduled for removal");
+        assert!(to_remove.is_empty(), "nothing was scheduled for removal");
         assert!(bundle.blocks.contains_key(&1), "payload survives");
     }
 

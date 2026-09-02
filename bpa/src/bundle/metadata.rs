@@ -133,6 +133,18 @@ pub struct BundleMetadata {
     // Classifier-chain output; empty until the filter tranches land.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
+    // Wire-scoped block removals derived at ingress: RFC 9172 §5.1.1
+    // failure-drops and honoured `delete_block_on_failure` unknowns. The
+    // stored bundle is kept as received — no editing on input — so these
+    // ride the record and are applied per transmission/delivery attempt at
+    // the output doors (egress rewrite, deliver strip). A cache of a pure
+    // derivation over the received bytes + keys, re-derived at restart
+    // re-admission; crate-private, fixed machinery only (never a filter).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub(crate) to_remove: Vec<u64>,
     // Opaque key used by the storage backend to locate the serialised bundle data.
     pub(crate) storage_name: Option<Arc<str>>,
 }
@@ -151,6 +163,7 @@ impl BundleMetadata {
             },
             extensions: ExtensionFields::default(),
             classification: Classification::default(),
+            to_remove: Vec::new(),
             storage_name: None,
         }
     }

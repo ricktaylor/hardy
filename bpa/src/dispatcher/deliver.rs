@@ -12,6 +12,35 @@ use super::*;
 use crate::services::registry::{Service, ServiceImpl};
 
 impl Dispatcher {
+    // Apply the deferred §E block removals to a bundle's wire form for
+    // delivery to a raw-bundle service — the deliver-side twin of the egress
+    // rewrite head. Returns `data` unchanged when nothing is queued (the
+    // common case, one branch and no re-parse); otherwise re-parses, runs the
+    // removal cascade with a fresh key source, and flattens the result. The
+    // stored bundle is never touched.
+    fn strip_removed_blocks(
+        &self,
+        bundle: &bundle::Bundle,
+        data: Bytes,
+    ) -> Result<Bytes, hardy_bpv7::editor::Error> {
+        use hardy_bpv7::bpsec::edit::BPSecEditor;
+
+        if bundle.metadata.to_remove.is_empty() {
+            return Ok(data);
+        }
+        let Parsed {
+            data, bundle: raw, ..
+        } = parse::parse(data).map_err(hardy_bpv7::editor::Error::from)?;
+        let key_source = self.key_source(&raw, &data);
+        let to_remove = bundle.metadata.to_remove.iter().copied().collect();
+        let editor = hardy_bpv7::editor::Editor::new(&raw, &data)
+            .remove_blocks(to_remove, key_source.as_ref())
+            .map_err(|(_, e)| e)?
+            .0;
+        let (_, chunks) = editor.rebuild_bundle()?;
+        Ok(hardy_bpv7::editor::Chunk::flatten_bytes(chunks, data))
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(&self, service: Arc<Service>, bundle: bundle::Bundle) {
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
@@ -65,7 +94,7 @@ impl Dispatcher {
         // so a bundle left there is invisible until restart.
 
         // Deliver chain: Rewriters (transport-block strip), then Verifiers.
-        let (bundle, mut data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
+        let (bundle, data) = match self.filters.run_deliver(bundle, data, &*self.key_provider) {
             Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
             Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                 return self.drop_bundle(bundle, reason).await;
@@ -93,8 +122,25 @@ impl Dispatcher {
 
         let delivery_result = match &service.service {
             ServiceImpl::LowLevel(svc) => {
-                // Pass raw bundle bytes to low-level services: the whole
-                // bundle is in hand, so it travels as a single Final segment.
+                // Strip the §E block removals the ingress gate deferred before
+                // handing raw bytes to a low-level service — the stored bundle
+                // is as received, the removals apply per delivery attempt (the
+                // deliver-side twin of the egress rewrite head). A strip
+                // failure means the removal cascade cannot be re-applied (a
+                // logic bug on a validated bundle, or a key that has since
+                // rotated away): drop rather than deliver a bundle that still
+                // carries a block §5.1.1 requires gone.
+                let mut data = match self.strip_removed_blocks(&bundle, data) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        debug!("Cannot apply deferred block removals at delivery: {e}");
+                        return self
+                            .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
+                            .await;
+                    }
+                };
+                // The whole bundle is in hand, so it travels as a single Final
+                // segment.
                 let total_len = data.len() as u64;
                 svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
