@@ -8,8 +8,7 @@
 // - [`Writer`] adapts the other direction: it pulls a borrowed
 //   [`Segment`] stream and pushes wire chunks onto a transfer it sends.
 //
-// The server's counterpart is `server::adapter::Reader`; the write half
-// there is folded into its RPC engines rather than a matching `Writer`.
+// The server's counterparts are `server::adapter::{Reader, Writer}`.
 
 use core::{future::Future, mem, pin::Pin};
 
