@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
 
-use super::adapter;
+use super::{TRANSFER_REQUEST_CAPACITY, adapter};
 use crate::stream::{Cancel, Chunk};
 
 // A surface's Receive door: how to build the metadata that opens a
@@ -57,7 +57,7 @@ impl<D: ReceiveDoor> Collector<D> {
         let door = self.door.clone();
         let token = self.token.clone();
         adapter::Reader::lazy(move || async move {
-            let (requests, rx) = mpsc::channel(2);
+            let (requests, rx) = mpsc::channel(TRANSFER_REQUEST_CAPACITY);
             requests.send(D::metadata(&token, bundle_id)).await.ok()?;
             let chunks = door.open(ReceiverStream::new(rx)).await?;
             Some((chunks, requests))

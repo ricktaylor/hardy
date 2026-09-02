@@ -593,7 +593,7 @@ impl hardy_bpa::services::Service for Service {
 
     // INTERIM BUFFERING: the ping client parses the whole response bundle
     // with a whole-buffer codec, so it assembles the stream in memory via
-    // `stream::concat_stream` before checking the reflected payload. This
+    // `stream::buffer_stream` before checking the reflected payload. This
     // is a deliberate stepping stone toward the full streaming pipeline;
     // see bpa/docs/streaming_pipeline_design.md.
     async fn on_deliver(
@@ -719,6 +719,6 @@ impl hardy_bpa::services::Service for Service {
         _reason: ReasonCode,
         _timestamp: Option<time::OffsetDateTime>,
     ) {
-        // Status reports arrive via on_receive when report_to = service EID
+        // Status reports arrive via on_deliver when report_to = service EID
     }
 }

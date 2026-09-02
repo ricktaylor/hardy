@@ -166,25 +166,51 @@ impl Dispatcher {
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, re-dispatching");
 
-                // Bundle-scoped evidence about a single transfer: restore
-                // the pre-rewrite block map (the stored data is the
-                // un-rewritten original) and re-run the routing decision
-                // now, rather than parking in Waiting or resetting the
-                // whole peer queue (link-scoped). Dispatch parks it in
-                // Waiting itself if no route remains. Mirrors the deferred
-                // `Failed` outcome path.
+                // Restore the pre-rewrite block map (the stored data is the
+                // un-rewritten original) before either retry path.
                 bundle.bundle.blocks = pre_rewrite;
-                // Conditional for the same reason as the NoNeighbour
-                // arm: losing the swap means another task already
-                // resolved the claim, and re-dispatch is theirs.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                    .await
-                {
-                    self.dispatch_bundle(bundle).await;
+
+                // Two kinds of failure, distinguished by whether the
+                // transfer was merely interrupted or the CLA rejected it:
+                //
+                // - `StreamCancelled` is a transfer abandoned or truncated
+                //   mid-stream — transient, and the route is unchanged, so
+                //   re-dispatch to retry. This does not busy-loop: the
+                //   next offer parks on the CLA reopening its transfer, so
+                //   a CLA that keeps abandoning paces the retries itself.
+                //
+                // - Any other error is the CLA rejecting this bundle (an
+                //   oversized bundle, a bad address): re-dispatching would
+                //   re-run an unchanged routing decision and cycle
+                //   dispatch→egress→forward at pipeline speed against an
+                //   in-process CLA that fails synchronously. Park in
+                //   Waiting instead, gating the retry on the next routing
+                //   event, with the reaper bounding the wait.
+                //
+                // Both swaps are conditional for the NoNeighbour arm's
+                // reason: losing it means another task already resolved
+                // the claim, and the retry is theirs. The peer queue is
+                // untouched either way: unlike NoNeighbour, nothing here
+                // says the link is gone.
+                if matches!(e, cla::Error::StreamCancelled) {
+                    debug!("Transfer to peer {peer} was interrupted: {e}, re-dispatching");
+                    if self
+                        .store
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                        .await
+                    {
+                        self.dispatch_bundle(bundle).await;
+                    }
+                } else {
+                    debug!("CLA rejected bundle for peer {peer}: {e}, parking");
+                    if self
+                        .store
+                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                        .await
+                    {
+                        self.store.watch_bundle(bundle).await;
+                    }
                 }
             }
         }

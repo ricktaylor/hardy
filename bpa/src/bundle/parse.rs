@@ -335,13 +335,35 @@ where
                 return Err(HeaderFailure::Invalid(None));
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
-            Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
-                Ok(parsed) => break (parsed, whole, None),
-                Err(e) => {
-                    debug!("Bundle BPSec structural validation failed: {e}");
-                    return Err(HeaderFailure::Invalid(None));
+            Ok(parse::ParserProgress::Ready(whole)) => {
+                // Structurally complete, but the wire's commit is the final
+                // segment: a bundle whose bytes all arrived in a non-final
+                // chunk is confirmed only by the terminating `Final`. A
+                // cancel or half-close first is a truncation, and any
+                // further bytes are trailing garbage after a complete
+                // bundle. (The framer ends data on `Final`, so the happy
+                // path takes `last` here and never pulls again.)
+                if !last {
+                    match stream.recv().await {
+                        Ok(Segment::Final(b)) if b.is_empty() => {}
+                        Ok(_) => {
+                            debug!("Trailing bytes after a complete bundle");
+                            return Err(HeaderFailure::Invalid(None));
+                        }
+                        Err(_) => {
+                            debug!("Bundle stream ended before its final segment");
+                            return Err(HeaderFailure::Cancelled);
+                        }
+                    }
                 }
-            },
+                match parser.finish(whole.clone()) {
+                    Ok(parsed) => break (parsed, whole, None),
+                    Err(e) => {
+                        debug!("Bundle BPSec structural validation failed: {e}");
+                        return Err(HeaderFailure::Invalid(None));
+                    }
+                }
+            }
             // A `Partial` after the stream has already ended is a truncated
             // bundle: the declared payload cannot complete (`tail.remaining()`
             // is positive), so reject it exactly like `NeedMore` at end-of-

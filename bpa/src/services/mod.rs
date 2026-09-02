@@ -2,11 +2,11 @@ pub mod registry;
 
 use core::time::Duration;
 
+use hardy_async::async_trait;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 use thiserror::Error;
 use time::OffsetDateTime;
 
-use super::*;
 use crate::stream::{Receiver, Segment};
 
 /// A specialized `Result` type for service operations.
@@ -53,13 +53,15 @@ pub enum Error {
     #[error("Bundle source {0} is not the registration's endpoint")]
     InvalidSource(Eid),
 
-    /// The bundle stream was cancelled: the producer dropped its sender
-    /// before delivering the final segment, so no complete bundle arrived.
+    /// The transfer ended before completion, from either side: the
+    /// producer dropped its sender before delivering the final segment,
+    /// or the BPA ended the transfer (registration teardown, an expired
+    /// collection window). Either way no complete bundle moved.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
     /// The bundle was dropped by a processing filter, with an optional reason code.
-    #[error("Bundle dropped by filter: {0:?}")]
+    #[error("Bundle dropped by filter: {}", .0.as_ref().map_or_else(|| alloc::string::String::from("no reason given"), |r| alloc::format!("{r:?}")))]
     Dropped(Option<ReasonCode>),
 
     /// A bundle with the same identity already exists in storage.
@@ -167,9 +169,11 @@ pub trait Application: Send + Sync {
     /// bundle as `WaitingForService`; a subsequent registration on the
     /// same endpoint re-delivers it.
     ///
-    /// `adu_size` is the payload block's data size, before any BPSec
-    /// decryption, carried as `u64` so it remains valid on 32-bit
-    /// targets. An implementation may size buffers from it, but a
+    /// `adu_size` is the exact byte count the stream delivers: the
+    /// payload as the application will receive it, after any BPSec
+    /// decryption. It is carried as `u64` so it remains valid on 32-bit
+    /// targets. An implementation may size buffers from it
+    /// ([`buffer_stream`](crate::stream::buffer_stream) does), and a
     /// producer that under-delivers against it fails at the seam.
     async fn on_deliver(
         &self,
@@ -238,14 +242,21 @@ pub trait ApplicationSink: Send + Sync {
     /// its id. Dropping the sender before a [`Segment::Final`] cancels
     /// the send and returns [`Error::StreamCancelled`].
     ///
+    /// `size_hint` is the total payload size in bytes when the caller
+    /// knows it up front: purely an allocation hint that lets the BPA
+    /// pre-size reassembly instead of growing by reallocation, advisory
+    /// and clamped by the BPA's bundle size limit. Pass `None` when the
+    /// size is not known ahead of the stream.
+    ///
     /// A caller holding a complete payload in memory sends it as a
     /// one-segment stream, since `Bytes` implements [`Receiver`]:
-    /// `sink.send(destination, lifetime, options, &mut data).await`.
+    /// `sink.send(destination, lifetime, options, None, &mut data).await`.
     async fn send(
         &self,
         destination: Eid,
         lifetime: Duration,
         options: Option<SendOptions>,
+        size_hint: Option<u64>,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id>;
 }

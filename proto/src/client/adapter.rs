@@ -11,7 +11,7 @@
 // The server's counterpart is `server::adapter::Reader`; the write half
 // there is folded into its RPC engines rather than a matching `Writer`.
 
-use core::{future::Future, pin::Pin};
+use core::{future::Future, mem, pin::Pin};
 
 use hardy_bpa::{
     async_trait,
@@ -19,6 +19,7 @@ use hardy_bpa::{
 };
 use tokio::sync::mpsc::Sender;
 use tonic::Streaming;
+use tracing::debug;
 
 use crate::stream::{Cancel, Chunk, chunks};
 
@@ -31,22 +32,29 @@ use crate::stream::{Cancel, Chunk, chunks};
 // be abandoned with the wire's in-band cancel.
 type Wire<Response, Request> = (Streaming<Response>, Sender<Request>);
 
+// The in-flight open of a lazy transfer, boxed so the state can hold it.
+type Opening<Response, Request> =
+    Pin<Box<dyn Future<Output = Option<Wire<Response, Request>>> + Send>>;
+
 // Issues the RPC on the first pull, yielding the transfer's halves or
 // `None` if the open fails. Boxed so a [`Reader`] can hold it before the
 // first pull without naming the future.
-type Opener<Response, Request> = Box<
-    dyn FnOnce() -> Pin<Box<dyn Future<Output = Option<Wire<Response, Request>>> + Send>> + Send,
->;
+type Opener<Response, Request> = Box<dyn FnOnce() -> Opening<Response, Request> + Send>;
 
 // The `Open` variant is the common, hot state (an eager transfer starts
-// there, and a lazy one transits to it on the first pull); `Pending` and
-// `Closed` are transient, so boxing the large variant to even the sizes
+// there, and a lazy one transits to it on the first pull); the other
+// variants are transient, so boxing the large variant to even the sizes
 // would only add an allocation to the path that matters.
 #[allow(clippy::large_enum_variant)]
 enum State<Response, Request> {
     // Not yet opened: the RPC is issued on the first pull, so a
     // component that never pulls never opens the transfer.
     Pending(Opener<Response, Request>),
+    // The RPC is being opened. The in-flight future lives in the state,
+    // not in a pull's stack frame, so a `recv` dropped mid-open (a lost
+    // `select!` race) leaves the open resumable by the next pull instead
+    // of destroying the reader.
+    Opening(Opening<Response, Request>),
     Open {
         chunks: Streaming<Response>,
         requests: Sender<Request>,
@@ -95,6 +103,14 @@ impl<Response, Request: Cancel> Reader<Response, Request> {
             completed: false,
         }
     }
+
+    // Whether the wire's last chunk has been pulled. Over the wire that
+    // pull is the commit point of the transfer: a completed collection
+    // is recorded server-side and can no longer be abandoned (Drop sends
+    // no cancel).
+    pub fn is_complete(&self) -> bool {
+        self.completed
+    }
 }
 
 #[async_trait]
@@ -104,14 +120,25 @@ where
     Request: Cancel + Send + 'static,
 {
     async fn recv(&mut self) -> Result<Segment, RecvError> {
-        // Open on the first pull, at most once.
+        // Open on the first pull, at most once. The opener converts to
+        // its future synchronously (no await between the take and the
+        // store), and the future is awaited from inside the state, so
+        // the whole open is cancellation-safe: a pull dropped mid-open
+        // resumes the same open on its next pull.
         if matches!(self.state, State::Pending(_)) {
-            let State::Pending(open) = core::mem::replace(&mut self.state, State::Closed) else {
+            let State::Pending(open) = mem::replace(&mut self.state, State::Closed) else {
                 unreachable!()
             };
-            match open().await {
+            self.state = State::Opening(open());
+        }
+        if let State::Opening(open) = &mut self.state {
+            let opened = open.as_mut().await;
+            match opened {
                 Some((chunks, requests)) => self.state = State::Open { chunks, requests },
-                None => return Err(RecvError),
+                None => {
+                    self.state = State::Closed;
+                    return Err(RecvError);
+                }
             }
         }
 
@@ -128,7 +155,13 @@ where
                 }
                 None => Err(RecvError),
             },
-            Ok(None) | Err(_) => Err(RecvError),
+            Ok(None) => Err(RecvError),
+            Err(status) => {
+                // The `Receiver` contract cannot carry the `Status`, so
+                // it is logged before folding into `RecvError`.
+                debug!("Transfer stream failed: {status}");
+                Err(RecvError)
+            }
         }
     }
 }
@@ -137,7 +170,14 @@ impl<Response, Request: Cancel> Drop for Reader<Response, Request> {
     // Unlike the session, a Receive half-close is not an ending (a
     // client may send only the metadata), so abandonment needs the
     // explicit in-band cancel. A collection never opened has no request
-    // side to cancel.
+    // side to cancel, and one dropped mid-open abandons the whole call
+    // (the in-flight future owns the request sender), which the server
+    // sees as a transport-level cancellation.
+    //
+    // The `try_send` is reliable, not best-effort: the request channel
+    // has room for every message this side queues plus the cancel, so a
+    // failed `try_send` means the channel is closed, and a closed
+    // channel means the call has already ended and no cancel is owed.
     fn drop(&mut self) {
         if !self.completed
             && let State::Open { requests, .. } = &self.state

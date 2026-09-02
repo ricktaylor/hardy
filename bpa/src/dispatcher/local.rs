@@ -45,9 +45,10 @@ impl Dispatcher {
         destination: Eid,
         lifetime: Duration,
         flags: Option<services::SendOptions>,
+        size_hint: Option<u64>,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let payload = concat_stream(stream, self.max_bundle_size).await?;
+        let payload = concat_stream(stream, self.max_bundle_size, size_hint).await?;
 
         // Build bundle and run Originate filter before storing
         loop {
@@ -110,7 +111,7 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let data = concat_stream(stream, self.max_bundle_size).await?;
+        let data = concat_stream(stream, self.max_bundle_size, None).await?;
 
         // Parse + validate the bundle (security boundary — can't trust
         // service-provided bytes). Non-canonical input is rejected, not rewritten;
@@ -270,11 +271,20 @@ impl Dispatcher {
         // endpoint (LegacyIpn vs Ipn) and would never match. The swap is
         // conditional, so losing the bundle to a concurrent resolution
         // (the reaper, a duplicate) simply ends the delivery.
+        //
+        // The id joins `deliveries_in_flight` before the park so that a
+        // registration poll snapshotting the parked state always sees the
+        // marker and cannot claim the bundle into a second, concurrent
+        // delivery; it leaves the set only once this delivery has resolved
+        // the bundle or re-parked it for a later poll.
         let service_eid = self
             .node_ids
             .resolve_eid(&service.service_id)
             .unwrap_or_else(|_| bundle.bundle.destination.clone());
         let mut bundle = bundle;
+        self.deliveries_in_flight
+            .lock()
+            .insert(bundle.bundle.id.clone());
         if !self
             .store
             .swap_status(
@@ -285,6 +295,7 @@ impl Dispatcher {
             )
             .await
         {
+            self.deliveries_in_flight.lock().remove(&bundle.bundle.id);
             return;
         }
 
@@ -318,32 +329,40 @@ impl Dispatcher {
                     }
                 }
             };
+            // Completion is polled first so a delivery that finished in the
+            // same instant an unregister landed is honoured rather than
+            // discarded and re-announced as a duplicate; a pending delivery
+            // still yields to the cancel immediately.
             let result = select_biased! {
-                _ = cancel.cancelled().fuse() => Err(services::Error::StreamCancelled),
                 r = deliver.fuse() => r,
+                _ = cancel.cancelled().fuse() => Err(services::Error::StreamCancelled),
             };
 
-            if let Err(e) = result {
-                // The bundle is already parked as WaitingForService;
-                // register it for reaping and re-announcement.
-                debug!("Service delivery deferred: {e}");
-                return dispatcher.store.watch_bundle(bundle).await;
-            }
+            match result {
+                Err(e) => {
+                    // The bundle is already parked as WaitingForService;
+                    // register it for reaping and re-announcement.
+                    debug!("Service delivery deferred: {e}");
+                    dispatcher.store.watch_bundle(bundle).await;
+                }
+                Ok(()) => {
+                    // Claim the parked bundle for deletion: the reaper may
+                    // have expired it during the collection window, so
+                    // completion is conditional and only the winner reports
+                    // and deletes.
+                    if dispatcher.store.tombstone_if(&bundle).await {
+                        metrics::counter!("bpa.bundle.delivered").increment(1);
+                        dispatcher.report_bundle_delivery(&bundle).await;
 
-            // Claim the parked bundle for deletion: the reaper may have
-            // expired it during the collection window, so completion is
-            // conditional and only the winner reports and deletes.
-            if !dispatcher.store.tombstone_if(&bundle).await {
-                return;
+                        // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
+                        dispatcher
+                            .report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
+                            .await;
+                        dispatcher.delete_bundle(bundle).await;
+                    }
+                }
             }
-            metrics::counter!("bpa.bundle.delivered").increment(1);
-            dispatcher.report_bundle_delivery(&bundle).await;
-
-            // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
-            dispatcher
-                .report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
-                .await;
-            dispatcher.delete_bundle(bundle).await;
+            dispatcher.deliveries_in_flight.lock().remove(&id);
         });
     }
 }

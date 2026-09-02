@@ -17,6 +17,12 @@ import "google/protobuf/timestamp.proto";
 // collected with Receive (success completes it); outgoing bundles go
 // with Send. Closing the stream, or sending Unregister, terminates the
 // registration and invalidates the token.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
 service ServiceService {
   // -- Control plane ---------------------------------------------------
 
@@ -103,7 +109,8 @@ message Registration {
 // The delivery of a bundle: collect it with Receive.
 message Delivery {
   // The RFC 9171 id of the bundle awaiting delivery; fetch it with
-  // Receive.
+  // Receive. Encoded as documented on application.v1
+  // SendResponse.bundle_id.
   string                    bundle_id   = 1;
   // When the bundle expires; it is discarded after this.
   google.protobuf.Timestamp expire_time = 2;
@@ -114,7 +121,8 @@ message Delivery {
 // A bundle status report arrived for a bundle this service sent.
 // Informational: no outcome is expected.
 message BundleStatusReport {
-  // The RFC 9171 bundle id the report is about.
+  // The RFC 9171 id of the bundle the report is about. Encoded as
+  // documented on application.v1 SendResponse.bundle_id.
   string                             bundle_id      = 1;
   // The endpoint of the reporting node.
   string                             reporting_node = 2;
@@ -162,7 +170,8 @@ message SendMetadata {
 
 message SendResponse {
   // The RFC 9171 id of the sent bundle; correlated by
-  // BundleStatusReport events.
+  // BundleStatusReport events. Encoded as documented on application.v1
+  // SendResponse.bundle_id.
   string bundle_id = 1;
 }
 
@@ -179,7 +188,8 @@ message ReceiveRequest {
 message ReceiveMetadata {
   // The session token from Registration.
   bytes  session_token = 1;
-  // The bundle to collect, from Delivery.
+  // The bundle to collect, from Delivery. Encoded as documented on
+  // application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
 }
 

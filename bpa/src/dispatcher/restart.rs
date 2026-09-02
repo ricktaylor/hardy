@@ -175,25 +175,45 @@ mod tests {
     // (in-memory metadata cannot survive a real restart, so its
     // confirm_exists is a stub). This wrapper answers confirm_exists from
     // the live map, making the replay path reachable in a test that seeds
-    // the same storage instance it recovers from.
-    struct RecoverableMem(MetadataMemStorage);
+    // the same storage instance it recovers from. It also nudges a channel
+    // after every status write, so a test waits on the transition itself
+    // rather than polling on a timer.
+    struct RecoverableMem {
+        store: MetadataMemStorage,
+        nudge_tx: flume::Sender<()>,
+    }
+
+    impl RecoverableMem {
+        fn new() -> (Arc<Self>, flume::Receiver<()>) {
+            let (nudge_tx, nudge_rx) = flume::unbounded();
+            (
+                Arc::new(Self {
+                    store: MetadataMemStorage::new(None),
+                    nudge_tx,
+                }),
+                nudge_rx,
+            )
+        }
+    }
 
     #[async_trait]
     impl MetadataStorage for RecoverableMem {
         async fn get(&self, bundle_id: &Id) -> StorageResult<Option<bundle::Bundle>> {
-            self.0.get(bundle_id).await
+            self.store.get(bundle_id).await
         }
 
         async fn insert(&self, bundle: &bundle::Bundle) -> StorageResult<bool> {
-            self.0.insert(bundle).await
+            self.store.insert(bundle).await
         }
 
         async fn replace(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.replace(bundle).await
+            self.store.replace(bundle).await
         }
 
         async fn update_status(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.update_status(bundle).await
+            let result = self.store.update_status(bundle).await;
+            let _ = self.nudge_tx.send(());
+            result
         }
 
         async fn swap_status(
@@ -202,7 +222,9 @@ mod tests {
             expected: &bundle::BundleStatus,
             status: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
-            self.0.swap_status(bundle_id, expected, status).await
+            let swapped = self.store.swap_status(bundle_id, expected, status).await;
+            let _ = self.nudge_tx.send(());
+            swapped
         }
 
         async fn tombstone_if(
@@ -210,11 +232,15 @@ mod tests {
             bundle_id: &Id,
             expected: &bundle::BundleStatus,
         ) -> StorageResult<bool> {
-            self.0.tombstone_if(bundle_id, expected).await
+            let tombstoned = self.store.tombstone_if(bundle_id, expected).await;
+            let _ = self.nudge_tx.send(());
+            tombstoned
         }
 
         async fn tombstone(&self, bundle_id: &Id) -> StorageResult<()> {
-            self.0.tombstone(bundle_id).await
+            let result = self.store.tombstone(bundle_id).await;
+            let _ = self.nudge_tx.send(());
+            result
         }
 
         async fn start_recovery(&self) {}
@@ -223,22 +249,22 @@ mod tests {
             &self,
             bundle_id: &Id,
         ) -> StorageResult<Option<bundle::BundleMetadata>> {
-            Ok(self.0.get(bundle_id).await?.map(|b| b.metadata))
+            Ok(self.store.get(bundle_id).await?.map(|b| b.metadata))
         }
 
         async fn remove_unconfirmed(
             &self,
             stream: &dyn Sender<bundle::Bundle>,
         ) -> StorageResult<()> {
-            self.0.remove_unconfirmed(stream).await
+            self.store.remove_unconfirmed(stream).await
         }
 
         async fn reset_peer_queue(&self, peer: u32) -> StorageResult<u64> {
-            self.0.reset_peer_queue(peer).await
+            self.store.reset_peer_queue(peer).await
         }
 
         async fn reset_peer_ack_pending(&self, peer: u32) -> StorageResult<u64> {
-            self.0.reset_peer_ack_pending(peer).await
+            self.store.reset_peer_ack_pending(peer).await
         }
 
         async fn poll_expiry(
@@ -246,11 +272,11 @@ mod tests {
             stream: &dyn Sender<bundle::Bundle>,
             limit: usize,
         ) -> StorageResult<()> {
-            self.0.poll_expiry(stream, limit).await
+            self.store.poll_expiry(stream, limit).await
         }
 
         async fn poll_waiting(&self, stream: &dyn Sender<bundle::Bundle>) -> StorageResult<()> {
-            self.0.poll_waiting(stream).await
+            self.store.poll_waiting(stream).await
         }
 
         async fn poll_service_waiting(
@@ -258,7 +284,7 @@ mod tests {
             source: Eid,
             stream: &dyn Sender<bundle::Bundle>,
         ) -> StorageResult<()> {
-            self.0.poll_service_waiting(source, stream).await
+            self.store.poll_service_waiting(source, stream).await
         }
 
         async fn poll_adu_fragments(
@@ -266,7 +292,7 @@ mod tests {
             stream: &dyn Sender<bundle::Bundle>,
             status: &bundle::BundleStatus,
         ) -> StorageResult<()> {
-            self.0.poll_adu_fragments(stream, status).await
+            self.store.poll_adu_fragments(stream, status).await
         }
 
         async fn poll_pending(
@@ -275,7 +301,7 @@ mod tests {
             status: &bundle::BundleStatus,
             limit: usize,
         ) -> StorageResult<()> {
-            self.0.poll_pending(stream, status, limit).await
+            self.store.poll_pending(stream, status, limit).await
         }
     }
 
@@ -285,7 +311,7 @@ mod tests {
     // re-offered once a route to its destination reappears.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_resets_ack_pending_transfer() {
-        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
+        let (metadata_store, nudge_rx) = RecoverableMem::new();
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
         // Seed the stores as an unclean stop would leave them: bundle data
@@ -332,8 +358,9 @@ mod tests {
             .unwrap();
         bpa.start(true);
 
-        // Recovery replays the stored bundle and resets it to Waiting
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        // Recovery replays the stored bundle and resets it to Waiting; the
+        // store nudges on every status write, so re-read the live status on
+        // each nudge rather than polling on a timer.
         loop {
             let status = metadata_store
                 .get(&id)
@@ -345,11 +372,15 @@ mod tests {
             if status == bundle::BundleStatus::Waiting {
                 break;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for recovery to reset the transfer, status: {status:?}"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            // The timeout only bounds a regression.
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), nudge_rx.recv_async())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Timed out waiting for recovery to reset the transfer, status: {status:?}"
+                    )
+                })
+                .expect("nudge channel closed");
         }
 
         // A route to the destination appears; the bundle is re-offered
@@ -427,7 +458,7 @@ mod tests {
     // bundle afresh, and the fresh stream collects it whole.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_re_announces_waiting_for_service() {
-        let metadata_store = Arc::new(RecoverableMem(MetadataMemStorage::new(None)));
+        let (metadata_store, _nudge_rx) = RecoverableMem::new();
         let data_store = Arc::new(BundleMemStorage::new(None, None));
 
         // Seed the stores as a stop would leave them: data present,
@@ -491,19 +522,13 @@ mod tests {
         assert_eq!(announced, id);
         assert_eq!(payload.as_ref(), b"survives restart");
 
-        // Completion resolves the recovered bundle terminally.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            if metadata_store.0.get(&id).await.unwrap().is_none() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for the collected delivery to resolve"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
-
+        // Completion resolves the recovered bundle terminally: shutdown
+        // joins the worker pool, so the resolution has happened by the
+        // time it returns.
         bpa.shutdown().await;
+        assert!(
+            metadata_store.get(&id).await.unwrap().is_none(),
+            "The collected delivery must resolve terminally"
+        );
     }
 }

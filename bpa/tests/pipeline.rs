@@ -383,6 +383,7 @@ async fn app_to_cla_routing() {
             dest.clone(),
             Duration::from_secs(3600),
             None,
+            None,
             &mut Bytes::from_static(b"Hello remote"),
         )
         .await
@@ -1840,6 +1841,7 @@ async fn egress_filter_sees_consistent_extents() {
             "ipn:0.2.99".parse().unwrap(),
             Duration::from_secs(3600),
             None,
+            None,
             &mut Bytes::from_static(b"Hello remote"),
         )
         .await
@@ -1952,6 +1954,7 @@ async fn unreceived_announcement_stays_parked() {
         .send(
             receiver_eid,
             Duration::from_secs(3600),
+            None,
             None,
             &mut Bytes::from_static(b"payload"),
         )

@@ -29,7 +29,7 @@ The schemas speak RFC 9171 vocabulary throughout, and the RFC 9171 bundle id is 
 ## Constants
 
 - `MAX_MESSAGE_SIZE` (16 MiB): cap on a single encoded gRPC message.
-- `CHUNK_SIZE` (256 KiB): one slice of a data-plane transfer.
+- `CHUNK_SIZE` (1 MiB): one slice of a data-plane transfer.
 - `MAX_TRANSFER_SIZE` (8 GiB): reassembly guard for one transfer.
 
 ## Feature flags

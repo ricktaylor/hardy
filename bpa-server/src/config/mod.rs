@@ -224,32 +224,29 @@ pub enum GrpcService {
 // The service list must name at least one surface and each at most once:
 // an empty list is a misconfiguration (omit the `grpc` section to run no
 // gRPC server), and a repeated surface is a mistake, not a doubled mount.
+// Each name re-enters the derived `GrpcService` deserializer, the one
+// source of the kebab-case mapping, so an unknown name is refused with
+// the valid ones listed.
 #[cfg(feature = "grpc")]
 fn at_least_one_service<'de, D>(deserializer: D) -> Result<Vec<GrpcService>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
+    use serde::de::{Error, IntoDeserializer};
+
     let names = Vec::<String>::deserialize(deserializer)?;
     if names.is_empty() {
-        return Err(serde::de::Error::custom(
+        return Err(D::Error::custom(
             "grpc.services must list at least one service",
         ));
     }
     let mut services = Vec::with_capacity(names.len());
     for name in names {
-        let service = match name.as_str() {
-            "cla" => GrpcService::Cla,
-            "service" => GrpcService::Service,
-            "application" => GrpcService::Application,
-            "routing" => GrpcService::Routing,
-            other => {
-                return Err(serde::de::Error::custom(format!(
-                    "grpc.services has unknown service {other:?}, expected one of cla, service, application, routing"
-                )));
-            }
-        };
+        let service = GrpcService::deserialize(name.as_str().into_deserializer()).map_err(
+            |e: serde::de::value::Error| D::Error::custom(format_args!("grpc.services: {e}")),
+        )?;
         if services.contains(&service) {
-            return Err(serde::de::Error::custom(format!(
+            return Err(D::Error::custom(format!(
                 "grpc.services lists {service:?} more than once"
             )));
         }
@@ -940,7 +937,7 @@ storage:
     }
 
     // Unknown gRPC service names are refused at parse with the known ones
-    // listed (previously ignored with a warning at startup).
+    // listed.
     #[test]
     #[serial]
     #[cfg(feature = "grpc")]

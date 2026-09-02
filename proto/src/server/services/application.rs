@@ -7,11 +7,11 @@
 use core::time::Duration;
 use std::sync::Arc;
 
-use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_async::{TaskPool, channel};
 use hardy_bpa::{
     async_trait,
     bpa::BpaRegistration,
-    services,
+    services::{self, SendOptions},
     stream::{Receiver, Segment},
 };
 use hardy_bpv7::{
@@ -27,8 +27,8 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::instrument;
 
 use super::{
-    Deliveries, abandonment, pump_to_collector, service_status, stream_delivery, to_timestamp,
-    watch_session,
+    Bridge, Component, Deliveries, SinkSlot, abandonment, pump_to_collector, service_status,
+    stream_delivery, to_timestamp,
 };
 use crate::{
     MAX_TRANSFER_SIZE,
@@ -40,8 +40,7 @@ use crate::{
     },
     server::{
         CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
-        session::{Session, SessionStream, Sessions},
-        token::Signer,
+        session::{Session, SessionStream},
     },
 };
 
@@ -60,7 +59,7 @@ const MAX_ADU_SIZE: u64 = if MAX_TRANSFER_SIZE > isize::MAX as u64 {
 
 struct GrpcApplication {
     session: Session<SubscribeResponse>,
-    sink: Once<Arc<dyn services::ApplicationSink>>,
+    sink: SinkSlot<dyn services::ApplicationSink>,
     // Announced streams held for the Receive door: the single
     // collection capability per announcement.
     deliveries: Deliveries,
@@ -70,16 +69,9 @@ impl GrpcApplication {
     fn new(session: Session<SubscribeResponse>) -> Self {
         Self {
             session,
-            sink: Once::new(),
+            sink: SinkSlot::new(),
             deliveries: Deliveries::default(),
         }
-    }
-
-    fn sink(&self) -> Result<Arc<dyn services::ApplicationSink>, Status> {
-        self.sink
-            .get()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Unregistered"))
     }
 
     async fn event(&self, event: subscribe_response::Event) -> bool {
@@ -89,10 +81,24 @@ impl GrpcApplication {
     }
 }
 
+impl Component for GrpcApplication {
+    type Event = SubscribeResponse;
+
+    fn session(&self) -> &Session<SubscribeResponse> {
+        &self.session
+    }
+
+    async fn unregister_sink(&self) {
+        if let Some(sink) = self.sink.peek() {
+            sink.unregister().await;
+        }
+    }
+}
+
 #[async_trait]
 impl services::Application for GrpcApplication {
     async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
-        self.sink.call_once(|| Arc::from(sink));
+        self.sink.set(sink);
     }
 
     async fn on_unregister(&self) {
@@ -119,7 +125,7 @@ impl services::Application for GrpcApplication {
         // the next registration. Held before the event goes out so a
         // client racing its Receive against the announcement always
         // finds the entry.
-        let (tx, rx) = hardy_async::channel::bounded(0);
+        let (tx, rx) = channel::bounded(0);
         // `hold` keeps the map's copy; the original key moves out onto the
         // wire in the event below. The cold withdraw paths recompute the
         // (deterministic) key rather than hold a third copy on every
@@ -180,39 +186,15 @@ impl services::Application for GrpcApplication {
 /// so shut it down only after the transport has stopped accepting.
 #[derive(Clone)]
 pub struct ApplicationServiceImpl {
-    bpa: Arc<dyn BpaRegistration>,
-    tasks: TaskPool,
-    sessions: Arc<Sessions<GrpcApplication>>,
+    bridge: Bridge<GrpcApplication>,
 }
 
 impl ApplicationServiceImpl {
-    /// Bridges the registration surface of `bpa`, minting session
-    /// tokens with the server-wide `signer`.
-    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool, signer: Signer) -> Self {
+    /// Bridges the registration surface of `bpa`.
+    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
         Self {
-            bpa,
-            tasks,
-            sessions: Arc::new(Sessions::new(signer)),
+            bridge: Bridge::new(bpa, tasks),
         }
-    }
-
-    // Unregisters one session, however it ended. Bundles announced but
-    // never received stay parked in the BPA for a later registration;
-    // a repeat unregister no-ops inside the sink.
-    async fn unregister_session(&self, application: Arc<GrpcApplication>) {
-        // Ordered by what the client must observe as done. Retire the
-        // token, then unregister from the BPA (which frees the service id
-        // before firing on_unregister), then close the stream last: the
-        // client sees teardown via the stream closing, so once it does
-        // the token is dead and the service id is reusable.
-        self.sessions.remove(application.session.token());
-        if let Some(sink) = application.sink.get() {
-            sink.unregister().await;
-        }
-        application.session.abort();
-        // The teardown barrier for tests: the session is fully retired.
-        #[cfg(test)]
-        self.sessions.signal_torn_down(application.session.token());
     }
 }
 
@@ -244,43 +226,36 @@ impl ApplicationService for ApplicationServiceImpl {
 
         // The token is minted before the BPA sees the component: the
         // session must be able to carry events the moment registration
-        // completes. The JWT `sub` is the requested identity,
+        // completes. The token's `sub` prefix is the requested identity,
         // observability only; the reply carries the resolved endpoint.
         let sub = match &service {
             Some(Service::Ipn(n)) => format!("ipn:{n}"),
             Some(Service::Dtn(name)) => format!("dtn:{name}"),
             None => "dynamic".to_string(),
         };
-        let token = self.sessions.mint(&sub);
+        let token = self.bridge.sessions.mint(&sub);
         let (events_tx, events_rx) = mpsc::channel(CHANNEL_DEPTH);
         let application = Arc::new(GrpcApplication::new(Session::new(
             token.clone(),
-            self.tasks.child_token(),
+            self.bridge.tasks.child_token(),
             events_tx,
         )));
 
         let endpoint_id = match service {
             Some(service) => {
-                self.bpa
+                self.bridge
+                    .bpa
                     .register_application(service, application.clone())
                     .await
             }
             None => {
-                self.bpa
+                self.bridge
+                    .bpa
                     .register_dynamic_application(application.clone())
                     .await
             }
         }
         .map_err(service_status)?;
-
-        // Published before the client can know its token.
-        self.sessions.publish(token.clone(), application.clone());
-
-        // The one task a session owns: it waits out the session's
-        // life, then unregisters it. The session ends on Unregister or
-        // half-close, or on the trigger: the stream's guard (the rpc
-        // dying), `on_unregister`, or pool shutdown.
-        let cancelled = application.session.cancellation();
 
         // The stream yields the Registration first, by construction:
         // the BPA announces parked bundles from inside `register_*`
@@ -291,14 +266,13 @@ impl ApplicationService for ApplicationServiceImpl {
                 session_token: token.into(),
             })),
         };
-        let stream = application.session.stream(registration, events_rx);
-        let service_impl = self.clone();
-        hardy_async::spawn!(self.tasks, "application_session", async move {
-            watch_session(cancelled, requests).await;
-            service_impl.unregister_session(application).await;
-        });
-
-        Ok(Response::new(stream))
+        Ok(Response::new(self.bridge.open_session(
+            application,
+            registration,
+            events_rx,
+            requests,
+            "application_session",
+        )))
     }
 
     // ---------------------------------------------------------------
@@ -324,7 +298,7 @@ impl ApplicationService for ApplicationServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let application = self.sessions.resolve(session_token)?;
+        let application = self.bridge.sessions.resolve(session_token)?;
         let cancelled = application.session.cancellation();
 
         let destination = destination
@@ -336,7 +310,6 @@ impl ApplicationService for ApplicationServiceImpl {
                 Duration::try_from(d)
                     .map_err(|e| Status::invalid_argument(format!("Invalid lifetime: {e}")))
             })?;
-        let options = options.map(Into::into);
 
         // A declared size larger than we would ever accept is rejected up
         // front rather than streamed to the ceiling and then failed.
@@ -346,14 +319,19 @@ impl ApplicationService for ApplicationServiceImpl {
             ));
         }
 
+        // The wire's declared ADU size is the BPA's reassembly hint, so a
+        // client that declared one lets the BPA pre-size.
+        let options = options.map(SendOptions::from);
+
         // The BPA pulls the transfer chunk by chunk and assembles the
         // ADU behind its own bundle size bound (canonical CBOR needs
         // the payload's definite length before the bundle can be
         // built); nothing materialises in the bridge.
         let mut reader = adapter::Reader::new(requests, cancelled, "Send");
         match application
-            .sink()?
-            .send(destination, lifetime, options, &mut reader)
+            .sink
+            .get()?
+            .send(destination, lifetime, options, adu_size, &mut reader)
             .await
         {
             Ok(bundle_id) => Ok(Response::new(SendResponse {
@@ -381,7 +359,7 @@ impl ApplicationService for ApplicationServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let application = self.sessions.resolve(session_token)?;
+        let application = self.bridge.sessions.resolve(session_token)?;
         let Some(mut stream) = application.deliveries.claim(&bundle_id) else {
             return Err(Status::not_found("No such delivery"));
         };
@@ -396,7 +374,7 @@ impl ApplicationService for ApplicationServiceImpl {
 
         let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
         let cancelled = application.session.cancellation();
-        hardy_async::spawn!(self.tasks, "application_receive", async move {
+        hardy_async::spawn!(self.bridge.tasks, "application_receive", async move {
             stream_delivery(cancelled, first, stream, tx, abandonment(requests)).await;
         });
 
@@ -410,23 +388,24 @@ impl ApplicationService for ApplicationServiceImpl {
 mod tests {
     use std::time::Duration;
 
+    #[cfg(feature = "client")]
+    use hardy_async::sync::spin::Once;
+    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
+    use hardy_bpv7::eid::{IpnNodeId, NodeId};
+    use tonic::{
+        Code,
+        transport::{Channel, Server},
+    };
+
+    use super::{
+        super::tests::{build_bpa, ipn1, serve, timeout, wait_torn_down},
+        *,
+    };
     use crate::application::{
         Register, Unregister, application_service_client::ApplicationServiceClient,
         application_service_server::ApplicationServiceServer, receive_response,
     };
-    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
-    use tokio::net::TcpListener;
-    use tonic::Code;
-    use tonic::transport::{Channel, Server, server::TcpIncoming};
-
-    use super::*;
-
-    async fn timeout<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(10), future)
-            .await
-            .expect("test timed out")
-    }
+    use crate::server::session::Sessions;
 
     struct Harness {
         bpa: Arc<Bpa>,
@@ -445,44 +424,18 @@ mod tests {
     // A running BPA (node ipn:1) behind the bridge on a port-0
     // listener, plus a connected generated client.
     async fn harness() -> Harness {
-        harness_with(
-            NodeIds::try_from(
-                [NodeId::Ipn(IpnNodeId {
-                    allocator_id: 0,
-                    node_number: 1,
-                })]
-                .as_slice(),
-            )
-            .unwrap(),
-        )
-        .await
+        harness_with(ipn1()).await
     }
 
     async fn harness_with(node_ids: NodeIds) -> Harness {
         // Status reports on: the report round-trip test needs them.
-        let bpa = Arc::new(
-            Bpa::builder()
-                .node_ids(node_ids)
-                .status_reports(true)
-                .build()
-                .await
-                .unwrap(),
-        );
-        bpa.start(false);
+        let bpa = build_bpa(node_ids, true).await;
 
         let tasks = TaskPool::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
-
-        let service_impl = ApplicationServiceImpl::new(bpa.clone(), tasks.clone(), Signer::new());
-        let sessions = service_impl.sessions.clone();
+        let service_impl = ApplicationServiceImpl::new(bpa.clone(), tasks.clone());
+        let sessions = service_impl.bridge.sessions.clone();
         let service = ApplicationServiceServer::new(service_impl);
-        tokio::spawn(
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming),
-        );
+        let address = serve(Server::builder().add_service(service)).await;
 
         let client = ApplicationServiceClient::connect(format!("http://{address}"))
             .await
@@ -712,11 +665,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Aborted);
 
-        // Nothing was submitted: no delivery is announced.
-        let raced = tokio::time::timeout(Duration::from_millis(500), app.events.message()).await;
-        assert!(raced.is_err(), "a truncated send must not deliver");
-
+        // The BPA shutdown joins its worker pool, so anything it would
+        // announce has been announced and the session stream then ends;
+        // draining it to that end must surface no Delivery.
         harness.bpa.shutdown().await;
+        while let Some(event) = app.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Delivery(_))),
+                "a truncated send must not deliver"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -752,11 +710,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Cancelled);
 
-        // Nothing was submitted: no delivery is announced.
-        let raced = tokio::time::timeout(Duration::from_millis(500), app.events.message()).await;
-        assert!(raced.is_err(), "a cancelled send must not deliver");
-
+        // The BPA shutdown joins its worker pool, so anything it would
+        // announce has been announced and the session stream then ends;
+        // draining it to that end must surface no Delivery.
         harness.bpa.shutdown().await;
+        while let Some(event) = app.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Delivery(_))),
+                "a cancelled send must not deliver"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -867,7 +830,7 @@ mod tests {
         let mut torn = harness.sessions.torn_down();
         drop(app.events);
         drop(app.requests);
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != app.token {} }).await;
+        wait_torn_down(&mut torn, &app.token).await;
 
         let status = send(&mut harness.client, app.token.clone(), "ipn:1.7", b"stale")
             .await
@@ -1408,7 +1371,7 @@ mod tests {
             _adu_size: u64,
             stream: &mut dyn Receiver<Segment>,
         ) -> services::Result<()> {
-            let payload = hardy_bpa::stream::concat_stream(stream, usize::MAX).await?;
+            let payload = hardy_bpa::stream::concat_stream(stream, usize::MAX, None).await?;
             let _ = self
                 .delivered
                 .send((bundle_id.source.clone(), payload))
@@ -1457,6 +1420,7 @@ mod tests {
             eid.clone(),
             Duration::from_secs(3600),
             None,
+            None,
             &mut adu.clone(),
         )
         .await
@@ -1504,6 +1468,7 @@ mod tests {
                     notify_delivery: true,
                     ..Default::default()
                 }),
+                None,
                 &mut Bytes::from_static(b"report me"),
             )
             .await
@@ -1599,9 +1564,8 @@ mod tests {
 
         // The token dies in the session task's teardown, which runs
         // after the stream closes; wait for the teardown signal, so the
-        // rejection below is asserted without a race. The timeout only
-        // bounds a regression.
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != app.token {} }).await;
+        // rejection below is asserted without a race.
+        wait_torn_down(&mut torn, &app.token).await;
 
         let status = send(&mut harness.client, app.token.clone(), "ipn:1.7", b"stale")
             .await

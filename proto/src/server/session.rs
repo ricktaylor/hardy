@@ -26,7 +26,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tonic::Status;
 
-use crate::server::token::{SessionToken, Signer};
+use crate::server::token::SessionToken;
 
 /// Aborts its session when dropped; see [`Session::guard`].
 pub struct SessionGuard(CancellationToken);
@@ -123,7 +123,6 @@ impl<E> Session<E> {
 /// `foldhash` hasher over the DoS-resistant default.
 pub struct Sessions<S> {
     map: DashMap<SessionToken, Arc<S>, RandomState>,
-    signer: Signer,
     // Fires each session's token once its teardown has fully run: the
     // race-free barrier a test waits on instead of polling for the
     // token to stop resolving. See [`torn_down`](Self::torn_down).
@@ -132,11 +131,10 @@ pub struct Sessions<S> {
 }
 
 impl<S> Sessions<S> {
-    /// An empty index minting tokens with the server-wide `signer`.
-    pub fn new(signer: Signer) -> Self {
+    /// An empty index.
+    pub fn new() -> Self {
         Self {
             map: DashMap::with_hasher(RandomState::default()),
-            signer,
             #[cfg(test)]
             torn_down: broadcast::channel(256).0,
         }
@@ -145,7 +143,7 @@ impl<S> Sessions<S> {
     /// Mints a fresh token for the registration identity `sub`; only
     /// the registering task holds it until the client receives it.
     pub fn mint(&self, sub: &str) -> SessionToken {
-        self.signer.mint(sub)
+        SessionToken::mint(sub)
     }
 
     /// Publishes a session's component under its token.
@@ -183,6 +181,12 @@ impl<S> Sessions<S> {
     #[cfg(test)]
     pub fn signal_torn_down(&self, token: &SessionToken) {
         let _ = self.torn_down.send(token.clone());
+    }
+}
+
+impl<S> Default for Sessions<S> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -227,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn sessions_resolve_only_live_tokens() {
-        let sessions = Sessions::new(Signer::new());
+        let sessions = Sessions::new();
         let token = sessions.mint("ipn:1.7");
         sessions.publish(token.clone(), Arc::new("session"));
 
@@ -253,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn the_registration_precedes_events_then_the_stream_ends_on_abort() {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<&str, Status>>(4);
-        let session = Session::new(Signer::new().mint("ipn:1.7"), CancellationToken::new(), tx);
+        let session = Session::new(SessionToken::mint("ipn:1.7"), CancellationToken::new(), tx);
 
         // An event accepted before the stream is even built cannot
         // outrun the registration.
@@ -276,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn abort_fires_the_broadcast_and_stops_events() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<&str, Status>>(1);
-        let session = Session::new(Signer::new().mint("ipn:1.7"), CancellationToken::new(), tx);
+        let session = Session::new(SessionToken::mint("ipn:1.7"), CancellationToken::new(), tx);
 
         session.abort();
         assert!(session.cancellation().is_cancelled());
@@ -291,7 +295,7 @@ mod tests {
     async fn event_blocked_on_a_full_buffer_is_freed_by_teardown() {
         let (tx, _rx) = tokio::sync::mpsc::channel::<Result<&str, Status>>(1);
         let session = Arc::new(Session::new(
-            Signer::new().mint("ipn:1.7"),
+            SessionToken::mint("ipn:1.7"),
             CancellationToken::new(),
             tx,
         ));

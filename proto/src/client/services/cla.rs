@@ -5,6 +5,7 @@
 // ordered define-before-reference: the wire conversions, the sink, the
 // forwarding runner, the event loop, then the handshake.
 
+use core::num::NonZeroU32;
 use std::sync::Arc;
 
 use hardy_async::{CancellationToken, TaskPool};
@@ -19,24 +20,32 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status, Streaming, transport::Channel};
 use tracing::warn;
 
-use super::super::adapter;
+use super::super::{SUBSCRIBE_REQUEST_CAPACITY, TRANSFER_REQUEST_CAPACITY, adapter};
+use super::next_event;
 use crate::{
     MAX_MESSAGE_SIZE,
     cla::{
         AddPeerRequest, ClaAddress, ClaAddressType, DispatchMetadata, DispatchRequest,
         ForwardMetadata, ForwardRequest, ForwardResult, Forwarding, Register, RemovePeerRequest,
-        ReportTransferOutcomeRequest, SubscribeRequest, SubscribeResponse,
+        ReportTransferOutcomeRequest, SubscribeRequest, SubscribeResponse, Unregister,
         cla_service_client::ClaServiceClient, dispatch_request, forward_request, forward_result,
         report_transfer_outcome_request, subscribe_request, subscribe_response,
     },
+    error_status::recover_cla_error,
     stream::Cancel,
 };
 
-// Wire statuses become cla errors: a dead token or an unreachable BPA
-// is the sink's disconnection, a duplicate name is the local registry's
-// error, a cancelled stream carries through, everything else is
-// internal.
+// Wire statuses become cla errors. A status carrying the wire's
+// typed-error discriminator recovers as the exact domain error the
+// server raised; otherwise (a non-Hardy server, or a kind whose payload
+// cannot travel) the status code classifies it: a dead token or an
+// unreachable BPA is the sink's disconnection, a duplicate name is the
+// local registry's error, a cancelled stream carries through,
+// everything else is internal.
 fn cla_error(status: Status) -> cla::Error {
+    if let Some(e) = recover_cla_error(&status) {
+        return e;
+    }
     match status.code() {
         Code::Unauthenticated | Code::Unavailable => cla::Error::Disconnected,
         Code::AlreadyExists => cla::Error::AlreadyExists(status.message().to_string()),
@@ -61,9 +70,7 @@ impl Sink for GrpcClaSink {
         let _ = self
             .requests
             .send(SubscribeRequest {
-                request: Some(subscribe_request::Request::Unregister(
-                    crate::cla::Unregister {},
-                )),
+                request: Some(subscribe_request::Request::Unregister(Unregister {})),
             })
             .await;
     }
@@ -83,7 +90,7 @@ impl Sink for GrpcClaSink {
             peer_node_id: peer_node.map(ToString::to_string),
             peer_addr: peer_addr.cloned().map(ClaAddress::from),
         };
-        let (requests, rx) = mpsc::channel::<DispatchRequest>(2);
+        let (requests, rx) = mpsc::channel::<DispatchRequest>(TRANSFER_REQUEST_CAPACITY);
         let pump = async move {
             if requests
                 .send(DispatchRequest {
@@ -159,15 +166,18 @@ impl Sink for GrpcClaSink {
 
 // Runs one announced forwarding to its terminal result: opens the
 // Forward call, streams the bundle down into the CLA through the
-// shared receiver, and sends the result back up. The receiver's in-band cancel on drop is the
-// abandonment signal for a forwarding the CLA declines without a
-// terminal result, and it is a no-op once the server has completed the
-// call on the result.
+// shared receiver, and sends the result back up. The receiver's
+// in-band cancel on drop is the abandonment signal for a forwarding
+// the CLA declines without a terminal result, and it is a no-op once
+// the server has completed the call on the result. Every await that
+// can outlast the session races `cancel`, so a stuck server or CLA
+// cannot hang the client's shutdown.
 async fn run_forwarding(
     cla: Arc<dyn Cla>,
     mut client: ClaServiceClient<Channel>,
     token: Bytes,
     forwarding: Forwarding,
+    cancel: CancellationToken,
 ) {
     let Forwarding {
         bundle_id,
@@ -182,7 +192,7 @@ async fn run_forwarding(
     // wire requires the metadata first, sent without waiting for
     // response headers; the bundle bytes then stream down as the
     // response.
-    let (requests, rx) = mpsc::channel::<ForwardRequest>(2);
+    let (requests, rx) = mpsc::channel::<ForwardRequest>(TRANSFER_REQUEST_CAPACITY);
     if requests
         .send(ForwardRequest {
             request: Some(forward_request::Request::Metadata(ForwardMetadata {
@@ -195,7 +205,14 @@ async fn run_forwarding(
     {
         return;
     }
-    let chunks = match client.forward(ReceiverStream::new(rx)).await {
+    let response = tokio::select! {
+        biased;
+        response = client.forward(ReceiverStream::new(rx)) => response,
+        // Teardown while the call is opening: dropping the request
+        // sender abandons it, and the BPA requeues the bundle.
+        _ = cancel.cancelled() => return,
+    };
+    let chunks = match response {
         Ok(response) => response.into_inner(),
         Err(status) => {
             warn!("Forward call rejected: {status}");
@@ -218,35 +235,54 @@ async fn run_forwarding(
     };
 
     let mut receiver = adapter::Reader::new(chunks, requests.clone());
-    let result = cla
-        .forward(lane, &cla_addr, &id, bundle_size, &mut receiver)
-        .await;
+    let forward = cla.forward(lane, &cla_addr, &id, bundle_size, &mut receiver);
+    // Completion is polled first so a forward that finished in the same
+    // instant the session ended is honoured; a pending one yields to the
+    // teardown immediately.
+    let result = tokio::select! {
+        biased;
+        result = forward => result,
+        // Teardown mid-transfer: dropping the receiver abandons the
+        // forwarding with the wire's in-band cancel, and the BPA
+        // requeues the bundle.
+        _ = cancel.cancelled() => return,
+    };
 
-    // A terminal result completes the forwarding; the CLA declining it
-    // (an error) leaves the receiver to abandon the call in-band on
-    // drop, and the BPA requeues the bundle.
-    if let Ok(result) = result {
-        let result = match result {
-            ForwardBundleResult::Sent => forward_result::Result::Sent(()),
-            ForwardBundleResult::NoNeighbour => forward_result::Result::NoNeighbour(()),
-            ForwardBundleResult::Accepted => forward_result::Result::Accepted(()),
-        };
-        let sent = requests
-            .send(ForwardRequest {
-                request: Some(forward_request::Request::Result(ForwardResult {
-                    result: Some(result),
-                })),
-            })
-            .await;
+    match result {
+        Ok(result) => {
+            let result = match result {
+                ForwardBundleResult::Sent => forward_result::Result::Sent(()),
+                ForwardBundleResult::NoNeighbour => forward_result::Result::NoNeighbour(()),
+                ForwardBundleResult::Accepted => forward_result::Result::Accepted(()),
+            };
+            let sent = requests
+                .send(ForwardRequest {
+                    request: Some(forward_request::Request::Result(ForwardResult {
+                        result: Some(result),
+                    })),
+                })
+                .await;
 
-        // The server completes the call on the result, so the response
-        // is drained to its end before the streams drop: tearing the
-        // response half down early resets the stream, which can
-        // discard the queued result and fail a transfer the CLA
-        // answered.
-        if sent.is_ok() {
-            while receiver.recv().await.is_ok() {}
+            // The server completes the call on the result, so the response
+            // is drained to its end before the streams drop: tearing the
+            // response half down early resets the stream, which can
+            // discard the queued result and fail a transfer the CLA
+            // answered. The drain races the teardown so a server that
+            // never ends the call cannot pin the session's shutdown.
+            if sent.is_ok() {
+                let drain = async { while receiver.recv().await.is_ok() {} };
+                tokio::select! {
+                    biased;
+                    _ = drain => {}
+                    _ = cancel.cancelled() => {}
+                }
+            }
         }
+        // The wire's ForwardResult has no failed variant, so the CLA's
+        // error cannot travel as a terminal result: it is logged here,
+        // and dropping the receiver abandons the call with the in-band
+        // cancel, on which the BPA requeues the bundle.
+        Err(e) => warn!("Forwarding {bundle_id} failed: {e}"),
     }
 }
 
@@ -260,21 +296,16 @@ pub async fn run_session(
     cancel: CancellationToken,
     client: ClaServiceClient<Channel>,
     token: Bytes,
-    tasks: TaskPool,
 ) {
-    loop {
-        let message = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => break,
-            message = events.message() => message,
-        };
-        let event = match message {
-            Ok(Some(SubscribeResponse { event: Some(event) })) => event,
-            Ok(Some(msg)) => {
-                warn!("Ignoring empty event: {msg:?}");
-                continue;
-            }
-            Ok(None) | Err(_) => break,
+    // Every in-flight forwarding races `session_cancel`, which fires on
+    // the client's shutdown (it is a child of `cancel`) and at this
+    // session's own end.
+    let session_cancel = cancel.child_token();
+    let forwardings = TaskPool::new();
+    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
+        let Some(event) = event else {
+            warn!("Ignoring event with no payload");
+            continue;
         };
         match event {
             subscribe_response::Event::Registration(registration) => {
@@ -284,12 +315,17 @@ pub async fn run_session(
                 let cla = cla.clone();
                 let client = client.clone();
                 let token = token.clone();
-                hardy_async::spawn!(tasks, "cla_forward", async move {
-                    run_forwarding(cla, client, token, forwarding).await
+                let cancel = session_cancel.clone();
+                hardy_async::spawn!(forwardings, "cla_forward", async move {
+                    run_forwarding(cla, client, token, forwarding, cancel).await
                 });
             }
         }
     }
+    // In-flight forwardings end before the CLA learns it is
+    // unregistered, so no `forward` call outlives `on_unregister`.
+    session_cancel.cancel();
+    forwardings.shutdown().await;
     cla.on_unregister().await;
 }
 
@@ -310,7 +346,7 @@ pub async fn subscribe(
     channel: Channel,
     name: String,
     address_type: Option<cla::ClaAddressType>,
-    lane_count: Option<core::num::NonZeroU32>,
+    lane_count: Option<NonZeroU32>,
 ) -> cla::Result<Registered> {
     let mut client = ClaServiceClient::new(channel)
         .max_encoding_message_size(MAX_MESSAGE_SIZE)
@@ -337,7 +373,7 @@ pub async fn subscribe(
 
     // The wire requires Register first, sent without waiting for
     // response headers.
-    let (requests, rx) = mpsc::channel(4);
+    let (requests, rx) = mpsc::channel(SUBSCRIBE_REQUEST_CAPACITY);
     requests
         .send(SubscribeRequest {
             request: Some(subscribe_request::Request::Register(Register {

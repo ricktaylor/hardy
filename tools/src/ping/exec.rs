@@ -173,11 +173,7 @@ async fn exec_external_cla(
         .map_err(|e| anyhow::anyhow!("Failed to bind gRPC listener: {e}"))?;
     let incoming = tonic::transport::server::TcpIncoming::from(listener);
     let service = hardy_proto::cla::cla_service_server::ClaServiceServer::new(
-        hardy_proto::server::ClaServiceImpl::new(
-            bpa.clone(),
-            tasks.clone(),
-            hardy_proto::server::Signer::new(),
-        ),
+        hardy_proto::server::ClaServiceImpl::new(bpa.clone(), tasks.clone()),
     )
     .max_encoding_message_size(hardy_proto::MAX_MESSAGE_SIZE)
     .max_decoding_message_size(hardy_proto::MAX_MESSAGE_SIZE);

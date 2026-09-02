@@ -5,7 +5,7 @@
 //! in-crate suites do not reach — BPA-initiated teardown, connection
 //! loss with a parked announcement, and simultaneous unregistration.
 
-use std::{sync::Arc, time::Duration};
+use std::{future::pending, sync::Arc, time::Duration};
 
 use hardy_async::TaskPool;
 use hardy_bpa::{
@@ -13,19 +13,19 @@ use hardy_bpa::{
     bpa::Bpa,
     node_ids::NodeIds,
     services,
-    stream::{Receiver, Segment},
+    stream::{Receiver, Segment, concat_stream},
 };
 use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId, Service};
 use hardy_proto::{
-    application::application_service_server::ApplicationServiceServer,
-    client::BpaClient,
-    server::{ApplicationServiceImpl, Signer},
+    application::application_service_server::ApplicationServiceServer, client::BpaClient,
+    server::ApplicationServiceImpl,
 };
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{Barrier, mpsc};
 use tonic::transport::{Server, server::TcpIncoming};
 
 async fn timeout<F: Future>(future: F) -> F::Output {
+    // The timeout only bounds a regression: the wait it wraps is event-driven.
     tokio::time::timeout(Duration::from_secs(10), future)
         .await
         .expect("test timed out")
@@ -57,11 +57,8 @@ async fn serve() -> Served {
     let address = listener.local_addr().unwrap();
     let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
 
-    let service = ApplicationServiceServer::new(ApplicationServiceImpl::new(
-        bpa.clone(),
-        tasks.clone(),
-        Signer::new(),
-    ));
+    let service =
+        ApplicationServiceServer::new(ApplicationServiceImpl::new(bpa.clone(), tasks.clone()));
     tokio::spawn(
         Server::builder()
             .add_service(service)
@@ -82,40 +79,70 @@ enum AppEvent {
     Delivered(Bytes),
 }
 
+// What `on_deliver` does with an announced delivery.
+enum DeliveryMode {
+    // Collects the payload whole and completes.
+    Collect,
+    // Announces the delivery, then declines it (returns `Err` without
+    // pulling the stream), so the bundle parks and is re-announced to
+    // the next registration.
+    Decline,
+    // Announces the delivery, then parks forever: a stuck collection,
+    // standing in for a wedged application or server.
+    Stall,
+    // Waits at the shared barrier before collecting, so the test can
+    // require several deliveries to be inside `on_deliver` at once.
+    Rendezvous(Arc<Barrier>),
+}
+
 struct LifecycleApp {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
     events: mpsc::UnboundedSender<AppEvent>,
     // When unset, `on_register` drops the sink on the spot: the BPA
     // reads that as the application disconnecting.
     keep_sink: bool,
-    // When set, `on_deliver` collects the payload and completes;
-    // otherwise it declines (returns `Err`), so the bundle parks and is
-    // re-announced to the next registration.
-    collect: bool,
+    mode: DeliveryMode,
 }
 
 impl LifecycleApp {
     fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
-        Self::build(true, true)
+        Self::build(true, DeliveryMode::Collect)
     }
 
     fn dropping_its_sink() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
-        Self::build(false, true)
+        Self::build(false, DeliveryMode::Collect)
     }
 
     // Registers, but declines every delivery so the bundle parks.
     fn declining() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
-        Self::build(true, false)
+        Self::build(true, DeliveryMode::Decline)
     }
 
-    fn build(keep_sink: bool, collect: bool) -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+    // Registers, but every delivery sticks inside `on_deliver` forever.
+    fn stalling() -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(true, DeliveryMode::Stall)
+    }
+
+    // Registers; every delivery must reach `on_deliver` together with
+    // `parties - 1` others before any of them collects.
+    fn rendezvousing(parties: usize) -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
+        Self::build(
+            true,
+            DeliveryMode::Rendezvous(Arc::new(Barrier::new(parties))),
+        )
+    }
+
+    fn build(
+        keep_sink: bool,
+        mode: DeliveryMode,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<AppEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (
             Arc::new(Self {
                 sink: hardy_async::sync::spin::Once::new(),
                 events: tx,
                 keep_sink,
-                collect,
+                mode,
             }),
             rx,
         )
@@ -147,15 +174,30 @@ impl services::Application for LifecycleApp {
         _adu_size: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
-        if self.collect {
-            let data = hardy_bpa::stream::concat_stream(stream, usize::MAX).await?;
-            let _ = self.events.send(AppEvent::Delivered(data));
-            Ok(())
-        } else {
-            // Decline: the bundle parks and is re-announced to the next
-            // registration on this endpoint.
-            let _ = self.events.send(AppEvent::Delivered(Bytes::new()));
-            Err(services::Error::StreamCancelled)
+        match &self.mode {
+            DeliveryMode::Collect => {
+                let data = concat_stream(stream, usize::MAX, None).await?;
+                let _ = self.events.send(AppEvent::Delivered(data));
+                Ok(())
+            }
+            DeliveryMode::Decline => {
+                // Decline with a clearly synthetic error, distinct from
+                // the SDK's own transfer-cancel error: any `Err` before
+                // the stream is pulled to completion parks the bundle
+                // for re-announcement to the next registration.
+                let _ = self.events.send(AppEvent::Delivered(Bytes::new()));
+                Err(services::Error::Internal("test: declined".into()))
+            }
+            DeliveryMode::Stall => {
+                let _ = self.events.send(AppEvent::Delivered(Bytes::new()));
+                pending().await
+            }
+            DeliveryMode::Rendezvous(barrier) => {
+                barrier.wait().await;
+                let data = concat_stream(stream, usize::MAX, None).await?;
+                let _ = self.events.send(AppEvent::Delivered(data));
+                Ok(())
+            }
         }
     }
 
@@ -291,6 +333,7 @@ async fn connection_loss_defers_announced_bundles() {
             eid.clone(),
             Duration::from_secs(3600),
             None,
+            None,
             &mut payload.clone(),
         )
         .await
@@ -334,7 +377,8 @@ async fn connection_loss_defers_announced_bundles() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simultaneous_unregister_settles() {
     let served = serve().await;
-    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
 
     let (app, mut events) = LifecycleApp::new();
     client
@@ -355,13 +399,20 @@ async fn simultaneous_unregister_settles() {
     timeout(bpa_side).await.unwrap();
     expect_unregistered(&mut events).await;
 
+    // Joining the client's pool joins the session task, the only sender
+    // of lifecycle events: afterwards the channel already holds every
+    // event the application will ever observe, so absence is proved by
+    // draining it, not by a quiet window.
+    timeout(tasks.shutdown()).await;
+
     // Exactly once: however many enders raced, the application must
     // observe a single unregistration.
-    let extra = tokio::time::timeout(Duration::from_millis(500), events.recv()).await;
-    assert!(
-        !matches!(extra, Ok(Some(AppEvent::Unregistered))),
-        "unregistration must be observed exactly once"
-    );
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Unregistered),
+            "unregistration must be observed exactly once"
+        );
+    }
 }
 
 /// An application that never stores its sink has disconnected by
@@ -413,10 +464,106 @@ async fn a_server_restart_disconnects_the_client() {
             eid,
             Duration::from_secs(3600),
             None,
+            None,
             &mut Bytes::from_static(b"into the void"),
         )
         .await;
-    assert!(result.is_err(), "a dead session must fail the send");
+    assert!(
+        matches!(result, Err(services::Error::Disconnected)),
+        "a dead session must fail the send as disconnected"
+    );
+
+    served.bpa.shutdown().await;
+}
+
+/// A stuck collection cannot hang shutdown: an `on_deliver` that never
+/// returns is abandoned when the client's pool shuts down, and the
+/// session still runs its unregistration to completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_interrupts_a_stuck_delivery() {
+    let served = serve().await;
+    let tasks = TaskPool::new();
+    let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
+
+    let (app, mut events) = LifecycleApp::stalling();
+    let eid = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+
+    app.sink()
+        .send(
+            eid,
+            Duration::from_secs(3600),
+            None,
+            None,
+            &mut Bytes::from_static(b"never collected").clone(),
+        )
+        .await
+        .unwrap();
+
+    // The application is now inside `on_deliver`, parked forever.
+    loop {
+        match timeout(events.recv()).await {
+            Some(AppEvent::Delivered(_)) => break,
+            Some(_) => continue,
+            None => panic!("the delivery was never announced"),
+        }
+    }
+
+    // Shutting the pool down must abandon the stuck delivery and join
+    // the session; the timeout only bounds a regression.
+    timeout(tasks.shutdown()).await;
+    expect_unregistered(&mut events).await;
+
+    served.bpa.shutdown().await;
+}
+
+/// Deliveries collect concurrently: two announced bundles are inside
+/// `on_deliver` at the same time, so one slow collection does not stall
+/// the next announcement. With serial delivery the first `on_deliver`
+/// would hold the loop and the rendezvous barrier would never release;
+/// the timeout only bounds a regression.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deliveries_collect_concurrently() {
+    let served = serve().await;
+    let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::rendezvousing(2);
+    let eid = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+
+    let first = Bytes::from_static(b"first of the pair");
+    let second = Bytes::from_static(b"second of the pair");
+    for payload in [&first, &second] {
+        app.sink()
+            .send(
+                eid.clone(),
+                Duration::from_secs(3600),
+                None,
+                None,
+                &mut payload.clone(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut collected = Vec::new();
+    while collected.len() < 2 {
+        match timeout(events.recv()).await {
+            Some(AppEvent::Delivered(data)) => collected.push(data),
+            Some(_) => continue,
+            None => panic!("both deliveries must complete"),
+        }
+    }
+    collected.sort();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(collected, expected);
 
     served.bpa.shutdown().await;
 }

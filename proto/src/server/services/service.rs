@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use hardy_async::{TaskPool, sync::spin::Once};
+use hardy_async::{TaskPool, channel};
 use hardy_bpa::{
     async_trait,
     bpa::BpaRegistration,
@@ -29,14 +29,13 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::instrument;
 
 use super::{
-    Deliveries, abandonment, pump_to_collector, service_status, stream_delivery, to_timestamp,
-    watch_session,
+    Bridge, Component, Deliveries, SinkSlot, abandonment, pump_to_collector, service_status,
+    stream_delivery, to_timestamp,
 };
 use crate::{
     server::{
         CHANNEL_DEPTH, DATA_CHANNEL_DEPTH, adapter,
-        session::{Session, SessionStream, Sessions},
-        token::Signer,
+        session::{Session, SessionStream},
     },
     service::{
         BundleStatusReport, Delivery, ReceiveMetadata, ReceiveRequest, ReceiveResponse,
@@ -52,7 +51,7 @@ use crate::{
 
 struct GrpcService {
     session: Session<SubscribeResponse>,
-    sink: Once<Arc<dyn services::ServiceSink>>,
+    sink: SinkSlot<dyn services::ServiceSink>,
     // Announced streams held for the Receive door: the single
     // collection capability per announcement.
     deliveries: Deliveries,
@@ -62,16 +61,9 @@ impl GrpcService {
     fn new(session: Session<SubscribeResponse>) -> Self {
         Self {
             session,
-            sink: Once::new(),
+            sink: SinkSlot::new(),
             deliveries: Deliveries::default(),
         }
-    }
-
-    fn sink(&self) -> Result<Arc<dyn services::ServiceSink>, Status> {
-        self.sink
-            .get()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Unregistered"))
     }
 
     async fn event(&self, event: subscribe_response::Event) -> bool {
@@ -81,10 +73,24 @@ impl GrpcService {
     }
 }
 
+impl Component for GrpcService {
+    type Event = SubscribeResponse;
+
+    fn session(&self) -> &Session<SubscribeResponse> {
+        &self.session
+    }
+
+    async fn unregister_sink(&self) {
+        if let Some(sink) = self.sink.peek() {
+            sink.unregister().await;
+        }
+    }
+}
+
 #[async_trait]
 impl services::Service for GrpcService {
     async fn on_register(&self, _endpoint: &Eid, sink: Box<dyn services::ServiceSink>) {
-        self.sink.call_once(|| Arc::from(sink));
+        self.sink.set(sink);
     }
 
     async fn on_unregister(&self) {
@@ -110,7 +116,7 @@ impl services::Service for GrpcService {
         // the next registration. Held before the event goes out so a
         // client racing its Receive against the announcement always
         // finds the entry.
-        let (tx, rx) = hardy_async::channel::bounded(0);
+        let (tx, rx) = channel::bounded(0);
         // `hold` keeps the map's copy; the original key moves out onto the
         // wire in the event below. The cold withdraw paths recompute the
         // (deterministic) key rather than hold a third copy on every
@@ -167,39 +173,15 @@ impl services::Service for GrpcService {
 /// so shut it down only after the transport has stopped accepting.
 #[derive(Clone)]
 pub struct ServiceServiceImpl {
-    bpa: Arc<dyn BpaRegistration>,
-    tasks: TaskPool,
-    sessions: Arc<Sessions<GrpcService>>,
+    bridge: Bridge<GrpcService>,
 }
 
 impl ServiceServiceImpl {
-    /// Bridges the low-level service surface of `bpa`, minting session
-    /// tokens with the server-wide `signer`.
-    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool, signer: Signer) -> Self {
+    /// Bridges the low-level service surface of `bpa`.
+    pub fn new(bpa: Arc<dyn BpaRegistration>, tasks: TaskPool) -> Self {
         Self {
-            bpa,
-            tasks,
-            sessions: Arc::new(Sessions::new(signer)),
+            bridge: Bridge::new(bpa, tasks),
         }
-    }
-
-    // Unregisters one session, however it ended. Bundles announced but
-    // never received stay parked in the BPA for a later registration;
-    // a repeat unregister no-ops inside the sink.
-    async fn unregister_session(&self, service: Arc<GrpcService>) {
-        // Ordered by what the client must observe as done. Retire the
-        // token, then unregister from the BPA (which frees the service id
-        // before firing on_unregister), then close the stream last: the
-        // client sees teardown via the stream closing, so once it does
-        // the token is dead and the service id is reusable.
-        self.sessions.remove(service.session.token());
-        if let Some(sink) = service.sink.get() {
-            sink.unregister().await;
-        }
-        service.session.abort();
-        // The teardown barrier for tests: the session is fully retired.
-        #[cfg(test)]
-        self.sessions.signal_torn_down(service.session.token());
     }
 }
 
@@ -238,28 +220,29 @@ impl ServiceService for ServiceServiceImpl {
             Some(Service::Dtn(name)) => format!("dtn:{name}"),
             None => "dynamic".to_string(),
         };
-        let token = self.sessions.mint(&sub);
+        let token = self.bridge.sessions.mint(&sub);
         let (events_tx, events_rx) = mpsc::channel(CHANNEL_DEPTH);
         let service = Arc::new(GrpcService::new(Session::new(
             token.clone(),
-            self.tasks.child_token(),
+            self.bridge.tasks.child_token(),
             events_tx,
         )));
 
         let endpoint_id = match service_id {
-            Some(service_id) => self.bpa.register_service(service_id, service.clone()).await,
-            None => self.bpa.register_dynamic_service(service.clone()).await,
+            Some(service_id) => {
+                self.bridge
+                    .bpa
+                    .register_service(service_id, service.clone())
+                    .await
+            }
+            None => {
+                self.bridge
+                    .bpa
+                    .register_dynamic_service(service.clone())
+                    .await
+            }
         }
         .map_err(service_status)?;
-
-        // Published before the client can know its token.
-        self.sessions.publish(token.clone(), service.clone());
-
-        // The one task a session owns: it waits out the session's
-        // life, then unregisters it. The session ends on Unregister or
-        // half-close, or on the trigger: the stream's guard (the rpc
-        // dying), `on_unregister`, or pool shutdown.
-        let cancelled = service.session.cancellation();
 
         // The stream yields the Registration first, by construction:
         // the BPA announces parked bundles from inside `register_*`
@@ -270,14 +253,13 @@ impl ServiceService for ServiceServiceImpl {
                 session_token: token.into(),
             })),
         };
-        let stream = service.session.stream(registration, events_rx);
-        let service_impl = self.clone();
-        hardy_async::spawn!(self.tasks, "service_session", async move {
-            watch_session(cancelled, requests).await;
-            service_impl.unregister_session(service).await;
-        });
-
-        Ok(Response::new(stream))
+        Ok(Response::new(self.bridge.open_session(
+            service,
+            registration,
+            events_rx,
+            requests,
+            "service_session",
+        )))
     }
 
     // ---------------------------------------------------------------
@@ -298,13 +280,13 @@ impl ServiceService for ServiceServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let service = self.sessions.resolve(session_token)?;
+        let service = self.bridge.sessions.resolve(session_token)?;
 
         // The BPA pulls the transfer chunk by chunk, parses and
         // validates the assembled bundle (services are not trusted),
         // and caps the reassembly with its own bundle size limit.
         let mut reader = adapter::Reader::new(requests, service.session.cancellation(), "Send");
-        match service.sink()?.send(&mut reader).await {
+        match service.sink.get()?.send(&mut reader).await {
             Ok(bundle_id) => Ok(Response::new(SendResponse {
                 bundle_id: bundle_id.to_key(),
             })),
@@ -330,7 +312,7 @@ impl ServiceService for ServiceServiceImpl {
                 "The first message must be the metadata",
             ));
         };
-        let service = self.sessions.resolve(session_token)?;
+        let service = self.bridge.sessions.resolve(session_token)?;
         let Some(mut stream) = service.deliveries.claim(&bundle_id) else {
             return Err(Status::not_found("No such delivery"));
         };
@@ -345,7 +327,7 @@ impl ServiceService for ServiceServiceImpl {
 
         let (tx, rx) = mpsc::channel(DATA_CHANNEL_DEPTH);
         let cancelled = service.session.cancellation();
-        hardy_async::spawn!(self.tasks, "service_receive", async move {
+        hardy_async::spawn!(self.bridge.tasks, "service_receive", async move {
             stream_delivery(cancelled, first, stream, tx, abandonment(requests)).await;
         });
 
@@ -357,25 +339,23 @@ impl ServiceService for ServiceServiceImpl {
 // listener, and event-driven waits.
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    #[cfg(feature = "client")]
+    use hardy_async::sync::spin::Once;
+    use hardy_bpa::{Bytes, bpa::Bpa};
+    use tonic::{
+        Code,
+        transport::{Channel, Server},
+    };
 
+    use super::{
+        super::tests::{build_bpa, build_bundle, ipn1, serve, timeout, wait_torn_down},
+        *,
+    };
+    use crate::server::session::Sessions;
     use crate::service::{
         Register, Unregister, receive_response, service_service_client::ServiceServiceClient,
         service_service_server::ServiceServiceServer,
     };
-    use hardy_bpa::{Bytes, bpa::Bpa, node_ids::NodeIds};
-    use hardy_bpv7::eid::{IpnNodeId, NodeId};
-    use tokio::net::TcpListener;
-    use tonic::Code;
-    use tonic::transport::{Channel, Server, server::TcpIncoming};
-
-    use super::*;
-
-    async fn timeout<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(10), future)
-            .await
-            .expect("test timed out")
-    }
 
     struct Harness {
         bpa: Arc<Bpa>,
@@ -395,38 +375,14 @@ mod tests {
     // A running BPA (node ipn:1) behind the bridge on a port-0
     // listener, plus a connected generated client.
     async fn harness() -> Harness {
-        let node_ids = NodeIds::try_from(
-            [NodeId::Ipn(IpnNodeId {
-                allocator_id: 0,
-                node_number: 1,
-            })]
-            .as_slice(),
-        )
-        .unwrap();
         // Status reports on: the report round-trip test needs them.
-        let bpa = Arc::new(
-            Bpa::builder()
-                .node_ids(node_ids)
-                .status_reports(true)
-                .build()
-                .await
-                .unwrap(),
-        );
-        bpa.start(false);
+        let bpa = build_bpa(ipn1(), true).await;
 
         let tasks = TaskPool::new();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let incoming = TcpIncoming::from(listener).with_nodelay(Some(true));
-
-        let service_impl = ServiceServiceImpl::new(bpa.clone(), tasks.clone(), Signer::new());
-        let sessions = service_impl.sessions.clone();
+        let service_impl = ServiceServiceImpl::new(bpa.clone(), tasks.clone());
+        let sessions = service_impl.bridge.sessions.clone();
         let service = ServiceServiceServer::new(service_impl);
-        tokio::spawn(
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming),
-        );
+        let address = serve(Server::builder().add_service(service)).await;
 
         let client = ServiceServiceClient::connect(format!("http://{address}"))
             .await
@@ -483,17 +439,6 @@ mod tests {
 
     // A canonical BPv7 bundle as raw bytes, as a registered service
     // would build one.
-    fn build_bundle(source: &str, destination: &str, payload: &[u8]) -> Bytes {
-        let (_, data) = hardy_bpv7::builder::Builder::new(
-            source.parse().unwrap(),
-            destination.parse().unwrap(),
-        )
-        .with_payload(std::borrow::Cow::Borrowed(payload))
-        .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
-        .unwrap();
-        Bytes::from(data)
-    }
-
     async fn send(
         client: &mut ServiceServiceClient<Channel>,
         token: Bytes,
@@ -660,12 +605,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Aborted);
 
-        // Nothing was submitted: no delivery is announced.
-        let raced =
-            tokio::time::timeout(Duration::from_millis(500), registered.events.message()).await;
-        assert!(raced.is_err(), "a truncated send must not deliver");
-
+        // The BPA shutdown joins its worker pool, so anything it would
+        // announce has been announced and the session stream then ends;
+        // draining it to that end must surface no Delivery.
         harness.bpa.shutdown().await;
+        while let Some(event) = registered.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Delivery(_))),
+                "a truncated send must not deliver"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -694,11 +643,16 @@ mod tests {
             .unwrap_err();
         assert_eq!(status.code(), Code::Cancelled);
 
-        let raced =
-            tokio::time::timeout(Duration::from_millis(500), registered.events.message()).await;
-        assert!(raced.is_err(), "a cancelled send must not deliver");
-
+        // The BPA shutdown joins its worker pool, so anything it would
+        // announce has been announced and the session stream then ends;
+        // draining it to that end must surface no Delivery.
         harness.bpa.shutdown().await;
+        while let Some(event) = registered.events.message().await.unwrap() {
+            assert!(
+                !matches!(event.event, Some(subscribe_response::Event::Delivery(_))),
+                "a cancelled send must not deliver"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -830,14 +784,12 @@ mod tests {
         // The client vanishes without Unregister: dropping the rpc's
         // streams is caught by the response-stream guard and the request
         // half-close, and the session tears down. Wait for the teardown
-        // signal, so the rejection below is asserted without a race (the
-        // timeout only bounds a regression).
+        // signal, so the rejection below is asserted without a race.
         let bundle = build_bundle("ipn:1.7", "ipn:1.7", b"stale");
         let mut torn = harness.sessions.torn_down();
         drop(registered.events);
         drop(registered.requests);
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        wait_torn_down(&mut torn, &registered.token).await;
 
         let status = send(&mut harness.client, registered.token.clone(), bundle)
             .await
@@ -872,7 +824,7 @@ mod tests {
             _bundle_size: u64,
             stream: &mut dyn Receiver<Segment>,
         ) -> services::Result<()> {
-            let data = hardy_bpa::stream::concat_stream(stream, usize::MAX).await?;
+            let data = hardy_bpa::stream::concat_stream(stream, usize::MAX, None).await?;
             let _ = self.delivered.send(data).await;
             Ok(())
         }
@@ -1003,11 +955,9 @@ mod tests {
 
         // The token dies in the session task's teardown, which runs
         // after the stream closes; wait for the teardown signal, so the
-        // rejection below is asserted without a race. The timeout only
-        // bounds a regression.
+        // rejection below is asserted without a race.
         let bundle = build_bundle("ipn:1.7", "ipn:1.7", b"stale");
-        timeout(async { while Bytes::from(torn.recv().await.unwrap()) != registered.token {} })
-            .await;
+        wait_torn_down(&mut torn, &registered.token).await;
         let status = send(&mut harness.client, registered.token.clone(), bundle)
             .await
             .unwrap_err();
