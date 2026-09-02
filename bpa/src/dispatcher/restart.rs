@@ -104,10 +104,14 @@ impl Dispatcher {
                 }
                 // Handled by their own recovery mechanisms — poll_waiting,
                 // poll_service_waiting on re-registration, and fragment
-                // reassembly polling respectively. No wildcard: a new status
-                // must choose its re-admission here, not silently assume
-                // some poller recovers it.
-                bundle::BundleStatus::Waiting
+                // reassembly polling respectively. `New` never reaches
+                // storage — fresh ingress runs the chain in memory and
+                // writes a single `Dispatching` checkpoint — so it is not a
+                // recoverable state; a legacy row simply keeps its gauge.
+                // No wildcard: a new status must choose its re-admission
+                // here, not silently assume some poller recovers it.
+                bundle::BundleStatus::New
+                | bundle::BundleStatus::Waiting
                 | bundle::BundleStatus::WaitingForService { .. }
                 | bundle::BundleStatus::AduFragment { .. } => {
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
@@ -213,10 +217,6 @@ mod tests {
 
         async fn insert(&self, bundle: &bundle::Bundle) -> StorageResult<bool> {
             self.0.insert(bundle).await
-        }
-
-        async fn replace(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.replace(bundle).await
         }
 
         async fn swap_status(

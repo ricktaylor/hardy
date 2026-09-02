@@ -144,9 +144,10 @@ impl Dispatcher {
                     Ok(data) => data,
                     Err(e) => {
                         debug!("Cannot apply deferred block removals at delivery: {e}");
-                        return self
-                            .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                            .await;
+                        return OfferOutcome::Dropped(
+                            bundle,
+                            Some(ReasonCode::BlockUnintelligible),
+                        );
                     }
                 };
                 // The whole bundle is in hand, so it travels as a single Final

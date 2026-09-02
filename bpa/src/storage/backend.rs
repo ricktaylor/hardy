@@ -56,9 +56,6 @@ pub trait MetadataStorage: Send + Sync {
     /// inserted (`false` if an entry already exists).
     async fn insert(&self, bundle: &Bundle) -> Result<bool>;
 
-    /// Replaces an existing bundle's metadata.
-    async fn replace(&self, bundle: &Bundle) -> Result<()>;
-
     /// Updates the status of the bundle with the given `bundle_id` only if
     /// its current status equals `expected`, returning whether the swap was
     /// applied.

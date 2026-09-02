@@ -295,32 +295,6 @@ impl MetadataStorage for SqliteStorage {
         .await
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        // UTC-normalized for the same reason as `insert`.
-        let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
-        let received_at = bundle.metadata.received_at();
-        let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.status);
-        let id = serde_json::to_vec(bundle.id())?;
-        let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
-        if self
-            .write(move |conn| {
-                // Update bundle
-                conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1",
-                )?
-                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
-                .map_err(Into::into)
-            })
-            .await?
-            != 1
-        {
-            error!("Failed to replace bundle!");
-        }
-        Ok(())
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn swap_status(
         &self,
@@ -1190,9 +1164,18 @@ mod tests {
         store.poll_waiting(&sink).await.unwrap();
         assert_eq!(sink.into_inner().len(), 1, "should poll 1 waiting bundle");
 
-        // Update status to Dispatching
+        // Claim the bundle to Dispatching
         bundle.status = BundleStatus::Dispatching;
-        store.replace(&bundle).await.unwrap();
+        assert!(
+            store
+                .swap_status(
+                    bundle.id(),
+                    &BundleStatus::Waiting,
+                    &BundleStatus::Dispatching
+                )
+                .await
+                .unwrap()
+        );
 
         // Poll waiting again — should return nothing
         let sink = VecSink::new();

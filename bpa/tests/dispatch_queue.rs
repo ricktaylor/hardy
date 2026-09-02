@@ -106,10 +106,6 @@ impl MetadataStorage for InjectingStorage {
         self.inner.insert(bundle).await
     }
 
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
-    }
-
     async fn swap_status(
         &self,
         bundle_id: &Id,
@@ -494,10 +490,6 @@ impl MetadataStorage for ClaimGate {
 
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         self.inner.insert(bundle).await
-    }
-
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
     }
 
     async fn swap_status(

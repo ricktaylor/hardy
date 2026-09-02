@@ -181,14 +181,6 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub async fn update_metadata(&self, bundle: &Bundle) {
-        self.metadata_storage
-            .replace(bundle)
-            .await
-            .trace_expect("Failed to replace metadata")
-    }
-
     // Compare-and-swap from the caller's snapshot status: the arbiter for
     // writers racing the peer sweeps, the expiry reaper, and each other.
     // Gauges move only when the swap wins.
@@ -395,9 +387,6 @@ mod tests {
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
                 Err("backend down".into())
-            }
-            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
             }
             async fn swap_status(
                 &self,
