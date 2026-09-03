@@ -1,3 +1,5 @@
+use tracing::warn;
+
 use super::*;
 
 // PeerTable uses hardy_async::sync::spin::RwLock because:
@@ -7,7 +9,9 @@ use super::*;
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
 struct PeerInner {
-    queues: HashMap<Option<u32>, storage::channel::Sender>,
+    // One poller per policy queue, indexed by the queue index — queue 0
+    // always exists (`EgressPolicy::queue_count` is non-zero).
+    queues: Vec<storage::channel::Sender>,
 }
 
 pub struct Peer {
@@ -45,32 +49,17 @@ impl Peer {
             ))
             .await;
 
-        let queue_count = cla.policy.queue_count();
-        let mut queues = HashMap::with_capacity(queue_count as usize + 1);
-        queues.insert(
-            None,
-            Self::start_queue_poller(
+        let queue_count = cla.policy.queue_count().get();
+        let mut queues = Vec::with_capacity(queue_count as usize);
+        for q in 0..queue_count {
+            queues.push(Self::start_queue_poller(
                 poll_channel_depth,
                 controller.clone(),
                 store.clone(),
                 tasks,
                 peer,
-                None,
-            ),
-        );
-
-        for q in 0..queue_count {
-            queues.insert(
-                Some(q),
-                Self::start_queue_poller(
-                    poll_channel_depth,
-                    controller.clone(),
-                    store.clone(),
-                    tasks,
-                    peer,
-                    Some(q),
-                ),
-            );
+                q,
+            ));
         }
 
         self.inner.call_once(|| PeerInner { queues });
@@ -82,7 +71,7 @@ impl Peer {
         store: Arc<storage::store::Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,
-        queue: Option<u32>,
+        queue: u32,
     ) -> storage::channel::Sender {
         let (tx, rx) = store.channel(
             bundle::BundleStatus::ForwardPending { peer, queue },
@@ -110,14 +99,12 @@ impl Peer {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        let queue = if let Some(flow_label) = bundle.metadata.writable.flow_label {
-            let Some(cla) = self.cla.upgrade() else {
-                return Err(bundle);
-            };
-            cla.policy.classify(Some(flow_label))
-        } else {
-            None
+        // Every bundle classifies into a policy queue (label-less bundles
+        // included).
+        let Some(cla) = self.cla.upgrade() else {
+            return Err(bundle);
         };
+        let queue = cla.policy.classify(bundle.metadata.writable.flow_label);
 
         // The peer is published into the PeerTable before start() initialises
         // the queues, so a forward may race ahead of initialisation. Return the
@@ -125,10 +112,12 @@ impl Peer {
         let Some(inner) = self.inner.get() else {
             return Err(bundle);
         };
-        let queue = inner
-            .queues
-            .get(&queue)
-            .unwrap_or_else(|| inner.queues.get(&None).trace_expect("No None queue?!?"));
+        // An out-of-range index is a policy bug: clamp to queue 0, which
+        // always exists.
+        let queue = inner.queues.get(queue as usize).unwrap_or_else(|| {
+            warn!("Egress policy classified a bundle into out-of-range queue {queue}");
+            &inner.queues[0]
+        });
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
@@ -142,7 +131,7 @@ impl Peer {
         let Some(inner) = self.inner.get() else {
             return;
         };
-        for tx in inner.queues.values() {
+        for tx in &inner.queues {
             tx.close();
         }
     }

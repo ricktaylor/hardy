@@ -66,7 +66,7 @@ impl StatusFields {
             BundleStatusKind::Dispatching => Some(BundleStatus::Dispatching),
             BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
-                queue: self.queue_id.and_then(|q| u32::try_from(q).ok()),
+                queue: u32::try_from(self.queue_id?).ok()?,
             }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
@@ -113,9 +113,9 @@ impl TryFrom<&BundleStatus> for StatusFields {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
-                queue_id: queue
-                    .map(|q| i32::try_from(q).map_err(|_| StatusConversionError::QueueId(q)))
-                    .transpose()?,
+                queue_id: Some(
+                    i32::try_from(*queue).map_err(|_| StatusConversionError::QueueId(*queue))?,
+                ),
                 ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
             BundleStatus::AduFragment { source, timestamp } => {

@@ -463,10 +463,7 @@ mod tests {
         test_expired_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
-    const STATUS: BundleStatus = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: None,
-    };
+    const STATUS: BundleStatus = BundleStatus::ForwardPending { peer: 1, queue: 0 };
 
     // The delivery contract requires the bundle to already exist in metadata
     // storage before it is offered to the channel; insert it with the
