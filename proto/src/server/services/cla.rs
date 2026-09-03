@@ -452,7 +452,7 @@ impl ClaService for ClaServiceImpl {
 
         // The token is minted before the BPA sees the component: the
         // session must be able to carry events the moment registration
-        // completes. The JWT `sub` is the requested identity,
+        // completes. The token's `sub` prefix is the requested identity,
         // observability only.
         let token = self.bridge.sessions.mint(&format!("cla:{}", register.name));
         let (events_tx, events_rx) = mpsc::channel(CHANNEL_DEPTH);

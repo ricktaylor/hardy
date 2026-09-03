@@ -4,7 +4,7 @@
 //! [`PatternKeySource`], so the key configuration can be hot-reloaded while
 //! bundles are being processed.
 
-use crate::config::bpsec::BPSecConfig;
+use crate::{config::bpsec::BPSecConfig, keyfile};
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
 use hardy_bpa::keys::KeyProvider;
@@ -14,7 +14,7 @@ use hardy_bpv7::{
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{collections::HashMap, fs, sync::Arc};
 use tracing::{debug, error, info, warn};
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
 ///
@@ -123,7 +123,7 @@ impl PatternKeySource {
     /// Every key must be a non-empty symmetric key (`kty: oct`) carrying a
     /// `key_ops` field, and every binding must reference a known key id.
     pub fn load(config: &BPSecConfig) -> anyhow::Result<Self> {
-        check_permissions(&config.keys_file);
+        keyfile::check_permissions(&config.keys_file);
 
         let file = fs::File::open(&config.keys_file).map_err(|e| {
             anyhow::anyhow!(
@@ -182,26 +182,6 @@ impl PatternKeySource {
         Ok(Self::new(keys, bindings))
     }
 }
-
-#[cfg(unix)]
-fn check_permissions(path: &Path) {
-    use std::os::unix::fs::MetadataExt;
-
-    if let Ok(meta) = fs::metadata(path) {
-        let mode = meta.mode() & 0o777;
-        if mode & 0o077 != 0 {
-            warn!(
-                "Key file '{}' has group/other permissions (mode {:04o}). \
-                 Restrict to owner-only (chmod 0600).",
-                path.display(),
-                mode
-            );
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn check_permissions(_path: &Path) {}
 
 impl KeySource for PatternKeySource {
     fn key<'a>(&'a self, source: &Eid, operations: &[Operation]) -> Option<&'a Key> {

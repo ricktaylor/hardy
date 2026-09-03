@@ -38,6 +38,8 @@ use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
 use hardy_tcpclv4::{Tcpclv4, tls};
 #[cfg(feature = "grpc")]
+use tokio::sync::oneshot;
+#[cfg(feature = "grpc")]
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tracing::{info, warn};
 
@@ -49,6 +51,8 @@ use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
 use crate::error::Error;
 #[cfg(feature = "grpc")]
 use crate::grpc::GrpcServer;
+#[cfg(feature = "grpc")]
+use crate::keyfile;
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -407,6 +411,7 @@ impl BpaServer {
                     path: tls.identity.key_file.clone(),
                     source,
                 })?;
+                keyfile::check_permissions(&tls.identity.key_file);
                 let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
 
                 if tls.client_auth != ClientAuth::Off {
@@ -461,13 +466,22 @@ impl BpaServer {
 
         bpa.start(recover_storage);
 
+        // A gRPC transport failure fires this channel; a clean cancel-driven
+        // shutdown leaves the sender to drop. Checked after shutdown so the
+        // failure keys the process exit status, matching a bind failure.
         #[cfg(feature = "grpc")]
-        if let Some(grpc) = grpc {
+        let grpc_failure = if let Some(grpc) = grpc {
             let cancel = tasks.cancel_token().clone();
+            let (tx, rx) = oneshot::channel();
             hardy_async::spawn!(tasks, "grpc_server", async move {
-                grpc.serve(cancel).await;
+                if let Err(e) = grpc.serve(cancel).await {
+                    let _ = tx.send(e);
+                }
             });
-        }
+            Some(rx)
+        } else {
+            None
+        };
 
         info!("Started successfully");
 
@@ -477,6 +491,15 @@ impl BpaServer {
         bpa.shutdown().await;
 
         info!("Stopped");
+
+        // After `shutdown` the serve task has ended, so the sender is either
+        // fired (transport failure) or dropped (clean shutdown).
+        #[cfg(feature = "grpc")]
+        if let Some(rx) = grpc_failure
+            && let Ok(err) = rx.await
+        {
+            return Err(err.into());
+        }
 
         Ok(())
     }

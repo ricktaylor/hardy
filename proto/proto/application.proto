@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package application.v1;
+package hardy.application.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/empty.proto";
@@ -178,7 +178,9 @@ message SendMetadata {
   bytes                    session_token = 1;
   // The destination endpoint id.
   string                   destination   = 2;
-  // The bundle lifetime.
+  // The bundle lifetime: required, and must be non-negative and within
+  // range. A missing, negative, or out-of-range value is
+  // INVALID_ARGUMENT.
   google.protobuf.Duration lifetime      = 3;
   optional SendOptions     options       = 4;
   // The total ADU size in bytes, if known: a preallocation hint only.

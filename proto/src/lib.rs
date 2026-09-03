@@ -147,7 +147,7 @@ macro_rules! impl_unregister {
 
 /// The application surface: ADUs in and out.
 pub mod application {
-    tonic::include_proto!("application.v1");
+    tonic::include_proto!("hardy.application.v1");
 
     use hardy_bpa::services;
 
@@ -232,7 +232,7 @@ pub mod application {
 
 /// The low-level service surface: whole BPv7 bundles in and out.
 pub mod service {
-    tonic::include_proto!("service.v1");
+    tonic::include_proto!("hardy.service.v1");
 
     use hardy_bpa::services;
 
@@ -287,7 +287,7 @@ pub mod service {
 
 /// The convergence-layer adapter surface.
 pub mod cla {
-    tonic::include_proto!("cla.v1");
+    tonic::include_proto!("hardy.cla.v1");
 
     use hardy_bpa::cla;
     use tonic::Status;
@@ -378,7 +378,7 @@ pub mod cla {
 
 /// The routing agent surface.
 pub mod routing {
-    tonic::include_proto!("routing.v1");
+    tonic::include_proto!("hardy.routing.v1");
 
     // Aliased to keep the domain type distinct from the wire `RouteAction`
     // this module generates.
@@ -398,6 +398,9 @@ pub mod routing {
         /// The `via` endpoint id does not parse.
         #[error("Invalid via EID: {0}")]
         InvalidVia(#[from] eid::Error),
+        /// The drop reason code is reserved and cannot be carried.
+        #[error("Reserved status report reason code")]
+        ReservedReason,
     }
 
     // The doors answer a bad route action as a plain invalid-argument.
@@ -429,9 +432,15 @@ pub mod routing {
 
         fn try_from(action: route_action::Action) -> Result<Self, RouteActionError> {
             Ok(match action {
+                // An unknown code becomes `Unassigned`, but the reserved
+                // 255 is refused rather than laundered: a remote agent
+                // must not put on the wire what a local caller cannot
+                // construct.
                 route_action::Action::Drop(drop) => Self::Drop(
                     drop.reason_code
-                        .map(|c| ReasonCode::try_from(c).unwrap_or(ReasonCode::Unassigned(c))),
+                        .map(ReasonCode::try_from)
+                        .transpose()
+                        .map_err(|_| RouteActionError::ReservedReason)?,
                 ),
                 route_action::Action::Reflect(_) => Self::Reflect,
                 route_action::Action::Via(eid) => Self::Via(eid.parse::<Eid>()?),
