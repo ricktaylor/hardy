@@ -32,7 +32,7 @@ impl RemoteBpa {
     ///
     /// # Arguments
     ///
-    /// * `grpc_addr` - The gRPC server address (e.g., "http://[::1]:50051")
+    /// * `grpc_addr` - The gRPC server address (e.g., "http://\[::1\]:50051")
     pub fn new(grpc_addr: String) -> Self {
         Self { grpc_addr }
     }

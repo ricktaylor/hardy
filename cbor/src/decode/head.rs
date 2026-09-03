@@ -130,7 +130,7 @@ pub enum Marker {
 pub struct Head {
     /// CBOR major-type-6 tags preceding the item, in encoding order. Empty
     /// if the item is untagged. Stored inline for the common 0-1 tag case;
-    /// see [`Tags`] for details.
+    /// see `Tags` for details.
     pub tags: Tags,
     /// The decoded marker for the item itself.
     pub marker: Marker,

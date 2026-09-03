@@ -1088,8 +1088,7 @@ mod deferred_payload_bib_tests {
     // awkward chunk sizes, and settles Ok — no resident payload anywhere.
     #[test]
     fn payload_bib_verifies_incrementally() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
         let (consumed, raw, facts) = deferred_setup(&full, &keys);
         let bib_block = *facts.deferred_bibs.keys().next().expect("a deferred BIB");
 
@@ -1118,8 +1117,7 @@ mod deferred_payload_bib_tests {
     // the streamed twin of `payload_bib_tamper_fails`.
     #[test]
     fn payload_bib_incremental_tamper_fails() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
         let (consumed, raw, facts) = deferred_setup(&full, &keys);
 
         let mut verifiers =
@@ -1147,8 +1145,7 @@ mod deferred_payload_bib_tests {
     // rather than an error.
     #[test]
     fn payload_bib_incremental_nokey_skips() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
         let (consumed, raw, facts) = deferred_setup(&full, &keys);
 
         let empty_keys = bpsec::key::KeySet::new(vec![]);
