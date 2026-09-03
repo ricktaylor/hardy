@@ -26,7 +26,7 @@ pub enum BundleStatus {
         /// Identifier of the CLA peer this bundle is queued for.
         peer: u32,
         /// The policy queue index within the peer's egress queues
-        /// (`0..EgressPolicy::queue_count()`; queue 0 always exists).
+        /// (`0..FlowControllerFactory::queue_count()`; queue 0 always exists).
         queue: u32,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained

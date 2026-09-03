@@ -2,12 +2,12 @@ use super::*;
 
 /// A pass-through egress controller: every bundle transmits on the next
 /// free lane.
-pub struct EgressController {
+pub struct FlowController {
     queue: Arc<dyn policy::EgressQueue>,
 }
 
 #[async_trait]
-impl policy::EgressController for EgressController {
+impl policy::FlowController for FlowController {
     fn queue_for(&self) -> u32 {
         0
     }
@@ -18,7 +18,7 @@ impl policy::EgressController for EgressController {
 }
 
 #[async_trait]
-impl policy::EgressQueue for EgressController {
+impl policy::EgressQueue for FlowController {
     async fn forward(&self, bundle: bundle::Bundle) {
         self.queue.forward(bundle).await
     }
@@ -27,9 +27,9 @@ impl policy::EgressQueue for EgressController {
 /// The null egress policy: one total FIFO queue, no prioritisation, no lane
 /// pinning — it applies no policy.
 #[derive(Default)]
-pub struct EgressPolicy {}
+pub struct FlowControllerFactory {}
 
-impl EgressPolicy {
+impl FlowControllerFactory {
     /// Creates a new null egress policy with default settings.
     pub fn new() -> Self {
         Default::default()
@@ -37,7 +37,7 @@ impl EgressPolicy {
 }
 
 #[async_trait]
-impl policy::EgressPolicy for EgressPolicy {
+impl policy::FlowControllerFactory for FlowControllerFactory {
     fn queue_count(&self) -> core::num::NonZeroU32 {
         core::num::NonZeroU32::MIN
     }
@@ -45,7 +45,7 @@ impl policy::EgressPolicy for EgressPolicy {
     async fn new_controller(
         &self,
         queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
-    ) -> Arc<dyn policy::EgressController> {
+    ) -> Arc<dyn policy::FlowController> {
         // Applying no policy means imposing no lane constraint: the one
         // queue transmits with the next-free-lane directive (`None`), so a
         // multi-lane CLA still fans across its idle lanes. Any pinned
@@ -55,13 +55,13 @@ impl policy::EgressPolicy for EgressPolicy {
             .get(&None)
             .trace_expect("No next-free queue?!?")
             .clone();
-        Arc::new(EgressController { queue })
+        Arc::new(FlowController { queue })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::policy::EgressPolicy as _;
+    use crate::policy::FlowControllerFactory as _;
 
     use super::*;
 
@@ -94,7 +94,7 @@ mod tests {
                 }),
             );
         }
-        let controller = EgressPolicy::new().new_controller(queues).await;
+        let controller = FlowControllerFactory::new().new_controller(queues).await;
 
         let (_, data) = hardy_bpv7::builder::Builder::new(
             "ipn:0.1.1".parse().unwrap(),

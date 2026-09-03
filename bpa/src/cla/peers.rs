@@ -10,11 +10,11 @@ use super::*;
 
 pub struct Peer {
     // One poller per policy queue, indexed by the queue index — queue 0
-    // always exists (`EgressPolicy::queue_count` is non-zero).
+    // always exists (`FlowControllerFactory::queue_count` is non-zero).
     queues: Vec<storage::channel::Sender>,
     // This peer's controller: owns the queue assignment (`queue_for`), so
     // the hot forwarding path touches no shared policy state.
-    controller: Arc<dyn policy::EgressController>,
+    controller: Arc<dyn policy::FlowController>,
 }
 
 impl Peer {
@@ -62,7 +62,7 @@ impl Peer {
 
     fn start_queue_poller(
         poll_channel_depth: usize,
-        controller: Arc<dyn policy::EgressController>,
+        controller: Arc<dyn policy::FlowController>,
         store: Arc<storage::store::Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,

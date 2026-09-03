@@ -141,7 +141,7 @@ pub struct Rfc9171ValidityConfig {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
-pub enum EgressPolicyConfig {
+pub enum FlowControllerFactoryConfig {
     #[serde(other)]
     Unknown,
 }
@@ -241,7 +241,7 @@ pub struct Config {
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
-    pub policies: HashMap<String, EgressPolicyConfig>,
+    pub policies: HashMap<String, FlowControllerFactoryConfig>,
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]
