@@ -3655,3 +3655,137 @@ async fn peer_removed_mid_construction_is_withdrawn() {
 
     bpa.shutdown().await;
 }
+
+// Routing is decided at the ingress gate: a destination resolving to an
+// explicit Drop route rejects the bundle before its payload is drained —
+// the stream is left unconsumed and nothing spools. Drop-with-reason
+// reports like any gated drop (the combined reception + deletion record);
+// Drop-without-reason is silent, exactly as dispatch's delete path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn early_route_drop_spools_nothing() {
+    use hardy_bpa::routing::{RouteAction, StaticRoutingAgent};
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A peer for the report route (report-to defaults to the source), plus
+    // Drop routes: reasoned for one destination, silent for another.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(remote_source.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: accepted, payload never drained, one combined report.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a route-dropped bundle is accepted and terminated, never refused"
+    );
+    assert!(
+        stream.remaining() > 0,
+        "the payload must never be drained for a route-dropped bundle"
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::NoKnownRouteToDestinationFromHere);
+
+    // Silent Drop: accepted, payload never drained, no report at all.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert!(
+        stream.remaining() > 0,
+        "the payload must never be drained for a silently-dropped bundle"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a reasonless Drop route emits nothing"
+    );
+}

@@ -77,21 +77,39 @@ impl Dispatcher {
         bundle: bundle::Bundle,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
+        // Snapshot the routing table before the lookup: the parks re-check
+        // it to close the park-vs-poll window (see park_bundle). A Forward
+        // result names the peer, whose egress queue carries the adjacency.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        self.execute_dispatch_action(bundle, action, seen, cla_registry)
+            .await
+    }
+
+    // Execute a routing decision. Shared by `process_bundle` (which routes
+    // at dispatch: the re-dispatch, poll, sweep, and recovery paths) and the
+    // ingress commit (which routes at the pre-drain gate — the decision of
+    // record for fresh arrivals). `seen` is the table snapshot captured with
+    // the lookup: a decision that proves stale lands in a failure arm whose
+    // park re-checks it and re-enters dispatch, so no staleness strands a
+    // bundle.
+    pub(super) async fn execute_dispatch_action(
+        &self,
+        bundle: bundle::Bundle,
+        action: Option<routing::DispatchAction>,
+        seen: routing::RibSnapshot,
+        cla_registry: &cla::registry::ClaRegistry,
+    ) {
         // Expiry checkpoint: the reaper defers the hand-off statuses
         // (DeliveryAckPending/ForwardAckPending), so an expired bundle can
         // re-enter dispatch through a transfer outcome, a sweep, or a poll —
-        // resolve it here rather than routing it onward.
+        // and the ingress drain takes real time — so resolve expiry here
+        // rather than routing the bundle onward.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Snapshot the routing table before the lookup: the parks below
-        // re-check it to close the park-vs-poll window (see park_bundle).
-        let seen = self.rib.table_snapshot();
-
-        // Perform RIB lookup; a Forward result names the peer, whose egress
-        // queue carries the adjacency EID.
-        match self.rib.find(&bundle) {
+        match action {
             Some(routing::DispatchAction::Drop(reason)) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");

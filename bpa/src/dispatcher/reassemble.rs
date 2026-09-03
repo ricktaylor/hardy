@@ -42,7 +42,11 @@ impl Dispatcher {
             .await
             .trace_expect("New stream push failed?!?");
 
-        match self.process_received_bundle(&mut rx, metadata).await {
+        // Box::pin breaks the async cycle: process_received_bundle executes
+        // the gate's routing decision inline, whose Deliver-fragment arm is
+        // this function. Depth is bounded — fragments reassemble into a
+        // whole, which cannot be a fragment again.
+        match Box::pin(self.process_received_bundle(&mut rx, metadata)).await {
             // Admitted and queued for dispatch — the pre-stored data is now
             // live, so leave it in place.
             Received::Dispatched => {}
