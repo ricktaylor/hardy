@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 - **BREAKING:** the free `bpsec::block_data()` function — `bpsec::DecryptingReader::block_data` is the same contract (typed errors carrying the cause; owned decrypted plaintext) plus outcome memoisation and an explicit `Ok(None)` for non-resident extents.
+- Incremental payload-BIB verification for streaming ingress: `bpsec::bib::Operation::begin_verify` returns a `bpsec::bib::Verifier` pre-fed with every header-resident IPPT part; the caller feeds the payload's block-type-specific data as it streams (`update`) and settles with `finish` (constant-time tag compare). The verifier owns everything it needs — including key material *copied* into the MAC state, the recorded exception to keeping raw keys out of async scopes — so it is `Send` and may cross `await` points and task boundaries. `checks::begin_payload_verification` begins one verifier per deferred payload BIB (`VerifyFacts::deferred_bibs`) from header material alone, mirroring the resident path's skip rules (BCB-covered payload, `NoKey`).
+
+### Changed
+- **BREAKING:** `checks::verify_payload` is removed. Callers holding deferred payload-BIB op-sets settle them incrementally via `checks::begin_payload_verification` + `bib::Verifier` — no resident payload buffer is required, which is the point.
+
+### Fixed
+- A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
 
 ### Changed
 - **BREAKING:** the block read abstraction is renamed and lifted to the crate root, joining the `Builder`/`Editor`/`Signer`/`Encryptor` role-noun family: trait `bpsec::BlockSet` is now `reader::Reader`, and `bpsec::PlainBlockSet` is now `reader::PlainReader`. No behavioural change — signatures and semantics are otherwise identical, and plain block reading no longer requires the `bpsec` module path.
