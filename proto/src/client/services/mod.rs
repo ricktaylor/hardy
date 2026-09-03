@@ -24,14 +24,17 @@ use crate::error_status::recover_service_error;
 // status carrying the wire's typed-error discriminator recovers as the
 // exact domain error the server raised; otherwise (a non-Hardy server,
 // or a kind whose payload cannot travel) the status code classifies it:
-// a dead token or an unreachable BPA is the sink's disconnection,
-// everything else carries through.
+// a dead token or an unreachable BPA is the sink's disconnection, a
+// cancelled call is the stream's cancellation (the same error a local
+// streamed send returns when its producer gives up before the final
+// segment), everything else carries through.
 fn service_error(status: Status) -> services::Error {
     if let Some(e) = recover_service_error(&status) {
         return e;
     }
     match status.code() {
         Code::Unauthenticated | Code::Unavailable => services::Error::Disconnected,
+        Code::Cancelled => services::Error::StreamCancelled,
         _ => services::Error::Internal(status.into()),
     }
 }

@@ -122,25 +122,58 @@ impl BpaClient {
     /// is usually the host's, so the sessions join its shutdown
     /// sequence.
     ///
-    /// The connection is armed with HTTP/2 keepalive (a ping every
-    /// 30 seconds, 10 seconds to answer, active while idle), so a
-    /// silently dead peer ends its sessions within about a minute
-    /// even when the event streams are quiet, with an adaptive
-    /// flow-control window so a large delivery is not throttled to the
-    /// fixed default window per round-trip, and with a chunk-sized DATA
-    /// frame cap so a transfer is not fragmented into many small frames.
-    /// For different transport settings, configure an `Endpoint` and use
-    /// [`with_endpoint`]; keepalive set here would override the
-    /// endpoint's own.
+    /// The connection carries the transport defaults of
+    /// [`default_endpoint`]. For different settings, start from
+    /// [`default_endpoint`] (or a bare `Endpoint`) and use
+    /// [`with_endpoint`].
     ///
     /// [`new_pool`]: BpaClient::new_pool
     /// [`with_endpoint`]: BpaClient::with_endpoint
+    /// [`default_endpoint`]: BpaClient::default_endpoint
     pub fn new<D>(endpoint: D, tasks: TaskPool) -> Result<Self, ConnectError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         Self::new_pool(endpoint, NonZeroUsize::MIN, tasks)
+    }
+
+    /// The SDK's transport defaults applied to `endpoint`: HTTP/2
+    /// keepalive (a ping every 30 seconds, 10 seconds to answer, active
+    /// while idle) so a silently dead peer ends its sessions within
+    /// about a minute even when the event streams are quiet, an adaptive
+    /// flow-control window so a large transfer is not throttled to the
+    /// fixed default window per round-trip, and a chunk-sized DATA frame
+    /// cap so a transfer is not fragmented into many small frames.
+    ///
+    /// [`new`] and [`new_pool`] connect with exactly this. To adjust one
+    /// setting without silently losing the others (say, the keepalive
+    /// cadence, since setting it again overrides these), start here,
+    /// reconfigure, and construct with [`with_endpoint`].
+    ///
+    /// [`new`]: BpaClient::new
+    /// [`new_pool`]: BpaClient::new_pool
+    /// [`with_endpoint`]: BpaClient::with_endpoint
+    pub fn default_endpoint<D>(endpoint: D) -> Result<Endpoint, ConnectError>
+    where
+        D: TryInto<Endpoint>,
+        D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
+    {
+        Ok(endpoint
+            .try_into()
+            .map_err(|e| ConnectError::InvalidEndpoint(e.into()))?
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_while_idle(true)
+            // Auto-size the flow-control window to the connection's
+            // bandwidth-delay product: the fixed ~64 KiB default caps a
+            // transfer at window/RTT, throttling GB-scale bundles on any
+            // link with non-trivial latency.
+            .http2_adaptive_window(true)
+            // Carry a whole chunk in as few HTTP/2 DATA frames as
+            // possible: the ~16 KiB default fragments each chunk into
+            // many frames, all per-frame bookkeeping on a GB transfer.
+            .max_frame_size(DEFAULT_MAX_FRAME_SIZE))
     }
 
     /// A client of the BPA server at `endpoint` over a pool of
@@ -161,22 +194,11 @@ impl BpaClient {
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
-        let endpoint = endpoint
-            .try_into()
-            .map_err(|e| ConnectError::InvalidEndpoint(e.into()))?
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .keep_alive_timeout(Duration::from_secs(10))
-            .keep_alive_while_idle(true)
-            // Auto-size the flow-control window to the connection's
-            // bandwidth-delay product: the fixed ~64 KiB default caps a
-            // transfer at window/RTT, throttling GB-scale bundles on any
-            // link with non-trivial latency.
-            .http2_adaptive_window(true)
-            // Carry a whole chunk in as few HTTP/2 DATA frames as
-            // possible: the ~16 KiB default fragments each chunk into
-            // many frames, all per-frame bookkeeping on a GB transfer.
-            .max_frame_size(DEFAULT_MAX_FRAME_SIZE);
-        Ok(Self::with_endpoint_pool(endpoint, connections, tasks))
+        Ok(Self::with_endpoint_pool(
+            Self::default_endpoint(endpoint)?,
+            connections,
+            tasks,
+        ))
     }
 
     /// A client over `endpoint` exactly as configured (no transport
@@ -232,14 +254,16 @@ impl BpaClient {
     ///
     /// # Delivery commitment over the wire
     ///
-    /// Over the wire, a delivery commits on the BPA the moment its
-    /// stream is received to completion. Returning `Err` from
+    /// A delivery commits only when the SDK acknowledges it, which it
+    /// does after
     /// [`on_deliver`](hardy_bpa::services::Application::on_deliver)
-    /// therefore only defers a delivery whose stream was **not** fully
-    /// received: the SDK abandons the collection and the bundle stays
-    /// parked for a later registration. An `Err` returned after the
-    /// stream was received in full cannot un-commit the delivery; the
-    /// SDK logs the decline and the BPA counts the bundle delivered.
+    /// returns `Ok` for a fully received stream. Returning `Err` parks
+    /// the bundle for a later registration, whether or not the stream
+    /// was received in full; so does a connection lost before the
+    /// acknowledgement reached the BPA, which the application then
+    /// observes as a re-delivery of a bundle it already accepted.
+    /// Deliveries are therefore at-least-once: accept idempotently,
+    /// keyed on the bundle id.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_application(
         &self,
@@ -289,14 +313,16 @@ impl BpaClient {
     ///
     /// # Delivery commitment over the wire
     ///
-    /// Over the wire, a delivery commits on the BPA the moment its
-    /// stream is received to completion. Returning `Err` from
+    /// A delivery commits only when the SDK acknowledges it, which it
+    /// does after
     /// [`on_deliver`](hardy_bpa::services::Service::on_deliver)
-    /// therefore only defers a delivery whose stream was **not** fully
-    /// received: the SDK abandons the collection and the bundle stays
-    /// parked for a later registration. An `Err` returned after the
-    /// stream was received in full cannot un-commit the delivery; the
-    /// SDK logs the decline and the BPA counts the bundle delivered.
+    /// returns `Ok` for a fully received stream. Returning `Err` parks
+    /// the bundle for a later registration, whether or not the stream
+    /// was received in full; so does a connection lost before the
+    /// acknowledgement reached the BPA, which the service then observes
+    /// as a re-delivery of a bundle it already accepted. Deliveries are
+    /// therefore at-least-once: accept idempotently, keyed on the
+    /// bundle id.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     pub async fn register_service(
         &self,

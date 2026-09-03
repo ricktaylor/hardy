@@ -85,14 +85,7 @@ impl services::ServiceSink for GrpcServiceSink {
 
         let mut client = self.client.clone();
         let ((), response) = tokio::join!(pump, client.send(ReceiverStream::new(rx)));
-        let response = response
-            .map_err(|status| match status.code() {
-                // The same error a local streamed send returns when
-                // its producer gives up before the final segment.
-                Code::Cancelled => services::Error::StreamCancelled,
-                _ => service_error(status),
-            })?
-            .into_inner();
+        let response = response.map_err(service_error)?.into_inner();
         bundle::Id::from_key(&response.bundle_id).map_err(|e| services::Error::Internal(e.into()))
     }
 }
