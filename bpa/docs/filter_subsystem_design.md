@@ -48,10 +48,11 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Extension fields → metadata wire cache | write (meta) | no |
 | Pre-drain gate: lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`) | read (reject) | no — spec/config |
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
+| Route lookup at the gate — the decision of record (an explicit Drop route rejects before the drain) | read (reject) | already — RoutingAgent |
 | Payload drain/spool through `TailReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
 | §5.1.1 failure-drops + unrecognised-block removals — *scheduled* in `to_remove` metadata, applied per attempt at the output doors; stored bytes stay as-received | write (meta) | no |
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
-| Enqueue to Dispatch | queue op | no |
+| Execute the gate's routing decision directly (no dispatch-queue transit) | queue op | no |
 
 **In from a local application** (Originate block — `local_dispatch`/`local_dispatch_raw`):
 
@@ -66,7 +67,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
-| RIB lookup → Drop / AdminEndpoint / Deliver / Forward(peer, next hop) / Wait | write (queue assignment) | already — RoutingAgent |
+| Routing decision → Drop / AdminEndpoint / Deliver / Forward(peer, next hop) / Wait — a fresh CLA arrival executes the ingress gate's decision of record; every other entry looks up here | write (queue assignment) | already — RoutingAgent |
 | Admin records → Admin block (no Deliver hook — see below) | — | already — AdminRecord registry |
 | Fragments → Reassemble block → re-enter Ingest processing | write | no |
 | Peer-seat FlowController (egress scheduling) | read (schedule) | no — a fixed point (tc/qdisc in the netfilter analogy, not iptables) |
@@ -255,7 +256,7 @@ What re-runs, precisely:
 - **The config-gated built-ins join the same pass.** The config is as restart-locked as the chain, so a tightened `primary_block_integrity` applies to stored bundles by the same rule — and those checks read the structural index, so they are equally metadata-only.
 - **Fragments** re-cross the full Ingest processing via the reassembly path, unchanged — today once per fragment; the draft [fragment reassembly redesign](fragment_reassembly_redesign.md) runs the chain once per ADU, at the first fragment.
 
-The payload-free kinds are what keep this affordable: re-admission never loads a payload. A Classifier that reads block bodies (or a payload peek) still gets them, because the engine supplies the invocation `data` by a **bounded head read** from `BundleStorage` — the persisted extents say how much is needed, and no new storage primitive is required: the engine calls the ordinary sequential `load` and drops its receiver once it has those bytes, which the backend observes and stops (`streaming_pipeline_design.md`). One bounded read per stale bundle, paid lazily: the seat is a **per-bundle stamp checked at the Dispatch block**, which every bundle already flows through. The stamp is a **policy epoch**, not a boot id: a restart bumps it, and so does a runtime class-policy push from a centralized policy manager (policy *data* flows at runtime through the component tier; only policy *code* rides the restart boundary) — the same mechanism re-derives classification in both cases, which an eager restart-time walk could never do for pushes. A filter's behaviour can change without its construction wiring changing shape (same registration code, new binary), so change detection is impossible — every restart conservatively re-admits everything. Accepted cost: a tightened Verifier purges a Waiting bundle only when a sweep next moves it; a background walk can close that gap if storage-pressure purging matters.
+The payload-free kinds are what keep this affordable: re-admission never loads a payload. A Classifier that reads block bodies (or a payload peek) still gets them, because the engine supplies the invocation `data` by a **bounded head read** from `BundleStorage` — the persisted extents say how much is needed, and no new storage primitive is required: the engine calls the ordinary sequential `load` and drops its receiver once it has those bytes, which the backend observes and stops (`streaming_pipeline_design.md`). One bounded read per stale bundle, paid lazily: the seat is a **per-bundle stamp checked at the Dispatch block**, which every re-entering bundle flows through; a fresh CLA arrival routed at the ingress gate needs no check, because its classification was computed moments earlier under the current policy. The stamp is a **policy epoch**, not a boot id: a restart bumps it, and so does a runtime class-policy push from a centralized policy manager (policy *data* flows at runtime through the component tier; only policy *code* rides the restart boundary) — the same mechanism re-derives classification in both cases, which an eager restart-time walk could never do for pushes. A filter's behaviour can change without its construction wiring changing shape (same registration code, new binary), so change detection is impossible — every restart conservatively re-admits everything. Accepted cost: a tightened Verifier purges a Waiting bundle only when a sweep next moves it; a background walk can close that gap if storage-pressure purging matters.
 
 ## `MetadataDelta` and the traffic class
 
