@@ -10,7 +10,7 @@ use super::*;
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::EgressPolicy>,
+    pub(super) policy: Arc<dyn policy::FlowControllerFactory>,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -162,7 +162,7 @@ impl ClaRegistryBuilder {
         &mut self,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
             return Err(cla::Error::AlreadyExists(name));
@@ -173,7 +173,8 @@ impl ClaRegistryBuilder {
             cla,
             peers: Default::default(),
             name: Arc::from(name.as_str()),
-            policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+            policy: policy
+                .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
         }));
         Ok(())
     }
@@ -256,7 +257,7 @@ impl ClaRegistry {
         name: String,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
         let entry = {
@@ -270,7 +271,7 @@ impl ClaRegistry {
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                    .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
             }))
             .clone()
         };

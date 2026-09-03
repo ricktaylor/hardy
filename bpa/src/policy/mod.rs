@@ -12,7 +12,7 @@ pub mod null_policy;
 /// A trait for controlling the egress of bundles through a CLA.
 /// This is often implemented by a CLA itself or by a policy manager.
 #[async_trait]
-pub trait EgressController: Send + Sync {
+pub trait FlowController: Send + Sync {
     /// The policy queue the next bundle is assigned to — the controller
     /// owns the mapping onto its own queues, per peer (this instance's
     /// scope), so per-peer scheduler state lives where it belongs. Every
@@ -30,10 +30,10 @@ pub trait EgressController: Send + Sync {
 
 /// Defines an egress policy for a CLA, managing how outgoing bundles are prioritized and scheduled.
 ///
-/// An `EgressPolicy` allows for sophisticated traffic management, such as implementing
+/// An `FlowControllerFactory` allows for sophisticated traffic management, such as implementing
 /// quality of service (QoS) by classifying bundles into different queues.
 #[async_trait]
-pub trait EgressPolicy: Send + Sync {
+pub trait FlowControllerFactory: Send + Sync {
     /// Returns the total number of egress queues this policy manages —
     /// always at least one, since every policy has a queue for every bundle
     /// to classify into (the null policy's single FIFO). Queue indices are
@@ -42,7 +42,7 @@ pub trait EgressPolicy: Send + Sync {
     /// exist (it is the clamp target for an out-of-range assignment).
     fn queue_count(&self) -> core::num::NonZeroU32;
 
-    /// Creates a new [`EgressController`] that implements this policy for a given CLA.
+    /// Creates a new [`FlowController`] that implements this policy for a given CLA.
     ///
     /// This allows the policy to wrap the CLA's basic `forward` capability with its
     /// own logic, such as token bucket filtering or prioritized dispatching.
@@ -53,7 +53,7 @@ pub trait EgressPolicy: Send + Sync {
     async fn new_controller(
         &self,
         queues: HashMap<Option<u32>, Arc<dyn EgressQueue>>,
-    ) -> Arc<dyn EgressController>;
+    ) -> Arc<dyn FlowController>;
 }
 
 /// The queue feeding one lane directive, from which a CLA pulls bundles
@@ -74,7 +74,7 @@ mod tests {
     // `queue_count()` as the contract requires.
     #[tokio::test]
     async fn null_policy_is_one_total_queue() {
-        let policy = null_policy::EgressPolicy::new();
+        let policy = null_policy::FlowControllerFactory::new();
         assert_eq!(policy.queue_count().get(), 1);
 
         struct NullQueue;

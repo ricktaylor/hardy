@@ -213,7 +213,7 @@ pub enum TransferOutcome {
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs are often wrapped by an [`EgressPolicy`](crate::policy::EgressPolicy)
+/// CLAs are often wrapped by an [`FlowControllerFactory`](crate::policy::FlowControllerFactory)
 /// to add more complex behaviors like rate limiting or prioritization.
 ///
 /// # Sink Lifecycle

@@ -10,7 +10,7 @@ use crate::{
     dispatcher::Dispatcher,
     filter::{self, Filter, FilterEngine, Hook},
     otel_metrics,
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::{self, Rib, RoutingAgent},
     services::{self, Service, registry::ServiceRegistry},
     storage::store::Store,
@@ -144,7 +144,7 @@ pub trait BpaRegistration: Send + Sync {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -346,7 +346,7 @@ impl BpaRegistration for Bpa {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
             .register(name, cla, &self.dispatcher, policy)

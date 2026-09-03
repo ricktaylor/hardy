@@ -14,7 +14,7 @@ use hardy_bpa::{
     bpa::Bpa,
     cla::Cla,
     filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
@@ -39,7 +39,7 @@ use hardy_tcpclv4::{Tcpclv4, tls};
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
+use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -269,13 +269,13 @@ impl BpaServer {
         // types: tolerated with a warning so a config can name policies
         // this build was not compiled with. A CLA that references one
         // fails below with the "references unknown policy" error.
-        let policies: HashMap<String, Arc<dyn EgressPolicy>> = config
+        let policies: HashMap<String, Arc<dyn FlowControllerFactory>> = config
             .policies
             .into_iter()
             .filter_map(
-                |(name, policy_config)| -> Option<(String, Arc<dyn EgressPolicy>)> {
+                |(name, policy_config)| -> Option<(String, Arc<dyn FlowControllerFactory>)> {
                     match policy_config {
-                        EgressPolicyConfig::Unknown => {
+                        FlowControllerFactoryConfig::Unknown => {
                             warn!("Ignoring policy '{name}' with unknown type");
                             None
                         }

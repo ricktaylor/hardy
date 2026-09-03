@@ -8,7 +8,7 @@ use crate::{
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
     node_ids::NodeIds,
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::{RibBuilder, RoutingAgent},
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
@@ -181,7 +181,7 @@ impl BpaBuilder {
         mut self,
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> Self {
         self.cla_registry_builder
             .insert(name.into(), cla, policy)
