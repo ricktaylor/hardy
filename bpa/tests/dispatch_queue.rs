@@ -5,7 +5,7 @@
 //! or a slow service sees the same bundle delivered concurrently more than
 //! once.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::time::Duration;
 use std::{
     borrow::Cow,
     sync::{
@@ -18,7 +18,6 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
     node_ids::NodeIds,
     services,
     storage::{self, MetadataMemStorage, MetadataStorage},
@@ -275,51 +274,6 @@ impl services::Service for CountingHoldService {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal CLA to inject the inbound bundle
-// ---------------------------------------------------------------------------
-
-struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-}
-
-impl IngressCla {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
-        })
-    }
-}
-
-#[async_trait]
-impl cla::Cla for IngressCla {
-    async fn on_register(
-        &self,
-        sink: Box<dyn cla::Sink>,
-        _node_ids: &[NodeId],
-        _max_bundle_size: core::num::NonZeroU64,
-    ) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
-    async fn forward(
-        &self,
-        _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
-        _total_len: u64,
-        _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
-    }
-}
-
-// ---------------------------------------------------------------------------
 
 /// A stale queued-status copy re-pushed by the channel's storage poller
 /// while the bundle is mid-delivery must lose the consumer's dequeue claim:
@@ -359,25 +313,22 @@ async fn stale_poller_duplicate_never_redelivers() {
         .await
         .unwrap();
 
-    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+    let (_, data) = Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"deliver me once".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
 
-    let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
+    // Originate the bundle through the service's raw door: fresh CLA
+    // arrivals route at the ingress gate and execute directly, so the
+    // dispatch queue (and the DispatchPending state this rig arms) belongs
+    // to the originate and re-dispatch paths.
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(data))
         .await
-        .unwrap();
-    assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut Bytes::from(data))
-            .await
-            .unwrap(),
-        cla::Acceptance::Accepted
-    );
+        .expect("raw origination failed");
 
     // The dispatch send parks the bundle in DispatchPending on the storage
     // slow path — the initial recovery poll is still blocked on the arm
@@ -413,20 +364,18 @@ async fn stale_poller_duplicate_never_redelivers() {
     // dequeued into its own claim task while the first delivery is
     // verifiably still held; the claim's resolution itself is enforced by
     // the shutdown barrier below, which joins the processing pool.
-    let (_, marker_data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+    let (_, marker_data) = Builder::new("ipn:0.1.8".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"marker".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut Bytes::from(marker_data))
-            .await
-            .unwrap(),
-        cla::Acceptance::Accepted
-    );
+    marker_svc
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(marker_data))
+        .await
+        .expect("raw origination failed");
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         marker_started_rx.recv_async(),
@@ -622,28 +571,24 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .await
         .unwrap();
 
-    let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
-        .await
-        .unwrap();
-
-    // Bundle A's dequeue claim parks at the gate.
+    // Bundle A's dequeue claim parks at the gate. Originated through the
+    // service's raw door: fresh CLA arrivals route at the ingress gate and
+    // execute directly, so the dispatch queue belongs to the originate and
+    // re-dispatch paths.
     let (bundle_a, data_a) =
-        Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+        Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
             .with_lifetime(Duration::from_secs(3600))
             .with_payload(Cow::Borrowed(b"slow claim".as_slice()))
             .build(CreationTimestamp::now())
             .expect("Failed to build bundle");
     *metadata_store.gated.lock().unwrap() = Some(bundle_a.primary.id);
-    assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut Bytes::from(data_a))
-            .await
-            .unwrap(),
-        cla::Acceptance::Accepted
-    );
+    svc_a
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(data_a))
+        .await
+        .expect("raw origination failed");
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         claim_entered_rx.recv_async(),
@@ -655,20 +600,18 @@ async fn slow_claim_does_not_serialize_dispatch() {
     // Bundle B is dispatched while A's claim is verifiably still held: its
     // delivery starting is the proof that claims overlap. (The timeout only
     // bounds a regression — an inline claim would serialize B behind A.)
-    let (_, data_b) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+    let (_, data_b) = Builder::new("ipn:0.1.8".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"overtakes".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    assert_eq!(
-        cla.sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut Bytes::from(data_b))
-            .await
-            .unwrap(),
-        cla::Acceptance::Accepted
-    );
+    svc_b
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(data_b))
+        .await
+        .expect("raw origination failed");
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         b_started_rx.recv_async(),
