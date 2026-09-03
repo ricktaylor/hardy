@@ -229,7 +229,7 @@ The bundle status tracks where a bundle is in the processing pipeline. See [Bund
        ┌─────────────┐
        │ Dispatching │
        └──────┬──────┘
-              │ process_bundle() / RIB::find()
+              │ RIB::find() — at the gate for fresh arrivals, in process_bundle() on re-dispatch
               │
     ┌─────────┼─────────┬──────────┐
     ▼         ▼         ▼          ▼
@@ -282,7 +282,7 @@ See also: [Bundle State Machine Design](bundle_state_machine_design.md) for deta
    Destination: ipn:200.42
    Ingress chain at the pre-drain gate (in memory); the single insert persists it as Dispatching
 
-2. ROUTE LOOKUP (process_bundle)
+2. ROUTE LOOKUP (at the pre-drain gate; the commit executes it)
    RIB::find() searches unified table:
    - priority 0: no match (admin endpoints, CLA peers)
    - priority 100: ipn:200.* via dtn://tunnel1

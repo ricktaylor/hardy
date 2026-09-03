@@ -65,9 +65,9 @@ A bundle entering from a CLA follows this path:
 1. **Ingress**: CLA calls `Sink::dispatch()` with raw bytes and peer information
 2. **Validation**: `process_received_bundle()` parses the header chain off the stream with keyed BPSec verification before the payload drains. Invalid bundles are dropped internally with status reports — errors are never returned to the CLA
 3. **Filtering**: the Ingress chain (Verifiers, then Classifiers) runs at the pre-drain gate on the resident header prefix, and may drop or annotate the bundle
-4. **Storage**: the payload drains with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status and queued for dispatch
-5. **Dispatch**: Destination examined — local delivery, admin endpoint, or forwarding
-6. **Routing**: RIB lookup determines next hop for forwarding bundles
+4. **Routing**: the RIB lookup at the gate is the routing decision of record — local delivery, admin endpoint, forwarding, or a drop that rejects the bundle before anything is stored
+5. **Storage**: the payload drains with its CRC and deferred payload BIBs verified as it flows, the bundle data is stored exactly as received, and the finished record is written once to metadata storage with `Dispatching` status
+6. **Dispatch**: the gate's routing decision executes on the arriving task, made again if the routing table changed during the drain — fresh arrivals do not transit the dispatch queue, except the admin-endpoint and fragment arms, which queue for the processing pool
 7. **Egress**: Bundle queued to CLA for transmission, egress filters applied
 
 Locally-originated bundles (from services) run the Originate chain pre-store, store with `Dispatching` status, and skip the Ingress chain. Fragment reassembly shares the same `process_received_bundle()` path as CLA ingress, ensuring reassembled bundles get full-mode parsing and validation.
@@ -213,7 +213,7 @@ Routes are keyed by `(priority, pattern, action, source)` allowing multiple rout
 
 ### Bounded Processing Pool
 
-The `BoundedTaskPool` provides concurrency control for dispatch queue consumers (filter chains run inline on the invoking task — see [Filter Subsystem](filter_subsystem_design.md)). Bundle ingress runs inline in the caller's context rather than being spawned into the pool — backpressure for CLA ingress comes from the RpcProxy's handler pool, which limits concurrent gRPC handler tasks.
+The `BoundedTaskPool` provides concurrency control for dispatch queue consumers (filter chains run inline on the invoking task — see [Filter Subsystem](filter_subsystem_design.md)). Bundle ingress runs inline in the caller's context rather than being spawned into the pool, through to the execution of its routing decision — except the admin endpoint and fragment reassembly, whose cost scales with embedder status-notify callbacks or the ADU, which go through the dispatch queue to the pool. Backpressure for CLA ingress therefore comes from the CLA's own session concurrency and, for gRPC CLAs, from the RpcProxy's handler pool, which limits concurrent gRPC handler tasks.
 
 This layered backpressure model means CLAs that receive bundles faster than the BPA can process them experience slowdown at the gRPC dispatch call, which propagates to their network handling.
 
@@ -281,7 +281,7 @@ The `Config` struct controls BPA behaviour:
 |--------|---------|---------|
 | `status_reports` | `false` | Enable RFC 9171 bundle status report generation |
 | `poll_channel_depth` | 16 | Capacity of internal dispatch channels before falling back to storage |
-| `processing_pool_size` | 4 × CPU cores | Maximum concurrent bundle processing tasks |
+| `processing_pool_size` | 4 × CPU cores | Maximum concurrent dispatch-queue tasks (re-dispatch, polls, and the admin-endpoint and fragment arms of fresh arrivals) |
 | `storage_config` | — | LRU cache settings (capacity, max cached bundle size) |
 | `node_ids` | — | Local node identifiers (IPN and/or DTN schemes) |
 

@@ -13,6 +13,7 @@ use hardy_bpa::{
     cla,
     filter::{RewriteContext, Rewriter, pack::FilterPack},
     node_ids::NodeIds,
+    routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
     storage::{MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
@@ -31,7 +32,7 @@ use hardy_bpv7::{
     hop_info::HopInfo,
     parse::{Parsed, parse},
     reader::Availability,
-    status_report::ReasonCode,
+    status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode, StatusAssertion},
 };
 use hardy_cbor::{
     decode::skip_value,
@@ -4401,6 +4402,435 @@ async fn peer_removed_mid_construction_is_withdrawn() {
             .expect("add_peer failed"),
         "a fresh add on the freed address succeeds"
     );
+
+    bpa.shutdown().await;
+}
+
+// Routing is decided at the ingress gate: a destination resolving to an
+// explicit Drop route rejects the bundle before its payload is drained —
+// the stream is left unconsumed and nothing spools. Drop-with-reason
+// reports like any gated drop (the combined reception + deletion record);
+// Drop-without-reason is silent, with no reception report either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn early_route_drop_spools_nothing() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A peer for the report route (report-to defaults to the source), plus
+    // Drop routes: reasoned for one destination, silent for another.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(remote_source.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: accepted, payload never drained, one combined report.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a route-dropped bundle is accepted and terminated, never refused"
+    );
+    assert!(
+        stream.remaining() > 0,
+        "the payload must never be drained for a route-dropped bundle"
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::NoKnownRouteToDestinationFromHere);
+
+    // Silent Drop: accepted, payload never drained, no report at all.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    assert!(
+        stream.remaining() > 0,
+        "the payload must never be drained for a silently-dropped bundle"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a reasonless Drop route emits nothing"
+    );
+}
+
+/// A routing agent that hands its sink to the test, which installs and
+/// withdraws routes at chosen moments.
+struct SinkAgent {
+    sink: hardy_async::sync::spin::Once<Box<dyn RoutingSink>>,
+}
+
+#[async_trait]
+impl RoutingAgent for SinkAgent {
+    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+}
+
+// The gate's decision of record is made again at the commit when the table
+// changed during the drain, so a route withdrawn while the payload was still
+// arriving does not carry the bundle. The route moves from one peer to
+// another while the source is parked mid-payload, and the bundle leaves
+// through the new route's peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_changed_during_the_drain_is_decided_again() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    // Two CLAs with one peer each: ipn:0.2 behind the first, ipn:0.4 behind
+    // the second.
+    let (old_cla, old_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "old".to_string(),
+        old_cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    old_cla
+        .sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("old".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+    let (new_cla, new_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "new".to_string(),
+        new_cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    new_cla
+        .sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("new".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 4,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let agent = Arc::new(SinkAgent {
+        sink: hardy_async::sync::spin::Once::new(),
+    });
+    bpa.register_routing_agent("swap".to_string(), agent.clone())
+        .await
+        .unwrap();
+    let routes = agent.sink.get().unwrap();
+    let old_via = RouteAction::Via("ipn:0.2.0".parse().unwrap());
+    let new_via = RouteAction::Via("ipn:0.4.0".parse().unwrap());
+    assert!(
+        routes
+            .add_route("ipn:0.3.*".parse().unwrap(), old_via.clone(), 1)
+            .await
+            .unwrap()
+    );
+
+    let (bundle, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.1".parse().unwrap())
+        .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let data = Bytes::from(data);
+    let start = usize::try_from(bundle.blocks[&1].payload_range().start).unwrap();
+
+    // Each send on the one-slot channel completes only once the previous
+    // segment has been pulled. The header pass takes the head alone (no
+    // filter declares a peek), so the drain pulling the first payload
+    // segment proves the gate's lookup is done.
+    let (tx, mut rx) = hardy_async::channel::bounded(1);
+    let arrival = old_cla.clone();
+    let dispatch = tokio::spawn(async move {
+        arrival
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut rx)
+            .await
+    });
+    tx.send(Segment::Next(data.slice(..start))).await.unwrap();
+    tx.send(Segment::Next(data.slice(start..start + 1000)))
+        .await
+        .unwrap();
+    tx.send(Segment::Next(data.slice(start + 1000..start + 2000)))
+        .await
+        .unwrap();
+
+    // The gate decided on the old route; move it to the new peer while the
+    // payload is still arriving.
+    assert!(
+        routes
+            .add_route("ipn:0.3.*".parse().unwrap(), new_via, 1)
+            .await
+            .unwrap()
+    );
+    assert!(
+        routes
+            .remove_route(&"ipn:0.3.*".parse().unwrap(), &old_via, 1)
+            .await
+            .unwrap()
+    );
+    tx.send(Segment::Final(data.slice(start + 2000..)))
+        .await
+        .unwrap();
+    drop(tx);
+
+    // The timeout only bounds a regression.
+    assert_eq!(
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), dispatch)
+            .await
+            .expect("Timeout waiting for the arrival to settle")
+            .unwrap()
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(tokio::time::Duration::from_secs(5), new_rx.recv_async())
+        .await
+        .expect("Timeout: the bundle must leave by the route in force at the commit")
+        .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(old_rx.is_empty(), "the withdrawn route carries nothing");
+}
+
+/// An application whose status notifications block until the test releases
+/// them, announcing each as it begins.
+struct BlockingNotifyApp {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+    entered_tx: flume::Sender<()>,
+    release_rx: flume::Receiver<()>,
+}
+
+#[async_trait]
+impl services::Application for BlockingNotifyApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &Id,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        _total_len: u64,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+        let _ = self.entered_tx.send(());
+        let _ = self.release_rx.recv_async().await;
+    }
+}
+
+// An arrival's admin-endpoint arm runs on the processing pool, not on the
+// arriving CLA's task: the embedder callbacks it makes do not hold the
+// session's acknowledgement. The CLA's dispatch returns while the status
+// notification is still blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admin_record_does_not_hold_the_arriving_cla() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (entered_tx, entered_rx) = flume::bounded(1);
+    let (release_tx, release_rx) = flume::bounded(1);
+    bpa.register_application(
+        Service::Ipn(42),
+        Arc::new(BlockingNotifyApp {
+            sink: hardy_async::sync::spin::Once::new(),
+            entered_tx,
+            release_rx,
+        }),
+    )
+    .await
+    .unwrap();
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    // A delivery report, from a remote node's admin endpoint to ours, about
+    // a bundle the application sent.
+    let (record, ()) = emit(&AdministrativeRecord::BundleStatusReport(
+        BundleStatusReport {
+            bundle_id: Id {
+                source: "ipn:0.1.42".parse().unwrap(),
+                timestamp: CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            delivered: Some(StatusAssertion(None)),
+            ..Default::default()
+        },
+    ));
+    let (_, data) = Builder::new("ipn:0.2.0".parse().unwrap(), "ipn:0.1.0".parse().unwrap())
+        .with_flags(Flags {
+            is_admin_record: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Owned(record))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+
+    // The timeout only bounds a regression.
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut Bytes::from(data))
+        )
+        .await
+        .expect("Timeout: the admin record must not hold the arriving CLA")
+        .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
+        .await
+        .expect("Timeout waiting for the status notification")
+        .expect("Channel closed");
+    release_tx.send(()).unwrap();
 
     bpa.shutdown().await;
 }
