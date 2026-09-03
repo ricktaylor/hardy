@@ -554,3 +554,95 @@ fn parse_uint_minor_fast(minor: u8, data: [u8; 8]) -> Result<(u64, bool, usize),
         _ => Err(Error::InvalidMinorValue(minor)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hex_literal::hex;
+
+    use super::*;
+
+    // parse_uint_minor_fast must agree with parse_uint_minor on value,
+    // shortest flag, and byte count for every minor form.
+    #[test]
+    fn uint_minor_fast_matches_slow() {
+        for (minor, bytes) in [
+            (0u8, hex!("0000000000000000")),
+            (23, hex!("0000000000000000")),
+            (24, hex!("7B00000000000000")), // 123, canonical
+            (24, hex!("1700000000000000")), // 23, non-canonical
+            (25, hex!("0100000000000000")), // 256, canonical
+            (25, hex!("00FF000000000000")), // 255, non-canonical
+            (26, hex!("0001000000000000")), // 65536, canonical
+            (26, hex!("0000FFFF00000000")), // 65535, non-canonical
+            (27, hex!("0000000100000000")), // 2^32, canonical
+            (27, hex!("00000000FFFFFFFF")), // 2^32 - 1, non-canonical
+        ] {
+            let fast = parse_uint_minor_fast(minor, bytes).unwrap();
+            let slow = parse_uint_minor(minor, &bytes).unwrap();
+            assert_eq!(fast, slow, "minor {minor} with bytes {bytes:02X?}");
+        }
+
+        // Reserved minor values are rejected by both paths.
+        for minor in 28..=31 {
+            assert!(matches!(
+                parse_uint_minor_fast(minor, [0; 8]),
+                Err(Error::InvalidMinorValue(m)) if m == minor
+            ));
+            assert!(matches!(
+                parse_uint_minor(minor, &[0; 8]),
+                Err(Error::InvalidMinorValue(m)) if m == minor
+            ));
+        }
+    }
+
+    // Head::from_cbor takes the bounds-check-free fast path when at least
+    // 9 bytes remain, and the byte-at-a-time slow path otherwise. Both
+    // must report identical markers, tags, shortest flags, and byte
+    // counts. The padded buffer steers the fast path; the exact-length
+    // buffer the slow path. In particular the byte count must not
+    // double-count the marker byte on the fast path.
+    #[test]
+    fn fast_and_slow_paths_agree() {
+        for encoding in [
+            &hex!("00")[..],                         // 1-byte uint
+            &hex!("18 7B")[..],                      // 2-byte uint (123)
+            &hex!("19 01 00")[..],                   // 3-byte uint (256)
+            &hex!("1A 00 01 00 00")[..],             // 5-byte uint (65536)
+            &hex!("1B 00 00 00 01 00 00 00 00")[..], // 9-byte uint (2^32)
+            &hex!("C1 00")[..],                      // tagged uint
+            &hex!("D8 05 00")[..],                   // non-canonically tagged uint
+        ] {
+            let (slow_head, slow_s, slow_len) = Head::from_cbor(encoding).unwrap();
+
+            let mut padded = encoding.to_vec();
+            padded.resize(encoding.len() + 16, 0);
+            let (fast_head, fast_s, fast_len) = Head::from_cbor(&padded).unwrap();
+
+            assert_eq!(slow_head.marker, fast_head.marker);
+            assert_eq!(slow_head.tags, fast_head.tags);
+            assert_eq!(slow_s, fast_s);
+            assert_eq!(slow_len, fast_len);
+            assert_eq!(slow_len, encoding.len());
+        }
+    }
+
+    // The fast path must AND the tag prefix's shortest flag into the
+    // marker's: a non-canonical tag encoding clears it even when the
+    // tagged value itself is canonical.
+    #[test]
+    fn fast_path_preserves_tags_shortest() {
+        // d8 05 = tag(5) via minor 24 (non-canonical: 5 fits in the
+        // immediate minor, whose canonical form is c5); 00 = uint 0.
+        // Padded so the fast path fires.
+        let mut data = hex!("D8 05 00").to_vec();
+        data.resize(16, 0);
+        let (head, s, len) = Head::from_cbor(&data).unwrap();
+        assert_eq!(head.tags.as_slice(), &[5]);
+        assert!(matches!(head.marker, Marker::UnsignedInteger(0)));
+        assert!(
+            !s,
+            "non-canonical tag encoding must propagate shortest=false through fast path"
+        );
+        assert_eq!(len, 3);
+    }
+}

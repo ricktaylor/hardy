@@ -97,11 +97,19 @@ macro_rules! impl_float_from_cbor {
     };
 }
 
+// `from_f64` rounds rather than failing, so lossy narrowing is detected by
+// widening the result back and comparing with the wire value. NaN never
+// compares equal to itself but is representable at every width, so it is
+// passed through explicitly.
 impl_float_from_cbor!(
     (half::f16, |v: f64| {
-        <half::f16 as num_traits::FromPrimitive>::from_f64(v)
+        let f = <half::f16 as num_traits::FromPrimitive>::from_f64(v)?;
+        (v.is_nan() || <half::f16 as num_traits::ToPrimitive>::to_f64(&f) == Some(v)).then_some(f)
     }),
-    (f32, f32::from_f64)
+    (f32, |v: f64| {
+        let f = f32::from_f64(v)?;
+        (v.is_nan() || f.to_f64() == Some(v)).then_some(f)
+    })
 );
 
 impl FromCbor for f64 {
