@@ -52,10 +52,10 @@ pub enum TailFailure {
 
 impl TailFailure {
     /// The status-report reason this failure raises, so the drain's caller
-    /// reports the drop like any other parsing failure (the RFC 9171
-    /// §5.6/§5.10 reception-then-deletion pair, per the bundle's flags).
-    /// `None` for [`Truncated`](Self::Truncated): a refused transfer is
-    /// never reported — the peer retains custody and may resend.
+    /// reports the drop like any other parsing failure (the combined RFC
+    /// 9171 §5.6/§5.10 reception + deletion status report, per the bundle's
+    /// flags). `None` for [`Truncated`](Self::Truncated): a refused transfer
+    /// is never reported — the peer retains custody and may resend.
     pub fn reason_code(&self) -> Option<ReasonCode> {
         match self {
             Self::Truncated => None,
