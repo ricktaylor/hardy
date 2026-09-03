@@ -73,7 +73,7 @@ Two non-atomic await sequences in the CLA/routing registries can race and leave 
 
 ## Wire lane_count for remote CLAs
 
-`Cla::lane_count()` is a required method, but CLA registration on the wire carries no lane count, so the gRPC bridge hardcodes `None` and a remote multi-lane CLA has no way to declare its parallelism. Add `optional uint32 lane_count` to registration (presence-tracked: absent = no declared limit, zero = invalid and rejected — the shape settled in `policy_subsystem_redesign.md`) when the wire batch for `hardy.*.v1` package scoping lands.
+`Cla::lane_count()` is a required method, but CLA registration on the wire carries no lane count, so the gRPC bridge hardcodes `None` and a remote multi-lane CLA has no way to declare its parallelism. Add `optional uint32 lane_count` to registration (presence-tracked: absent = no declared limit, zero = invalid and rejected — the shape settled in `policy_subsystem_redesign.md`) when the wire batch for `hardy.*.v1` package scoping lands. Its bpa prerequisites are in place (the missed #667 salvage, landed 2026-09-03 on `fix/bpa-dispatch-redelivery`): the null egress policy tolerates declared lanes — logged and forwarded on the default queue — rather than asserting, and `ServiceRegistry::register`'s post-registration poll is spawned so a bridge-shaped sink cannot deadlock registration against its own announcements.
 
 ## CLA transfer-outcome follow-ups (feat/cla-transfer-outcome review, 2026-08-07)
 

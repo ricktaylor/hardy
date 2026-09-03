@@ -10,12 +10,12 @@ use std::{borrow::Cow, sync::Arc};
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    bundle::BundleStatus,
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     cla,
     node_ids::NodeIds,
     services,
-    storage::{MetadataMemStorage, MetadataStorage},
-    stream::{Receiver, Segment},
+    storage::{self, MetadataMemStorage, MetadataStorage},
+    stream::{Receiver, Segment, Sender},
 };
 use hardy_bpv7::{
     builder::Builder,
@@ -276,4 +276,216 @@ async fn unregister_sweeps_queued_deliveries() {
         delivered_a_rx.is_empty() && delivered_b_rx.is_empty(),
         "no duplicate deliveries"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Registration must not await the post-registration poll inline
+// ---------------------------------------------------------------------------
+
+/// Delegates to [`MetadataMemStorage`], parking every `poll_service_waiting`
+/// until the test's release sender drops. Registration must return while
+/// the poll is still parked here.
+struct BlockingPollStorage {
+    inner: MetadataMemStorage,
+    entered_tx: flume::Sender<()>,
+    release_rx: flume::Receiver<()>,
+}
+
+#[async_trait]
+impl MetadataStorage for BlockingPollStorage {
+    async fn get(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+        self.inner.get(bundle_id).await
+    }
+
+    async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
+        self.inner.insert(bundle).await
+    }
+
+    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> storage::Result<()> {
+        self.inner.update_status(bundle_id, status).await
+    }
+
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        self.inner.swap_status(bundle_id, expected, status).await
+    }
+
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> storage::Result<bool> {
+        self.inner.tombstone_if(bundle_id, expected).await
+    }
+
+    async fn tombstone(&self, bundle_id: &Id) -> storage::Result<()> {
+        self.inner.tombstone(bundle_id).await
+    }
+
+    async fn start_recovery(&self) {
+        self.inner.start_recovery().await
+    }
+
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
+        self.inner.confirm_exists(bundle_id).await
+    }
+
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
+        self.inner.remove_unconfirmed(stream).await
+    }
+
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
+        self.inner.reset_peer_queue(peer).await
+    }
+
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        self.inner.reset_peer_ack_pending(peer).await
+    }
+
+    async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
+        self.inner.reset_service_queue(service).await
+    }
+
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
+        self.inner.poll_expiry(stream, limit).await
+    }
+
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
+        self.inner.poll_waiting(stream).await
+    }
+
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        stream: &dyn Sender<Bundle>,
+    ) -> storage::Result<()> {
+        let _ = self.entered_tx.send(());
+        // Parked until the test drops the release sender — registration
+        // must not be waiting on us.
+        let _ = self.release_rx.recv_async().await;
+        self.inner.poll_service_waiting(source, stream).await
+    }
+
+    async fn poll_adu_fragments(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+    ) -> storage::Result<()> {
+        self.inner.poll_adu_fragments(stream, status).await
+    }
+
+    async fn poll_pending(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+        limit: usize,
+    ) -> storage::Result<()> {
+        self.inner.poll_pending(stream, status, limit).await
+    }
+}
+
+// Registration returns while its post-registration WaitingForService poll
+// is still parked in storage: the poll is spawned, never awaited inline —
+// a sink whose event buffer drains only after registration returns (the
+// gRPC-bridge shape) would otherwise deadlock registration against its own
+// announcements. The parked bundle still arrives once the poll runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_does_not_await_the_post_registration_poll() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let (entered_tx, entered_rx) = flume::unbounded();
+    let (release_tx, release_rx) = flume::bounded::<()>(1);
+    let store = Arc::new(BlockingPollStorage {
+        inner: MetadataMemStorage::new(None),
+        entered_tx,
+        release_rx,
+    });
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .metadata_storage(store.clone())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // Park a bundle as WaitingForService: destined to a local service that
+    // is not yet registered.
+    let cla = Arc::new(IngressCla {
+        sink: hardy_async::sync::spin::Once::new(),
+    });
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let service_eid: Eid = "ipn:0.1.9".parse().unwrap();
+    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), service_eid.clone())
+        .with_lifetime(Duration::from_secs(3600))
+        .with_payload(Cow::Borrowed(b"parked".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let id = hardy_bpv7::parse::parse(Bytes::from(data.clone()))
+        .unwrap()
+        .bundle
+        .primary
+        .id;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    await_status(
+        &store.inner,
+        &id,
+        &BundleStatus::WaitingForService {
+            service: service_eid.clone(),
+        },
+    )
+    .await;
+
+    // Registration must return while the poll is parked in storage. The
+    // generous timeout only bounds a regression: an inline await would
+    // never return.
+    let (svc, delivered_rx, _started_rx, svc_release_tx) = HoldService::new();
+    drop(svc_release_tx); // complete deliveries immediately
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        bpa.register_service(Service::Ipn(9), svc.clone()),
+    )
+    .await
+    .expect("registration awaited the parked poll — the spawn regressed")
+    .unwrap();
+
+    // The spawned poll genuinely ran and parked in storage.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
+        .await
+        .expect("Timeout waiting for the spawned poll to reach storage")
+        .expect("Storage gone");
+
+    // Release the poll; the parked bundle is claimed and delivered.
+    drop(release_tx);
+    let delivered = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        delivered_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the parked bundle's delivery")
+    .expect("Service gone");
+    assert_eq!(
+        delivered, id,
+        "the parked bundle arrives once the poll runs"
+    );
+
+    bpa.shutdown().await;
 }
