@@ -15,7 +15,7 @@ path = "src/main.rs"
 [features]
 default = []
 otel = ["dep:hardy-otel"]
-instrument = ["hardy-async/instrument"]
+instrument = ["hardy-async/instrument", "hardy-proto/instrument"]
 
 [dependencies]
 hardy-bpa = { version = "0.2", path = "../bpa" }
