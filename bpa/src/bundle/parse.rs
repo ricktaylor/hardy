@@ -84,23 +84,69 @@ pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     }
 }
 
-/// Reception-report reason from the §A `report_on_failure` facts plus the
-/// §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank the
-/// generic RFC 9171 block code when several fire: a dropped corrupt operation
-/// is the most material event, then an operation this node cannot understand,
-/// then an unrecognised plain block.
-pub fn reception_reason_for(
+/// The §5.6 reception-reporting facts the header verify established: what
+/// reason the reception assertion carries, and whether a block's own
+/// `report_on_failure` flag demands the report be emitted regardless of the
+/// bundle-level receipt flag (§5.6 Step 4's block-flag-alone trigger). The
+/// nonsense states — a demanded "No additional information", a non-demanded
+/// "Block unsupported" — are unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceptionReport {
+    /// Nothing beyond §5.6 Step 2: reason "No additional information",
+    /// emitted only when the bundle requests reception reports.
+    Requested,
+    /// A §5.1.1 failure-drop was scheduled: reason "Failed security
+    /// operation", still bundle-flag-gated (RFC 9172 keeps failure
+    /// reporting at requested-MAY level).
+    FailureDropped,
+    /// A block's `report_on_failure` flag demands the report: emitted even
+    /// when the bundle-level receipt flag is clear. Carries "Block
+    /// unsupported" / "Unknown security operation" — or "Failed security
+    /// operation" when a failure-drop also fired and outranks them in the
+    /// record's one reason slot. Never produced for an admin-record or
+    /// anonymous bundle: the parser rejects the flag combination (§4.2.4).
+    Demanded(ReasonCode),
+}
+
+impl ReceptionReport {
+    /// The reason code the reception assertion carries.
+    pub fn reason(&self) -> ReasonCode {
+        match self {
+            Self::Requested => ReasonCode::NoAdditionalInformation,
+            Self::FailureDropped => ReasonCode::FailedSecurityOperation,
+            Self::Demanded(reason) => *reason,
+        }
+    }
+
+    /// §5.6 Step 4's block-flag-alone trigger: the report is emitted even
+    /// when the bundle-level receipt flag is clear.
+    pub fn demanded(&self) -> bool {
+        matches!(self, Self::Demanded(_))
+    }
+}
+
+/// Reception-reporting facts from the §A `report_on_failure` classification
+/// plus the §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank
+/// the generic RFC 9171 block code when several fire: a dropped corrupt
+/// operation is the most material event, then an operation this node cannot
+/// understand, then an unrecognised plain block — but only the block-flag
+/// facts make the report [`Demanded`](ReceptionReport::Demanded).
+pub fn reception_report_for(
     classification: &checks::Classification,
     failure_dropped: bool,
-) -> ReasonCode {
-    if failure_dropped {
-        ReasonCode::FailedSecurityOperation
-    } else if classification.report_unsupported_security {
-        ReasonCode::UnknownSecurityOperation
-    } else if classification.report_unsupported_block {
-        ReasonCode::BlockUnsupported
-    } else {
-        ReasonCode::NoAdditionalInformation
+) -> ReceptionReport {
+    let demanded =
+        classification.report_unsupported_security || classification.report_unsupported_block;
+    match (demanded, failure_dropped) {
+        (false, false) => ReceptionReport::Requested,
+        (false, true) => ReceptionReport::FailureDropped,
+        (true, _) => ReceptionReport::Demanded(if failure_dropped {
+            ReasonCode::FailedSecurityOperation
+        } else if classification.report_unsupported_security {
+            ReasonCode::UnknownSecurityOperation
+        } else {
+            ReasonCode::BlockUnsupported
+        }),
     }
 }
 
@@ -210,14 +256,12 @@ pub struct HeaderVerify {
     pub extracted: ExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
     pub to_remove: HashSet<u64>,
-    /// Reception-report reason chosen from the §A `report_on_failure` facts
-    /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
-    /// `NoAdditionalInformation` when none fired. Carried on the reception
-    /// assertion whether the bundle is accepted or rejected downstream —
-    /// §5.6 Step 4's facts precede either outcome — though a reject's
-    /// deletion reason takes the report's one reason slot when both are
-    /// asserted.
-    pub report_reason: ReasonCode,
+    /// The §5.6 reception-reporting facts (see [`reception_report_for`]).
+    /// Carried on the reception assertion whether the bundle is accepted or
+    /// rejected downstream — Step 4's facts precede either outcome — though
+    /// a reject's deletion reason takes the report's one reason slot when
+    /// both are asserted.
+    pub report: ReceptionReport,
     /// One incremental verifier per BIB op-set `checks::verify` left targeting
     /// the not-yet-resident payload (block 1), each paired with its BIB's
     /// block number for failure attribution. Begun (via
@@ -385,12 +429,12 @@ where
     } = parsed;
     let key_source = key_provider(&bundle, &headers);
     match verify_headers(&headers, &*key_source, &mut bundle, &bcb_ops, &mut bib_ops) {
-        Ok((extracted, to_remove, report_reason, deferred_verifiers)) => Ok((
+        Ok((extracted, to_remove, report, deferred_verifiers)) => Ok((
             HeaderVerify {
                 bundle,
                 extracted,
                 to_remove,
-                report_reason,
+                report,
                 deferred_verifiers,
             },
             headers,
@@ -429,7 +473,7 @@ fn verify_headers(
     (
         ExtensionFields,
         HashSet<u64>,
-        ReasonCode,
+        ReceptionReport,
         Vec<(u64, bpsec::bib::Verifier)>,
     ),
     hardy_bpv7::Error,
@@ -491,7 +535,7 @@ fn verify_headers(
     }
     // Anything still in `facts.failed` here was queued for failure-drop (the
     // fatal cases returned above) — surface that in the reception report.
-    let report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
+    let report = reception_report_for(&classification, !facts.failed.is_empty());
 
     // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
     // other undecipherable block is forwarded intact for a downstream acceptor.
@@ -516,7 +560,7 @@ fn verify_headers(
         &facts.deferred_bibs,
     )?;
 
-    Ok((extracted, to_remove, report_reason, deferred_verifiers))
+    Ok((extracted, to_remove, report, deferred_verifiers))
 }
 
 // ---------------------------------------------------------------------------
@@ -780,25 +824,29 @@ mod tests {
     }
 
     #[test]
-    fn reception_reason_precedence() {
+    fn reception_report_precedence() {
         let mut c = checks::Classification::default();
+        assert_eq!(reception_report_for(&c, false), ReceptionReport::Requested);
+        // A failure-drop alone reports, but is not block-demanded.
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::NoAdditionalInformation
+            reception_report_for(&c, true),
+            ReceptionReport::FailureDropped
         );
         c.report_unsupported_block = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::BlockUnsupported
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
         c.report_unsupported_security = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::UnknownSecurityOperation
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::UnknownSecurityOperation)
         );
+        // The failure-drop outranks in the reason slot without erasing the
+        // block's demand.
         assert_eq!(
-            reception_reason_for(&c, true),
-            ReasonCode::FailedSecurityOperation
+            reception_report_for(&c, true),
+            ReceptionReport::Demanded(ReasonCode::FailedSecurityOperation)
         );
     }
 

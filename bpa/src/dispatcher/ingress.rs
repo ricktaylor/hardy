@@ -134,7 +134,7 @@ impl Dispatcher {
                         self.report_bundle_reception(
                             &bundle,
                             metadata.received_at(),
-                            ReasonCode::NoAdditionalInformation,
+                            parse::ReceptionReport::Requested,
                             Some(reason),
                         )
                         .await;
@@ -166,7 +166,7 @@ impl Dispatcher {
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
-                hv.report_reason,
+                hv.report,
                 Some(reason),
             )
             .await;
@@ -182,7 +182,7 @@ impl Dispatcher {
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
-                hv.report_reason,
+                hv.report,
                 Some(reason),
             )
             .await;
@@ -198,7 +198,7 @@ impl Dispatcher {
             bundle,
             extracted,
             to_remove,
-            report_reason,
+            report,
             deferred_verifiers,
         } = hv;
         metadata.extensions = extracted;
@@ -215,8 +215,8 @@ impl Dispatcher {
         // chain reads the live prefix directly.
         let (mut metadata, headers) = if self.filters.has_ingress() {
             let record = bundle::Bundle {
+                bpv7: bundle.clone(),
                 metadata,
-                bundle: bundle.clone(),
                 status: bundle::BundleStatus::New,
             };
             match self
@@ -228,9 +228,9 @@ impl Dispatcher {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
                     self.report_bundle_reception(
-                        &record.bundle,
+                        &record.bpv7,
                         record.metadata.received_at(),
-                        report_reason,
+                        report,
                         reason,
                     )
                     .await;
@@ -242,9 +242,9 @@ impl Dispatcher {
                     error!("Ingress filter chain failed: {e}");
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
                     self.report_bundle_reception(
-                        &record.bundle,
+                        &record.bpv7,
                         record.metadata.received_at(),
-                        report_reason,
+                        report,
                         Some(ReasonCode::BlockUnintelligible),
                     )
                     .await;
@@ -323,7 +323,7 @@ impl Dispatcher {
                         self.report_bundle_reception(
                             &bundle,
                             metadata.received_at(),
-                            report_reason,
+                            report,
                             Some(reason),
                         )
                         .await;
@@ -368,13 +368,8 @@ impl Dispatcher {
         // check: RFC 9171 §5.6 reports on reception, so a replayed/duplicate
         // bundle is still reported as received. (The Ingress chain already ran
         // at the pre-drain gate; a chain drop reported itself there.)
-        self.report_bundle_reception(
-            &bundle.bundle,
-            bundle.metadata.received_at(),
-            report_reason,
-            None,
-        )
-        .await;
+        self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+            .await;
 
         // Promote to the queued checkpoint before the single write. `New` is a
         // purely in-memory "under construction" marker: the chain ran at the
