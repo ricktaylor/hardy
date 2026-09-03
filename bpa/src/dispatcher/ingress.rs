@@ -1,4 +1,4 @@
-use hardy_bpv7::{block::BibCoverage, checks, crc::CrcType, status_report::ReasonCode};
+use hardy_bpv7::{block::BibCoverage, crc::CrcType, status_report::ReasonCode};
 
 use super::*;
 use crate::{
@@ -177,22 +177,23 @@ impl Dispatcher {
 
         // Destructure the verified headers once, here at the gate: move the
         // decoded extension fields into metadata (a Classifier may read them),
-        // and keep the wire bundle, the deferred payload-BIB op-sets, the
+        // and keep the wire bundle, the begun payload-BIB verifiers, the
         // scheduled §E removals, and the reception reason for the drain and
-        // store below. Nothing downstream needs `hv` whole any more.
+        // store below. Nothing downstream needs `hv` whole.
         let parse::HeaderVerify {
             bundle,
             extracted,
             to_remove,
             report_reason,
-            deferred_bibs,
+            deferred_verifiers,
         } = hv;
         metadata.extensions = extracted;
 
         // Ingress chain at the pre-drain gate, on the resident header prefix.
         // It runs synchronously on a throwaway record: the wire bundle is
-        // cloned so `hv` stays whole for finalize, while the real metadata
-        // moves through so a Classifier's deltas survive. A chain drop here is
+        // cloned so the original stays available for the drain and the stored
+        // record, while the real metadata moves through so a Classifier's
+        // deltas survive. A chain drop here is
         // pre-store — nothing was spooled — and is reported reception-then-
         // deletion like the sibling gates above. A filter reading the
         // not-yet-resident payload gets the reader's not-resident `None`. The
@@ -245,39 +246,10 @@ impl Dispatcher {
         let whole = match tail {
             None => headers,
             Some(tail) => {
-                // One incremental verifier per deferred payload BIB, from the
-                // header material; the resident payload prefix is absorbed by
-                // `TailReceiver::new`, the streamed remainder as it arrives.
-                let verifiers = if deferred_bibs.is_empty() {
-                    Vec::new()
-                } else {
-                    // The key source is `!Send`; build it and the verifiers in
-                    // one sync block so it never crosses the `await` below.
-                    let result = {
-                        let key_source = self.key_provider()(&bundle, &headers);
-                        checks::begin_payload_verification(
-                            &headers,
-                            key_source.as_ref(),
-                            &bundle.blocks,
-                            &deferred_bibs,
-                        )
-                    };
-                    match result {
-                        Ok(verifiers) => verifiers,
-                        Err(error) => {
-                            debug!("Invalid bundle received: {error}");
-                            let reason = parse::status_report_reason_for(&error);
-                            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                            let bundle = bundle::Bundle {
-                                metadata,
-                                bundle,
-                                status: bundle::BundleStatus::New,
-                            };
-                            self.report_bundle_reception(&bundle, reason).await;
-                            return Received::Disposed;
-                        }
-                    }
-                };
+                // The deferred-BIB verifiers were begun by the header pass, in
+                // the same keyed scope as the header verify; the resident
+                // payload prefix is absorbed by `TailReceiver::new`, the
+                // streamed remainder as it arrives.
                 let payload_start = bundle
                     .blocks
                     .get(&1)
@@ -285,7 +257,7 @@ impl Dispatcher {
                 let mut tail_rx = tail::TailReceiver::new(
                     stream,
                     tail,
-                    verifiers,
+                    deferred_verifiers,
                     &headers.slice(payload_start..),
                 );
 
@@ -372,11 +344,11 @@ impl Dispatcher {
         // Promote to the queued checkpoint before the single write. `New` is a
         // purely in-memory "under construction" marker: the chain ran at the
         // gate above, and only the finished, classified record is ever
-        // persisted — directly at `Dispatching`. This one write replaces
-        // the old insert-`New`-then-checkpoint pair (P1); the dispatch send's
-        // conditional swap to `DispatchPending` is the queue commit, and a
-        // crash between the two recovers via the `Dispatching` restart arm. No
-        // chain-incomplete record ever reaches storage.
+        // persisted — directly at `Dispatching`, the one metadata write per
+        // received bundle. The dispatch send's conditional swap to
+        // `DispatchPending` is the queue commit, and a crash between the two
+        // recovers via the `Dispatching` restart arm. No chain-incomplete
+        // record ever reaches storage.
         bundle.status = bundle::BundleStatus::Dispatching;
 
         // `insert_metadata` is the authoritative atomic dup check — the one place

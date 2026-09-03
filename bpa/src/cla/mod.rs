@@ -213,7 +213,7 @@ pub enum TransferOutcome {
 ///
 /// Refusal is a normal protocol outcome, not an error: a CLA acts on it by
 /// withholding its transfer acknowledgement, and carries on. Faults that
-/// make the sink unusable travel as [`Error`] instead.
+/// make the sink unusable travel as [`enum@Error`] instead.
 #[must_use = "the verdict decides whether the transfer may be acknowledged"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acceptance {
@@ -372,8 +372,8 @@ pub trait Cla: Send + Sync {
     /// to parse the bundle to learn it.
     ///
     /// An implementation that needs the whole bundle in memory buffers the
-    /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`Error`] via `?`.
+    /// stream with [`stream::buffer_stream`],
+    /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn forward(
         &self,
         lane: Option<u32>,
@@ -437,7 +437,7 @@ pub trait Sink: Send + Sync {
     /// retransmit.
     ///
     /// A caller holding a complete bundle in memory dispatches it as a
-    /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
+    /// one-segment stream, since `Bytes` implements [`stream::Receiver`]:
     /// `sink.dispatch(&mut bundle, ..).await`.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:

@@ -1,7 +1,8 @@
 //! The validating pull-through for the ingress payload drain.
 //!
 //! [`parse_headers`](super::parse::parse_headers) hands back the resident
-//! header prefix, a synchronous [`PayloadTail`] continuation, and — via
+//! header prefix, a synchronous [`PayloadTail`] continuation, and — begun in
+//! its keyed pass via
 //! [`begin_payload_verification`](hardy_bpv7::checks::begin_payload_verification)
 //! — one incremental [`bib::Verifier`] per deferred payload BIB. A
 //! [`TailReceiver`] marries those to the CLA's segment stream: it wraps the
@@ -148,7 +149,6 @@ mod tests {
             signer::{Context, Signer},
         },
         builder::Builder,
-        checks,
         creation_timestamp::CreationTimestamp,
         parse::{self, BundleParser, ParserProgress},
     };
@@ -323,9 +323,9 @@ mod tests {
         );
     }
 
-    // Build the deferred-BIB verifiers for a signed bundle: run the keyed
-    // header pass, then `begin_payload_verification`. Returns the verifiers,
-    // the header prefix, the tail, and the resident body-prefix.
+    // Build the deferred-BIB verifiers for a signed bundle: the keyed header
+    // pass begins them itself. Returns the verifiers, the header prefix, the
+    // tail, and the resident body-prefix.
     async fn signed_setup(full: &Bytes) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Bytes) {
         let keys = |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![sign_key()]))
@@ -336,21 +336,15 @@ mod tests {
             .map_err(|_| ())
             .expect("header pass verifies (payload deferred)");
         let tail = tail.expect("oversized payload takes the Partial route");
-        assert!(!hv.deferred_bibs.is_empty(), "the payload BIB is deferred");
-
-        let keyset = KeySet::new(vec![sign_key()]);
-        let verifiers = checks::begin_payload_verification(
-            &headers,
-            &keyset,
-            &hv.bundle.blocks,
-            &hv.deferred_bibs,
-        )
-        .expect("verifier construction needs only header material");
+        assert!(
+            !hv.deferred_verifiers.is_empty(),
+            "the payload BIB is deferred"
+        );
 
         // The payload body prefix already resident in `headers`.
         let payload_start = hv.bundle.blocks.get(&1).unwrap().payload_range().start as usize;
         let initial_body = headers.slice(payload_start..);
-        (verifiers, headers, tail, initial_body)
+        (hv.deferred_verifiers, headers, tail, initial_body)
     }
 
     // A deferred payload BIB verifies over the streamed body: the resident

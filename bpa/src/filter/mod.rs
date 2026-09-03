@@ -29,13 +29,8 @@ mod engine;
 
 pub(crate) use engine::ChainOutcome;
 
-/// The scoped extension-block editor and its operation errors.
 pub mod editor;
-
-/// Filter packs — the embedder registration surface spliced in by the builder.
 pub mod pack;
-
-/// Annotation slots — embedder-private metadata in the classification group.
 pub mod slots;
 
 /// The outcome of a filter invocation, shared across all three kinds.

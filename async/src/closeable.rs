@@ -1,9 +1,9 @@
 //! Bounded MPMC channel with explicit close.
 //!
-//! Like [`channel`](crate::channel), but adds [`Sender::close`] for signalling
+//! Like [`channel`], but adds [`Sender::close`] for signalling
 //! "no more messages from any sender" without requiring every `Sender` clone
 //! to be dropped first. The close signal is delivered via a
-//! [`CancellationToken`](crate::CancellationToken) shared between all handles,
+//! [`CancellationToken`] shared between all handles,
 //! so subsequent [`Sender::send`]/[`Sender::try_send`] calls fail and a
 //! waiting [`Receiver::recv`] returns [`RecvError::Disconnected`] once the
 //! buffer is drained.
@@ -12,15 +12,15 @@
 //! multiple concurrent producers — typically a worker pool draining a request
 //! queue, or a dispatcher fanning out to per-peer egress queues.
 //!
-//! # Relationship to [`channel`](crate::channel)
+//! # Relationship to [`channel`]
 //!
 //! `closeable::Sender` and `closeable::Receiver` are thin wrappers around the
-//! corresponding [`channel`](crate::channel) handles plus a shared
-//! [`CancellationToken`](crate::CancellationToken). The error types
+//! corresponding [`channel`] handles plus a shared
+//! [`CancellationToken`]. The error types
 //! ([`TrySendError`], [`SendError`], [`RecvError`]) are re-exported from
 //! `channel` — there is one canonical definition for each, shared across both
 //! modules. Backend choice (currently `flume`) is inherited transitively from
-//! [`channel`](crate::channel).
+//! [`channel`].
 //!
 //! # Example
 //!

@@ -44,6 +44,15 @@ pub struct OperationArgs<'a> {
 /// Owns everything it needs (including copied key material — see the
 /// per-context verifier docs), so it is `Send` and may cross `await`
 /// points and task boundaries.
+///
+/// Contract for future security contexts: a verifier carries the *minimum
+/// derived state* across the drain — a running digest, never a raw key
+/// larger than the digest state. Resolve key material from the
+/// [`KeySource`](super::key::KeySource) inside `begin_verify`'s sync scope;
+/// a context that instead needs the key at settle (a hash-then-verify
+/// signature scheme, say) should extend [`finish`](Self::finish) to take a
+/// `KeySource` — the settle site is sync and can re-resolve — rather than
+/// store the key in the verifier.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
@@ -101,9 +110,9 @@ impl Operation {
     }
 
     /// Begin incremental verification of this operation: the returned
-    /// [`Verifier`] absorbs the target's data — streamed through
-    /// [`Verifier::update`] when it is not resident (the ingress drain), or
-    /// in one [`Verifier::update_resident`] step. Applies the RFC 9172
+    /// [`Verifier`] absorbs the target's data streamed through
+    /// [`Verifier::update`] (the ingress drain); a resident target takes the
+    /// all-in-one [`verify`](Self::verify) instead. Applies the RFC 9172
     /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
     /// policy skip.
     #[allow(unused_variables)]

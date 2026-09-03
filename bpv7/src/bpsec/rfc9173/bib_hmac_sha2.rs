@@ -224,7 +224,7 @@ impl Verifier {
 // block-type-specific data otherwise. The head is sized from the resident
 // payload's own length, not the block's parsed extent — the editor's
 // in-flight template carries a placeholder `Block.data` range. Shared by
-// `sign` and the verify wrapper's `Verifier::update_resident`.
+// `sign` and the resident path of `Operation::verify`.
 fn absorb_resident_target(mac: &mut MacInner, args: &bib::OperationArgs) -> Result<(), Error> {
     let (target_block, payload) = args
         .blocks

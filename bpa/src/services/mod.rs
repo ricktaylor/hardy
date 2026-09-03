@@ -174,7 +174,7 @@ pub trait Application: Send + Sync {
     ///
     /// An implementation that needs the whole payload in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`Error`] via `?`.
+    /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,
@@ -323,7 +323,7 @@ pub trait Service: Send + Sync {
     ///
     /// An implementation that needs the whole bundle in memory buffers the
     /// stream with [`stream::buffer_stream`](crate::stream::buffer_stream),
-    /// whose errors convert into this module's [`Error`] via `?`.
+    /// whose errors convert into this module's [`enum@Error`] via `?`.
     async fn on_deliver(
         &self,
         bundle_id: &Id,

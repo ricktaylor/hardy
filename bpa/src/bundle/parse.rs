@@ -18,10 +18,12 @@
 //! * [`parse_headers`] — the streaming ingress header pass, which the gate can
 //!   early-reject on before the payload is spooled. It classifies and
 //!   *schedules* the removals — the `delete_block_on_failure`-flagged unknowns
-//!   and the §5.1.1 failure-drops ([`HeaderVerify::to_remove`]) — and drains
-//!   BPSec down to the deferred block-1 (payload) targets; the dispatcher's
-//!   payload drain then verifies those as the payload streams (via
-//!   [`hardy_bpv7::checks::begin_payload_verification`]). The bundle is
+//!   and the §5.1.1 failure-drops ([`HeaderVerify::to_remove`]) — and, in the
+//!   same keyed pass, begins incremental verification of the BIB targets
+//!   deferred to the not-yet-resident payload
+//!   ([`HeaderVerify::deferred_verifiers`], via
+//!   [`hardy_bpv7::checks::begin_payload_verification`]); the dispatcher's
+//!   payload drain feeds those as the payload streams. The bundle is
 //!   **stored as received** — no editing on input — so the removals ride the
 //!   metadata and are applied per attempt at the output doors (the egress
 //!   rewrite head, the deliver strip), where the BPSec cascade for a
@@ -57,7 +59,7 @@ pub fn extract_from_built(
 }
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
-/// deletion notice. Used by [`parse_headers`] and the dispatcher's ingress drain.
+/// deletion notice. Used by [`parse_headers`].
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand
@@ -68,7 +70,7 @@ pub fn extract_from_built(
 /// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
 /// policy SHOULD gate when security reason codes are sent at all; the global
 /// `status_reports` switch is that gate for now.
-pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
+fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     match error {
         hardy_bpv7::Error::Unsupported(_) => ReasonCode::BlockUnsupported,
         hardy_bpv7::Error::InvalidBPSec(
@@ -201,9 +203,7 @@ pub fn reject_undecryptable_liveness(
 
 /// Result of the pre-drain header pass: everything the streaming gate needs to
 /// decide whether to drain, plus the inputs the dispatcher's payload drain
-/// needs to finish once the payload streams. `bundle` is the structural parse,
-/// kept so a key source can still be built (`key_provider` takes a `&Bundle`)
-/// for the payload verify.
+/// needs to finish once the payload streams.
 pub struct HeaderVerify {
     pub bundle: Bpv7Bundle,
     pub extracted: ExtensionFields,
@@ -213,13 +213,18 @@ pub struct HeaderVerify {
     /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
     /// `NoAdditionalInformation` when none fired.
     pub report_reason: ReasonCode,
-    /// BIB op-sets `checks::verify` left targeting the not-yet-resident payload
-    /// (block 1) — verified as the payload streams by the dispatcher's drain
-    /// (via [`hardy_bpv7::checks::begin_payload_verification`]). Empty when the
-    /// payload was resident. A block-1 *BCB* (payload confidentiality) needs no
-    /// deferral — it's decrypted at delivery via
+    /// One incremental verifier per BIB op-set `checks::verify` left targeting
+    /// the not-yet-resident payload (block 1), each paired with its BIB's
+    /// block number for failure attribution. Begun (via
+    /// [`hardy_bpv7::checks::begin_payload_verification`]) inside the header
+    /// pass, where the key source already exists: the `!Send` source is
+    /// resolved once per bundle and stays sync-scoped — only these `Send`
+    /// verifiers (carrying copied key material, the recorded exception) cross
+    /// the drain's `await`s. The dispatcher's payload drain feeds and settles
+    /// them. Empty when the payload was resident. A block-1 *BCB* (payload
+    /// confidentiality) needs no deferral — it's decrypted at delivery via
     /// [`hardy_bpv7::bpsec::block_data`].
-    pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
+    pub deferred_verifiers: Vec<(u64, bpsec::bib::Verifier)>,
 }
 
 impl HeaderVerify {
@@ -278,9 +283,9 @@ pub enum HeaderFailure {
 /// Drive the structural parser off the segment stream up to the parsed header
 /// chain (*without* draining an oversized payload), then run the keyed header
 /// verification against the resident bytes — the streaming gate's whole
-/// pre-drain stage in one call. The header verification drains the
-/// payload-block BPSec into [`HeaderVerify::deferred_bibs`] for the dispatcher's
-/// streaming payload drain to verify.
+/// pre-drain stage in one call. The header verification begins incremental
+/// verification of the payload-block BIBs ([`HeaderVerify::deferred_verifiers`])
+/// for the dispatcher's streaming payload drain to feed and settle.
 ///
 /// `Ok` is the verified headers, the resident header `Bytes` (the whole bundle
 /// when it fit, else the `consumed` prefix), the payload `tail` the caller
@@ -375,13 +380,13 @@ where
     } = parsed;
     let key_source = key_provider(&bundle, &headers);
     match verify_headers(&headers, &*key_source, &mut bundle, &bcb_ops, &mut bib_ops) {
-        Ok((extracted, to_remove, report_reason, deferred_bibs)) => Ok((
+        Ok((extracted, to_remove, report_reason, deferred_verifiers)) => Ok((
             HeaderVerify {
                 bundle,
                 extracted,
                 to_remove,
                 report_reason,
-                deferred_bibs,
+                deferred_verifiers,
             },
             headers,
             tail,
@@ -404,9 +409,9 @@ where
 /// resident `headers` buffer — the `consumed` prefix for an oversized streamed
 /// payload, or the whole bundle otherwise. Mutates `bundle.blocks` (BIB coverage
 /// stamps). Returns the extracted extension fields, the blocks to remove, the
-/// reception-report reason, and — drained out of `bib_ops` by the keyed verify —
-/// the deferred block-1 (payload) op-sets that the dispatcher's payload drain
-/// re-verifies as the payload streams; the §E removals are deferred to the
+/// reception-report reason, and one begun incremental verifier per block-1
+/// (payload) op-set the keyed verify deferred, for the dispatcher's payload
+/// drain to feed as the payload streams; the §E removals are deferred to the
 /// output doors too.
 #[allow(clippy::type_complexity)]
 fn verify_headers(
@@ -420,7 +425,7 @@ fn verify_headers(
         ExtensionFields,
         HashSet<u64>,
         ReasonCode,
-        HashMap<u64, bpsec::bib::OperationSet>,
+        Vec<(u64, bpsec::bib::Verifier)>,
     ),
     hardy_bpv7::Error,
 > {
@@ -493,7 +498,20 @@ fn verify_headers(
     // never the payload, so header-resident.
     let extracted = extract_extension_block_fields(headers, &bundle.blocks, &decrypted)?;
 
-    Ok((extracted, to_remove, report_reason, facts.deferred_bibs))
+    // Begin incremental verification of the deferred block-1 (payload)
+    // targets here, where `key_source` already exists: the source (possibly
+    // an expensive provider lookup) is resolved once per bundle and never
+    // crosses an `await` — only the returned `Send` verifiers, carrying
+    // copied key material (the recorded exception), ride the async drain.
+    // Empty deferral (a resident payload) yields an empty vec.
+    let deferred_verifiers = checks::begin_payload_verification(
+        headers,
+        key_source,
+        &bundle.blocks,
+        &facts.deferred_bibs,
+    )?;
+
+    Ok((extracted, to_remove, report_reason, deferred_verifiers))
 }
 
 // ---------------------------------------------------------------------------
@@ -636,14 +654,14 @@ mod tests {
         };
         assert!(tail.is_none(), "the small bundle is fully resident");
 
-        // §5.1.1 failure-drop is now *scheduled* at ingress, not applied: the
+        // §5.1.1 failure-drop is *scheduled* at ingress, not applied: the
         // bundle is stored as received and the corrupt target rides the removal
         // set to the output doors, where the BPSec cascade runs per attempt
         // (the shared BCB survives there, still covering the payload). A small
         // resident bundle defers no payload BIB, so the header pass already
         // holds the complete schedule.
         assert!(
-            hv.deferred_bibs.is_empty(),
+            hv.deferred_verifiers.is_empty(),
             "a resident bundle defers no BIB"
         );
         let mut to_remove: Vec<u64> = hv.to_remove.iter().copied().collect();
