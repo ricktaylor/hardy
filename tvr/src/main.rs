@@ -82,7 +82,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         "Contact plan file reload attempts"
     );
 
-    // Create scheduler channel (handle available immediately, task starts after registration)
+    // Create scheduler channel (handle available immediately, task starts after handle)
     let (scheduler_handle, scheduler_rx) = scheduler::channel();
 
     // Create the routing agent
@@ -100,20 +100,28 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
         .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
 
-    let node_ids = client
+    // Register: the registration handle returns once the handshake completes, so the
+    // sink is stored and the node ids are known before we start the
+    // scheduler. The session runs on the pool; there is no automatic
+    // re-registration (a supervisor restarts the process).
+    let handle = client
         .register_routing_agent(config.agent_name.clone(), agent.clone())
         .await
         .map_err(|e| anyhow::anyhow!("RoutingAgent registration failed: {e}"))?;
-
     info!(
         "Routing agent '{}' registered, node IDs: {:?}",
         config.agent_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
+        handle
+            .id()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
     );
 
-    // Start scheduler task (sink is now available after registration)
+    // Start scheduler task (the sink is available now that handle
+    // has completed).
     {
-        let sink = agent.sink().expect("sink should be set after registration");
+        let sink = agent.sink().expect("sink should be set after handle");
         scheduler::start(scheduler_rx, sink, &tasks);
     }
 

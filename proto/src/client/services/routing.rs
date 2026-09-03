@@ -6,12 +6,10 @@
 // end. Declarations are ordered define-before-reference: the wire
 // conversions, the sink, the event loop, then the handshake.
 
-use std::sync::Arc;
-
 use hardy_async::CancellationToken;
 use hardy_bpa::{
     Bytes, async_trait,
-    routing::{self, RouteAction, RoutingAgent, RoutingSink},
+    routing::{self, RouteAction, RoutingSink},
 };
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
@@ -19,6 +17,8 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status, Streaming, transport::Channel};
 use tracing::warn;
+
+use core::ops::ControlFlow;
 
 use super::super::SUBSCRIBE_REQUEST_CAPACITY;
 use super::next_event;
@@ -114,22 +114,28 @@ impl RoutingSink for GrpcRoutingSink {
 }
 
 // The session anchor: routing agents receive no events, so the loop only
-// waits for the session to end (the stream closing or the client's
-// shutdown), which is the unregistration. An event on this stream is a
-// contract violation by the server and is logged.
+// waits for the session to end. An event on this stream is a contract
+// violation by the server and is logged. Returns `Ok(())` when the
+// session ends cleanly (the client's shutdown or a server half-close)
+// and `Err` when the stream fails; the caller owns the agent's
+// `on_unregister`.
 pub async fn run_session(
     mut events: Streaming<SubscribeResponse>,
-    agent: Arc<dyn RoutingAgent>,
     cancel: CancellationToken,
-) {
+) -> routing::Result<()> {
     // Routing agents receive no events: the session's down direction only
     // anchors liveness, so anything on it is a contract violation, logged.
-    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
-        if let Some(event) = event {
-            warn!("Ignoring unexpected routing event: {event:?}");
+    loop {
+        match next_event(&mut events, &cancel).await {
+            ControlFlow::Continue(SubscribeResponse { event }) => {
+                if let Some(event) = event {
+                    warn!("Ignoring unexpected routing event: {event:?}");
+                }
+            }
+            ControlFlow::Break(None) => return Ok(()),
+            ControlFlow::Break(Some(status)) => return Err(routing_error(status)),
         }
     }
-    agent.on_unregister().await;
 }
 
 // The Subscribe handshake: Register up, Registration down, and the

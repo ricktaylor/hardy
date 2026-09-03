@@ -1502,7 +1502,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_sdk_roundtrip() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
@@ -1515,10 +1515,11 @@ mod tests {
             delivered: delivered_tx,
             statuses: statuses_tx,
         });
-        let eid = remote
+        let handle = client
             .register_application(Service::Ipn(9), app.clone())
             .await
             .unwrap();
+        let eid = handle.id().clone();
         assert_eq!(eid.to_string(), "ipn:1.9");
 
         let adu = Bytes::from_static(b"through the sdk and back");
@@ -1593,7 +1594,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_sdk_decline_after_full_receipt_is_redelivered() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
@@ -1606,10 +1607,11 @@ mod tests {
             declined: declined_tx,
             unregistered: unregistered_tx,
         });
-        let eid = remote
+        let handle = client
             .register_application(Service::Ipn(9), decliner.clone())
             .await
             .unwrap();
+        let eid = handle.id().clone();
 
         let adu = Bytes::from_static(b"declined then redelivered");
         let sink = decliner.sink.get().unwrap();
@@ -1642,7 +1644,7 @@ mod tests {
             delivered: delivered_tx,
             statuses: statuses_tx,
         });
-        remote
+        let _accepting = client
             .register_application(Service::Ipn(9), app.clone())
             .await
             .unwrap();
@@ -1660,7 +1662,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delivery_report_reaches_the_sending_application() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
@@ -1673,10 +1675,11 @@ mod tests {
             delivered: delivered_tx,
             statuses: statuses_tx,
         });
-        let eid = remote
+        let handle = client
             .register_application(Service::Ipn(9), app.clone())
             .await
             .unwrap();
+        let eid = handle.id().clone();
 
         let sink = app.sink.get().unwrap();
         let sent = sink

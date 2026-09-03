@@ -17,7 +17,8 @@ use hardy_bpa::{
 };
 use hardy_bpv7::eid::{Eid, IpnNodeId, NodeId, Service};
 use hardy_proto::{
-    application::application_service_server::ApplicationServiceServer, client::BpaClient,
+    application::application_service_server::ApplicationServiceServer,
+    client::{BpaClient, RegistrationHandle},
     server::ApplicationServiceImpl,
 };
 use tokio::net::TcpListener;
@@ -231,31 +232,31 @@ async fn expect_unregistered(events: &mut mpsc::UnboundedReceiver<AppEvent>) {
     }
 }
 
-// Registers `app` under `service_id`. A predecessor whose teardown the
-// client observed (a round-tripped unregister) has already released the
-// id, so this succeeds first try. After a peer's connection loss, though,
-// a fresh client cannot observe the peer's server-side teardown, so the
-// id can briefly read as in use: retry as fast as the round-trip
-// completes (no sleep, no timing margin) until it frees. The deadline
-// only bounds a regression.
+// Registers `app` under `service_id`, retrying until it takes, and returns
+// the registration handle. A predecessor whose teardown the client
+// observed (a round-tripped unregister) has already released the id, so
+// this succeeds first try. After a peer's connection loss, though, a
+// fresh client cannot observe the peer's server-side teardown, so the id
+// can briefly read as in use: `register_application` returns
+// `ServiceIdInUse`, and this retries as fast as the round-trip completes
+// (no sleep, no timing margin) until it frees. The deadline only bounds a
+// regression.
 async fn register_retrying(
     client: &BpaClient,
     app: &Arc<LifecycleApp>,
     service_id: u32,
-) -> hardy_bpv7::eid::Eid {
+) -> RegistrationHandle<Eid, services::Error> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         match client
             .register_application(Service::Ipn(service_id), app.clone())
             .await
         {
-            Ok(eid) => return eid,
-            Err(services::Error::ServiceIdInUse(_)) => {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "the predecessor session never released the service id"
-                );
-            }
+            Ok(handle) => return handle,
+            Err(services::Error::ServiceIdInUse(_)) => assert!(
+                tokio::time::Instant::now() < deadline,
+                "the predecessor session never released the service id"
+            ),
             Err(e) => panic!("registration failed: {e}"),
         }
     }
@@ -270,19 +271,20 @@ async fn a_client_unregister_round_trips() {
     let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
     let (app, mut events) = LifecycleApp::new();
-    let eid = client
+    let handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
-    assert_eq!(eid.to_string(), "ipn:1.9");
+    let eid = handle.id().clone();
     expect_registered(&mut events).await;
+    assert_eq!(eid.to_string(), "ipn:1.9");
 
     app.sink().unregister().await;
     expect_unregistered(&mut events).await;
 
     // The service id is free again.
     let (successor, mut successor_events) = LifecycleApp::new();
-    register_retrying(&client, &successor, 9).await;
+    let _successor = register_retrying(&client, &successor, 9).await;
     expect_registered(&mut successor_events).await;
 
     served.bpa.shutdown().await;
@@ -297,7 +299,7 @@ async fn bpa_initiated_teardown_reaches_the_client() {
     let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
     let (app, mut events) = LifecycleApp::new();
-    client
+    let _handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
@@ -318,10 +320,11 @@ async fn connection_loss_defers_announced_bundles() {
     let doomed_tasks = TaskPool::new();
     let doomed_client = BpaClient::new(served.url.clone(), doomed_tasks.clone()).unwrap();
     let (doomed, mut doomed_events) = LifecycleApp::declining();
-    let eid = doomed_client
+    let handle = doomed_client
         .register_application(Service::Ipn(9), doomed.clone())
         .await
         .unwrap();
+    let eid = handle.id().clone();
     expect_registered(&mut doomed_events).await;
 
     // A bundle to self, announced but declined by the first client:
@@ -358,7 +361,7 @@ async fn connection_loss_defers_announced_bundles() {
     // bundle afresh and collects it whole.
     let client = BpaClient::new(served.url, TaskPool::new()).unwrap();
     let (fresh, mut fresh_events) = LifecycleApp::new();
-    register_retrying(&client, &fresh, 9).await;
+    let _fresh = register_retrying(&client, &fresh, 9).await;
 
     let collected = loop {
         match timeout(fresh_events.recv()).await {
@@ -381,7 +384,7 @@ async fn simultaneous_unregister_settles() {
     let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
 
     let (app, mut events) = LifecycleApp::new();
-    client
+    let _handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
@@ -424,7 +427,7 @@ async fn dropping_the_sink_unregisters() {
     let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
     let (app, mut events) = LifecycleApp::dropping_its_sink();
-    client
+    let _handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
@@ -433,7 +436,7 @@ async fn dropping_the_sink_unregisters() {
 
     // The service id frees for a successor.
     let (successor, mut successor_events) = LifecycleApp::new();
-    register_retrying(&client, &successor, 9).await;
+    let _successor = register_retrying(&client, &successor, 9).await;
     expect_registered(&mut successor_events).await;
 
     served.bpa.shutdown().await;
@@ -449,10 +452,11 @@ async fn a_server_restart_disconnects_the_client() {
     let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
     let (app, mut events) = LifecycleApp::new();
-    let eid = client
+    let handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
+    let eid = handle.id().clone();
     expect_registered(&mut events).await;
 
     served.tasks.shutdown().await;
@@ -486,10 +490,11 @@ async fn shutdown_interrupts_a_stuck_delivery() {
     let client = BpaClient::new(served.url.clone(), tasks.clone()).unwrap();
 
     let (app, mut events) = LifecycleApp::stalling();
-    let eid = client
+    let handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
+    let eid = handle.id().clone();
     expect_registered(&mut events).await;
 
     app.sink()
@@ -531,10 +536,11 @@ async fn deliveries_collect_concurrently() {
     let client = BpaClient::new(served.url.clone(), TaskPool::new()).unwrap();
 
     let (app, mut events) = LifecycleApp::rendezvousing(2);
-    let eid = client
+    let handle = client
         .register_application(Service::Ipn(9), app.clone())
         .await
         .unwrap();
+    let eid = handle.id().clone();
     expect_registered(&mut events).await;
 
     let first = Bytes::from_static(b"first of the pair");

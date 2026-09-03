@@ -1562,7 +1562,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_sdk_deferred_outcome_completes_the_transfer() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
@@ -1573,7 +1573,7 @@ mod tests {
             sink: Once::new(),
             forwarded: forwarded_tx,
         });
-        remote
+        let _handle = client
             .register_cla("sdk-accepting".to_string(), cla.clone())
             .await
             .unwrap();
@@ -1646,13 +1646,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_sdk_rejects_an_over_declared_lane_count() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
         .unwrap();
 
-        let error = remote
+        let error = client
             .register_cla("over-laned".to_string(), Arc::new(OverLanedCla))
             .await
             .unwrap_err();
@@ -1710,7 +1710,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_sdk_roundtrip() {
         let harness = harness().await;
-        let remote =
+        let client =
             crate::client::BpaClient::new(format!("http://{}", harness.address), TaskPool::new())
                 .unwrap();
 
@@ -1719,11 +1719,11 @@ mod tests {
             sink: Once::new(),
             forwarded: forwarded_tx,
         });
-        let node_ids = remote
+        let handle = client
             .register_cla("sdk-cla".to_string(), cla.clone())
             .await
             .unwrap();
-        assert!(!node_ids.is_empty());
+        assert!(!handle.id().is_empty());
 
         // Announce a peer, then dispatch a bundle destined for it: the
         // BPA routes it back out through the CLA.

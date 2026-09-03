@@ -843,7 +843,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_sdk_roundtrip() {
         let harness = harness().await;
-        let remote =
+        let client =
             crate::client::BpaClient::new(format!("http://{}", harness.address), TaskPool::new())
                 .unwrap();
 
@@ -854,10 +854,11 @@ mod tests {
             delivered: delivered_tx,
             statuses: statuses_tx,
         });
-        let eid = remote
+        let handle = client
             .register_service(Service::Ipn(9), svc.clone())
             .await
             .unwrap();
+        let eid = handle.id().clone();
         assert_eq!(eid.to_string(), "ipn:1.9");
 
         // A whole buffer is one final segment through the pump,
@@ -881,7 +882,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delivery_report_reaches_the_sending_service() {
         let harness = harness().await;
-        let remote = crate::client::BpaClient::new(
+        let client = crate::client::BpaClient::new(
             format!("http://{}", harness.address),
             hardy_async::TaskPool::new(),
         )
@@ -894,7 +895,7 @@ mod tests {
             delivered: delivered_tx,
             statuses: statuses_tx,
         });
-        remote
+        let _handle = client
             .register_service(Service::Ipn(9), svc.clone())
             .await
             .unwrap();
