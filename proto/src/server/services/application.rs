@@ -375,7 +375,7 @@ mod tests {
         Register, Unregister, application_service_client::ApplicationServiceClient,
         application_service_server::ApplicationServiceServer, receive_response,
     };
-    use crate::server::session::Sessions;
+    use crate::server::{DATA_CHANNEL_DEPTH, session::Sessions};
 
     struct Harness {
         bpa: Arc<Bpa>,
@@ -1254,11 +1254,12 @@ mod tests {
         let mut harness = harness().await;
         let mut app = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
 
-        // Sixteen wire chunks of data: far more than the bridge's
-        // shallow buffer plus transport windows can absorb, so the drain
-        // cannot complete before the early ack (sent ahead of any read)
-        // is seen.
-        let adu = vec![0x5a; 16 * crate::CHUNK_SIZE];
+        // Several times the bridge's shallow data buffer: far more than it
+        // plus the transport windows can absorb, so the drain cannot
+        // complete before the early ack (sent ahead of any read) is seen.
+        // Derived from the constant so the test cannot go vacuous if the
+        // buffer grows.
+        let adu = vec![0x5a; DATA_CHANNEL_DEPTH * 4 * crate::CHUNK_SIZE];
         let destination = app.endpoint_id.clone();
         send_chunked(&mut harness.client, app.token.clone(), destination, &adu).await;
         let announced = delivery(&mut app, adu.len() as u64).await;
@@ -1358,8 +1359,11 @@ mod tests {
         let stalled = register(&mut harness.client, Some(register::ServiceId::Ipn(7))).await;
         let mut healthy = register(&mut harness.client, Some(register::ServiceId::Ipn(8))).await;
 
-        // Flood the stalled endpoint well past its session buffer.
-        for i in 0..24 {
+        // Flood the stalled endpoint well past its session event buffer;
+        // derived from the constant so the flood cannot silently shrink to
+        // fit the buffer and make the test vacuous.
+        let flood = CHANNEL_DEPTH + CHANNEL_DEPTH / 2;
+        for i in 0..flood {
             send(
                 &mut harness.client,
                 healthy.token.clone(),
@@ -1539,6 +1543,130 @@ mod tests {
         assert_eq!(payload, adu);
 
         sink.unregister().await;
+        harness.bpa.shutdown().await;
+    }
+
+    // An application that echoes each delivery back out through its own
+    // sink from inside `on_deliver`: the echo-over-gRPC shape.
+    #[cfg(feature = "client")]
+    struct EchoApp {
+        sink: Once<Box<dyn services::ApplicationSink>>,
+        // Where each received delivery is echoed to.
+        peer: Eid,
+    }
+
+    #[cfg(feature = "client")]
+    #[async_trait]
+    impl services::Application for EchoApp {
+        async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+            self.sink.call_once(|| sink);
+        }
+
+        async fn on_unregister(&self) {}
+
+        async fn on_deliver(
+            &self,
+            _bundle_id: &bundle::Id,
+            _expiry: OffsetDateTime,
+            _ack_requested: bool,
+            _adu_size: u64,
+            stream: &mut dyn Receiver<Segment>,
+        ) -> services::Result<()> {
+            let mut payload = hardy_bpa::stream::concat_stream(stream, usize::MAX, None).await?;
+            // The reply is issued from inside the delivery, on the delivery
+            // task: the SDK must not serialise the two against each other.
+            self.sink
+                .get()
+                .unwrap()
+                .send(
+                    self.peer.clone(),
+                    Duration::from_secs(3600),
+                    None,
+                    None,
+                    &mut payload,
+                )
+                .await?;
+            Ok(())
+        }
+
+        async fn on_status_notify(
+            &self,
+            _bundle_id: &bundle::Id,
+            _from: &Eid,
+            _kind: services::StatusNotify,
+            _reason: status_report::ReasonCode,
+            _timestamp: Option<OffsetDateTime>,
+        ) {
+        }
+    }
+
+    // Replying from within a pulled delivery must not deadlock, even with
+    // more echoes in flight than the SDK's concurrent-delivery bound: every
+    // bundle sent to the echo app comes back to the collector. This pins
+    // the echo-over-gRPC deployment shape against a reintroduced
+    // self-deadlock.
+    #[cfg(feature = "client")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_sdk_reply_from_within_a_delivery_does_not_deadlock() {
+        let harness = harness().await;
+        let client = crate::client::BpaClient::new(
+            format!("http://{}", harness.address),
+            hardy_async::TaskPool::new(),
+        )
+        .unwrap();
+
+        // The collector both seeds the echo app and receives every echo.
+        let (echoed_tx, mut echoed_rx) = mpsc::channel(64);
+        let (statuses_tx, _statuses_rx) = mpsc::channel(4);
+        let collector = Arc::new(SdkApp {
+            sink: Once::new(),
+            delivered: echoed_tx,
+            statuses: statuses_tx,
+        });
+        let collector_handle = client
+            .register_application(Service::Ipn(8), collector.clone())
+            .await
+            .unwrap();
+        let collector_eid = collector_handle.id().clone();
+
+        let echo = Arc::new(EchoApp {
+            sink: Once::new(),
+            peer: collector_eid.clone(),
+        });
+        let echo_handle = client
+            .register_application(Service::Ipn(9), echo.clone())
+            .await
+            .unwrap();
+        let echo_eid = echo_handle.id().clone();
+
+        // Far more than the SDK's concurrent-delivery bound, so replies are
+        // generated from several deliveries in flight at once.
+        let count = 32;
+        let seed = collector.sink.get().unwrap();
+        for i in 0..count {
+            seed.send(
+                echo_eid.clone(),
+                Duration::from_secs(3600),
+                None,
+                None,
+                &mut Bytes::from(format!("echo {i}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Every echo returns to the collector; a reply that deadlocked
+        // inside a delivery would leave this short (the timeout only bounds
+        // a regression).
+        let mut received = 0;
+        while received < count {
+            let (source, _payload) = timeout(echoed_rx.recv()).await.unwrap();
+            assert_eq!(source, echo_eid);
+            received += 1;
+        }
+
+        seed.unregister().await;
+        echo.sink.get().unwrap().unregister().await;
         harness.bpa.shutdown().await;
     }
 

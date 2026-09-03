@@ -22,13 +22,15 @@ use tracing::error;
 use tracing::instrument;
 
 use super::{Bridge, Component, SinkSlot};
-use crate::error_status::embed_routing_error;
-use crate::routing::{
-    AddRouteRequest, AddRouteResponse, Registration, RemoveRouteRequest, RemoveRouteResponse,
-    SubscribeRequest, SubscribeResponse, routing_agent_service_server::RoutingAgentService,
-    subscribe_request, subscribe_response,
+use crate::{
+    error_status::embed_routing_error,
+    routing::{
+        AddRouteRequest, AddRouteResponse, Registration, RemoveRouteRequest, RemoveRouteResponse,
+        SubscribeRequest, SubscribeResponse, routing_agent_service_server::RoutingAgentService,
+        subscribe_request, subscribe_response,
+    },
+    server::session::{Session, SessionStream},
 };
-use crate::server::session::{Session, SessionStream};
 
 // The one point where BPA routing errors become gRPC statuses. The typed
 // discriminator is embedded on the way out so the SDK can recover the

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package service.v1;
+package hardy.service.v1;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
@@ -112,7 +112,7 @@ message Registration {
 // The delivery of a bundle: collect it with Receive.
 message Delivery {
   // The RFC 9171 id of the bundle awaiting delivery; fetch it with
-  // Receive. Encoded as documented on application.v1
+  // Receive. Encoded as documented on hardy.application.v1
   // SendResponse.bundle_id.
   string                    bundle_id   = 1;
   // When the bundle expires; it is discarded after this.
@@ -125,7 +125,7 @@ message Delivery {
 // Informational: no outcome is expected.
 message BundleStatusReport {
   // The RFC 9171 id of the bundle the report is about. Encoded as
-  // documented on application.v1 SendResponse.bundle_id.
+  // documented on hardy.application.v1 SendResponse.bundle_id.
   string                             bundle_id      = 1;
   // The endpoint of the reporting node.
   string                             reporting_node = 2;
@@ -173,7 +173,7 @@ message SendMetadata {
 
 message SendResponse {
   // The RFC 9171 id of the sent bundle; correlated by
-  // BundleStatusReport events. Encoded as documented on application.v1
+  // BundleStatusReport events. Encoded as documented on hardy.application.v1
   // SendResponse.bundle_id.
   string bundle_id = 1;
 }
@@ -198,7 +198,7 @@ message ReceiveMetadata {
   // The session token from Registration.
   bytes  session_token = 1;
   // The bundle to collect, from Delivery. Encoded as documented on
-  // application.v1 SendResponse.bundle_id.
+  // hardy.application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
 }
 

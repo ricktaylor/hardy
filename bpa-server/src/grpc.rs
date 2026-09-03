@@ -131,15 +131,27 @@ impl GrpcServer {
         // fixed ~64 KiB default caps a transfer at window/RTT, throttling
         // GB-scale bundles on any link with non-trivial latency. The window,
         // stream, and frame limits are operator-tunable via `grpc.http2`.
+        // Adaptive sizing overrides any fixed window, so a pinned window is
+        // silently ignored while it is on: warn rather than let the operator
+        // believe their setting took effect.
+        let adaptive_window = http2.adaptive_window.unwrap_or(DEFAULT_ADAPTIVE_WINDOW);
+        if adaptive_window
+            && (http2.initial_stream_window_size.is_some()
+                || http2.initial_connection_window_size.is_some())
+        {
+            warn!(
+                "gRPC initial-*-window-size is ignored while adaptive-window is on; \
+                 set adaptive-window: false to apply a fixed window"
+            );
+        }
+
         let mut builder = Server::builder()
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-            .http2_adaptive_window(Some(
-                http2.adaptive_window.unwrap_or(DEFAULT_ADAPTIVE_WINDOW),
-            ))
+            .http2_adaptive_window(Some(adaptive_window))
             .initial_stream_window_size(http2.initial_stream_window_size.map(|w| w.get()))
             .initial_connection_window_size(http2.initial_connection_window_size.map(|w| w.get()))
-            .max_concurrent_streams(http2.max_concurrent_streams)
+            .max_concurrent_streams(http2.max_concurrent_streams.map(|n| n.get()))
             .max_frame_size(Some(
                 http2
                     .max_frame_size
@@ -180,7 +192,9 @@ impl GrpcServer {
     // Serves until `cancel` fires, then drains open connections up to the
     // configured timeout before returning. Marks the server `Serving` at
     // entry so health readiness is truthful only once it is accepting.
-    pub async fn serve(self, cancel: CancellationToken) {
+    // Returns `Err` on a transport failure so the caller can key its exit
+    // status on it; a clean cancel-driven shutdown returns `Ok`.
+    pub async fn serve(self, cancel: CancellationToken) -> Result<(), Error> {
         let Self {
             router,
             incoming,
@@ -201,7 +215,10 @@ impl GrpcServer {
             result = &mut server => {
                 if let Err(e) = result {
                     error!("gRPC server failed: {e}, shutting down");
+                    // Unblock the composition root's shutdown wait, then hand
+                    // the failure back so the process exits non-zero.
                     cancel.cancel();
+                    return Err(Error::Serve(e));
                 }
             }
             // The graceful drain is shutdown's one unbounded wait: a client
@@ -210,6 +227,12 @@ impl GrpcServer {
             // abandoned here die with the process.
             _ = async {
                 cancel.cancelled().await;
+                // Flip readiness off as the drain begins so a load balancer
+                // stops routing new work here before connections are torn
+                // down; the drain then races the deadline.
+                reporter
+                    .set_service_status("", ServingStatus::NotServing)
+                    .await;
                 tokio::time::sleep(drain_timeout).await;
             } => {
                 warn!(
@@ -217,6 +240,7 @@ impl GrpcServer {
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -238,6 +262,7 @@ mod tests {
 
     use super::GrpcServer;
     use crate::config::{GrpcHttp2Config, GrpcService};
+    use crate::error::Error;
 
     // Bounds a hung shutdown only; the wait it wraps is event-driven.
     const REGRESSION_BOUND: Duration = Duration::from_secs(10);
@@ -260,12 +285,17 @@ mod tests {
         assert_eq!(status, ServingStatus::Serving as i32);
     }
 
-    // Cancelling must drive `serve` to return.
-    async fn cancel_and_join(cancel: CancellationToken, served: tokio::task::JoinHandle<()>) {
+    // Cancelling must drive `serve` to return `Ok` (a clean shutdown, not a
+    // transport failure).
+    async fn cancel_and_join(
+        cancel: CancellationToken,
+        served: tokio::task::JoinHandle<Result<(), Error>>,
+    ) {
         cancel.cancel();
         tokio::time::timeout(REGRESSION_BOUND, served)
             .await
             .expect("the timeout only bounds a regression")
+            .unwrap()
             .unwrap();
     }
 

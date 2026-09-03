@@ -34,7 +34,7 @@ pub enum EndpointError {
     /// The endpoint does not convert to a tonic
     /// [`Endpoint`](tonic::transport::Endpoint): an invalid URI, or an
     /// unsupported scheme.
-    #[error("Invalid endpoint: {0}")]
+    #[error("invalid endpoint")]
     InvalidEndpoint(#[source] Box<dyn core::error::Error + Send + Sync>),
 }
 
@@ -523,8 +523,11 @@ impl BpaClient {
     /// Registers a convergence-layer adapter: the BPA forwards bundles to
     /// it, and it dispatches received bundles and manages peers through
     /// the sink it is given. Its address type and lane count are read from
-    /// the trait, as a local registration reads them. The returned
-    /// handle's [`id`](RegistrationHandle::id) is the BPA's node ids, also
+    /// the trait, as a local registration reads them. Unlike a local
+    /// registration, this carries no egress policy: a policy is an
+    /// in-process trait object the wire cannot express, so a remote CLA
+    /// runs under the host's policy configuration. The returned handle's
+    /// [`id`](RegistrationHandle::id) is the BPA's node ids, also
     /// delivered to the CLA in `on_register`; dropping the sink, or
     /// calling its `unregister`, ends the session.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]

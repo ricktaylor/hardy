@@ -11,6 +11,7 @@ mod config;
 mod error;
 #[cfg(feature = "grpc")]
 mod grpc;
+mod keyfile;
 mod server;
 mod static_routes;
 

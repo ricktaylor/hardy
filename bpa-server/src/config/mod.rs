@@ -1,3 +1,5 @@
+#[cfg(feature = "grpc")]
+use core::num::NonZeroU32;
 use core::num::NonZeroUsize;
 #[cfg(feature = "grpc")]
 use std::net::SocketAddr;
@@ -265,9 +267,9 @@ impl Http2WindowSize {
     /// The RFC 9113 Section 6.9.1 maximum: `2^31 - 1` bytes.
     pub const MAX: Http2WindowSize = Http2WindowSize(i32::MAX as u32);
 
-    /// Creates a window size; `None` above [`MAX`](Self::MAX).
+    /// Creates a window size; `None` if zero or above [`MAX`](Self::MAX).
     pub const fn new(bytes: u32) -> Option<Self> {
-        if bytes > Self::MAX.0 {
+        if bytes == 0 || bytes > Self::MAX.0 {
             None
         } else {
             Some(Self(bytes))
@@ -289,7 +291,7 @@ impl<'de> Deserialize<'de> for Http2WindowSize {
         let bytes = u32::deserialize(deserializer)?;
         Self::new(bytes).ok_or_else(|| {
             serde::de::Error::custom(format!(
-                "HTTP/2 window size {bytes} exceeds the maximum of {}",
+                "HTTP/2 window size must be between 1 and {}",
                 Self::MAX.get()
             ))
         })
@@ -366,7 +368,8 @@ pub struct GrpcHttp2Config {
 
     // Maximum concurrent HTTP/2 streams a peer may open; absent uses the
     // transport default. Bounds per-connection memory (window x streams).
-    pub max_concurrent_streams: Option<u32>,
+    // Zero would wedge the listener, so it is rejected at parse.
+    pub max_concurrent_streams: Option<NonZeroU32>,
 
     // Maximum HTTP/2 DATA frame payload; absent defers to the server
     // default (one chunk per frame). Larger frames cut per-frame
@@ -401,7 +404,9 @@ pub struct GrpcConfig {
     #[serde(default = "default_drain_timeout", with = "human_duration")]
     pub drain_timeout: Duration,
 
-    // TLS for the listener; absent serves plaintext HTTP/2.
+    // TLS for the listener; absent serves plaintext HTTP/2. The
+    // certificate and key are read once at startup; there is no hot
+    // reload, so a rotated certificate needs a restart to take effect.
     #[serde(default)]
     pub tls: Option<GrpcTlsConfig>,
 
@@ -532,6 +537,20 @@ impl Config {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    // Helper: an error and its whole source chain as one string, so an
+    // assertion can match text a source carries rather than only the
+    // top-level message.
+    fn error_chain(err: &dyn std::error::Error) -> String {
+        let mut out = err.to_string();
+        let mut source = err.source();
+        while let Some(e) = source {
+            out.push_str(": ");
+            out.push_str(&e.to_string());
+            source = e.source();
+        }
+        out
+    }
 
     // Helper: write a config file and load it.
     fn write_and_load(name: &str, content: &str) -> Config {
@@ -896,7 +915,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("this-field-does-not-exist"), "{err}");
 
         // Sections are strict too: a typo'd storage knob is refused, not
@@ -906,7 +925,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("lru-capactiy"), "{err}");
     }
 
@@ -924,7 +943,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("at least one"), "{err}");
 
         let path = dir.path().join("missing.yaml");
@@ -932,7 +951,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("services"), "{err}");
     }
 
@@ -948,7 +967,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("application"), "{err}");
     }
 
@@ -1010,7 +1029,7 @@ storage:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("more than once"), "{err}");
     }
 
@@ -1049,6 +1068,22 @@ storage:
         std::fs::write(
             &path,
             "grpc:\n  services: [\"application\"]\n  http2:\n    initial-stream-window-size: 4294967295\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path.clone())).is_err());
+
+        // A zero window size would wedge the connection: refused.
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  http2:\n    initial-stream-window-size: 0\n",
+        )
+        .unwrap();
+        assert!(Config::load(Some(path.clone())).is_err());
+
+        // A zero stream cap would wedge the listener: refused.
+        std::fs::write(
+            &path,
+            "grpc:\n  services: [\"application\"]\n  http2:\n    max-concurrent-streams: 0\n",
         )
         .unwrap();
         assert!(Config::load(Some(path)).is_err());
@@ -1153,7 +1188,7 @@ node-ids:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("listeners"), "{err}");
     }
 
@@ -1174,7 +1209,7 @@ node-ids:
         let Err(err) = Config::load(Some(path)) else {
             panic!("expected a parse error");
         };
-        let err = err.to_string();
+        let err = error_chain(&err);
         assert!(err.contains("keepalive"), "{err}");
     }
 

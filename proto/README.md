@@ -17,10 +17,10 @@ Published on [crates.io](https://crates.io/crates/hardy-proto).
 
 One gRPC service per component surface, defined in the schemas under [`proto/`](./proto/) and exposed as generated types (one root module per protobuf package):
 
-- `application.v1` — applications: ADUs in and out.
-- `service.v1` — low-level endpoint services: whole BPv7 bundles in and out.
-- `cla.v1` — convergence-layer adapters.
-- `routing.v1` — routing agents.
+- `hardy.application.v1` — applications: ADUs in and out.
+- `hardy.service.v1` — low-level endpoint services: whole BPv7 bundles in and out.
+- `hardy.cla.v1` — convergence-layer adapters.
+- `hardy.routing.v1` — routing agents.
 
 Every surface follows the same design. `Subscribe` is the session: `Register` commences the registration, the BPA answers with `Registration` carrying a session token, and from then on the down direction is a pure event stream of small messages. Every action a component takes is an ordinary RPC presenting the token, and payload bytes move only on the chunked streaming data-plane calls (`Send`, `Receive`, `Dispatch`, `Forward`), with in-stream cancellation in both directions. Closing the session stream terminates the registration and invalidates the token.
 

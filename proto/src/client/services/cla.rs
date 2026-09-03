@@ -5,10 +5,13 @@
 // ordered define-before-reference: the wire conversions, the sink, the
 // forwarding runner, the event loop, then the handshake.
 
-use core::{num::NonZeroU32, ops::ControlFlow};
+use core::{
+    num::{NonZeroU32, NonZeroUsize},
+    ops::ControlFlow,
+};
 use std::sync::Arc;
 
-use hardy_async::{CancellationToken, TaskPool};
+use hardy_async::{BoundedTaskPool, CancellationToken};
 use hardy_bpa::{
     Bytes, async_trait,
     cla::{self, Cla, ForwardBundleResult, Sink, TransferOutcome},
@@ -286,11 +289,17 @@ async fn run_forwarding(
     }
 }
 
+// How many announced forwardings one registration executes at once:
+// beyond it the announcement loop waits for a slot, which backpressures
+// the session stream and through it the BPA, the same client-side
+// self-defence the delivery surfaces have.
+const MAX_CONCURRENT_FORWARDINGS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
 // The session's event loop: each announced forwarding is executed on its
-// own task so a slow transfer never stalls the next announcement. Returns
-// `Ok(())` when the session ends cleanly (the client's shutdown or a
-// server half-close) and `Err` when the stream fails; the caller owns the
-// CLA's `on_unregister`.
+// own task so a slow transfer never stalls the next announcement, bounded
+// by [`MAX_CONCURRENT_FORWARDINGS`]. Returns `Ok(())` when the session
+// ends cleanly (the client's shutdown or a server half-close) and `Err`
+// when the stream fails; the caller owns the CLA's `on_unregister`.
 pub async fn run_session(
     mut events: Streaming<SubscribeResponse>,
     cla: Arc<dyn Cla>,
@@ -302,7 +311,7 @@ pub async fn run_session(
     // the client's shutdown (it is a child of `cancel`) and at this
     // session's own end.
     let session_cancel = cancel.child_token();
-    let forwardings = TaskPool::new();
+    let forwardings = BoundedTaskPool::new(MAX_CONCURRENT_FORWARDINGS);
     let result = loop {
         let SubscribeResponse { event } = match next_event(&mut events, &cancel).await {
             ControlFlow::Continue(response) => response,
@@ -322,9 +331,12 @@ pub async fn run_session(
                 let client = client.clone();
                 let token = token.clone();
                 let cancel = session_cancel.clone();
+                // Awaited, so a full pool backpressures the announcement
+                // loop rather than spawning without bound.
                 hardy_async::spawn!(forwardings, "cla_forward", async move {
                     run_forwarding(cla, client, token, forwarding, cancel).await
-                });
+                })
+                .await;
             }
         }
     };

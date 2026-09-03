@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package cla.v1;
+package hardy.cla.v1;
 
 import "google/protobuf/empty.proto";
 
@@ -88,7 +88,7 @@ message Register {
   // declares no limit (every transfer travels on a new lane from the
   // infinite pool). Lanes are parallel transport channels with no
   // explicit priority among them; zero is invalid, and the BPA
-  // rejects declarations above its bound (currently 256) with
+  // rejects declarations above its configured bound with
   // INVALID_ARGUMENT.
   optional uint32         lane_count    = 3;
 }
@@ -118,7 +118,7 @@ message Registration {
 // Forward.
 message Forwarding {
   // The RFC 9171 id of the bundle awaiting forwarding; fetch it with
-  // Forward. Encoded as documented on application.v1
+  // Forward. Encoded as documented on hardy.application.v1
   // SendResponse.bundle_id.
   string          bundle_id   = 1;
   // The address to forward the bundle to.
@@ -171,7 +171,10 @@ message DispatchResponse {}
 message ForwardRequest {
   oneof request {
     ForwardMetadata       metadata = 1;
-    // The result of the transmission over the link.
+    // The result of the transmission over the link. It may arrive
+    // before the server has finished streaming the bundle down (before
+    // last_chunk): unlike the application Receive ack, an early result
+    // is wire-legal and completes the forwarding.
     ForwardResult         result   = 2;
     // Abandon: the bundle stays queued for a later attempt.
     google.protobuf.Empty cancel   = 3;
@@ -182,7 +185,7 @@ message ForwardMetadata {
   // The session token from Registration.
   bytes  session_token = 1;
   // The bundle to forward, from Forwarding. Encoded as documented on
-  // application.v1 SendResponse.bundle_id.
+  // hardy.application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
 }
 
@@ -250,7 +253,7 @@ message ReportTransferOutcomeRequest {
   // The session token from Registration.
   bytes  session_token = 1;
   // The bundle id from the accepted Forwarding. Encoded as documented
-  // on application.v1 SendResponse.bundle_id.
+  // on hardy.application.v1 SendResponse.bundle_id.
   string bundle_id     = 2;
   oneof outcome {
     // The bundle was handed to the far bundle node.

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package routing.v1;
+package hardy.routing.v1;
 
 import "google/protobuf/empty.proto";
 
