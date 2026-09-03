@@ -3523,3 +3523,135 @@ async fn relaxed_gate_admits_clockless_bundle_without_age() {
 
     bpa.shutdown().await;
 }
+
+// A peer removed while its construction is still in flight leaves nothing
+// behind (whole-codebase review #14): add_peer claims the address, builds
+// the peer complete, publishes, then re-checks its claim before installing
+// RIB entries — a concurrent remove wins the claim, and the half-added peer
+// is withdrawn (add_peer reports false). The policy's controller
+// construction is the interception point: it parks until released, and a
+// fresh add on the same address afterwards succeeds cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_removed_mid_construction_is_withdrawn() {
+    use hardy_bpa::policy;
+
+    struct ParkedPolicy {
+        entered_tx: flume::Sender<()>,
+        release_rx: flume::Receiver<()>,
+    }
+
+    struct DefaultController {
+        queue: Arc<dyn policy::EgressQueue>,
+    }
+
+    #[async_trait]
+    impl policy::FlowController for DefaultController {
+        fn queue_for(&self) -> u32 {
+            0
+        }
+
+        async fn forward(&self, _queue: u32, bundle: hardy_bpa::bundle::Bundle) {
+            self.queue.forward(bundle).await
+        }
+    }
+
+    #[async_trait]
+    impl policy::FlowControllerFactory for ParkedPolicy {
+        fn queue_count(&self) -> NonZeroU32 {
+            NonZeroU32::MIN
+        }
+
+        async fn new_controller(
+            &self,
+            queues: std::collections::HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
+        ) -> Arc<dyn policy::FlowController> {
+            let _ = self.entered_tx.send(());
+            // Parked until the test drops the release sender; the peer is
+            // mid-construction for exactly this window.
+            let _ = self.release_rx.recv_async().await;
+            Arc::new(DefaultController {
+                queue: queues.get(&None).expect("next-free queue exists").clone(),
+            })
+        }
+    }
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (entered_tx, entered_rx) = flume::unbounded();
+    let (release_tx, release_rx) = flume::bounded::<()>(1);
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        Some(Arc::new(ParkedPolicy {
+            entered_tx,
+            release_rx,
+        })),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+
+    // The add parks in controller construction...
+    let add = {
+        let cla = cla.clone();
+        let peer_addr = peer_addr.clone();
+        let remote_node = remote_node.clone();
+        tokio::spawn(async move {
+            cla.sink
+                .get()
+                .unwrap()
+                .add_peer(peer_addr, from_ref(&remote_node))
+                .await
+        })
+    };
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), entered_rx.recv_async())
+        .await
+        .expect("Timeout waiting for controller construction to start")
+        .expect("Policy gone");
+
+    // ...and the removal wins the claim while it is parked.
+    assert!(
+        cla.sink
+            .get()
+            .unwrap()
+            .remove_peer(&peer_addr)
+            .await
+            .expect("remove_peer failed"),
+        "the claimed address is removable mid-construction"
+    );
+
+    drop(release_tx);
+    let added = add
+        .await
+        .expect("add task panicked")
+        .expect("add_peer failed");
+    assert!(!added, "a removed claim must not complete as an added peer");
+
+    // The address is free and a fresh add succeeds (the release sender is
+    // dropped, so its construction completes immediately).
+    assert!(
+        cla.sink
+            .get()
+            .unwrap()
+            .add_peer(peer_addr, from_ref(&remote_node))
+            .await
+            .expect("add_peer failed"),
+        "a fresh add on the freed address succeeds"
+    );
+
+    bpa.shutdown().await;
+}
