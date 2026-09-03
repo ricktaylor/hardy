@@ -1662,6 +1662,125 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     );
 }
 
+// A complete-but-invalid streamed payload — a CRC mismatch the drain's
+// `TailReceiver` detects after the header pass admitted the bundle — is
+// accepted, terminated, and reported exactly like a gate drop: the §5.6/§5.10
+// reception + deletion pair, the deletion citing `BlockUnintelligible`. The
+// transfer is accepted, never refused: the content cannot become valid by
+// resending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drain_failure_reports_reception_then_deletion() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A CLA with a peer for the remote node — the route for the reports
+    // (report-to defaults to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // An oversized-payload bundle fed in CLA-sized chunks: the payload
+    // outruns the parser's accumulation, so the bundle takes the `Partial`
+    // route and the payload streams through the validating drain. One
+    // corrupt byte deep in the payload body fails the payload CRC there —
+    // after the header pass admitted the bundle.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Owned(vec![0xA5_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let mut data = data.into_vec();
+    let corrupt_at = data.len() - 100; // inside the payload body, before its CRC field
+    data[corrupt_at] ^= 0xFF;
+
+    let mut stream = SegmentReceiver::new(&data, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a complete-but-corrupt transfer is accepted and terminated, never refused"
+    );
+
+    // Exactly the report pair comes out of the CLA — the corrupt bundle
+    // itself must not be forwarded. Both are admin records to the source.
+    let mut reception = None;
+    let mut deletion = None;
+    for _ in 0..2 {
+        // Event-driven wait; the timeout only bounds a regression.
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for a status report")
+        .expect("Channel closed");
+        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+        assert!(
+            parsed.bundle.primary.flags.is_admin_record,
+            "only status reports may leave the node for a drain-dropped bundle"
+        );
+        assert_eq!(parsed.bundle.primary.destination, remote_source);
+        let body = parsed
+            .bundle
+            .blocks
+            .get(&1)
+            .expect("report has a payload block")
+            .payload(&parsed.data)
+            .expect("report payload in bundle");
+        let AdministrativeRecord::BundleStatusReport(status) =
+            hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+        assert_eq!(status.bundle_id.source, remote_source);
+        if status.received.is_some() {
+            reception = Some(status);
+        } else if status.deleted.is_some() {
+            deletion = Some(status);
+        } else {
+            panic!("status report asserts neither reception nor deletion");
+        }
+    }
+    let reception = reception.expect("reception report emitted");
+    assert_eq!(reception.reason, ReasonCode::NoAdditionalInformation);
+    let deletion = deletion.expect("deletion report emitted");
+    assert_eq!(deletion.reason, ReasonCode::BlockUnintelligible);
+
+    bpa.shutdown().await;
+}
+
 // R-01: a single `Segment::Final` carrying a bundle whose declared payload is
 // truncated — the parser takes the streaming fallback (`Partial`) though the
 // stream has already ended — must be an internal drop, not handed to the

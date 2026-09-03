@@ -59,7 +59,8 @@ pub fn extract_from_built(
 }
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
-/// deletion notice. Used by [`parse_headers`].
+/// deletion notice. Used by [`parse_headers`] and the payload drain's
+/// [`TailFailure::reason_code`](super::tail::TailFailure::reason_code).
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand
@@ -70,7 +71,7 @@ pub fn extract_from_built(
 /// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
 /// policy SHOULD gate when security reason codes are sent at all; the global
 /// `status_reports` switch is that gate for now.
-fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
+pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     match error {
         hardy_bpv7::Error::Unsupported(_) => ReasonCode::BlockUnsupported,
         hardy_bpv7::Error::InvalidBPSec(

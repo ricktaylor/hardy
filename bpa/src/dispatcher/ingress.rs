@@ -286,18 +286,30 @@ impl Dispatcher {
 
                 match tail_rx.finish() {
                     Ok(()) => whole.freeze(),
-                    Err(tail::TailFailure::Truncated) => {
-                        debug!("Truncated payload; refused");
-                        return Received::Refused;
-                    }
-                    Err(tail::TailFailure::Invalid(e)) => {
-                        debug!("Streamed payload rejected: {e}");
-                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                        return Received::Disposed;
-                    }
-                    Err(tail::TailFailure::IntegrityFailed { bib }) => {
-                        debug!("Deferred payload BIB {bib} failed integrity; dropped");
-                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::FailedSecurityOperation)).increment(1);
+                    Err(failure) => {
+                        let Some(reason) = failure.reason_code() else {
+                            // Truncated: the transfer never completed, so it
+                            // is refused — the peer retains custody and may
+                            // resend. A refusal is never reported.
+                            debug!("Truncated payload; refused");
+                            return Received::Refused;
+                        };
+                        // Complete but unacceptable: the transfer was
+                        // accepted, so this node owns the bundle and
+                        // terminates it — reported like the sibling gate
+                        // drops (reception then deletion per the bundle's
+                        // flags, RFC 9171 §5.6/§5.10). Nothing was stored:
+                        // the failure precedes the save below.
+                        debug!("Streamed payload rejected: {failure}");
+                        metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                        let bundle = bundle::Bundle {
+                            metadata,
+                            bundle,
+                            status: bundle::BundleStatus::New,
+                        };
+                        self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
+                            .await;
+                        self.report_bundle_deletion(&bundle, reason).await;
                         return Received::Disposed;
                     }
                 }

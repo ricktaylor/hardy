@@ -18,29 +18,51 @@
 //! from [`TailReceiver::finish`] once the stream is drained.
 
 use hardy_async::async_trait;
-use hardy_bpv7::{bpsec::bib, parse::PayloadTail};
+use hardy_bpv7::{bpsec::bib, parse::PayloadTail, status_report::ReasonCode};
+use thiserror::Error;
 
-use super::super::{
-    Bytes,
-    cla::Segment,
-    stream::{Receiver, RecvError},
+use super::{
+    super::{
+        Bytes,
+        cla::Segment,
+        stream::{Receiver, RecvError},
+    },
+    parse::status_report_reason_for,
 };
 
 /// Why a [`TailReceiver`] rejected the drained bytes.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum TailFailure {
     /// The stream ended before the bundle's outer break: the producer went
     /// away mid-bundle. A resend may complete it, so the transfer is
     /// refused (the CLA withholds its acknowledgement).
+    #[error("the stream ended before the bundle's outer break")]
     Truncated,
     /// The drained bytes were structurally invalid — payload CRC mismatch,
     /// a malformed trailer, or bytes past the outer break. The bundle is
     /// complete but unacceptable: accepted and dropped, never refused.
+    #[error("invalid payload bytes: {0}")]
     Invalid(hardy_bpv7::Error),
     /// A deferred payload BIB failed integrity over the streamed body
     /// (RFC 9172 §5.1.1). Names the BIB block that made the claim; the
     /// bundle is accepted and dropped.
+    #[error("deferred payload BIB {bib} failed integrity over the streamed body")]
     IntegrityFailed { bib: u64 },
+}
+
+impl TailFailure {
+    /// The status-report reason this failure raises, so the drain's caller
+    /// reports the drop like any other parsing failure (the RFC 9171
+    /// §5.6/§5.10 reception-then-deletion pair, per the bundle's flags).
+    /// `None` for [`Truncated`](Self::Truncated): a refused transfer is
+    /// never reported — the peer retains custody and may resend.
+    pub fn reason_code(&self) -> Option<ReasonCode> {
+        match self {
+            Self::Truncated => None,
+            Self::Invalid(error) => Some(status_report_reason_for(error)),
+            Self::IntegrityFailed { .. } => Some(ReasonCode::FailedSecurityOperation),
+        }
+    }
 }
 
 /// A [`Receiver<Segment>`] decorator that validates a bundle's payload tail
@@ -271,9 +293,12 @@ mod tests {
         // The corruption surfaces at the CRC check (end of body) as a failed
         // pull; finish categorises it.
         let _ = drain(&mut tr).await;
-        assert!(
-            matches!(tr.finish(), Err(TailFailure::Invalid(_))),
-            "a payload CRC mismatch is Invalid"
+        let failure = tr.finish().expect_err("a payload CRC mismatch is Invalid");
+        assert!(matches!(failure, TailFailure::Invalid(_)));
+        assert_eq!(
+            failure.reason_code(),
+            Some(ReasonCode::BlockUnintelligible),
+            "a CRC mismatch reports the generic block reason"
         );
     }
 
@@ -300,9 +325,22 @@ mod tests {
             tr.recv().await.is_err(),
             "the dropped producer ends the stream"
         );
-        assert!(
-            matches!(tr.finish(), Err(TailFailure::Truncated)),
-            "an unfinished tail is Truncated"
+        let failure = tr.finish().expect_err("an unfinished tail is Truncated");
+        assert!(matches!(failure, TailFailure::Truncated));
+        assert_eq!(
+            failure.reason_code(),
+            None,
+            "a refused transfer raises no status report"
+        );
+    }
+
+    // The reason a drain failure hands the reporting path: a failed deferred
+    // BIB is a failed security operation (RFC 9172).
+    #[test]
+    fn integrity_failure_reports_failed_security_operation() {
+        assert_eq!(
+            TailFailure::IntegrityFailed { bib: 3 }.reason_code(),
+            Some(ReasonCode::FailedSecurityOperation)
         );
     }
 
