@@ -55,27 +55,29 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
         .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
 
-    let node_ids = client
+    // Register: the registration handle returns once the handshake completes (a
+    // failure returns here), and its session runs on the pool until the
+    // pool is cancelled, the BPA closes it, or the connection is lost.
+    // There is no automatic re-registration; a supervisor restarts the
+    // process. The registration ran its own `on_unregister`, so teardown
+    // here is just the pool.
+    let handle = client
         .register_cla(config.cla_name.clone(), cla.clone())
         .await
         .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
-
     info!(
         "CLA {} registered, node IDs: {:?}",
         config.cla_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
+        handle
+            .id()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
     );
 
-    info!("Started successfully");
-
-    tasks.cancel_token().cancelled().await;
-
-    // Gracefully unregister from the BPA before shutting down
-    cla.unregister().await;
-
+    let result = handle.await;
     tasks.shutdown().await;
-
     info!("Stopped");
 
-    Ok(())
+    result.map_err(|e| anyhow::anyhow!("CLA session ended: {e}"))
 }

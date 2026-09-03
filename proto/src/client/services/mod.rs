@@ -10,6 +10,8 @@ pub mod cla;
 pub mod routing;
 pub mod service;
 
+use core::ops::ControlFlow;
+
 use hardy_async::CancellationToken;
 use hardy_bpa::services;
 use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
@@ -39,24 +41,28 @@ fn service_error(status: Status) -> services::Error {
     }
 }
 
-// Advances a session's event stream: yields the next message, or `None`
-// once the session has ended — the client shutting down (via `cancel`),
-// the server half-closing, or a failed stream (logged; a clean end is
-// silent). Interpreting the message is the surface's job; this only
-// decides whether the session is still live.
-async fn next_event<M>(events: &mut Streaming<M>, cancel: &CancellationToken) -> Option<M> {
+// Advances a session's event stream: `Continue(event)` yields the next
+// event to handle, and `Break` ends the session — `Break(None)` a clean
+// end (the client's pool cancelled, or the server half-closed the
+// stream: a round-tripped unregister or the BPA's own shutdown,
+// indistinguishable on the wire), `Break(Some(status))` a stream failure
+// carrying its gRPC status. A surface turns that status into its own
+// typed error (recovering the exact variant the server raised where the
+// wire carried it), so `serve_*` hands the caller the real error rather
+// than a flattened one.
+async fn next_event<M>(
+    events: &mut Streaming<M>,
+    cancel: &CancellationToken,
+) -> ControlFlow<Option<Status>, M> {
     let message = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return None,
+        _ = cancel.cancelled() => return ControlFlow::Break(None),
         message = events.message() => message,
     };
     match message {
-        Ok(Some(message)) => Some(message),
-        Ok(None) => None,
-        Err(status) => {
-            debug!("Subscribe stream failed: {status}");
-            None
-        }
+        Ok(Some(message)) => ControlFlow::Continue(message),
+        Ok(None) => ControlFlow::Break(None),
+        Err(status) => ControlFlow::Break(Some(status)),
     }
 }
 

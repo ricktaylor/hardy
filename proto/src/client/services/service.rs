@@ -7,7 +7,7 @@
 // `BpaClient`: it opens the session here, hands the sink to the
 // service, and drives the event loop.
 
-use core::num::NonZeroUsize;
+use core::{num::NonZeroUsize, ops::ControlFlow};
 use std::sync::Arc;
 
 use hardy_async::{BoundedTaskPool, CancellationToken};
@@ -182,13 +182,18 @@ pub async fn run_session(
     collector: Collector<ServiceServiceClient<Channel>>,
     service: Arc<dyn services::Service>,
     cancel: CancellationToken,
-) {
+) -> services::Result<()> {
     // Every in-flight delivery races `session_cancel`, which fires on the
     // client's shutdown (it is a child of `cancel`) and at this session's
     // own end.
     let session_cancel = cancel.child_token();
     let deliveries = BoundedTaskPool::new(MAX_CONCURRENT_DELIVERIES);
-    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
+    let result = loop {
+        let SubscribeResponse { event } = match next_event(&mut events, &cancel).await {
+            ControlFlow::Continue(response) => response,
+            ControlFlow::Break(None) => break Ok(()),
+            ControlFlow::Break(Some(status)) => break Err(service_error(status)),
+        };
         let Some(event) = event else {
             warn!("Ignoring event with no payload");
             continue;
@@ -233,12 +238,12 @@ pub async fn run_session(
                     .await;
             }
         }
-    }
-    // In-flight deliveries end before the component learns it is
-    // unregistered, so no `on_deliver` call outlives `on_unregister`.
+    };
+    // In-flight deliveries end before the session is declared over, so no
+    // `on_deliver` call outlives the caller's `on_unregister`.
     session_cancel.cancel();
     deliveries.shutdown().await;
-    service.on_unregister().await;
+    result
 }
 
 // The Subscribe handshake: Register up, Registration down, and the

@@ -5,7 +5,7 @@
 // ordered define-before-reference: the wire conversions, the sink, the
 // forwarding runner, the event loop, then the handshake.
 
-use core::num::NonZeroU32;
+use core::{num::NonZeroU32, ops::ControlFlow};
 use std::sync::Arc;
 
 use hardy_async::{CancellationToken, TaskPool};
@@ -286,23 +286,29 @@ async fn run_forwarding(
     }
 }
 
-// The session's event loop: each announced forwarding is executed on
-// its own task so a slow transfer never stalls the next announcement,
-// and the session ending, however it ends (the stream closing or the
-// client's shutdown), is the unregistration.
+// The session's event loop: each announced forwarding is executed on its
+// own task so a slow transfer never stalls the next announcement. Returns
+// `Ok(())` when the session ends cleanly (the client's shutdown or a
+// server half-close) and `Err` when the stream fails; the caller owns the
+// CLA's `on_unregister`.
 pub async fn run_session(
     mut events: Streaming<SubscribeResponse>,
     cla: Arc<dyn Cla>,
     cancel: CancellationToken,
     client: ClaServiceClient<Channel>,
     token: Bytes,
-) {
+) -> cla::Result<()> {
     // Every in-flight forwarding races `session_cancel`, which fires on
     // the client's shutdown (it is a child of `cancel`) and at this
     // session's own end.
     let session_cancel = cancel.child_token();
     let forwardings = TaskPool::new();
-    while let Some(SubscribeResponse { event }) = next_event(&mut events, &cancel).await {
+    let result = loop {
+        let SubscribeResponse { event } = match next_event(&mut events, &cancel).await {
+            ControlFlow::Continue(response) => response,
+            ControlFlow::Break(None) => break Ok(()),
+            ControlFlow::Break(Some(status)) => break Err(cla_error(status)),
+        };
         let Some(event) = event else {
             warn!("Ignoring event with no payload");
             continue;
@@ -321,12 +327,12 @@ pub async fn run_session(
                 });
             }
         }
-    }
-    // In-flight forwardings end before the CLA learns it is
-    // unregistered, so no `forward` call outlives `on_unregister`.
+    };
+    // In-flight forwardings end before the session is declared over, so no
+    // `forward` call outlives the caller's `on_unregister`.
     session_cancel.cancel();
     forwardings.shutdown().await;
-    cla.on_unregister().await;
+    result
 }
 
 // A completed CLA registration: the BPA's node ids, the sink for the

@@ -346,7 +346,7 @@ mod tests {
         }
     }
 
-    // A `via` route action to a remote next hop.
+    // A `via` route action to a client next hop.
     fn via(eid: &str) -> RouteAction {
         RouteAction {
             action: Some(Action::Via(eid.to_string())),
@@ -644,18 +644,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_sdk_roundtrip() {
         let harness = harness().await;
-        let remote =
+        let client =
             crate::client::BpaClient::new(format!("http://{}", harness.address), TaskPool::new())
                 .unwrap();
 
         let agent = Arc::new(SdkAgent {
             sink: hardy_async::sync::spin::Once::new(),
         });
-        let node_ids = remote
+        let handle = client
             .register_routing_agent("sdk-agent".to_string(), agent.clone())
             .await
             .unwrap();
-        assert_eq!(node_ids.len(), 1);
+        assert_eq!(handle.id().len(), 1);
 
         let sink = agent.sink.get().unwrap();
         let pattern: EidPattern = "ipn:2.*".parse().unwrap();
