@@ -2,7 +2,7 @@
 
 The embedder's extension seam on the bundle pipeline: three payload-free filter kinds, registered in construction-frozen packs, run inline at four hook points.
 
-> **Status.** This document describes the implemented registration surface, filter kinds, and engine (the filter redesign's Phase 2, per [`refactor_plan.md`](refactor_plan.md)). Two settled parts of the design are not yet implemented and are flagged where they appear: the repositioning of the Ingress chain onto the pre-drain gate together with [restart re-admission](#restart-re-admission) (Phase 3), and the [scanner component](#payload-inspection-is-a-component-not-a-filter-kind) (Phase 4). The `class`/`route_key` classification fields arrive with the policy and routing tranches ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md), [`routing_table_redesign.md`](routing_table_redesign.md)).
+> **Status.** This document describes the implemented registration surface, filter kinds, and engine (the filter redesign's Phase 2, per [`refactor_plan.md`](refactor_plan.md)). The Ingress chain runs at the pre-drain gate (the Phase-3 repositioning landed with the ingress-spool tranche). Two settled parts of the design are not yet implemented and are flagged where they appear: [restart re-admission](#restart-re-admission) (Phase 3), and the [scanner component](#payload-inspection-is-a-component-not-a-filter-kind) (Phase 4). The `class`/`route_key` classification fields arrive with the policy and routing tranches ([`policy_subsystem_redesign.md`](policy_subsystem_redesign.md), [`routing_table_redesign.md`](routing_table_redesign.md)).
 
 ## The governing constraint: a closed-source server on an unmodified open `bpa`
 
@@ -36,9 +36,9 @@ Anything that appears to want runtime registration is evidence it is a component
 
 ## Hook points: the pipeline enumerated
 
-The evidence base for the taxonomy. Every processing point in the in→out pipeline, classified by (a) read or write, (b) externally pluggable. Stage names follow the processing blocks of [`queue_architecture.md`](queue_architecture.md); function references are current `dispatcher/` code. The ★ hook rows show the *designed* positions; today the registered Ingress chain runs post-store in `ingress_bundle` (before the `Dispatching` checkpoint), and Phase 3 moves it onto the pre-drain gate where the config-gated built-ins already sit. The other three hooks are at their designed positions.
+The evidence base for the taxonomy. Every processing point in the in→out pipeline, classified by (a) read or write, (b) externally pluggable. Stage names follow the processing blocks of [`queue_architecture.md`](queue_architecture.md); function references are current `dispatcher/` code. All four ★ hook rows are at their designed positions (the Ingress chain runs at the pre-drain gate, beside the config-gated built-ins).
 
-**In from a peer** (Ingest block — `receive_bundle` → `process_received_bundle` → `ingress_bundle`):
+**In from a peer** (Ingest block — `receive_bundle` → `process_received_bundle`):
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|
@@ -48,8 +48,8 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Extension fields → metadata wire cache | write (meta) | no |
 | Pre-drain gate: lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`) | read (reject) | no — spec/config |
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
-| Payload drain/spool | write (accumulate) | no |
-| Finalize: deferred block-1 BIB, §5.1.1 failure-drop, removal rewrites | **write (bytes)** | no — parser/BPSec owns |
+| Payload drain/spool through `TailReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
+| §5.1.1 failure-drops + unrecognised-block removals — *scheduled* in `to_remove` metadata, applied per attempt at the output doors; stored bytes stay as-received | write (meta) | no |
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
 | Enqueue to Dispatch | queue op | no |
 
@@ -112,7 +112,7 @@ Three kinds, defined in `bpa/src/filter/mod.rs` (`Verifier`, `Classifier`, `Rewr
 
 The two mutating kinds are duals by scope: the **Classifier** (inputs) writes *node-scoped* annotations — metadata this node's own downstream consumes; the **Rewriter** (egress) writes *network-scoped* annotations — extension blocks the next hops consume. A rule whose effect is local needs a delta; a rule whose effect must travel needs a block.
 
-All three kinds are payload-free and therefore **streaming-immune**: at ingress, Verifiers and Classifiers need only the header blocks (plus any declared payload peek), and when the full streaming gate lands (`streaming_pipeline_design.md` §5.4/§5.7) they ride it unchanged; the Rewriter edits header blocks, which are resident at ClaSend where the per-hop rewrite already operates, while the payload streams past untouched. There is no late ingress pass — an early/late Ingress split would exist only to serve in-pipeline payload inspection, and with none there is nothing a late pass could see that the pre-drain pass cannot.
+All three kinds are payload-free and therefore **streaming-immune**: at ingress, Verifiers and Classifiers need only the header blocks (plus any declared payload peek) and ride the pre-drain gate unchanged (`streaming_pipeline_design.md` §5.4; the §5.7 tee'd spool is still to come); the Rewriter edits header blocks, which are resident at ClaSend where the per-hop rewrite already operates, while the payload streams past untouched. There is no late ingress pass — an early/late Ingress split would exist only to serve in-pipeline payload inspection, and with none there is nothing a late pass could see that the pre-drain pass cannot.
 
 The Classifier returns a *delta* rather than taking `&mut metadata` deliberately: the engine applies it, filters never touch `bundle.metadata` directly, the boundary stays clean for closed-source implementors, and delta application is idempotent — which the queue architecture's at-least-once semantics require of every processing block. A Classifier **sees the deltas applied by preceding links** of the same pass: the engine applies each delta before the next invocation.
 
@@ -124,7 +124,7 @@ The Rewriter's execution model is **in-memory, per transmission attempt** — ex
 
 | Hook | Processing block | Position | Verifier | Classifier | Rewriter |
 |---|---|---|:--:|:--:|:--:|
-| **Ingress** | Ingest | designed: pre-drain, pre-store (at the gate); today: post-store, pre-dispatch | ✓ | ✓ | — |
+| **Ingress** | Ingest | pre-drain, pre-store (at the gate) | ✓ | ✓ | — |
 | **Originate** | Originate | pre-store, in-memory | ✓ | ✓ | — |
 | **Egress** | ClaSend | after per-hop rewrite, before BPSec | ✓ | — | ✓ |
 | **Deliver** | Deliver | before payload decrypt | ✓ | — | ✓ (transport-block strip) |
@@ -327,7 +327,7 @@ The fourth, **latest-only delivery, is deliberately not filter material** — an
 
 ## Open items
 
-- **Drop reporting from Originate/Egress/Deliver Verifiers.** Gate-pattern reporting is defined for Ingress; Phase 2 keeps today's per-hook behaviour (Originate returns the reason to the service; Egress/Deliver drop with reason or delete). The formal semantics land with Phase 3's repositioning, alongside the reception-report reason-code fix ledgered in [`TODO.md`](TODO.md).
+- **Drop reporting from Originate/Egress/Deliver Verifiers.** Gate-pattern reporting is defined (and implemented) for Ingress; the other hooks keep their per-hook behaviour (Originate returns the reason to the service; Egress/Deliver drop with reason or delete). The formal semantics land with the rest of Phase 3, alongside the reception-report reason-code fix ledgered in [`TODO.md`](TODO.md).
 - **Scanner component.** Queue/verdict shape: a new registry row + queue wiring — how much lands with the queue-architecture work vs later; the provenance-chained shape waits on the virtual-CLA re-forward entry point in the routing work.
 - **Fixed-vs-pluggable split for stripping the standard transport blocks at Deliver.** The RFC-defined blocks (Previous Node, Hop Count, Bundle Age) may be stripped by fixed machinery; the pluggable Deliver Rewriter targets embedder-defined transport blocks. The fixed strip is Phase 3 material.
 - **Intra-chain classification reads.** Whether a later Classifier should read a predecessor's *pending* class assignment through the reader (it currently sees applied deltas, which is sufficient for slots); revisit when `class` arrives with the policy tranche.
@@ -336,10 +336,10 @@ The fourth, **latest-only delivery, is deliberately not filter material** — an
 
 The working task list is [`refactor_plan.md`](refactor_plan.md). Phase 2 — the kinds, packs, slots, editor, engine swap, and dissolution of the built-in filters — is complete. Remaining:
 
-- **Phase 3** — move the Ingress chain onto the pre-drain gate; formal Originate/Egress/Deliver drop semantics; restart re-admission of stored bundles. Early Drop then skips drain + store entirely: for a rejected 1 GB bundle the BPA has received only the header blocks (`streaming_pipeline_design.md` §5.4).
+- **Phase 3 (remaining)** — formal Originate/Egress/Deliver drop semantics; restart re-admission of stored bundles. The Ingress-chain move onto the pre-drain gate landed with the ingress-spool tranche: an early Drop skips drain + store entirely, so for a rejected 1 GB bundle the BPA has received only the header blocks (`streaming_pipeline_design.md` §5.4).
 - **Phase 4** — scanner/verdict component and the virtual-CLA re-forward entry point. Waits on the queue-architecture and routing/RIB work; build when a consumer exists.
 
-When the full streaming gate lands (`streaming_pipeline_design.md` §5.4/§5.7) the Ingress pass moves onto the accumulation buffer before any spool opens — the payload-free signatures make that a no-op for filter authors.
+The Ingress pass runs on the accumulation buffer before any spool opens — the payload-free signatures made that a no-op for filter authors, as designed.
 
 ## Testing
 

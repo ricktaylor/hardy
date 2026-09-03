@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Incremental payload-BIB verification for streaming ingress: `bpsec::bib::Operation::begin_verify` returns a `bpsec::bib::Verifier` pre-fed with every header-resident IPPT part; the caller feeds the payload's block-type-specific data as it streams (`update`) and settles with `finish` (constant-time tag compare). The verifier owns everything it needs — including key material *copied* into the MAC state, the recorded exception to keeping raw keys out of async scopes — so it is `Send` and may cross `await` points and task boundaries. `checks::begin_payload_verification` begins one verifier per deferred payload BIB (`VerifyFacts::deferred_bibs`) from header material alone, mirroring the resident path's skip rules (BCB-covered payload, `NoKey`).
+
+### Changed
+- **BREAKING:** `checks::verify_payload` is removed. Callers holding deferred payload-BIB op-sets settle them incrementally via `checks::begin_payload_verification` + `bib::Verifier` — no resident payload buffer is required, which is the point.
+
 ### Fixed
 - A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
 

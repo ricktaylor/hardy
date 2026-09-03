@@ -386,6 +386,14 @@ RFC 9173 §3.8.2 is explicit: the HMAC key is derived from the single wrapped-ke
 
 Latent, not a runtime bug: the BPA never signs, and the `bundle sign` CLI signs a single block per invocation, so no multi-target BIB is produced by shipped paths. Fix on the bpsec-editor work rather than as a standalone patch.
 
+## Key-material zeroization gaps (ingress-spool key review, 2026-09-03)
+
+Two gaps found while auditing what key material the streaming ingress carries across `await` points (answer: none — the raw CEK copy is confined to `begin_verify`'s sync scope and wiped, and only key-*derived*, fixed-size MAC state rides the drain). Both gaps are in the material that *stays behind*, and both grow with the big-key security contexts to come (RSA/PQC key sizes):
+
+**`Key` storage is never wiped.** `key::Type::OctetSequence { key: Box<[u8]> }` holds the configured long-lived key bytes in a plain `Box`, so every `KeySet` (and each per-bundle clone a `KeyProvider` hands out) leaves unwiped key material behind on drop — while the transient copies derived from it are scrupulously `Zeroizing`. Make the stored form `Zeroizing<Box<[u8]>>` (or `impl ZeroizeOnDrop for Key`); serde and the JWK decode path need the same treatment so intermediate decode buffers don't reintroduce the leak.
+
+**`hmac`'s `zeroize` feature is off.** `bpv7/Cargo.toml` enables `aes-gcm`'s `zeroize` feature but not `hmac`'s (`zeroize = ["digest/zeroize"]` in hmac 0.13), so the ipad/opad key-derived digest state inside every `Hmac` — including the state a streaming `bib::Verifier` carries across the ingress drain — is not wiped on drop. One-line feature addition; verify the transitive `digest`/`block-buffer` impls actually cover `HmacCore` before claiming the property.
+
 ## bpv7-parse review triage (2026-08-19)
 
 Open items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-parse-review.md`, per-finding dispositions inline there) that are fixed nowhere in the refactor train. The behavioural items (E3 coverage-clearing, the `remove_blocks` screen and Maybe pull-back, E4's override-clearing, E10's checked flatten, the E11e removed-set, the dead error variants, and the semantic_eq / checks contract docs) landed on this branch on 2026-08-19; what follows is the remainder. The E3 CRC-restoration sliver was ruled intentional-as-is on 2026-08-25 (an unprocessable BIB never made a checkable integrity statement, so wholesale removal restores no CRC — rationale documented on `BPSecEditor::remove_integrity` and at the `remove_block_inner` coverage-clearing site), and the E8 release note landed in the crate changelog; both items are closed.
