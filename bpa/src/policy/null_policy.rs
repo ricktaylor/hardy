@@ -8,6 +8,10 @@ pub struct EgressController {
 
 #[async_trait]
 impl policy::EgressController for EgressController {
+    fn queue_for(&self) -> u32 {
+        0
+    }
+
     async fn forward(&self, _queue: u32, bundle: bundle::Bundle) {
         self.queue.forward(bundle).await
     }
@@ -36,10 +40,6 @@ impl EgressPolicy {
 impl policy::EgressPolicy for EgressPolicy {
     fn queue_count(&self) -> core::num::NonZeroU32 {
         core::num::NonZeroU32::MIN
-    }
-
-    fn classify(&self, _flow_label: Option<u32>) -> u32 {
-        0
     }
 
     async fn new_controller(

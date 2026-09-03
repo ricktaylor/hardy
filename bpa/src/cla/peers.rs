@@ -12,17 +12,18 @@ struct PeerInner {
     // One poller per policy queue, indexed by the queue index — queue 0
     // always exists (`EgressPolicy::queue_count` is non-zero).
     queues: Vec<storage::channel::Sender>,
+    // This peer's controller: owns the queue assignment (`queue_for`), so
+    // the hot forwarding path touches no shared policy state.
+    controller: Arc<dyn policy::EgressController>,
 }
 
 pub struct Peer {
-    cla: Weak<registry::Cla>,
     inner: hardy_async::sync::spin::Once<PeerInner>,
 }
 
 impl Peer {
-    pub fn new(cla: Weak<registry::Cla>) -> Self {
+    pub fn new() -> Self {
         Self {
-            cla,
             inner: hardy_async::sync::spin::Once::new(),
         }
     }
@@ -62,7 +63,7 @@ impl Peer {
             ));
         }
 
-        self.inner.call_once(|| PeerInner { queues });
+        self.inner.call_once(|| PeerInner { queues, controller });
     }
 
     fn start_queue_poller(
@@ -99,19 +100,16 @@ impl Peer {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        // Every bundle classifies into a policy queue (label-less bundles
-        // included).
-        let Some(cla) = self.cla.upgrade() else {
-            return Err(bundle);
-        };
-        let queue = cla.policy.classify(bundle.metadata.writable.flow_label);
-
         // The peer is published into the PeerTable before start() initialises
         // the queues, so a forward may race ahead of initialisation. Return the
         // bundle for re-routing rather than blocking on an uninitialised cell.
         let Some(inner) = self.inner.get() else {
             return Err(bundle);
         };
+
+        // The per-peer controller owns the queue assignment; nothing on
+        // this path touches shared policy state.
+        let queue = inner.controller.queue_for();
         // An out-of-range index is a policy bug: clamp to queue 0, which
         // always exists.
         let queue = inner.queues.get(queue as usize).unwrap_or_else(|| {

@@ -13,6 +13,16 @@ pub mod null_policy;
 /// This is often implemented by a CLA itself or by a policy manager.
 #[async_trait]
 pub trait EgressController: Send + Sync {
+    /// The policy queue the next bundle is assigned to — the controller
+    /// owns the mapping onto its own queues, per peer (this instance's
+    /// scope), so per-peer scheduler state lives where it belongs. Every
+    /// bundle is assigned somewhere: the returned index is in
+    /// `0..queue_count()`, and an out-of-range index is a policy bug the
+    /// caller clamps to queue 0 and logs. The traffic-class parameter
+    /// arrives with the policy tranche (`policy_subsystem_redesign.md`:
+    /// this is the interior mapping of the future `FlowController::push`).
+    fn queue_for(&self) -> u32;
+
     /// Forwards a bundle from the given policy queue (an index in
     /// `0..queue_count()`).
     async fn forward(&self, queue: u32, bundle: bundle::Bundle);
@@ -29,14 +39,8 @@ pub trait EgressPolicy: Send + Sync {
     /// to classify into (the null policy's single FIFO). Queue indices are
     /// the policy's own naming: relative priority and scheduling between
     /// queues are internal policy decisions — index 0 is only guaranteed to
-    /// exist (it is the clamp target for an out-of-range classify).
+    /// exist (it is the clamp target for an out-of-range assignment).
     fn queue_count(&self) -> core::num::NonZeroU32;
-
-    /// Classifies a bundle by its flow label into an egress queue index.
-    /// Every bundle classifies somewhere: the returned index is in
-    /// `0..queue_count()`. An out-of-range index is a policy bug; the
-    /// caller clamps it to queue 0 and logs.
-    fn classify(&self, _flow_label: Option<u32>) -> u32;
 
     /// Creates a new [`EgressController`] that implements this policy for a given CLA.
     ///
@@ -65,16 +69,24 @@ pub trait EgressQueue: Send + Sync {
 mod tests {
     use super::*;
 
-    // The null policy is one total queue: every flow label classifies to
-    // queue 0, in range of `queue_count()` as the contract requires.
-    #[test]
-    fn null_policy_is_one_total_queue() {
+    // The null policy is one total queue: the factory declares it, and the
+    // controller's mapping assigns every bundle to it, in range of
+    // `queue_count()` as the contract requires.
+    #[tokio::test]
+    async fn null_policy_is_one_total_queue() {
         let policy = null_policy::EgressPolicy::new();
         assert_eq!(policy.queue_count().get(), 1);
-        for label in [None, Some(0), Some(1), Some(42), Some(u32::MAX)] {
-            let queue = policy.classify(label);
-            assert_eq!(queue, 0);
-            assert!(queue < policy.queue_count().get());
+
+        struct NullQueue;
+        #[async_trait]
+        impl EgressQueue for NullQueue {
+            async fn forward(&self, _bundle: bundle::Bundle) {}
         }
+        let queues: HashMap<Option<u32>, Arc<dyn EgressQueue>> =
+            [(None, Arc::new(NullQueue) as Arc<dyn EgressQueue>)].into();
+        let controller = policy.new_controller(queues).await;
+        let queue = controller.queue_for();
+        assert_eq!(queue, 0);
+        assert!(queue < policy.queue_count().get());
     }
 }
