@@ -25,8 +25,9 @@ pub enum BundleStatus {
     ForwardPending {
         /// Identifier of the CLA peer this bundle is queued for.
         peer: u32,
-        /// Optional queue index within the peer's egress queues.
-        queue: Option<u32>,
+        /// The policy queue index within the peer's egress queues
+        /// (`0..EgressPolicy::queue_count()`; queue 0 always exists).
+        queue: u32,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained
     /// until the CLA reports the outcome via `Sink::transfer_outcome` or the

@@ -247,10 +247,7 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     let earlier = now - time::Duration::seconds(100);
     let later = now + time::Duration::seconds(100);
 
-    let status = BundleStatus::ForwardPending {
-        peer: 42,
-        queue: Some(0),
-    };
+    let status = BundleStatus::ForwardPending { peer: 42, queue: 0 };
 
     let bundle_a = fixtures::bundle_with_status(status.clone(), earlier);
     let bundle_b = fixtures::bundle_with_status(status.clone(), later);
@@ -284,18 +281,9 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
 pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
     let now = time::OffsetDateTime::now_utc();
 
-    let status_a = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: Some(0),
-    };
-    let status_b = BundleStatus::ForwardPending {
-        peer: 2,
-        queue: Some(0),
-    };
-    let status_c = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: Some(1),
-    };
+    let status_a = BundleStatus::ForwardPending { peer: 1, queue: 0 };
+    let status_b = BundleStatus::ForwardPending { peer: 2, queue: 0 };
+    let status_c = BundleStatus::ForwardPending { peer: 1, queue: 1 };
 
     let bundle_a = fixtures::bundle_with_status(status_a.clone(), now);
     let bundle_b = fixtures::bundle_with_status(status_b, now);
@@ -434,11 +422,11 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
 
     let status_100 = BundleStatus::ForwardPending {
         peer: 100,
-        queue: Some(0),
+        queue: 0,
     };
     let status_200 = BundleStatus::ForwardPending {
         peer: 200,
-        queue: Some(0),
+        queue: 0,
     };
 
     let bundle_a = fixtures::bundle_with_status(status_100, now);

@@ -1,15 +1,14 @@
-use tracing::warn;
-
 use super::*;
 
-/// A pass-through egress controller that forwards all bundles to a single queue.
+/// A pass-through egress controller: every bundle transmits on the next
+/// free lane.
 pub struct EgressController {
     queue: Arc<dyn policy::EgressQueue>,
 }
 
 #[async_trait]
 impl policy::EgressController for EgressController {
-    async fn forward(&self, _queue: Option<u32>, bundle: bundle::Bundle) {
+    async fn forward(&self, _queue: u32, bundle: bundle::Bundle) {
         self.queue.forward(bundle).await
     }
 }
@@ -21,7 +20,8 @@ impl policy::EgressQueue for EgressController {
     }
 }
 
-/// A no-op egress policy: zero priority queues, all bundles go to the default FIFO queue.
+/// The null egress policy: one total FIFO queue, no prioritisation, no lane
+/// pinning — it applies no policy.
 #[derive(Default)]
 pub struct EgressPolicy {}
 
@@ -34,30 +34,27 @@ impl EgressPolicy {
 
 #[async_trait]
 impl policy::EgressPolicy for EgressPolicy {
-    fn queue_count(&self) -> u32 {
-        0
+    fn queue_count(&self) -> core::num::NonZeroU32 {
+        core::num::NonZeroU32::MIN
     }
 
-    fn classify(&self, _flow_label: Option<u32>) -> Option<u32> {
-        None
+    fn classify(&self, _flow_label: Option<u32>) -> u32 {
+        0
     }
 
     async fn new_controller(
         &self,
         queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
     ) -> Arc<dyn policy::EgressController> {
-        // A CLA may declare explicit egress lanes (`Cla::lane_count`) — a
-        // CLA-side shape declaration, not this policy's contract, and on the
-        // v1 wire a remote CLA's to make. This policy classifies nothing
-        // onto them, so the declared lanes sit unused and every bundle
-        // forwards on the default queue.
-        if queues.len() > 1 {
-            warn!(
-                "Null egress policy ignoring {} declared CLA lanes",
-                queues.len() - 1
-            );
-        }
-        let queue = queues.get(&None).trace_expect("No None queue?!?").clone();
+        // Applying no policy means imposing no lane constraint: the one
+        // queue transmits with the next-free-lane directive (`None`), so a
+        // multi-lane CLA still fans across its idle lanes. Any pinned
+        // per-lane queues a CLA's declaration created simply sit unused —
+        // pinning is what a real policy does when it wants flow affinity.
+        let queue = queues
+            .get(&None)
+            .trace_expect("No next-free queue?!?")
+            .clone();
         Arc::new(EgressController { queue })
     }
 }
@@ -80,12 +77,12 @@ mod tests {
         }
     }
 
-    // A CLA declaring explicit egress lanes must not panic the null policy:
-    // the declaration is CLA-side shape (remote, once the v1 wire carries
-    // `lane_count`), so the lanes sit unused and every bundle — whatever
-    // queue index it arrives with — forwards on the default queue.
+    // A CLA declaring pinned lanes must not panic the null policy (remote,
+    // once the v1 wire carries `lane_count`): its single queue transmits
+    // with the next-free directive, so the pinned endpoints stay idle and
+    // every bundle — whatever queue index it arrives with — goes next-free.
     #[tokio::test]
-    async fn declared_lanes_are_tolerated_on_the_default_queue() {
+    async fn declared_lanes_are_tolerated_on_the_next_free_endpoint() {
         let (tx, rx) = flume::unbounded();
         let mut queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> = HashMap::new();
         for lane in [None, Some(0), Some(1)] {
@@ -113,12 +110,12 @@ mod tests {
             status: bundle::BundleStatus::New,
         };
 
-        controller.forward(Some(1), record).await;
+        controller.forward(1, record).await;
         assert_eq!(
-            rx.recv().expect("a queue received the bundle"),
+            rx.recv().expect("an endpoint received the bundle"),
             None,
-            "forwarded on the default queue"
+            "transmitted with the next-free-lane directive"
         );
-        assert!(rx.is_empty(), "no declared lane received anything");
+        assert!(rx.is_empty(), "no pinned endpoint received anything");
     }
 }

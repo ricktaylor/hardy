@@ -163,7 +163,7 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
         BundleStatus::New => (0, None, None, None),
         BundleStatus::Waiting => (1, None, None, None),
         BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer as i64), queue.map(|q| q as i64), None)
+            (2, Some(*peer as i64), Some(*queue as i64), None)
         }
         BundleStatus::AduFragment { source, timestamp } => (
             3,
@@ -195,7 +195,7 @@ fn to_status(
         1 => Some(BundleStatus::Waiting),
         2 => Some(BundleStatus::ForwardPending {
             peer: param1? as u32,
-            queue: param2.map(|q| q as u32),
+            queue: param2? as u32,
         }),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
@@ -541,10 +541,8 @@ impl MetadataStorage for SqliteStorage {
             "Status code mismatch"
         );
         debug_assert!(
-            from_status(&BundleStatus::ForwardPending {
-                peer,
-                queue: Some(0)
-            }) == (2, Some(peer as i64), Some(0), None),
+            from_status(&BundleStatus::ForwardPending { peer, queue: 0 })
+                == (2, Some(peer as i64), Some(0), None),
             "Status code mismatch"
         );
 
