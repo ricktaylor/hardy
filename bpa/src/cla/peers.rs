@@ -8,7 +8,7 @@ use super::*;
 // 3. No blocking/iteration while holding lock
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
-struct PeerInner {
+pub struct Peer {
     // One poller per policy queue, indexed by the queue index — queue 0
     // always exists (`EgressPolicy::queue_count` is non-zero).
     queues: Vec<storage::channel::Sender>,
@@ -17,20 +17,14 @@ struct PeerInner {
     controller: Arc<dyn policy::EgressController>,
 }
 
-pub struct Peer {
-    inner: hardy_async::sync::spin::Once<PeerInner>,
-}
-
 impl Peer {
-    pub fn new() -> Self {
-        Self {
-            inner: hardy_async::sync::spin::Once::new(),
-        }
-    }
-
+    /// Builds the peer complete — controller and per-queue pollers — and
+    /// returns it ready to forward. Publication into the [`PeerTable`]
+    /// happens strictly after construction ([`PeerTable::publish`]), so a
+    /// `Peer` that is reachable is a `Peer` that works: there is no
+    /// half-built state to guard against.
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
-        &self,
         poll_channel_depth: usize,
         cla: Arc<registry::Cla>,
         peer: u32,
@@ -38,7 +32,7 @@ impl Peer {
         store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
-    ) {
+    ) -> Arc<Self> {
         let controller = cla
             .policy
             .new_controller(egress_queue::new_queue_set(
@@ -63,7 +57,7 @@ impl Peer {
             ));
         }
 
-        self.inner.call_once(|| PeerInner { queues, controller });
+        Arc::new(Self { queues, controller })
     }
 
     fn start_queue_poller(
@@ -100,21 +94,14 @@ impl Peer {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        // The peer is published into the PeerTable before start() initialises
-        // the queues, so a forward may race ahead of initialisation. Return the
-        // bundle for re-routing rather than blocking on an uninitialised cell.
-        let Some(inner) = self.inner.get() else {
-            return Err(bundle);
-        };
-
         // The per-peer controller owns the queue assignment; nothing on
         // this path touches shared policy state.
-        let queue = inner.controller.queue_for();
+        let queue = self.controller.queue_for();
         // An out-of-range index is a policy bug: clamp to queue 0, which
         // always exists.
-        let queue = inner.queues.get(queue as usize).unwrap_or_else(|| {
+        let queue = self.queues.get(queue as usize).unwrap_or_else(|| {
             warn!("Egress policy classified a bundle into out-of-range queue {queue}");
-            &inner.queues[0]
+            &self.queues[0]
         });
 
         match queue.send(bundle).await {
@@ -124,12 +111,7 @@ impl Peer {
     }
 
     fn close(&self) {
-        // An orphaned peer (added to the PeerTable but never started, e.g. a
-        // duplicate address) has no queues, so closing is a no-op.
-        let Some(inner) = self.inner.get() else {
-            return;
-        };
-        for tx in &inner.queues {
+        for tx in &self.queues {
             tx.close();
         }
     }
@@ -138,6 +120,11 @@ impl Peer {
 #[derive(Default)]
 struct PeerTableInner {
     peers: HashMap<u32, Arc<Peer>>,
+    // Ids minted by `reserve` but not yet published. Cleared by `publish`
+    // (the normal path) or `unreserve` (an abandoned claim); `remove` never
+    // touches it, so a concurrent removal cannot let `reserve` re-mint an
+    // id whose peer is still mid-construction.
+    reserved: HashSet<u32>,
     next: u32,
 }
 
@@ -152,18 +139,35 @@ impl PeerTable {
         }
     }
 
-    pub fn insert(&self, peer: Arc<Peer>) -> u32 {
+    /// Mint a fresh peer id without publishing anything: the id is
+    /// reserved against reuse until [`publish`](Self::publish) (or
+    /// [`unreserve`](Self::unreserve), if the claim is abandoned before a
+    /// peer is built) clears it.
+    pub fn reserve(&self) -> u32 {
         // sync::spin::RwLock::write() returns guard directly (no Result)
         let mut inner = self.inner.write();
         let peer_id = loop {
             inner.next = inner.next.wrapping_add(1);
-            if !inner.peers.contains_key(&inner.next) {
+            if !inner.peers.contains_key(&inner.next) && !inner.reserved.contains(&inner.next) {
                 break inner.next;
             }
         };
-
-        inner.peers.insert(peer_id, peer);
+        inner.reserved.insert(peer_id);
         peer_id
+    }
+
+    /// Release a reserved id whose peer was never built (a duplicate
+    /// address claim). Nothing was published, so there is nothing to close.
+    pub fn unreserve(&self, peer_id: u32) {
+        self.inner.write().reserved.remove(&peer_id);
+    }
+
+    /// Publish a fully-constructed peer under its reserved id — the only
+    /// way a peer becomes reachable, and it is complete by construction.
+    pub fn publish(&self, peer_id: u32, peer: Arc<Peer>) {
+        let mut inner = self.inner.write();
+        inner.reserved.remove(&peer_id);
+        inner.peers.insert(peer_id, peer);
     }
 
     pub async fn remove(&self, peer_id: u32) {
