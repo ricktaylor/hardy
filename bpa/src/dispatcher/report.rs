@@ -4,42 +4,68 @@ use hardy_bpv7::status_report::{
 };
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
+    /// Report a bundle's reception and, for a rejected bundle, its deletion —
+    /// in **one** status report: an RFC 9171 §6.1.1 admin record carries
+    /// every assertion slot, so one report bundle does the work of two (the
+    /// same coalescing ION performs). Each assertion is gated on its own
+    /// request flag: `reason` is the §5.6 reception reason ("No additional
+    /// information", or Step 4's "Block unsupported" facts), and a `deletion`
+    /// reason adds the §5.10 assertion and takes over the record's one
+    /// reason-code slot — the deletion is the material event.
+    ///
+    /// Takes the parsed primary parts directly: a rejected bundle never
+    /// becomes a `bundle::Bundle` record.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.primary.id)))]
     pub(super) async fn report_bundle_reception(
         &self,
-        bundle: &bundle::Bundle,
+        bundle: &hardy_bpv7::Bundle,
+        received_at: time::OffsetDateTime,
         reason: ReasonCode,
+        deletion: Option<ReasonCode>,
     ) {
-        debug!("Bundle {} received", bundle.id());
+        debug!("Bundle {} received", bundle.primary.id);
 
-        // Check if a report is requested
-        if bundle.primary().flags.receipt_report_requested {
-            debug!(
-                "Reporting bundle reception to {}",
-                &bundle.primary().report_to
-            );
-            metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
-
-            self.dispatch_status_report(
-                hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
-                    BundleStatusReport {
-                        bundle_id: bundle.id().clone(),
-                        received: Some(StatusAssertion(
-                            if bundle.primary().flags.report_status_time {
-                                Some(bundle.metadata.received_at())
-                            } else {
-                                None
-                            },
-                        )),
-                        reason,
-                        ..Default::default()
-                    },
-                ))
-                .0,
-                &bundle.primary().report_to,
-            )
-            .await
+        let flags = &bundle.primary.flags;
+        let received = flags.receipt_report_requested;
+        let deletion = if flags.delete_report_requested {
+            deletion
+        } else {
+            None
+        };
+        if !received && deletion.is_none() {
+            return;
         }
+
+        debug!(
+            "Reporting bundle reception to {}",
+            &bundle.primary.report_to
+        );
+        if received {
+            metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
+        }
+        if deletion.is_some() {
+            metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
+        }
+
+        self.dispatch_status_report(
+            hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
+                BundleStatusReport {
+                    bundle_id: bundle.primary.id.clone(),
+                    received: received
+                        .then(|| StatusAssertion(flags.report_status_time.then_some(received_at))),
+                    deleted: deletion.map(|_| {
+                        StatusAssertion(
+                            flags.report_status_time.then(time::OffsetDateTime::now_utc),
+                        )
+                    }),
+                    reason: deletion.unwrap_or(reason),
+                    ..Default::default()
+                },
+            ))
+            .0,
+            &bundle.primary.report_to,
+        )
+        .await
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]

@@ -212,7 +212,11 @@ pub struct HeaderVerify {
     pub to_remove: HashSet<u64>,
     /// Reception-report reason chosen from the §A `report_on_failure` facts
     /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
-    /// `NoAdditionalInformation` when none fired.
+    /// `NoAdditionalInformation` when none fired. Carried on the reception
+    /// assertion whether the bundle is accepted or rejected downstream —
+    /// §5.6 Step 4's facts precede either outcome — though a reject's
+    /// deletion reason takes the report's one reason slot when both are
+    /// asserted.
     pub report_reason: ReasonCode,
     /// One incremental verifier per BIB op-set `checks::verify` left targeting
     /// the not-yet-resident payload (block 1), each paired with its BIB's
@@ -276,8 +280,8 @@ pub enum HeaderFailure {
     /// The accumulated stream crossed the caller's size bound.
     TooLarge { size: usize, max: usize },
     /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller emits a reception report with the reason,
-    /// then drops.
+    /// recoverable the caller reports the drop — reception then deletion,
+    /// the deletion citing the reason (RFC 9171 §5.6/§5.10) — then drops.
     Invalid(Option<(Bpv7Bundle, ReasonCode)>),
 }
 
@@ -371,8 +375,8 @@ where
     };
 
     // Header verification (§A–§D) against the resident bytes. On a keyed failure
-    // the recoverable `bundle` is returned so the caller need only emit a reception
-    // report; on success it moves into the returned `HeaderVerify`.
+    // the recoverable `bundle` is returned so the caller can report the drop;
+    // on success it moves into the returned `HeaderVerify`.
     let parse::Parsed {
         mut bundle,
         bcbs: bcb_ops,

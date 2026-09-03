@@ -1527,10 +1527,11 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
 }
 
 // The gate's reporting split: a hop-exhausted arrival with the report flags
-// set emits the §5.6/§5.10 reception + deletion report pair — the deletion
-// citing `HopLimitExceeded` — while an already-expired arrival with the same
-// flags emits nothing at all (anti-amplification: it is treated as if it
-// never arrived). Swapping the two gate branches fails both halves.
+// set emits the combined §5.6/§5.10 status report — one §6.1.1 record
+// asserting both reception and deletion, citing `HopLimitExceeded` — while
+// an already-expired arrival with the same flags emits nothing at all
+// (anti-amplification: it is treated as if it never arrived). Swapping the
+// two gate branches fails both halves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_reports_hop_exhaustion_but_not_expiry() {
     use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
@@ -1592,47 +1593,35 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
         cla::Acceptance::Accepted
     );
 
-    // Exactly the report pair comes out of the CLA — the bundle itself must
-    // not be forwarded. Both are admin records to the source.
-    let mut reception = None;
-    let mut deletion = None;
-    for _ in 0..2 {
-        // Event-driven wait; the timeout only bounds a regression.
-        let forwarded = tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            forwarded_rx.recv_async(),
-        )
-        .await
-        .expect("Timeout waiting for a status report")
-        .expect("Channel closed");
-        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
-        assert!(
-            parsed.bundle.primary.flags.is_admin_record,
-            "only status reports may leave the node for a gated bundle"
-        );
-        assert_eq!(parsed.bundle.primary.destination, remote_source);
-        let body = parsed
-            .bundle
-            .blocks
-            .get(&1)
-            .expect("report has a payload block")
-            .payload(&parsed.data)
-            .expect("report payload in bundle");
-        let AdministrativeRecord::BundleStatusReport(status) =
-            hardy_cbor::decode::parse(body).expect("report payload is an admin record");
-        assert_eq!(status.bundle_id.source, remote_source);
-        if status.received.is_some() {
-            reception = Some(status);
-        } else if status.deleted.is_some() {
-            deletion = Some(status);
-        } else {
-            panic!("status report asserts neither reception nor deletion");
-        }
-    }
-    let reception = reception.expect("reception report emitted");
-    assert_eq!(reception.reason, ReasonCode::NoAdditionalInformation);
-    let deletion = deletion.expect("deletion report emitted");
-    assert_eq!(deletion.reason, ReasonCode::HopLimitExceeded);
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a gated bundle"
+    );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::HopLimitExceeded);
 
     // An already-expired arrival with the same report flags: total silence.
     let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
@@ -1736,49 +1725,283 @@ async fn drain_failure_reports_reception_then_deletion() {
         "a complete-but-corrupt transfer is accepted and terminated, never refused"
     );
 
-    // Exactly the report pair comes out of the CLA — the corrupt bundle
-    // itself must not be forwarded. Both are admin records to the source.
-    let mut reception = None;
-    let mut deletion = None;
-    for _ in 0..2 {
-        // Event-driven wait; the timeout only bounds a regression.
-        let forwarded = tokio::time::timeout(
-            tokio::time::Duration::from_secs(5),
-            forwarded_rx.recv_async(),
-        )
-        .await
-        .expect("Timeout waiting for a status report")
-        .expect("Channel closed");
-        let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
-        assert!(
-            parsed.bundle.primary.flags.is_admin_record,
-            "only status reports may leave the node for a drain-dropped bundle"
-        );
-        assert_eq!(parsed.bundle.primary.destination, remote_source);
-        let body = parsed
-            .bundle
-            .blocks
-            .get(&1)
-            .expect("report has a payload block")
-            .payload(&parsed.data)
-            .expect("report payload in bundle");
-        let AdministrativeRecord::BundleStatusReport(status) =
-            hardy_cbor::decode::parse(body).expect("report payload is an admin record");
-        assert_eq!(status.bundle_id.source, remote_source);
-        if status.received.is_some() {
-            reception = Some(status);
-        } else if status.deleted.is_some() {
-            deletion = Some(status);
-        } else {
-            panic!("status report asserts neither reception nor deletion");
-        }
-    }
-    let reception = reception.expect("reception report emitted");
-    assert_eq!(reception.reason, ReasonCode::NoAdditionalInformation);
-    let deletion = deletion.expect("deletion report emitted");
-    assert_eq!(deletion.reason, ReasonCode::BlockUnintelligible);
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a drain-dropped bundle"
+    );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnintelligible);
 
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
     bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+}
+
+// A keyed header-pass failure with a recoverable bundle id — here an
+// unrecognised extension block flagged `delete_bundle_on_failure`, fatal at
+// the §A classify — is reported exactly like a gate or drain drop: one
+// status report asserting both reception and deletion, citing
+// `BlockUnsupported` (§5.6 Step 4's delete-bundle case). The transfer is
+// accepted: the content cannot become valid by resending.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn header_failure_reports_reception_then_deletion() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // A CLA with a peer for the remote node — the route for the reports
+    // (report-to defaults to the source).
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // A report-requesting bundle carrying an unrecognised block (type 999,
+    // block 2) flagged delete_bundle_on_failure, spliced between the primary
+    // and the payload.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_payload(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&2u64); // block number
+        a.emit(&0x04u64); // flags: delete_bundle_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(data[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&data[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + unknown.len());
+    modified.extend_from_slice(&data[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&data[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted,
+        "a complete-but-unsupported bundle is accepted and terminated, never refused"
+    );
+
+    // The single combined status report comes out of the CLA — reception and
+    // deletion asserted in one record; the bundle itself must not be
+    // forwarded. Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(
+        parsed.bundle.primary.flags.is_admin_record,
+        "only status reports may leave the node for a rejected bundle"
+    );
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert_eq!(status.bundle_id.source, remote_source);
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(status.deleted.is_some(), "deletion asserted");
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
+}
+
+// A rejected bundle that requested only reception reporting (no deletion
+// reports) still carries the §5.6 Step-4 facts on its reception-only status
+// report: an unrecognised `report_on_failure` block sets the reception
+// reason to `BlockUnsupported`, and a hop-exhausted gate drop must not
+// squash it to `NoAdditionalInformation` — with no deletion asserted, the
+// record's one reason slot belongs to the reception assertion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reception_only_reject_carries_step4_reason() {
+    use hardy_bpv7::status_report::{AdministrativeRecord, ReasonCode};
+
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let dest: Eid = "ipn:0.2.99".parse().unwrap();
+
+    // Hop-exhausted, reception-report-only bundle carrying an unrecognised
+    // block (type 999, block 3 — the builder's Hop Count block takes 2)
+    // flagged report_on_failure.
+    let (_, data) = Builder::new(remote_source.clone(), dest)
+        .with_flags(Flags {
+            receipt_report_requested: true,
+            ..Default::default()
+        })
+        .with_hop_count(&HopInfo { limit: 1, count: 2 })
+        .with_payload(Cow::Borrowed(b"opaque"))
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let unknown = emit_array(Some(5), |a| {
+        a.emit(&999u64); // unrecognised block type
+        a.emit(&3u64); // block number
+        a.emit(&0x02u64); // flags: report_on_failure
+        a.emit(&0u64); // CRC type: none
+        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+    });
+    assert_eq!(data[0], 0x9F, "bundle is an indefinite array");
+    let (_, primary_len) = skip_value(&data[1..], 16).expect("skip primary");
+    let insert = 1 + primary_len;
+    let mut modified = Vec::with_capacity(data.len() + unknown.len());
+    modified.extend_from_slice(&data[..insert]);
+    modified.extend_from_slice(&unknown);
+    modified.extend_from_slice(&data[insert..]);
+    let mut inbound = Bytes::from(modified);
+
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(Some(&remote_node), None, &mut inbound)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // One reception-only report: received asserted with the Step-4 reason,
+    // no deletion asserted (deletion reports were not requested).
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for a status report")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert!(parsed.bundle.primary.flags.is_admin_record);
+    assert_eq!(parsed.bundle.primary.destination, remote_source);
+    let body = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("report has a payload block")
+        .payload(&parsed.data)
+        .expect("report payload in bundle");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(body).expect("report payload is an admin record");
+    assert!(status.received.is_some(), "reception asserted");
+    assert!(
+        status.deleted.is_none(),
+        "no deletion asserted without the request flag"
+    );
+    assert_eq!(status.reason, ReasonCode::BlockUnsupported);
+
+    // The completed shutdown is the barrier proving nothing else left the
+    // node — one report bundle, and never the rejected bundle itself.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "exactly one report leaves the node"
+    );
 }
 
 // R-01: a single `Segment::Final` carrying a bundle whose declared payload is

@@ -101,9 +101,9 @@ impl Dispatcher {
     ) -> Received {
         // Pre-drain header pass: parse the header chain off the stream and run
         // keyed header verification — both in `bundle::parse`, before an oversized
-        // payload is spooled. `Err` carries an optional reception report to emit
-        // before dropping (reporting stays here — we own the machinery); a
-        // structural / truncation drop carries no recoverable bundle.
+        // payload is spooled. `Err` carries an optional recoverable bundle to
+        // report before dropping (reporting stays here — we own the machinery);
+        // a structural / truncation drop carries no recoverable bundle.
         // The cap as an in-memory bound: on a 32-bit target a cap beyond the
         // address space saturates — nothing larger could be buffered anyway.
         let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
@@ -126,8 +126,18 @@ impl Dispatcher {
             Err(parse::HeaderFailure::Invalid(report)) => {
                 let reason = match report {
                     Some((bundle, reason)) => {
-                        let bundle = bundle::Bundle::new(bundle, metadata);
-                        self.report_bundle_reception(&bundle, reason).await;
+                        // Complete but invalid, with a recoverable id: the
+                        // drop is reported like the sibling gate and drain
+                        // drops (RFC 9171 §5.6/§5.10). A structural failure
+                        // (`None`) has no id to report: the §4.1 discard,
+                        // outside the reception state machine.
+                        self.report_bundle_reception(
+                            &bundle,
+                            metadata.received_at(),
+                            ReasonCode::NoAdditionalInformation,
+                            Some(reason),
+                        )
+                        .await;
                         reason
                     }
                     None => ReasonCode::BlockUnintelligible,
@@ -153,25 +163,29 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return Received::Disposed;
             }
-            metadata.extensions = hv.extracted;
-            let bundle = bundle::Bundle::new(hv.bundle, metadata);
-            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
-                .await;
-            self.report_bundle_deletion(&bundle, reason).await;
+            self.report_bundle_reception(
+                &hv.bundle,
+                metadata.received_at(),
+                hv.report_reason,
+                Some(reason),
+            )
+            .await;
             return Received::Disposed;
         }
 
         // Config-gated RFC 9171 validity checks, at the same pre-drain seat
         // as the lifetime/hop gate: policy rejections that go beyond
         // structural validity (deployments may relax them), reported like
-        // any other gated drop — reception per §5.6, then deletion.
+        // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
             metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-            metadata.extensions = hv.extracted;
-            let bundle = bundle::Bundle::new(hv.bundle, metadata);
-            self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
-                .await;
-            self.report_bundle_deletion(&bundle, reason).await;
+            self.report_bundle_reception(
+                &hv.bundle,
+                metadata.received_at(),
+                hv.report_reason,
+                Some(reason),
+            )
+            .await;
             return Received::Disposed;
         }
 
@@ -194,8 +208,8 @@ impl Dispatcher {
         // cloned so the original stays available for the drain and the stored
         // record, while the real metadata moves through so a Classifier's
         // deltas survive. A chain drop here is
-        // pre-store — nothing was spooled — and is reported reception-then-
-        // deletion like the sibling gates above. A filter reading the
+        // pre-store — nothing was spooled — and is reported like the sibling
+        // gates above. A filter reading the
         // not-yet-resident payload gets the reader's not-resident `None`. The
         // clone and this whole block dissolve in the streaming leg, where the
         // chain reads the live prefix directly.
@@ -213,11 +227,13 @@ impl Dispatcher {
                 Ok(filter::ChainOutcome::Drop(record, reason)) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
-                    self.report_bundle_reception(&record, ReasonCode::NoAdditionalInformation)
-                        .await;
-                    if let Some(reason) = reason {
-                        self.report_bundle_deletion(&record, reason).await;
-                    }
+                    self.report_bundle_reception(
+                        &record.bundle,
+                        record.metadata.received_at(),
+                        report_reason,
+                        reason,
+                    )
+                    .await;
                     return Received::Disposed;
                 }
                 Err((record, e)) => {
@@ -225,10 +241,13 @@ impl Dispatcher {
                     // an internal inconsistency, since it parsed at reception.
                     error!("Ingress filter chain failed: {e}");
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
-                    self.report_bundle_reception(&record, ReasonCode::NoAdditionalInformation)
-                        .await;
-                    self.report_bundle_deletion(&record, ReasonCode::BlockUnintelligible)
-                        .await;
+                    self.report_bundle_reception(
+                        &record.bundle,
+                        record.metadata.received_at(),
+                        report_reason,
+                        Some(ReasonCode::BlockUnintelligible),
+                    )
+                    .await;
                     return Received::Disposed;
                 }
             }
@@ -297,19 +316,17 @@ impl Dispatcher {
                         // Complete but unacceptable: the transfer was
                         // accepted, so this node owns the bundle and
                         // terminates it — reported like the sibling gate
-                        // drops (reception then deletion per the bundle's
-                        // flags, RFC 9171 §5.6/§5.10). Nothing was stored:
+                        // drops (RFC 9171 §5.6/§5.10). Nothing was stored:
                         // the failure precedes the save below.
                         debug!("Streamed payload rejected: {failure}");
                         metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                        let bundle = bundle::Bundle {
-                            metadata,
-                            bundle,
-                            status: bundle::BundleStatus::New,
-                        };
-                        self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
-                            .await;
-                        self.report_bundle_deletion(&bundle, reason).await;
+                        self.report_bundle_reception(
+                            &bundle,
+                            metadata.received_at(),
+                            report_reason,
+                            Some(reason),
+                        )
+                        .await;
                         return Received::Disposed;
                     }
                 }
@@ -351,7 +368,13 @@ impl Dispatcher {
         // check: RFC 9171 §5.6 reports on reception, so a replayed/duplicate
         // bundle is still reported as received. (The Ingress chain already ran
         // at the pre-drain gate; a chain drop reported itself there.)
-        self.report_bundle_reception(&bundle, report_reason).await;
+        self.report_bundle_reception(
+            &bundle.bundle,
+            bundle.metadata.received_at(),
+            report_reason,
+            None,
+        )
+        .await;
 
         // Promote to the queued checkpoint before the single write. `New` is a
         // purely in-memory "under construction" marker: the chain ran at the
