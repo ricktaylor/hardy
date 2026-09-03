@@ -40,12 +40,13 @@ pub(crate) const TRANSFER_REQUEST_CAPACITY: usize = 2;
 // a later Unregister, with headroom.
 pub(crate) const SUBSCRIBE_REQUEST_CAPACITY: usize = 4;
 
-/// Errors constructing a [`BpaClient`]. Construction only configures the
-/// endpoint (connections are established lazily), so this is distinct
-/// from the per-surface registration errors the `register_*` methods
-/// return.
+/// Errors configuring a [`BpaClient`]. Construction never dials the
+/// endpoint (connections are established lazily), so only configuration
+/// can fail here; DNS, TCP, TLS, and HTTP/2 connection failures surface
+/// later, from the `register_*` calls and the sinks' operations, as the
+/// surface's own errors.
 #[derive(Debug, Error)]
-pub enum ConnectError {
+pub enum EndpointError {
     /// The endpoint does not convert to a tonic
     /// [`Endpoint`](tonic::transport::Endpoint): an invalid URI, or an
     /// unsupported scheme.
@@ -61,7 +62,11 @@ pub enum ConnectError {
 /// single session's event stream, its token-gated data-plane calls, and
 /// its in-band cancels all stay on one connection, while separate
 /// sessions spread across the pool so no single HTTP/2 state machine or
-/// TCP flow bounds aggregate throughput. See [`new_pool`].
+/// TCP flow bounds aggregate throughput. Sharding happens only when the
+/// session is created: an existing session is never migrated (its token
+/// and in-band cancels are per-connection state), so one very busy
+/// session can saturate its connection while others sit idle. See
+/// [`new_pool`].
 ///
 /// [`new_pool`]: BpaClient::new_pool
 ///
@@ -87,20 +92,26 @@ pub enum ConnectError {
 /// drop(app);
 /// ```
 ///
-/// `on_unregister` fires on the component whichever way the session
-/// ends, including BPA shutdown, connection loss, and the shutdown of
-/// the client's own [`TaskPool`]; the server
-/// closing the stream is the single source of truth, so a silent peer
-/// is only detected as fast as the transport reports it. [`new`]
-/// arms HTTP/2 keepalive to bound that detection; [`with_endpoint`]
-/// leaves it to the [`Endpoint`].
+/// `on_unregister` fires on the component exactly once, whichever way
+/// the session ends: explicit `unregister`, dropping the sink,
+/// connection loss, BPA shutdown, or the shutdown of the client's own
+/// [`TaskPool`]. (A pool shutdown racing a fresh registration is that
+/// last ending arriving early: the component may see `on_register`
+/// followed promptly by `on_unregister`.) The server closing the stream
+/// is the single source of truth, so a silent peer is only detected as
+/// fast as the transport reports it. [`new`] arms HTTP/2 keepalive to
+/// bound that detection; [`with_endpoint`] leaves it to the
+/// [`Endpoint`].
 ///
 /// [`new`]: BpaClient::new
 /// [`with_endpoint`]: BpaClient::with_endpoint
 ///
-/// Afterwards the session token is dead; registering again resumes,
-/// and deliveries that were announced but never collected are
-/// announced to the new registration.
+/// A registration is never re-created automatically: connection loss
+/// terminates it like any other ending, through `on_unregister`, and
+/// its session token is dead afterwards. The component (or its host)
+/// calls `register_*` again to resume, and deliveries that were
+/// announced but never acknowledged are announced to the new
+/// registration.
 #[derive(Clone, Debug)]
 pub struct BpaClient {
     // The connection pool; sessions are sharded round-robin across it by
@@ -130,7 +141,7 @@ impl BpaClient {
     /// [`new_pool`]: BpaClient::new_pool
     /// [`with_endpoint`]: BpaClient::with_endpoint
     /// [`default_endpoint`]: BpaClient::default_endpoint
-    pub fn new<D>(endpoint: D, tasks: TaskPool) -> Result<Self, ConnectError>
+    pub fn new<D>(endpoint: D, tasks: TaskPool) -> Result<Self, EndpointError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
@@ -145,6 +156,9 @@ impl BpaClient {
     /// flow-control window so a large transfer is not throttled to the
     /// fixed default window per round-trip, and a chunk-sized DATA frame
     /// cap so a transfer is not fragmented into many small frames.
+    /// Keepalive is transport liveness only: it detects a peer that is
+    /// unreachable at the HTTP/2 level, not a BPA that is unhealthy or
+    /// stalled.
     ///
     /// [`new`] and [`new_pool`] connect with exactly this. To adjust one
     /// setting without silently losing the others (say, the keepalive
@@ -154,14 +168,14 @@ impl BpaClient {
     /// [`new`]: BpaClient::new
     /// [`new_pool`]: BpaClient::new_pool
     /// [`with_endpoint`]: BpaClient::with_endpoint
-    pub fn default_endpoint<D>(endpoint: D) -> Result<Endpoint, ConnectError>
+    pub fn default_endpoint<D>(endpoint: D) -> Result<Endpoint, EndpointError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         Ok(endpoint
             .try_into()
-            .map_err(|e| ConnectError::InvalidEndpoint(e.into()))?
+            .map_err(|e| EndpointError::InvalidEndpoint(e.into()))?
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10))
             .keep_alive_while_idle(true)
@@ -189,7 +203,7 @@ impl BpaClient {
         endpoint: D,
         connections: NonZeroUsize,
         tasks: TaskPool,
-    ) -> Result<Self, ConnectError>
+    ) -> Result<Self, EndpointError>
     where
         D: TryInto<Endpoint>,
         D::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
@@ -243,6 +257,16 @@ impl BpaClient {
     fn next_channel(&self) -> Channel {
         let index = self.next.fetch_add(1, Ordering::Relaxed) % self.channels.len();
         self.channels[index].clone()
+    }
+
+    /// The size of the connection pool, for diagnostics and sizing
+    /// decisions: the `connections` given to [`new_pool`] or
+    /// [`with_endpoint_pool`], or one.
+    ///
+    /// [`new_pool`]: BpaClient::new_pool
+    /// [`with_endpoint_pool`]: BpaClient::with_endpoint_pool
+    pub fn connection_count(&self) -> usize {
+        self.channels.len()
     }
 
     /// Registers an application under an explicit service id. The
