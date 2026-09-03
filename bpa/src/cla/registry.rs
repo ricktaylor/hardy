@@ -338,7 +338,7 @@ impl ClaRegistry {
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
+        let peer = Arc::new(peers::Peer::new());
 
         // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
         // If the cla.peers entry already exists, we clean up the orphaned peer_id.
