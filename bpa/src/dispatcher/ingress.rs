@@ -6,13 +6,13 @@ use crate::{bundle::parse, cla::Segment, stream::Receiver};
 // The outcome of the shared receive pipeline, for the three in-feeds.
 //
 // `Dispatched` and `Disposed` are both *acceptance* (the bundle ran the
-// Ingress chain and was handed to the dispatch queue, or was dropped
+// Ingress chain and its routing decision was executed, or it was dropped
 // internally with reports); `Refused` is the one non-acceptance outcome — the
 // transfer could not be taken at all (truncation, the size cap) and its
 // custodian keeps responsibility.
 pub(super) enum Received {
     /// Admitted: the bundle ran the Ingress chain, was written once to the
-    /// metadata store, and was handed to the dispatch queue.
+    /// metadata store, and had the gate's routing decision executed.
     Dispatched,
     /// Accepted and disposed of internally (invalid, gate-rejected,
     /// chain-dropped, duplicate) — reports emitted where possible; nothing
@@ -39,10 +39,10 @@ impl Dispatcher {
     //
     // # Bundle State
     //
-    // - Initial status: `New`
-    // - Next: `process_received_bundle()` runs the Ingress filter, writes the
-    //   record once at `Dispatching`, and hands it to the dispatch queue
-    //   (whose send swaps it to `DispatchPending`).
+    // - `process_received_bundle()` runs the Ingress filter and the gate
+    //   route lookup, writes the record once at `Dispatching`, and executes
+    //   the routing decision directly — fresh arrivals do not transit the
+    //   dispatch queue (`DispatchPending` belongs to the re-dispatch paths).
     //
     // See [Bundle State Machine Design](../../docs/bundle_state_machine_design.md)
     // for the complete state transition diagram.
@@ -76,8 +76,8 @@ impl Dispatcher {
     }
 
     // Shared bundle processing: parse and validate the headers, gate them
-    // (the Ingress chain among the gate's checks), drain and store the
-    // payload, report, and hand off to the dispatch queue.
+    // (the Ingress chain and the route lookup among the gate's checks), drain
+    // and store the payload, report, and execute the routing decision.
     //
     // Called from the CLA ingress path (`receive_bundle`), the ADU
     // reassembly path (`reassemble`), and restart orphan recovery. Handles
@@ -85,7 +85,8 @@ impl Dispatcher {
     // counted, and dropped with status reports where possible (`Disposed`);
     // only truncation and the size cap refuse (`Refused`). An admitted
     // bundle runs the Ingress chain, is written once to the metadata store
-    // (the P1 checkpoint), and is queued for dispatch (`Dispatched`).
+    // (the P1 checkpoint), and has its gate routing decision executed
+    // (`Dispatched`).
     //
     // If `metadata.storage_name` is already set (reassembly/restart case),
     // the existing stored data is used. Otherwise (CLA case), the data is
@@ -200,9 +201,9 @@ impl Dispatcher {
 
         // Destructure the verified headers once, here at the gate: move the
         // decoded extension fields into metadata (a Classifier may read them),
-        // and keep the wire bundle, the begun payload-BIB verifiers, the
-        // scheduled §E removals, and the reception reason for the drain and
-        // store below. Nothing downstream needs `hv` whole.
+        // and keep the begun payload-BIB verifiers, the scheduled §E removals,
+        // and the reception reason for the drain and store below. Nothing
+        // downstream needs `hv` whole.
         let parse::HeaderVerify {
             bundle,
             extensions,
@@ -212,49 +213,54 @@ impl Dispatcher {
         } = hv;
         metadata.extensions = extensions;
 
+        // The record under construction: built once here at the gate, it is
+        // the one object that travels through the chain, the route lookup,
+        // the drain, and the store below, mutated in place. It is born at
+        // `Dispatching` — the status it is persisted at — because nothing
+        // observes the record before the single insert below: only the
+        // finished, classified record ever reaches storage.
+        let bundle = bundle::Bundle {
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::Dispatching,
+        };
+
         // Ingress chain at the pre-drain gate, on the resident prefix.
-        // It runs synchronously on a throwaway record: the wire bundle is
-        // cloned so the original stays available for the drain and the stored
-        // record, while the real metadata moves through so a Classifier's
-        // deltas survive. A chain drop here is
-        // pre-store — nothing was spooled — and is reported like the sibling
-        // gates above. A filter may read a resident payload before its CRC is
-        // checked: the drain checks it before the bundle commits or its route
-        // executes, so a damaged payload costs only the chain's work. A filter
-        // reading a payload that is not resident gets the reader's
-        // `NotResident`. The clone and this whole block dissolve in the
-        // streaming leg, where the chain reads the live prefix directly.
-        let (mut metadata, headers) = if self.filters.has_ingress() {
-            let record = bundle::Bundle {
-                bpv7: bundle.clone(),
-                metadata,
-                status: bundle::BundleStatus::New,
-            };
+        // It runs synchronously on the record and returns it in every
+        // outcome, so a Classifier's metadata deltas survive. A chain drop
+        // here is pre-store — nothing was spooled — and is reported like the
+        // sibling gates above. A filter may read a resident payload before its
+        // CRC is checked: the drain checks it before the bundle commits or its
+        // route executes, so a damaged payload costs only the chain's work. A
+        // filter reading a payload that is not resident gets the reader's
+        // `NotResident`; in the streaming leg the chain reads the live prefix
+        // directly.
+        let (mut bundle, headers) = if self.filters.has_ingress() {
             match self
                 .filters
-                .run_ingress(record, headers, &bcb_ops, &*self.key_provider)
+                .run_ingress(bundle, headers, &bcb_ops, &*self.key_provider)
             {
-                Ok(filter::ChainOutcome::Continue(record, prefix)) => (record.metadata, prefix),
-                Ok(filter::ChainOutcome::Drop(record, reason)) => {
+                Ok(filter::ChainOutcome::Continue(bundle, prefix)) => (bundle, prefix),
+                Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
                     self.report_bundle_reception(
-                        &record.bpv7,
-                        record.metadata.received_at(),
+                        &bundle.bpv7,
+                        bundle.metadata.received_at(),
                         report,
                         reason,
                     )
                     .await;
                     return Received::Disposed;
                 }
-                Err((record, e)) => {
+                Err((bundle, e)) => {
                     // The resident prefix failed the chain's own decode pass —
                     // an internal inconsistency, since it parsed at reception.
                     error!("Ingress filter chain failed: {e}");
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
                     self.report_bundle_reception(
-                        &record.bpv7,
-                        record.metadata.received_at(),
+                        &bundle.bpv7,
+                        bundle.metadata.received_at(),
                         report,
                         Some(ReasonCode::BlockUnintelligible),
                     )
@@ -263,8 +269,39 @@ impl Dispatcher {
                 }
             }
         } else {
-            (metadata, headers)
+            (bundle, headers)
         };
+
+        // Route at the gate — the decision of record for this arrival. The
+        // snapshot rides with the decision: if it proves stale after the
+        // drain, the failure arms park and re-check it (park_bundle), which
+        // re-enters dispatch for a fresh lookup. An explicit Drop route
+        // rejects the bundle here, before its payload is drained — doomed
+        // traffic spools nothing. Placement after the chain is deliberate:
+        // a filter Drop keeps precedence, and a future Classifier-supplied
+        // route key must precede the lookup.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        if let Some(routing::DispatchAction::Drop(reason)) = action {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
+            // Drop-with-reason reports like the sibling gate drops;
+            // Drop-without-reason is silent, exactly as dispatch's
+            // delete_bundle path.
+            if reason.is_some() {
+                debug!("Route lookup drops the bundle at the ingress gate: {label:?}");
+                self.report_bundle_reception(
+                    &bundle.bpv7,
+                    bundle.metadata.received_at(),
+                    report,
+                    reason,
+                )
+                .await;
+            } else {
+                debug!("Route lookup silently drops the bundle at the ingress gate");
+            }
+            return Received::Disposed;
+        }
 
         // Drain the payload tail (a bundle still arriving) through the
         // ValidatingReceiver: it feeds the payload CRC / block+outer breaks and
@@ -281,6 +318,7 @@ impl Dispatcher {
                 // payload prefix is absorbed by `ValidatingReceiver::new`, the
                 // streamed remainder as it arrives.
                 let payload_start = bundle
+                    .bpv7
                     .blocks
                     .get(&1)
                     .map_or(headers.len(), |b| b.payload_range().start as usize);
@@ -333,8 +371,8 @@ impl Dispatcher {
                         debug!("Streamed payload rejected: {failure}");
                         metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
                         self.report_bundle_reception(
-                            &bundle,
-                            metadata.received_at(),
+                            &bundle.bpv7,
+                            bundle.metadata.received_at(),
                             report,
                             Some(reason),
                         )
@@ -354,21 +392,16 @@ impl Dispatcher {
         // The §E removals ride the metadata and are applied per-attempt at
         // the output doors (egress rewrite, deliver strip).
         let data = whole;
-        metadata.to_remove = to_remove;
+        bundle.metadata.to_remove = to_remove;
         // The caller pre-stored the data (reassembly / restart): stored as
         // received, it stands as is, and the caller owns its cleanup — on any
         // non-dispatched outcome the caller deletes it. We only delete
         // storage *we* create (the CLA `save_data` path below), on the
         // duplicate path.
-        let caller_stored = metadata.storage_name.is_some();
+        let caller_stored = bundle.metadata.storage_name.is_some();
         if !caller_stored {
-            metadata.storage_name = Some(self.store.save_data(data.clone()).await);
+            bundle.metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
-        let mut bundle = bundle::Bundle {
-            bpv7: bundle,
-            metadata,
-            status: bundle::BundleStatus::New,
-        };
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
@@ -380,16 +413,6 @@ impl Dispatcher {
         // at the pre-drain gate; a chain drop reported itself there.)
         self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
             .await;
-
-        // Promote to the queued checkpoint before the single write. `New` is a
-        // purely in-memory "under construction" marker: the chain ran at the
-        // gate above, and only the finished, classified record is ever
-        // persisted — directly at `Dispatching`, the one metadata write per
-        // received bundle. The dispatch send's conditional swap to
-        // `DispatchPending` is the queue commit, and a crash between the two
-        // recovers via the `Dispatching` restart arm. No chain-incomplete
-        // record ever reaches storage.
-        bundle.status = bundle::BundleStatus::Dispatching;
 
         // `insert_metadata` is the authoritative atomic dup check — the one place
         // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
@@ -416,11 +439,17 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
-        // Account the admitted bundle in the status gauge; the dispatch send's
-        // swap moves it on to `DispatchPending`.
+        // Account the admitted bundle in the status gauge.
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 
-        self.dispatch_bundle(bundle).await;
+        // Execute the gate's routing decision directly — fresh arrivals do
+        // not transit the dispatch queue (`DispatchPending` belongs to the
+        // re-dispatch paths: parks, polls, sweeps, restart, transfer
+        // outcomes). A crash between the insert above and this execution
+        // recovers through restart's `Dispatching` arm, which re-dispatches
+        // with a fresh lookup.
+        self.execute_dispatch_action(bundle, action, seen, self.cla_registry())
+            .await;
         Received::Dispatched
     }
 
