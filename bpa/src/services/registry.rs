@@ -408,7 +408,18 @@ impl ServiceRegistry {
             ServiceImpl::LowLevel(s) => s.on_register(&eid, Box::new(sink)).await,
             ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
         }
-        dispatcher.poll_service_waiting(&eid).await;
+        // The post-registration poll is spawned, never awaited inline: a
+        // sink whose event buffer drains only after registration returns —
+        // the gRPC-bridge shape — would deadlock registration against its
+        // own announcements. Overlapping polls are safe: the poll claims
+        // each bundle out of WaitingForService with a status CAS.
+        {
+            let dispatcher = dispatcher.clone();
+            let eid = eid.clone();
+            hardy_async::spawn!(self.tasks, "post_registration_poll", async move {
+                dispatcher.poll_service_waiting(&eid).await;
+            });
+        }
         metrics::gauge!("bpa.service.registered").increment(1.0);
         Ok(eid)
     }
