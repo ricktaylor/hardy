@@ -10,7 +10,7 @@ use hardy_bpv7::{
 use std::collections::{HashMap, HashSet};
 
 mod common;
-use self::common::{insert_after_primary, make_block, rand_k};
+use self::common::{insert_after_primary, make_block, make_unknown_context_asb, rand_k};
 
 /// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
 /// shape the pipeline tests are written against.
@@ -271,6 +271,72 @@ fn unsupported_security_delete_bundle_errors() {
     assert!(matches!(
         checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]),
         Err(Error::InvalidBPSec(bpsec::Error::UnrecognisedContext(99)))
+    ));
+}
+
+// Requirement: RFC 9172 §7.1 — an unsupported security operation flagged
+// report_on_failure and delete_bundle_on_failure raises its
+// `UnknownSecurityOperation` report fact alongside the deletion verdict, for
+// a BCB (A2) and for a plaintext BIB (A3) alike.
+#[test]
+fn classify_reports_the_security_facts_with_the_delete_verdict() {
+    // BCB: must_replicate (payload target) + report + delete bundle (0x07).
+    let bcb = splice_unrecognised_bcb(&build_minimal_bundle(), 0x07);
+    // BIB: report + delete bundle (0x06).
+    let bib = insert_after_primary(
+        &build_minimal_bundle(),
+        &[&make_block(11, 2, 0x06, &make_unknown_context_asb(1))],
+    );
+    for (kind, modified) in [("BCB", bcb), ("BIB", bib)] {
+        let (_, raw_bundle, bcb_ops, bib_ops) =
+            raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+        let (classification, verdict) =
+            checks::classify_unsupported_and_verdict(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]);
+        assert!(
+            classification.report_unsupported_security,
+            "{kind}: the report fact survives the deletion verdict"
+        );
+        assert!(
+            matches!(
+                verdict,
+                Some(Error::InvalidBPSec(bpsec::Error::UnrecognisedContext(99)))
+            ),
+            "{kind}: got {verdict:?}"
+        );
+    }
+}
+
+// Requirement: RFC 9171 §5.6 Step 4 reports, then deletes — the facts and
+// the delete-bundle verdict come back together, so a block's
+// `report_on_failure` demand survives the deletion its
+// `delete_bundle_on_failure` orders. `classify_unsupported` returns the same
+// verdict as its error.
+#[test]
+fn classify_reports_the_facts_with_the_delete_verdict() {
+    // An unknown (non-security) block flagged report_on_failure and
+    // delete_bundle_on_failure (0x06), beside an unrecognised-context BIB and
+    // another unknown block, both flagged delete_block_on_failure (0x10): the
+    // deletion verdict leaves the classification of every other block
+    // complete. The BIB's arm (A3) runs after the verdict's (A1).
+    let unknown_block = make_block(999, 2, 0x06, &[0xDE, 0xAD]);
+    let deletable_bib = make_block(11, 3, 0x10, &make_unknown_context_asb(1));
+    let deletable_block = make_block(998, 4, 0x10, &[0xBE, 0xEF]);
+    let modified = insert_after_primary(
+        &build_minimal_bundle(),
+        &[&unknown_block, &deletable_bib, &deletable_block],
+    );
+    let (_, raw_bundle, bcb_ops, bib_ops) =
+        raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
+
+    let (classification, verdict) =
+        checks::classify_unsupported_and_verdict(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]);
+    assert!(classification.report_unsupported_block);
+    assert_eq!(classification.bib_deletable.as_slice(), &[3]);
+    assert_eq!(classification.unrecognised_deletable.as_slice(), &[4]);
+    assert!(matches!(verdict, Some(Error::Unsupported(2))));
+    assert!(matches!(
+        checks::classify_unsupported(&raw_bundle.blocks, &bcb_ops, &bib_ops, &[]),
+        Err(Error::Unsupported(2))
     ));
 }
 

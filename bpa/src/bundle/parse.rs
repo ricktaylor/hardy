@@ -61,7 +61,8 @@ pub fn extract_from_built(
 }
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
-/// deletion notice. Used by [`parse_headers`].
+/// deletion notice. Used by [`parse_headers`] and the payload drain's
+/// `ValidationFailure::reason_code` (crate-internal, in `dispatcher`).
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand
@@ -72,7 +73,7 @@ pub fn extract_from_built(
 /// structural parser before any reportable bundle exists. Per RFC 9172 §7.1,
 /// policy SHOULD gate when security reason codes are sent at all; the global
 /// `status_reports` switch is that gate for now.
-fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
+pub fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     match error {
         hardy_bpv7::Error::Unsupported(_) => ReasonCode::BlockUnsupported,
         hardy_bpv7::Error::InvalidBPSec(
@@ -85,23 +86,69 @@ fn status_report_reason_for(error: &hardy_bpv7::Error) -> ReasonCode {
     }
 }
 
-/// Reception-report reason from the §A `report_on_failure` facts plus the
-/// §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank the
-/// generic RFC 9171 block code when several fire: a dropped corrupt operation
-/// is the most material event, then an operation this node cannot understand,
-/// then an unrecognised plain block.
-pub fn reception_reason_for(
+/// The §5.6 reception-reporting facts the header verify established: what
+/// reason the reception assertion carries, and whether a block's own
+/// `report_on_failure` flag demands the report be emitted regardless of the
+/// bundle-level receipt flag (§5.6 Step 4's block-flag-alone trigger). The
+/// nonsense states — a demanded "No additional information", a non-demanded
+/// "Block unsupported" — are unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceptionReport {
+    /// Nothing beyond §5.6 Step 2: reason "No additional information",
+    /// emitted only when the bundle requests reception reports.
+    Requested,
+    /// A §5.1.1 failure-drop was scheduled: reason "Failed security
+    /// operation", still bundle-flag-gated (RFC 9172 keeps failure
+    /// reporting at requested-MAY level).
+    FailureDropped,
+    /// A block's `report_on_failure` flag demands the report: emitted even
+    /// when the bundle-level receipt flag is clear. Carries "Block
+    /// unsupported" / "Unknown security operation" — or "Failed security
+    /// operation" when a failure-drop also fired and outranks them in the
+    /// record's one reason slot. Never produced for an admin-record or
+    /// anonymous bundle: the parser rejects the flag combination (§4.2.4).
+    Demanded(ReasonCode),
+}
+
+impl ReceptionReport {
+    /// The reason code the reception assertion carries.
+    pub fn reason(&self) -> ReasonCode {
+        match self {
+            Self::Requested => ReasonCode::NoAdditionalInformation,
+            Self::FailureDropped => ReasonCode::FailedSecurityOperation,
+            Self::Demanded(reason) => *reason,
+        }
+    }
+
+    /// §5.6 Step 4's block-flag-alone trigger: the report is emitted even
+    /// when the bundle-level receipt flag is clear.
+    pub fn demanded(&self) -> bool {
+        matches!(self, Self::Demanded(_))
+    }
+}
+
+/// Reception-reporting facts from the §A `report_on_failure` classification
+/// plus the §5.1.1 failure-drop outcome. The RFC 9172 security codes outrank
+/// the generic RFC 9171 block code when several fire: a dropped corrupt
+/// operation is the most material event, then an operation this node cannot
+/// understand, then an unrecognised plain block — but only the block-flag
+/// facts make the report [`Demanded`](ReceptionReport::Demanded).
+pub fn reception_report_for(
     classification: &checks::Classification,
     failure_dropped: bool,
-) -> ReasonCode {
-    if failure_dropped {
-        ReasonCode::FailedSecurityOperation
-    } else if classification.report_unsupported_security {
-        ReasonCode::UnknownSecurityOperation
-    } else if classification.report_unsupported_block {
-        ReasonCode::BlockUnsupported
-    } else {
-        ReasonCode::NoAdditionalInformation
+) -> ReceptionReport {
+    let demanded =
+        classification.report_unsupported_security || classification.report_unsupported_block;
+    match (demanded, failure_dropped) {
+        (false, false) => ReceptionReport::Requested,
+        (false, true) => ReceptionReport::FailureDropped,
+        (true, _) => ReceptionReport::Demanded(if failure_dropped {
+            ReasonCode::FailedSecurityOperation
+        } else if classification.report_unsupported_security {
+            ReasonCode::UnknownSecurityOperation
+        } else {
+            ReasonCode::BlockUnsupported
+        }),
     }
 }
 
@@ -227,10 +274,12 @@ pub struct HeaderVerify {
     pub extensions: ExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
     pub to_remove: HashSet<u64>,
-    /// Reception-report reason chosen from the §A `report_on_failure` facts
-    /// and the §5.1.1 failure-drop outcome (see [`reception_reason_for`]);
-    /// `NoAdditionalInformation` when none fired.
-    pub report_reason: ReasonCode,
+    /// The §5.6 reception-reporting facts (see [`reception_report_for`]).
+    /// Carried on the reception assertion whether the bundle is accepted or
+    /// rejected downstream — Step 4's facts precede either outcome — though
+    /// a reject's deletion reason takes the report's one reason slot when
+    /// both are asserted.
+    pub report: ReceptionReport,
     /// One incremental verifier per BIB op-set `checks::verify` left targeting
     /// the not-yet-resident payload (block 1), each paired with its BIB's
     /// block number for failure attribution. Begun (via
@@ -283,9 +332,10 @@ pub enum HeaderFailure {
     /// The accumulated stream crossed the caller's size bound.
     TooLarge { size: usize, max: usize },
     /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller emits a reception report with the reason,
-    /// then drops.
-    Invalid(Option<(Bpv7Bundle, ReasonCode)>),
+    /// recoverable the caller reports the drop — the reception facts
+    /// established before the failure, then deletion citing the reason (RFC
+    /// 9171 §5.6/§5.10) — then drops.
+    Invalid(Option<(Bpv7Bundle, ReceptionReport, ReasonCode)>),
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
@@ -378,8 +428,8 @@ where
     };
 
     // Header verification (§A–§D) against the resident bytes. On a keyed failure
-    // the recoverable `bundle` is returned so the caller need only emit a reception
-    // report; on success it moves into the returned `HeaderVerify`.
+    // the recoverable `bundle` is returned so the caller can report the drop;
+    // on success it moves into the returned `HeaderVerify`.
     let parse::Parsed {
         bundle,
         bcbs: bcb_ops,
@@ -392,10 +442,11 @@ where
         // the Ingress gate chain, handed back from this one decode rather
         // than re-derived from the prefix later.
         Ok(hv) => Ok((hv, headers, tail, bcb_ops)),
-        Err((bundle, error)) => {
+        Err((bundle, error, reception)) => {
             debug!("Invalid bundle received: {error}");
             Err(HeaderFailure::Invalid(Some((
                 bundle,
+                reception,
                 status_report_reason_for(&error),
             ))))
         }
@@ -409,7 +460,8 @@ where
 /// applied, and one begun incremental verifier per block-1 (payload) op-set
 /// the keyed verify deferred, for the dispatcher's payload drain to feed as
 /// the payload streams; the §E removals are deferred to the output doors
-/// too). On a keyed failure the recoverable bundle rides the error.
+/// too). On a keyed failure the recoverable bundle rides the error, with the
+/// reception facts established before it.
 #[allow(clippy::result_large_err)]
 fn verify_headers(
     headers: &[u8],
@@ -417,7 +469,7 @@ fn verify_headers(
     bundle: Bpv7Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error)> {
+) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error, ReceptionReport)> {
     // Assembled up front with empty facts; the verification closure fills
     // them in place (keeping `?` ergonomics — its borrow ends at the call),
     // and the recoverable bundle rides whichever arm results.
@@ -425,15 +477,21 @@ fn verify_headers(
         bundle,
         extensions: ExtensionFields::default(),
         to_remove: HashSet::new(),
-        report_reason: ReasonCode::NoAdditionalInformation,
+        report: ReceptionReport::Requested,
         deferred_verifiers: Vec::new(),
     };
 
     let verified = (|hv: &mut HeaderVerify| {
-        // §A — classify; collect deletables; the report_* facts feed the
-        // reception-report reason below.
-        let classification =
-            checks::classify_unsupported(&hv.bundle.blocks, bcb_ops, bib_ops, &[])?;
+        // §A — classify; collect deletables. The report_* facts stand from
+        // here, so every rejection below — a block demanding the bundle's
+        // deletion (RFC 9171 §5.6 Step 4 reports, then deletes) or a keyed
+        // failure — still honours a block's report demand.
+        let (classification, delete_bundle) =
+            checks::classify_unsupported_and_verdict(&hv.bundle.blocks, bcb_ops, bib_ops, &[]);
+        hv.report = reception_report_for(&classification, false);
+        if let Some(error) = delete_bundle {
+            return Err(error);
+        }
 
         hv.to_remove
             .extend(classification.unrecognised_deletable.iter().copied());
@@ -489,7 +547,7 @@ fn verify_headers(
         }
         // Anything still in `facts.failed` here was queued for failure-drop (the
         // fatal cases returned above) — surface that in the reception report.
-        hv.report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
+        hv.report = reception_report_for(&classification, !facts.failed.is_empty());
 
         // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
         // other undecipherable block is forwarded intact for a downstream acceptor.
@@ -520,7 +578,7 @@ fn verify_headers(
 
     match verified {
         Ok(()) => Ok(hv),
-        Err(e) => Err((hv.bundle, e)),
+        Err(e) => Err((hv.bundle, e, hv.report)),
     }
 }
 
@@ -759,7 +817,7 @@ mod tests {
             .await
             .expect("channel open");
         match parse_headers(&mut rx, 1 << 20, no_keys).await {
-            Err(HeaderFailure::Invalid(Some((_, reason)))) => {
+            Err(HeaderFailure::Invalid(Some((_, _, reason)))) => {
                 assert_eq!(reason, ReasonCode::BlockUnintelligible)
             }
             Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
@@ -786,26 +844,128 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn reception_reason_precedence() {
-        let mut c = checks::Classification::default();
+    // A keyed verification failure keeps the facts the §A classification
+    // established: an unrecognised block flagged `report_on_failure` still
+    // demands its reception report (RFC 9171 §5.6 Step 4) when a BIB over
+    // another block fails integrity, and the deletion cites the failed
+    // security operation.
+    #[cfg(feature = "rfc9173")]
+    #[tokio::test]
+    async fn a_keyed_failure_keeps_the_block_facts() {
+        use hardy_bpv7::{
+            bpsec::{
+                key::{Key, KeyAlgorithm, KeySet, Operation, Type},
+                signer::{Context, Signer},
+            },
+            builder::Builder,
+            creation_timestamp::CreationTimestamp,
+        };
+        use rand::{TryRng, rngs::SysRng};
+
+        // Immaterial key value: generated, and bound once for the signer and
+        // the verifying key source.
+        let mut k = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut k).unwrap();
+        let key = Key {
+            key_type: Type::octet_sequence(k),
+            key_algorithm: Some(KeyAlgorithm::HS256),
+            enc_algorithm: None,
+            operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),
+            id: None,
+            key_use: None,
+        };
+
+        // Block type 777 is signed and carries no flags; block type 999 asks
+        // for a report on failure.
+        let (_, data) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+            .add_extension_block(block::Type::Unrecognised(777))
+            .unwrap()
+            .build(b"signed".as_slice().into())
+            .add_extension_block(block::Type::Unrecognised(999))
+            .unwrap()
+            .with_flags(block::Flags {
+                report_on_failure: true,
+                ..Default::default()
+            })
+            .build(b"unknown".as_slice().into())
+            .with_payload(b"payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let built = parse::parse(Bytes::from(data)).unwrap();
+        let signed_block = *built
+            .bundle
+            .blocks
+            .iter()
+            .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(777)))
+            .expect("the 777 block is present")
+            .0;
+        let signed = Signer::new(&built.bundle, &built.data)
+            .sign_block(
+                signed_block,
+                Context::HMAC_SHA2(Default::default()),
+                "ipn:1.2".parse().unwrap(),
+                &key,
+            )
+            .map_err(|(_, e)| e)
+            .expect("sign the 777 block")
+            .rebuild()
+            .expect("rebuild the signed bundle");
+
+        // Flip the signed block's first data byte.
+        let at = parse::parse(Bytes::copy_from_slice(&signed))
+            .unwrap()
+            .bundle
+            .blocks
+            .get(&signed_block)
+            .expect("the signed block is present")
+            .payload_range()
+            .start as usize;
+        let mut tampered = signed.to_vec();
+        tampered[at] ^= 0xFF;
+
+        let (tx, mut rx) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Final(Bytes::from(tampered)))
+            .await
+            .expect("channel open");
+        let keys = move |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+            Box::new(KeySet::new(vec![key]))
+        };
+        let Err(HeaderFailure::Invalid(Some((_, reception, reason)))) =
+            parse_headers(&mut rx, 1 << 20, keys).await
+        else {
+            panic!("a failed BIB must reject the bundle with a report");
+        };
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::NoAdditionalInformation
+            reception,
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
+        );
+        assert_eq!(reason, ReasonCode::FailedSecurityOperation);
+    }
+
+    #[test]
+    fn reception_report_precedence() {
+        let mut c = checks::Classification::default();
+        assert_eq!(reception_report_for(&c, false), ReceptionReport::Requested);
+        // A failure-drop alone reports, but is not block-demanded.
+        assert_eq!(
+            reception_report_for(&c, true),
+            ReceptionReport::FailureDropped
         );
         c.report_unsupported_block = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::BlockUnsupported
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::BlockUnsupported)
         );
         c.report_unsupported_security = true;
         assert_eq!(
-            reception_reason_for(&c, false),
-            ReasonCode::UnknownSecurityOperation
+            reception_report_for(&c, false),
+            ReceptionReport::Demanded(ReasonCode::UnknownSecurityOperation)
         );
+        // The failure-drop outranks in the reason slot without erasing the
+        // block's demand.
         assert_eq!(
-            reception_reason_for(&c, true),
-            ReasonCode::FailedSecurityOperation
+            reception_report_for(&c, true),
+            ReceptionReport::Demanded(ReasonCode::FailedSecurityOperation)
         );
     }
 

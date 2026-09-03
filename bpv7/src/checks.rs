@@ -99,7 +99,9 @@ pub struct Classification {
 /// `delete_bundle_on_failure`, returns `Err(Error::Unsupported(n))` for an
 /// A1 block, or the security block's
 /// [`unsupported_error`](bpsec::bib::OperationSet::unsupported_error) for
-/// an A2/A3 block — so the caller can tell the two kinds apart.
+/// an A2/A3 block — so the caller can tell the two kinds apart. The facts
+/// do not survive that `Err`; a caller that reports the deletion needs
+/// them, and takes both from [`classify_unsupported_and_verdict`].
 ///
 /// `supported` lists block-type codes the caller actually understands
 /// (e.g. extension types it has registered handlers for); a
@@ -123,7 +125,31 @@ pub fn classify_unsupported(
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
     supported: &[u64],
 ) -> Result<Classification, Error> {
+    match classify_unsupported_and_verdict(blocks, bcb_ops, bib_ops, supported) {
+        (classification, None) => Ok(classification),
+        (_, Some(verdict)) => Err(verdict),
+    }
+}
+
+/// [`classify_unsupported`]'s facts and its delete-bundle verdict together.
+/// The [`Classification`] is complete even when a block demands the
+/// bundle's deletion, so a caller reporting that deletion still sees which
+/// blocks request a status report: RFC 9171 §5.6 Step 4 reports, then
+/// deletes. The verdict is the error [`classify_unsupported`] returns: an A1
+/// block's before an A2 block's before an A3 block's, and within a kind the
+/// first such block visited.
+///
+/// # Panics
+///
+/// As [`classify_unsupported`].
+pub fn classify_unsupported_and_verdict(
+    blocks: &HashMap<u64, block::Block>,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
+    supported: &[u64],
+) -> (Classification, Option<Error>) {
     let mut out = Classification::default();
+    let mut verdict = None;
 
     // A1 — unrecognised blocks.
     for (&block_number, block) in blocks {
@@ -133,13 +159,14 @@ pub fn classify_unsupported(
         if supported.contains(&block_type) {
             continue;
         }
-        if block.flags.delete_bundle_on_failure {
-            return Err(Error::Unsupported(block_number));
-        }
         if block.flags.report_on_failure {
             out.report_unsupported_block = true;
         }
-        if block.flags.delete_block_on_failure {
+        if block.flags.delete_bundle_on_failure {
+            if verdict.is_none() {
+                verdict = Some(Error::Unsupported(block_number));
+            }
+        } else if block.flags.delete_block_on_failure {
             out.unrecognised_deletable.push(block_number);
         }
     }
@@ -153,11 +180,11 @@ pub fn classify_unsupported(
             .get(&bcb_block_number)
             .expect("BCB number from bcb_ops must exist in blocks")
             .flags;
-        if flags.delete_bundle_on_failure {
-            return Err(error.into());
-        }
         if flags.report_on_failure {
             out.report_unsupported_security = true;
+        }
+        if flags.delete_bundle_on_failure && verdict.is_none() {
+            verdict = Some(error.into());
         }
     }
 
@@ -170,18 +197,19 @@ pub fn classify_unsupported(
             .get(&bib_block_number)
             .expect("BIB number from bib_ops must exist in blocks")
             .flags;
-        if flags.delete_bundle_on_failure {
-            return Err(error.into());
-        }
         if flags.report_on_failure {
             out.report_unsupported_security = true;
         }
-        if flags.delete_block_on_failure {
+        if flags.delete_bundle_on_failure {
+            if verdict.is_none() {
+                verdict = Some(error.into());
+            }
+        } else if flags.delete_block_on_failure {
             out.bib_deletable.push(bib_block_number);
         }
     }
 
-    Ok(out)
+    (out, verdict)
 }
 
 // ===== Section B — decrypt-and-validate BCB-encrypted BIBs =====
