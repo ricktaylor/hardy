@@ -81,7 +81,10 @@ impl Dispatcher {
         // it to close the park-vs-poll window (see park_bundle). A Forward
         // result names the peer, whose egress queue carries the adjacency.
         let seen = self.rib.table_snapshot();
-        let action = self.rib.find(&bundle);
+        // The lookup inputs resolve from classification metadata
+        // (route_table/route_key) in a later tranche; the defaults are the
+        // destination in the default table.
+        let action = self.rib.find(&bundle, &routing::RoutingKey::default());
         self.execute_dispatch_action(bundle, action, seen, cla_registry)
             .await
     }
