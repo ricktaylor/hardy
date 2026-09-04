@@ -5,15 +5,17 @@
 //! its keyed pass via
 //! [`begin_payload_verification`](hardy_bpv7::checks::begin_payload_verification)
 //! — one incremental [`bib::Verifier`] per deferred payload BIB. A
-//! [`TailReceiver`] marries those to the CLA's segment stream: it wraps the
-//! inner [`Receiver`], and as each segment flows through it feeds the
-//! [`PayloadTail`] (payload CRC, block/outer break, anti-smuggling) and the
+//! [`TailReceiver`] marries those to the CLA's segment stream: it yields the
+//! resident head as its first segment, then wraps the inner [`Receiver`] —
+//! as each streamed segment flows through it feeds the [`PayloadTail`]
+//! (payload CRC, block/outer break, anti-smuggling) and the
 //! block-type-specific data prefix of each segment to every verifier, then
-//! yields the same segment onward to whatever drains it (the interim
-//! in-memory spool now, `BundleStorage::store` after the storage tranche).
+//! yields the same segment onward. One receiver therefore carries the whole
+//! bundle to whatever drains it (`Store::save_stream`'s interim spool now,
+//! the backends' streamed store after the storage tranche).
 //!
-//! Every downstream consumer therefore takes a plain [`Receiver<Segment>`]:
-//! the validation is invisible to it, surfacing only as a pull that fails
+//! Every downstream consumer takes a plain [`Receiver<Segment>`]: the
+//! validation is invisible to it, surfacing only as a pull that fails
 //! ([`RecvError`]) when the bytes are bad. The categorised verdict is read
 //! from [`TailReceiver::finish`] once the stream is drained.
 
@@ -74,6 +76,10 @@ impl TailFailure {
 /// the ingress pipeline; the spawned-spool phase revisits ownership.
 pub struct TailReceiver<'a> {
     inner: &'a mut dyn Receiver<Segment>,
+    // The resident header prefix, yielded as the first segment so one
+    // receiver carries the whole bundle. Already validated by the header
+    // pass — never absorbed.
+    head: Option<Bytes>,
     tail: PayloadTail,
     // Each deferred payload BIB, paired with its block number for failure
     // attribution.
@@ -85,22 +91,24 @@ pub struct TailReceiver<'a> {
 
 impl<'a> TailReceiver<'a> {
     /// Wraps `inner`, marrying the `tail` continuation and the deferred-BIB
-    /// `verifiers` to the stream. `initial_body` is the payload's
-    /// block-type-specific data prefix already resident in the header pass's
-    /// `consumed` buffer: the `PayloadTail` was pre-fed it at construction,
-    /// but the verifiers were not, so it is absorbed here before the stream
-    /// supplies the rest.
+    /// `verifiers` to the stream. `head` is the header pass's resident
+    /// `consumed` buffer — yielded onward as the first segment, and its
+    /// payload block-type-specific data prefix (`head[payload_start..]`) is
+    /// absorbed into the verifiers here (the `PayloadTail` was pre-fed it at
+    /// construction) before the stream supplies the rest.
     pub fn new(
         inner: &'a mut dyn Receiver<Segment>,
         tail: PayloadTail,
         mut verifiers: Vec<(u64, bib::Verifier)>,
-        initial_body: &[u8],
+        head: Bytes,
+        payload_start: usize,
     ) -> Self {
         for (_, verifier) in &mut verifiers {
-            verifier.update(initial_body);
+            verifier.update(&head[payload_start..]);
         }
         Self {
             inner,
+            head: Some(head),
             tail,
             verifiers,
             failure: None,
@@ -149,6 +157,11 @@ impl Receiver<Segment> for TailReceiver<'_> {
         // A prior failure is terminal: never yield more bytes downstream.
         if self.failure.is_some() {
             return Err(RecvError);
+        }
+        // The resident head goes first — validated by the header pass, so it
+        // is yielded without absorption. A tail exists, so it is never Final.
+        if let Some(head) = self.head.take() {
+            return Ok(Segment::Next(head));
         }
         let segment = self.inner.recv().await?;
         let bytes: &Bytes = match &segment {
@@ -265,7 +278,8 @@ mod tests {
         }
     }
 
-    // A valid tail passes through byte-for-byte and settles Ok.
+    // A valid tail passes through byte-for-byte — the resident head first,
+    // then the streamed remainder — and settles Ok.
     #[tokio::test]
     async fn valid_tail_passes_through_and_settles() {
         let full = oversized_bundle(false);
@@ -273,9 +287,13 @@ mod tests {
         let rest = full.slice(consumed.len()..);
 
         let mut inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        let payload_start = consumed.len();
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), consumed, payload_start);
         let yielded = drain(&mut tr).await.expect("valid tail drains");
-        assert_eq!(yielded, rest, "every byte is yielded onward unchanged");
+        assert_eq!(
+            yielded, full,
+            "the head then every streamed byte is yielded onward unchanged"
+        );
         tr.finish().expect("a well-formed tail settles Ok");
     }
 
@@ -289,7 +307,8 @@ mod tests {
         rest[10] ^= 0xFF; // inside the streamed body, before the CRC/breaks
 
         let mut inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        let payload_start = consumed.len();
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), consumed, payload_start);
         // The corruption surfaces at the CRC check (end of body) as a failed
         // pull; finish categorises it.
         let _ = drain(&mut tr).await;
@@ -316,10 +335,15 @@ mod tests {
             .expect("channel open");
         drop(tx);
 
-        let mut tr = TailReceiver::new(&mut rx, tail, Vec::new(), &[]);
+        let payload_start = consumed.len();
+        let mut tr = TailReceiver::new(&mut rx, tail, Vec::new(), consumed, payload_start);
         assert!(
             matches!(tr.recv().await, Ok(Segment::Next(_))),
-            "first pull yields"
+            "first pull yields the resident head"
+        );
+        assert!(
+            matches!(tr.recv().await, Ok(Segment::Next(_))),
+            "second pull yields the streamed chunk"
         );
         assert!(
             tr.recv().await.is_err(),
@@ -353,7 +377,8 @@ mod tests {
         rest.push(0x00); // one byte past the bundle's outer break
 
         let mut inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), &[]);
+        let payload_start = consumed.len();
+        let mut tr = TailReceiver::new(&mut inner, tail, Vec::new(), consumed, payload_start);
         let _ = drain(&mut tr).await;
         assert!(
             matches!(tr.finish(), Err(TailFailure::Invalid(_))),
@@ -363,8 +388,8 @@ mod tests {
 
     // Build the deferred-BIB verifiers for a signed bundle: the keyed header
     // pass begins them itself. Returns the verifiers, the header prefix, the
-    // tail, and the resident body-prefix.
-    async fn signed_setup(full: &Bytes) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, Bytes) {
+    // tail, and the resident body-prefix offset.
+    async fn signed_setup(full: &Bytes) -> (Vec<(u64, bib::Verifier)>, Bytes, PayloadTail, usize) {
         let keys = |_: &hardy_bpv7::Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![sign_key()]))
         };
@@ -381,8 +406,7 @@ mod tests {
 
         // The payload body prefix already resident in `headers`.
         let payload_start = hv.bundle.blocks.get(&1).unwrap().payload_range().start as usize;
-        let initial_body = headers.slice(payload_start..);
-        (hv.deferred_verifiers, headers, tail, initial_body)
+        (hv.deferred_verifiers, headers, tail, payload_start)
     }
 
     // A deferred payload BIB verifies over the streamed body: the resident
@@ -391,12 +415,12 @@ mod tests {
     #[tokio::test]
     async fn deferred_bib_verifies_over_stream() {
         let full = oversized_bundle(true);
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full).await;
+        let (verifiers, headers, tail, payload_start) = signed_setup(&full).await;
         assert_eq!(verifiers.len(), 1);
 
         let rest = full.slice(headers.len()..);
         let mut inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, &initial_body);
+        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, headers, payload_start);
         drain(&mut tr).await.expect("valid signed tail drains");
         tr.finish().expect("the deferred payload BIB verifies");
     }
@@ -405,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn deferred_bib_tamper_fails() {
         let full = oversized_bundle(true);
-        let (verifiers, headers, tail, initial_body) = signed_setup(&full).await;
+        let (verifiers, headers, tail, payload_start) = signed_setup(&full).await;
 
         // Flip a byte well inside the streamed body (after the header
         // prefix), leaving the payload CRC intact by recomputing? No — the
@@ -415,7 +439,7 @@ mod tests {
         let mut rest = full.slice(headers.len()..).to_vec();
         rest[5] ^= 0xFF;
         let mut inner = segment_stream(&rest).await;
-        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, &initial_body);
+        let mut tr = TailReceiver::new(&mut inner, tail, verifiers, headers, payload_start);
         let _ = drain(&mut tr).await;
         assert!(
             tr.finish().is_err(),
