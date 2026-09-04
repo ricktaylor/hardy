@@ -10,11 +10,11 @@
 //! * [`parse_validate_with_provider`] — one-shot keyed validation of a complete
 //!   buffer, no block removal. It returns the list of BCB-protected well-known
 //!   extension blocks that couldn't be decrypted (no key); the caller decides
-//!   what to do with it. `dispatcher::restart` ignores it (re-check stored data
-//!   on startup, tolerating a since-rotated key), while `dispatcher::local` and
-//!   `filter::chain` pass it to [`reject_undecryptable_liveness`], which applies
-//!   the liveness policy (locally originated / re-emitted bytes must be fully
-//!   decryptable).
+//!   what to do with it. Its one remaining caller is `dispatcher::restart`'s
+//!   reconcile walk, which ignores the list (re-check stored data on startup,
+//!   tolerating a since-rotated key); it retires when that walk moves to the
+//!   streamed pass. The streamed pass applies the liveness policy itself via
+//!   [`reject_undecryptable_liveness`].
 //! * [`parse_headers`] — the streaming ingress header pass, which the gate can
 //!   early-reject on before the payload is spooled. It classifies and
 //!   *schedules* the removals — the `delete_block_on_failure`-flagged unknowns
@@ -327,10 +327,16 @@ pub enum HeaderFailure {
     /// known before the payload arrives). `u64` end to end: a declared
     /// size may exceed a 32-bit target's address space.
     TooLarge { size: u64, max: u64 },
-    /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller reports the drop — reception then deletion,
-    /// the deletion citing the reason (RFC 9171 §5.6/§5.10) — then drops.
-    Invalid(Option<(Bpv7Bundle, ReasonCode)>),
+    /// Structural or keyed-validation failure. `error` is the parse or
+    /// verification failure itself (the originate door surfaces it to the
+    /// caller); `report` carries the recoverable bundle and status-report
+    /// reason when the bundle id survived — the CLA ingress door reports
+    /// the drop with it, reception then deletion, the deletion citing the
+    /// reason (RFC 9171 §5.6/§5.10).
+    Invalid {
+        error: hardy_bpv7::Error,
+        report: Option<(Bpv7Bundle, ReasonCode)>,
+    },
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
@@ -388,38 +394,56 @@ where
             });
         }
         match parser.push(bytes) {
-            Ok(parse::ParserProgress::NeedMore(_)) if last => {
+            Ok(parse::ParserProgress::NeedMore(n)) if last => {
                 debug!("Truncated bundle");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: hardy_cbor::decode::Error::NeedMoreData(n).into(),
+                    report: None,
+                });
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
                 Ok(parsed) => break (parsed, whole, None),
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
-                    return Err(HeaderFailure::Invalid(None));
+                    return Err(HeaderFailure::Invalid {
+                        error: e,
+                        report: None,
+                    });
                 }
             },
             // A `Partial` after the stream has already ended is a truncated
             // bundle: the declared payload cannot complete (`tail.remaining()`
             // is positive), so reject it exactly like `NeedMore` at end-of-
             // stream instead of handing an exhausted stream to the payload drain.
-            Ok(parse::ParserProgress::Partial { .. }) if last => {
+            Ok(parse::ParserProgress::Partial { tail, .. }) if last => {
                 debug!("Truncated bundle (oversized payload, stream ended)");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: hardy_cbor::decode::Error::NeedMoreData(
+                        usize::try_from(tail.remaining()).unwrap_or(usize::MAX),
+                    )
+                    .into(),
+                    report: None,
+                });
             }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
                 match parser.finish(consumed.clone()) {
                     Ok(parsed) => break (parsed, consumed, Some(tail)),
                     Err(e) => {
                         debug!("Bundle BPSec structural validation failed: {e}");
-                        return Err(HeaderFailure::Invalid(None));
+                        return Err(HeaderFailure::Invalid {
+                            error: e,
+                            report: None,
+                        });
                     }
                 }
             }
             Err(e) => {
                 debug!("Bundle structural parse failed: {e}");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: e,
+                    report: None,
+                });
             }
         }
     };
@@ -464,10 +488,11 @@ where
         )),
         Err(error) => {
             debug!("Invalid bundle received: {error}");
-            Err(HeaderFailure::Invalid(Some((
-                bundle,
-                status_report_reason_for(&error),
-            ))))
+            let reason = status_report_reason_for(&error);
+            Err(HeaderFailure::Invalid {
+                error,
+                report: Some((bundle, reason)),
+            })
         }
     }
 }
@@ -815,7 +840,10 @@ mod tests {
             .await
             .expect("channel open");
         match parse_headers(&mut rx, 1 << 20, no_keys).await {
-            Err(HeaderFailure::Invalid(Some((_, reason)))) => {
+            Err(HeaderFailure::Invalid {
+                report: Some((_, reason)),
+                ..
+            }) => {
                 assert_eq!(reason, ReasonCode::BlockUnintelligible)
             }
             Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),

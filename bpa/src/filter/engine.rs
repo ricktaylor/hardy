@@ -62,15 +62,36 @@ impl FilterChains {
         !self.ingress.verifiers.is_empty() || !self.ingress.classifiers.is_empty()
     }
 
-    /// Runs the Originate chain: Verifiers, then Classifiers sequentially.
+    /// Runs the Originate chain (Verifiers, then Classifiers) on the
+    /// resident buffer `data` and its already-decoded BCB OperationSets —
+    /// the header prefix at the originate door's admission stage, exactly
+    /// as [`run_ingress`](Self::run_ingress) at the CLA gate.
     #[allow(clippy::result_large_err)]
     pub(crate) fn run_originate(
         &self,
         bundle: Bundle,
         data: Bytes,
+        bcbs: &HashMap<u64, bcb::OperationSet>,
         key_provider: &dyn KeyProvider,
     ) -> RunResult {
-        self.run_input(&self.originate, "originate", bundle, data, key_provider)
+        if self.originate.verifiers.is_empty() && self.originate.classifiers.is_empty() {
+            return Ok(ChainOutcome::Continue(bundle, data));
+        }
+        self.run_input_decoded(
+            &self.originate,
+            "originate",
+            bundle,
+            data,
+            bcbs,
+            key_provider,
+        )
+    }
+
+    /// Whether the Originate chain has any registered links, for the
+    /// originate door's short-circuit — the twin of
+    /// [`has_ingress`](Self::has_ingress).
+    pub(crate) fn has_originate(&self) -> bool {
+        !self.originate.verifiers.is_empty() || !self.originate.classifiers.is_empty()
     }
 
     /// Runs the Egress chain: Rewriters sequentially — each invocation's
@@ -112,36 +133,10 @@ impl FilterChains {
         )
     }
 
-    #[allow(clippy::result_large_err)]
-    fn run_input(
-        &self,
-        chain: &InputChain,
-        hook: &'static str,
-        bundle: Bundle,
-        data: Bytes,
-        key_provider: &dyn KeyProvider,
-    ) -> RunResult {
-        if chain.verifiers.is_empty() && chain.classifiers.is_empty() {
-            return Ok(ChainOutcome::Continue(bundle, data));
-        }
-
-        // One decode pass per hook crossing: the OperationSets and the
-        // returned buffer feed every invocation of this pass.
-        let (buf, bcbs) = match hardy_bpv7::parse::parse(data) {
-            Ok(Parsed { data, bcbs, .. }) => (data, bcbs),
-            Err(e) => {
-                metrics::counter!("bpa.filter.error", "hook" => hook).increment(1);
-                return Err((bundle, e.into()));
-            }
-        };
-        self.run_input_decoded(chain, hook, bundle, buf, &bcbs, key_provider)
-    }
-
     // The Verifier-then-Classifier pass over a resident buffer whose BCB
-    // OperationSets are already decoded. `run_input` decodes them from the whole
-    // bundle; the Ingress gate threads in the set re-derived from the header
-    // prefix (`buf` is then that prefix, and payload reads return the reader's
-    // not-resident `None`).
+    // OperationSets are already decoded — both input doors thread in the set
+    // from their one header decode (`buf` is the header prefix, and payload
+    // reads return the reader's not-resident `None`).
     #[allow(clippy::result_large_err)]
     fn run_input_decoded(
         &self,

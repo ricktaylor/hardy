@@ -179,9 +179,7 @@ impl services::ServiceSink for Sink {
             inner: stream,
             token: service.cancel.clone(),
         };
-        self.dispatcher
-            .local_dispatch_raw_streamed(&self.eid, &mut stream)
-            .await
+        self.dispatcher.originate_raw(&self.eid, &mut stream).await
     }
 }
 
@@ -203,7 +201,7 @@ impl services::ApplicationSink for Sink {
             .ok_or(services::Error::Disconnected)?;
 
         self.dispatcher
-            .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
+            .originate(self.eid.clone(), destination, data, lifetime, options)
             .await
     }
 }

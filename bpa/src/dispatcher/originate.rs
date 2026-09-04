@@ -1,33 +1,64 @@
+//! The originate doors: bundles entering the pipeline from local
+//! applications and services.
+//!
+//! Two doors with one admission stage. The ADU door
+//! ([`originate`](Dispatcher::originate)) builds the bundle
+//! itself, so it performs no validation — the `Builder` emits valid bundles
+//! by construction. The raw door
+//! ([`originate_raw`](Dispatcher::originate_raw))
+//! is a security boundary: service-provided bytes run the same strict
+//! parser and keyed header verification as CLA ingress. Both merge at
+//! [`originate_admit`](Dispatcher::originate_admit) — the gate decisions
+//! (Originate chain, then the route lookup as the decision of record)
+//! settled ahead of the spool, one metadata write, and direct execution of
+//! the routing decision. Every rejection is a [`services::Error`] to the
+//! originator; this path never raises status reports.
+
 use core::time::Duration;
 
 use alloc::borrow::Cow;
 
-// `Bpv7Bundle` disambiguates the structural wire bundle from the BPA
-// record `bundle::Bundle` used throughout this module.
 use hardy_bpv7::{
     builder::Builder,
-    bundle::{Bundle as Bpv7Bundle, Flags, Id},
+    bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
+    eid::Eid,
     status_report::ReasonCode,
 };
+use tracing::{debug, error};
 
-use super::*;
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::{
+    Dispatcher,
+    validate::{ValidatingReceiver, ValidationFailure},
+};
 use crate::{
-    bundle::parse,
-    stream::{ConcatError, Receiver, Segment, concat_stream},
+    Bytes, HashMap,
+    bundle::{self, parse},
+    cla::Segment,
+    filter, otel_metrics, routing, services,
+    stream::{ConcatError, Receiver},
 };
 
 impl Dispatcher {
+    /// Originate a bundle around an application payload (the ADU door).
+    ///
+    /// The `Builder` output is valid by construction, so nothing here
+    /// parses or validates: the extension fields are read straight off the
+    /// built view and the record goes to the shared admission stage as a
+    /// resident stream. A duplicate id (a same-millisecond timestamp
+    /// collision) rebuilds with a fresh timestamp and retries.
     #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
-    pub async fn local_dispatch(
-        self: &Arc<Self>,
+    pub async fn originate(
+        &self,
         source: Eid,
         destination: Eid,
         payload: Bytes,
         lifetime: Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<Id, services::Error> {
-        // Build bundle and run the Originate chain before storing
         loop {
             let mut builder =
                 Builder::new(source.clone(), destination.clone()).with_lifetime(lifetime);
@@ -55,16 +86,28 @@ impl Dispatcher {
                 }
             }
 
-            let (bundle, data) = builder
+            let (built, data) = builder
                 .with_payload(Cow::Borrowed(&payload))
                 .build(CreationTimestamp::now())
                 .map_err(|e| services::Error::Internal(e.into()))?;
-
             let data = Bytes::from(data);
-            let extracted = parse::extract_from_built(&bundle, &data)
-                .map_err(|e| services::Error::Internal(e.into()))?;
 
-            let r = self.originate_bundle(bundle, extracted, data).await;
+            let extracted = parse::extract_from_built(&built, &data)
+                .map_err(|e| services::Error::Internal(e.into()))?;
+            let mut metadata = bundle::BundleMetadata::originated();
+            metadata.extensions = extracted;
+            let record = bundle::Bundle {
+                bpv7: built,
+                metadata,
+                status: bundle::BundleStatus::Dispatching,
+            };
+
+            // `Bytes` is a `Receiver<Segment>`: the resident build takes the
+            // same admission stage as a streamed arrival, with no decorator
+            // and no settle-side verdict.
+            let r = self
+                .originate_admit(record, data.clone(), data, &HashMap::new(), |_| Ok(()))
+                .await;
             if !matches!(r, Err(services::Error::DuplicateBundle)) {
                 break r;
             }
@@ -73,116 +116,283 @@ impl Dispatcher {
         }
     }
 
-    /// Dispatch a bundle from a segment stream (for low-level Service trait)
+    /// Originate a service-built bundle from a segment stream (the raw
+    /// door, for the low-level `Service` trait).
     ///
-    /// Accumulates the stream (bounded by `max_bundle_size`, like CLA
-    /// ingress), then parses and validates the assembled bundle exactly as
-    /// [`local_dispatch_raw`](Self::local_dispatch_raw) does. A producer that
-    /// goes away before the final segment cancels the send: nothing has been
-    /// stored, and the caller gets
+    /// This is a security boundary — services are not trusted — so the raw
+    /// door carries all the validation the ADU door doesn't: the stream
+    /// runs the same strict parser and keyed header verification as CLA
+    /// ingress (non-canonical input is rejected, never rewritten; the
+    /// bytes are stored and forwarded as received), the source must match
+    /// the registered endpoint, and the lifetime/hop admission and
+    /// config-gated RFC 9171 validity checks apply at the same pre-drain
+    /// seat. A producer that goes away before the final segment cancels
+    /// the send: nothing is stored, and the caller gets
     /// [`StreamCancelled`](services::Error::StreamCancelled).
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    pub async fn local_dispatch_raw_streamed(
-        self: &Arc<Self>,
+    pub async fn originate_raw(
+        &self,
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        // 32-bit: a cap beyond the address space saturates — nothing larger
-        // could be buffered anyway.
+        // The cap as an in-memory bound: on a 32-bit target a cap beyond
+        // the address space saturates — nothing larger could be buffered.
         let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
-        let data = concat_stream(stream, max_size).await.map_err(|e| match e {
-            ConcatError::Cancelled => services::Error::StreamCancelled,
-            ConcatError::TooLarge { size, max } => services::Error::PayloadTooLarge { size, max },
-        })?;
-        self.local_dispatch_raw(expected_source, data).await
-    }
-
-    /// Dispatch a bundle from raw bytes (for low-level Service trait)
-    /// Parses and validates the bundle (security boundary)
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn local_dispatch_raw(
-        self: &Arc<Self>,
-        expected_source: &Eid,
-        data: Bytes,
-    ) -> Result<Id, services::Error> {
-        // Parse + validate the bundle (security boundary — can't trust
-        // service-provided bytes). Non-canonical input is rejected, not rewritten;
-        // the bytes are stored and forwarded as received. As the origin we must be
-        // able to process HopCount / unclocked BundleAge, so an undecryptable one
-        // is fatal.
-        let (bundle, extracted, nokey) =
-            parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
-        parse::reject_undecryptable_liveness(&nokey, bundle.primary.id.timestamp.is_clocked())?;
+        let (hv, headers, tail, bcb_ops) =
+            match parse::parse_headers(stream, max_size, self.key_provider()).await {
+                Ok(parts) => parts,
+                Err(parse::HeaderFailure::Cancelled) => {
+                    return Err(services::Error::StreamCancelled);
+                }
+                Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                    return Err(services::Error::PayloadTooLarge { size, max });
+                }
+                // The report half is CLA-ingress machinery; an originator
+                // gets the parse or verification error itself.
+                Err(parse::HeaderFailure::Invalid { error, .. }) => {
+                    return Err(services::Error::InvalidBundle(error));
+                }
+            };
 
         // Verify source matches the registered service endpoint
-        // (registration already validated that the EID belongs to our node)
-        if &bundle.primary.id.source != expected_source {
+        // (registration already validated that the EID belongs to our node).
+        if hv.bundle.primary.id.source != *expected_source {
             return Err(services::Error::InvalidDestination(
-                bundle.primary.id.source.clone(),
+                hv.bundle.primary.id.source.clone(),
             ));
         }
 
-        self.originate_bundle(bundle, extracted, data).await
-    }
-
-    async fn originate_bundle(
-        self: &Arc<Self>,
-        bundle: Bpv7Bundle,
-        extensions: bundle::ExtensionFields,
-        data: Bytes,
-    ) -> Result<Id, services::Error> {
-        // Wrap in bundle::Bundle with Dispatching status so that restart
-        // recovery skips the Ingress chain (originated bundles only run the
-        // Originate chain, never the Ingress chain).
         let mut metadata = bundle::BundleMetadata::originated();
-        metadata.extensions = extensions;
-        let bundle = bundle::Bundle {
-            bpv7: bundle,
+
+        // Lifetime/hop admission and the config-gated RFC 9171 validity
+        // checks, at the same pre-drain seat as CLA ingress: the Builder
+        // cannot produce a bundle that trips them, but parse-validated
+        // service bytes can. Nothing is stored yet — a rejection is purely
+        // an error to the caller.
+        if let Some(reason) = hv.gate_reason(metadata.received_at()) {
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            return Err(services::Error::Dropped(Some(reason)));
+        }
+        if let Some(reason) = self.rfc9171_gate_reason(&hv) {
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            return Err(services::Error::Dropped(Some(reason)));
+        }
+
+        let parse::HeaderVerify {
+            bundle,
+            extracted,
+            to_remove,
+            // Originated bundles never raise reception reports — reception
+            // is a CLA-ingress notion; the originator learns the outcome
+            // from this call's return value.
+            report: _,
+            deferred_verifiers,
+        } = hv;
+        metadata.extensions = extracted;
+
+        // The §E removals travel with the bundle to the output doors,
+        // sorted for a deterministic persisted order, exactly as at CLA
+        // ingress — the bundle is stored as received.
+        let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
+        to_remove.sort_unstable();
+        metadata.to_remove = to_remove;
+
+        let record = bundle::Bundle {
             metadata,
             status: bundle::BundleStatus::Dispatching,
         };
 
-        // Inline lifetime/hop admission check for the raw-bytes path: the
-        // Builder cannot produce an expired or hop-exhausted bundle, but
-        // parse-validated service bytes can — the origination-side twin of
-        // ingress's pre-drain gate. Nothing is stored yet, so a rejection
-        // is purely an error to the caller.
-        if bundle.has_expired() {
-            return Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)));
-        }
-        if let Some(hop_info) = &bundle.metadata.extensions.hop_count
-            && hop_info.count > hop_info.limit
-        {
-            return Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)));
+        // The validating decorator settles the drain verdict — the same
+        // machinery as CLA ingress, mapped to the caller's error surface
+        // instead of status reports.
+        let payload_start = record
+            .bpv7
+            .blocks
+            .get(&1)
+            .map_or(headers.len(), |b| b.payload_range().start as usize);
+        let tail_rx = ValidatingReceiver::new(
+            stream,
+            tail,
+            deferred_verifiers,
+            headers.clone(),
+            payload_start,
+        );
+        self.originate_admit(record, headers, tail_rx, &bcb_ops, |rx| {
+            rx.finish().map_err(|failure| {
+                if let Some(reason) = failure.reason_code() {
+                    metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+                }
+                match failure {
+                    // The transfer never completed; the producer may retry.
+                    ValidationFailure::Truncated => services::Error::StreamCancelled,
+                    ValidationFailure::Invalid(e) => services::Error::InvalidBundle(e),
+                    ValidationFailure::IntegrityFailed { .. } => services::Error::InvalidBundle(
+                        hardy_bpv7::bpsec::Error::IntegrityCheckFailed.into(),
+                    ),
+                }
+            })
+        })
+        .await
+    }
+
+    // The shared admission stage where the originate doors merge: the gate
+    // decisions (Originate chain, then the route lookup — the decision of
+    // record) settle first, the spool follows, the door's stream verdict
+    // settles against the save, and the admitted record is written once and
+    // its routing decision executed directly. Originated bundles do not transit the
+    // dispatch queue (`DispatchPending` belongs to the re-dispatch paths),
+    // mirroring fresh CLA arrivals; a crash between the insert and the
+    // execution recovers through restart's `Dispatching` arm.
+    //
+    // `stream` is the door's whole-bundle byte source (`head` included);
+    // `settle` maps the door's post-drain verdict — a `ValidatingReceiver`'s
+    // `finish` at the raw door, nothing at the ADU door — to the caller's
+    // error surface, and runs before anything is persisted.
+    async fn originate_admit<S, F>(
+        &self,
+        bundle: bundle::Bundle,
+        head: Bytes,
+        mut stream: S,
+        bcbs: &HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+        settle: F,
+    ) -> Result<Id, services::Error>
+    where
+        S: Receiver<Segment>,
+        F: FnOnce(S) -> Result<(), services::Error>,
+    {
+        // The declared wire size bounds both doors before a byte spools.
+        // The comparison stays in u64: the declaration may exceed this
+        // target's address space.
+        let declared = bundle.bpv7.encoded_len();
+        if declared > self.max_bundle_size.get() {
+            debug!(
+                "Originated bundle declares {declared} bytes, exceeding max_bundle_size {}",
+                self.max_bundle_size
+            );
+            return Err(services::Error::PayloadTooLarge {
+                size: usize::try_from(declared).unwrap_or(usize::MAX),
+                max: usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX),
+            });
         }
 
-        // Run the Originate chain (pure in-memory, pre-store); a Drop
-        // returns its reason to the originating service.
-        let (mut bundle, data) = match self
-            .filters
-            .run_originate(bundle, data, &*self.key_provider)
-        {
-            Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
-            Ok(filter::ChainOutcome::Drop(_, reason)) => {
-                return Err(services::Error::Dropped(reason));
-            }
-            Err((_, e)) => {
-                error!("Originate filter chain failed: {e}");
-                return Err(services::Error::Internal(e));
+        // The gate decisions settle before a byte spools: the Originate
+        // chain's verdict shapes the save itself — a Classifier may set the
+        // storage QoS the spool must honour — so the drain strictly follows
+        // the chain and the route lookup. A rejection returns here with
+        // nothing spooled, never awaiting the payload.
+        let (mut bundle, action, seen) = self.decide_at_originate_gate(bundle, head, bcbs)?;
+
+        // Drain the whole wire form into the store, bounded by
+        // `max_bundle_size` as the defensive backstop. 32-bit: a cap beyond
+        // the address space saturates — nothing larger could be spooled to
+        // RAM anyway.
+        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
+        let outcome = self.store.save_stream(&mut stream, max_size).await;
+
+        // Settle the door's stream verdict against the save: a save the
+        // verdict rejects was staged before the verdict settled — the
+        // discard half of the streaming contract.
+        let (storage_name, data_len) = match settle(stream) {
+            Ok(()) => match outcome {
+                Ok(save) => save,
+                // The door's decorator saw a clean stream, so a drain
+                // failure is the transport's: the producer went away, or
+                // the drain's defensive bound tripped.
+                Err(ConcatError::Cancelled) => return Err(services::Error::StreamCancelled),
+                Err(ConcatError::TooLarge { size, max }) => {
+                    return Err(services::Error::PayloadTooLarge { size, max });
+                }
+            },
+            Err(e) => {
+                if let Ok((storage_name, _)) = outcome {
+                    self.store.delete_data(&storage_name).await;
+                }
+                return Err(e);
             }
         };
+        bundle.metadata.storage_name = Some(storage_name);
 
-        // Now store (single persist operation, preserves filter-applied metadata)
-        if !self.store.store(&mut bundle, &data).await {
+        // `insert_metadata` is the authoritative atomic duplicate check;
+        // the duplicate loses its staged data and the door decides whether
+        // to retry (the ADU door rebuilds with a fresh timestamp).
+        if !self.store.insert_metadata(&bundle).await {
+            if let Some(storage_name) = &bundle.metadata.storage_name {
+                self.store.delete_data(storage_name).await;
+            }
             return Err(services::Error::DuplicateBundle);
         }
 
         metrics::counter!("bpa.bundle.originated").increment(1);
-        metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
+        metrics::counter!("bpa.bundle.originated.bytes").increment(data_len as u64);
 
         let bundle_id = bundle.id().clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-        self.dispatch_bundle(bundle).await;
+        metrics::gauge!("bpa.bundle.status", "state" => otel_metrics::status_label(&bundle.status))
+            .increment(1.0);
+
+        // Execute the routing decision of record directly.
+        self.execute_dispatch_action(bundle, action, seen, self.cla_registry())
+            .await;
         Ok(bundle_id)
+    }
+
+    // The gate decisions for an originated record: the Originate chain on
+    // the resident header prefix, then the route lookup — the decision of
+    // record, mirroring `decide_at_gate` at CLA ingress. Runs before the
+    // payload spools; an `Err` returns with nothing spooled or persisted,
+    // so a rejected bundle never awaits its payload.
+    fn decide_at_originate_gate(
+        &self,
+        bundle: bundle::Bundle,
+        head: Bytes,
+        bcbs: &HashMap<u64, hardy_bpv7::bpsec::bcb::OperationSet>,
+    ) -> Result<
+        (
+            bundle::Bundle,
+            Option<routing::DispatchAction>,
+            routing::RibSnapshot,
+        ),
+        services::Error,
+    > {
+        // The Originate chain runs synchronously on the record; a
+        // Classifier's metadata deltas survive into the persisted record. A
+        // filter reading a not-yet-resident payload gets the reader's
+        // not-resident `None`.
+        let bundle = if self.filters.has_originate() {
+            match self
+                .filters
+                .run_originate(bundle, head, bcbs, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
+                Ok(filter::ChainOutcome::Drop(_, reason)) => {
+                    let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+                    metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+                    debug!("Originate filter chain dropped the bundle: {label:?}");
+                    return Err(services::Error::Dropped(reason));
+                }
+                Err((_, e)) => {
+                    error!("Originate filter chain failed: {e}");
+                    return Err(services::Error::Internal(e));
+                }
+            }
+        } else {
+            bundle
+        };
+
+        // Route at the door — the decision of record for this origination.
+        // The snapshot rides with the decision: if it proves stale, the
+        // failure arms park and re-check it. An explicit Drop route rejects
+        // here — doomed traffic is never persisted — and the originator
+        // always gets an error: even a reasonless (silent) Drop surfaces as
+        // `Dropped(None)`, where the CLA gate drops silently.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        if let Some(routing::DispatchAction::Drop(reason)) = action {
+            let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
+            metrics::counter!("bpa.bundle.originated.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+            debug!("Route lookup drops the bundle at the originate door: {label:?}");
+            return Err(services::Error::Dropped(reason));
+        }
+
+        Ok((bundle, action, seen))
     }
 }

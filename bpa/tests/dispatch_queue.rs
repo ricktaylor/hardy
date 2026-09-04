@@ -305,39 +305,53 @@ async fn stale_poller_duplicate_never_redelivers() {
         .unwrap();
     bpa.start(false).await;
 
-    // The service under test holds its deliveries open; the marker service
-    // completes immediately (its release sender is dropped at creation).
-    let (svc, started_rx, release_tx) = CountingHoldService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
-        .await
-        .unwrap();
-    let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
-    drop(marker_release_tx);
-    bpa.register_service(Service::Ipn(8), marker_svc.clone())
+    // Both originate and fresh CLA arrivals now route at their doors and
+    // execute directly, so the dispatch queue (and the DispatchPending
+    // state this rig arms) belongs to the re-dispatch paths. The feeder
+    // here is the service-registration poll: bundles originated to a
+    // not-yet-registered service park WaitingForService, and registering
+    // the service pushes them through `dispatch_bundle` into the queue.
+    let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
+    drop(originator_release_tx);
+    bpa.register_service(Service::Ipn(9), originator.clone())
         .await
         .unwrap();
 
-    let (_, data) = Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+    let (_, data) = Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"deliver me once".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-
-    // Originate the bundle through the service's raw door: fresh CLA
-    // arrivals route at the ingress gate and execute directly, so the
-    // dispatch queue (and the DispatchPending state this rig arms) belongs
-    // to the originate and re-dispatch paths.
-    svc.sink
+    originator
+        .sink
         .get()
         .unwrap()
         .send(&mut Bytes::from(data))
         .await
         .expect("raw origination failed");
+    let (_, marker_data) = Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+        .with_lifetime(Duration::from_secs(3600))
+        .with_payload(Cow::Borrowed(b"marker".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    originator
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(marker_data))
+        .await
+        .expect("raw origination failed");
 
-    // The dispatch send parks the bundle in DispatchPending on the storage
-    // slow path — the initial recovery poll is still blocked on the arm
-    // signal, keeping the channel's fast path closed. (Every timeout below
+    // The service under test holds its deliveries open. Registering it
+    // recovers the parked bundle through poll_service_waiting →
+    // dispatch_bundle, which parks it in DispatchPending on the storage
+    // slow path — the channel's initial recovery poll is still blocked on
+    // the arm signal, keeping the fast path closed. (Every timeout below
     // only bounds a regression.)
+    let (svc, started_rx, release_tx) = CountingHoldService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
     tokio::time::timeout(tokio::time::Duration::from_secs(10), queued_rx.recv_async())
         .await
         .expect("Timed out waiting for the bundle to queue")
@@ -362,23 +376,17 @@ async fn stale_poller_duplicate_never_redelivers() {
     .expect("Timed out waiting for the delivery to start")
     .expect("Holding service gone");
 
-    // Dispatch a marker bundle to the other service. It enters the dispatch
-    // queue strictly after the injected duplicate (the injection completed
-    // above), and the consumer handles the queue in order — so once the
-    // marker's delivery starts, the duplicate has already been through the
-    // dequeue claim, while the first delivery is verifiably still held.
-    let (_, marker_data) = Builder::new("ipn:0.1.8".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
-        .with_lifetime(Duration::from_secs(3600))
-        .with_payload(Cow::Borrowed(b"marker".as_slice()))
-        .build(CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    marker_svc
-        .sink
-        .get()
-        .unwrap()
-        .send(&mut Bytes::from(marker_data))
+    // Register the marker service: its registration poll pushes the parked
+    // marker bundle into the dispatch queue strictly after the injected
+    // duplicate (the injection completed above), and the consumer handles
+    // the queue in order — so once the marker's delivery starts, the
+    // duplicate has already been through the dequeue claim, while the
+    // first delivery is verifiably still held.
+    let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
+    drop(marker_release_tx);
+    bpa.register_service(Service::Ipn(8), marker_svc.clone())
         .await
-        .expect("raw origination failed");
+        .unwrap();
     tokio::time::timeout(
         tokio::time::Duration::from_secs(10),
         marker_started_rx.recv_async(),
