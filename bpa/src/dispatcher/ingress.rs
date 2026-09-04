@@ -269,7 +269,7 @@ impl Dispatcher {
         // a filter Drop keeps precedence, and a future Classifier-supplied
         // route key must precede the lookup.
         let seen = self.rib.table_snapshot();
-        let action = self.rib.find(&bundle, &routing::RoutingKey::default());
+        let action = self.rib.find(&bundle);
         if let Some(routing::DispatchAction::Drop(reason)) = action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
             metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
