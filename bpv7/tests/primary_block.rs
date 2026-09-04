@@ -1,11 +1,17 @@
 //! Integration tests for primary-block parsing/validation via the public
 //! `hardy_bpv7` API (Builder → bytes → parse).
 
+use bytes::Bytes;
 use hardy_bpv7::{
     Error, builder, bundle, crc, creation_timestamp, dtn_time, eid, parse,
     primary_block::PrimaryBlock,
 };
-use hardy_cbor::decode::FromCbor;
+// Aliased: `decode::Error` collides with the bpv7 `Error` and
+// `encode::Bytes` with `bytes::Bytes` imported above.
+use hardy_cbor::{
+    decode::{Error as CborError, FromCbor},
+    encode::{Bytes as CborBytes, emit_array},
+};
 
 fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -22,24 +28,57 @@ fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
 fn valid_crc() {
     // CRC-32 (default) — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
-    assert!(parse::parse(bytes::Bytes::copy_from_slice(&data)).is_ok());
+    assert!(parse::parse(Bytes::copy_from_slice(&data)).is_ok());
 
     // CRC-16 — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC16_X25);
-    assert!(parse::parse(bytes::Bytes::copy_from_slice(&data)).is_ok());
+    assert!(parse::parse(Bytes::copy_from_slice(&data)).is_ok());
 }
 
 #[test]
 fn invalid_crc() {
-    let mut data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI).to_vec();
+    for crc_type in [crc::CrcType::CRC16_X25, crc::CrcType::CRC32_CASTAGNOLI] {
+        let data = build_bundle_with_crc(crc_type);
 
-    // Corrupt a byte in the primary block (flip a bit in the middle)
-    // The primary block starts at byte 1 (after 0x9F)
-    let corrupt_pos = data.len() / 3;
-    data[corrupt_pos] ^= 0x01;
+        // Locate the primary block so the corruption targets the stored CRC
+        // value itself, not CBOR structure: the CRC value is the final field
+        // of the primary block, so the last byte of the block extent is
+        // inside it.
+        let parsed = parse::parse(Bytes::copy_from_slice(&data)).expect("valid bundle must parse");
+        let primary_extent = parsed
+            .bundle
+            .blocks
+            .get(&0)
+            .expect("primary block missing")
+            .extent
+            .clone();
+        let crc_last = usize::try_from(primary_extent.end).unwrap() - 1;
 
-    let result = parse::parse(bytes::Bytes::copy_from_slice(&data));
-    assert!(result.is_err(), "Corrupted CRC should fail to parse");
+        let mut data = data.to_vec();
+        data[crc_last] ^= 0x01;
+
+        let Err(Error::InvalidField {
+            field: "primary block",
+            source,
+        }) = parse::parse(Bytes::from(data))
+        else {
+            panic!("corrupted {crc_type:?} must fail as a primary-block field error");
+        };
+        let Some(Error::InvalidField {
+            field: "CRC value",
+            source,
+        }) = source.downcast_ref::<Error>()
+        else {
+            panic!("the primary-block failure must name the CRC value, got {source:?}");
+        };
+        assert!(
+            matches!(
+                source.downcast_ref::<Error>(),
+                Some(Error::InvalidCrc(crc::Error::IncorrectCrc))
+            ),
+            "expected IncorrectCrc for {crc_type:?}, got: {source:?}"
+        );
+    }
 }
 
 // LLR 1.1.22 (Parser must support all CRC types — CRC-16 and CRC-32)
@@ -52,8 +91,7 @@ fn invalid_crc() {
 fn primary_block_validation() {
     // Valid bundle parses successfully
     let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
-    let parse::Parsed { data, bundle, .. } =
-        parse::parse(bytes::Bytes::copy_from_slice(&data)).unwrap();
+    let parse::Parsed { data, bundle, .. } = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
     assert_eq!(bundle.primary.id.source, "ipn:1.0".parse().unwrap());
 
     // Bundle with version != 7 should fail
@@ -69,7 +107,7 @@ fn primary_block_validation() {
         .position(|w| w == [0x89, 0x07])
         .expect("version byte pattern [0x89, 0x07] not found — test fixture needs updating");
     bad_version[pos + 1] = 0x06; // change version to 6
-    let result = parse::parse(bytes::Bytes::copy_from_slice(&bad_version));
+    let result = parse::parse(Bytes::copy_from_slice(&bad_version));
     // Downcast the source: rejection must be for the version itself, not some
     // other primary-block failure the byte edit could provoke (e.g. the CRC).
     let Err(Error::InvalidField {
@@ -94,7 +132,7 @@ fn primary_block_validation() {
 // destination, source, report_to, creation timestamp, lifetime[, offset,
 // total].
 fn emit_primary(flags: u64, fragment_fields: Option<(u64, u64)>) -> Vec<u8> {
-    hardy_cbor::encode::emit_array(Some(if fragment_fields.is_some() { 10 } else { 8 }), |a| {
+    emit_array(Some(if fragment_fields.is_some() { 10 } else { 8 }), |a| {
         a.emit(&7u64); // version
         a.emit(&flags);
         a.emit(&0u64); // CRC type: none
@@ -154,13 +192,27 @@ fn fragment_primary_block_parsing() {
 }
 
 // A non-fragment primary block carrying the two extra fragment fields is
-// structurally invalid.
+// structurally invalid: with is_fragment clear the ninth element can only
+// be the CRC value, and an unsigned integer there fails that field's parse.
 #[test]
 fn non_fragment_with_fragment_fields_rejected() {
     let data = emit_primary(0x00, Some((40, 5000)));
+    let Err(Error::InvalidField {
+        field: "CRC value",
+        source,
+    }) = PrimaryBlock::from_cbor(&data)
+    else {
+        panic!("a non-fragment primary block with 10 fields must fail the CRC-value parse");
+    };
     assert!(
-        PrimaryBlock::from_cbor(&data).is_err(),
-        "non-fragment primary block with 10 fields should fail to parse"
+        matches!(
+            source.downcast_ref::<Error>(),
+            Some(Error::InvalidCBOR(CborError::IncorrectType(
+                "Definite-length Byte String",
+                _
+            )))
+        ),
+        "expected an incorrect-type CRC value, got {source:?}"
     );
 }
 
@@ -172,19 +224,19 @@ fn fragment_bundle_parsing() {
         let mut data = vec![0x9Fu8]; // indefinite-length bundle array
         data.extend_from_slice(&emit_primary(0x01, Some((offset, total))));
         // Payload block [1, 1, flags=0, crc_type=0, data]
-        data.extend_from_slice(&hardy_cbor::encode::emit_array(Some(5), |a| {
+        data.extend_from_slice(&emit_array(Some(5), |a| {
             a.emit(&1u64);
             a.emit(&1u64);
             a.emit(&0u64);
             a.emit(&0u64);
-            a.emit(&hardy_cbor::encode::Bytes(b"Hi"));
+            a.emit(&CborBytes(b"Hi"));
         }));
         data.push(0xFF); // break
         data
     }
 
     // A valid fragment parses and carries its fragment info in the id.
-    let parsed = parse::parse(bytes::Bytes::copy_from_slice(&make_bundle(40, 5000))).unwrap();
+    let parsed = parse::parse(Bytes::copy_from_slice(&make_bundle(40, 5000))).unwrap();
     assert!(parsed.bundle.primary.flags.is_fragment);
     assert_eq!(
         parsed.bundle.primary.id.fragment_info,
@@ -195,7 +247,7 @@ fn fragment_bundle_parsing() {
     );
 
     // An invalid offset is rejected as a primary-block field error.
-    let result = parse::parse(bytes::Bytes::copy_from_slice(&make_bundle(5001, 5000)));
+    let result = parse::parse(Bytes::copy_from_slice(&make_bundle(5001, 5000)));
     let Err(Error::InvalidField {
         field: "primary block",
         source,

@@ -551,6 +551,7 @@ fn encoded_len_is_the_wire_length() {
 mod block_rules {
     use bytes::Bytes;
     use hardy_bpv7::{Error, block, parse};
+    use hardy_cbor::{decode::skip_value, encode::emit};
 
     use super::build_minimal_bundle;
     use super::common::{insert_after_primary, make_block};
@@ -577,7 +578,7 @@ mod block_rules {
     #[test]
     fn duplicate_bundle_age_block_rejected() {
         let data = build_minimal_bundle();
-        let age = hardy_cbor::encode::emit(&0u64).0;
+        let age = emit(&0u64).0;
         let age_block_2 = make_block(7, 2, 0, &age);
         let age_block_3 = make_block(7, 3, 0, &age);
         let modified = insert_after_primary(&data, &[&age_block_2, &age_block_3]);
@@ -632,8 +633,7 @@ mod block_rules {
             data[0], 0x9F,
             "bundle should start with an indefinite array"
         );
-        let (_, primary_len) =
-            hardy_cbor::decode::skip_value(&data[1..], 16).expect("should skip the primary block");
+        let (_, primary_len) = skip_value(&data[1..], 16).expect("should skip the primary block");
         let mut modified = data[..1 + primary_len].to_vec();
         modified.push(0xFF);
         let Err(err) = parse::parse(Bytes::from(modified)) else {
@@ -651,6 +651,8 @@ mod block_rules {
 mod crc_and_bpsec_rules {
     use bytes::Bytes;
     use hardy_bpv7::{Error, bpsec, crc, parse};
+    // Aliased: `encode::Bytes` collides with `bytes::Bytes` imported above.
+    use hardy_cbor::encode::{Bytes as CborBytes, emit_array};
 
     use super::build_minimal_bundle;
     use super::common::{insert_after_primary, make_block, make_unknown_context_asb};
@@ -664,12 +666,12 @@ mod crc_and_bpsec_rules {
     fn missing_crc_value_rejected() {
         let data = build_minimal_bundle();
         // Declares CRC-16 (crc_type=1) but carries no sixth CRC element.
-        let block = hardy_cbor::encode::emit_array(Some(5), |a| {
+        let block = emit_array(Some(5), |a| {
             a.emit(&999u64);
             a.emit(&2u64);
             a.emit(&0u64);
             a.emit(&1u64);
-            a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
         });
         let modified = insert_after_primary(&data, &[&block]);
         let Err(err) = parse::parse(Bytes::from(modified)) else {
@@ -685,13 +687,13 @@ mod crc_and_bpsec_rules {
     fn unexpected_crc_value_rejected() {
         let data = build_minimal_bundle();
         // crc_type=none but carries a spurious sixth CRC element.
-        let block = hardy_cbor::encode::emit_array(Some(6), |a| {
+        let block = emit_array(Some(6), |a| {
             a.emit(&999u64);
             a.emit(&2u64);
             a.emit(&0u64);
             a.emit(&0u64);
-            a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
-            a.emit(&hardy_cbor::encode::Bytes(&[0x00, 0x00]));
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
+            a.emit(&CborBytes(&[0x00, 0x00]));
         });
         let modified = insert_after_primary(&data, &[&block]);
         let Err(err) = parse::parse(Bytes::from(modified)) else {
@@ -707,13 +709,13 @@ mod crc_and_bpsec_rules {
     #[test]
     fn unrecognised_crc_type_rejected() {
         let data = build_minimal_bundle();
-        let block = hardy_cbor::encode::emit_array(Some(6), |a| {
+        let block = emit_array(Some(6), |a| {
             a.emit(&999u64);
             a.emit(&2u64);
             a.emit(&0u64);
             a.emit(&3u64); // CRC type: unrecognised
-            a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
-            a.emit(&hardy_cbor::encode::Bytes(&[0x00, 0x00, 0x00, 0x00]));
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
+            a.emit(&CborBytes(&[0x00, 0x00, 0x00, 0x00]));
         });
         let modified = insert_after_primary(&data, &[&block]);
         let Err(err) = parse::parse(Bytes::from(modified)) else {

@@ -6,16 +6,24 @@
 //! binary are expected.
 #![allow(dead_code)]
 
-use hardy_bpv7::eid;
+use hardy_bpv7::eid::Eid;
+use hardy_cbor::{
+    decode::skip_value,
+    encode::{Bytes, Encoder, emit_array},
+};
+
+// A generous CBOR nesting bound for skipping a primary block: a flat
+// array whose deepest members are EID and timestamp arrays.
+const PRIMARY_BLOCK_SKIP_DEPTH: usize = 16;
 
 /// A canonical block `[type, number, flags, crc_type=none, data]`.
 pub fn make_block(block_type: u64, block_number: u64, flags: u64, payload: &[u8]) -> Vec<u8> {
-    hardy_cbor::encode::emit_array(Some(5), |a| {
+    emit_array(Some(5), |a| {
         a.emit(&block_type);
         a.emit(&block_number);
         a.emit(&flags);
         a.emit(&0u64); // CRC type: none
-        a.emit(&hardy_cbor::encode::Bytes(payload));
+        a.emit(&Bytes(payload));
     })
 }
 
@@ -26,7 +34,7 @@ pub fn insert_after_primary(data: &[u8], blocks: &[&[u8]]) -> Vec<u8> {
         "bundle should start with an indefinite array"
     );
     let (_, primary_len) =
-        hardy_cbor::decode::skip_value(&data[1..], 16).expect("should skip the primary block");
+        skip_value(&data[1..], PRIMARY_BLOCK_SKIP_DEPTH).expect("should skip the primary block");
     let insert_pos = 1 + primary_len;
 
     let mut modified = data[..insert_pos].to_vec();
@@ -40,13 +48,13 @@ pub fn insert_after_primary(data: &[u8], blocks: &[&[u8]]) -> Vec<u8> {
 /// An Abstract Syntax Block (a CBOR sequence, not an array) with an
 /// unrecognised security context, one target, and one empty result set.
 pub fn make_unknown_context_asb(target: u64) -> Vec<u8> {
-    let mut encoder = hardy_cbor::encode::Encoder::new();
+    let mut encoder = Encoder::new();
     encoder.emit_array(Some(1), |a| {
         a.emit(&target);
     });
     encoder.emit(&99u64); // unrecognised context id
     encoder.emit(&0u64); // flags: no context parameters
-    encoder.emit(&"ipn:1.0".parse::<eid::Eid>().unwrap()); // security source
+    encoder.emit(&"ipn:1.0".parse::<Eid>().unwrap()); // security source
     encoder.emit_array(Some(1), |a| {
         a.emit_array(Some(0), |_| {}); // empty result set for the target
     });

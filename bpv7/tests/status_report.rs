@@ -2,17 +2,20 @@ use hardy_bpv7::{
     bundle, creation_timestamp, dtn_time,
     status_report::{AdministrativeRecord, BundleStatusReport, Error, ReasonCode, StatusAssertion},
 };
-use hardy_cbor::decode::FromCbor;
+use hardy_cbor::{
+    decode::FromCbor,
+    encode::{emit, emit_array},
+};
 
 fn roundtrip_report(report: &BundleStatusReport) -> BundleStatusReport {
-    let encoded = hardy_cbor::encode::emit(report);
+    let encoded = emit(report);
     let (decoded, _, _) =
         BundleStatusReport::from_cbor(&encoded.0).expect("Should decode status report");
     decoded
 }
 
 fn roundtrip_admin(record: &AdministrativeRecord) -> AdministrativeRecord {
-    let encoded = hardy_cbor::encode::emit(record);
+    let encoded = emit(record);
     let (decoded, _, _) =
         AdministrativeRecord::from_cbor(&encoded.0).expect("Should decode admin record");
     decoded
@@ -263,7 +266,7 @@ fn reason_code_roundtrip() {
 #[test]
 fn reason_code_cbor_roundtrip() {
     let code = ReasonCode::HopLimitExceeded;
-    let encoded = hardy_cbor::encode::emit(&code);
+    let encoded = emit(&code);
     let (decoded, _, _) =
         ReasonCode::from_cbor(&encoded.0).expect("Should decode reason code from CBOR");
     assert_eq!(decoded, code);
@@ -272,7 +275,7 @@ fn reason_code_cbor_roundtrip() {
 #[test]
 fn unknown_admin_record_type() {
     // Encode an admin record with type code 99 (unknown)
-    let data = hardy_cbor::encode::emit_array(Some(2), |a| {
+    let data = emit_array(Some(2), |a| {
         a.emit(&99u64);
         a.emit(&0u64);
     });
@@ -297,7 +300,7 @@ fn tagged_status_flag_is_rejected_as_not_canonical() {
         reason: ReasonCode::NoAdditionalInformation,
         ..Default::default()
     };
-    let encoded = hardy_cbor::encode::emit(&report);
+    let encoded = emit(&report);
     // [4-array [4-array [1-array false ... — the received-status flag is the
     // fourth byte.
     assert_eq!(&encoded.0[..4], &[0x84, 0x84, 0x81, 0xF4]);
