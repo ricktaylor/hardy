@@ -281,6 +281,20 @@ impl Dispatcher {
             status: bundle::BundleStatus::Dispatching,
         };
 
+        // Early duplicate probe, before the decorator and the gate
+        // decisions: raw bytes are externally shaped, so a replay here is
+        // incoming-duplicate traffic exactly as at CLA ingress, settled for
+        // the price of a cache lookup without consuming the caller's
+        // stream. The ADU doors carry no probe — their ids are freshly
+        // generated, and a collision settles at insert_metadata's atomic
+        // refusal. Advisory only: copies racing in concurrently, ids past
+        // the cache's horizon, and a cold cache after restart all settle
+        // at that same refusal.
+        if self.store.seen_recently(record.id()) {
+            debug!("Duplicate bundle detected at the originate gate");
+            return Err(services::Error::DuplicateBundle);
+        }
+
         // The validating decorator settles the drain verdict — the same
         // machinery as CLA ingress, mapped to the caller's error surface
         // instead of status reports.
@@ -414,10 +428,11 @@ impl Dispatcher {
     }
 
     // The gate decisions for an originated record: the Originate chain on
-    // the resident header prefix, then the route lookup — the decision of
-    // record, mirroring `decide_at_gate` at CLA ingress. Runs before the
-    // payload spools; an `Err` returns with nothing spooled or persisted,
-    // so a rejected bundle never awaits its payload.
+    // the resident prefix (the headers and any held peek), then the route
+    // lookup — the decision of record, mirroring `decide_at_gate` at CLA
+    // ingress. Runs before the payload spools; an `Err` returns with nothing
+    // spooled or persisted, so a rejected bundle never awaits its payload
+    // past the peek.
     fn decide_at_originate_gate(
         &self,
         bundle: bundle::Bundle,
