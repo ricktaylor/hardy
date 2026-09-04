@@ -8,7 +8,7 @@ use crate::{
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
     node_ids::NodeIds,
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::{RibBuilder, RoutingAgent},
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
@@ -181,7 +181,7 @@ impl BpaBuilder {
         mut self,
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> Self {
         self.cla_registry_builder
             .insert(name.into(), cla, policy)
@@ -259,7 +259,7 @@ impl BpaBuilder {
             .await?;
         let filter_engine = self.filter_engine;
 
-        let dispatcher = Dispatcher::new(
+        let (dispatcher, start_dispatcher) = Dispatcher::new(
             self.status_reports,
             self.poll_channel_depth,
             self.processing_pool_size,
@@ -287,6 +287,11 @@ impl BpaBuilder {
 
         // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
         dispatcher.set_cla_registry(cla_registry.clone());
+
+        // Only now start the dispatch-queue consumer: its storage poller
+        // recovers persisted DispatchPending bundles immediately, and
+        // processing one dereferences the CLA registry wired above.
+        start_dispatcher(&dispatcher);
 
         Ok(Bpa::from_parts(
             node_ids,

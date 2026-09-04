@@ -55,7 +55,8 @@ pub trait MetadataStorage: Send + Sync {
     /// Replaces an existing bundle's metadata.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
-    /// Updates only the typed status columns for an existing bundle's metadata.
+    /// Unconditionally sets the status of the bundle with the given
+    /// `bundle_id` — the typed status columns only.
     ///
     /// Cheaper than `replace` because the bundle blob is not written. Use this
     /// for pure state-machine transitions where no other metadata has changed.
@@ -63,7 +64,7 @@ pub trait MetadataStorage: Send + Sync {
     /// A bundle deleted concurrently is not an error: delete is terminal, and
     /// the update quietly loses. Backends must neither resurrect the bundle
     /// nor fail the call.
-    async fn update_status(&self, bundle: &Bundle) -> Result<()>;
+    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()>;
 
     /// Updates the status of the bundle with the given `bundle_id` only if
     /// its current status equals `expected`, returning whether the swap was
@@ -115,7 +116,10 @@ pub trait MetadataStorage: Send + Sync {
     /// Part of the startup recovery protocol. Called once per bundle after
     /// `start_recovery()` as the BPA walks the bundle store and finds data on
     /// disk. Confirms that the metadata entry for this bundle is still wanted,
-    /// and returns its metadata so the BPA can resume processing.
+    /// and returns the stored record halves recovery needs — metadata and
+    /// status — so the BPA can resume processing. The wire bundle is not
+    /// returned: the caller has already re-parsed the bytes on disk, which
+    /// stay authoritative for the wire half.
     ///
     /// For persistent backends (e.g. SQLite), this removes the bundle from the
     /// "unconfirmed" set populated by `start_recovery()`. Any entries still in
@@ -124,7 +128,10 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
     /// this returns `Ok(None)`.
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<BundleMetadata>>;
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> Result<Option<(BundleMetadata, BundleStatus)>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last
@@ -145,6 +152,14 @@ pub trait MetadataStorage: Send + Sync {
     /// can never arrive and is resolved as outcome-unknown. Returns the number
     /// of bundles reset.
     async fn reset_peer_ack_pending(&self, peer: u32) -> Result<u64>;
+
+    /// Resets all bundles with status `BundleStatus::DeliverPending { service }`
+    /// to `WaitingForService { service }`: the service has unregistered, so its
+    /// queued deliveries re-park to await the next registration (the local
+    /// analogue of [`reset_peer_queue`](Self::reset_peer_queue)). In-flight
+    /// deliveries (`DeliveryAckPending`) are untouched — they resolve
+    /// themselves. Returns the number of bundles reset.
+    async fn reset_service_queue(&self, service: &Eid) -> Result<u64>;
 
     /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
     /// and ordered by expiry, to `stream`. Stops early if `stream.send`

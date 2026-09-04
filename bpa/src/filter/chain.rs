@@ -256,15 +256,19 @@ impl Level {
                         // Re-validate the filter's output (non-canonical is
                         // rejected, not rewritten); store its bytes as-is. We
                         // forward it, so an undecryptable liveness block is fatal.
-                        let (rich, nokey) = crate::bundle::parse::parse_validate_with_provider(
-                            new_data.clone(),
-                            key_provider,
-                        )?;
+                        let (raw, extracted, nokey) =
+                            crate::bundle::parse::parse_validate_with_provider(
+                                new_data.clone(),
+                                key_provider,
+                            )?;
                         crate::bundle::parse::reject_undecryptable_liveness(
                             &nokey,
-                            rich.id.timestamp.is_clocked(),
+                            raw.primary.id.timestamp.is_clocked(),
                         )?;
-                        bundle.bundle = rich;
+                        bundle.bpv7 = raw;
+                        // The rewrite changed the bytes, so refresh the cached
+                        // extension fields from the re-parse.
+                        bundle.metadata.extensions = extracted;
                         *data = new_data;
                     }
                 }
@@ -530,8 +534,23 @@ mod tests {
         let chain = builder.build();
         let pool = hardy_async::TaskPool::new();
         let bundle = Bundle {
-            bundle: Default::default(),
-            metadata: Default::default(),
+            bpv7: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: hardy_bpv7::bundle::Id {
+                        source: "ipn:1.0".parse().unwrap(),
+                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: "ipn:99.0".parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: core::time::Duration::from_secs(3600),
+                },
+                blocks: Default::default(),
+            },
+            metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         };
         chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)

@@ -1,4 +1,4 @@
-pub mod registry;
+pub(crate) mod registry;
 
 use core::time::Duration;
 

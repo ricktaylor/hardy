@@ -63,16 +63,16 @@ impl Dispatcher {
                 }
             }
 
-            let (raw, data) = builder
+            let (bundle, data) = builder
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
             let data = Bytes::from(data);
-            let bundle = crate::bundle::parse::rich_from_built(raw, &data)
+            let extracted = crate::bundle::parse::extract_from_built(&bundle, &data)
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
-            let r = self.originate_bundle(bundle, data).await;
+            let r = self.originate_bundle(bundle, extracted, data).await;
             if !matches!(r, Err(services::Error::DuplicateBundle)) {
                 break r;
             }
@@ -119,38 +119,39 @@ impl Dispatcher {
         // the bytes are stored and forwarded as received. As the origin we must be
         // able to process HopCount / unclocked BundleAge, so an undecryptable one
         // is fatal.
-        let (bundle, nokey) =
+        let (bundle, extracted, nokey) =
             crate::bundle::parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
         crate::bundle::parse::reject_undecryptable_liveness(
             &nokey,
-            bundle.id.timestamp.is_clocked(),
+            bundle.primary.id.timestamp.is_clocked(),
         )?;
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
-        if &bundle.id.source != expected_source {
+        if &bundle.primary.id.source != expected_source {
             return Err(services::Error::InvalidDestination(
-                bundle.id.source.clone(),
+                bundle.primary.id.source.clone(),
             ));
         }
 
-        self.originate_bundle(bundle, data).await
+        self.originate_bundle(bundle, extracted, data).await
     }
 
     async fn originate_bundle(
         self: &Arc<Self>,
-        bundle: bundle::Bpv7Bundle,
+        bundle: hardy_bpv7::bundle::Bundle,
+        extensions: bundle::ExtensionFields,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.extensions = extensions;
         let bundle = bundle::Bundle {
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::Dispatching,
-                ..Default::default()
-            },
-            bundle,
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::Dispatching,
         };
 
         // Run Originate filter (pure in-memory)
@@ -170,24 +171,71 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated").increment(1);
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
-        let bundle_id = bundle.bundle.id.clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        let bundle_id = bundle.id().clone();
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
         self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(
         &self,
         service: Arc<services::registry::Service>,
         bundle: bundle::Bundle,
     ) {
-        let Some((bundle, data)) = self.load_data_or_drop(bundle).await else {
+        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
+        // The claim key and every park below use the canonical registration
+        // EID — the exact key `poll_service_waiting` matches on
+        // re-registration. The bundle's own destination can be a different
+        // Eid variant for the same endpoint (e.g. LegacyIpn vs Ipn) and
+        // would never match.
+        let service_eid = self
+            .node_ids
+            .resolve_eid(&service.service_id)
+            .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+
+        // Snapshot the routing table before the claim: the parks below
+        // re-check it to close the park-vs-poll window (see park_bundle).
+        let seen = self.rib.table_snapshot();
+
+        // Delivery commits at the claim below — the reaper defers an
+        // in-flight delivery — so never commence one for a bundle that has
+        // already expired: resolve it as the reaper would.
+        if bundle.has_expired() {
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+        }
+
+        // Claim the bundle out of its delivery queue before offering it.
+        // The claim must be a conditional swap: the delivery channel is
+        // at-least-once, so a duplicate copy recovered by the storage
+        // poller must lose here rather than produce a second delivery. The
+        // new status also marks the point past which the delivery cannot be
+        // recalled: the reaper defers it, and the unregister sweep only
+        // touches the queued status.
+        if !self
+            .store
+            .swap_status(
+                &mut bundle,
+                &bundle::BundleStatus::DeliveryAckPending {
+                    service: service_eid.clone(),
+                },
+            )
+            .await
+        {
+            debug!("Bundle already claimed for delivery or swept, skipping offer");
+            return;
+        }
+
+        // Every exit below this point must resolve the claim taken above:
+        // DeliveryAckPending has no storage poller and the reaper defers it,
+        // so a bundle left there is invisible until restart.
+        let bundle_id = bundle.bundle.primary.id.clone();
+
         // Deliver filter hook
-        let (mut bundle, mut data) = match self
+        let (bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
@@ -202,6 +250,25 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!("Deliver filter execution failed: {e}");
+
+                // The filter consumed the claimed bundle, so re-fetch it and
+                // conditionally park it for the next registration. Losing
+                // the park means a sweep or the reaper resolved it first.
+                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
+                    && bundle.status
+                        == (bundle::BundleStatus::DeliveryAckPending {
+                            service: service_eid.clone(),
+                        })
+                {
+                    self.park_bundle(
+                        bundle,
+                        bundle::BundleStatus::WaitingForService {
+                            service: service_eid,
+                        },
+                        &seen,
+                    )
+                    .await;
+                }
                 return;
             }
         };
@@ -211,7 +278,7 @@ impl Dispatcher {
                 // Pass raw bundle bytes to low-level services: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(&bundle.bundle.id, bundle.expiry(), total_len, &mut data)
+                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
             }
             services::registry::ServiceImpl::Application(app) => {
@@ -253,8 +320,19 @@ impl Dispatcher {
                 let mut payload = match payload_result {
                     Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                         // TODO: We are unable to decrypt the payload, what do we do?
+                        // For now, park for the next registration (which may
+                        // bring usable keys) — the claim must not be left
+                        // dangling in DeliveryAckPending.
                         debug!("Failed to decrypt payload: No valid keys");
-                        return self.store.watch_bundle(bundle).await;
+                        return self
+                            .park_bundle(
+                                bundle,
+                                bundle::BundleStatus::WaitingForService {
+                                    service: service_eid,
+                                },
+                                &seen,
+                            )
+                            .await;
                     }
                     Err(e) => {
                         // Other decryption error - skip delivery
@@ -273,9 +351,9 @@ impl Dispatcher {
                 // so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
                 app.on_deliver(
-                    &bundle.bundle.id,
+                    bundle.id(),
                     bundle.expiry(),
-                    bundle.bundle.flags.app_ack_requested,
+                    bundle.primary().flags.app_ack_requested,
                     total_len,
                     &mut payload,
                 )
@@ -285,24 +363,19 @@ impl Dispatcher {
 
         if let Err(e) = delivery_result {
             debug!("Service delivery deferred: {e}");
-            // Park under the service's registration EID, the exact key
-            // `poll_service_waiting` matches on re-registration. The bundle's
-            // own destination can be a different Eid variant for the same
-            // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
-            let service_eid = self
-                .node_ids
-                .resolve_eid(&service.service_id)
-                .unwrap_or_else(|_| bundle.bundle.destination.clone());
-            let desired = bundle::BundleStatus::WaitingForService {
-                service: service_eid,
-            };
-            // Conditional: the reaper expires bundles regardless of status,
-            // so it may have resolved this one mid-delivery, and the park
-            // must not resurrect a tombstoned bundle.
-            if self.store.swap_status(&mut bundle, &desired).await {
-                self.store.watch_bundle(bundle).await;
-            }
-            return;
+            // Park under the registration EID for the next registration; the
+            // park re-checks the routing snapshot, so a service that
+            // (re-)registered while this delivery was in flight re-dispatches
+            // the bundle instead of stranding it (see park_bundle).
+            return self
+                .park_bundle(
+                    bundle,
+                    bundle::BundleStatus::WaitingForService {
+                        service: service_eid,
+                    },
+                    &seen,
+                )
+                .await;
         }
 
         // The terminal claim is a conditional tombstone: the reaper races
@@ -312,7 +385,7 @@ impl Dispatcher {
         if !self.store.tombstone_if(&bundle).await {
             debug!(
                 "Delivery completion for {} lost the resolution race, ignored",
-                bundle.bundle.id
+                bundle.id()
             );
             return;
         }

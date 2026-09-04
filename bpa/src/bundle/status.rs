@@ -1,33 +1,62 @@
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
 
 /// Processing status of a bundle within the BPA pipeline.
 ///
 /// Tracks where a bundle is in the dispatch/forward/deliver lifecycle.
-/// Persisted to metadata storage so processing can resume after restart.
+/// Persisted to metadata storage so processing can resume after restart —
+/// but never through serde: backends encode it in their own typed columns
+/// (it is `serde(skip)`ed on [`Bundle`](super::Bundle)).
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum BundleStatus {
     /// Freshly received, not yet processed.
     #[default]
     New,
-    /// Currently being dispatched (routing lookup and forwarding decision).
+    /// Queued for dispatch processing. The dispatch queue consumer claims the
+    /// bundle to [`Dispatching`](Self::Dispatching) on dequeue; the storage
+    /// poller only recovers bundles still in this status, so an in-flight
+    /// bundle cannot be re-queued as a duplicate.
+    DispatchPending,
+    /// Routing decision in flight. Transient: the dispatch consumer claims a
+    /// bundle into this status, and the routing outcome immediately moves it
+    /// on (a queue, a park, reassembly, or a tombstone).
     Dispatching,
     /// Queued for forwarding to a specific CLA peer.
     ForwardPending {
         /// Identifier of the CLA peer this bundle is queued for.
         peer: u32,
-        /// Optional queue index within the peer's egress queues.
-        queue: Option<u32>,
+        /// The policy queue index within the peer's egress queues
+        /// (`0..FlowControllerFactory::queue_count()`; queue 0 always exists).
+        queue: u32,
     },
     /// Offered to a CLA that has taken ownership of the transfer; retained
-    /// until the CLA reports the outcome via `Sink::transfer_outcome`, the
-    /// peer is removed, or the bundle's lifetime expires.
+    /// until the CLA reports the outcome via `Sink::transfer_outcome` or the
+    /// peer is removed. The reaper defers expiry of this status — the
+    /// transfer cannot be recalled from the wire — so an expired bundle
+    /// resolves when the outcome arrives: a completed transfer reports
+    /// truthfully, and any other exit is dropped as `LifetimeExpired` at the
+    /// dispatch expiry checkpoint.
     ForwardAckPending {
         /// Identifier of the CLA peer the transfer was accepted for.
         peer: u32,
+    },
+    /// Queued for delivery to a specific local service (the local analogue
+    /// of [`ForwardPending`](Self::ForwardPending)). Held in the service's
+    /// delivery channel; swept to
+    /// [`WaitingForService`](Self::WaitingForService) when the service
+    /// unregisters or the BPA restarts.
+    DeliverPending {
+        /// Canonical registration EID of the service this bundle is queued for.
+        service: Eid,
+    },
+    /// Offered to a local service via `on_deliver` (the local analogue of
+    /// [`ForwardAckPending`](Self::ForwardAckPending)). No storage poller
+    /// recovers this status: every delivery exit resolves the claim, and a
+    /// restart re-parks it as
+    /// [`WaitingForService`](Self::WaitingForService).
+    DeliveryAckPending {
+        /// Canonical registration EID of the service the bundle was offered to.
+        service: Eid,
     },
     /// Fragment of an Application Data Unit awaiting reassembly.
     AduFragment {

@@ -160,13 +160,28 @@ impl core::fmt::Display for ClaAddress {
 }
 
 /// The result of a bundle forwarding attempt by a CLA.
+///
+/// The variants encode who owns the transfer when `forward` returns, not
+/// merely success or failure. An *unreliable* convergence layer is
+/// fire-and-forget and answers terminally: [`Sent`](Self::Sent) is all it
+/// will ever know. [`Accepted`](Self::Accepted) exists only for *reliable*
+/// convergence layers that learn their peer's acceptance later: returning
+/// early frees the egress lane while that acknowledgement is in flight, so
+/// a session can pipeline many transfers concurrently. This deferred
+/// callback is the pipelining seam — a `forward` that awaited the final
+/// outcome would serialize every lane on a wire round-trip. Local delivery
+/// has no analogue of `Accepted` because `on_deliver` completes in-process,
+/// with no round-trip to wait out.
 pub enum ForwardBundleResult {
-    /// The bundle was successfully sent.
+    /// The bundle was successfully sent, and no further outcome will be
+    /// reported — the terminal, fire-and-forget answer of an unreliable
+    /// convergence layer.
     Sent,
     /// The CLA has taken ownership of the bundle and will report the
     /// transfer's outcome later via [`Sink::transfer_outcome`]. The BPA
-    /// retains the bundle until the outcome arrives, the peer is removed,
-    /// or the bundle's lifetime expires.
+    /// retains the bundle until the outcome arrives or the peer is removed;
+    /// a lifetime that expires mid-transfer is enforced when the outcome
+    /// arrives, not by recalling the transfer.
     Accepted,
     /// The bundle could not be sent because the neighbor is no longer available.
     NoNeighbour,
@@ -174,6 +189,12 @@ pub enum ForwardBundleResult {
 
 /// The final outcome of a transfer previously answered
 /// [`ForwardBundleResult::Accepted`].
+///
+/// Today the outcome only resolves the retained bundle, but it is
+/// deliberately the peer-acceptance signal a future reliability /
+/// custody-transfer layer will consume — which is why reliable CLAs
+/// report it even though `Completed` and a fire-and-forget
+/// [`Sent`](ForwardBundleResult::Sent) currently resolve identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferOutcome {
     /// The bundle was handed to the far bundle node.
@@ -192,7 +213,7 @@ pub enum TransferOutcome {
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs are often wrapped by an [`EgressPolicy`](crate::policy::EgressPolicy)
+/// CLAs are often wrapped by an [`FlowControllerFactory`](crate::policy::FlowControllerFactory)
 /// to add more complex behaviors like rate limiting or prioritization.
 ///
 /// # Sink Lifecycle

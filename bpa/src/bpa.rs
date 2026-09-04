@@ -10,7 +10,7 @@ use crate::{
     dispatcher::Dispatcher,
     filter::{self, Filter, FilterEngine, Hook},
     otel_metrics,
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::{self, Rib, RoutingAgent},
     services::{self, Service, registry::ServiceRegistry},
     storage::store::Store,
@@ -144,7 +144,7 @@ pub trait BpaRegistration: Send + Sync {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> cla::Result<Vec<hardy_bpv7::eid::NodeId>>;
 
     /// Register a low-level Service with full bundle access.
@@ -235,12 +235,21 @@ impl Bpa {
         BpaBuilder::new()
     }
 
+    /// Start the BPA's background machinery.
+    ///
+    /// When `recover_storage` is set, storage crash recovery runs to
+    /// completion before this returns: recovery's checkpoint resets assume
+    /// a quiescent store, so CLAs and services must only be registered
+    /// after `start` resolves.
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
-    pub fn start(&self, recover_storage: bool) {
+    pub async fn start(&self, recover_storage: bool) {
         otel_metrics::init();
 
-        // Start the store
-        self.store.start(self.dispatcher.clone(), recover_storage);
+        // Start the store, awaiting recovery so registrations that follow
+        // cannot race the consistency check
+        self.store
+            .start(self.dispatcher.clone(), recover_storage)
+            .await;
 
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
@@ -337,7 +346,7 @@ impl BpaRegistration for Bpa {
         &self,
         name: String,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> cla::Result<Vec<NodeId>> {
         self.cla_registry
             .register(name, cla, &self.dispatcher, policy)
