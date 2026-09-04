@@ -5130,9 +5130,9 @@ async fn originate_route_drop_never_awaits_the_payload() {
     );
 }
 
-// The ADU door refuses a bundle that expires at creation, as the raw door's
+// The ADU doors refuse a bundle that expires at creation, as the raw door's
 // admission gate does: a zero lifetime surfaces as `Dropped(LifetimeExpired)`
-// with nothing admitted.
+// with nothing admitted, whole-buffer or streamed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adu_originate_refuses_a_zero_lifetime() {
     let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
@@ -5152,6 +5152,26 @@ async fn adu_originate_refuses_a_zero_lifetime() {
             None,
         )
         .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The streamed door, the same refusal before the payload is pulled: the
+    // source pends forever if pulled. The timeout only bounds a regression.
+    let mut stream = ParkedReceiver::new(b"expired", 7, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            7,
+            &mut stream,
+            Duration::ZERO,
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the expired send must not pull the payload");
     assert!(matches!(
         result,
         Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
@@ -5262,10 +5282,10 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
 
 /// An origination declaring more than `max_bundle_size` is refused before a
 /// byte spools, at both doors: the raw door from its headers' declared size
-/// (the header pass), the ADU door from its built bundle's declared size.
-/// The raw source parks after its first segments, so a refusal returning at
-/// all proves the door never drained the payload, and each refusal reports
-/// a declared size rather than a count of bytes taken.
+/// (the header pass), the ADU door from its declared payload. Both payload
+/// sources park after their first segments, so a refusal returning at all
+/// proves the door never drained the payload, and each refusal reports a
+/// declared size rather than a count of bytes taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn oversized_originate_refuses_before_the_payload() {
     let node_ids = NodeIds::try_from(
@@ -5314,21 +5334,103 @@ async fn oversized_originate_refuses_before_the_payload() {
         other => panic!("expected PayloadTooLarge, got {other:?}"),
     }
 
-    // ADU: a 50 KB payload. The timeout only bounds a regression.
+    // ADU: a 50 KB declared payload, streamed. The timeout only bounds a
+    // regression.
+    let payload = vec![0u8; 50_000];
+    let mut stream = ParkedReceiver::new(&payload, 1000, 3);
     let result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        app.sink.get().unwrap().send(
+        app.sink.get().unwrap().send_streamed(
             "ipn:0.2.1".parse().unwrap(),
-            Bytes::from(vec![0u8; 50_000]),
+            50_000,
+            &mut stream,
             Duration::from_secs(60),
             None,
         ),
     )
     .await
-    .expect("Timeout: the ADU size refusal must not wait");
+    .expect("Timeout: the ADU size refusal must not wait for the payload");
     match result {
         Err(services::Error::PayloadTooLarge { size, max }) => {
             assert!(size >= 50_000, "a declared size, got {size}");
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    bpa.shutdown().await;
+}
+
+// An ADU whose payload fits `max_bundle_size` but whose headers carry the
+// bundle over it is refused by the shared stage's declared-size bound before
+// the payload is pulled: the source parks on its first pull. The declared
+// size is the built bundle's, whose length depends on the width of the
+// creation timestamp's sequence number, so it is checked against twins built
+// at one creation time with a sequence number of each CBOR width.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adu_originate_refuses_headers_over_the_cap() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .max_bundle_size(NonZeroU64::new(2048).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    let source = bpa
+        .register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let destination: Eid = "ipn:0.2.1".parse().unwrap();
+    let lifetime = Duration::from_secs(60);
+
+    let payload = vec![0u8; 2040];
+    let creation_time = DtnTime::now();
+    let twins: Vec<u64> = [0, 24, 256, 65_536]
+        .into_iter()
+        .map(|sequence_number| {
+            let (_, data) = Builder::new(source.clone(), destination.clone())
+                .with_lifetime(lifetime)
+                .with_payload(Cow::Borrowed(&payload))
+                .build(CreationTimestamp::from_parts(
+                    Some(creation_time),
+                    sequence_number,
+                ))
+                .expect("Failed to build bundle");
+            data.len() as u64
+        })
+        .collect();
+    assert!(
+        twins.iter().all(|&size| size > 2048),
+        "the headers carry every twin over the cap: {twins:?}"
+    );
+
+    // The timeout only bounds a regression.
+    let mut stream = ParkedReceiver::new(&payload, 1000, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink
+            .get()
+            .unwrap()
+            .send_streamed(destination, 2040, &mut stream, lifetime, None),
+    )
+    .await
+    .expect("Timeout: the size refusal must not wait for the payload");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert!(
+                twins.contains(&size),
+                "expected one of {twins:?}, got {size}"
+            );
             assert_eq!(max, 2048);
         }
         other => panic!("expected PayloadTooLarge, got {other:?}"),
@@ -5391,4 +5493,383 @@ async fn configured_endpoints_activate_at_start() {
     );
 
     bpa.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// The streamed ADU door: ApplicationSink::send_streamed
+// ---------------------------------------------------------------------------
+
+/// A payload streamed through `send_streamed` originates a bundle
+/// wire-equivalent to the whole-buffer `send` of the same payload: same
+/// source, destination, flags, and payload bytes (the ids differ only by
+/// creation timestamp), and the streamed form parses canonically — the CRC
+/// computed as the payload flowed is the CRC a resident build writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_matches_whole_buffer_send() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let payload = vec![0xB7_u8; 9000];
+
+    // Streamed: several Next segments and a Final.
+    let (tx, mut rx) = hardy_async::channel::bounded(8);
+    for chunk in payload.chunks(2000) {
+        tx.send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(tx);
+    let streamed_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            dest.clone(),
+            payload.len() as u64,
+            &mut rx,
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("streamed send failed");
+
+    // Whole-buffer twin.
+    let buffered_id = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            dest.clone(),
+            Bytes::from(payload.clone()),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .expect("whole-buffer send failed");
+
+    // Event-driven waits; the timeouts only bound a regression.
+    let mut parsed = Vec::new();
+    for _ in 0..2 {
+        let forwarded = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for forwarded bundle")
+        .expect("Channel closed");
+        parsed.push(parse(forwarded).expect("forwarded bundle parses"));
+    }
+    parsed.sort_by_key(|p| p.bundle.primary.id != streamed_id);
+    let (streamed, buffered) = (&parsed[0], &parsed[1]);
+
+    assert_eq!(streamed.bundle.primary.id, streamed_id);
+    assert_eq!(buffered.bundle.primary.id, buffered_id);
+    assert_eq!(streamed.bundle.primary.destination, dest);
+    assert_eq!(streamed.bundle.primary.flags, buffered.bundle.primary.flags);
+    assert_eq!(
+        streamed.bundle.blocks.len(),
+        buffered.bundle.blocks.len(),
+        "same block structure"
+    );
+    // Past the primary, which carries each bundle's own id, the two are the
+    // same bytes.
+    let after_primary = |p: &Parsed| {
+        let end = usize::try_from(p.bundle.blocks[&0].extent.end).unwrap();
+        p.data.slice(end..)
+    };
+    assert_eq!(after_primary(streamed), after_primary(buffered));
+    assert_eq!(
+        streamed.bundle.blocks[&1]
+            .payload(&streamed.data)
+            .expect("streamed payload resident"),
+        payload.as_slice()
+    );
+
+    bpa.shutdown().await;
+}
+
+/// A producer that goes away before its final segment cancels the streamed
+/// ADU send: `StreamCancelled`, nothing originated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_producer_drop_cancels() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Next(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx); // no Final — the producer aborts
+
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(
+            "ipn:0.2.1".parse().unwrap(),
+            5000,
+            &mut rx,
+            Duration::from_secs(3600),
+            None,
+        )
+        .await;
+    assert!(matches!(result, Err(services::Error::StreamCancelled)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "a cancelled streamed send must not originate a bundle"
+    );
+}
+
+/// The declared-length contract is enforced with nothing persisted: an
+/// over-delivering producer is rejected `PayloadTooLarge`, an
+/// under-delivering one `PayloadUnderrun`, each carrying the declared
+/// total.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_enforces_the_declared_length() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(peer_addr, from_ref(&remote_node))
+        .await
+        .unwrap();
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Overrun: 2000 bytes against a declaration of 1000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 2000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(dest.clone(), 1000, &mut rx, Duration::from_secs(3600), None)
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadTooLarge { max: 1000, .. })
+    ));
+
+    // Underrun: 1000 bytes against a declaration of 2000.
+    let (tx, mut rx) = hardy_async::channel::bounded(2);
+    tx.send(Segment::Final(Bytes::from(vec![0u8; 1000])))
+        .await
+        .unwrap();
+    drop(tx);
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send_streamed(dest.clone(), 2000, &mut rx, Duration::from_secs(3600), None)
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadUnderrun {
+            size: 1000,
+            expected: 2000
+        })
+    ));
+
+    // A declaration past `max_bundle_size` is refused with its declared
+    // length before the payload is pulled, however large: `u64::MAX` would
+    // otherwise overflow the built bundle's extents. The timeout only bounds
+    // a regression.
+    let mut stream = ParkedReceiver::new(&[], 1, 0);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send_streamed(
+            dest,
+            u64::MAX,
+            &mut stream,
+            Duration::from_secs(3600),
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the size refusal must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadTooLarge { size: u64::MAX, .. })
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was originated");
+}
+
+/// The trait's provided `send_streamed` buffers and delegates to `send`
+/// with the same error surface, so third-party sinks (the gRPC bridge
+/// included) get the streamed API without implementing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_send_streamed_default_buffers_and_delegates() {
+    struct RecordingSink(flume::Sender<Bytes>);
+
+    #[async_trait]
+    impl services::ApplicationSink for RecordingSink {
+        async fn unregister(&self) {}
+
+        async fn send(
+            &self,
+            _destination: Eid,
+            data: Bytes,
+            _lifetime: Duration,
+            _options: Option<services::SendOptions>,
+        ) -> services::Result<Id> {
+            self.0.send(data).unwrap();
+            Ok(Id::default())
+        }
+    }
+
+    let (tx, sent_rx) = flume::bounded(1);
+    let sink = RecordingSink(tx);
+
+    // A clean stream is buffered whole and handed to `send`.
+    let payload = vec![0x11_u8; 3000];
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(4);
+    for chunk in payload.chunks(1024) {
+        seg_tx
+            .send(Segment::Next(Bytes::copy_from_slice(chunk)))
+            .await
+            .unwrap();
+    }
+    seg_tx.send(Segment::Final(Bytes::new())).await.unwrap();
+    drop(seg_tx);
+    services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        payload.len() as u64,
+        &mut rx,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("default send_streamed delegates");
+    assert_eq!(sent_rx.recv().unwrap().as_ref(), payload.as_slice());
+
+    // The declared-length contract holds before `send` is ever called.
+    let (seg_tx, mut rx) = hardy_async::channel::bounded(2);
+    seg_tx
+        .send(Segment::Final(Bytes::from(vec![0u8; 100])))
+        .await
+        .unwrap();
+    drop(seg_tx);
+    let result = services::ApplicationSink::send_streamed(
+        &sink,
+        "ipn:0.2.1".parse().unwrap(),
+        500,
+        &mut rx,
+        Duration::from_secs(60),
+        None,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::PayloadUnderrun {
+            size: 100,
+            expected: 500
+        })
+    ));
+    assert!(sent_rx.is_empty(), "a violating stream never reaches send");
 }
