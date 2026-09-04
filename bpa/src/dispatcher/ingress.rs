@@ -284,11 +284,10 @@ impl Dispatcher {
         // resident payload prefix at construction, the streamed remainder
         // as it arrives — feeding the payload CRC, the block+outer framing,
         // and each deferred BIB digest as the bytes stream past.
-        let payload_start = bundle
-            .bpv7
-            .blocks
-            .get(&1)
-            .map_or(headers.len(), |b| b.payload_range().start as usize);
+        let payload_start = bundle.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
+            usize::try_from(b.payload_range().start)
+                .expect("parse bounds pre-payload offsets to usize")
+        });
         let mut tail_rx =
             ValidatingReceiver::new(stream, tail, deferred_verifiers, headers, payload_start);
 
