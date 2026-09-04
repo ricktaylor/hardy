@@ -47,8 +47,8 @@ struct FragmentSet {
 impl Store {
     pub async fn adu_reassemble(&self, bundle: &Bundle) -> ReassemblyResult {
         let status = BundleStatus::AduFragment {
-            source: bundle.bundle.primary.id.source.clone(),
-            timestamp: bundle.bundle.primary.id.timestamp.clone(),
+            source: bundle.id().source.clone(),
+            timestamp: bundle.id().timestamp.clone(),
         };
 
         let Some(fragments) = self.poll_fragments(bundle, &status).await else {
@@ -79,10 +79,10 @@ impl Store {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
 
-        let source = bundle.bundle.primary.id.source.clone();
-        let timestamp = bundle.bundle.primary.id.timestamp.clone();
+        let source = bundle.id().source.clone();
+        let timestamp = bundle.id().timestamp.clone();
         let fragment_info = bundle
-            .bundle
+            .bpv7
             .primary
             .id
             .fragment_info
@@ -91,7 +91,7 @@ impl Store {
 
         let total_adu_len = fragment_info.total_adu_length;
         let r = bundle
-            .bundle
+            .bpv7
             .blocks
             .get(&1)
             .trace_expect("Bundle without payload?!")
@@ -108,7 +108,7 @@ impl Store {
             adus: [(
                 fragment_info.offset,
                 (
-                    bundle.bundle.primary.id.clone(),
+                    bundle.id().clone(),
                     bundle
                         .metadata
                         .storage_name
@@ -143,12 +143,12 @@ impl Store {
                                 break (adu_totals >= total_adu_len).then_some(results);
                             };
 
-                            if source == bundle.bundle.primary.id.source &&
-                                timestamp == bundle.bundle.primary.id.timestamp &&
-                                let Some(fragment_info) = &bundle.bundle.primary.id.fragment_info
+                            if source == bundle.id().source &&
+                                timestamp == bundle.id().timestamp &&
+                                let Some(fragment_info) = &bundle.bpv7.primary.id.fragment_info
                             {
                                 let r = bundle
-                                    .bundle
+                                    .bpv7
                                     .blocks
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
@@ -169,7 +169,7 @@ impl Store {
                                 }
                                 results.adus.insert(fragment_info.offset,
                                     (
-                                        bundle.bundle.primary.id,
+                                        bundle.bpv7.primary.id,
                                         bundle.metadata
                                             .storage_name
                                             .trace_expect("Invalid bundle in reassembly?!"),
@@ -414,7 +414,7 @@ mod tests {
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
         let bundle = Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bpv7: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
                     id: id.clone(),
                     flags: Default::default(),
@@ -719,7 +719,7 @@ mod tests {
         // Store fragment 0 metadata with the full parsed Bundle (reassemble
         // passes it to Editor::new which needs the blocks map, not just the ID)
         let meta_bundle = Bundle {
-            bundle: bundle0.clone(),
+            bpv7: bundle0.clone(),
             metadata: {
                 let mut m = BundleMetadata::originated();
                 m.storage_name = Some(name0.clone());

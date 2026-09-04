@@ -26,6 +26,42 @@ fn make_bpv7(
     }
 }
 
+/// Create a bundle received from a peer CLA, with every persisted metadata
+/// group populated: an `Origin::Ingress` provenance and decoded extension
+/// fields. Exercises the exact blob shape the SQL backends serialize.
+pub fn ingress_bundle() -> bundle::Bundle {
+    let seq = next_seq();
+
+    let bpv7 = make_bpv7(
+        hardy_bpv7::bundle::Id {
+            source: format!("ipn:{seq}.0").parse().unwrap(),
+            timestamp: CreationTimestamp::now(),
+            fragment_info: None,
+        },
+        core::time::Duration::from_secs(3600),
+    );
+
+    let mut metadata = BundleMetadata::ingress(
+        "test-cla".into(),
+        Some("ipn:1.0".parse().unwrap()),
+        Some(hardy_bpa::cla::ClaAddress::Tcp(
+            "127.0.0.1:4556".parse().unwrap(),
+        )),
+    );
+    metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
+    metadata.extensions.age = Some(core::time::Duration::from_millis(1234));
+    metadata.extensions.hop_count = Some(hardy_bpv7::hop_info::HopInfo {
+        limit: 32,
+        count: 3,
+    });
+
+    bundle::Bundle {
+        bpv7,
+        metadata,
+        status: BundleStatus::Waiting,
+    }
+}
+
 /// Create a bundle with a unique ID, status `Waiting`, and a 1-hour lifetime.
 pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
@@ -40,7 +76,7 @@ pub fn random_bundle() -> bundle::Bundle {
     );
 
     bundle::Bundle {
-        bundle: bpv7,
+        bpv7,
         metadata: BundleMetadata::originated(),
         status: BundleStatus::Waiting,
     }
@@ -63,7 +99,7 @@ pub fn bundle_with_status(
     );
 
     bundle::Bundle {
-        bundle: bpv7,
+        bpv7,
         metadata: BundleMetadata::new(received_at, hardy_bpa::bundle::Origin::Originated),
         status,
     }
@@ -93,7 +129,7 @@ pub fn bundle_with_expiry(
     );
 
     bundle::Bundle {
-        bundle: bpv7,
+        bpv7,
         metadata: BundleMetadata::originated(),
         status,
     }
@@ -120,7 +156,7 @@ pub fn bundle_with_fragment(
     );
 
     bundle::Bundle {
-        bundle: bpv7,
+        bpv7,
         metadata: BundleMetadata::originated(),
         status,
     }

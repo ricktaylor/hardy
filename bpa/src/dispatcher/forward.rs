@@ -1,7 +1,7 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
     pub async fn forward_bundle(
         &self,
         cla: &dyn cla::Cla,
@@ -58,7 +58,7 @@ impl Dispatcher {
                 return;
             }
             Ok((new_bundle, data)) => (
-                core::mem::replace(&mut bundle.bundle.blocks, new_bundle.blocks),
+                core::mem::replace(&mut bundle.bpv7.blocks, new_bundle.blocks),
                 data,
             ),
         };
@@ -73,7 +73,7 @@ impl Dispatcher {
         // Every exit below this point must resolve the claim taken above:
         // ForwardAckPending has no storage poller, so a bundle left there is
         // invisible until peer removal, restart, or expiry.
-        let bundle_id = bundle.bundle.primary.id.clone();
+        let bundle_id = bundle.id().clone();
         let (mut bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
@@ -111,13 +111,7 @@ impl Dispatcher {
         // single Final segment.
         let total_len = data.len() as u64;
         match cla
-            .forward(
-                queue,
-                cla_addr,
-                &bundle.bundle.primary.id,
-                total_len,
-                &mut data,
-            )
+            .forward(queue, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => {
@@ -129,7 +123,7 @@ impl Dispatcher {
                 if !self.store.tombstone_if(&bundle).await {
                     debug!(
                         "Forward completion for {} lost the resolution race, ignored",
-                        bundle.bundle.primary.id
+                        bundle.id()
                     );
                     return;
                 }
@@ -156,11 +150,16 @@ impl Dispatcher {
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
-                bundle.bundle.blocks = pre_rewrite;
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                self.store.watch_bundle(bundle).await;
+                bundle.bpv7.blocks = pre_rewrite;
+                // Conditional: the reaper can resolve the claimed bundle at
+                // any await, and the park must not resurrect a tombstone.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
                 self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
@@ -175,11 +174,16 @@ impl Dispatcher {
                 // failure can be deterministic and instantaneous, so
                 // re-running dispatch inline here could spin; the retry
                 // waits in Waiting for the next routing or link event.
-                bundle.bundle.blocks = pre_rewrite;
-                self.store
-                    .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await;
-                self.store.watch_bundle(bundle).await;
+                bundle.bpv7.blocks = pre_rewrite;
+                // Conditional: the reaper can resolve the claimed bundle at
+                // any await, and the park must not resurrect a tombstone.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
             }
         }
     }
@@ -265,14 +269,14 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
-        // `metadata.wire`) to rebuild the wire blocks, but never write the
+        // `metadata.extensions`) to rebuild the wire blocks, but never write the
         // bumped values back: `forward_bundle` deletes the bundle on a successful
         // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
         // in-memory cache is never observed again after this rewrite.
@@ -289,8 +293,8 @@ impl Dispatcher {
         // of an admin-record or anonymous bundle — the receiver has nowhere
         // meaningful to report to, and a conformant parser (ours included)
         // rejects the combination.
-        let report_on_failure = !bundle.bundle.primary.flags.is_admin_record
-            && !bundle.bundle.primary.id.source.is_null();
+        let report_on_failure =
+            !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
@@ -304,7 +308,7 @@ impl Dispatcher {
                 hardy_cbor::encode::emit(
                     &self
                         .node_ids
-                        .get_admin_endpoint(&bundle.bundle.primary.destination),
+                        .get_admin_endpoint(&bundle.primary().destination),
                 )
                 .0
                 .into(),
@@ -312,7 +316,7 @@ impl Dispatcher {
             .rebuild();
 
         // Increment Hop Count
-        if let Some(hop_count) = &bundle.metadata.wire.hop_count {
+        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
@@ -333,7 +337,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.metadata.wire.age.is_some() || !bundle.bundle.primary.id.timestamp.is_clocked() {
+        if bundle.metadata.extensions.age.is_some() || !bundle.id().timestamp.is_clocked() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())

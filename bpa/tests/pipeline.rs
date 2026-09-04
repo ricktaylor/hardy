@@ -1767,7 +1767,7 @@ impl hardy_bpa::filter::ReadFilter for ExtentCheckFilter {
             Err(e) => *mismatch = Some(format!("unparseable filter data: {e}")),
             Ok(parsed) => {
                 for (number, block) in &parsed.bundle.blocks {
-                    match bundle.bundle.blocks.get(number) {
+                    match bundle.bpv7.blocks.get(number) {
                         Some(b) if b.extent == block.extent => {}
                         Some(b) => {
                             *mismatch = Some(format!(

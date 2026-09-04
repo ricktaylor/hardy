@@ -191,7 +191,7 @@ mod tests {
             handles.push(
                 hardy_async::spawn!(caller_pool, "outer_task", async move {
                     let bundle = Bundle {
-                        bundle: hardy_bpv7::bundle::Bundle {
+                        bpv7: hardy_bpv7::bundle::Bundle {
                             primary: hardy_bpv7::primary_block::PrimaryBlock {
                                 id: hardy_bpv7::bundle::Id {
                                     source: "ipn:1.0".parse().unwrap(),

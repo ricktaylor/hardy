@@ -63,8 +63,8 @@ impl WriteFilter for IpnLegacyFilter {
             return Ok(WriteResult::Continue(None, None));
         }
 
-        let needs_source = matches!(bundle.bundle.primary.id.source, Eid::Ipn { .. });
-        let needs_dest = matches!(bundle.bundle.primary.destination, Eid::Ipn { .. });
+        let needs_source = matches!(bundle.id().source, Eid::Ipn { .. });
+        let needs_dest = matches!(bundle.primary().destination, Eid::Ipn { .. });
 
         if !needs_source && !needs_dest {
             return Ok(WriteResult::Continue(None, None));
@@ -80,7 +80,7 @@ impl WriteFilter for IpnLegacyFilter {
         if let Eid::Ipn {
             fqnn,
             service_number,
-        } = &bundle.bundle.primary.id.source
+        } = &bundle.id().source
         {
             editor = editor
                 .with_source(Eid::LegacyIpn {
@@ -93,7 +93,7 @@ impl WriteFilter for IpnLegacyFilter {
         if let Eid::Ipn {
             fqnn,
             service_number,
-        } = &bundle.bundle.primary.destination
+        } = &bundle.primary().destination
         {
             editor = editor
                 .with_destination(Eid::LegacyIpn {
@@ -134,7 +134,7 @@ mod tests {
         metadata.next_hop = next_hop.map(|nh| nh.parse().unwrap());
 
         let bundle = Bundle {
-            bundle: raw,
+            bpv7: raw,
             metadata,
             status: hardy_bpa::bundle::BundleStatus::New,
         };

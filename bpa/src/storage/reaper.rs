@@ -85,8 +85,8 @@ impl Reaper {
     pub fn watch(&self, bundle: &Bundle, cap: bool) {
         let new_entry = CacheEntry {
             expiry: bundle.expiry(),
-            id: bundle.bundle.primary.id.clone(),
-            destination: bundle.bundle.primary.destination.clone(),
+            id: bundle.id().clone(),
+            destination: bundle.primary().destination.clone(),
         };
 
         let new_expiry = new_entry.expiry;

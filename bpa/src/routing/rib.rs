@@ -8,6 +8,7 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
@@ -132,21 +133,20 @@ impl Rib {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
-        let result = table.find_recurse(
-            &bundle.bundle.primary.destination,
-            true,
-            &mut HashSet::new(),
-        )?;
+        // Precise field borrow: the lookup result keeps this Eid borrowed,
+        // and the match arms below mutate `bundle.metadata`.
+        let result =
+            table.find_recurse(&bundle.bpv7.primary.destination, true, &mut HashSet::new())?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
             previous = bundle
                 .previous_node()
-                .unwrap_or_else(|| bundle.bundle.primary.id.source.clone());
+                .unwrap_or_else(|| bundle.id().source.clone());
             table.find_recurse(&previous, false, &mut HashSet::new())?
         } else {
             result
@@ -161,7 +161,7 @@ impl Rib {
                 Some(DispatchAction::Forward(peer))
             }
             LookupResult::ForwardEcmp(peers) => {
-                self.select_peer(peers, &bundle.bundle, &mut bundle.metadata)
+                self.select_peer(peers, &bundle.bpv7, &mut bundle.metadata)
             }
             LookupResult::Reflect => None,
         }
@@ -178,7 +178,7 @@ impl Rib {
     fn select_peer(
         &self,
         mut peers: Vec<(u32, &Eid)>,
-        bundle: &hardy_bpv7::bundle::Bundle,
+        bundle: &Bpv7Bundle,
         metadata: &mut BundleMetadata,
     ) -> Option<DispatchAction> {
         if peers.is_empty() {
@@ -536,7 +536,7 @@ mod tests {
 
     fn make_bundle(destination: &str) -> Bundle {
         Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bpv7: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
                     id: BundleId {
                         source: "ipn:0.99.1".parse().unwrap(),
@@ -668,7 +668,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(4), 77);
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.wire.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(matches!(result, Some(DispatchAction::Forward(77))));
     }
@@ -692,7 +692,7 @@ mod tests {
         );
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.metadata.wire.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(result.is_none());
     }
@@ -725,7 +725,7 @@ mod tests {
         };
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
-        bundle2.bundle.primary.id = bundle.bundle.primary.id.clone();
+        bundle2.bpv7.primary.id = bundle.id().clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
             Some(DispatchAction::Forward(p)) => p,
@@ -765,7 +765,7 @@ mod tests {
 
         // Same bundle deterministically picks the same peer
         let mut bundle2 = make_bundle("ipn:0.2.1");
-        bundle2.bundle.primary.id = bundle.bundle.primary.id.clone();
+        bundle2.bpv7.primary.id = bundle.id().clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
             Some(DispatchAction::Forward(p)) => p,

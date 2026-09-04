@@ -37,7 +37,7 @@ Target shape per the filter doc's "Sketch — the concrete types" section: visib
 | Status | Task |
 |---|---|
 | ✅ | `Provenance { received_at, origin }` with `origin: Ingress { cla, peer_node, peer_addr } \| Originated \| Recovered` — **persisted, write-once** = private fields + `pub` read accessors + no `&mut` accessor. `Recovered` covers restart orphans (data without a metadata record), where fabricating an Ingress origin would be the lie the partition exists to kill |
-| ✅ | `WireCache { previous_node, age, hop_count }` — parser-derived cache of the stored bytes; plain `pub` fields (filters only ever hold `&Bundle`) |
+| ✅ | `ExtensionFields { previous_node, age, hop_count }` — parser-derived cache of the stored bytes; plain `pub` fields (filters only ever hold `&Bundle`) |
 | ✅ | `Classification` — empty placeholder group, serde-persisted, **private field** (getters/`apply()` arrive with Phase 2); fields arrive with their tranches |
 | ✅ | `storage_name` stays a `pub(crate)` field — already unreachable outside the crate; a one-field `Infrastructure` struct added ceremony without enforcement |
 | ✅ | Constructors `BundleMetadata::ingress(…)` / `::originated()` / `::new(received_at, origin)` (the explicit-parts primitive for record reconstruction — storage backends, fixtures, recovery paths); `Default` removed |

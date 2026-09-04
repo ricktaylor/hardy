@@ -163,7 +163,7 @@ impl Dispatcher {
         if !self.store.tombstone_if(&bundle).await {
             debug!(
                 "Drop of bundle {} lost the resolution race, ignored",
-                bundle.bundle.primary.id
+                bundle.id()
             );
             return;
         }
@@ -178,9 +178,7 @@ impl Dispatcher {
         if let Some(storage_name) = &bundle.metadata.storage_name {
             self.store.delete_data(storage_name).await;
         }
-        self.store
-            .tombstone_metadata(&bundle.bundle.primary.id)
-            .await;
+        self.store.tombstone_metadata(bundle.id()).await;
 
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
     }

@@ -28,11 +28,12 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Bundle, block, bpsec, bundle_age, checks, editor::Chunk, eid, hop_info, parse, rewrite,
+    Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, editor::Chunk, parse, rewrite,
     status_report::ReasonCode,
 };
 use tracing::debug;
 
+use super::ExtensionFields;
 use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 
 // ---------------------------------------------------------------------------
@@ -47,9 +48,9 @@ use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 /// would do this same extraction after redundant BPSec validation a freshly-built
 /// bundle doesn't need.
 pub fn extract_from_built(
-    bundle: &Bundle,
+    bundle: &Bpv7Bundle,
     data: &[u8],
-) -> Result<ExtractedExtensionFields, hardy_bpv7::Error> {
+) -> Result<ExtensionFields, hardy_bpv7::Error> {
     extract_extension_block_fields(data, &bundle.blocks, &HashMap::<u64, &[u8]>::new())
 }
 
@@ -103,7 +104,7 @@ pub fn reception_reason_for(
 // ---------------------------------------------------------------------------
 
 /// One-shot keyed validation of a complete in-memory bundle. Returns the
-/// validated structural [`Bundle`], its decoded [`ExtractedExtensionFields`],
+/// validated structural [`Bpv7Bundle`], its decoded [`ExtensionFields`],
 /// **and** `nokey_ext` — the §C8 extension blocks
 /// that were BCB-encrypted but undecryptable (no key). It produces those facts;
 /// it does **not** adjudicate them — whether an undecryptable block is fatal is a
@@ -118,9 +119,9 @@ pub fn reception_reason_for(
 pub fn parse_validate_with_provider<F>(
     data: Bytes,
     key_provider: F,
-) -> Result<(Bundle, ExtractedExtensionFields, Vec<(u64, block::Type)>), hardy_bpv7::Error>
+) -> Result<(Bpv7Bundle, ExtensionFields, Vec<(u64, block::Type)>), hardy_bpv7::Error>
 where
-    F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
     let parse::Parsed {
         data,
@@ -201,8 +202,8 @@ pub fn reject_undecryptable_liveness(
 /// a key source can still be built (`key_provider` takes a `&Bundle`) for the
 /// post-drain payload verify and rewrite.
 pub struct HeaderVerify {
-    pub bundle: Bundle,
-    pub extracted: ExtractedExtensionFields,
+    pub bundle: Bpv7Bundle,
+    pub extracted: ExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
     pub to_remove: HashSet<u64>,
     /// Reception-report reason chosen from the §A `report_on_failure` facts
@@ -267,7 +268,7 @@ pub enum HeaderFailure {
     /// Structural or keyed-validation failure. When the bundle id was
     /// recoverable the caller emits a reception report with the reason,
     /// then drops.
-    Invalid(Option<(Bundle, ReasonCode)>),
+    Invalid(Option<(Bpv7Bundle, ReasonCode)>),
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
@@ -289,7 +290,7 @@ pub async fn parse_headers<F>(
     key_provider: F,
 ) -> Result<(HeaderVerify, Bytes, Option<parse::PayloadTail>), HeaderFailure>
 where
-    F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
     let mut parser = parse::BundleParser::default();
     // Drive the parser up to the header chain. `headers` is the resident bytes
@@ -393,12 +394,12 @@ where
 fn verify_headers(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    bundle: &mut Bundle,
+    bundle: &mut Bpv7Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
 ) -> Result<
     (
-        ExtractedExtensionFields,
+        ExtensionFields,
         HashSet<u64>,
         ReasonCode,
         HashMap<u64, bpsec::bib::OperationSet>,
@@ -480,7 +481,7 @@ fn verify_headers(
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
 /// queued §E block removals — both against the now-resident full bundle `whole`.
-/// Returns the (possibly-rewritten) structural [`Bundle`]. The decoded extension
+/// Returns the (possibly-rewritten) structural [`Bpv7Bundle`]. The decoded extension
 /// fields are *not* returned: they were captured at header time
 /// ([`HeaderVerify::extracted`]) and the §E rewrite only removes blocks (never
 /// a still-decodable well-known extension block), so the caller pairs the bundle
@@ -492,9 +493,9 @@ pub fn finalize_with_provider<F>(
     whole: &[u8],
     mut hv: HeaderVerify,
     key_provider: F,
-) -> Result<(Bundle, Option<Vec<Chunk>>, ReasonCode), (Bundle, hardy_bpv7::Error)>
+) -> Result<(Bpv7Bundle, Option<Vec<Chunk>>, ReasonCode), (Bpv7Bundle, hardy_bpv7::Error)>
 where
-    F: FnOnce(&Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
+    F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
     // Only the deferred-payload verify and the §E rewrite below consume keys.
     // The common no-BPSec, no-removal bundle must not pay a second
@@ -555,14 +556,6 @@ where
 // the structural parse + per-section BPSec primitives.
 // ---------------------------------------------------------------------------
 
-/// Output of [`extract_extension_block_fields`].
-#[derive(Debug, Default)]
-pub struct ExtractedExtensionFields {
-    pub previous_node: Option<eid::Eid>,
-    pub age: Option<core::time::Duration>,
-    pub hop_count: Option<hop_info::HopInfo>,
-}
-
 /// Decode one `PreviousNode` / `BundleAge` / `HopCount` field: the BCB-decrypted
 /// plaintext when §C8 supplied it (smuggling-checked via
 /// [`hardy_cbor::decode::parse_exact`]), else the block's wire payload via
@@ -588,7 +581,7 @@ where
 }
 
 /// Decode `PreviousNode` / `BundleAge` / `HopCount` block bodies into an
-/// [`ExtractedExtensionFields`]. Non-canonical encodings are rejected at decode
+/// [`ExtensionFields`]. Non-canonical encodings are rejected at decode
 /// (RFC 9171 §4.1), not re-emitted — canonicalisation is a configurable mutating
 /// filter. Generic over the decrypted-plaintext container so the BPSec
 /// `Zeroizing` type never needs naming here.
@@ -596,8 +589,8 @@ fn extract_extension_block_fields<V: AsRef<[u8]>>(
     data: &[u8],
     blocks: &HashMap<u64, block::Block>,
     decrypted_data: &HashMap<u64, V>,
-) -> Result<ExtractedExtensionFields, hardy_bpv7::Error> {
-    let mut out = ExtractedExtensionFields::default();
+) -> Result<ExtensionFields, hardy_bpv7::Error> {
+    let mut out = ExtensionFields::default();
 
     // Iterate `blocks` directly — no per-bundle `candidates` Vec to allocate
     // (this runs for every bundle, and a Previous Node block is near-universal).
@@ -867,7 +860,7 @@ mod tests {
             tx.send(seg).await.expect("channel open");
         }
 
-        let keys = |_: &Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
+        let keys = |_: &Bpv7Bundle, _: &[u8]| -> Box<dyn bpsec::key::KeySource> {
             Box::new(KeySet::new(vec![sign_key()]))
         };
         let Ok((hv, headers, tail)) = parse_headers(&mut rx, 1 << 20, keys).await else {
