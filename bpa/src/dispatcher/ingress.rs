@@ -371,11 +371,10 @@ impl Dispatcher {
         self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
             .await;
 
-        // `insert_metadata` is the authoritative atomic dup check — the one place
-        // a duplicate is caught, so a duplicate *valid* bundle is dropped here and
-        // never dispatched. We don't pre-check existence earlier: that would add a
-        // metadata read to every received bundle to catch a comparatively rare
-        // replay.
+        // `insert_metadata` is the authoritative atomic dup check: the gate's
+        // advisory exists() probe only sees committed records, so duplicate
+        // copies racing in concurrently both spool and settle here — the
+        // loser is dropped and never dispatched.
         //
         // A duplicate *invalid* bundle (rejected before reaching here) isn't
         // deduplicated — a replay re-parses and may re-report. Accepted, not fixed:
@@ -423,6 +422,22 @@ impl Dispatcher {
         bcb_ops: &HashMap<u64, bcb::OperationSet>,
         report: parse::ReceptionReport,
     ) -> GateVerdict {
+        // Early duplicate probe, first — before any filter or route work: a
+        // replay is DoS-shaped traffic, so a recently-committed id settles
+        // it for the price of a cache lookup, without touching storage.
+        // Advisory only: copies racing in concurrently, ids past the
+        // cache's horizon, and a cold cache after restart all settle at
+        // insert_metadata's atomic refusal. Reception is still reported
+        // (RFC 9171 §5.6 reports on reception; dedup is a dispatch
+        // concern), exactly as the post-spool duplicate path reports it.
+        if self.store.seen_recently(bundle.id()) {
+            debug!("Duplicate bundle detected at the ingress gate");
+            metrics::counter!("bpa.bundle.received.duplicate").increment(1);
+            self.report_bundle_reception(&bundle.bpv7, bundle.metadata.received_at(), report, None)
+                .await;
+            return GateVerdict::Disposed;
+        }
+
         // Ingress chain at the pre-drain gate, on the resident header prefix.
         // It runs synchronously on the record and returns it in every
         // outcome, so a Classifier's metadata deltas survive. A filter

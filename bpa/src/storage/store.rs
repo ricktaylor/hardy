@@ -1,7 +1,8 @@
 use core::num::NonZeroUsize;
 
-use hardy_async::TaskPool;
+use hardy_async::{TaskPool, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
+use lru::LruCache;
 use trace_err::*;
 use tracing::error;
 #[cfg(feature = "instrument")]
@@ -15,11 +16,22 @@ use crate::{
     stream::{ConcatError, Receiver, Segment, Sender, concat_stream},
 };
 
+// The capacity of the recently-committed id cache. Sized for the burst the
+// gates dedup against — replay floods and same-millisecond origination
+// collisions — not for the store's population: anything beyond the cache is
+// still caught by `insert_metadata`'s atomic refusal.
+const RECENT_IDS: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
+
 pub struct Store {
     pub(super) tasks: TaskPool,
     pub(super) metadata_storage: Arc<dyn MetadataStorage>,
     pub(super) bundle_storage: Arc<dyn BundleStorage>,
     pub(super) reaper: Arc<Reaper>,
+    // The recently-committed id cache: every id this node commits (or
+    // refuses as a duplicate) is remembered here, exclusively for the input
+    // gates' advisory duplicate probe — a pure in-memory check that never
+    // touches the backends.
+    recent: Mutex<LruCache<Id, ()>>,
 }
 
 impl Store {
@@ -44,6 +56,7 @@ impl Store {
             metadata_storage,
             bundle_storage,
             reaper,
+            recent: Mutex::new(LruCache::new(RECENT_IDS)),
         }
     }
 
@@ -87,9 +100,14 @@ impl Store {
 
         // Write to metadata store
         match self.metadata_storage.insert(bundle).await {
-            Ok(true) => true,
+            Ok(true) => {
+                self.remember(bundle.id());
+                true
+            }
             Ok(false) => {
-                // We have a duplicate, remove the duplicate from the bundle store
+                // A record already exists; cache the id for the gates' probe
+                // and remove the duplicate copy from the bundle store.
+                self.remember(bundle.id());
                 if let Some(storage_name) = &bundle.metadata.storage_name {
                     self.delete_data(storage_name).await;
                 }
@@ -163,12 +181,35 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
+    /// The advisory duplicate probe: `bundle_id` was recently committed (or
+    /// refused as a duplicate) by this node. A pure cache check — the
+    /// backends are never touched — so a hit is definitive, while a miss
+    /// means nothing: copies racing in concurrently, ids past the cache's
+    /// horizon, and a cold cache after restart all settle at
+    /// [`insert_metadata`](Self::insert_metadata)'s atomic refusal.
+    pub fn seen_recently(&self, bundle_id: &Id) -> bool {
+        // `get`, not `peek`: an actively replayed id stays hot.
+        self.recent.lock().get(bundle_id).is_some()
+    }
+
+    // Remember an id whose committed record is known to exist, for the
+    // gates' probe. Only ever called with committed ids — a cache hit must
+    // imply a record (live or tombstoned), because the gates drop on it.
+    fn remember(&self, bundle_id: &Id) {
+        self.recent.lock().put(bundle_id.clone(), ());
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
-        self.metadata_storage
+        let inserted = self
+            .metadata_storage
             .insert(bundle)
             .await
-            .trace_expect("Failed to insert metadata")
+            .trace_expect("Failed to insert metadata");
+        // Cache the id on both arms: a refusal means a record already
+        // exists, which is exactly what the gates' probe answers.
+        self.remember(bundle.id());
+        inserted
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]

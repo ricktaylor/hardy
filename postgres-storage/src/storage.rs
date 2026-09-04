@@ -214,7 +214,6 @@ fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<
 
 #[async_trait]
 impl storage::MetadataStorage for PostgresStorage {
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let bundle_key = bundle_id.to_key();
 

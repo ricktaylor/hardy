@@ -1449,6 +1449,78 @@ async fn streamed_oversized_payload_local_delivery() {
     bpa.shutdown().await;
 }
 
+// A replayed arrival is settled at the ingress gate: the first copy was
+// committed (and, once delivered, tombstoned), so the replay's duplicate
+// probe fires while its payload source is still parked — the transfer is
+// acked and dropped without spooling a byte. A consumer that returns while
+// the source is parked provably did not wait for the payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_arrival_never_awaits_the_payload() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+    let inbound = build_bundle(&remote_source, &local_dest, &payload);
+
+    // First copy: delivered whole, so the record commits and its id enters
+    // the gates' recently-committed cache (delivery tombstones the record,
+    // but the probe answers from the cached id, not the record's state).
+    let mut stream = SegmentReceiver::new(&inbound, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        .await
+        .expect("Timeout waiting for first delivery")
+        .expect("Channel closed");
+
+    // Replay: headers resident, payload parked forever. The gate's duplicate
+    // probe must settle the transfer — acked, dropped — without the payload.
+    // The timeout only bounds a regression: a door that waits for the
+    // payload parks forever.
+    let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
+    let acceptance = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, &mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate arrival awaited its parked payload")
+    .unwrap();
+    assert_eq!(
+        acceptance,
+        cla::Acceptance::Accepted,
+        "a committed duplicate is acked so the peer stops resending"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "the duplicate must not deliver");
+}
+
 // A bundle whose creation time + lifetime is already in the past — expired on
 // arrival. Oversized payload so it streams as `Partial`.
 fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
@@ -4092,6 +4164,55 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     ));
 
     // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// The originate twin of the gate-side duplicate probe: once the first send
+// commits, a replay through the raw door is refused with `DuplicateBundle`
+// while its payload source is still parked — the caller's stream is never
+// drained for a bundle the node already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    // Oversized payload so the replay genuinely streams (headers < payload).
+    let payload = vec![0x5A_u8; 20_000];
+    let data = build_bundle(&source_eid, &dest, &payload);
+
+    let mut first = data.clone();
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    // Replay with the payload parked: the duplicate must surface from the
+    // gate probe, not from an insert that waited on the whole payload. The
+    // timeout only bounds a regression: a door that waits for the payload
+    // parks forever.
+    let mut replay = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate origination awaited its parked payload");
+    assert!(
+        matches!(result, Err(hardy_bpa::services::Error::DuplicateBundle)),
+        "the parked replay must surface DuplicateBundle without the payload"
+    );
+
     bpa.shutdown().await;
     assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
 }

@@ -237,7 +237,6 @@ fn to_status(
 
 #[async_trait]
 impl MetadataStorage for SqliteStorage {
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn get(&self, bundle_id: &hardy_bpv7::bundle::Id) -> storage::Result<Option<Bundle>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3)) = self
