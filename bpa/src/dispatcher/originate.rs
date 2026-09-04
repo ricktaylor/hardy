@@ -158,12 +158,10 @@ impl Dispatcher {
         let extracted = parse::extract_from_built(&built_view, &prefix)
             .map_err(|e| services::Error::Internal(e.into()))?;
         let mut metadata = bundle::BundleMetadata::originated();
-        metadata.wire.previous_node = extracted.previous_node;
-        metadata.wire.age = extracted.age;
-        metadata.wire.hop_count = extracted.hop_count;
+        metadata.extensions = extracted;
         let record = bundle::Bundle {
+            bpv7: built_view,
             metadata,
-            bundle: built_view,
             status: bundle::BundleStatus::Dispatching,
         };
 
@@ -172,12 +170,12 @@ impl Dispatcher {
             match rx.into_violation() {
                 None => Ok(()),
                 Some(LengthViolation::Overrun { size }) => Err(services::Error::PayloadTooLarge {
-                    size: usize::try_from(size).unwrap_or(usize::MAX),
-                    max: usize::try_from(declared).unwrap_or(usize::MAX),
+                    size,
+                    max: declared,
                 }),
                 Some(LengthViolation::Underrun { size }) => Err(services::Error::PayloadUnderrun {
-                    size: usize::try_from(size).unwrap_or(usize::MAX),
-                    expected: usize::try_from(declared).unwrap_or(usize::MAX),
+                    size,
+                    expected: declared,
                 }),
             }
         })
@@ -203,26 +201,17 @@ impl Dispatcher {
         expected_source: &Eid,
         stream: &mut dyn Receiver<Segment>,
     ) -> Result<Id, services::Error> {
-        let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
-            stream,
-            self.max_bundle_size.get(),
-            self.key_provider(),
-        )
-        .await
-        {
-            Ok(parts) => parts,
-            Err(parse::HeaderFailure::Cancelled) => {
-                return Err(services::Error::StreamCancelled);
-            }
-            Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                // The caller's error carries in-memory sizes: on a 32-bit
-                // target a wire size beyond the address space saturates —
-                // nothing larger could be buffered anyway.
-                return Err(services::Error::PayloadTooLarge {
-                    size: usize::try_from(size).unwrap_or(usize::MAX),
-                    max: usize::try_from(max).unwrap_or(usize::MAX),
-                });
-            }
+        let (hv, headers, tail, bcb_ops) =
+            match parse::parse_headers(stream, self.max_bundle_size.get(), self.key_provider())
+                .await
+            {
+                Ok(parts) => parts,
+                Err(parse::HeaderFailure::Cancelled) => {
+                    return Err(services::Error::StreamCancelled);
+                }
+                Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                    return Err(services::Error::PayloadTooLarge { size, max });
+                }
                 // The report half is CLA-ingress machinery; an originator
                 // gets the parse or verification error itself.
                 Err(parse::HeaderFailure::Invalid { error, .. }) => {
@@ -347,8 +336,8 @@ impl Dispatcher {
                 self.max_bundle_size
             );
             return Err(services::Error::PayloadTooLarge {
-                size: usize::try_from(declared).unwrap_or(usize::MAX),
-                max: usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX),
+                size: declared,
+                max: self.max_bundle_size.get(),
             });
         }
 
@@ -377,7 +366,10 @@ impl Dispatcher {
                 // the drain's defensive bound tripped.
                 Err(ConcatError::Cancelled) => return Err(services::Error::StreamCancelled),
                 Err(ConcatError::TooLarge { size, max }) => {
-                    return Err(services::Error::PayloadTooLarge { size, max });
+                    return Err(services::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    });
                 }
             },
             Err(e) => {
