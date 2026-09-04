@@ -14,11 +14,11 @@
 //! the routing decision. Every rejection is a [`services::Error`] to the
 //! originator; this path never raises status reports.
 
-use alloc::borrow::Cow;
 use core::time::Duration;
 
+use hardy_async::async_trait;
 use hardy_bpv7::{
-    builder::Builder,
+    builder::{Builder, PayloadTrailer, StreamBuild},
     bundle::{Flags, Id},
     creation_timestamp::CreationTimestamp,
     eid::Eid,
@@ -38,17 +38,17 @@ use crate::{
     bundle::{self, parse},
     cla::Segment,
     filter, otel_metrics, routing, services,
-    stream::{ConcatError, Receiver},
+    stream::{ConcatError, Receiver, RecvError},
 };
 
 impl Dispatcher {
     /// Originate a bundle around an application payload (the ADU door).
     ///
     /// The `Builder` output is valid by construction, so nothing here
-    /// parses or validates: the extension fields are read straight off the
-    /// built view and the record goes to the shared admission stage as a
-    /// resident stream. The id is unique by construction
-    /// (`CreationTimestamp::now` is process-monotonic), so
+    /// parses or validates: the streamed build's view carries the record's
+    /// facts and the bytes go to the shared admission stage as a resident
+    /// stream (`Bytes` is a `Receiver<Segment>`). The id is unique by
+    /// construction (`CreationTimestamp::now` is process-monotonic), so
     /// [`DuplicateBundle`](services::Error::DuplicateBundle) can only mean
     /// a collision with a pre-restart bundle; the caller may resend.
     #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
@@ -66,10 +66,56 @@ impl Dispatcher {
         // a pre-restart bundle (a wall clock that stepped backwards across a
         // restart, per RFC 9171 §4.2.7) — surfaced to the caller, who may
         // resend; the store's atomic insert refusal remains the backstop.
-        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        let declared = payload.len() as u64;
+        let built = self
+            .originate_builder(source, destination, lifetime, &flags)
+            .build_stream(declared, CreationTimestamp::now())
+            .map_err(|e| services::Error::Internal(e.into()))?;
 
-        // Set flags
-        if let Some(flags) = &flags {
+        let mut payload = payload;
+        self.admit_built(built, &mut payload, declared).await
+    }
+
+    /// Originate a bundle around an application payload supplied as a
+    /// segment stream (the streamed ADU door).
+    ///
+    /// The stream must deliver exactly `total_len` payload bytes — the
+    /// declaration frames the wire form before the first pull — and an
+    /// over- or under-delivering producer is rejected
+    /// ([`PayloadTooLarge`](services::Error::PayloadTooLarge) /
+    /// [`PayloadUnderrun`](services::Error::PayloadUnderrun)) with nothing
+    /// persisted. The stream is one-shot, so a duplicate id (a
+    /// same-millisecond timestamp collision, vanishingly rare) surfaces as
+    /// [`DuplicateBundle`](services::Error::DuplicateBundle) rather than
+    /// retrying; the caller may resend.
+    #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
+    pub async fn originate_streamed(
+        &self,
+        source: Eid,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn Receiver<Segment>,
+        lifetime: Duration,
+        flags: Option<services::SendOptions>,
+    ) -> Result<Id, services::Error> {
+        let built = self
+            .originate_builder(source, destination, lifetime, &flags)
+            .build_stream(total_len, CreationTimestamp::now())
+            .map_err(|e| services::Error::Internal(e.into()))?;
+        self.admit_built(built, stream, total_len).await
+    }
+
+    // The ADU doors' shared Builder setup: flags and the report-to
+    // endpoint, from the caller's `SendOptions`.
+    fn originate_builder(
+        &self,
+        source: Eid,
+        destination: Eid,
+        lifetime: Duration,
+        flags: &Option<services::SendOptions>,
+    ) -> Builder<'static> {
+        let mut builder = Builder::new(source, destination.clone()).with_lifetime(lifetime);
+        if let Some(flags) = flags {
             builder = builder.with_flags(Flags {
                 do_not_fragment: flags.do_not_fragment,
                 app_ack_requested: flags.request_ack,
@@ -89,26 +135,58 @@ impl Dispatcher {
                 builder = builder.with_report_to(self.node_ids.get_admin_endpoint(&destination));
             }
         }
+        builder
+    }
 
-        let (built, data) = builder
-            .with_payload(Cow::Borrowed(&payload))
-            .build(CreationTimestamp::now())
-            .map_err(|e| services::Error::Internal(e.into()))?;
-        let data = Bytes::from(data);
+    // The ADU doors' shared admission: wrap the streamed build and the
+    // payload source in a `BuiltReceiver` — the CRC applied at the point of
+    // origination as the payload flows — and run the shared stage, mapping
+    // a declared-length violation to the caller's error surface.
+    async fn admit_built(
+        &self,
+        built: StreamBuild,
+        stream: &mut dyn Receiver<Segment>,
+        declared: u64,
+    ) -> Result<Id, services::Error> {
+        let StreamBuild {
+            bundle: built_view,
+            prefix,
+            trailer,
+        } = built;
 
-        let extensions = parse::extract_from_built(&built, &data)
+        let prefix = Bytes::from(prefix);
+        let extracted = parse::extract_from_built(&built_view, &prefix)
             .map_err(|e| services::Error::Internal(e.into()))?;
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.extensions = extracted;
         let record = bundle::Bundle {
-            bpv7: built,
-            metadata: bundle::BundleMetadata::originated().with_extensions(extensions),
+            bpv7: built_view,
+            metadata,
             status: bundle::BundleStatus::Dispatching,
         };
 
-        // `Bytes` is a `Receiver<Segment>`: the resident build takes the
-        // same admission stage as a streamed arrival, with no decorator
-        // and no settle-side verdict.
-        self.originate_admit(record, data.clone(), data, &HashMap::new(), |_| Ok(()))
-            .await
+        // The Originate chain's payload peek, held before the gate as the raw
+        // door's header pass holds it: the app's first payload bytes join the
+        // prefix the gate reads. A bundle the shared stage refuses by size
+        // pulls nothing, and an Originate chain with no peek declared holds nothing.
+        let admissible =
+            record.bpv7.encoded_len() <= self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get();
+        let peek = if admissible {
+            self.filters.originate.peek
+        } else {
+            0
+        };
+        let mut built_rx = BuiltReceiver::new(prefix, stream, trailer, declared);
+        let head = match built_rx.hold(peek).await {
+            Ok(head) => head,
+            Err(Some(violation)) => return Err(violation.into_error(declared)),
+            Err(None) => return Err(services::Error::StreamCancelled),
+        };
+        self.originate_admit(record, head, built_rx, &HashMap::new(), |rx| {
+            rx.into_violation()
+                .map_or(Ok(()), |violation| Err(violation.into_error(declared)))
+        })
+        .await
     }
 
     /// Originate a service-built bundle from a segment stream (the raw
@@ -395,5 +473,401 @@ impl Dispatcher {
         }
 
         Ok((bundle, action, seen))
+    }
+}
+
+// Why a [`BuiltReceiver`]'s stream ended early: the caller's payload did
+// not honour the declared length. Recorded rather than smuggled through
+// `RecvError`, so the door maps it to the caller's error surface after the
+// spool settles.
+enum LengthViolation {
+    // The payload ran past the declaration; `size` is the count at the
+    // first excess byte.
+    Overrun { size: u64 },
+    // The payload completed short of the declaration.
+    Underrun { size: u64 },
+}
+
+impl LengthViolation {
+    // The caller's error for the violation of a `declared`-byte payload.
+    fn into_error(self, declared: u64) -> services::Error {
+        match self {
+            LengthViolation::Overrun { size } => services::Error::PayloadTooLarge {
+                size,
+                max: declared,
+            },
+            LengthViolation::Underrun { size } => services::Error::PayloadUnderrun {
+                size,
+                expected: declared,
+            },
+        }
+    }
+}
+
+// The build-side twin of the ingress door's validating decorator: presents
+// a [`Builder::build_stream`] output — the wire prefix, the caller's
+// payload stream, and the trailer continuation — as one
+// `Receiver<Segment>` carrying the whole wire form, ready to drive
+// `Dispatcher::spool`. The payload block's CRC is applied at the point of
+// origination: each payload run feeds the [`PayloadTrailer`] digest as it
+// flows, and the trailer's bytes (the CRC field, then the outer break) are
+// yielded as the stream's `Final` segment.
+//
+// The declared length is enforced as the bytes flow — the prefix framed the
+// payload byte string with it, so a violating stream must never reach the
+// store. A violation ends the stream (`RecvError`, surfacing downstream as
+// an incomplete drain) and is recorded for `into_violation`; a producer
+// that goes away early ends the stream without a violation, exactly as any
+// truncated transfer.
+struct BuiltReceiver<'a> {
+    inner: &'a mut dyn Receiver<Segment>,
+    // The resident wire prefix, yielded first; `None` once yielded.
+    prefix: Option<Bytes>,
+    // The emit-side continuation; `None` once its bytes are yielded.
+    trailer: Option<PayloadTrailer>,
+    declared: u64,
+    fed: u64,
+    // The inner stream's `Final` has been absorbed; nothing further is
+    // pulled.
+    inner_done: bool,
+    violation: Option<LengthViolation>,
+}
+
+impl<'a> BuiltReceiver<'a> {
+    fn new(
+        prefix: Bytes,
+        inner: &'a mut dyn Receiver<Segment>,
+        trailer: PayloadTrailer,
+        declared: u64,
+    ) -> Self {
+        Self {
+            inner,
+            prefix: Some(prefix),
+            trailer: Some(trailer),
+            declared,
+            fed: 0,
+            inner_done: false,
+            violation: None,
+        }
+    }
+
+    // The declared-length verdict, settled after the drain: `None` is a
+    // clean pass (or a plain truncation, which the transport surfaces
+    // itself).
+    fn into_violation(self) -> Option<LengthViolation> {
+        self.violation
+    }
+
+    // Holds the payload peek: pulls the caller's stream until the payload's
+    // first `peek` bytes (all of it, if shorter) have arrived, each absorbed
+    // as `recv` absorbs it, and joins them to the prefix, which is still
+    // yielded first. Returns the resident head the gate reads. A violation
+    // ends the hold with it, and a producer gone away with `None`.
+    async fn hold(&mut self, peek: usize) -> Result<Bytes, Option<LengthViolation>> {
+        let prefix = self.prefix.take().unwrap_or_default();
+        let target = (peek as u64).min(self.declared);
+        if self.fed >= target {
+            self.prefix = Some(prefix.clone());
+            return Ok(prefix);
+        }
+        let mut head = prefix.to_vec();
+        while self.fed < target && !self.inner_done {
+            let segment = self.inner.recv().await.map_err(|_| None)?;
+            head.extend_from_slice(&self.absorb(segment).map_err(Some)?);
+        }
+        let head = Bytes::from(head);
+        self.prefix = Some(head.clone());
+        Ok(head)
+    }
+
+    // Absorbs one segment of the caller's stream: the declared-length
+    // checks, then the trailer's digest. Returns the payload bytes.
+    fn absorb(&mut self, segment: Segment) -> Result<Bytes, LengthViolation> {
+        let (bytes, last) = match segment {
+            Segment::Next(bytes) => (bytes, false),
+            Segment::Final(bytes) => (bytes, true),
+        };
+        let fed = self.fed.saturating_add(bytes.len() as u64);
+        if fed > self.declared {
+            return Err(LengthViolation::Overrun { size: fed });
+        }
+        if last && fed < self.declared {
+            return Err(LengthViolation::Underrun { size: fed });
+        }
+        if let Some(trailer) = &mut self.trailer {
+            trailer.update(&bytes);
+        }
+        self.fed = fed;
+        if last {
+            self.inner_done = true;
+        }
+        Ok(bytes)
+    }
+}
+
+#[async_trait]
+impl Receiver<Segment> for BuiltReceiver<'_> {
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        // A violation is terminal: never yield more bytes downstream.
+        if self.violation.is_some() {
+            return Err(RecvError);
+        }
+        // The wire prefix goes first. A zero-length payload never pulls the
+        // inner stream at all.
+        if let Some(prefix) = self.prefix.take() {
+            return Ok(Segment::Next(prefix));
+        }
+        // The payload is complete: the trailer terminates the wire form.
+        if self.fed == self.declared && (self.inner_done || self.declared == 0) {
+            let Some(trailer) = self.trailer.take() else {
+                return Err(RecvError);
+            };
+            return Ok(Segment::Final(Bytes::from(trailer.finish())));
+        }
+
+        let segment = self.inner.recv().await?;
+        match self.absorb(segment) {
+            // Inner `Final` is re-tagged: the trailer is the stream's real
+            // end.
+            Ok(bytes) => Ok(Segment::Next(bytes)),
+            Err(violation) => {
+                self.violation = Some(violation);
+                Err(RecvError)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::builder::Builder;
+
+    use super::*;
+
+    const PAYLOAD: usize = 5000;
+    const CHUNK: usize = 700;
+
+    fn source() -> Eid {
+        "ipn:1.2".parse().unwrap()
+    }
+
+    fn destination() -> Eid {
+        "ipn:2.1".parse().unwrap()
+    }
+
+    // Feed `bytes` into a bounded channel as segments (last one `Final`),
+    // the payload producer a `BuiltReceiver` wraps.
+    async fn segment_stream(bytes: &[u8]) -> hardy_async::channel::Receiver<Segment> {
+        let chunks: Vec<&[u8]> = bytes.chunks(CHUNK).collect();
+        let (tx, rx) = hardy_async::channel::bounded(chunks.len().max(1));
+        let last = chunks.len().saturating_sub(1);
+        for (i, c) in chunks.iter().enumerate() {
+            let seg = if i == last {
+                Segment::Final(Bytes::copy_from_slice(c))
+            } else {
+                Segment::Next(Bytes::copy_from_slice(c))
+            };
+            tx.send(seg).await.expect("channel open");
+        }
+        rx
+    }
+
+    // Drain a receiver to completion, returning the concatenated bytes.
+    async fn drain(rx: &mut impl Receiver<Segment>) -> Result<Bytes, RecvError> {
+        let mut out = crate::BytesMut::new();
+        loop {
+            match rx.recv().await? {
+                Segment::Next(b) => out.extend_from_slice(&b),
+                Segment::Final(b) => {
+                    out.extend_from_slice(&b);
+                    return Ok(out.freeze());
+                }
+            }
+        }
+    }
+
+    // The receiver carries the whole wire form — prefix, payload, trailer —
+    // byte-identical to the resident build for the same timestamp: the CRC
+    // applied as the payload streamed is the CRC `build()` would have
+    // written.
+    #[tokio::test]
+    async fn built_receiver_carries_the_whole_wire_form() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(payload.as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        let built = Builder::new(source(), destination())
+            .build_stream(payload.len() as u64, timestamp)
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            payload.len() as u64,
+        );
+        let yielded = drain(&mut rx).await.expect("clean stream drains");
+        assert_eq!(yielded.as_ref(), resident.as_ref());
+        assert!(rx.into_violation().is_none());
+    }
+
+    // A held peek joins the prefix and is yielded with it: the gate reads
+    // the payload's first bytes, and the drain still carries the whole wire
+    // form, byte-identical to the resident build. Holding pulls only the
+    // segments the peek needs.
+    #[tokio::test]
+    async fn a_held_peek_leads_the_whole_wire_form() {
+        let payload: Vec<u8> = (0..PAYLOAD as u32).map(|i| i as u8).collect();
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(payload.as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        for (peek, held) in [(0, 0), (1000, 2 * CHUNK), (2 * PAYLOAD, PAYLOAD)] {
+            let built = Builder::new(source(), destination())
+                .build_stream(payload.len() as u64, timestamp.clone())
+                .expect("build_stream");
+            let prefix_len = built.prefix.len();
+            let mut inner = segment_stream(&payload).await;
+            let mut rx = BuiltReceiver::new(
+                Bytes::from(built.prefix),
+                &mut inner,
+                built.trailer,
+                payload.len() as u64,
+            );
+            let head = rx.hold(peek).await.map_err(|_| ()).expect("a clean hold");
+            assert_eq!(
+                head.len(),
+                prefix_len + held,
+                "peek {peek} holds {held} bytes"
+            );
+            assert_eq!(head[prefix_len..], payload[..held]);
+            let yielded = drain(&mut rx).await.expect("clean stream drains");
+            assert_eq!(yielded.as_ref(), resident.as_ref(), "peek {peek}");
+            assert!(rx.into_violation().is_none());
+        }
+    }
+
+    // A violation inside the hold ends it with the violation; a producer
+    // gone away ends it with none.
+    #[tokio::test]
+    async fn a_hold_reports_a_violation_or_a_cancel() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let build = || {
+            Builder::new(source(), destination())
+                .build_stream(100, CreationTimestamp::now())
+                .expect("build_stream")
+        };
+        let built = build();
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(matches!(
+            rx.hold(50).await,
+            Err(Some(LengthViolation::Overrun { size })) if size > 100
+        ));
+
+        let built = build();
+        let (tx, mut inner) = hardy_async::channel::bounded::<Segment>(1);
+        drop(tx);
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(matches!(rx.hold(50).await, Err(None)));
+    }
+
+    // A zero-length payload never pulls the inner stream: the prefix and
+    // the trailer are the whole wire form.
+    #[tokio::test]
+    async fn built_receiver_zero_length_never_pulls_inner() {
+        let timestamp = CreationTimestamp::now();
+        let (_, resident) = Builder::new(source(), destination())
+            .with_payload(b"".as_slice().into())
+            .build(timestamp.clone())
+            .expect("build");
+        let built = Builder::new(source(), destination())
+            .build_stream(0, timestamp)
+            .expect("build_stream");
+
+        // An inner stream that errors if ever pulled.
+        let (tx, mut inner) = hardy_async::channel::bounded::<Segment>(1);
+        drop(tx);
+
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 0);
+        let yielded = drain(&mut rx).await.expect("prefix + trailer drain");
+        assert_eq!(yielded.as_ref(), resident.as_ref());
+    }
+
+    // A producer running past the declaration is a recorded overrun: the
+    // stream ends before the excess reaches downstream.
+    #[tokio::test]
+    async fn built_receiver_records_an_overrun() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let built = Builder::new(source(), destination())
+            .build_stream(100, CreationTimestamp::now())
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(Bytes::from(built.prefix), &mut inner, built.trailer, 100);
+        assert!(drain(&mut rx).await.is_err(), "the overrun ends the stream");
+        assert!(matches!(
+            rx.into_violation(),
+            Some(LengthViolation::Overrun { size }) if size > 100
+        ));
+    }
+
+    // A producer completing short of the declaration is a recorded
+    // underrun.
+    #[tokio::test]
+    async fn built_receiver_records_an_underrun() {
+        let payload = vec![0xC3_u8; 100];
+        let built = Builder::new(source(), destination())
+            .build_stream(PAYLOAD as u64, CreationTimestamp::now())
+            .expect("build_stream");
+
+        let mut inner = segment_stream(&payload).await;
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            PAYLOAD as u64,
+        );
+        assert!(
+            drain(&mut rx).await.is_err(),
+            "the underrun ends the stream"
+        );
+        assert!(matches!(
+            rx.into_violation(),
+            Some(LengthViolation::Underrun { size: 100 })
+        ));
+    }
+
+    // A producer that goes away mid-payload ends the stream with no
+    // violation: a plain truncation, the transport's to surface.
+    #[tokio::test]
+    async fn built_receiver_truncation_is_not_a_violation() {
+        let payload = vec![0xC3_u8; PAYLOAD];
+        let built = Builder::new(source(), destination())
+            .build_stream(payload.len() as u64, CreationTimestamp::now())
+            .expect("build_stream");
+
+        // One chunk, then the producer drops without `Final`.
+        let (tx, mut inner) = hardy_async::channel::bounded(1);
+        tx.send(Segment::Next(Bytes::copy_from_slice(&payload[..CHUNK])))
+            .await
+            .expect("channel open");
+        drop(tx);
+
+        let mut rx = BuiltReceiver::new(
+            Bytes::from(built.prefix),
+            &mut inner,
+            built.trailer,
+            payload.len() as u64,
+        );
+        assert!(
+            drain(&mut rx).await.is_err(),
+            "the truncation ends the stream"
+        );
+        assert!(rx.into_violation().is_none());
     }
 }

@@ -9,7 +9,10 @@
 //! bundle whose primary block forbids its edit: the flags are the sender's
 //! choice, so an abort there would hand any peer a node-kill.
 
-use core::num::{NonZeroU8, NonZeroU64};
+use core::{
+    num::{NonZeroU8, NonZeroU64},
+    time::Duration,
+};
 use std::{
     collections::VecDeque,
     sync::{
@@ -1126,6 +1129,124 @@ async fn an_originate_classifier_reads_its_declared_peek() {
                 "the whole payload, exactly"
             );
         }
+
+        bpa.shutdown().await;
+    }
+}
+
+// A send-only application, for the ADU doors.
+struct SendingApp {
+    sink: hardy_async::sync::spin::Once<Box<dyn services::ApplicationSink>>,
+}
+
+#[async_trait]
+impl services::Application for SendingApp {
+    async fn on_register(&self, _source: &Eid, sink: Box<dyn services::ApplicationSink>) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    async fn on_deliver(
+        &self,
+        _bundle_id: &Id,
+        _expiry: time::OffsetDateTime,
+        _ack_requested: bool,
+        _total_len: u64,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<()> {
+        Ok(())
+    }
+
+    async fn on_status_notify(
+        &self,
+        _bundle_id: &Id,
+        _from: &Eid,
+        _kind: services::StatusNotify,
+        _reason: ReasonCode,
+        _timestamp: Option<time::OffsetDateTime>,
+    ) {
+    }
+}
+
+/// An Originate Classifier reads its declared peek at the ADU doors too: the
+/// streamed door holds the app's first payload bytes before the gate, and the
+/// resident door's payload is a one-segment stream. The bytes are the app's
+/// own plaintext, which the Originate chain may read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_adu_doors_hold_the_declared_peek() {
+    let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+
+    for peek in [PEEK, 0] {
+        let (peek_tx, peek_rx) = flume::unbounded();
+        let mut pack = FilterPack::new("test");
+        pack.originate_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
+        let (bpa, _cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+        let app = Arc::new(SendingApp {
+            sink: hardy_async::sync::spin::Once::new(),
+        });
+        bpa.register_application(Service::Ipn(42), app.clone())
+            .await
+            .unwrap();
+        let sink = app.sink.get().unwrap();
+        // Each send is forwarded with the app's payload unchanged: the peek
+        // never stands in for a bundle that went no further.
+        let assert_forwarded = |forwarded: Bytes| {
+            let out = parse(forwarded).unwrap();
+            assert_eq!(
+                out.bundle.blocks[&1].payload(&out.data),
+                Some(&payload[..]),
+                "the bundle is forwarded with the app's payload"
+            );
+        };
+
+        let mut segments = Segments(
+            payload
+                .chunks(SEGMENT)
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let chunk = Bytes::copy_from_slice(chunk);
+                    if i == payload.len() / SEGMENT - 1 {
+                        Segment::Final(chunk)
+                    } else {
+                        Segment::Next(chunk)
+                    }
+                })
+                .collect(),
+        );
+        sink.send_streamed(
+            REMOTE.parse().unwrap(),
+            payload.len() as u64,
+            &mut segments,
+            Duration::from_secs(60),
+            None,
+        )
+        .await
+        .expect("the streamed send is accepted");
+        let found = next(&peek_rx).await.expect("an ADU payload has a peek");
+        let held = if peek == 0 { 0 } else { SEGMENT };
+        assert_eq!(
+            found.as_slice(),
+            &payload[..held],
+            "the streamed door's peek is the app's first {held} bytes"
+        );
+        assert_forwarded(next(&forwarded_rx).await);
+
+        sink.send(
+            REMOTE.parse().unwrap(),
+            Bytes::from(payload.clone()),
+            Duration::from_secs(60),
+            None,
+        )
+        .await
+        .expect("the resident send is accepted");
+        let held = if peek == 0 { 0 } else { payload.len() };
+        assert_eq!(
+            next(&peek_rx).await.as_deref(),
+            Some(&payload[..held]),
+            "the resident door's payload is one segment: a declared peek holds all of it"
+        );
+        assert_forwarded(next(&forwarded_rx).await);
 
         bpa.shutdown().await;
     }
