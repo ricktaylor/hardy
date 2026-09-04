@@ -1,8 +1,26 @@
-use futures::join;
-use hardy_bpv7::{block::BibCoverage, bpsec::bcb, crc::CrcType, status_report::ReasonCode};
+use alloc::sync::Arc;
 
-use super::*;
-use crate::{bundle::parse, cla::Segment, stream::Receiver};
+use futures::join;
+use hardy_async::CancellationToken;
+use hardy_bpv7::{
+    block::BibCoverage, bpsec::bcb, crc::CrcType, eid::NodeId, status_report::ReasonCode,
+};
+use tracing::{debug, error};
+
+#[cfg(feature = "instrument")]
+use tracing::instrument;
+
+use super::{
+    Dispatcher,
+    validate::{ValidatingReceiver, ValidationFailure},
+};
+use crate::{
+    Bytes, HashMap,
+    bundle::{self, parse},
+    cla::{self, Segment},
+    filter, otel_metrics, routing,
+    stream::Receiver,
+};
 
 // The verdict of the gate decisions (Ingress chain + route lookup) for one
 // arrival. `Disposed` rejections have already been counted and reported.
@@ -69,7 +87,7 @@ impl Dispatcher {
     pub async fn receive_bundle(
         &self,
         ingress_cla: Arc<str>,
-        ingress_peer_node: Option<&hardy_bpv7::eid::NodeId>,
+        ingress_peer_node: Option<&NodeId>,
         ingress_peer_addr: Option<&cla::ClaAddress>,
         stream: &mut dyn Receiver<Segment>,
     ) -> cla::Acceptance {
@@ -160,7 +178,7 @@ impl Dispatcher {
                     }
                     None => ReasonCode::BlockUnintelligible,
                 };
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
                 return Received::Disposed;
             }
         };
@@ -187,7 +205,7 @@ impl Dispatcher {
         // re-checks lifetime post-store in the ingress filter — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -213,7 +231,7 @@ impl Dispatcher {
         // structural validity (deployments may relax them), reported like
         // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
@@ -252,20 +270,21 @@ impl Dispatcher {
 
         // Every arrival spools through the store's streaming seam — the
         // resident head may include payload bytes, or the whole bundle, so
-        // there is one store path, not a resident/streamed fork. The whole
-        // rig (spawned store-side task, bounded-channel pump over the
-        // borrowed CLA stream, cancellation) lives behind
-        // `Dispatcher::spool`; the gate decisions run alongside it, and a
-        // Disposed decision cancels it through the shared token. For a
-        // complete-at-head arrival the spool settles from its head segment
-        // alone, and the pump performs the stream's terminal pull: per the
-        // `Segment` contract a completed stream's producer has dropped
-        // (`RecvError`) or keeps yielding the empty `Final` (the
-        // whole-buffer receivers), so the pull cannot park.
+        // there is one store path, not a resident/streamed fork. The door
+        // owns the validation: a `ValidatingReceiver` decorates the arrival,
+        // and `Dispatcher::spool` is the pure store rig (spawned store-side
+        // task, bounded-channel pump, cancellation) driving it. The gate
+        // decisions run alongside; a Disposed decision cancels the spool
+        // through the shared token. For a complete-at-head arrival the
+        // decorator settles from its head segment alone, and the pump
+        // performs the stream's terminal pull: per the `Segment` contract a
+        // completed stream's producer has dropped (`RecvError`) or keeps
+        // yielding the empty `Final` (the whole-buffer receivers), so the
+        // pull cannot park.
         debug_assert!(bundle.metadata.storage_name.is_none());
 
         // The deferred-BIB verifiers were begun by the header pass, in the
-        // same keyed scope as the header verify; the spool absorbs the
+        // same keyed scope as the header verify; the decorator absorbs the
         // resident payload prefix at construction, the streamed remainder
         // as it arrives — feeding the payload CRC, the block+outer framing,
         // and each deferred BIB digest as the bytes stream past.
@@ -274,16 +293,16 @@ impl Dispatcher {
             .blocks
             .get(&1)
             .map_or(headers.len(), |b| b.payload_range().start as usize);
-
-        let cancel = hardy_async::CancellationToken::new();
-        let spool = self.spool(
+        let mut tail_rx = ValidatingReceiver::new(
             stream,
             tail,
             deferred_verifiers,
             headers.clone(),
             payload_start,
-            cancel.clone(),
         );
+
+        let cancel = CancellationToken::new();
+        let spool = self.spool(&mut tail_rx, cancel.clone());
         let decide = async {
             let verdict = self.decide_at_gate(bundle, headers, &bcb_ops, report).await;
             if matches!(verdict, GateVerdict::Disposed) {
@@ -293,6 +312,27 @@ impl Dispatcher {
         };
         let (outcome, verdict) = join!(spool, decide);
 
+        // Settle the decorator's verdict against the save. A save the
+        // verdict then rejects was staged before the verdict settled — the
+        // discard half of the streaming contract, owed by this door now
+        // that the spool is validation-blind.
+        let outcome = match outcome {
+            Ok((storage_name, len)) => match tail_rx.finish() {
+                Ok(()) => Ok((storage_name, len)),
+                Err(failure) => {
+                    self.store.delete_data(&storage_name).await;
+                    Err(failure)
+                }
+            },
+            // Any drain failure — an ended pump, a deliberate cancel, or
+            // the spool's defensive bound — settles through the decorator's
+            // verdict; nothing was persisted.
+            Err(_) => Err(tail_rx
+                .finish()
+                .err()
+                .unwrap_or(ValidationFailure::Truncated)),
+        };
+
         let GateVerdict::Proceed {
             mut bundle,
             action,
@@ -300,8 +340,8 @@ impl Dispatcher {
         } = verdict
         else {
             // Rejected and reported by the decision, which cancelled the
-            // spool; a save that raced the cancel is discarded before the
-            // verdict returns.
+            // spool; a save that raced the cancel is discarded here — the
+            // canceller owes the discard.
             if let Ok((storage_name, _)) = outcome {
                 self.store.delete_data(&storage_name).await;
             }
@@ -329,7 +369,7 @@ impl Dispatcher {
                 // §5.6/§5.10). Nothing remains staged: the spool
                 // discarded any save with the rejection.
                 debug!("Streamed payload rejected: {failure}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
+                metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
                 self.report_bundle_reception(
                     &bundle.bpv7,
                     bundle.metadata.received_at(),
@@ -384,7 +424,8 @@ impl Dispatcher {
         }
 
         // Account the admitted bundle in the status gauge.
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
+        metrics::gauge!("bpa.bundle.status", "state" => otel_metrics::status_label(&bundle.status))
+            .increment(1.0);
 
         // Execute the gate's routing decision directly — fresh arrivals do
         // not transit the dispatch queue (`DispatchPending` belongs to the
@@ -422,7 +463,7 @@ impl Dispatcher {
                 Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
                 Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -436,7 +477,7 @@ impl Dispatcher {
                     // The resident prefix failed the chain's own decode pass —
                     // an internal inconsistency, since it parsed at reception.
                     error!("Ingress filter chain failed: {e}");
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -463,7 +504,7 @@ impl Dispatcher {
         let action = self.rib.find(&bundle);
         if let Some(routing::DispatchAction::Drop(reason)) = action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&label)).increment(1);
+            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
             // Drop-with-reason reports like the sibling gate drops;
             // Drop-without-reason is silent, exactly as dispatch's
             // delete_bundle path.
