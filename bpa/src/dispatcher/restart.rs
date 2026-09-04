@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok(validated) => validated.bundle,
+            Ok(bundle) => bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -311,8 +311,7 @@ mod tests {
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
-        .unwrap()
-        .bundle;
+        .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -413,8 +412,7 @@ mod tests {
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
-        .unwrap()
-        .bundle;
+        .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -562,8 +560,7 @@ mod tests {
                 data.clone(),
                 hardy_bpv7::bpsec::no_keys,
             )
-            .unwrap()
-            .bundle;
+            .unwrap();
             let mut metadata = bundle::BundleMetadata::originated();
             metadata.storage_name = Some(storage_name);
             let bundle = bundle::Bundle {
