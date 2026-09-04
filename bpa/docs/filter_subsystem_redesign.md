@@ -321,7 +321,7 @@ pub struct BundleMetadata {
     // write-once provenance: private fields + pub read accessors
     received_at: OffsetDateTime,
     origin: Origin,
-    pub wire: WireCache,              // plain pub — read-only comes from &
+    pub extensions: ExtensionFields,  // plain pub — read-only comes from &
     classification: Classification,   // private: getters to read, apply() to write
     pub(crate) storage_name: Option<Arc<str>>,   // infrastructure — unreachable outside the crate
 }
@@ -329,7 +329,7 @@ pub struct BundleMetadata {
 
 *(As landed by the partition commit: the provenance fields sit inline rather than in a `Provenance` struct, and `storage_name` stays a bare `pub(crate)` field — a one-field `Infrastructure` struct added ceremony without enforcement. `Classification` landed as the empty private placeholder; slots and the epoch arrive with Phase 2.)*
 
-The visibility column maps onto Rust field/module privacy — no separate per-invocation view struct at all. Filters (closed-source, external crate) receive `&Bundle`: `wire` is directly readable, provenance and classification are readable through getters, and `infra` is unreachable outside the crate. The record's own privacy *is* the projection, so there is no view type to drift from the record. The consequence — bpa-internal code also goes through the accessors — is the ~35-site mechanical sweep the metadata-partition commit already budgets.
+The visibility column maps onto Rust field/module privacy — no separate per-invocation view struct at all. Filters (closed-source, external crate) receive `&Bundle`: `extensions` is directly readable, provenance and classification are readable through getters, and `infra` is unreachable outside the crate. The record's own privacy *is* the projection, so there is no view type to drift from the record. The consequence — bpa-internal code also goes through the accessors — is the ~35-site mechanical sweep the metadata-partition commit already budgets.
 
 **`bpa::bundle::Bundle` is committed filter API, directly.** This is per-bundle fast-path code, and the record-with-privacy shape is the only zero-cost projection: private fields plus inline getters compile to field reads. The alternatives each tax every invocation — a wrapper struct is built per filter per bundle, a trait view adds dynamic dispatch per field read — to buy insulation the privacy boundary already provides for everything not deliberately exposed. What the commitment actually freezes is only the enumerated public surface ([below](#what-the-sketch-settles-and-what-it-phases)); the private group internals remain free to restructure, which is most of the record.
 
@@ -366,7 +366,7 @@ impl BundleMetadata {
 Write-once is private fields + constructors + no `&mut` accessor, ever. The transit predicate is `matches!(m.origin(), Origin::Ingress { .. })`.
 
 ```rust
-pub struct WireCache {
+pub struct ExtensionFields {
     pub previous_node: Option<Eid>,
     pub age: Option<core::time::Duration>,
     pub hop_count: Option<HopInfo>,
@@ -429,7 +429,7 @@ This also keeps the byte-access surface at zero: the UQEB Classifier calls `bund
 
 ### What the sketch settles, and what it phases
 
-The committed semver surface enumerates precisely: `Bundle`'s two pub fields, `WireCache`'s pub fields, the getter set (`origin`, `received_at`, `class`, `route_key`, `slot`), `MetadataDelta` + `SlotHandle::set`, the `data: &[u8]` source argument (block-body access via bpv7's existing `payload`/`extract` accessors — already committed bpv7 API), `NextHop`, and the three filter traits. Everything else — group internals, `SlotMap` representation, the epoch, infrastructure — stays the BPA's to restructure.
+The committed semver surface enumerates precisely: `Bundle`'s two pub fields, `ExtensionFields`'s pub fields, the getter set (`origin`, `received_at`, `class`, `route_key`, `slot`), `MetadataDelta` + `SlotHandle::set`, the `data: &[u8]` source argument (block-body access via bpv7's existing `payload`/`extract` accessors — already committed bpv7 API), `NextHop`, and the three filter traits. Everything else — group internals, `SlotMap` representation, the epoch, infrastructure — stays the BPA's to restructure.
 
 Phasing: the **metadata-partition commit** takes the record shape — the four groups, private fields + accessors, the constructors, `Origin` with `cla` persisted, no `Default`, `next_hop` demoted to a transient — while `status` and the flat `writable` group survive as interim passengers until their tranches. The **queue items** and `MetadataDelta`/slots are Phase 2/queue-tranche material; the sketch fixes their shape so the partition commit cuts the record along the right seams.
 

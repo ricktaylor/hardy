@@ -4,28 +4,28 @@ use hardy_bpv7::status_report::{
 };
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn report_bundle_reception(
         &self,
         bundle: &bundle::Bundle,
         reason: ReasonCode,
     ) {
-        debug!("Bundle {} received", bundle.bundle.primary.id);
+        debug!("Bundle {} received", bundle.id());
 
         // Check if a report is requested
-        if bundle.bundle.primary.flags.receipt_report_requested {
+        if bundle.primary().flags.receipt_report_requested {
             debug!(
                 "Reporting bundle reception to {}",
-                &bundle.bundle.primary.report_to
+                &bundle.primary().report_to
             );
             metrics::counter!("bpa.status_report.sent", "type" => "reception").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
-                        bundle_id: bundle.bundle.primary.id.clone(),
+                        bundle_id: bundle.id().clone(),
                         received: Some(StatusAssertion(
-                            if bundle.bundle.primary.flags.report_status_time {
+                            if bundle.primary().flags.report_status_time {
                                 Some(bundle.metadata.received_at())
                             } else {
                                 None
@@ -36,32 +36,31 @@ impl Dispatcher {
                     },
                 ))
                 .0,
-                &bundle.bundle.primary.report_to,
+                &bundle.primary().report_to,
             )
             .await
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn report_bundle_forwarded(&self, bundle: &bundle::Bundle) {
-        debug!("Bundle {} forwarded", bundle.bundle.primary.id);
+        debug!("Bundle {} forwarded", bundle.id());
 
         // Check if a report is requested
-        if bundle.bundle.primary.flags.forward_report_requested {
+        if bundle.primary().flags.forward_report_requested {
             debug!(
                 "Reporting bundle as forwarded to {}",
-                &bundle.bundle.primary.report_to
+                &bundle.primary().report_to
             );
             metrics::counter!("bpa.status_report.sent", "type" => "forwarding").increment(1);
 
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
-                        bundle_id: bundle.bundle.primary.id.clone(),
+                        bundle_id: bundle.id().clone(),
                         forwarded: Some(StatusAssertion(
                             bundle
-                                .bundle
-                                .primary
+                                .primary()
                                 .flags
                                 .report_status_time
                                 .then(time::OffsetDateTime::now_utc),
@@ -70,21 +69,21 @@ impl Dispatcher {
                     },
                 ))
                 .0,
-                &bundle.bundle.primary.report_to,
+                &bundle.primary().report_to,
             )
             .await
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn report_bundle_delivery(&self, bundle: &bundle::Bundle) {
-        debug!("Bundle {} delivered", bundle.bundle.primary.id);
+        debug!("Bundle {} delivered", bundle.id());
 
         // Check if a report is requested
-        if bundle.bundle.primary.flags.delivery_report_requested {
+        if bundle.primary().flags.delivery_report_requested {
             debug!(
                 "Reporting bundle delivery to {}",
-                &bundle.bundle.primary.report_to
+                &bundle.primary().report_to
             );
             metrics::counter!("bpa.status_report.sent", "type" => "delivery").increment(1);
 
@@ -92,11 +91,10 @@ impl Dispatcher {
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
-                        bundle_id: bundle.bundle.primary.id.clone(),
+                        bundle_id: bundle.id().clone(),
                         delivered: Some(StatusAssertion(
                             bundle
-                                .bundle
-                                .primary
+                                .primary()
                                 .flags
                                 .report_status_time
                                 .then(time::OffsetDateTime::now_utc),
@@ -105,19 +103,19 @@ impl Dispatcher {
                     },
                 ))
                 .0,
-                &bundle.bundle.primary.report_to,
+                &bundle.primary().report_to,
             )
             .await
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub async fn report_bundle_deletion(&self, bundle: &bundle::Bundle, reason: ReasonCode) {
         // Check if a report is requested
-        if bundle.bundle.primary.flags.delete_report_requested {
+        if bundle.primary().flags.delete_report_requested {
             debug!(
                 "Reporting bundle deletion to {}",
-                &bundle.bundle.primary.report_to
+                &bundle.primary().report_to
             );
             metrics::counter!("bpa.status_report.sent", "type" => "deletion").increment(1);
 
@@ -125,11 +123,10 @@ impl Dispatcher {
             self.dispatch_status_report(
                 hardy_cbor::encode::emit(&AdministrativeRecord::BundleStatusReport(
                     BundleStatusReport {
-                        bundle_id: bundle.bundle.primary.id.clone(),
+                        bundle_id: bundle.id().clone(),
                         deleted: Some(StatusAssertion(
                             bundle
-                                .bundle
-                                .primary
+                                .primary()
                                 .flags
                                 .report_status_time
                                 .then(time::OffsetDateTime::now_utc),
@@ -139,7 +136,7 @@ impl Dispatcher {
                     },
                 ))
                 .0,
-                &bundle.bundle.primary.report_to,
+                &bundle.primary().report_to,
             )
             .await
         }
@@ -170,12 +167,10 @@ impl Dispatcher {
             // are internally generated, so they skip both the Originate and
             // Ingress filters and go directly to routing.
             let mut metadata = bundle::BundleMetadata::originated();
-            metadata.wire.previous_node = extracted.previous_node;
-            metadata.wire.age = extracted.age;
-            metadata.wire.hop_count = extracted.hop_count;
+            metadata.extensions = extracted;
             let mut bundle = bundle::Bundle {
+                bpv7: bundle,
                 metadata,
-                bundle,
                 status: bundle::BundleStatus::Dispatching,
             };
 

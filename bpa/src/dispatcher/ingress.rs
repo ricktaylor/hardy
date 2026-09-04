@@ -155,11 +155,7 @@ impl Dispatcher {
             Err(parse::HeaderFailure::Invalid(report)) => {
                 let reason = match report {
                     Some((bundle, reason)) => {
-                        let bundle = bundle::Bundle {
-                            metadata,
-                            bundle,
-                            status: bundle::BundleStatus::New,
-                        };
+                        let bundle = bundle::Bundle::new(bundle, metadata);
                         self.report_bundle_reception(&bundle, reason).await;
                         reason
                     }
@@ -186,14 +182,8 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return Ok(None);
             }
-            metadata.wire.previous_node = hv.extracted.previous_node;
-            metadata.wire.age = hv.extracted.age;
-            metadata.wire.hop_count = hv.extracted.hop_count;
-            let bundle = bundle::Bundle {
-                metadata,
-                bundle: hv.bundle,
-                status: bundle::BundleStatus::New,
-            };
+            metadata.extensions = hv.extracted;
+            let bundle = bundle::Bundle::new(hv.bundle, metadata);
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
             self.report_bundle_deletion(&bundle, reason).await;
@@ -221,9 +211,7 @@ impl Dispatcher {
         // §E rewrites. The decoded extension fields were captured at header time
         // and the §E rewrite only removes blocks, so move `hv.extracted` into the
         // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
-        metadata.wire.previous_node = hv.extracted.previous_node.take();
-        metadata.wire.age = hv.extracted.age.take();
-        metadata.wire.hop_count = hv.extracted.hop_count.take();
+        metadata.extensions = core::mem::take(&mut hv.extracted);
         let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
             &whole,
             hv,
@@ -234,11 +222,7 @@ impl Dispatcher {
                 debug!("Invalid bundle received: {error}");
                 let reason = parse::status_report_reason_for(&error);
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
-                let bundle = bundle::Bundle {
-                    metadata,
-                    bundle,
-                    status: bundle::BundleStatus::New,
-                };
+                let bundle = bundle::Bundle::new(bundle, metadata);
                 self.report_bundle_reception(&bundle, reason).await;
                 return Ok(None);
             }
@@ -260,11 +244,7 @@ impl Dispatcher {
         } else {
             metadata.storage_name = Some(self.store.save_data(data.clone()).await);
         }
-        let bundle = bundle::Bundle {
-            metadata,
-            bundle,
-            status: bundle::BundleStatus::New,
-        };
+        let bundle = bundle::Bundle::new(bundle, metadata);
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
@@ -321,7 +301,7 @@ impl Dispatcher {
     //
     // See [Filter Subsystem Design](../../docs/filter_subsystem_design.md) for
     // filter execution details.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn ingress_bundle(&self, bundle: bundle::Bundle, data: Bytes) {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
 

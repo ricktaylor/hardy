@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use crate::{
     Arc, Bytes,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     stream::Sender,
 };
 
@@ -116,9 +116,10 @@ pub trait MetadataStorage: Send + Sync {
     /// Part of the startup recovery protocol. Called once per bundle after
     /// `start_recovery()` as the BPA walks the bundle store and finds data on
     /// disk. Confirms that the metadata entry for this bundle is still wanted,
-    /// and returns the stored record — metadata and status — so the BPA can
-    /// resume processing. Distinct from [`get`](Self::get) only by the
-    /// confirmation side-effect.
+    /// and returns the stored record halves recovery needs — metadata and
+    /// status — so the BPA can resume processing. The wire bundle is not
+    /// returned: the caller has already re-parsed the bytes on disk, which
+    /// stay authoritative for the wire half.
     ///
     /// For persistent backends (e.g. SQLite), this removes the bundle from the
     /// "unconfirmed" set populated by `start_recovery()`. Any entries still in
@@ -127,7 +128,10 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
     /// this returns `Ok(None)`.
-    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<Bundle>>;
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> Result<Option<(BundleMetadata, BundleStatus)>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last

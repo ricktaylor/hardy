@@ -21,26 +21,26 @@ pub struct BundleValidityFilter;
 #[async_trait]
 impl ReadFilter for BundleValidityFilter {
     async fn filter(&self, bundle: &Bundle, _data: &[u8]) -> Result<ReadResult, crate::Error> {
-        if let Some(u) = bundle.bundle.primary.flags.unrecognised {
+        if let Some(u) = bundle.primary().flags.unrecognised {
             debug!(
-                bundle_id = %bundle.bundle.primary.id,
+                bundle_id = %bundle.id(),
                 "Bundle primary block has unrecognised flag bits set: {u:#x}"
             );
         }
 
         if bundle.has_expired() {
             debug!(
-                bundle_id = %bundle.bundle.primary.id,
+                bundle_id = %bundle.id(),
                 "Rejecting bundle: lifetime has expired"
             );
             return Ok(ReadResult::Drop(Some(ReasonCode::LifetimeExpired)));
         }
 
-        if let Some(hop_info) = bundle.metadata.wire.hop_count.as_ref()
+        if let Some(hop_info) = bundle.metadata.extensions.hop_count.as_ref()
             && hop_info.count > hop_info.limit
         {
             debug!(
-                bundle_id = %bundle.bundle.primary.id,
+                bundle_id = %bundle.id(),
                 limit = hop_info.limit,
                 count = hop_info.count,
                 "Rejecting bundle: hop limit exceeded"

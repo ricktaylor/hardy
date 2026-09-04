@@ -450,7 +450,7 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bpv7: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
                     id: hardy_bpv7::bundle::Id {
                         source: format!("ipn:0.{n}.1").parse().unwrap(),
@@ -472,7 +472,7 @@ mod tests {
 
     fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
-        b.bundle.primary.lifetime = core::time::Duration::from_secs(0);
+        b.bpv7.primary.lifetime = core::time::Duration::from_secs(0);
         // received_at in the past so expiry has already passed
         b.metadata = crate::bundle::BundleMetadata::new(
             time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
@@ -617,8 +617,8 @@ mod tests {
                 .await
                 .expect("Timed out waiting for a bundle delivery")
                 .expect("Channel closed mid-drain");
-            store.tombstone_metadata(&b.bundle.primary.id).await;
-            seen.insert(b.bundle.primary.id);
+            store.tombstone_metadata(b.id()).await;
+            seen.insert(b.id().clone());
         }
         assert_eq!(
             seen.len(),
@@ -644,7 +644,7 @@ mod tests {
                         // immediately rather than spinning on a ready Err arm
                         // until the outer timeout.
                         let b = r.expect("Channel disconnected while awaiting re-open");
-                        store.tombstone_metadata(&b.bundle.primary.id).await;
+                        store.tombstone_metadata(b.id()).await;
                     }
                 }
             }
@@ -727,8 +727,8 @@ mod tests {
         while seen.len() < 3 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.primary.id).await;
-                    seen.insert(b.bundle.primary.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -765,8 +765,8 @@ mod tests {
         while seen.len() < total as usize {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.primary.id).await;
-                    seen.insert(b.bundle.primary.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -805,8 +805,8 @@ mod tests {
         while seen.len() < 2 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.primary.id).await;
-                    seen.insert(b.bundle.primary.id.source.clone());
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().source.clone());
                 }
                 _ => break,
             }

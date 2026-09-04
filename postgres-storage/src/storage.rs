@@ -1,6 +1,6 @@
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     storage,
     stream::Sender,
 };
@@ -231,9 +231,9 @@ impl storage::MetadataStorage for PostgresStorage {
         Ok(row.and_then(MetadataRow::decode))
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
-        let bundle_key = bundle.bundle.primary.id.to_key();
+        let bundle_key = bundle.id().to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let received_at = bundle.metadata.received_at();
         let expiry = bundle.expiry();
@@ -276,9 +276,9 @@ impl storage::MetadataStorage for PostgresStorage {
         Ok(inserted.is_some())
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        let bundle_key = bundle.bundle.primary.id.to_key();
+        let bundle_key = bundle.id().to_key();
         let bundle_bytes = serde_json::to_vec(bundle)?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
@@ -476,7 +476,7 @@ impl storage::MetadataStorage for PostgresStorage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<Bundle>> {
+    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
         let bundle_key = bundle_id.to_key();
 
         // Atomic: SELECT + DELETE in one transaction so a concurrent
@@ -513,7 +513,7 @@ impl storage::MetadataStorage for PostgresStorage {
             .await?;
 
         txn.commit().await?;
-        Ok(Some(bundle))
+        Ok(Some((bundle.metadata, bundle.status)))
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]

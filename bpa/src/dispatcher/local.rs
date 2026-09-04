@@ -140,19 +140,17 @@ impl Dispatcher {
     async fn originate_bundle(
         self: &Arc<Self>,
         bundle: hardy_bpv7::bundle::Bundle,
-        extracted: crate::bundle::parse::ExtractedExtensionFields,
+        extensions: bundle::ExtensionFields,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
         let mut metadata = bundle::BundleMetadata::originated();
-        metadata.wire.previous_node = extracted.previous_node;
-        metadata.wire.age = extracted.age;
-        metadata.wire.hop_count = extracted.hop_count;
+        metadata.extensions = extensions;
         let bundle = bundle::Bundle {
+            bpv7: bundle,
             metadata,
-            bundle,
             status: bundle::BundleStatus::Dispatching,
         };
 
@@ -173,13 +171,13 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated").increment(1);
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
-        let bundle_id = bundle.bundle.primary.id.clone();
+        let bundle_id = bundle.id().clone();
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
         self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.primary.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(
         &self,
         service: Arc<services::registry::Service>,
@@ -214,13 +212,8 @@ impl Dispatcher {
                 // Pass raw bundle bytes to low-level services: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(
-                    &bundle.bundle.primary.id,
-                    bundle.expiry(),
-                    total_len,
-                    &mut data,
-                )
-                .await
+                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
+                    .await
             }
             services::registry::ServiceImpl::Application(app) => {
                 // Extract and decrypt payload for Application.
@@ -281,9 +274,9 @@ impl Dispatcher {
                 // so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
                 app.on_deliver(
-                    &bundle.bundle.primary.id,
+                    bundle.id(),
                     bundle.expiry(),
-                    bundle.bundle.primary.flags.app_ack_requested,
+                    bundle.primary().flags.app_ack_requested,
                     total_len,
                     &mut payload,
                 )
@@ -300,7 +293,7 @@ impl Dispatcher {
             let service_eid = self
                 .node_ids
                 .resolve_eid(&service.service_id)
-                .unwrap_or_else(|_| bundle.bundle.primary.destination.clone());
+                .unwrap_or_else(|_| bundle.primary().destination.clone());
             let desired = bundle::BundleStatus::WaitingForService {
                 service: service_eid,
             };
@@ -320,7 +313,7 @@ impl Dispatcher {
         if !self.store.tombstone_if(&bundle).await {
             debug!(
                 "Delivery completion for {} lost the resolution race, ignored",
-                bundle.bundle.primary.id
+                bundle.id()
             );
             return;
         }

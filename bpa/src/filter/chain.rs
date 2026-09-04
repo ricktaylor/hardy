@@ -265,12 +265,10 @@ impl Level {
                             &nokey,
                             raw.primary.id.timestamp.is_clocked(),
                         )?;
-                        bundle.bundle = raw;
+                        bundle.bpv7 = raw;
                         // The rewrite changed the bytes, so refresh the cached
                         // extension fields from the re-parse.
-                        bundle.metadata.wire.previous_node = extracted.previous_node;
-                        bundle.metadata.wire.age = extracted.age;
-                        bundle.metadata.wire.hop_count = extracted.hop_count;
+                        bundle.metadata.extensions = extracted;
                         *data = new_data;
                     }
                 }
@@ -536,7 +534,7 @@ mod tests {
         let chain = builder.build();
         let pool = hardy_async::TaskPool::new();
         let bundle = Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bpv7: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
                     id: hardy_bpv7::bundle::Id {
                         source: "ipn:1.0".parse().unwrap(),

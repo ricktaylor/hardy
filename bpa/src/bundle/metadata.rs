@@ -13,7 +13,7 @@ use crate::{Arc, cla::ClaAddress};
 /// Part of the bundle's provenance: persisted, write-once. At Egress the
 /// transit predicate is a type-level match: a bundle is transit traffic iff
 /// its origin is [`Ingress`](Origin::Ingress).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Origin {
     /// Received from a peer through a convergence-layer adapter.
@@ -43,21 +43,21 @@ pub enum Origin {
 
 // Arrival facts, written once at construction. Private fields and no `&mut`
 // accessor anywhere keep the write-once property a compile-time fact.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Provenance {
     received_at: OffsetDateTime,
     origin: Origin,
 }
 
-/// Cache of decoded extension-block fields, derived from the stored bytes.
+/// Decoded well-known extension-block fields, derived from the bundle's bytes.
 ///
-/// Written by the parser when the bundle's content is parsed — at ingress, on
-/// local build, or on re-parse. Never invalidated: the stored bytes are
-/// immutable.
-#[derive(Debug, Clone, Default)]
+/// Produced by the parse pipelines (`bundle::parse`) and recorded here when
+/// the bundle's content is parsed — at ingress, on local build, or on
+/// re-parse. Never invalidated: the stored bytes are immutable.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct WireCache {
+pub struct ExtensionFields {
     /// EID of the node that last forwarded the bundle (Previous Node block).
     #[cfg_attr(
         feature = "serde",
@@ -81,12 +81,12 @@ pub struct WireCache {
 // Output of the classifier chain: persisted, cleared and re-derived at
 // restart re-admission. Fields arrive with the filter and policy tranches
 // (see bpa/docs/filter_subsystem_redesign.md).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Classification {}
 
 /// Mutable annotations that filters may modify during bundle processing.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct WritableMetadata {
     /// Optional flow label for QoS differentiation.
@@ -97,12 +97,12 @@ pub struct WritableMetadata {
 ///
 /// Partitioned by write discipline: provenance (write-once arrival facts,
 /// read via [`received_at`](Self::received_at) / [`origin`](Self::origin)),
-/// the [`wire`](Self::wire) cache of parser-decoded extension fields, the
-/// classification group (placeholder), and BPA infrastructure references
-/// (crate-private). There is no `Default`: a defaulted provenance would
-/// fabricate a `received_at` and an origin, so records are built only through
-/// the constructors.
-#[derive(Debug, Clone)]
+/// the [`extensions`](Self::extensions) cache of parser-decoded extension
+/// fields, the classification group (placeholder), and BPA infrastructure
+/// references (crate-private). There is no `Default`: a defaulted provenance
+/// would fabricate a `received_at` and an origin, so records are built only
+/// through the constructors.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BundleMetadata {
     // Write-once arrival facts.
@@ -110,7 +110,7 @@ pub struct BundleMetadata {
     provenance: Provenance,
     /// Parser-derived cache of decoded extension-block fields.
     #[cfg_attr(feature = "serde", serde(flatten))]
-    pub wire: WireCache,
+    pub extensions: ExtensionFields,
     // Classifier-chain output; empty until the filter tranches land.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
@@ -137,7 +137,7 @@ impl BundleMetadata {
                 received_at,
                 origin,
             },
-            wire: WireCache::default(),
+            extensions: ExtensionFields::default(),
             classification: Classification::default(),
             storage_name: None,
             next_hop: None,

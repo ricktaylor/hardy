@@ -37,15 +37,15 @@ impl Dispatcher {
         };
 
         // Reconcile with metadata store
-        if let Some(stored) = self.store.confirm_exists(&bundle.primary.id).await {
-            if stored.metadata.storage_name.as_ref() != Some(&storage_name) {
+        if let Some((metadata, status)) = self.store.confirm_exists(&bundle.primary.id).await {
+            if metadata.storage_name.as_ref() != Some(&storage_name) {
                 // Metadata references a different copy — this one is a duplicate
-                if stored.metadata.storage_name.is_none() {
+                if metadata.storage_name.is_none() {
                     warn!("Duplicate copy of processed bundle data found: {storage_name}");
                 } else {
                     warn!(
                         "Duplicate bundle data found: {storage_name} != {:?}",
-                        stored.metadata.storage_name.as_ref()
+                        metadata.storage_name.as_ref()
                     );
                 }
                 self.store.delete_data(&storage_name).await;
@@ -57,9 +57,9 @@ impl Dispatcher {
             // stored record with the freshly-parsed bundle — the bytes on
             // disk stay authoritative for the wire half.
             let bundle = bundle::Bundle {
-                metadata: stored.metadata,
-                bundle,
-                status: stored.status,
+                bpv7: bundle,
+                metadata,
+                status,
             };
             match &bundle.status {
                 bundle::BundleStatus::New => {
@@ -221,8 +221,15 @@ mod tests {
 
         async fn start_recovery(&self) {}
 
-        async fn confirm_exists(&self, bundle_id: &Id) -> StorageResult<Option<bundle::Bundle>> {
-            self.0.get(bundle_id).await
+        async fn confirm_exists(
+            &self,
+            bundle_id: &Id,
+        ) -> StorageResult<Option<(bundle::BundleMetadata, bundle::BundleStatus)>> {
+            Ok(self
+                .0
+                .get(bundle_id)
+                .await?
+                .map(|bundle| (bundle.metadata, bundle.status)))
         }
 
         async fn remove_unconfirmed(
@@ -306,11 +313,11 @@ mod tests {
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
-            bundle: parsed,
+            bpv7: parsed,
             metadata,
             status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
         };
-        let id = bundle.bundle.primary.id.clone();
+        let id = bundle.id().clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
 
         let node_ids = crate::node_ids::NodeIds::try_from(

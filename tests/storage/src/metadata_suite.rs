@@ -13,10 +13,10 @@ pub async fn meta_01_insert_and_get(store: Arc<dyn MetadataStorage>) {
         "insert should return true"
     );
 
-    let got = store.get(&bundle.bundle.primary.id).await.unwrap();
+    let got = store.get(bundle.id()).await.unwrap();
     let got = got.expect("get should return Some after insert");
 
-    assert_eq!(got.bundle.primary.id, bundle.bundle.primary.id);
+    assert_eq!(got.id(), bundle.id());
     assert_eq!(got.status, bundle.status);
 }
 
@@ -42,7 +42,7 @@ pub async fn meta_03_update_replace(store: Arc<dyn MetadataStorage>) {
     bundle.status = BundleStatus::Dispatching;
     store.replace(&bundle).await.unwrap();
 
-    let got = store.get(&bundle.bundle.primary.id).await.unwrap().unwrap();
+    let got = store.get(bundle.id()).await.unwrap().unwrap();
     assert_eq!(got.status, BundleStatus::Dispatching);
 }
 
@@ -51,9 +51,9 @@ pub async fn meta_04_tombstone(store: Arc<dyn MetadataStorage>) {
     let bundle = fixtures::random_bundle();
     assert!(store.insert(&bundle).await.unwrap());
 
-    store.tombstone(&bundle.bundle.primary.id).await.unwrap();
+    store.tombstone(bundle.id()).await.unwrap();
 
-    let got = store.get(&bundle.bundle.primary.id).await.unwrap();
+    let got = store.get(bundle.id()).await.unwrap();
     assert!(got.is_none(), "get should return None after tombstone");
 
     assert!(
@@ -68,8 +68,8 @@ pub async fn meta_04_tombstone(store: Arc<dyn MetadataStorage>) {
 /// marked unconfirmed by `start_recovery()`, then selectively confirmed
 /// via `confirm_exists()`. Only applicable to persistent backends.
 pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
-    let bundle = fixtures::random_bundle();
-    let missing_id = fixtures::random_bundle().bundle.primary.id;
+    let bundle = fixtures::ingress_bundle();
+    let missing_id = fixtures::random_bundle().id().clone();
 
     // Simulate a previous session: bundle already exists in the store
     assert!(store.insert(&bundle).await.unwrap());
@@ -77,15 +77,15 @@ pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
     // Start recovery — marks all existing entries as unconfirmed
     store.start_recovery().await;
 
-    // Confirm the bundle we know about
-    let exists = store
-        .confirm_exists(&bundle.bundle.primary.id)
+    // Confirm the bundle we know about — the recovered record must be the
+    // inserted one, metadata body and status alike.
+    let (metadata, status) = store
+        .confirm_exists(bundle.id())
         .await
-        .unwrap();
-    assert!(
-        exists.is_some(),
-        "confirm_exists should return Some for existing bundle"
-    );
+        .unwrap()
+        .expect("confirm_exists should return Some for existing bundle");
+    assert_eq!(metadata, bundle.metadata, "metadata should round-trip");
+    assert_eq!(status, bundle.status, "status should round-trip");
 
     // A bundle ID that was never inserted should return None
     let missing = store.confirm_exists(&missing_id).await.unwrap();
@@ -101,11 +101,35 @@ pub async fn meta_05_confirm_exists(store: Arc<dyn MetadataStorage>) {
     assert!(removed.is_empty(), "confirmed bundle should not be removed");
 
     // The confirmed bundle should still be retrievable
-    let got = store.get(&bundle.bundle.primary.id).await.unwrap();
+    let got = store.get(bundle.id()).await.unwrap();
     assert!(
         got.is_some(),
         "confirmed bundle should still exist after remove_unconfirmed"
     );
+}
+
+/// META-15: Metadata body round-trip
+///
+/// The serialized record body is otherwise never asserted: the suite's other
+/// tests check only the bundle ID and status. Store a bundle whose every
+/// metadata group is populated (`Origin::Ingress` provenance plus decoded
+/// extension fields) and assert the whole record survives a store/load.
+pub async fn meta_15_metadata_roundtrip(store: Arc<dyn MetadataStorage>) {
+    let bundle = fixtures::ingress_bundle();
+    assert!(store.insert(&bundle).await.unwrap());
+
+    let got = store
+        .get(bundle.id())
+        .await
+        .unwrap()
+        .expect("get should return Some after insert");
+
+    assert_eq!(got.bpv7, bundle.bpv7, "wire bundle should round-trip");
+    assert_eq!(
+        got.metadata, bundle.metadata,
+        "metadata body (origin, received_at, extension fields) should round-trip"
+    );
+    assert_eq!(got.status, bundle.status, "status should round-trip");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +155,13 @@ pub async fn meta_06_poll_waiting_fifo(store: Arc<dyn MetadataStorage>) {
 
     assert_eq!(results.len(), 2, "should return both Waiting bundles");
     assert_eq!(
-        results[0].bundle.primary.id, bundle_a.bundle.primary.id,
+        results[0].id(),
+        bundle_a.id(),
         "first should be earlier bundle"
     );
     assert_eq!(
-        results[1].bundle.primary.id, bundle_b.bundle.primary.id,
+        results[1].id(),
+        bundle_b.id(),
         "second should be later bundle"
     );
 }
@@ -171,11 +197,13 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
 
     assert_eq!(results.len(), 2, "New-status bundle should be excluded");
     assert_eq!(
-        results[0].bundle.primary.id, bundle_b.bundle.primary.id,
+        results[0].id(),
+        bundle_b.id(),
         "first should be the bundle with earlier expiry"
     );
     assert_eq!(
-        results[1].bundle.primary.id, bundle_a.bundle.primary.id,
+        results[1].id(),
+        bundle_a.id(),
         "second should be the bundle with later expiry"
     );
 
@@ -185,7 +213,7 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
-    assert_eq!(results[0].bundle.primary.id, bundle_b.bundle.primary.id);
+    assert_eq!(results[0].id(), bundle_b.id());
 }
 
 /// META-08: Poll Pending (FIFO & Limit)
@@ -212,7 +240,8 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
 
     assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
     assert_eq!(
-        results[0].bundle.primary.id, bundle_a.bundle.primary.id,
+        results[0].id(),
+        bundle_a.id(),
         "should be FIFO (earlier first)"
     );
 
@@ -222,14 +251,8 @@ pub async fn meta_08_poll_pending_limit(store: Arc<dyn MetadataStorage>) {
     let results = sink.into_inner();
 
     assert_eq!(results.len(), 2, "limit=2 should return both bundles");
-    assert_eq!(
-        results[0].bundle.primary.id, bundle_a.bundle.primary.id,
-        "first should be earlier"
-    );
-    assert_eq!(
-        results[1].bundle.primary.id, bundle_b.bundle.primary.id,
-        "second should be later"
-    );
+    assert_eq!(results[0].id(), bundle_a.id(), "first should be earlier");
+    assert_eq!(results[1].id(), bundle_b.id(), "second should be later");
 }
 
 /// META-09: Poll Pending (Exact Match)
@@ -266,7 +289,7 @@ pub async fn meta_09_poll_pending_exact_match(store: Arc<dyn MetadataStorage>) {
         1,
         "only exact-matching status should be returned"
     );
-    assert_eq!(results[0].bundle.primary.id, bundle_a.bundle.primary.id);
+    assert_eq!(results[0].id(), bundle_a.id());
 }
 
 /// META-10: Poll Fragments
@@ -293,7 +316,7 @@ pub async fn meta_10_poll_adu_fragments(store: Arc<dyn MetadataStorage>) {
     assert_eq!(results.len(), 2, "should return both fragments");
     assert_eq!(
         results[0]
-            .bundle
+            .bpv7
             .primary
             .id
             .fragment_info
@@ -305,7 +328,7 @@ pub async fn meta_10_poll_adu_fragments(store: Arc<dyn MetadataStorage>) {
     );
     assert_eq!(
         results[1]
-            .bundle
+            .bpv7
             .primary
             .id
             .fragment_info
@@ -353,7 +376,8 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
 
     assert_eq!(results.len(), 2, "should return both bundles for service_a");
     assert_eq!(
-        results[0].bundle.primary.id, bundle_a2.bundle.primary.id,
+        results[0].id(),
+        bundle_a2.id(),
         "first should be earlier bundle"
     );
     assert_eq!(
@@ -361,7 +385,8 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
         "returned bundle should have correct WaitingForService status"
     );
     assert_eq!(
-        results[1].bundle.primary.id, bundle_a1.bundle.primary.id,
+        results[1].id(),
+        bundle_a1.id(),
         "second should be later bundle"
     );
 
@@ -371,7 +396,7 @@ pub async fn meta_14_poll_service_waiting(store: Arc<dyn MetadataStorage>) {
     let results = sink.into_inner();
 
     assert_eq!(results.len(), 1, "should return only bundle for service_b");
-    assert_eq!(results[0].bundle.primary.id, bundle_b1.bundle.primary.id);
+    assert_eq!(results[0].id(), bundle_b1.id());
 }
 
 // ---------------------------------------------------------------------------
@@ -403,22 +428,14 @@ pub async fn meta_11_reset_peer_queue(store: Arc<dyn MetadataStorage>) {
         "reset_peer_queue should return 1 when bundles were reset"
     );
 
-    let got_a = store
-        .get(&bundle_a.bundle.primary.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let got_a = store.get(bundle_a.id()).await.unwrap().unwrap();
     assert_eq!(
         got_a.status,
         BundleStatus::Waiting,
         "peer 100 bundle should become Waiting"
     );
 
-    let got_b = store
-        .get(&bundle_b.bundle.primary.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let got_b = store.get(bundle_b.id()).await.unwrap().unwrap();
     assert_eq!(
         got_b.status, status_200,
         "peer 200 bundle should remain ForwardPending"

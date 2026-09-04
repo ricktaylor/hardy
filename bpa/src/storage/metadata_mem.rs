@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use super::{MetadataStorage, Result};
 use crate::{
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     stream::Sender,
 };
 
@@ -237,7 +237,7 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn insert(&self, bundle: &Bundle) -> Result<bool> {
-        let key = bundle.bundle.primary.id.clone();
+        let key = bundle.id().clone();
         let edge = {
             let mut inner = self.inner.lock();
             // contains() leaves the LRU order untouched: a duplicate lookup
@@ -253,10 +253,7 @@ impl MetadataStorage for MetadataMemStorage {
     }
 
     async fn replace(&self, bundle: &Bundle) -> Result<()> {
-        self.apply(
-            bundle.bundle.primary.id.clone(),
-            Entry::Live(Box::new(bundle.clone())),
-        );
+        self.apply(bundle.id().clone(), Entry::Live(Box::new(bundle.clone())));
         Ok(())
     }
 
@@ -338,7 +335,10 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<Bundle>> {
+    async fn confirm_exists(
+        &self,
+        _bundle_id: &Id,
+    ) -> Result<Option<(BundleMetadata, BundleStatus)>> {
         Ok(None)
     }
 
@@ -452,7 +452,7 @@ impl MetadataStorage for MetadataMemStorage {
             .filter_map(|(_, v)| v.live())
             .filter(|v| &v.status == status)
             .filter_map(|v| {
-                v.bundle
+                v.bpv7
                     .primary
                     .id
                     .fragment_info
@@ -508,7 +508,7 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: hardy_bpv7::bundle::Bundle {
+            bpv7: hardy_bpv7::bundle::Bundle {
                 primary: hardy_bpv7::primary_block::PrimaryBlock {
                     id: hardy_bpv7::bundle::Id {
                         source: format!("ipn:0.{n}.1").parse().unwrap(),
@@ -545,14 +545,14 @@ mod tests {
         assert!(storage.insert(&c).await.unwrap());
 
         // a has already expired, so its tombstone is demoted at write time
-        storage.tombstone(&a.bundle.primary.id).await.unwrap();
+        storage.tombstone(a.id()).await.unwrap();
 
         // The cache is full: inserting d must evict a's expired tombstone,
         // not the least-recently-used live bundle (b).
         assert!(storage.insert(&d).await.unwrap());
-        assert!(storage.get(&b.bundle.primary.id).await.unwrap().is_some());
-        assert!(storage.get(&c.bundle.primary.id).await.unwrap().is_some());
-        assert!(storage.get(&d.bundle.primary.id).await.unwrap().is_some());
+        assert!(storage.get(b.id()).await.unwrap().is_some());
+        assert!(storage.get(c.id()).await.unwrap().is_some());
+        assert!(storage.get(d.id()).await.unwrap().is_some());
     }
 
     // An unexpired tombstone is live dedup state: it enters at the MRU end,
@@ -573,12 +573,12 @@ mod tests {
         assert!(storage.insert(&c).await.unwrap());
 
         // a has not expired: its tombstone lands at the MRU end
-        storage.tombstone(&a.bundle.primary.id).await.unwrap();
+        storage.tombstone(a.id()).await.unwrap();
 
         // Inserting d evicts the LRU live bundle (b), not the fresh tombstone
         assert!(storage.insert(&d).await.unwrap());
-        assert!(storage.get(&b.bundle.primary.id).await.unwrap().is_none());
-        assert!(storage.get(&c.bundle.primary.id).await.unwrap().is_some());
+        assert!(storage.get(b.id()).await.unwrap().is_none());
+        assert!(storage.get(c.id()).await.unwrap().is_some());
 
         // The tombstone still refuses a duplicate of a
         assert!(!storage.insert(&a).await.unwrap());
@@ -595,9 +595,9 @@ mod tests {
         assert!(storage.insert(&b).await.unwrap());
         assert!(storage.insert(&c).await.unwrap());
 
-        assert!(storage.get(&a.bundle.primary.id).await.unwrap().is_none());
-        assert!(storage.get(&b.bundle.primary.id).await.unwrap().is_some());
-        assert!(storage.get(&c.bundle.primary.id).await.unwrap().is_some());
+        assert!(storage.get(a.id()).await.unwrap().is_none());
+        assert!(storage.get(b.id()).await.unwrap().is_some());
+        assert!(storage.get(c.id()).await.unwrap().is_some());
     }
 
     // A duplicate of a tombstoned bundle is refused, and the refusal must
@@ -616,12 +616,12 @@ mod tests {
         assert!(storage.insert(&b).await.unwrap());
         assert!(storage.insert(&c).await.unwrap());
 
-        storage.tombstone(&a.bundle.primary.id).await.unwrap();
+        storage.tombstone(a.id()).await.unwrap();
         assert!(!storage.insert(&a).await.unwrap());
 
         // The expired tombstone must still be the next eviction victim.
         assert!(storage.insert(&d).await.unwrap());
-        assert!(storage.get(&b.bundle.primary.id).await.unwrap().is_some());
+        assert!(storage.get(b.id()).await.unwrap().is_some());
 
         // The tombstone is gone with it, so a duplicate of a is accepted again.
         assert!(storage.insert(&a).await.unwrap());
@@ -638,20 +638,20 @@ mod tests {
         assert!(storage.insert(&b).await.unwrap());
         // The cache is full with no tombstones: inserting c evicts a
         assert!(storage.insert(&c).await.unwrap());
-        assert!(storage.get(&a.bundle.primary.id).await.unwrap().is_none());
+        assert!(storage.get(a.id()).await.unwrap().is_none());
 
-        storage.tombstone(&a.bundle.primary.id).await.unwrap();
+        storage.tombstone(a.id()).await.unwrap();
 
         // Both live bundles survive; the deletion went unrecorded, so a
         // duplicate of a is accepted again.
-        assert!(storage.get(&b.bundle.primary.id).await.unwrap().is_some());
-        assert!(storage.get(&c.bundle.primary.id).await.unwrap().is_some());
+        assert!(storage.get(b.id()).await.unwrap().is_some());
+        assert!(storage.get(c.id()).await.unwrap().is_some());
         assert!(storage.insert(&a).await.unwrap());
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
-        b.bundle.primary.lifetime = core::time::Duration::from_secs(0);
+        b.bpv7.primary.lifetime = core::time::Duration::from_secs(0);
         // received_at in the past so expiry has already passed
         b.metadata = crate::bundle::BundleMetadata::new(
             time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
@@ -700,17 +700,11 @@ mod tests {
         assert!(storage.near_capacity(), "19 of 20 live crosses 95%");
 
         // 18 live == low watermark: still inside the hysteresis band
-        storage
-            .tombstone(&bundles[0].bundle.primary.id)
-            .await
-            .unwrap();
+        storage.tombstone(bundles[0].id()).await.unwrap();
         assert!(storage.near_capacity());
 
         // 17 live < 18 exits the episode
-        storage
-            .tombstone(&bundles[1].bundle.primary.id)
-            .await
-            .unwrap();
+        storage.tombstone(bundles[1].id()).await.unwrap();
         assert!(!storage.near_capacity());
     }
 
@@ -728,7 +722,7 @@ mod tests {
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.primary.id,
+                    bundle.id(),
                     &BundleStatus::Waiting,
                     &BundleStatus::Dispatching,
                 )
@@ -740,7 +734,7 @@ mod tests {
         assert!(
             storage
                 .swap_status(
-                    &bundle.bundle.primary.id,
+                    bundle.id(),
                     &BundleStatus::ForwardAckPending { peer: 7 },
                     &BundleStatus::Dispatching,
                 )
@@ -748,12 +742,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            storage
-                .get(&bundle.bundle.primary.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
+            storage.get(bundle.id()).await.unwrap().unwrap().status,
             BundleStatus::Dispatching
         );
 
@@ -761,7 +750,7 @@ mod tests {
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.primary.id,
+                    bundle.id(),
                     &BundleStatus::ForwardAckPending { peer: 7 },
                     &BundleStatus::Dispatching,
                 )
@@ -770,11 +759,11 @@ mod tests {
         );
 
         // A deleted bundle swaps nothing
-        storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
+        storage.tombstone(bundle.id()).await.unwrap();
         assert!(
             !storage
                 .swap_status(
-                    &bundle.bundle.primary.id,
+                    bundle.id(),
                     &BundleStatus::Dispatching,
                     &BundleStatus::Waiting,
                 )
@@ -796,43 +785,25 @@ mod tests {
         // Wrong expectation: not tombstoned
         assert!(
             !storage
-                .tombstone_if(&bundle.bundle.primary.id, &BundleStatus::Waiting)
+                .tombstone_if(bundle.id(), &BundleStatus::Waiting)
                 .await
                 .unwrap()
         );
-        assert!(
-            storage
-                .get(&bundle.bundle.primary.id)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert!(storage.get(bundle.id()).await.unwrap().is_some());
 
         // Matching expectation: tombstoned
         assert!(
             storage
-                .tombstone_if(
-                    &bundle.bundle.primary.id,
-                    &BundleStatus::ForwardAckPending { peer: 7 },
-                )
+                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 },)
                 .await
                 .unwrap()
         );
-        assert!(
-            storage
-                .get(&bundle.bundle.primary.id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(storage.get(bundle.id()).await.unwrap().is_none());
 
         // A duplicate resolution loses
         assert!(
             !storage
-                .tombstone_if(
-                    &bundle.bundle.primary.id,
-                    &BundleStatus::ForwardAckPending { peer: 7 },
-                )
+                .tombstone_if(bundle.id(), &BundleStatus::ForwardAckPending { peer: 7 },)
                 .await
                 .unwrap()
         );
@@ -845,27 +816,15 @@ mod tests {
         let storage = MetadataMemStorage::new(None);
         let bundle = make_bundle(1);
         assert!(storage.insert(&bundle).await.unwrap());
-        storage.tombstone(&bundle.bundle.primary.id).await.unwrap();
+        storage.tombstone(bundle.id()).await.unwrap();
 
         storage
-            .update_status(&bundle.bundle.primary.id, &BundleStatus::Dispatching)
+            .update_status(bundle.id(), &BundleStatus::Dispatching)
             .await
             .unwrap();
-        assert!(
-            storage
-                .get(&bundle.bundle.primary.id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(storage.get(bundle.id()).await.unwrap().is_none());
 
         storage.replace(&bundle).await.unwrap();
-        assert!(
-            storage
-                .get(&bundle.bundle.primary.id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(storage.get(bundle.id()).await.unwrap().is_none());
     }
 }
