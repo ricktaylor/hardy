@@ -18,7 +18,7 @@ use hardy_bpa::{
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
-    storage::{MetadataMemStorage, MetadataStorage},
+    storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
     stream::{Receiver, Segment, buffer_stream},
 };
 use hardy_bpv7::{
@@ -1825,6 +1825,83 @@ async fn segmented_payload_local_delivery() {
     );
 
     bpa.shutdown().await;
+}
+
+// A replayed arrival is settled at the ingress gate: the first copy was
+// committed (and, once delivered, tombstoned), so the replay's duplicate
+// probe fires while its payload source is still parked — the transfer is
+// acked and dropped without spooling a byte. A consumer that returns while
+// the source is parked provably did not wait for the payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_arrival_never_awaits_the_payload() {
+    let node_id = IpnNodeId {
+        allocator_id: 0,
+        node_number: 1,
+    };
+    let node_ids = NodeIds::try_from([NodeId::Ipn(node_id)].as_slice()).unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+
+    let (app, app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let (cla, _forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let payload = vec![0xA5_u8; 20_000];
+    let inbound = build_bundle(&remote_source, &local_dest, &payload);
+
+    // First copy: delivered whole, so the record commits and its id enters
+    // the gates' recently-committed cache (delivery tombstones the record,
+    // but the probe answers from the cached id, not the record's state).
+    let mut stream = SegmentReceiver::new(&inbound, 1000);
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut stream)
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), app_rx.recv_async())
+        .await
+        .expect("Timeout waiting for first delivery")
+        .expect("Channel closed");
+
+    // Replay: headers resident, payload parked forever. The gate's duplicate
+    // probe must settle the transfer — acked, dropped — without the payload.
+    // The timeout only bounds a regression: a door that waits for the
+    // payload parks forever.
+    let mut replay = ParkedReceiver::new(&inbound, 1000, 3);
+    let acceptance = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        cla.sink.get().unwrap().dispatch(None, None, &mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate arrival awaited its parked payload")
+    .unwrap();
+    assert_eq!(
+        acceptance,
+        cla::Acceptance::Accepted,
+        "a committed duplicate is acked so the peer stops resending"
+    );
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(app_rx.is_empty(), "the duplicate must not deliver");
 }
 
 // A bundle whose creation time + lifetime is already in the past — expired on
@@ -3987,8 +4064,8 @@ async fn deferred_outcome_failed_redispatches() {
 // ---------------------------------------------------------------------------
 
 /// A transfer answered `Accepted` whose outcome is reported `Completed` is
-/// complete: no re-offer, a late duplicate outcome is ignored, and the
-/// tombstone dedups a re-arrival of the same bundle.
+/// complete: no re-offer, a late duplicate outcome is ignored, and a
+/// re-arrival of the same bundle is dropped as a duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deferred_outcome_completed_resolves() {
     let (bpa, cla, offers_rx) = deferring_setup(1, 2).await;
@@ -4019,8 +4096,8 @@ async fn deferred_outcome_completed_resolves() {
         .unwrap();
     expect_no_offer(&offers_rx).await;
 
-    // The completed bundle was deleted with a tombstone: a re-arrival of the
-    // same bundle is dropped as a duplicate rather than re-forwarded.
+    // The completed bundle's id was committed: a re-arrival of the same
+    // bundle is dropped as a duplicate rather than re-forwarded.
     assert_eq!(
         cla.sink().dispatch(None, None, &mut data).await.unwrap(),
         cla::Acceptance::Accepted
@@ -5304,8 +5381,7 @@ async fn raw_originate_applies_the_admission_gates() {
 
 /// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
 /// bundles carry service-authored ids, so the door cannot retry for them —
-/// and the first copy is unaffected: forwarded exactly once, the
-/// duplicate's staged data discarded.
+/// and the first copy is unaffected: forwarded exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn raw_originate_duplicate_surfaces_to_the_caller() {
     let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
@@ -5342,6 +5418,188 @@ async fn raw_originate_duplicate_surfaces_to_the_caller() {
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
     assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// The originate twin of the gate-side duplicate probe: once the first send
+// commits, a replay through the raw door is refused with `DuplicateBundle`
+// while its payload source is still parked — the caller's stream is never
+// drained for a bundle the node already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    // Oversized payload so the replay genuinely streams (headers < payload).
+    let payload = vec![0x5A_u8; 20_000];
+    let data = build_bundle(&source_eid, &dest, &payload);
+
+    let mut first = data.clone();
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+
+    // Replay with the payload parked: the duplicate must surface from the
+    // gate probe, not from an insert that waited on the whole payload. The
+    // timeout only bounds a regression: a door that waits for the payload
+    // parks forever.
+    let mut replay = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut replay),
+    )
+    .await
+    .expect("Timeout: the duplicate origination awaited its parked payload");
+    assert!(
+        matches!(result, Err(services::Error::DuplicateBundle)),
+        "the parked replay must surface DuplicateBundle without the payload"
+    );
+
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+// A node whose storage survives a restart, with a peer for ipn:0.2.
+async fn restart_setup(
+    metadata: Arc<MetadataMemStorage>,
+    bundles: Arc<BundleMemStorage>,
+) -> (
+    Bpa,
+    Arc<EchoService>,
+    Arc<PipelineCla>,
+    flume::Receiver<Bytes>,
+) {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .metadata_storage(metadata)
+        .bundle_storage(bundles)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+    let svc = EchoService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+    (bpa, svc, cla, forwarded_rx)
+}
+
+// The number of bundles `bundles` holds.
+async fn stored_bundles(bundles: &BundleMemStorage) -> usize {
+    let (tx, rx) = hardy_async::channel::unbounded();
+    bundles.recover(&tx).await.unwrap();
+    drop(tx);
+    let mut count = 0;
+    while rx.recv().await.is_ok() {
+        count += 1;
+    }
+    count
+}
+
+// The duplicate refusal of record is the metadata insert; the recent-id
+// cache answers only for what this process committed. Bundles forwarded
+// before a restart arrive again after it, the cache now cold: a CLA arrival
+// is accepted and refused at the insert, a raw send surfaces
+// `DuplicateBundle`, neither is forwarded again, and neither copy's spooled
+// data is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_duplicate_after_a_restart_is_refused_at_the_insert() {
+    let metadata = Arc::new(MetadataMemStorage::new(None));
+    let bundles = Arc::new(BundleMemStorage::new(None, None));
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let arrival = build_bundle(&"ipn:0.3.1".parse().unwrap(), &dest, b"arrives once");
+    let raw = build_bundle(&"ipn:0.1.7".parse().unwrap(), &dest, b"sent once");
+
+    // First life: both forward. The timeouts only bound a regression.
+    let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata.clone(), bundles.clone()).await;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut arrival.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    svc.sink
+        .get()
+        .unwrap()
+        .send(&mut raw.clone())
+        .await
+        .expect("the first raw send admits");
+    for _ in 0..2 {
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            forwarded_rx.recv_async(),
+        )
+        .await
+        .expect("Timeout waiting for a first-life forward")
+        .expect("Channel closed");
+    }
+    bpa.shutdown().await;
+
+    // Second life over the same storage.
+    let held = stored_bundles(&bundles).await;
+    let (bpa, svc, cla, forwarded_rx) = restart_setup(metadata, bundles.clone()).await;
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut arrival.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+    let result = svc.sink.get().unwrap().send(&mut raw.clone()).await;
+    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "neither duplicate forwards");
+    assert_eq!(
+        stored_bundles(&bundles).await,
+        held,
+        "neither duplicate's spooled data is kept"
+    );
 }
 
 /// An origination declaring more than `max_bundle_size` is refused before a
