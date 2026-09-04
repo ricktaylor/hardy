@@ -10,9 +10,58 @@
 grpc:
   # The local IP address and port to listen on for gRPC requests.
   # address: "[::1]:50051"
-  # List of gRPC services to enable. Available: "application", "cla", "service"
-  # The gRPC server will not start if this list is empty.
+  # The services to expose: application, service, cla, routing.
+  # List at least one, or the gRPC section fails to parse.
   services: ["application", "cla", "service"]
+
+  # How long a graceful shutdown waits for open connections to drain
+  # before abandoning them (humantime; `0s` cuts them immediately).
+  # Default: 5s.
+  # drain-timeout: "5s"
+
+  # --- TLS (optional, plaintext HTTP/2 if the tls: block is absent) ---
+  # Unlike the tcpclv4 tls block, a gRPC listener is TLS or plaintext for
+  # the whole port (no in-band negotiation), so there is no `required` key:
+  # the presence of this block enforces TLS. The dial-side `server-name`
+  # and `insecure-skip-verify` keys likewise do not apply to a listener.
+  # tls:
+  #   # The server's own certificate and key, only ever configured together
+  #   # (a lone half is a parse error; `private-key-file` aliases `key-file`).
+  #   identity:
+  #     cert-file: "/etc/hardy/certs/server.crt"
+  #     key-file: "/etc/hardy/private/server.key"
+  #
+  #   # Require clients to present a certificate chaining to `ca-certs`
+  #   # (mutual TLS): "off" (default), "optional" (verify a certificate when
+  #   # presented, accept clients without one), or "required".
+  #   client-auth: "off"
+  #
+  #   # A PEM file of CA certificates (one file, one or more certificates)
+  #   # verifying client certificates. Required when client-auth is not "off".
+  #   ca-certs: "/etc/hardy/ca/clients.pem"
+
+  # --- HTTP/2 transport tuning (optional) ---
+  # Defaults favour throughput: a single large transfer is otherwise capped
+  # at window/round-trip-time by the fixed ~64 KiB default window. Sizes are
+  # in bytes.
+  # http2:
+  #   # Auto-size the flow-control windows to the connection's
+  #   # bandwidth-delay product (default true). When on, the fixed
+  #   # initial-*-window-size keys below are ignored; set false to pin them.
+  #   # Note: with adaptive windows, one stalled consumer can hold the
+  #   # connection-window budget it has grown on its connection
+  #   # (head-of-line blocking); pinning fixed windows bounds that.
+  #   adaptive-window: true
+  #   # Fixed windows (only when adaptive-window is false).
+  #   initial-stream-window-size: 16777216       # 16 MiB
+  #   initial-connection-window-size: 134217728  # 128 MiB
+  #   # Bound per-connection memory (window x streams). Also a throughput
+  #   # knob: each transfer is its own RPC, so one connection caps at
+  #   # ~200 concurrent in-flight transfers by default. Raise this, or
+  #   # pool connections client-side, to push more transfers in parallel.
+  #   max-concurrent-streams: 1024
+  #   # Larger DATA frames cut per-frame bookkeeping for big transfers.
+  #   max-frame-size: 1048576                    # 1 MiB
 
 # The Endpoint IDs (EIDs) that identify this node.
 # This can be a single string or a list of strings.
@@ -65,7 +114,7 @@ storage:
 # RFC 9171 Validity Filter
 # Configures policy checks from RFC 9171. These are SHOULD requirements,
 # not structural validity, so they can be relaxed for interoperability.
-rfc9171-validity:
+# rfc9171-validity:
   # Require the primary block to be protected by CRC or BIB.
   # Disable for interoperability with implementations that omit CRCs (e.g., dtn7-rs).
   # primary-block-integrity: true
@@ -80,7 +129,7 @@ rfc9171-validity:
 #
 # EID patterns matching next-hop peers that require legacy encoding.
 # Bundles forwarded to matching peers will have their IPN EIDs rewritten.
-ipn-legacy-nodes:
+# ipn-legacy-nodes:
 #  - "ipn:10.*"           # All endpoints on node 10
 #  - "ipn:20.0"           # Node 20's admin endpoint
 #  - "ipn:[100-199].*"    # Nodes 100-199 (range pattern)

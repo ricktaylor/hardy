@@ -1,5 +1,6 @@
 use futures::join;
-use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_async::sync::Mutex;
+use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
 
 use super::*;
 
@@ -30,6 +31,13 @@ pub(crate) struct Dispatcher {
 
     // Dispatch queue
     dispatch_tx: storage::channel::Sender,
+
+    // Bundles parked as WaitingForService by their own in-flight delivery.
+    // The status value alone cannot distinguish "parked mid-announcement"
+    // from "parked awaiting a registration", so `poll_service_waiting`
+    // consults this set before claiming a bundle out of the parked state;
+    // without it an overlapping poll would deliver the same bundle twice.
+    deliveries_in_flight: Mutex<HashSet<Id>>,
 
     // Config options
     status_reports: bool,
@@ -97,6 +105,7 @@ impl Dispatcher {
             filter_engine,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
+            deliveries_in_flight: Mutex::new(HashSet::new()),
             status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
@@ -197,6 +206,18 @@ impl Dispatcher {
             },
             async {
                 while let Ok(mut bundle) = rx.recv().await {
+                    // A bundle parked by its own in-flight delivery is not
+                    // claimable: the announcement is still open and will
+                    // resolve it (or re-park it for a later poll).
+                    if dispatcher
+                        .deliveries_in_flight
+                        .lock()
+                        .contains(&bundle.bundle.id)
+                    {
+                        debug!("Service-waiting bundle has a delivery in flight, skipping");
+                        continue;
+                    }
+
                     // Claim the bundle out of WaitingForService: overlapping
                     // polls (a re-registering service) or a concurrent cancel
                     // must not dispatch — and potentially deliver — the same

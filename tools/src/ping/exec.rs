@@ -164,23 +164,29 @@ async fn exec_external_cla(
     args: &Command,
     bpa: &alloc::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
-    // Start gRPC server with CLA service
+    // Serve the CLA surface of the in-process BPA over gRPC, so the
+    // external CLA binary can register against it. The listener is
+    // bound before the CLA is spawned, so the port is ready to dial.
     let tasks = hardy_async::TaskPool::new();
-    let grpc_config = hardy_proto::server::Config {
-        address: args.grpc_listen,
-        services: vec!["cla".to_string()],
-    };
-    let server = hardy_proto::server::GrpcServer::new(&grpc_config, bpa.clone())
-        .map_err(|e| anyhow::anyhow!("Failed to create gRPC server: {e}"))?;
+    let listener = tokio::net::TcpListener::bind(args.grpc_listen)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to bind gRPC listener: {e}"))?;
+    let incoming = tonic::transport::server::TcpIncoming::from(listener);
+    let service = hardy_proto::cla::cla_service_server::ClaServiceServer::new(
+        hardy_proto::server::ClaServiceImpl::new(bpa.clone(), tasks.clone()),
+    )
+    .max_encoding_message_size(hardy_proto::MAX_MESSAGE_SIZE)
+    .max_decoding_message_size(hardy_proto::MAX_MESSAGE_SIZE);
     let cancel = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "grpc_server", async move {
-        if let Err(e) = server.serve(cancel).await {
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(incoming, cancel.cancelled())
+            .await
+        {
             tracing::error!("gRPC server failed: {e}");
         }
     });
-
-    // Yield to let the gRPC server task bind and start listening
-    tokio::task::yield_now().await;
 
     // Spawn the CLA binary as a subprocess
     let mut cmd = tokio::process::Command::new(&args.cla);

@@ -1,0 +1,281 @@
+syntax = "proto3";
+
+package hardy.cla.v1;
+
+import "google/protobuf/empty.proto";
+
+// A convergence-layer adapter's connection to the BPA.
+//
+// The control plane is the Subscribe session: Register commences the
+// registration, the BPA answers with Registration carrying the session
+// token, and from then on the down direction is a pure event stream of
+// small messages. Bundle bytes never ride it.
+//
+// The data plane is the token-gated RPCs: a bundle received from the
+// link goes up with Dispatch, and an announced Forwarding is executed
+// with Forward, which streams the bundle down and carries the result
+// back up. Closing the stream, or sending Unregister, terminates the
+// registration and invalidates the token.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
+service ClaService {
+  // -- Control plane ---------------------------------------------------
+
+  // The session: the registration lifecycle up, events down.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Data plane ------------------------------------------------------
+
+  // Dispatch a bundle received from the link to the BPA: the metadata
+  // first (the only message carrying the session token), then the
+  // bundle bytes in chunks, ending with last_chunk. A transfer whose
+  // stream ends without last_chunk was truncated: it is discarded and
+  // the call ends with status ABORTED. A cancel message aborts the
+  // transfer: the partial bundle is discarded and the call ends with
+  // status CANCELLED.
+  rpc Dispatch(stream DispatchRequest) returns (DispatchResponse);
+
+  // Execute an announced Forwarding: the metadata first (the only
+  // message carrying the session token), then the bundle bytes stream
+  // down in chunks, ending with last_chunk (a stream that ends without
+  // it was truncated, and the bundle must not be transmitted); after
+  // transmitting over the link, the CLA answers with the result on the
+  // same stream, which completes the call. A cancel message, or the
+  // stream ending without a result, abandons the forwarding: the call
+  // ends with status CANCELLED (or ABORTED) and the bundle stays
+  // queued, re-announced when it is next offered, as is a forwarding
+  // never executed before the session ends. Each Forwarding
+  // announcement authorises exactly one Forward: a repeat Forward for
+  // the same announcement answers NOT_FOUND.
+  rpc Forward(stream ForwardRequest) returns (stream ForwardResponse);
+
+  // -- Peers and transfers ---------------------------------------------
+
+  // Announce a link-layer neighbour the BPA can forward through.
+  rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
+
+  // Withdraw a previously announced neighbour.
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+
+  // Report the final outcome of a forwarding answered `accepted`.
+  rpc ReportTransferOutcome(ReportTransferOutcomeRequest)
+      returns (ReportTransferOutcomeResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// The up direction of the session: the registration lifecycle, nothing else.
+message SubscribeRequest {
+  oneof request {
+    Register   register   = 1;
+    Unregister unregister = 2;
+  }
+}
+
+// Commences the registration. Must be the first message.
+message Register {
+  // The unique name of this CLA instance.
+  string                  name          = 1;
+  // The address type this CLA speaks, if it uses well-known addresses.
+  optional ClaAddressType address_type  = 2;
+  // The number of explicit egress lanes this CLA offers; absent
+  // declares no limit (every transfer travels on a new lane from the
+  // infinite pool). Lanes are parallel transport channels with no
+  // explicit priority among them; zero is invalid, and the BPA
+  // rejects declarations above its bound (a fixed 256 in this
+  // implementation) with INVALID_ARGUMENT.
+  optional uint32         lane_count    = 3;
+}
+
+// Terminates the registration gracefully; closing the stream does too.
+message Unregister {}
+
+// The down direction of the session: a pure event stream. A failed
+// registration terminates the stream with a gRPC status instead.
+message SubscribeResponse {
+  oneof event {
+    Registration registration = 1;
+    Forwarding   forwarding   = 2;
+  }
+}
+
+// The commenced registration. Always the first event.
+message Registration {
+  // The node ids of the BPA.
+  repeated string node_ids = 1;
+  // Presented by every data-plane RPC of this session. Opaque; invalid
+  // once the session stream closes.
+  bytes           session_token = 2;
+}
+
+// A bundle needs forwarding over this CLA's link: execute it with
+// Forward.
+message Forwarding {
+  // The RFC 9171 id of the bundle awaiting forwarding; fetch it with
+  // Forward. Encoded as documented on hardy.application.v1
+  // SendResponse.bundle_id.
+  string          bundle_id   = 1;
+  // The address to forward the bundle to.
+  ClaAddress      address     = 2;
+  // The egress lane to forward on; absent requests a new lane from
+  // the CLA's infinite pool (a CLA with explicit lanes picks one
+  // arbitrarily as a safety net). Which bundles go on which lane is
+  // decided by the BPA's egress policy; lanes carry no explicit
+  // priority.
+  optional uint32 lane        = 3;
+  // The bundle size in bytes.
+  uint64          bundle_size = 4;
+}
+
+// ---------------------------------------------------------------------
+// Data plane: token-gated RPCs. Bundle bytes move here.
+// ---------------------------------------------------------------------
+
+// One item of a Dispatch call: the first message is the metadata, the
+// only one carrying the session token; then the bundle bytes in order;
+// cancel aborts the transfer.
+message DispatchRequest {
+  oneof request {
+    DispatchMetadata      metadata   = 1;
+    // A slice of the bundle, in order; more follow.
+    bytes                 chunk      = 2;
+    // Abort: the partial bundle is discarded.
+    google.protobuf.Empty cancel     = 3;
+    // The last slice of the bundle (possibly the only one, possibly
+    // empty): completes the transfer. A stream that ends without it
+    // was truncated, and nothing is dispatched.
+    bytes                 last_chunk = 4;
+  }
+}
+
+message DispatchMetadata {
+  // The session token from Registration.
+  bytes               session_token = 1;
+  // The node id of the peer that sent this bundle, if known.
+  optional string     peer_node_id  = 2;
+  // The convergence-layer address of the peer, if applicable.
+  optional ClaAddress peer_addr     = 3;
+}
+
+message DispatchResponse {}
+
+// One item of a Forward call: the first message is the metadata; the
+// result, after transmitting, completes the call; cancel abandons the
+// forwarding.
+message ForwardRequest {
+  oneof request {
+    ForwardMetadata       metadata = 1;
+    // The result of the transmission over the link. It may arrive
+    // before the server has finished streaming the bundle down (before
+    // last_chunk): unlike the application Receive ack, an early result
+    // is wire-legal and completes the forwarding.
+    ForwardResult         result   = 2;
+    // Abandon: the bundle stays queued for a later attempt.
+    google.protobuf.Empty cancel   = 3;
+  }
+}
+
+message ForwardMetadata {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle to forward, from Forwarding. Encoded as documented on
+  // hardy.application.v1 SendResponse.bundle_id.
+  string bundle_id     = 2;
+}
+
+// The CLA's answer to a Forwarding, sent after transmitting.
+message ForwardResult {
+  oneof result {
+    // The bundle was sent over the link.
+    google.protobuf.Empty sent         = 1;
+    // The neighbour is no longer reachable.
+    google.protobuf.Empty no_neighbour = 2;
+    // The CLA took ownership of the transfer and will report the final
+    // outcome later with ReportTransferOutcome.
+    google.protobuf.Empty accepted     = 3;
+  }
+}
+
+// One item of a Forward call's down direction: bundle bytes in order,
+// or the withdrawal of the forwarding.
+message ForwardResponse {
+  oneof response {
+    // A slice of the bundle, in order; more follow.
+    bytes                 chunk      = 1;
+    // The forwarding was withdrawn: the bundle expired or was deleted
+    // before or during the call. Nothing follows.
+    google.protobuf.Empty cancelled  = 2;
+    // The last slice of the bundle (possibly the only one, possibly
+    // empty): the bundle is complete. A stream that ends without it
+    // was truncated, and the bundle must not be transmitted.
+    bytes                 last_chunk = 3;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Peers and transfers: token-gated unary RPCs.
+// ---------------------------------------------------------------------
+
+message AddPeerRequest {
+  // The session token from Registration.
+  bytes           session_token = 1;
+  // The node ids of the peer. May be empty if its BPA identity is not
+  // yet known; more than one supports multi-homed peers.
+  repeated string node_ids      = 2;
+  // The convergence-layer address of the peer.
+  ClaAddress      address       = 3;
+}
+
+message AddPeerResponse {
+  // Whether the peer was newly added.
+  bool added = 1;
+}
+
+message RemovePeerRequest {
+  // The session token from Registration.
+  bytes      session_token = 1;
+  // The convergence-layer address that identifies the peer.
+  ClaAddress address       = 2;
+}
+
+message RemovePeerResponse {
+  // Whether the peer was known and removed.
+  bool removed = 1;
+}
+
+message ReportTransferOutcomeRequest {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle id from the accepted Forwarding. Encoded as documented
+  // on hardy.application.v1 SendResponse.bundle_id.
+  string bundle_id     = 2;
+  oneof outcome {
+    // The bundle was handed to the far bundle node.
+    google.protobuf.Empty completed = 3;
+    // The convergence layer gave up on the transfer.
+    google.protobuf.Empty failed    = 4;
+  }
+}
+
+message ReportTransferOutcomeResponse {}
+
+// A convergence-layer address: a type tag and the address bytes it
+// interprets.
+message ClaAddress {
+  ClaAddressType address_type = 1;
+  bytes          address      = 2;
+}
+
+enum ClaAddressType {
+  CLA_ADDRESS_TYPE_UNSPECIFIED = 0;
+  // The address is a TCP socket address string.
+  CLA_ADDRESS_TYPE_TCP         = 1;
+  // The address is opaque to everything but this CLA.
+  CLA_ADDRESS_TYPE_PRIVATE     = 2;
+}

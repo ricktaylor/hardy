@@ -1,100 +1,37 @@
-use super::*;
-use proxy::*;
+/*!
+The client SDK: a local component registers against a remote BPA over
+the v1 wire with the same traits a local [`Bpa`](hardy_bpa::bpa::Bpa)
+uses, and the SDK carries the sessions, tokens, and data-plane calls.
 
-mod application;
-mod cla;
-mod routing;
-mod service;
+All four surfaces are served: applications, low-level services,
+convergence-layer adapters, and routing agents.
+*/
 
-fn from_timestamp(t: prost_types::Timestamp) -> Result<time::OffsetDateTime, tonic::Status> {
-    Ok(time::OffsetDateTime::from_unix_timestamp(t.seconds)
-        .map_err(|e| tonic::Status::from_error(e.into()))?
-        + time::Duration::nanoseconds(t.nanos.into()))
-}
+mod adapter;
+mod bpa_client;
+mod collector;
+mod services;
 
-/// A remote BPA client that implements `BpaRegistration` via gRPC.
-///
-/// This allows CLAs, services, and applications to connect to a remote BPA
-/// server using the same interface as a local `Bpa` instance.
-///
-/// # Example
-///
-/// ```ignore
-/// let remote_bpa = RemoteBpa::new("http://[::1]:50051".to_string());
-/// cla.register(&remote_bpa, "tcp0".to_string(), None).await?;
-/// ```
-pub struct RemoteBpa {
-    grpc_addr: String,
-}
+pub use bpa_client::{BpaClient, EndpointError, RegistrationHandle};
 
-impl RemoteBpa {
-    /// Create a new RemoteBpa client.
-    ///
-    /// # Arguments
-    ///
-    /// * `grpc_addr` - The gRPC server address (e.g., "http://[::1]:50051")
-    pub fn new(grpc_addr: String) -> Self {
-        Self { grpc_addr }
-    }
+use core::num::NonZeroUsize;
 
-    /// Get the gRPC address this client connects to.
-    pub fn grpc_addr(&self) -> &str {
-        &self.grpc_addr
-    }
-}
+// The request channel of one data-plane transfer (Send/Dispatch/Receive/
+// Forward): the metadata message, then chunks written one at a time under
+// backpressure. The capacity is load-bearing, not a tuning knob:
+// [`adapter::Reader`]'s drop relies on there being room for every message
+// this side queues plus the in-band cancel, so `try_send(cancel)` on drop
+// is reliable rather than best-effort. Do not lower it below `queued + 1`.
+pub(crate) const TRANSFER_REQUEST_CAPACITY: usize = 2;
 
-#[async_trait]
-impl hardy_bpa::bpa::BpaRegistration for RemoteBpa {
-    async fn register_cla(
-        &self,
-        name: String,
-        cla: Arc<dyn hardy_bpa::cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
-    ) -> hardy_bpa::cla::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        // Note: policy is not supported over gRPC currently
-        cla::register_cla(self.grpc_addr.clone(), name, cla).await
-    }
+// The request channel of a Subscribe session: the Register handshake plus
+// a later Unregister, with headroom.
+pub(crate) const SUBSCRIBE_REQUEST_CAPACITY: usize = 4;
 
-    async fn register_service(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), Some(service_id), service).await
-    }
-
-    async fn register_application(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(
-            self.grpc_addr.clone(),
-            Some(service_id),
-            application,
-        )
-        .await
-    }
-
-    async fn register_dynamic_service(
-        &self,
-        service: Arc<dyn hardy_bpa::services::Service>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        service::register_endpoint_service(self.grpc_addr.clone(), None, service).await
-    }
-
-    async fn register_dynamic_application(
-        &self,
-        application: Arc<dyn hardy_bpa::services::Application>,
-    ) -> hardy_bpa::services::Result<hardy_bpv7::eid::Eid> {
-        application::register_application_service(self.grpc_addr.clone(), None, application).await
-    }
-
-    async fn register_routing_agent(
-        &self,
-        name: String,
-        agent: Arc<dyn hardy_bpa::routing::RoutingAgent>,
-    ) -> hardy_bpa::routing::Result<Vec<hardy_bpv7::eid::NodeId>> {
-        routing::register_routing_agent(self.grpc_addr.clone(), name, agent).await
-    }
-}
+// How many announced deliveries one registration collects at once, on the
+// application and service surfaces alike: enough that one slow collection
+// does not serialise the rest, small enough that a single registration
+// cannot monopolise its connection. Beyond the bound, the announcement
+// loop waits for a slot, which backpressures the session stream and
+// through it the BPA, by design.
+pub(crate) const MAX_CONCURRENT_DELIVERIES: NonZeroUsize = NonZeroUsize::new(4).unwrap();

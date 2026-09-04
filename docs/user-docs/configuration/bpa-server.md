@@ -82,14 +82,16 @@ node-ids:
 
 ## `grpc` — Management Interface
 
-The gRPC server enables external components (CLAs, services, routing
-agents) to connect to the BPA. It only starts if at least one service
-is enabled.
+The gRPC server enables external components (CLAs, services,
+applications, routing agents) to connect to the BPA. An absent `grpc`
+section runs no gRPC server; a present section must enable at least one
+service, or parsing fails.
 
 | Key | Valid Values | Default | Description |
 |-----|-------------|---------|-------------|
-| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections. |
-| `services` | List of service names | `[]` | Services to enable. Server does not start if empty. |
+| `address` | IP:port string | `[::1]:50051` | Listen address for gRPC connections; the port is claimed at startup, so a conflict is a startup error. |
+| `services` | A list drawn from `cla`, `service`, `application`, `routing`. `service` components exchange whole BPv7 bundles; `application` components exchange payloads (ADUs) | - | Required; list at least one, with no repeats, or parsing fails. A typo'd name is a parse error listing the known ones. |
+| `drain-timeout` | humantime duration string, e.g. `5s`, `1m 30s`; `0s` cuts open connections immediately | `5s` | How long a graceful shutdown waits for open gRPC connections to drain before abandoning them (a client holding an unread response stream can otherwise stall shutdown indefinitely). |
 
 Example (standalone deployment):
 
@@ -120,6 +122,55 @@ Available service names:
     For standalone deployments with inline CLAs, you may only need
     `application` and `service`. Enable `cla` and `routing` when running
     separate CLA or routing agent containers.
+
+### `grpc.tls` — Listener TLS
+
+An absent `tls` block serves plaintext HTTP/2; a present block enforces TLS for the whole port (there is no in-band negotiation, so no `required` key exists). Because this is a listener, the dial-side keys of the CLA `tls` vocabulary (`server-name`, `insecure-skip-verify`) do not apply and are not accepted.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `identity` | Object with `cert-file` and `key-file` | - | Required. The server's own certificate and private key, presented to every client. The two fields are only representable as a pair, so a lone certificate or key is a parse error. |
+| `identity.cert-file` | File path | - | The server's certificate (PEM). |
+| `identity.key-file` | File path | - | The private key (PEM: PKCS#8, PKCS#1, or SEC1) matching `cert-file`. `private-key-file` is accepted as an alias. |
+| `client-auth` | `off`, `optional`, `required` | `off` | Client-certificate verification for inbound connections (mutual TLS): `off` never requests a certificate, `optional` verifies one when presented but accepts clients without one, `required` refuses clients without a certificate chaining to `ca-certs`. Any value other than `off` requires `ca-certs`. |
+| `ca-certs` | File path | *(none)* | A PEM file of CA certificates (one file, one or more certificates) used to verify client certificates under mutual TLS. Required when `client-auth` is not `off`, ignored otherwise. |
+
+Example:
+
+```yaml
+grpc:
+  services: ["application", "cla"]
+  tls:
+    identity:
+      cert-file: "/etc/hardy/certs/server.crt"
+      key-file: "/etc/hardy/private/server.key"
+    client-auth: "required"
+    ca-certs: "/etc/hardy/ca/clients.pem"
+```
+
+### `grpc.http2` — Transport Tuning
+
+HTTP/2 transport tuning for the gRPC listener. Every key is optional; absent keys defer to the server's own defaults, which favour throughput at scale (a fixed ~64 KiB window would otherwise cap a single transfer at window/round-trip-time). All sizes are in bytes.
+
+| Key | Valid Values | Default | Description |
+|-----|-------------|---------|-------------|
+| `adaptive-window` | `true`, `false` | `true` | Auto-size the stream and connection flow-control windows to the connection's bandwidth-delay product. When on, the fixed `initial-*-window-size` keys below are ignored; set `false` to pin fixed windows instead. Note that with adaptive windows, one stalled consumer can hold the connection-window budget it has grown on its connection (head-of-line blocking); pinned fixed windows bound that. |
+| `initial-stream-window-size` | Integer in `1..=2147483647` (2^31 - 1, RFC 9113 §6.9.1) | *(transport default)* | Fixed initial per-stream receive window. Ignored while `adaptive-window` is on. Out-of-range values, including zero (which would wedge every stream), are a parse error. |
+| `initial-connection-window-size` | Integer in `1..=2147483647` (2^31 - 1, RFC 9113 §6.9.1) | *(transport default)* | Fixed initial whole-connection receive window. Ignored while `adaptive-window` is on. Out-of-range values, including zero (which would wedge every stream), are a parse error. |
+| `max-concurrent-streams` | Positive integer | *(transport default, ~200)* | Maximum concurrent HTTP/2 streams a peer may open. Zero would wedge the listener, so it is a parse error. Bounds per-connection memory (window &times; streams), and doubles as a throughput knob: each transfer is its own RPC, so this caps a connection's concurrent in-flight transfers. Raise it, or pool connections client-side, to push more transfers in parallel. |
+| `max-frame-size` | Integer in `16384..=16777215` (2^14 to 2^24 - 1, RFC 9113 §6.5.2) | `1048576` (1 MiB) | Maximum HTTP/2 DATA frame payload, defaulting to one data-plane chunk per frame. Larger frames cut per-frame bookkeeping for big transfers. Out-of-range values are a parse error. |
+
+Example:
+
+```yaml
+grpc:
+  services: ["application"]
+  http2:
+    adaptive-window: false
+    initial-stream-window-size: 16777216       # 16 MiB
+    initial-connection-window-size: 134217728  # 128 MiB
+    max-concurrent-streams: 1024
+```
 
 ## `built-in-services` — Application Services
 

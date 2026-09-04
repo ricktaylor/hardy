@@ -62,6 +62,22 @@ async fn drain_payload(
         };
         whole.extend_from_slice(&bytes);
         if complete {
+            // Structurally complete, but the wire's commit is the final
+            // segment (as in `parse_headers`): if the payload finished on a
+            // non-final chunk, the terminating `Final` still has to arrive.
+            if !last {
+                match stream.recv().await {
+                    Ok(Segment::Final(b)) if b.is_empty() => {}
+                    Ok(_) => {
+                        debug!("Trailing bytes after a complete payload");
+                        return Err(DrainFailure::Rejected);
+                    }
+                    Err(_) => {
+                        debug!("Payload stream ended before its final segment");
+                        return Err(DrainFailure::Cancelled);
+                    }
+                }
+            }
             break;
         }
         if last {

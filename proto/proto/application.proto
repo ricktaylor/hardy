@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package hardy.application.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// An application agent's connection to the BPA, in RFC 9171 terms:
+// the registration, transmission of ADUs, delivery of ADUs, and bundle
+// status reports.
+//
+// The control plane is the Subscribe session: Register commences the
+// registration, the BPA answers with Registration carrying the session
+// token, and from then on the down direction is a pure event stream of
+// small messages. ADU bytes never ride it.
+//
+// The data plane is the token-gated RPCs: a pending delivery is
+// collected with Receive (success completes it); outgoing ADUs go with
+// Send. Closing the stream, or sending Unregister, terminates the
+// registration and invalidates the token.
+//
+// Domain errors are carried as gRPC statuses. Hardy servers additionally
+// attach machine-readable metadata: `hardy-error-kind`, a stable
+// kebab-case tag naming the error variant, and an optional
+// `hardy-error-detail` carrying a per-kind payload. Clients may ignore
+// both and rely on the status code and message alone.
+service ApplicationService {
+  // -- Control plane ---------------------------------------------------
+
+  // The session: the registration lifecycle up, events down.
+  rpc Subscribe(stream SubscribeRequest) returns (stream SubscribeResponse);
+
+  // -- Data plane ------------------------------------------------------
+
+  // Request transmission of an ADU: the metadata first (the only
+  // message carrying the session token), then the ADU bytes in
+  // chunks, ending with last_chunk. A transfer whose stream ends
+  // without last_chunk was truncated: it is discarded and the call
+  // ends with status ABORTED. A cancel message aborts the transfer:
+  // the partial ADU is discarded and the call ends with status
+  // CANCELLED.
+  rpc Send(stream SendRequest) returns (SendResponse);
+
+  // Collect a pending delivery: the metadata first (the only message
+  // carrying the session token), then the ADU bytes stream back in
+  // chunks. Receiving last_chunk does not complete the delivery: the
+  // client commits it with an in-band ack, sent only after last_chunk,
+  // once it has taken responsibility for the ADU. The server finalizes
+  // the bundle on the ack and then closes the response; the client
+  // should read the response to that end, since dropping the call may
+  // discard an ack still in flight. Each Delivery announcement
+  // authorises exactly one Receive: a repeat Receive for the same
+  // bundle answers NOT_FOUND. Anything short of the ack abandons the
+  // collection and the bundle stays held, re-announced to this
+  // endpoint's next registration: a cancel message, before or after
+  // last_chunk, ends the call with status CANCELLED, as does a request
+  // stream that ends without an ack; a failed stream or a dead session
+  // parks it too, as does a delivery never collected before the
+  // session ends. An ack sent before last_chunk is a protocol
+  // violation: the call ends with status INVALID_ARGUMENT and the
+  // bundle stays held.
+  rpc Receive(stream ReceiveRequest) returns (stream ReceiveResponse);
+}
+
+// ---------------------------------------------------------------------
+// Control plane: the session stream. Small messages only.
+// ---------------------------------------------------------------------
+
+// The up direction of the session: the registration lifecycle, nothing else.
+message SubscribeRequest {
+  oneof request {
+    Register   register   = 1;
+    Unregister unregister = 2;
+  }
+}
+
+// Commences the registration. Must be the first message.
+message Register {
+  // The endpoint demux to register. Absent: the BPA assigns a dynamic
+  // service number.
+  oneof service_id {
+    // An ipn scheme service number.
+    uint32 ipn = 1;
+    // A dtn scheme demux string.
+    string dtn = 2;
+  }
+}
+
+// Terminates the registration gracefully; closing the stream does too.
+message Unregister {}
+
+// The down direction of the session: a pure event stream. A failed
+// registration terminates the stream with a gRPC status instead.
+message SubscribeResponse {
+  oneof event {
+    Registration       registration         = 1;
+    Delivery           delivery             = 2;
+    BundleStatusReport bundle_status_report = 3;
+  }
+}
+
+// The commenced registration. Always the first event.
+message Registration {
+  // The full endpoint id this registration is bound to: the node id
+  // combined with the registered (or dynamically assigned) service
+  // demux, e.g. "ipn:977000.42". The source address of everything sent
+  // under this registration.
+  string endpoint_id = 1;
+  // Presented by every data-plane RPC of this session. Opaque; invalid
+  // once the session stream closes.
+  bytes  session_token = 2;
+}
+
+// The delivery of an ADU: collect it with Receive.
+message Delivery {
+  // The RFC 9171 id of the bundle awaiting delivery; fetch it with
+  // Receive. Encoded as documented on SendResponse.bundle_id.
+  string                    bundle_id     = 1;
+  // The source endpoint of the bundle.
+  string                    source        = 2;
+  // When the bundle expires; the ADU is discarded after this.
+  google.protobuf.Timestamp expire_time   = 3;
+  // Whether the sender requested an application acknowledgement.
+  bool                      ack_requested = 4;
+  // The exact size in bytes the Receive stream delivers: the ADU as
+  // the application receives it, after any BPSec processing.
+  uint64                    adu_size      = 5;
+}
+
+// A bundle status report arrived for a bundle this application sent.
+// Informational: no outcome is expected.
+message BundleStatusReport {
+  // The RFC 9171 id of the bundle the report is about. Encoded as
+  // documented on SendResponse.bundle_id.
+  string                             bundle_id      = 1;
+  // The endpoint of the reporting node.
+  string                             reporting_node = 2;
+  StatusAssertion                    assertion      = 3;
+  // The RFC 9171 reason code.
+  uint64                             reason_code    = 4;
+  // When the asserted event happened, if status time was reported.
+  optional google.protobuf.Timestamp status_time    = 5;
+}
+
+// The status assertions of RFC 9171 bundle status reports.
+enum StatusAssertion {
+  STATUS_ASSERTION_UNSPECIFIED = 0;
+  STATUS_ASSERTION_RECEIVED    = 1;
+  STATUS_ASSERTION_FORWARDED   = 2;
+  STATUS_ASSERTION_DELIVERED   = 3;
+  STATUS_ASSERTION_DELETED     = 4;
+}
+
+// ---------------------------------------------------------------------
+// Data plane: token-gated RPCs. ADU bytes move here.
+// ---------------------------------------------------------------------
+
+// One item of a Send call: the first message is the metadata, the only
+// one carrying the session token; then the ADU bytes in order; cancel
+// aborts the transfer.
+message SendRequest {
+  oneof request {
+    SendMetadata          metadata   = 1;
+    // A slice of the ADU, in order; more follow.
+    bytes                 chunk      = 2;
+    // Abort: the partial ADU is discarded.
+    google.protobuf.Empty cancel     = 3;
+    // The last slice of the ADU (possibly the only one, possibly
+    // empty): completes the transfer. A stream that ends without it
+    // was truncated, and nothing is submitted.
+    bytes                 last_chunk = 4;
+  }
+}
+
+message SendMetadata {
+  // The session token from Registration.
+  bytes                    session_token = 1;
+  // The destination endpoint id.
+  string                   destination   = 2;
+  // The bundle lifetime: required, and must be non-negative and within
+  // range. A missing, negative, or out-of-range value is
+  // INVALID_ARGUMENT.
+  google.protobuf.Duration lifetime      = 3;
+  optional SendOptions     options       = 4;
+  // The total ADU size in bytes, if known: a preallocation hint only.
+  // The transfer is still delimited by last_chunk and bounded by the
+  // server's maximum transfer size regardless of this value.
+  optional uint64          adu_size      = 5;
+}
+
+// Per-transmission flags, in RFC 9171 terms; every flag defaults to off.
+message SendOptions {
+  // The bundle must not be fragmented.
+  bool do_not_fragment    = 1;
+  // Request an acknowledgement by the receiving application.
+  bool app_ack_requested  = 2;
+  // Ask reporting nodes to include the time of the asserted event.
+  bool report_status_time = 3;
+  // Request bundle status reports:
+  bool report_reception   = 4;
+  bool report_forwarding  = 5;
+  bool report_delivery    = 6;
+  bool report_deletion    = 7;
+}
+
+message SendResponse {
+  // The RFC 9171 id of the sent bundle; correlated by
+  // BundleStatusReport events.
+  //
+  // Every bundle_id string on this wire (all four v1 surfaces) uses
+  // the same encoding: the bundle id's canonical CBOR array — the
+  // source EID and creation timestamp, plus the fragment offset and
+  // total ADU length when the bundle is a fragment — encoded with
+  // URL-safe base64 without padding (RFC 4648 section 5). RFC 9171
+  // defines no textual encoding of its own. The string is opaque to
+  // clients: compare it byte-for-byte and echo it back unchanged.
+  string bundle_id = 1;
+}
+
+// One item of a Receive call: the first message is the metadata; ack
+// completes the collection, cancel abandons it.
+message ReceiveRequest {
+  oneof request {
+    ReceiveMetadata       metadata = 1;
+    // Abandon: the bundle stays held for a later attempt.
+    google.protobuf.Empty cancel   = 2;
+    // Acknowledge receipt of the whole ADU (through last_chunk): the
+    // collection completes and the bundle is finalized. Valid only
+    // after last_chunk (earlier is a protocol violation: the call ends
+    // with status INVALID_ARGUMENT); without it the bundle stays held
+    // for a later attempt.
+    google.protobuf.Empty ack      = 3;
+  }
+}
+
+message ReceiveMetadata {
+  // The session token from Registration.
+  bytes  session_token = 1;
+  // The bundle to collect, from Delivery. Encoded as documented on
+  // SendResponse.bundle_id.
+  string bundle_id     = 2;
+}
+
+// One item of a Receive call: ADU bytes in order, or the
+// withdrawal of the delivery.
+message ReceiveResponse {
+  oneof response {
+    // A slice of the ADU, in order; more follow.
+    bytes                 chunk      = 1;
+    // The delivery was withdrawn: the bundle expired or was deleted
+    // before or during collection. Nothing follows.
+    google.protobuf.Empty cancelled  = 2;
+    // The last slice of the ADU (possibly the only one, possibly
+    // empty): completes the collection. A stream that ends without it
+    // was truncated, and the delivery did not complete.
+    bytes                 last_chunk = 3;
+  }
+}
