@@ -2,7 +2,6 @@ mod metadata;
 mod status;
 
 pub(crate) mod parse;
-pub(crate) mod tail;
 
 pub use metadata::{BundleMetadata, ExtensionFields, Origin};
 pub use status::BundleStatus;

@@ -7,7 +7,7 @@ impl Dispatcher {
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
     ) {
-        let Some(data) = self.store.load_data(&storage_name).await else {
+        let Some(mut data) = self.store.load_data(&storage_name).await else {
             // Data has gone while we were restarting — the reaper hasn't started,
             // so this is data loss. Safe because metadata recovery will report it
             // if the bundle is in the metadata store.
@@ -124,31 +124,22 @@ impl Dispatcher {
         } else {
             // Orphan — data exists but no metadata. Run the full receive
             // pipeline (process_received_bundle: parse, validate, report, run
-            // the Ingress filter, and queue for dispatch).
-            let mut metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
-            metadata.storage_name = Some(storage_name.clone());
-
-            // TODO: Just push the entire bundle into the stream
-            let (tx, mut rx) = hardy_async::channel::bounded(1);
-            tx.send(crate::stream::Segment::Final(data))
-                .await
-                .trace_expect("New stream push failed?!?");
-
-            match self.process_received_bundle(&mut rx, metadata).await {
-                // Admitted and queued for dispatch — its stored data is live.
-                ingress::Received::Dispatched => {}
-                // Re-validation rejected the orphan — delete its stranded data.
-                ingress::Received::Disposed => {
-                    self.store.delete_data(&storage_name).await;
-                }
+            // the Ingress filter, and execute the routing decision), handing
+            // the loaded bytes as the bundle stream: the pipeline's spool
+            // saves an admitted bundle fresh, so the orphan copy is stranded
+            // in every outcome and deleted below. A crash before the delete
+            // re-admits it on the next restart, where it loses as a
+            // duplicate.
+            let metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
+            match self.process_received_bundle(&mut data, metadata).await {
+                ingress::Received::Dispatched | ingress::Received::Disposed => {}
                 // A stored orphan has no live transfer to refuse (reachable
-                // only when the size cap tightened across the restart);
-                // delete its stranded data.
+                // only when the size cap tightened across the restart).
                 ingress::Received::Refused => {
                     warn!("Restart orphan refused, deleted");
-                    self.store.delete_data(&storage_name).await;
                 }
             }
+            self.store.delete_data(&storage_name).await;
             metrics::counter!("bpa.restart.orphan").increment(1);
         }
     }

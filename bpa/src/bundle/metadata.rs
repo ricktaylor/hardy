@@ -128,10 +128,10 @@ struct Classification {
 /// read via [`received_at`](Self::received_at) / [`origin`](Self::origin)),
 /// the [`extensions`](Self::extensions) cache of parser-decoded extension
 /// fields, the classification group (annotation slots and the routing inputs,
-/// written only through [`apply`](Self::apply)), and BPA infrastructure
-/// references (crate-private). There is no `Default`: a defaulted provenance
-/// would fabricate a `received_at` and an origin, so records are built only
-/// through the constructors.
+/// written only through the crate-private delta-apply path), and BPA
+/// infrastructure references (crate-private). There is no `Default`: a
+/// defaulted provenance would fabricate a `received_at` and an origin, so
+/// records are built only through the constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BundleMetadata {
