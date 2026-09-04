@@ -19,13 +19,29 @@ set -e  # Exit on error
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Configuration
-BUNDLE="cargo run --quiet --package hardy-bpv7-tools --bin bundle --"
-CBOR="cargo run --quiet --package hardy-cbor-tools --bin cbor --"
-OUT_DIR="${SCRIPT_DIR}/output"
+# Check for jq (needed both for the tests and to locate the cargo target dir)
+if ! command -v jq &> /dev/null; then
+    echo "ERROR: jq is required for this test suite"
+    echo "Please install jq: https://stedolan.github.io/jq/"
+    exit 1
+fi
 
-# Create output directory for test artifacts
-mkdir -p "${OUT_DIR}"
+# Build the tools once and invoke the binaries directly, instead of paying
+# cargo's lock and freshness-check overhead on every command
+echo "Building bundle and cbor tools..."
+cargo build --quiet --manifest-path "${SCRIPT_DIR}/../Cargo.toml" \
+    --package hardy-bpv7-tools --bin bundle \
+    --package hardy-cbor-tools --bin cbor
+TARGET_DIR="$(cargo metadata --quiet --format-version 1 --no-deps \
+    --manifest-path "${SCRIPT_DIR}/../Cargo.toml" | jq -r '.target_directory')"
+
+# Configuration
+BUNDLE="${TARGET_DIR}/debug/bundle"
+CBOR="${TARGET_DIR}/debug/cbor"
+
+# Private output directory so concurrent invocations cannot clobber each
+# other's keys and bundles
+OUT_DIR="$(mktemp -d)"
 
 # Keys will be generated in the output directory
 KEYS="${OUT_DIR}/test-keys.json"
@@ -76,10 +92,6 @@ generate_test_keys
 # Helper function to inspect bundle and query with jq
 # Usage: bundle_jq <bundle_file> <jq_query>
 bundle_jq() {
-    if ! command -v jq &> /dev/null; then
-        echo "ERROR: jq is required for this test suite" >&2
-        exit 1
-    fi
     ${BUNDLE} inspect --format json "$1" | jq -r "$2"
 }
 
@@ -129,13 +141,6 @@ echo
 echo "Keys file: ${KEYS}"
 echo "Output dir: ${OUT_DIR}"
 echo
-
-# Check for jq
-if ! command -v jq &> /dev/null; then
-    echo "ERROR: jq is required for this test suite"
-    echo "Please install jq: https://stedolan.github.io/jq/"
-    exit 1
-fi
 
 # ============================================================================
 echo "=== Part 1: Basic Bundle Operations ==="

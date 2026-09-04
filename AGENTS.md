@@ -50,6 +50,8 @@ Full reference: [`docs/style_guides/code_style_guide.md`](./docs/style_guides/co
 - **32-bit safe.** Hardy targets 32-bit. Never `as usize` a wire-derived `u64` length — compare in `u64` first, then `try_from`.
 - **Errors are `thiserror` enums** with a `#[error("…")]` per variant; modules expose `pub type Result<T> = core::result::Result<T, Error>`. Give sub-parsers focused leaf error types rather than reusing a crate-root `Error`.
 - **`no_std` core.** `cbor`, `bpv7`, and `bpa` are `no_std` + `alloc`; gate `std` behind a feature, don't assume it.
+- **Secrets never reach `Display`, `Debug`, or logs — no exceptions.** Key material, tokens, and credentials MUST have a redacting `Debug` (length or kid, never bytes), MUST NOT be interpolated into error messages, and raw key bytes MUST live in `zeroize::Zeroizing` (`bpsec::key::Type` is the pattern).
+- **Cryptographic hygiene — no exceptions.** MAC/tag/signature verification MUST be constant-time (the primitive's verify API, never `==`); cryptographic randomness MUST come from `SysRng` (a non-crypto PRNG only for non-security values, with a comment saying so); plaintext key material MUST NOT transit unzeroized buffers, including error paths.
 - **Comments describe the present.** No "moved from / replaces the old X / now takes Y" porting narration — git holds that history.
 
 ## Testing
@@ -61,7 +63,8 @@ Full conventions: [`docs/style_guides/test_style_guide.md`](./docs/style_guides/
 - **Paused clock for time-dependent behaviour.** `#[tokio::test(start_paused = true)]` plus `tokio::time::advance`; never wait for a real timeout.
 - **No shared ambient state.** Ephemeral ports (`:0`), per-process temp dirs (`std::process::id()`), and RAII-guarded env vars in `#[serial]` tests.
 - **A test must be able to fail for the behaviour it names.** Exercise the real production path (never a re-implementation of the algorithm), and assert the specific value or typed error variant, never a bare `is_err()` or a `to_string().contains(...)`.
-- **Placement:** public-API tests in the crate's `tests/`; private-internal tests in an inline `#[cfg(test)] mod tests`. No test or fixture file under `src/` (no `src/tests.rs`, no `src/test_util.rs`); shared fixtures live in an inline `#[cfg(test)] pub mod tests` cross-imported by path.
+- **Placement:** public-API tests in the crate's `tests/`; private-internal tests in an inline `#[cfg(test)] mod tests`. No test or fixture file under `src/` (no `src/tests.rs`, no `src/test_util.rs`); shared fixtures live in an inline `#[cfg(test)] pub mod tests` cross-imported by path, or in `tests/common/mod.rs` when shared between integration-test binaries.
+- **No hard-coded cryptographic values, even in tests — no exceptions beyond pinned vectors.** Literal keys/IVs/salts are forbidden, `#[cfg(test)]` included; immaterial values MUST be generated via the crate's own rand helper. A key MAY be hard-coded only when the expected bytes were produced outside the test with that exact key (spec appendix, conformance/PICS vector, interop capture); there is no third case. Agreement on a generated key is explicit (bind once, pass to both paths — never memoize a fixture into a process-global); required distinctness is generated and `assert_ne!`d, never spelled as two magic literals.
 
 ## Documentation & prose
 

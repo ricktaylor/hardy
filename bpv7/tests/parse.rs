@@ -11,6 +11,8 @@ use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
 
+mod common;
+
 // Build a minimal valid bundle and return its serialised bytes.
 fn build_minimal_bundle() -> Box<[u8]> {
     builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -540,4 +542,218 @@ fn encoded_len_is_the_wire_length() {
 
     let parsed = parse::parse(Bytes::from(data)).expect("round-trip parse");
     assert_eq!(parsed.bundle.encoded_len(), parsed.data.len() as u64);
+}
+
+// Wire-input structural block rules (RFC 9171 §4.1): duplicate, misnumbered,
+// misplaced, and missing blocks. On this API an invalid bundle surfaces as
+// `Err(Error::…)` from `parse::parse`; the status-report reason code the
+// original suite also asserted is now the BPA's concern, not the parser's.
+mod block_rules {
+    use bytes::Bytes;
+    use hardy_bpv7::{Error, block, parse};
+    use hardy_cbor::{decode::skip_value, encode::emit};
+
+    use super::build_minimal_bundle;
+    use super::common::{insert_after_primary, make_block};
+
+    // RFC 9171 §4.1: at most one payload block, and it must be last. A
+    // second payload (block number 1) necessarily leaves a block-number-1
+    // block that is not last, which the canonical-form check rejects first.
+    #[test]
+    fn duplicate_payload_block_rejected() {
+        let data = build_minimal_bundle();
+        let dup_payload = make_block(1, 1, 0, b"XX");
+        let modified = insert_after_primary(&data, &[&dup_payload]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a second payload must be rejected");
+        };
+        assert!(
+            matches!(err, Error::NotCanonical),
+            "second payload block, got: {err:?}"
+        );
+    }
+
+    // RFC 9171 §4.4.2/§4.4.3: PreviousNode, BundleAge, and HopCount blocks
+    // must not occur more than once.
+    #[test]
+    fn duplicate_bundle_age_block_rejected() {
+        let data = build_minimal_bundle();
+        let age = emit(&0u64).0;
+        let age_block_2 = make_block(7, 2, 0, &age);
+        let age_block_3 = make_block(7, 3, 0, &age);
+        let modified = insert_after_primary(&data, &[&age_block_2, &age_block_3]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("two BundleAge blocks must be rejected");
+        };
+        assert!(
+            matches!(err, Error::DuplicateBlocks(block::Type::BundleAge)),
+            "two BundleAge blocks, got: {err:?}"
+        );
+    }
+
+    // RFC 9171 §4.2.1: block numbers must be unique within a bundle.
+    #[test]
+    fn duplicate_block_number_rejected() {
+        let data = build_minimal_bundle();
+        let block_a = make_block(999, 2, 0, &[0xDE, 0xAD]);
+        let block_b = make_block(998, 2, 0, &[0xBE, 0xEF]);
+        let modified = insert_after_primary(&data, &[&block_a, &block_b]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a reused block number must be rejected");
+        };
+        assert!(
+            matches!(err, Error::DuplicateBlockNumber(2)),
+            "reused block number, got: {err:?}"
+        );
+    }
+
+    // RFC 9171 §4.1: the payload block must be the last block of the bundle.
+    #[test]
+    fn payload_not_final_rejected() {
+        let data = build_minimal_bundle();
+        let trailing_block = make_block(999, 2, 0, &[0xDE, 0xAD]);
+        assert_eq!(data[data.len() - 1], 0xFF, "bundle should end with a break");
+        let mut modified = data[..data.len() - 1].to_vec();
+        modified.extend_from_slice(&trailing_block);
+        modified.push(0xFF);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a block after the payload must be rejected");
+        };
+        assert!(
+            matches!(err, Error::NotCanonical),
+            "block after payload, got: {err:?}"
+        );
+    }
+
+    // RFC 9171 §4.1: every bundle must have a payload block.
+    #[test]
+    fn missing_payload_rejected() {
+        let data = build_minimal_bundle();
+        assert_eq!(
+            data[0], 0x9F,
+            "bundle should start with an indefinite array"
+        );
+        let (_, primary_len) = skip_value(&data[1..], 16).expect("should skip the primary block");
+        let mut modified = data[..1 + primary_len].to_vec();
+        modified.push(0xFF);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a bundle with no payload must be rejected");
+        };
+        assert!(
+            matches!(err, Error::MissingPayload),
+            "bundle without payload, got: {err:?}"
+        );
+    }
+}
+
+// CRC framing (RFC 9171 §4.2.2) and BPSec target rules (RFC 9172 §3.7)
+// through parse::parse.
+mod crc_and_bpsec_rules {
+    use bytes::Bytes;
+    use hardy_bpv7::{Error, bpsec, crc, parse};
+    // Aliased: `encode::Bytes` collides with `bytes::Bytes` imported above.
+    use hardy_cbor::encode::{Bytes as CborBytes, emit_array};
+
+    use super::build_minimal_bundle;
+    use super::common::{insert_after_primary, make_block, make_unknown_context_asb};
+
+    // A block whose element count contradicts its declared CRC type is a
+    // malformed block. On this parser the CRC value's presence is framed by
+    // the block array's arity, so a mismatch surfaces at the CBOR layer,
+    // wrapped as an InvalidField over the "block" (rather than as a distinct
+    // MissingCrc / UnexpectedCrcValue).
+    #[test]
+    fn missing_crc_value_rejected() {
+        let data = build_minimal_bundle();
+        // Declares CRC-16 (crc_type=1) but carries no sixth CRC element.
+        let block = emit_array(Some(5), |a| {
+            a.emit(&999u64);
+            a.emit(&2u64);
+            a.emit(&0u64);
+            a.emit(&1u64);
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
+        });
+        let modified = insert_after_primary(&data, &[&block]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a block declaring a CRC but carrying none must be rejected");
+        };
+        assert!(
+            matches!(err, Error::InvalidField { field: "block", .. }),
+            "missing CRC value, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unexpected_crc_value_rejected() {
+        let data = build_minimal_bundle();
+        // crc_type=none but carries a spurious sixth CRC element.
+        let block = emit_array(Some(6), |a| {
+            a.emit(&999u64);
+            a.emit(&2u64);
+            a.emit(&0u64);
+            a.emit(&0u64);
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
+            a.emit(&CborBytes(&[0x00, 0x00]));
+        });
+        let modified = insert_after_primary(&data, &[&block]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a CRC value with crc_type=none must be rejected");
+        };
+        assert!(
+            matches!(err, Error::InvalidField { field: "block", .. }),
+            "unexpected CRC value, got: {err:?}"
+        );
+    }
+
+    // RFC 9171 §4.2.2: only CRC types 0-2 are defined.
+    #[test]
+    fn unrecognised_crc_type_rejected() {
+        let data = build_minimal_bundle();
+        let block = emit_array(Some(6), |a| {
+            a.emit(&999u64);
+            a.emit(&2u64);
+            a.emit(&0u64);
+            a.emit(&3u64); // CRC type: unrecognised
+            a.emit(&CborBytes(&[0xDE, 0xAD]));
+            a.emit(&CborBytes(&[0x00, 0x00, 0x00, 0x00]));
+        });
+        let modified = insert_after_primary(&data, &[&block]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("an unrecognised CRC type must be rejected");
+        };
+        assert!(
+            matches!(err, Error::InvalidCrc(crc::Error::InvalidType(3))),
+            "unrecognised CRC type, got: {err:?}"
+        );
+    }
+
+    // RFC 9172 §3.7: a BCB targeting the payload must set must_replicate.
+    #[test]
+    fn bcb_targeting_payload_without_must_replicate_rejected() {
+        let data = build_minimal_bundle();
+        let bcb = make_block(12, 2, 0, &make_unknown_context_asb(1)); // must_replicate clear
+        let modified = insert_after_primary(&data, &[&bcb]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a BCB targeting the payload without must_replicate must be rejected");
+        };
+        assert!(
+            matches!(err, Error::InvalidBPSec(bpsec::Error::BCBMustReplicate)),
+            "BCB without must_replicate, got: {err:?}"
+        );
+    }
+
+    // RFC 9172 §3.7: a BCB must not target the primary block.
+    #[test]
+    fn bcb_targeting_primary_block_rejected() {
+        let data = build_minimal_bundle();
+        let bcb = make_block(12, 2, 0x01, &make_unknown_context_asb(0));
+        let modified = insert_after_primary(&data, &[&bcb]);
+        let Err(err) = parse::parse(Bytes::from(modified)) else {
+            panic!("a BCB targeting the primary block must be rejected");
+        };
+        assert!(
+            matches!(err, Error::InvalidBPSec(bpsec::Error::InvalidBCBTarget)),
+            "BCB targeting primary, got: {err:?}"
+        );
+    }
 }

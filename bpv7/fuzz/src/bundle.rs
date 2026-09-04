@@ -232,41 +232,56 @@ mod test {
     use std::io::Read;
 
     #[test]
-    #[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
+    #[ignore] // Post-mortem debug test: run explicitly with `cargo test -- --ignored`
     fn test() {
-        if let Ok(mut file) =
-            std::fs::File::open("./artifacts/bundle/crash-effffdc7a8837e1dc7225d82466f3f068508a79a")
-        {
-            let mut buffer = Vec::new();
-            if file.read_to_end(&mut buffer).is_ok() {
-                test_bundle(&buffer);
+        const ARTIFACT: &str = "./artifacts/bundle/crash-effffdc7a8837e1dc7225d82466f3f068508a79a";
+
+        // A missing artifact is a skip (it is not committed), but a
+        // present-yet-unreadable one is a failure.
+        let mut file = match std::fs::File::open(ARTIFACT) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("Skipping: crash artifact {ARTIFACT} not present");
+                return;
             }
-        }
+            Err(e) => panic!("Failed to open crash artifact {ARTIFACT}: {e}"),
+        };
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .unwrap_or_else(|e| panic!("Failed to read crash artifact {ARTIFACT}: {e}"));
+        test_bundle(&buffer);
     }
 
     #[test]
-    #[ignore] // Post-mortem debug test — run explicitly with `cargo test -- --ignored`
+    #[ignore] // Post-mortem debug test: run explicitly with `cargo test -- --ignored`
     fn test_all() {
-        match std::fs::read_dir("./corpus/bundle") {
-            Err(e) => {
-                eprintln!(
-                    "Failed to open dir: {e}, curr dir: {}",
-                    std::env::current_dir().unwrap().display()
-                );
+        const CORPUS_DIR: &str = "./corpus/bundle";
+
+        // A missing corpus directory is a skip (it is not committed), but a
+        // present-yet-unreadable directory or file is a failure.
+        let dir = match std::fs::read_dir(CORPUS_DIR) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("Skipping: corpus directory {CORPUS_DIR} not present");
+                return;
             }
-            Ok(dir) => {
-                for entry in dir.flatten() {
-                    let path = entry.path();
-                    if path.is_file()
-                        && let Ok(mut file) = std::fs::File::open(&path)
-                    {
-                        let mut buffer = Vec::new();
-                        if file.read_to_end(&mut buffer).is_ok() {
-                            test_bundle(&buffer);
-                        }
-                    }
-                }
+            Err(e) => panic!("Failed to open corpus directory {CORPUS_DIR}: {e}"),
+        };
+
+        let mut tested = 0usize;
+        for entry in dir {
+            let path = entry.expect("Failed to read corpus directory entry").path();
+            if path.is_file() {
+                let mut buffer = Vec::new();
+                std::fs::File::open(&path)
+                    .and_then(|mut file| file.read_to_end(&mut buffer))
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+                test_bundle(&buffer);
+                tested += 1;
             }
+        }
+        if tested == 0 {
+            eprintln!("Skipping: corpus directory {CORPUS_DIR} contains no files");
         }
     }
 }
