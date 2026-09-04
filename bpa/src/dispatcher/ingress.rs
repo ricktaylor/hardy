@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     bundle::{parse, tail},
     cla::Segment,
-    stream::Receiver,
+    stream::{ConcatError, Receiver},
 };
 
 // The outcome of the shared receive pipeline, for the three in-feeds.
@@ -291,20 +291,43 @@ impl Dispatcher {
             return Received::Disposed;
         }
 
-        // Drain the payload tail (oversized case) through the validating
-        // TailReceiver: it feeds the payload CRC / block+outer breaks and each
-        // deferred BIB digest as the bytes stream past, accumulating the whole
-        // bundle bounded by `max_size` (the amplification guard — the declared
-        // length is not trusted). A resident bundle (`tail` None) was already
-        // fully validated by the header pass: the payload was present, so no
-        // BIB was deferred and its CRC was checked inline.
-        let whole = match tail {
-            None => headers,
+        // Store the bundle exactly as received — no editing on input. A
+        // streamed tail is handed to the store *as a stream*: the spool
+        // lives in the `Store` wrapper (interim RAM; the storage tranche
+        // moves it into the backends), so this pipeline already assumes an
+        // asynchronous streaming store. A resident bundle saves its buffer
+        // directly.
+        let (data_len, caller_stored) = match tail {
+            None => {
+                // Fully resident: already validated by the header pass (the
+                // payload was present, so no BIB was deferred and its CRC
+                // was checked inline). The caller pre-stored the data
+                // (reassembly / restart) and owns its cleanup on any
+                // non-dispatched outcome; we only delete storage *we*
+                // create, on the duplicate path below.
+                let data = headers;
+                let len = data.len();
+                if let Some(storage_name) = &bundle.metadata.storage_name {
+                    self.store.replace_data(storage_name, data).await;
+                    (len, true)
+                } else {
+                    bundle.metadata.storage_name = Some(self.store.save_data(data).await);
+                    (len, false)
+                }
+            }
             Some(tail) => {
-                // The deferred-BIB verifiers were begun by the header pass, in
-                // the same keyed scope as the header verify; the resident
+                // Streamed tails only arrive on the CLA path: a caller-stored
+                // feed is a single Final segment, which the header pass
+                // either fully resides or rejects as truncated.
+                debug_assert!(bundle.metadata.storage_name.is_none());
+
+                // The deferred-BIB verifiers were begun by the header pass,
+                // in the same keyed scope as the header verify; the resident
                 // payload prefix is absorbed by `TailReceiver::new`, the
-                // streamed remainder as it arrives.
+                // streamed remainder as it arrives — feeding the payload
+                // CRC, the block+outer framing, and each deferred BIB digest
+                // as the bytes stream past. The receiver yields the resident
+                // head first, so one stream carries the whole bundle.
                 let payload_start = bundle
                     .bundle
                     .blocks
@@ -314,35 +337,44 @@ impl Dispatcher {
                     stream,
                     tail,
                     deferred_verifiers,
-                    &headers.slice(payload_start..),
+                    headers,
+                    payload_start,
                 );
 
-                // Accumulate onto the resident prefix, reusing its allocation
-                // when unshared (a CLA still holding the `Bytes` forces a copy).
-                let mut whole = headers
-                    .try_into_mut()
-                    .unwrap_or_else(|b| crate::BytesMut::from(b.as_ref()));
-                loop {
-                    let (bytes, last) = match tail_rx.recv().await {
-                        Ok(Segment::Next(b)) => (b, false),
-                        Ok(Segment::Final(b)) => (b, true),
-                        // A failing pull records the reason in `tail_rx`;
-                        // `finish` categorises it below.
-                        Err(_) => break,
-                    };
-                    if whole.len().saturating_add(bytes.len()) > max_size {
-                        debug!("Streamed bundle exceeds max_bundle_size; refused");
+                // One async store call drains the whole bundle through the
+                // validating receiver, bounded by `max_size` (the
+                // amplification guard — the declared length is not trusted).
+                let saved = match self.store.save_stream(&mut tail_rx, max_size).await {
+                    Ok(saved) => Some(saved),
+                    Err(ConcatError::TooLarge { size, max }) => {
+                        debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
                         return Received::Refused;
                     }
-                    whole.extend_from_slice(&bytes);
-                    if last {
-                        break;
-                    }
-                }
+                    // The failing pull recorded its reason in `tail_rx`;
+                    // `finish` categorises it below. Nothing was persisted.
+                    Err(ConcatError::Cancelled) => None,
+                };
 
                 match tail_rx.finish() {
-                    Ok(()) => whole.freeze(),
+                    Ok(()) => {
+                        // An incomplete stream always records its failure, so
+                        // a clean finish without a save cannot happen; refuse
+                        // defensively rather than dispatch a bundle with no
+                        // stored data.
+                        let Some((storage_name, len)) = saved else {
+                            return Received::Refused;
+                        };
+                        bundle.metadata.storage_name = Some(storage_name);
+                        (len, false)
+                    }
                     Err(failure) => {
+                        // A staged save is discarded with the rejection: the
+                        // spool commits before validation settles (the
+                        // streaming contract — stage, validate, discard on
+                        // failure), so the reject owes the deletion.
+                        if let Some((storage_name, _)) = &saved {
+                            self.store.delete_data(storage_name).await;
+                        }
                         let Some(reason) = failure.reason_code() else {
                             // Truncated: the transfer never completed, so it
                             // is refused — the peer retains custody and may
@@ -353,8 +385,7 @@ impl Dispatcher {
                         // Complete but unacceptable: the transfer was
                         // accepted, so this node owns the bundle and
                         // terminates it — reported like the sibling gate
-                        // drops (RFC 9171 §5.6/§5.10). Nothing was stored:
-                        // the failure precedes the save below.
+                        // drops (RFC 9171 §5.6/§5.10).
                         debug!("Streamed payload rejected: {failure}");
                         metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&reason)).increment(1);
                         self.report_bundle_reception(
@@ -371,30 +402,15 @@ impl Dispatcher {
         };
 
         // The §E removals travel with the bundle to the output doors, sorted
-        // for a deterministic persisted order.
+        // for a deterministic persisted order; they ride the metadata and are
+        // applied per-attempt (egress rewrite, deliver strip).
         let mut to_remove: Vec<u64> = to_remove.into_iter().collect();
         to_remove.sort_unstable();
-
-        // The bundle is stored exactly as received — no editing on input.
-        // The §E removals ride the metadata and are applied per-attempt at
-        // the output doors (egress rewrite, deliver strip).
-        let data = whole;
         bundle.metadata.to_remove = to_remove;
-        // The caller pre-stored the data (reassembly / restart) and owns its
-        // cleanup; on any non-dispatched outcome the caller deletes it. We only
-        // delete storage *we* create (the CLA `save_data` path below), on the
-        // duplicate path.
-        let mut caller_stored = false;
-        if let Some(storage_name) = &bundle.metadata.storage_name {
-            self.store.replace_data(storage_name, data.clone()).await;
-            caller_stored = true;
-        } else {
-            bundle.metadata.storage_name = Some(self.store.save_data(data.clone()).await);
-        }
 
         // Only a completely assembled bundle counts as received.
         metrics::counter!("bpa.bundle.received").increment(1);
-        metrics::counter!("bpa.bundle.received.bytes").increment(data.len() as u64);
+        metrics::counter!("bpa.bundle.received.bytes").increment(data_len as u64);
 
         // Reception happened, so report it (when requested) before the duplicate
         // check: RFC 9171 §5.6 reports on reception, so a replayed/duplicate
