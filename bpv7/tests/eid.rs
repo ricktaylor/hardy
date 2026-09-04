@@ -1,12 +1,17 @@
 use hardy_bpv7::eid::{DtnNodeId, Eid, Error, IpnNodeId};
+// Aliased: collides with the eid `Error` imported above.
+use hardy_cbor::{
+    decode::{Error as CborError, parse},
+    encode::emit,
+};
 use hex_literal::hex;
 
 // Parse a string EID, re-encode it as CBOR, decode it again, and check
 // the displayed form of the result.
 fn roundtrip(eid_str: &str, expected: &str) {
     let eid = eid_str.parse::<Eid>().expect("Invalid EID");
-    let cbor = hardy_cbor::encode::emit(&eid).0;
-    let eid2 = hardy_cbor::decode::parse::<Eid>(&cbor).expect("Invalid CBOR");
+    let cbor = emit(&eid).0;
+    let eid2 = parse::<Eid>(&cbor).expect("Invalid CBOR");
     assert_eq!(eid2.to_string(), expected, "{eid_str} round-tripped badly");
 }
 
@@ -45,7 +50,7 @@ fn normalising_roundtrip() {
 #[test]
 fn unknown_scheme_cbor_roundtrip() {
     let input = hex!("82 03 43 010203");
-    let (eid, shortest) = hardy_cbor::decode::parse::<(Eid, bool)>(&input).expect("should parse");
+    let (eid, shortest) = parse::<(Eid, bool)>(&input).expect("should parse");
     let Eid::Unknown { scheme: 3, data } = &eid else {
         panic!("expected Eid::Unknown with scheme 3, got {eid:?}");
     };
@@ -56,7 +61,7 @@ fn unknown_scheme_cbor_roundtrip() {
     );
     assert!(shortest, "canonical input should flag shortest=true");
     assert_eq!(
-        hardy_cbor::encode::emit(&eid).0,
+        emit(&eid).0,
         input,
         "re-emit must reproduce the wire form exactly"
     );
@@ -232,12 +237,11 @@ fn str_ipn_overflow_rejected() {
 }
 
 fn parse_cbor(data: &[u8]) -> Eid {
-    hardy_cbor::decode::parse::<Eid>(data)
-        .unwrap_or_else(|e| panic!("failed to parse {data:02x?}: {e}"))
+    parse::<Eid>(data).unwrap_or_else(|e| panic!("failed to parse {data:02x?}: {e}"))
 }
 
 fn expect_cbor_error(data: &[u8]) -> Error {
-    hardy_cbor::decode::parse::<Eid>(data).expect_err("parsed successfully")
+    parse::<Eid>(data).expect_err("parsed successfully")
 }
 
 #[test]
@@ -292,7 +296,7 @@ fn cbor_dtn() {
 fn cbor_truncated_rejected() {
     assert!(matches!(
         expect_cbor_error(&[]),
-        Error::InvalidCBOR(hardy_cbor::decode::Error::NeedMoreData(1))
+        Error::InvalidCBOR(CborError::NeedMoreData(1))
     ));
 }
 
@@ -359,7 +363,7 @@ fn non_shortest_scheme_uint_rejected() {
 fn indefinite_outer_array_accepted_but_flagged() {
     // 9f ... ff = indefinite-length array of [1, "//node/"]
     let bytes = hex!("9f 01 67 2f2f6e6f64652f ff");
-    let (eid, shortest) = hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+    let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
     assert!(matches!(eid, Eid::Dtn { .. }));
     assert!(
         !shortest,
@@ -374,13 +378,13 @@ fn indefinite_outer_array_accepted_but_flagged() {
 fn dtn_null_canonicality() {
     // [1, "none"]: non-canonical form
     let bytes = hex!("82 01 64 6e6f6e65");
-    let (eid, shortest) = hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+    let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
     assert_eq!(eid, Eid::Null);
     assert!(!shortest, "Text(\"none\") should flag shortest=false");
 
     // [1, 0]: canonical form per §4.2.5.1.1
     let bytes = hex!("82 01 00");
-    let (eid, shortest) = hardy_cbor::decode::parse::<(Eid, bool)>(&bytes).expect("should parse");
+    let (eid, shortest) = parse::<(Eid, bool)>(&bytes).expect("should parse");
     assert_eq!(eid, Eid::Null);
     assert!(shortest, "uint 0 form should flag shortest=true");
 }

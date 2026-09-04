@@ -258,12 +258,16 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
+    use hardy_cbor::encode::Encoder;
+
     use super::*;
 
     // An Abstract Syntax Block is a CBOR sequence (RFC 9172 §3.6), not an
     // array: emit each field into a bare encoder.
-    fn emit_asb(targets: &[u64], source: &eid::Eid, result_sets: usize) -> alloc::vec::Vec<u8> {
-        let mut encoder = hardy_cbor::encode::Encoder::new();
+    fn emit_asb(targets: &[u64], source: &eid::Eid, result_sets: usize) -> Vec<u8> {
+        let mut encoder = Encoder::new();
         encoder.emit_array(Some(targets.len()), |a| {
             for target in targets {
                 a.emit(target);
