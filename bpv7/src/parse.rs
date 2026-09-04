@@ -911,6 +911,13 @@ impl BundleParser {
         self.parse_blocks(data, offset)
     }
 
+    // The pre-payload bound: everything before the payload block's data must
+    // end within 256 MiB. An implementation limit, not RFC: real header
+    // chains are kilobytes, the whole pre-payload region must be resident
+    // for verification, and a fixed bound keeps accept/reject decisions
+    // identical on every node regardless of pointer width.
+    const MAX_PRE_PAYLOAD_EXTENT: u64 = 256 * 1024 * 1024;
+
     fn parse_blocks(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
         let bundle = self
             .bundle
@@ -974,6 +981,21 @@ impl BundleParser {
                 .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
+
+            // Enforce the pre-payload bound: everything before the payload
+            // body — every extension block and the payload block's header —
+            // must end within MAX_PRE_PAYLOAD_EXTENT (callers slice header
+            // extents as usize on the strength of this guarantee). Only the
+            // payload body may run past the bound, and the check fires from
+            // the declared lengths alone, before any body byte arrives.
+            if is_payload {
+                let payload_data_start = block_start_u64.saturating_add(header.data_start);
+                if payload_data_start > Self::MAX_PRE_PAYLOAD_EXTENT {
+                    return Err(Error::ExtensionBlocksTooLarge(payload_data_start));
+                }
+            } else if extent_end > Self::MAX_PRE_PAYLOAD_EXTENT {
+                return Err(Error::ExtensionBlocksTooLarge(extent_end));
+            }
 
             // The payload block's trailer (CRC, breaks) is the tail's, fed
             // whatever of the block the buffer holds (see `ParserProgress`).
