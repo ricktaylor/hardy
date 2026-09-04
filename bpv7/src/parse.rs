@@ -862,7 +862,8 @@ impl BundleParser {
 
     fn parse_primary(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
         let block_start = offset;
-        let primary: PrimaryBlock = parse_canonical(data, &mut offset, "primary block")?;
+        let primary: PrimaryBlock = parse_canonical(data, &mut offset, "primary block")
+            .map_err(|e| Self::bound_primary_shortfall(data.len(), e))?;
 
         // RFC 9171 §4.2.3-4 / §4.2.3-5: invalid bundle-flag combinations.
         // Null source ⇒ must not be a fragment, must set do_not_fragment,
@@ -909,6 +910,32 @@ impl BundleParser {
         });
         self.state = State::Blocks(offset);
         self.parse_blocks(data, offset)
+    }
+
+    // The pre-payload bound: everything before the payload block's data — the
+    // primary, every extension block and the payload block's header — must
+    // end within 256 MiB. An implementation limit, not RFC: real header
+    // chains are kilobytes, the whole pre-payload region must be resident
+    // for verification, and a fixed bound keeps accept/reject decisions
+    // identical on every node regardless of pointer width.
+    const MAX_PRE_PAYLOAD_EXTENT: u64 = 256 * 1024 * 1024;
+
+    // An incomplete primary is bounded like the blocks after it: when the
+    // input it still needs (a declared EID length, say) would take the
+    // buffer past the bound, it is refused now, from the declaration alone,
+    // rather than asking for bytes the parser must reject anyway.
+    fn bound_primary_shortfall(have: usize, e: Error) -> Error {
+        match need_more(&e) {
+            Some(shortfall) => {
+                let end = (have as u64).saturating_add(shortfall as u64);
+                if end > Self::MAX_PRE_PAYLOAD_EXTENT {
+                    Error::PrePayloadTooLarge(end)
+                } else {
+                    e
+                }
+            }
+            None => e,
+        }
     }
 
     fn parse_blocks(&mut self, data: &[u8], mut offset: usize) -> Result<usize, Error> {
@@ -975,6 +1002,21 @@ impl BundleParser {
 
             let is_payload = matches!(header.block_type, block::Type::Payload);
 
+            // Enforce the pre-payload bound: everything before the payload
+            // body — every extension block and the payload block's header —
+            // must end within MAX_PRE_PAYLOAD_EXTENT (callers slice header
+            // extents as usize on the strength of this guarantee). Only the
+            // payload body may run past the bound, and the check fires from
+            // the declared lengths alone, before any body byte arrives.
+            if is_payload {
+                let payload_data_start = block_start_u64.saturating_add(header.data_start);
+                if payload_data_start > Self::MAX_PRE_PAYLOAD_EXTENT {
+                    return Err(Error::PrePayloadTooLarge(payload_data_start));
+                }
+            } else if extent_end > Self::MAX_PRE_PAYLOAD_EXTENT {
+                return Err(Error::PrePayloadTooLarge(extent_end));
+            }
+
             // The payload block's trailer (CRC, breaks) is the tail's, fed
             // whatever of the block the buffer holds (see `ParserProgress`).
             // Extension blocks must arrive whole and are checked inline.
@@ -991,11 +1033,13 @@ impl BundleParser {
                 };
                 // The bundle ends with the payload block's trailer and the
                 // outer break. Kept in u64: `extent_end` is wire-derived and
-                // can exceed usize on 32-bit. Saturating, unlike the two
-                // checks above: an extent ending at u64::MAX is a payload no
-                // buffer holds, reported as truncation
-                // (`crafted_max_extent_payload`), not as too big.
-                let bundle_end = extent_end.saturating_add(1);
+                // can exceed usize on 32-bit. Checked, like the two sums
+                // above: an extent ending at u64::MAX leaves no room for the
+                // break, so the bundle's length is unrepresentable and the
+                // declaration is too big (`crafted_max_extent_payload`).
+                let bundle_end = extent_end
+                    .checked_add(1)
+                    .ok_or(Error::InvalidCBOR(CborError::TooBig))?;
                 let offset_u64 = offset as u64;
                 let mut tail = PayloadTail::new(
                     digest,

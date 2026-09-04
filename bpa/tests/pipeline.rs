@@ -3086,6 +3086,70 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     }
 }
 
+// A payload declaration whose wire form ends at `u64::MAX` leaves no room
+// for the outer break. The header pass rejects it as invalid, so the CLA door
+// disposes of it (accepted, never stored) without pulling a payload byte and
+// without computing the bundle's length, which would overflow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ingress_disposes_of_a_payload_declared_to_u64_max() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
+    bpa.start(false).await;
+    let (cla, _fwd) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    // A built bundle with its payload block replaced by a CRC-32 payload
+    // header (`86 01 01 04 02 5b` + an 8-byte length) whose extent ends at
+    // exactly u64::MAX:
+    //   extent.end = block_start + header(14) + len + crc_trailer(5)
+    let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
+    let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
+    let good = build_bundle(&remote_source, &local_dest, b"x");
+    let block_start = parse(good.clone())
+        .expect("built bundle parses")
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start;
+    let len = u64::MAX - block_start - 19;
+    let mut crafted = good[..usize::try_from(block_start).unwrap()].to_vec();
+    crafted.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
+    crafted.extend_from_slice(&len.to_be_bytes());
+
+    // The headers arrive whole and the source then parks forever, so a door
+    // that admitted the declaration would wait on the payload. The timeout
+    // only bounds a regression.
+    let mut stream = ParkedReceiver::new(&crafted, crafted.len(), 1);
+    assert_eq!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            cla.sink.get().unwrap().dispatch(None, None, &mut stream)
+        )
+        .await
+        .expect("Timeout: the rejection must not wait for the payload")
+        .unwrap(),
+        cla::Acceptance::Accepted,
+    );
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // PERF-01: Throughput (REQ-13: >1000 bundles/sec)
 // ---------------------------------------------------------------------------
