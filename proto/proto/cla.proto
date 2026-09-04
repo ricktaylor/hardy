@@ -88,8 +88,8 @@ message Register {
   // declares no limit (every transfer travels on a new lane from the
   // infinite pool). Lanes are parallel transport channels with no
   // explicit priority among them; zero is invalid, and the BPA
-  // rejects declarations above its configured bound with
-  // INVALID_ARGUMENT.
+  // rejects declarations above its bound (a fixed 256 in this
+  // implementation) with INVALID_ARGUMENT.
   optional uint32         lane_count    = 3;
 }
 

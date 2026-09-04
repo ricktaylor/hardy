@@ -1,16 +1,25 @@
 #[cfg(feature = "grpc")]
 use core::num::NonZeroU32;
 use core::num::NonZeroUsize;
+#[cfg(unix)]
+use std::fs;
 #[cfg(feature = "grpc")]
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use hardy_async::watcher::WatchMode;
 use hardy_bpa::node_ids::NodeIds;
 use hardy_bpv7::eid::Service;
 use serde::{Deserialize, Serialize};
 use tracing::Level;
+#[cfg(unix)]
+use tracing::warn;
 
 #[cfg(feature = "grpc")]
 use crate::config::tls::GrpcTlsConfig;
@@ -96,6 +105,26 @@ mod human_duration {
         serializer.collect_str(&humantime::format_duration(*duration))
     }
 }
+
+// Warns if `path` is readable by group or other. Unix-only; a no-op on
+// platforms without POSIX permission bits.
+#[cfg(unix)]
+fn warn_key_permissions(path: &Path) {
+    if let Ok(meta) = fs::metadata(path) {
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            warn!(
+                "Key file '{}' has group/other permissions (mode {:04o}). \
+                 Restrict to owner-only (chmod 0600).",
+                path.display(),
+                mode
+            );
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_key_permissions(_path: &Path) {}
 
 // A positive duration, written as a humantime string (e.g. `30s`, `10m`,
 // `1h 30m`).
@@ -530,6 +559,34 @@ impl Config {
 
         eprintln!("Loaded configuration from '{}'", config_file.display());
         Ok(config)
+    }
+
+    /// Warns for every configured private key whose file is readable by
+    /// group or other, in one walk of the parsed configuration, so a new
+    /// key-bearing field is added here rather than remembered at its
+    /// consumer. Called from `main` once tracing is installed: the log
+    /// level comes from this very configuration, so a warning raised
+    /// while it parses would be dropped by the not-yet-existing
+    /// subscriber.
+    pub fn warn_insecure_keys(&self) {
+        if let Some(bpsec) = &self.bpsec {
+            warn_key_permissions(&bpsec.keys_file);
+        }
+        #[cfg(feature = "grpc")]
+        if let Some(grpc) = &self.grpc
+            && let Some(tls) = &grpc.tls
+        {
+            warn_key_permissions(&tls.identity.key_file);
+        }
+        #[cfg(feature = "tcpclv4")]
+        for cla_config in &self.clas {
+            if let cla::ClaType::TcpClv4(tcpcl) = &cla_config.cla_type
+                && let Some(tls) = &tcpcl.tls
+                && let Some(identity) = &tls.identity
+            {
+                warn_key_permissions(&identity.key_file);
+            }
+        }
     }
 }
 
@@ -1056,37 +1113,69 @@ storage:
         assert_eq!(http2.max_frame_size.unwrap().get(), 1048576);
         assert_eq!(http2.initial_stream_window_size.unwrap().get(), 16777216);
 
-        // A frame size below HTTP/2's 2^14 minimum is refused.
+        // A frame size below HTTP/2's 2^14 minimum is refused, for the
+        // frame-size range specifically.
         std::fs::write(
             &path,
             "grpc:\n  services: [\"application\"]\n  http2:\n    max-frame-size: 1024\n",
         )
         .unwrap();
-        assert!(Config::load(Some(path.clone())).is_err());
+        let Err(err) = Config::load(Some(path.clone())) else {
+            panic!("an under-minimum frame size must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("max-frame-size 1024 must be between"), "{err}");
 
-        // A window size above HTTP/2's 2^31 - 1 maximum is refused.
+        // A window size above HTTP/2's 2^31 - 1 maximum is refused, for
+        // the window-size range specifically.
         std::fs::write(
             &path,
             "grpc:\n  services: [\"application\"]\n  http2:\n    initial-stream-window-size: 4294967295\n",
         )
         .unwrap();
-        assert!(Config::load(Some(path.clone())).is_err());
+        let Err(err) = Config::load(Some(path.clone())) else {
+            panic!("an over-maximum window size must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("window size must be between 1 and"), "{err}");
 
-        // A zero window size would wedge the connection: refused.
+        // A zero window size would wedge the connection: refused, for the
+        // window-size range specifically.
         std::fs::write(
             &path,
             "grpc:\n  services: [\"application\"]\n  http2:\n    initial-stream-window-size: 0\n",
         )
         .unwrap();
-        assert!(Config::load(Some(path.clone())).is_err());
+        let Err(err) = Config::load(Some(path.clone())) else {
+            panic!("a zero window size must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("window size must be between 1 and"), "{err}");
 
-        // A zero stream cap would wedge the listener: refused.
+        // A zero stream cap would wedge the listener: refused by the
+        // `NonZeroU32` field.
         std::fs::write(
             &path,
             "grpc:\n  services: [\"application\"]\n  http2:\n    max-concurrent-streams: 0\n",
         )
         .unwrap();
-        assert!(Config::load(Some(path)).is_err());
+        let Err(err) = Config::load(Some(path)) else {
+            panic!("a zero stream cap must be refused");
+        };
+        let err = error_chain(&err);
+        assert!(err.contains("nonzero"), "{err}");
+
+        // The newtype constructors are the production validators the
+        // serde layer delegates to; pin their bounds directly, both the
+        // last refused and the first accepted value on each side.
+        assert!(Http2WindowSize::new(0).is_none());
+        assert!(Http2WindowSize::new(1).is_some());
+        assert!(Http2WindowSize::new(Http2WindowSize::MAX.get()).is_some());
+        assert!(Http2WindowSize::new(Http2WindowSize::MAX.get() + 1).is_none());
+        assert!(Http2FrameSize::new(Http2FrameSize::MIN.get() - 1).is_none());
+        assert!(Http2FrameSize::new(Http2FrameSize::MIN.get()).is_some());
+        assert!(Http2FrameSize::new(Http2FrameSize::MAX.get()).is_some());
+        assert!(Http2FrameSize::new(Http2FrameSize::MAX.get() + 1).is_none());
     }
 
     // The shipped example config parses under the strict schema, so its

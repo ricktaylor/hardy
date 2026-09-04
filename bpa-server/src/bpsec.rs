@@ -4,7 +4,8 @@
 //! [`PatternKeySource`], so the key configuration can be hot-reloaded while
 //! bundles are being processed.
 
-use crate::{config::bpsec::BPSecConfig, keyfile};
+use std::{collections::HashMap, fs, sync::Arc};
+
 use arc_swap::ArcSwap;
 use hardy_async::{TaskPool, watcher};
 use hardy_bpa::keys::KeyProvider;
@@ -14,8 +15,10 @@ use hardy_bpv7::{
 };
 use hardy_eid_patterns::EidPattern;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, sync::Arc};
 use tracing::{debug, error, info, warn};
+
+use crate::config::bpsec::BPSecConfig;
+
 /// The BPA's role with respect to a security block (RFC 9172 Section 2.5).
 ///
 /// A role is expressed entirely through which operations keys are released
@@ -123,8 +126,6 @@ impl PatternKeySource {
     /// Every key must be a non-empty symmetric key (`kty: oct`) carrying a
     /// `key_ops` field, and every binding must reference a known key id.
     pub fn load(config: &BPSecConfig) -> anyhow::Result<Self> {
-        keyfile::check_permissions(&config.keys_file);
-
         let file = fs::File::open(&config.keys_file).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to open key file '{}': {e}",

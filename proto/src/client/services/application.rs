@@ -9,7 +9,7 @@
 // here, hands the sink to the application, and drives the event
 // loop.
 
-use core::{num::NonZeroUsize, ops::ControlFlow, time::Duration};
+use core::{ops::ControlFlow, time::Duration};
 use std::sync::Arc;
 
 use hardy_async::{BoundedTaskPool, CancellationToken};
@@ -28,10 +28,12 @@ use tonic::{Code, Streaming, transport::Channel};
 use tracing::{debug, warn};
 
 use super::super::{
-    SUBSCRIBE_REQUEST_CAPACITY, TRANSFER_REQUEST_CAPACITY, adapter,
+    MAX_CONCURRENT_DELIVERIES, SUBSCRIBE_REQUEST_CAPACITY, TRANSFER_REQUEST_CAPACITY, adapter,
     collector::{Collector, ReceiveDoor},
 };
-use super::{decode_status_report, from_timestamp, log_declined, next_event, service_error};
+use super::{
+    decode_status_report, from_timestamp, log_declined, next_event, service_error, session_error,
+};
 use crate::{
     MAX_MESSAGE_SIZE,
     application::{
@@ -138,13 +140,6 @@ impl ReceiveDoor for ApplicationServiceClient<Channel> {
     }
 }
 
-// How many announced deliveries one registration collects at once: enough
-// that one slow collection does not serialise the rest, small enough that
-// a single registration cannot monopolise its connection. Beyond the
-// bound, the announcement loop waits for a slot, which backpressures the
-// session stream and through it the BPA, by design.
-const MAX_CONCURRENT_DELIVERIES: NonZeroUsize = NonZeroUsize::new(4).unwrap();
-
 // Runs one announced delivery to its end, racing the session's teardown
 // so a stuck collection cannot hang the client's shutdown.
 async fn deliver(
@@ -211,7 +206,7 @@ pub async fn run_session(
         let SubscribeResponse { event } = match next_event(&mut events, &cancel).await {
             ControlFlow::Continue(response) => response,
             ControlFlow::Break(None) => break Ok(()),
-            ControlFlow::Break(Some(status)) => break Err(service_error(status)),
+            ControlFlow::Break(Some(status)) => break Err(session_error(status)),
         };
         let Some(event) = event else {
             warn!("Ignoring event with no payload");

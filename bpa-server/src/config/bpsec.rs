@@ -11,7 +11,8 @@ use crate::bpsec::SecurityRole;
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct BPSecConfig {
     /// Path to a JWK Set file (RFC 7517 Section 5).
-    /// The file SHOULD have restrictive permissions (0600 on Unix).
+    /// The file SHOULD have restrictive permissions (0600 on Unix);
+    /// `Config::warn_insecure_keys` warns at startup when it does not.
     pub keys_file: PathBuf,
 
     /// Watch the key file for changes and reload automatically.

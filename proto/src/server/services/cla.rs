@@ -1,4 +1,4 @@
-// The CLA surface: the `cla.v1` wire served against the
+// The CLA surface: the `hardy.cla.v1` wire served against the
 // convergence-layer surface of a BPA. Declarations are ordered
 // define-before-reference: the wire conversions, the component as the
 // BPA sees it, the doors' streaming halves, then the rpc service;

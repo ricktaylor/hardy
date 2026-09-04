@@ -1,4 +1,4 @@
-// The service surface: the `service.v1` wire served against the
+// The service surface: the `hardy.service.v1` wire served against the
 // low-level service surface of a BPA. Declarations are ordered
 // define-before-reference: the wire conversions, the component as the
 // BPA sees it, the doors' streaming halves, then the rpc service;

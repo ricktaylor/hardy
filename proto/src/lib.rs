@@ -410,18 +410,29 @@ pub mod routing {
         }
     }
 
-    impl From<&DomainRouteAction> for RouteAction {
-        fn from(action: &DomainRouteAction) -> Self {
+    // The domain route action becomes the wire's. The refusal mirrors
+    // the inbound conversion below: a drop reason the wire's receiving
+    // end would reject as reserved (`ReasonCode::try_from` refuses it)
+    // is refused before it is sent, so neither direction of this crate
+    // carries a reserved reason code.
+    impl TryFrom<&DomainRouteAction> for RouteAction {
+        type Error = RouteActionError;
+
+        fn try_from(action: &DomainRouteAction) -> Result<Self, RouteActionError> {
             let action = match action {
-                DomainRouteAction::Drop(reason) => route_action::Action::Drop(Drop {
-                    reason_code: reason.map(u64::from),
-                }),
+                DomainRouteAction::Drop(reason) => {
+                    let reason_code = reason.map(u64::from);
+                    if reason_code.is_some_and(|code| ReasonCode::try_from(code).is_err()) {
+                        return Err(RouteActionError::ReservedReason);
+                    }
+                    route_action::Action::Drop(Drop { reason_code })
+                }
                 DomainRouteAction::Reflect => route_action::Action::Reflect(()),
                 DomainRouteAction::Via(eid) => route_action::Action::Via(eid.to_string()),
             };
-            Self {
+            Ok(Self {
                 action: Some(action),
-            }
+            })
         }
     }
 
@@ -433,9 +444,8 @@ pub mod routing {
         fn try_from(action: route_action::Action) -> Result<Self, RouteActionError> {
             Ok(match action {
                 // An unknown code becomes `Unassigned`, but the reserved
-                // 255 is refused rather than laundered: a remote agent
-                // must not put on the wire what a local caller cannot
-                // construct.
+                // 255 is refused rather than laundered, matching the
+                // outbound conversion above.
                 route_action::Action::Drop(drop) => Self::Drop(
                     drop.reason_code
                         .map(ReasonCode::try_from)

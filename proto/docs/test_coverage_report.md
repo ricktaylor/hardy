@@ -18,12 +18,12 @@ No formal LLRs are assigned to this crate: it is API infrastructure under [REQ-1
 | n/a | Application surface (`hardy.application.v1`) served against a real BPA | Pass | `APP-01..26` | n/a |
 | n/a | Service surface (`hardy.service.v1`) served against a real BPA | Pass | `SVC-01..12` | n/a |
 | n/a | CLA surface (`hardy.cla.v1`) served against a real BPA | Pass | `CLA-01..17` | n/a |
-| n/a | Routing surface (`hardy.routing.v1`) served against a real BPA | Pass | `RTE-01..08` | n/a |
+| n/a | Routing surface (`hardy.routing.v1`) served against a real BPA | Pass | `RTE-01..09` | n/a |
 | n/a | Client SDK (`BpaClient`) end to end | Pass | `APP-21..23`, `APP-26`, `SVC-10..11`, `CLA-15..17`, `RTE-08`, plus the lifecycle suite | n/a |
 
 ## 2. Test Inventory
 
-77 tests in total: 69 in-crate `#[cfg(test)]` tests under `src/`, and 8 cross-crate lifecycle tests in `proto/tests/lifecycle.rs`. The 6 unit tests (4 session-state, 2 hold-table) run no network; the 63 wire tests are component tests over real sockets (a real `Bpa`, a port-0 listener, the generated tonic clients). Ten in-crate tests additionally require the `client` feature (the SDK roundtrips, the reply-from-within-a-delivery pin, the SDK decline-redelivery and deferred-outcome paths, and the delivery-report round-trips), as do all 8 lifecycle tests, so `cargo test -p hardy-proto --all-features` is the run that executes the full inventory.
+79 tests in total: 70 in-crate `#[cfg(test)]` tests under `src/`, and 9 cross-crate lifecycle tests in `proto/tests/lifecycle.rs`. The 6 unit tests (4 session-state, 2 hold-table) run no network; the 64 wire tests are component tests over real sockets (a real `Bpa`, a port-0 listener, the generated tonic clients). Ten in-crate tests additionally require the `client` feature (the SDK roundtrips, the reply-from-within-a-delivery pin, the SDK decline-redelivery and deferred-outcome paths, and the delivery-report round-trips), as do all 9 lifecycle tests, so `cargo test -p hardy-proto --all-features` is the run that executes the full inventory.
 
 ### Unit tests: shared session state (`server/session.rs`), 4 tests
 
@@ -122,20 +122,22 @@ No formal LLRs are assigned to this crate: it is API infrastructure under [REQ-1
 | `a_forged_token_is_rejected` | RTE-05 | As APP-07 |
 | `a_dropped_stream_tears_the_session_down` | RTE-06 | Dropped rpc fires the stream guard on the routing surface; the token dies |
 | `unregister_ends_the_session_and_invalidates_the_token` | RTE-07 | As APP-25 |
-| `client_sdk_roundtrip` | RTE-08 | SDK routing agent drives add/remove idempotence through its sink (`client` feature) |
+| `client_sdk_roundtrip` | RTE-08 | SDK routing agent drives add/remove idempotence through its sink, and the sink refuses the reserved drop reason before the wire (`client` feature) |
+| `a_reserved_drop_reason_is_rejected` | RTE-09 | RFC 9171's reserved reason code 255 in a `drop` action is `INVALID_ARGUMENT`; an unassigned code is carried through |
 
-### Cross-crate lifecycle tests (`proto/tests/lifecycle.rs`), 8 tests
+### Cross-crate lifecycle tests (`proto/tests/lifecycle.rs`), 9 tests
 
 | Test Function | Plan ID | Scope |
 | :--- | :--- | :--- |
-| `a_client_unregister_round_trips` | LIF-01 | A client `Unregister` ends the session, the SDK surfaces `on_unregister`, and the service id frees for a successor |
+| `a_client_unregister_round_trips` | LIF-01 | A client `Unregister` ends the session, the SDK surfaces `on_unregister`, the registration handle resolves `Ok`, and the service id frees for a successor |
 | `bpa_initiated_teardown_reaches_the_client` | LIF-02 | Shutting the BPA down unregisters the bridge's component, ends the wire session, and the SDK surfaces `on_unregister` |
 | `connection_loss_defers_announced_bundles` | LIF-03 | A dead client's parked, uncollected bundle is re-announced to the endpoint's next registration, which collects it whole |
 | `simultaneous_unregister_settles` | LIF-04 | Unregistration from both ends settles with neither side hanging and exactly one observed `on_unregister` |
 | `dropping_the_sink_unregisters` | LIF-05 | A never-stored sink half-closes the session; the server unregisters and the SDK surfaces `on_unregister` |
-| `a_server_restart_disconnects_the_client` | LIF-06 | A bridge teardown (a restart from the client's view) surfaces `on_unregister`; the orphaned sink fails rather than blocking, its token dead |
+| `a_server_restart_disconnects_the_client` | LIF-06 | A bridge teardown (a restart from the client's view) surfaces `on_unregister` and reads as a clean close on the handle; the orphaned sink fails rather than blocking, its token dead |
 | `shutdown_interrupts_a_stuck_delivery` | LIF-07 | An `on_deliver` that never returns is abandoned on client pool shutdown; the session still runs its unregistration to completion |
 | `deliveries_collect_concurrently` | LIF-08 | Two announced bundles are inside `on_deliver` at once, so a slow collection does not stall the next announcement |
+| `a_transport_loss_surfaces_the_session_error` | LIF-09 | A connection killed without trailers ends the session with the transport's own error carried whole: the handle yields the actual status, code and source chain intact, unlike the clean `Ok` of an orderly close |
 
 No fuzz targets exist for this crate: the parsers it exposes to the network are prost's generated decoders plus the domain parsers of `hardy-bpv7` and `hardy-eid-patterns`, which have their own fuzz plans.
 
@@ -148,10 +150,10 @@ No fuzz targets exist for this crate: the parsers it exposes to the network are 
 | Plan §3 APP | Application surface | 26 | 26 | Complete |
 | Plan §3 SVC | Service surface | 12 | 12 | Complete |
 | Plan §3 CLA | CLA surface | 17 | 17 | Complete |
-| Plan §3 RTE | Routing surface | 8 | 8 | Complete |
-| Plan §5 | Cross-crate lifecycle scenarios | 8 | 8 | `proto/tests/lifecycle.rs`; the two killable-transport scenarios remain deferred |
-| | **Total (in-crate scope)** | **69** | **69** | **100%** |
-| | **Total (including deferred)** | **79** | **77** | **97%** |
+| Plan §3 RTE | Routing surface | 9 | 9 | Complete |
+| Plan §5 | Cross-crate lifecycle scenarios | 9 | 9 | `proto/tests/lifecycle.rs`; the silent-transport-death and mid-`Forward` vanish scenarios remain deferred |
+| | **Total (in-crate scope)** | **70** | **70** | **100%** |
+| | **Total (including deferred)** | **81** | **79** | **98%** |
 
 ## 4. Line Coverage
 
@@ -162,11 +164,11 @@ cargo llvm-cov test --package hardy-proto --all-features --lcov --output-path lc
 lcov --summary lcov.info
 ```
 
-Note that `--all-features` is required: without the `server` feature no tests compile, and without `client` the ten SDK-driven in-crate tests and all eight lifecycle tests are skipped.
+Note that `--all-features` is required: without the `server` feature no tests compile, and without `client` the ten SDK-driven in-crate tests and all nine lifecycle tests are skipped.
 
 ### Inventory-based assessment (not instrumented)
 
-In place of measured figures, the following is what the 77 tests demonstrably reach, derived from reading the test modules against the source:
+In place of measured figures, the following is what the 79 tests demonstrably reach, derived from reading the test modules against the source:
 
 - **Exercised on every run:** the four bridge `subscribe` handlers and their session tasks; all data-plane and unary doors including their rejection arms (`UNAUTHENTICATED`, `NOT_FOUND`, `INVALID_ARGUMENT`, `ALREADY_EXISTS`, `FAILED_PRECONDITION`, `ABORTED`, `CANCELLED`); the whole of `server/session.rs` and the shared claim/hold table in `server/services/mod.rs`; the minting and resolution paths of `server/token.rs`; the ack-gated delivery commit protocol in every arm (completion commits, a full receipt without an ack parks, an ack before the final chunk is refused, a mid-stream session death or post-last-chunk cancel re-announces); the `ServerTransfer` pump's chunk, last-chunk, cancel, and truncation arms; the `stream_delivery` and `drive_forward` down engines through completion and abandonment; the `Send` accumulation loop's in-band cancel arm (APP-04); the delivery-report event path end to end (APP-23, SVC-11); the empty-ADU and declared-size-preflight arms; the `dtn`-scheme handshake precondition; and the chunk grammar in `stream.rs` including multi-chunk transfers.
 - **Exercised with `--all-features`:** the client SDK's handshake, event loops, sinks, streaming pumps, and `ClientTransfer` pull path for all four surfaces; the SDK's decline-then-redelivery path (APP-22), a reply issued through the sink from inside a pulled delivery (APP-26), its deferred forwarding-outcome path (CLA-15), and two registration-time rejections it surfaces (CLA-16, and the lifecycle suite's disconnection paths).
@@ -184,12 +186,12 @@ In place of measured figures, the following is what the 77 tests demonstrably re
 
 | Area | Gap | Severity | Notes |
 | :--- | :--- | :--- | :--- |
-| Lifecycle | Silent transport death unpinned | Medium | Needs a killable transport (a proxy or a hard-killed process); the in-process suite severs sessions only cooperatively, so keepalive-bounded detection of a silently dead peer is unverified |
+| Lifecycle | Silent transport death unpinned | Medium | Needs a transport that can go quiet without closing (a proxy or a hard-killed process); the in-process suite kills connections outright (LIF-09) but cannot leave them silently half-open, so keepalive-bounded detection of a silently dead peer is unverified |
 | Lifecycle | CLA vanished-client mid-`Forward` residue unpinned | Low | Abandonment and dropped-session teardown are pinned in-crate (CLA-03, CLA-09); a client vanishing mid-`Forward` drive (rendezvous claimed, chunks in flight) should be pinned end to end once a killable transport exists |
-| Client SDK | Error-translation branches partially tested | Medium | The decline-redelivery, over-declared lane count, and disconnection arms execute; the exhaustive status-to-domain-error translation does not |
+| Client SDK | Error-translation branches partially tested | Medium | The decline-redelivery, over-declared lane count, and disconnection arms execute; the exhaustive status-to-domain-error translation does not, and the carried-whole session ending is pinned only on the application surface (LIF-09): the identical `cla_session_error`/`routing_session_error` paths are unexercised |
 | Data plane | Mid-transfer withdrawal untested | Low | `ReceiveResponse.cancelled` and `ForwardResponse.cancelled` fire only on expiry or deletion during a transfer, which no test triggers |
 | Wire options | `Drop`/`Reflect` route-action conversions and non-report `SendOptions` flags unasserted | Low | The reserved-reason-code rejection and the transmission-flag conversions beyond the delivery-report flag have no test |
 
 ## 7. Conclusion
 
-The crate carries 77 tests: 69 in-crate (4 session-state and 2 hold-table unit tests plus 63 wire component tests, of which 10 drive the client SDK) and 8 cross-crate lifecycle tests in `proto/tests/lifecycle.rs`. Every planned in-crate scenario and all but the two killable-transport lifecycle scenarios are implemented. Instrumented line coverage has not been measured for this crate version; section 4 gives the command and an inventory-based assessment in its place. The strengths are the doctrine itself: every wire test runs the real wire against a real `Bpa`, every surface pins its registration, its token discipline, its truncation-never-commits rule, and its abandonment-defers-work rule, and the ack-gated delivery commit protocol is pinned in every arm. The primary remaining gaps are the deferred killable-transport lifecycle scenarios and the client SDK's exhaustive error-translation paths, with the smaller in-crate branches listed in section 6.
+The crate carries 79 tests: 70 in-crate (4 session-state and 2 hold-table unit tests plus 64 wire component tests, of which 10 drive the client SDK) and 9 cross-crate lifecycle tests in `proto/tests/lifecycle.rs`. Every planned in-crate scenario and all but the two killable-transport lifecycle scenarios are implemented. Instrumented line coverage has not been measured for this crate version; section 4 gives the command and an inventory-based assessment in its place. The strengths are the doctrine itself: every wire test runs the real wire against a real `Bpa`, every surface pins its registration, its token discipline, its truncation-never-commits rule, and its abandonment-defers-work rule, and the ack-gated delivery commit protocol is pinned in every arm. The primary remaining gaps are the deferred killable-transport lifecycle scenarios and the client SDK's exhaustive error-translation paths, with the smaller in-crate branches listed in section 6.

@@ -52,6 +52,6 @@ async fn main() -> anyhow::Result<()> {
     let tasks = TaskPool::new();
     listen_for_cancel(&tasks);
 
-    let server = Tcpclv4Server::new(config, tasks).inspect_err(|e| error!("{e}"))?;
-    server.run().await.inspect_err(|e| error!("{e}"))
+    let server = Tcpclv4Server::new(config, tasks).inspect_err(|e| error!("{e:#}"))?;
+    server.run().await.inspect_err(|e| error!("{e:#}"))
 }

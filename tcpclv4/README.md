@@ -44,7 +44,11 @@ let cla = Arc::new(Tcpclv4::builder().build()?);
 bpa.register_cla("tcp0".to_string(), cla.clone(), None).await?;
 cla.connect(&remote_addr).await?;
 
-// Clean shutdown
+// Withdraw from the BPA without stopping the process: `unregister` asks
+// the BPA to release the registration in-band. It is not needed for
+// shutdown; tearing the registration down (the host's task teardown, or
+// a remote session ending any way at all) unregisters just the same,
+// and `on_unregister` fires exactly once either way.
 cla.unregister().await;
 ```
 

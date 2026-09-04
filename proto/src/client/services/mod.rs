@@ -41,15 +41,26 @@ fn service_error(status: Status) -> services::Error {
     }
 }
 
+// A session-ending status, bubbled to the registration handle with
+// nothing flattened: a status carrying the wire's typed-error
+// discriminator recovers as the exact domain error the server raised;
+// any other ending (the transport failing under the stream, a foreign
+// server) is carried whole, its source chain intact, so awaiting the
+// handle shows the actual failure. The doors classify instead
+// (`service_error`): their callers react to the category, where a
+// session's ending is read by a human or an exit path.
+fn session_error(status: Status) -> services::Error {
+    recover_service_error(&status).unwrap_or_else(|| services::Error::Internal(status.into()))
+}
+
 // Advances a session's event stream: `Continue(event)` yields the next
 // event to handle, and `Break` ends the session — `Break(None)` a clean
 // end (the client's pool cancelled, or the server half-closed the
 // stream: a round-tripped unregister or the BPA's own shutdown,
 // indistinguishable on the wire), `Break(Some(status))` a stream failure
-// carrying its gRPC status. A surface turns that status into its own
-// typed error (recovering the exact variant the server raised where the
-// wire carried it), so `serve_*` hands the caller the real error rather
-// than a flattened one.
+// carrying its gRPC status. A surface bubbles that status through its
+// session-error conversion, so the registration handle hands the caller
+// the real error rather than a flattened one.
 async fn next_event<M>(
     events: &mut Streaming<M>,
     cancel: &CancellationToken,
@@ -62,7 +73,10 @@ async fn next_event<M>(
     match message {
         Ok(Some(message)) => ControlFlow::Continue(message),
         Ok(None) => ControlFlow::Break(None),
-        Err(status) => ControlFlow::Break(Some(status)),
+        Err(status) => {
+            warn!("Subscribe stream failed: {status}");
+            ControlFlow::Break(Some(status))
+        }
     }
 }
 
@@ -100,7 +114,10 @@ fn decode_status_report(
 ) -> Option<(Id, Eid, ReasonCode, Option<OffsetDateTime>)> {
     let bundle_id = Id::from_key(bundle_id).ok()?;
     let from = reporting_node.parse().ok()?;
-    let reason = ReasonCode::try_from(reason_code).unwrap_or(ReasonCode::Unassigned(reason_code));
+    // An unknown code decodes as `Unassigned`; only the reserved 255 is
+    // an error here, and a report carrying it is malformed like any
+    // other undecodable field.
+    let reason = ReasonCode::try_from(reason_code).ok()?;
     Some((
         bundle_id,
         from,
