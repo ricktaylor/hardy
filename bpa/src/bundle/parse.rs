@@ -685,9 +685,7 @@ mod tests {
             use bpsec::key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type};
             Box::new(KeySet::new(vec![
                 Key {
-                    key_type: Type::OctetSequence {
-                        key: hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
-                    },
+                    key_type: Type::symmetric(hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b")),
                     key_algorithm: Some(KeyAlgorithm::HS384),
                     enc_algorithm: None,
                     operations: Some([Operation::Verify].into_iter().collect()),
@@ -695,9 +693,7 @@ mod tests {
                     key_use: None,
                 },
                 Key {
-                    key_type: Type::OctetSequence {
-                        key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-                    },
+                    key_type: Type::symmetric(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
                     key_algorithm: None,
                     enc_algorithm: Some(EncAlgorithm::A256GCM),
                     operations: Some([Operation::Decrypt].into_iter().collect()),
@@ -751,9 +747,7 @@ mod tests {
         };
 
         let enc_k = Key {
-            key_type: Type::OctetSequence {
-                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-            },
+            key_type: Type::symmetric(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
             key_algorithm: None,
             enc_algorithm: Some(EncAlgorithm::A256GCM),
             operations: Some([Operation::Encrypt].into_iter().collect()),
@@ -829,9 +823,7 @@ mod tests {
     fn sign_key() -> bpsec::key::Key {
         use bpsec::key::{Key, KeyAlgorithm, Operation, Type};
         Key {
-            key_type: Type::OctetSequence {
-                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-            },
+            key_type: Type::symmetric(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
             key_algorithm: Some(KeyAlgorithm::HS256),
             enc_algorithm: None,
             operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),

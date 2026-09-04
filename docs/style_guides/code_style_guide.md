@@ -210,6 +210,7 @@ extern crate alloc;
 
 - Use the `tracing` macros (`tracing::debug!`, `error!`, `instrument`) for logging and spans — not `println!` / `eprintln!` in library or server code.
 - Keep log levels meaningful: `error!` for faults needing attention, `debug!`/`trace!` for diagnostics. Don't log per-bundle at `info!` on hot paths.
+- **Secrets never reach `Display`, `Debug`, or logs.** Key material, session tokens, and other credentials get a hand-written redacting `Debug` (print the length or the kid, never the bytes) and are never interpolated into error messages or log lines. Types holding raw key bytes wrap them in `zeroize::Zeroizing` so they are wiped on drop; `bpsec::key::Type` is the pattern (redacting `Debug`, `Type::symmetric` constructor over a `Zeroizing` field).
 
 ## Cargo and Dependencies
 

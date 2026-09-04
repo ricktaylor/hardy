@@ -1,4 +1,7 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
+use core::fmt;
+
+use zeroize::Zeroizing;
 
 use crate::{HashSet, eid};
 
@@ -72,7 +75,7 @@ pub struct Key {
 }
 
 /// JWK key type (`kty`) as defined in RFC 7517.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kty"))]
 pub enum Type {
@@ -85,17 +88,43 @@ pub enum Type {
     #[cfg_attr(feature = "serde", serde(rename = "oct"))]
     OctetSequence {
         /// The raw symmetric key bytes, base64url-encoded for serialization.
+        /// Zeroized on drop.
         #[cfg_attr(feature = "serde", serde(rename = "k"))]
         #[cfg_attr(
             feature = "serde",
             serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")
         )]
-        key: Box<[u8]>,
+        key: Zeroizing<Box<[u8]>>,
     },
     /// Unrecognized key type.
     #[default]
     #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
+}
+
+impl Type {
+    /// Builds a symmetric octet-sequence key (`kty: oct`) from raw bytes.
+    ///
+    /// The bytes are zeroized on drop; callers do not need to handle the
+    /// [`Zeroizing`] wrapper themselves.
+    pub fn symmetric(key: impl Into<Box<[u8]>>) -> Self {
+        Self::OctetSequence {
+            key: Zeroizing::new(key.into()),
+        }
+    }
+}
+
+// Hand-written so the raw key bytes can never reach logs or error output:
+// an octet sequence prints only its length.
+impl fmt::Debug for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EllipticCurve => f.write_str("EC"),
+            Self::RSA => f.write_str("RSA"),
+            Self::OctetSequence { key } => write!(f, "oct({} bytes)", key.len()),
+            Self::Unknown => f.write_str("Unknown"),
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -110,7 +139,7 @@ where
 }
 
 #[cfg(feature = "serde")]
-fn deserialize_key<'de, D>(deserializer: D) -> Result<Box<[u8]>, D::Error>
+fn deserialize_key<'de, D>(deserializer: D) -> Result<Zeroizing<Box<[u8]>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -120,7 +149,7 @@ where
     BASE64_URL_SAFE_NO_PAD
         .decode(s.as_bytes())
         .map_err(serde::de::Error::custom)
-        .map(Into::into)
+        .map(|v| Zeroizing::new(v.into()))
 }
 
 /// JWK public key use (`use`) as defined in RFC 7517 Section 4.2.
