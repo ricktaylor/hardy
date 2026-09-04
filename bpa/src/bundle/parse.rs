@@ -60,7 +60,7 @@ pub fn extract_from_built(
 
 /// Map a keyed-validation error to the status-report reason BPA emits with the
 /// deletion notice. Used by [`parse_headers`] and the payload drain's
-/// [`TailFailure::reason_code`](super::tail::TailFailure::reason_code).
+/// `ValidationFailure::reason_code` (crate-internal, in `dispatcher`).
 ///
 /// The RFC 9172 codes selectable here are the ones detectable without security
 /// policy: `UnknownSecurityOperation` (an operation this node cannot understand

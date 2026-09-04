@@ -124,7 +124,7 @@ impl Store {
     /// ([`TooLarge`](ConcatError::TooLarge)) or incomplete
     /// ([`Cancelled`](ConcatError::Cancelled)) stream discards the spool. A
     /// verdict the caller settles only after the stream is consumed (e.g.
-    /// `TailReceiver::finish`) owes the discard itself via
+    /// an input door's `ValidatingReceiver::finish`) owes the discard itself via
     /// [`delete_data`](Self::delete_data): staging commits before such a
     /// verdict can exist.
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
