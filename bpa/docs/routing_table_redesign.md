@@ -16,7 +16,7 @@ Peer feedback names a real hard-coding: Hardy is destination-based — the RIB l
 
 Routing is three separable functions, all currently hard-coded to one behaviour each:
 
-```
+```text
 key   = select_key(bundle)                default: destination EID
 table = select_table(bundle, key)         default: the one table
 action = lookup(table, key)               default: glob match + specificity order
@@ -28,7 +28,7 @@ This design makes each one right: key and table selection become Classifier conc
 
 The RIB lookup generalises to `route_key.unwrap_or(destination)`, where `route_key: Option<Eid>` is a Classifier-set `MetadataDelta` field (see [`filter_subsystem_design.md`](filter_subsystem_design.md)). This is the Linux fwmark shape: classification feeds routing through metadata; the lookup itself stays fixed machinery, and Dispatch stays hook-free.
 
-The key is per-node-stable (a function of the bundle's wire state, derivable once at the input boundary), persists across Waiting sweeps, and is re-derived by restart re-admission — so key-derivation policy changes are covered by the same restart story as every other filter.
+The key is per-node-stable (a function of the bundle's wire state, derivable once at the input boundary) and persists across Waiting sweeps as a cache under the policy epoch: when the chain's declared behaviour changes — or the operator forces a reevaluation — the epoch's lazy re-derivation at the Dispatch block re-derives it before the next lookup ([`storage_consistency_updates.md`](storage_consistency_updates.md)), the same freshness story as every other classification cache.
 
 **Segment routing is the worked example** (detail in the filter doc): an input Classifier derives the effective top of a label-stack extension block (skipping segments equal to self, so the RIB never sees key == self and deliver-vs-forward stays keyed on the real destination); an egress Rewriter pops consumed segments onto the wire, committing only by transmission. Forward progress generalises from "re-targeting" to **"the lookup key is consumed"** — BIBE consumes by re-targeting the destination, segment routing consumes by popping.
 
@@ -65,7 +65,9 @@ The DPP Harmonized Specificity Score is never evaluated in-node: a lookup key ha
 
 Tables are first-class, and vital for MTR: per-traffic-class contact plans from TVR, security-segregated topologies, emergency overlays. Precedents: IS-IS MT (RFC 5120), Linux's multiple routing tables + RPDB.
 
-**Table selection is a property of the bundle's traffic class**: the Classifier assigns the class (see the filter doc's "`MetadataDelta` and the traffic class"), the class's frozen `ClassPolicy` names its routing table, and classless bundles use the default table. No per-point policy lookup exists — reading the table is an array-index access on frozen, build-validated policy — and operator coherence is structural: the `[classes]` stanza assigns table, dispatch weight, and egress contracts together in one place.
+**Table selection is a Classifier output, not a class property** *(settled 2026-09-04)*: the table is part of the per-bundle routing decision — the RPDB half of the Linux precedent, which was never a property of the tc class — so the classifier emits `route_table` in its delta exactly as it emits `route_key`, and a class that needs a specific table is simply a classifier that emits both facts together. `ClassPolicy` carries no table: it stays pure treatment (weights, contracts, eviction), which removes the FlowController↔routing weld at the root rather than guarding it. Operator coherence is preserved where the operator sees it: the `[classes]` stanza still declares `table = X` in one place, compiled into the stock classifier's emitted delta rather than into a policy property. Chain order arbitrates (per-field last-writer-wins, bespoke after stock), and bundles for which no classifier expressed an opinion use the default table.
+
+**Both lookup inputs are persisted Classifier outputs under the policy epoch** *(settled 2026-09-04, superseding the 2026-09-03 ephemeral-table interim)*: `route_table` and `route_key` ride the Classification group as caches of the chain's output, re-derived by the epoch's lazy pass ([`storage_consistency_updates.md`](storage_consistency_updates.md)). The dispatcher resolves the full lookup input per lookup entirely from the record — `route_table.unwrap_or(default)`, `route_key.unwrap_or(destination)`, both already freshened by the Dispatch block's epoch check — and hands it to the RIB as arguments; the RIB reads neither policy nor metadata itself. The accepted trade, named: re-tabling a class is a classification-policy change, reaching parked bundles through the epoch's lazy re-derivation rather than for free at the next sweep — and it is self-announcing, since a re-table moves the stock classifier's declared rule-hash; the right price, because re-tabling is a rare topology-membership event, while the frequent churn (table *contents*, TVR contact windows) is ordinary RIB traffic and unaffected. A persisted `route_table` naming a table that no longer exists resolves to no-match → Waiting, per wait-not-drop and strict isolation — never an uninstalled fall-through.
 
 **Tables are scheme-agnostic: a table is a topology, and a scheme is not a topology.** One real topology — an emergency overlay, a bulk contact plan — legitimately contains routes to both `ipn` and `dtn` destinations, so scheme must not appear in table selection: that would mix MTR with addressing, force every topology into per-scheme table pairs, and make a TVR contact plan split its installs by scheme. Instead, each table is internally scheme-partitioned into per-scheme compiled sub-FIBs (the ipn FQNN trie, the dtn interned trie), dispatched by the lookup key's scheme. This needs no cross-scheme specificity machinery, because **the match set for any lookup is single-scheme by construction** — a key has exactly one scheme, so `ipn` and `dtn` routes in one table never compete. The Linux precedent read correctly is the VRF: the topology object contains per-family FIBs, and the family is an axis *inside* the table, never a selector *of* it. Scheme partitioning of the internal key spaces is thereby solved one level down — per-scheme-within-table, nothing shared.
 
@@ -82,22 +84,22 @@ Fall-through between tables is not engine configuration but an explicit, optiona
 
 ## Composition with the wider architecture
 
-- **Licence-clean end to end**: a closed `bpa-server` ships Classifiers (key selection, class EIDs), Rewriters (e.g. the SR pop), and RoutingAgents (routes, tables, jumps) against an unmodified `bpa` — no key-space coordination required of it, because there is no public key space.
-- **Frozen filter chains** mean key-derivation policy cannot skew mid-process; **restart re-admission** re-derives `route_key` for stored bundles under new policy, and doubles as renumbering safety for the internal FIB.
+- **Licence-clean end to end**: a closed `bpa-server` ships Classifiers (key and table selection, class EIDs), Rewriters (e.g. the SR pop), and RoutingAgents (routes, tables, jumps) against an unmodified `bpa` — no key-space coordination required of it, because there is no public key space.
+- **Frozen filter chains** mean key-derivation policy cannot skew mid-process; the **policy epoch's lazy re-derivation** re-derives `route_key` for stored bundles when the operator declares a reevaluation ([`storage_consistency_updates.md`](storage_consistency_updates.md)). Internal FIB renumbering needs no re-admission safety at all, because compiled keys never persist — the vocabulary at every boundary is EIDs.
 - **Waiting semantics** compose: strict-table misses, unmapped destinations, and jump-loop detection all resolve to Waiting, never Drop.
 
 ## Sequencing
 
 The three pieces are decoupled, and the FIB compilation — being a pure performance hack behind an unchanged lookup contract — can land **last**, benchmarked against the matcher it replaces:
 
-1. The classification-delta seam in the filter tranche (Phase 2 ships the delta with slots only); `route_key` joins the delta with this tranche's first step (the only cross-tranche commitment; the class's `table` property is this document's consumer).
+1. The classification-delta seam in the filter tranche (Phase 2 ships the delta with slots only); `route_key` joins the delta with this tranche's first step, `route_table` with its tables step (the only cross-tranche commitments — both are Classifier-emitted routing inputs, neither is a class property).
 2. Tables, selection policy, and the jump action on top of the *existing* pattern-matching lookup (mechanism first, representation later).
 3. The compiled FIB (interning + LPM) as a drop-in replacement for the per-table matcher.
 
 ## Open questions
 
 1. **Table identity.** Names vs small numeric ids at the API; who creates tables (config-declared vs RoutingAgent-declared on first install); lifecycle of an emptied table.
-2. **Selection-policy shape.** The `[classes]` config format — match rules and per-class properties including the routing table — and the default-table fallback.
+2. **Selection-policy shape.** The `[classes]` config format — match rules, per-class treatment properties, and the per-stanza `table` the stock classifier emits — and the default-table fallback. Also `TableId` stability: a persisted `route_table` must survive policy recompiles, which argues for stable names/ids over snapshot indices (shared with open question 1).
 3. **Sweep granularity.** Which table's route change sweeps which Waiting bundles (conservative: any change sweeps all, as today; refinement is an optimisation).
 4. **RoutingAgent API.** The table parameter on install; representation of the jump action; whether Via routes and jumps interact (a Via resolving through a route in another table).
 
@@ -105,6 +107,7 @@ The three pieces are decoupled, and the FIB compilation — being a pure perform
 
 - [`filter_subsystem_design.md`](filter_subsystem_design.md) — the `MetadataDelta` (`class` + `route_key`), Classifier/Rewriter kinds, the segment-routing worked example, restart re-admission
 - [`policy_subsystem_redesign.md`](policy_subsystem_redesign.md) — the `ClassPolicy` owning the `table` property; multi-topology tables as per-intent topologies; the centralized policy manager
+- [`storage_consistency_updates.md`](storage_consistency_updates.md) — the durable policy epoch and operator-declared reevaluation that keep the persisted `route_key` cache honest
 - [`routing_subsystem_design.md`](routing_subsystem_design.md) — the current routing design and this draft's eventual home
 - [`queue_architecture.md`](queue_architecture.md) — processing blocks and queues; Waiting/gated queues (its flow-label section is superseded by the filter doc's `MetadataDelta`)
 - The DPP draft (`/workspace/dpp/draft-taylor-dtn-dpp.md`) — defines the Strict Monotonic Subset adopted for installable patterns; its Harmonized Specificity Score remains a wire/management-plane concern, unused in-node
