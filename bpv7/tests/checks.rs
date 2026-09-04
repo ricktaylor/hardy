@@ -9,6 +9,9 @@ use hardy_bpv7::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod common;
+use common::generated_k;
+
 /// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
 /// shape the pipeline tests are written against.
 #[allow(clippy::type_complexity)]
@@ -316,13 +319,15 @@ fn unsupported_security_delete_bundle_errors() {
 mod cascade_reencryption_tests {
     use super::*;
 
+    // Fresh per call: a test binds the key once and passes it to every
+    // path that must agree on it.
     fn sign_key() -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({
             "kid": "ipn:2.1",
             "kty": "oct",
             "alg": "HS256",
             "key_ops": ["sign", "verify"],
-            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+            "k": generated_k(18)
         }))
         .unwrap()
     }
@@ -334,7 +339,7 @@ mod cascade_reencryption_tests {
             "alg": "A128KW",
             "enc": "A128GCM",
             "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAA"
+            "k": generated_k(16)
         }))
         .unwrap()
     }
@@ -600,7 +605,7 @@ mod cascade_reencryption_tests {
             "alg": "A128KW",
             "enc": "A128GCM",
             "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
+            "k": generated_k(16)
         }))
         .unwrap();
         let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
@@ -661,14 +666,14 @@ mod cascade_reencryption_tests {
                     "kty": "oct",
                     "alg": "HS384",
                     "key_ops": ["verify"],
-                    "k": "GisaKxorGisaKxorGisaKw"
+                    "k": generated_k(16)
                 },
                 {
                     "kid": "ipn:2.1",
                     "kty": "oct",
                     "enc": "A256GCM",
                     "key_ops": ["decrypt"],
-                    "k": "cXdlcnR5dWlvcGFzZGZnaHF3ZXJ0eXVpb3Bhc2RmZ2g"
+                    "k": generated_k(32)
                 }
             ]
         }))
@@ -722,7 +727,7 @@ mod cascade_reencryption_tests {
             "alg": "A128KW",
             "enc": "A128GCM",
             "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
+            "k": generated_k(16)
         }))
         .unwrap();
         let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
@@ -974,19 +979,15 @@ mod deferred_payload_bib_tests {
             "kty": "oct",
             "alg": "HS256",
             "key_ops": ["sign", "verify"],
-            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+            "k": generated_k(18)
         }))
         .unwrap()
-    }
-
-    fn keys() -> bpsec::key::KeySet {
-        bpsec::key::KeySet::new(vec![sign_key()])
     }
 
     // A bundle whose payload (block 1) is signed under a BIB and is far larger
     // than any sane parser chunk, so the streaming parser must report `Partial`
     // before the payload body is resident.
-    fn signed_large_payload() -> Box<[u8]> {
+    fn signed_large_payload(key: &bpsec::key::Key) -> Box<[u8]> {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
@@ -998,7 +999,7 @@ mod deferred_payload_bib_tests {
                 1,
                 bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
-                &sign_key(),
+                key,
             )
             .map_err(|(_, e)| e)
             .unwrap()
@@ -1027,8 +1028,9 @@ mod deferred_payload_bib_tests {
     // op-set over owned; the map then verifies against the full bundle.
     #[test]
     fn payload_bib_deferred_then_verified() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let key = sign_key();
+        let full = signed_large_payload(&key);
+        let keys = bpsec::key::KeySet::new(vec![key]);
 
         let Parsed {
             data: consumed,
@@ -1079,8 +1081,9 @@ mod deferred_payload_bib_tests {
     // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
     #[test]
     fn payload_bib_tamper_fails() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let key = sign_key();
+        let full = signed_large_payload(&key);
+        let keys = bpsec::key::KeySet::new(vec![key]);
 
         let Parsed {
             data: consumed,
@@ -1126,8 +1129,9 @@ mod deferred_payload_bib_tests {
     // is non-empty and `iter` names that block.
     #[test]
     fn verify_all_bibs_defers_nonempty_on_headers_only_buffer() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let key = sign_key();
+        let full = signed_large_payload(&key);
+        let keys = bpsec::key::KeySet::new(vec![key]);
 
         let Parsed {
             data: consumed,
@@ -1159,8 +1163,9 @@ mod deferred_payload_bib_tests {
     // defers nothing — the non-streaming path is unchanged.
     #[test]
     fn all_resident_verifies_inline_without_deferring() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let key = sign_key();
+        let full = signed_large_payload(&key);
+        let keys = bpsec::key::KeySet::new(vec![key]);
 
         let (data, mut raw, bcb_ops, mut bib_ops) =
             raw_parse_tuple(Bytes::copy_from_slice(&full)).unwrap();

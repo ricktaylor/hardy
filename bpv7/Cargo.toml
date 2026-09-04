@@ -59,4 +59,6 @@ serde = { version = "1", default-features = false, features = ["alloc","derive"]
 [dev-dependencies]
 hex-literal = "1"
 serde_json = "1"
+rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 hardy-bpv7 = { path = ".", features = ["serde", "std"] }
