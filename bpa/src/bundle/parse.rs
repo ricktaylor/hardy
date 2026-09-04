@@ -10,11 +10,11 @@
 //! * [`parse_validate_with_provider`] — one-shot keyed validation of a complete
 //!   buffer, no block removal. It returns the list of BCB-protected well-known
 //!   extension blocks that couldn't be decrypted (no key); the caller decides
-//!   what to do with it. `dispatcher::restart` ignores it (re-check stored data
-//!   on startup, tolerating a since-rotated key), while `dispatcher::local` and
-//!   `filter::chain` pass it to [`reject_undecryptable_liveness`], which applies
-//!   the liveness policy (locally originated / re-emitted bytes must be fully
-//!   decryptable).
+//!   what to do with it. Its one remaining caller is `dispatcher::restart`'s
+//!   reconcile walk, which ignores the list (re-check stored data on startup,
+//!   tolerating a since-rotated key); it retires when that walk moves to the
+//!   streamed pass. The streamed pass applies the liveness policy itself via
+//!   [`reject_undecryptable_liveness`].
 //! * [`parse_headers`] — the streaming ingress header pass, which the gate can
 //!   early-reject on before the payload is spooled. It classifies and
 //!   *schedules* the removals — the `delete_block_on_failure`-flagged unknowns
@@ -156,27 +156,12 @@ pub fn reception_report_for(
 // Validate — one-shot keyed validation of a complete buffer, no rewriting
 // ---------------------------------------------------------------------------
 
-/// Result of [`parse_validate_with_provider`]: the validated structural
-/// bundle, its decoded extension fields, and the §C8 no-key facts — one value,
-/// so a bundle and the fields decoded from its bytes travel together.
-pub struct Validated {
-    pub bundle: Bpv7Bundle,
-    pub extensions: ExtensionFields,
-    /// The §C8 extension blocks that were BCB-encrypted but undecryptable
-    /// (no key) — facts for the call site to adjudicate (see
-    /// [`reject_undecryptable_liveness`]).
-    pub nokey_ext: Vec<(u64, block::Type)>,
-}
-
-/// One-shot keyed validation of a complete in-memory bundle. Returns a
-/// [`Validated`]: the structural [`Bpv7Bundle`], its decoded
-/// [`ExtensionFields`], **and** [`nokey_ext`](Validated::nokey_ext) — the §C8
-/// extension blocks that were BCB-encrypted but undecryptable (no key). It
-/// produces those facts; it does **not** adjudicate them — whether an
-/// undecryptable block is fatal is a call-site policy (see
-/// [`reject_undecryptable_liveness`]). This keeps extension-block policy at
-/// the point of use, matching the eventual decode-on-demand model rather than
-/// baking it into the parse layer.
+/// One-shot keyed validation of a complete in-memory bundle, returning the
+/// re-validated structural [`Bpv7Bundle`]. The §D extension-field decode still
+/// runs — a corrupt well-known block rejects the bundle — but neither the
+/// decoded fields nor the §C8 no-key facts are returned: the sole caller,
+/// restart's stored-data re-check, deliberately ignores both, tolerating a
+/// key that has since rotated away (soft NoKey).
 ///
 /// No block removal, no rewriting — non-canonical CBOR is rejected at parse
 /// (RFC 9171 §4.1), and re-emitting it is a configurable mutating-filter concern
@@ -185,7 +170,7 @@ pub struct Validated {
 pub fn parse_validate_with_provider<F>(
     data: Bytes,
     key_provider: F,
-) -> Result<Validated, hardy_bpv7::Error>
+) -> Result<Bpv7Bundle, hardy_bpv7::Error>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -219,13 +204,9 @@ where
         return Err(bpsec::Error::DecryptionFailed.into());
     }
 
-    // §D — extract extension fields; the caller writes them into metadata.
-    let extensions = extract_extension_block_fields(&data, &bundle.blocks, &decrypted)?;
-    Ok(Validated {
-        bundle,
-        extensions,
-        nokey_ext: facts.nokey_ext.into_vec(),
-    })
+    // §D — decode the extension fields purely as validation: a corrupt
+    // well-known block rejects the bundle; the decoded values are discarded.
+    extract_extension_block_fields(&data, &bundle.blocks, &decrypted).map(|_| bundle)
 }
 
 /// A liveness-critical extension block a forwarding node can't process without
@@ -244,7 +225,7 @@ fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
 
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
 /// block that couldn't be decrypted (no key) — see [`is_liveness_critical`].
-/// `nokey` is [`Validated::nokey_ext`] (equivalently `VerifyFacts::nokey_ext`).
+/// `nokey` is `VerifyFacts::nokey_ext`.
 /// A node that accepts/forwards applies this; a restart re-check tolerates a
 /// key that has since rotated away and skips it.
 pub fn reject_undecryptable_liveness(
@@ -335,10 +316,16 @@ pub enum HeaderFailure {
     /// known before the payload arrives). `u64` end to end: a declared
     /// size may exceed a 32-bit target's address space.
     TooLarge { size: u64, max: u64 },
-    /// Structural or keyed-validation failure. When the bundle id was
-    /// recoverable the caller reports the drop — reception then deletion,
-    /// the deletion citing the reason (RFC 9171 §5.6/§5.10) — then drops.
-    Invalid(Option<(Bpv7Bundle, ReasonCode)>),
+    /// Structural or keyed-validation failure. `error` is the parse or
+    /// verification failure itself (the originate door surfaces it to the
+    /// caller); `report` carries the recoverable bundle and status-report
+    /// reason when the bundle id survived — the CLA ingress door reports
+    /// the drop with it, reception then deletion, the deletion citing the
+    /// reason (RFC 9171 §5.6/§5.10).
+    Invalid {
+        error: hardy_bpv7::Error,
+        report: Option<(Bpv7Bundle, ReasonCode)>,
+    },
 }
 
 /// Drive the structural parser off the segment stream up to the parsed header
@@ -396,38 +383,56 @@ where
             });
         }
         match parser.push(bytes) {
-            Ok(parse::ParserProgress::NeedMore(_)) if last => {
+            Ok(parse::ParserProgress::NeedMore(n)) if last => {
                 debug!("Truncated bundle");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: hardy_cbor::decode::Error::NeedMoreData(n).into(),
+                    report: None,
+                });
             }
             Ok(parse::ParserProgress::NeedMore(_)) => {}
             Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
                 Ok(parsed) => break (parsed, whole, None),
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
-                    return Err(HeaderFailure::Invalid(None));
+                    return Err(HeaderFailure::Invalid {
+                        error: e,
+                        report: None,
+                    });
                 }
             },
             // A `Partial` after the stream has already ended is a truncated
             // bundle: the declared payload cannot complete (`tail.remaining()`
             // is positive), so reject it exactly like `NeedMore` at end-of-
             // stream instead of handing an exhausted stream to the payload drain.
-            Ok(parse::ParserProgress::Partial { .. }) if last => {
+            Ok(parse::ParserProgress::Partial { tail, .. }) if last => {
                 debug!("Truncated bundle (oversized payload, stream ended)");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: hardy_cbor::decode::Error::NeedMoreData(
+                        usize::try_from(tail.remaining()).unwrap_or(usize::MAX),
+                    )
+                    .into(),
+                    report: None,
+                });
             }
             Ok(parse::ParserProgress::Partial { consumed, tail }) => {
                 match parser.finish(consumed.clone()) {
                     Ok(parsed) => break (parsed, consumed, Some(tail)),
                     Err(e) => {
                         debug!("Bundle BPSec structural validation failed: {e}");
-                        return Err(HeaderFailure::Invalid(None));
+                        return Err(HeaderFailure::Invalid {
+                            error: e,
+                            report: None,
+                        });
                     }
                 }
             }
             Err(e) => {
                 debug!("Bundle structural parse failed: {e}");
-                return Err(HeaderFailure::Invalid(None));
+                return Err(HeaderFailure::Invalid {
+                    error: e,
+                    report: None,
+                });
             }
         }
     };
@@ -461,10 +466,11 @@ where
         Ok(hv) => Ok((hv, headers, tail, bcb_ops)),
         Err((bundle, error)) => {
             debug!("Invalid bundle received: {error}");
-            Err(HeaderFailure::Invalid(Some((
-                bundle,
-                status_report_reason_for(&error),
-            ))))
+            let reason = status_report_reason_for(&error);
+            Err(HeaderFailure::Invalid {
+                error,
+                report: Some((bundle, reason)),
+            })
         }
     }
 }
@@ -826,21 +832,23 @@ mod tests {
             .await
             .expect("channel open");
         match parse_headers(&mut rx, 1 << 20, no_keys).await {
-            Err(HeaderFailure::Invalid(Some((_, reason)))) => {
+            Err(HeaderFailure::Invalid {
+                report: Some((_, reason)),
+                ..
+            }) => {
                 assert_eq!(reason, ReasonCode::BlockUnintelligible)
             }
             Ok(_) => panic!("an undecryptable Hop Count must be fatal at ingress"),
             Err(_) => panic!("expected Invalid with a recoverable bundle"),
         }
 
-        // Validate: a fact, not a verdict — the Ok is what lets restart
-        // tolerate the bundle; the accept/forward call sites then reject it.
-        let nokey = parse_validate_with_provider(encrypted, no_keys)
-            .expect("validate returns the facts")
-            .nokey_ext;
-        assert_eq!(nokey, vec![(hop_block, block::Type::HopCount)]);
+        // Validate: tolerant by construction — the Ok is what lets restart
+        // re-admit stored data whose key has rotated away; the ingress door
+        // above is the one that adjudicates.
+        parse_validate_with_provider(encrypted, no_keys)
+            .expect("validate tolerates an undecryptable Hop Count");
         assert!(matches!(
-            reject_undecryptable_liveness(&nokey, true),
+            reject_undecryptable_liveness(&[(hop_block, block::Type::HopCount)], true),
             Err(hardy_bpv7::Error::InvalidBPSec(bpsec::Error::NoKey))
         ));
 

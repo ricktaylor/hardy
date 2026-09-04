@@ -53,7 +53,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
 | Enqueue to Dispatch | queue op | no |
 
-**In from a local application** (Originate block — `local_dispatch`/`local_dispatch_raw`):
+**In from a local application** (Originate block — `Dispatcher::originate`/`originate_raw`):
 
 | Processing point | R/W | Pluggable? |
 |---|---|---|

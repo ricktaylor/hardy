@@ -419,7 +419,7 @@ The byte contract keeps filters off the streaming path entirely:
 - An invocation receives `(&Bundle, data: &[u8])` — the resident header prefix plus, when a registered Classifier declared a payload peek, the first min(P, payload length) payload bytes. Block bodies are read through `bpv7`'s existing accessors (`Block::payload` / `Block::extract`), which return `None` for bytes not resident in `data`.
 - No filter receives a byte stream, holds a stream open, or blocks the drain: the hook runs on the accumulation buffer at the gate, and the payload spools past untouched.
 - Classifiers return a `MetadataDelta` (`class`, `route_key`, registered annotation slots) that the engine applies; the class drives the dispatch enqueue. Filters never mutate stored bytes — the egress Rewriter edits extension blocks per transmission attempt, in memory, so §6.4's read-only forward path holds by construction.
-- The originate-raw path (`local_dispatch_raw()`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
+- The originate-raw path (`Dispatcher::originate_raw`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
 
 Built-in checks (validity, rfc9171 strictness) are pipeline code gated by `Config`, upstream of any registered filter; BPSec verification and the §5.1.1 failure-drop are fixed machinery (§5.2.1), never filters.
 
