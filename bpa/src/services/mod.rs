@@ -241,6 +241,37 @@ pub trait ApplicationSink: Send + Sync {
         lifetime: Duration,
         options: Option<SendOptions>,
     ) -> Result<Id>;
+
+    /// Sends a payload supplied as a segment stream, wrapped in a bundle
+    /// by the BPA.
+    ///
+    /// The stream must deliver exactly `total_len` payload bytes — the
+    /// declaration frames the bundle's wire form before the first segment
+    /// is pulled — and the stream is one-shot: an over- or
+    /// under-delivering producer is rejected
+    /// ([`PayloadTooLarge`](Error::PayloadTooLarge) /
+    /// [`PayloadUnderrun`](Error::PayloadUnderrun)), a producer that goes
+    /// away before its final segment cancels the send
+    /// ([`StreamCancelled`](Error::StreamCancelled)), and — one-shot — a
+    /// creation-timestamp collision surfaces as
+    /// [`DuplicateBundle`](Error::DuplicateBundle) (vanishingly rare; the
+    /// caller may resend) where [`send`](Self::send) retries internally.
+    ///
+    /// The provided implementation buffers the stream
+    /// ([`buffer_stream`](crate::stream::buffer_stream)) and delegates to
+    /// [`send`](Self::send), with the same error surface; the BPA's own
+    /// sink streams end to end.
+    async fn send_streamed(
+        &self,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        lifetime: Duration,
+        options: Option<SendOptions>,
+    ) -> Result<Id> {
+        let data = crate::stream::buffer_stream(stream, total_len).await?;
+        self.send(destination, data, lifetime, options).await
+    }
 }
 
 /// Low-level service trait with raw bundle access.

@@ -59,6 +59,10 @@ Remaining work when the consumers land:
 
 **Pin the ADU-length definition at the Application door.** The announced size is the *stored* payload block data length, pre-BPSec-decryption — AES-GCM preserves plaintext length so the two coincide today, but a length-changing confidentiality suite would make the distinction real. Post-reassembly bundles re-derive both lengths from the reassembled bundle's index.
 
+## Remove `total_len` from the streamed ADU originate (ruled 2026-09-04)
+
+`ApplicationSink::send_streamed` / `Dispatcher::originate_streamed` carry a declared `total_len` only because the payload block's definite-length byte-string head sits in the wire prefix `Builder::build_stream` emits before the first payload byte — the caller must know the length before the stream starts, which excludes producers that genuinely don't (a compressor, a live capture). We probably want to remove the parameter: spool the payload unframed and record a marker in `BundleMetadata` — the `to_remove` deferred-edit family — that the stored form's payload length is unresolved, fixed up at egress where the per-attempt resident rewrite already runs. Consequences to design through before starting: the stored bytes are not a canonical bundle until fixed, so every consumer of stored bytes (delivery's raw-`Service` path, restart's reconcile parse, the async payload verifier) must honour the marker or the fix-up must happen once at first read; the declared-size admission gate loses its pre-drain seat for these sends (the bound falls back to the spool's byte count); and the `BuiltReceiver` length-violation contract (`PayloadTooLarge`/`PayloadUnderrun`) dissolves — the stream defines the length. The parameter stays until then; callers that cannot declare use `send` or the trait's buffering default.
+
 ## Registration/routing concurrency races (whole-codebase review 2026-07-08, #14/#15)
 
 Two non-atomic await sequences in the CLA/routing registries can race and leave stranded or wrongly-deleted state. Neither is data-loss or wire-corruption, and both need specific concurrent timing, so they were deferred past v0.2.0.

@@ -204,6 +204,37 @@ impl services::ApplicationSink for Sink {
             .originate(self.eid.clone(), destination, data, lifetime, options)
             .await
     }
+
+    async fn send_streamed(
+        &self,
+        destination: Eid,
+        total_len: u64,
+        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+        lifetime: core::time::Duration,
+        options: Option<services::SendOptions>,
+    ) -> services::Result<hardy_bpv7::bundle::Id> {
+        let service = self
+            .service
+            .upgrade()
+            .ok_or(services::Error::Disconnected)?;
+
+        // Registration teardown wakes an in-flight send exactly as on the
+        // raw door: the token races every pull, sink-side.
+        let mut stream = crate::stream::CancellableReceiver {
+            inner: stream,
+            token: service.cancel.clone(),
+        };
+        self.dispatcher
+            .originate_streamed(
+                self.eid.clone(),
+                destination,
+                total_len,
+                &mut stream,
+                lifetime,
+                options,
+            )
+            .await
+    }
 }
 
 impl Drop for Sink {
