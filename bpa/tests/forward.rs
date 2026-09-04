@@ -599,7 +599,7 @@ async fn buffering_cla_rejects_under_delivering_stream() {
     assert!(matches!(
         err,
         cla::Error::PayloadUnderrun { size, expected }
-            if size == short.len() && expected == data.len()
+            if size == short.len() as u64 && expected == data.len() as u64
     ));
     assert!(events_rx.is_empty());
 }

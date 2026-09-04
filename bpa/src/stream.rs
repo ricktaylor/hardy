@@ -305,17 +305,18 @@ pub async fn buffer_stream<R: Receiver<Segment> + ?Sized>(
     stream: &mut R,
     total_len: u64,
 ) -> core::result::Result<crate::Bytes, BufferError> {
-    let Ok(max_size) = usize::try_from(total_len) else {
-        return Err(BufferError::Unaddressable { total_len });
-    };
-    let data = concat_stream(stream, max_size).await.map_err(|e| match e {
-        ConcatError::Cancelled => BufferError::Cancelled,
-        ConcatError::TooLarge { size, max } => BufferError::TooLarge { size, max },
-    })?;
-    if data.len() != max_size {
+    let total_len =
+        usize::try_from(total_len).map_err(|_| BufferError::Unaddressable { total_len })?;
+    let data = concat_stream(stream, total_len)
+        .await
+        .map_err(|e| match e {
+            ConcatError::Cancelled => BufferError::Cancelled,
+            ConcatError::TooLarge { size, max } => BufferError::TooLarge { size, max },
+        })?;
+    if data.len() != total_len {
         return Err(BufferError::Underrun {
             size: data.len(),
-            expected: max_size,
+            expected: total_len,
         });
     }
     Ok(data)

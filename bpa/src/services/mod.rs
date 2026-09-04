@@ -39,14 +39,14 @@ pub enum Error {
     /// (e.g. gRPC) when a pre-flight size check fails, instead of
     /// letting the oversized message break the underlying stream.
     #[error("Payload too large: {size} bytes exceeds the maximum of {max} bytes")]
-    PayloadTooLarge { size: usize, max: usize },
+    PayloadTooLarge { size: u64, max: u64 },
 
     /// A bundle stream completed with fewer bytes than its declared
     /// `total_len`. An implementation may size buffers — or frame a
     /// transfer — from the declared length before pulling the first
     /// segment, so an under-delivering producer is rejected at the seam.
     #[error("Bundle stream delivered {size} bytes of the {expected} declared")]
-    PayloadUnderrun { size: usize, expected: usize },
+    PayloadUnderrun { size: u64, expected: u64 },
 
     #[error("declared length of {total_len} bytes is unaddressable on this target")]
     PayloadUnaddressable { total_len: u64 },
@@ -100,12 +100,14 @@ impl From<crate::stream::BufferError> for Error {
     fn from(e: crate::stream::BufferError) -> Self {
         match e {
             crate::stream::BufferError::Cancelled => Error::StreamCancelled,
-            crate::stream::BufferError::TooLarge { size, max } => {
-                Error::PayloadTooLarge { size, max }
-            }
-            crate::stream::BufferError::Underrun { size, expected } => {
-                Error::PayloadUnderrun { size, expected }
-            }
+            crate::stream::BufferError::TooLarge { size, max } => Error::PayloadTooLarge {
+                size: size as u64,
+                max: max as u64,
+            },
+            crate::stream::BufferError::Underrun { size, expected } => Error::PayloadUnderrun {
+                size: size as u64,
+                expected: expected as u64,
+            },
             crate::stream::BufferError::Unaddressable { total_len } => {
                 Error::PayloadUnaddressable { total_len }
             }

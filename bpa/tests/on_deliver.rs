@@ -851,7 +851,7 @@ async fn buffering_service_rejects_under_delivering_stream() {
     assert!(matches!(
         err,
         services::Error::PayloadUnderrun { size, expected }
-            if size == short.len() && expected == data.len()
+            if size == short.len() as u64 && expected == data.len() as u64
     ));
     assert!(events_rx.is_empty());
 }

@@ -107,7 +107,10 @@ impl hardy_bpa::services::ServiceSink for Sink {
                     hardy_bpa::services::Error::StreamCancelled
                 }
                 hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::services::Error::PayloadTooLarge { size, max }
+                    hardy_bpa::services::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    }
                 }
             })?;
         match self
