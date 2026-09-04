@@ -696,6 +696,34 @@ async fn arrive_peeked(
         cla::Acceptance::Accepted
     );
     let found = next(peek_rx).await;
+    assert_forwarded_as_sent(forwarded_rx, data).await;
+    found
+}
+
+// Sends `stream`, carrying `data`, through the raw originate door. Returns
+// what the witness found, once the bundle is forwarded with its payload as
+// sent.
+async fn send_peeked(
+    service: &CapturingService,
+    peek_rx: &flume::Receiver<Option<Vec<u8>>>,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: &Bytes,
+    stream: &mut dyn Receiver<Segment>,
+) -> Option<Vec<u8>> {
+    service
+        .sink
+        .get()
+        .unwrap()
+        .send(stream)
+        .await
+        .expect("the raw send is accepted");
+    let found = next(peek_rx).await;
+    assert_forwarded_as_sent(forwarded_rx, data).await;
+    found
+}
+
+// The next forwarded bundle carries `data`'s payload unchanged.
+async fn assert_forwarded_as_sent(forwarded_rx: &flume::Receiver<Bytes>, data: &Bytes) {
     let sent = parse(data.clone()).unwrap();
     let out = parse(next(forwarded_rx).await).unwrap();
     assert_eq!(
@@ -703,23 +731,17 @@ async fn arrive_peeked(
         sent.bundle.blocks[&1].payload(&sent.data),
         "the bundle is forwarded with its payload as sent"
     );
-    found
 }
 
-// The payload peek these tests declare, and `peek_through`'s segment size.
+// The payload peek these tests declare, and `peek_segments`' segment size.
 // One segment covers the peek, so the hold rests with exactly `SEGMENT`
 // payload bytes resident.
 const PEEK: usize = 16;
 const SEGMENT: usize = 100;
 
-// `arrive_peeked` with `data` in a first segment ending where the payload's
-// data starts, then `SEGMENT`-byte segments, the last a `Final`.
-async fn peek_through(
-    cla: &CapturingCla,
-    peek_rx: &flume::Receiver<Option<Vec<u8>>>,
-    forwarded_rx: &flume::Receiver<Bytes>,
-    data: &Bytes,
-) -> Option<Vec<u8>> {
+// `data` in a first segment ending where the payload's data starts, then
+// `SEGMENT`-byte segments, the last a `Final`.
+fn peek_segments(data: &Bytes) -> Segments {
     let start = parse(data.clone()).unwrap().bundle.blocks[&1]
         .payload_range()
         .start as usize;
@@ -734,7 +756,17 @@ async fn peek_through(
         });
         at = end;
     }
-    arrive_peeked(cla, peek_rx, forwarded_rx, data, &mut Segments(segments)).await
+    Segments(segments)
+}
+
+// `arrive_peeked` with `data` segmented by `peek_segments`.
+async fn peek_through(
+    cla: &CapturingCla,
+    peek_rx: &flume::Receiver<Option<Vec<u8>>>,
+    forwarded_rx: &flume::Receiver<Bytes>,
+    data: &Bytes,
+) -> Option<Vec<u8>> {
+    arrive_peeked(cla, peek_rx, forwarded_rx, data, &mut peek_segments(data)).await
 }
 
 /// An Ingress Classifier reads the payload's first bytes through its declared
@@ -983,4 +1015,118 @@ async fn an_encrypted_payload_has_no_peek() {
     );
 
     bpa.shutdown().await;
+}
+
+/// The Originate chain reads the payload whenever its body is resident at
+/// the header pass, as the Ingress chain does: a raw bundle sent whole shows
+/// it, as does one whose CRC is still to come, while one whose body is cut
+/// short reads as not resident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_reads_the_payload_whenever_resident() {
+    let (available_tx, available_rx) = flume::unbounded();
+    let mut pack = FilterPack::new("test");
+    pack.originate_verifier("witness", PayloadWitness { available_tx });
+    let (bpa, _cla, _forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+    let (service, _delivered_rx) = register_service(&bpa).await;
+    let sink = service.sink.get().unwrap();
+    let build = || {
+        let (_, data) = Builder::new(LOCAL.parse().unwrap(), REMOTE.parse().unwrap())
+            .with_payload(b"payload".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        Bytes::from(data)
+    };
+
+    let mut whole = build();
+    sink.send(&mut whole)
+        .await
+        .expect("the raw send is accepted");
+    assert!(
+        next(&available_rx).await,
+        "a bundle sent whole shows its payload"
+    );
+
+    // The bundle ends in the CRC-32 trailer and outer break
+    // (`44 c0 c1 c2 c3 FF`) after the 7-byte body: a `Next` cut 6 bytes from
+    // the end holds the whole body, one cut 9 bytes from the end only part.
+    for (short_by, resident) in [(6, true), (9, false)] {
+        let split = build();
+        let cut = split.len() - short_by;
+        let mut segments = Segments(VecDeque::from([
+            Segment::Next(split.slice(..cut)),
+            Segment::Final(split.slice(cut..)),
+        ]));
+        sink.send(&mut segments)
+            .await
+            .expect("the raw send is accepted");
+        assert_eq!(
+            next(&available_rx).await,
+            resident,
+            "the payload is visible exactly when its body is resident (cut {short_by} from the end)"
+        );
+    }
+
+    bpa.shutdown().await;
+}
+
+/// An Originate Classifier reads the payload's first bytes through its
+/// declared peek at the raw door, as at the Ingress gate: the door holds them
+/// though the payload is still arriving. With no peek declared, it holds none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_originate_classifier_reads_its_declared_peek() {
+    let payload: Vec<u8> = (0..1000_u32).map(|i| i as u8).collect();
+    let (_, data) = Builder::new(LOCAL.parse().unwrap(), REMOTE.parse().unwrap())
+        .with_payload(payload.as_slice().into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let data = Bytes::from(data);
+
+    for peek in [PEEK, 0] {
+        let (peek_tx, peek_rx) = flume::unbounded();
+        let mut pack = FilterPack::new("test");
+        pack.originate_classifier_with_peek("peek", PeekWitness { peek_tx }, peek);
+        let (bpa, _cla, forwarded_rx) = setup(Bpa::builder().add_filters(pack)).await;
+        let (service, _delivered_rx) = register_service(&bpa).await;
+
+        let found = send_peeked(
+            &service,
+            &peek_rx,
+            &forwarded_rx,
+            &data,
+            &mut peek_segments(&data),
+        )
+        .await
+        .expect("an unencrypted payload has a peek");
+        let held = if peek == 0 { 0 } else { SEGMENT };
+        assert_eq!(
+            found.as_slice(),
+            &payload[..held],
+            "the peek is the payload's first {held} bytes"
+        );
+        if peek != 0 {
+            // A bundle sent whole lends its payload exactly: the peek stops at
+            // the body's end, before the CRC trailer. A fresh bundle, as the
+            // node would settle a resend as a duplicate.
+            let (_, whole) = Builder::new(LOCAL.parse().unwrap(), REMOTE.parse().unwrap())
+                .with_payload(payload.as_slice().into())
+                .build(CreationTimestamp::now())
+                .unwrap();
+            let whole = Bytes::from(whole);
+            let found = send_peeked(
+                &service,
+                &peek_rx,
+                &forwarded_rx,
+                &whole,
+                &mut whole.clone(),
+            )
+            .await;
+            assert_eq!(
+                found.as_deref(),
+                Some(&payload[..]),
+                "the whole payload, exactly"
+            );
+        }
+
+        bpa.shutdown().await;
+    }
 }

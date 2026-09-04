@@ -5050,6 +5050,293 @@ async fn an_admin_record_does_not_hold_the_arriving_cla() {
     bpa.shutdown().await;
 }
 
+// ---------------------------------------------------------------------------
+// The originate door: the validation split, route-at-door, and the caller's
+// error surface
+// ---------------------------------------------------------------------------
+
+/// Routing is decided at the originate door: a destination resolving to an
+/// explicit Drop route rejects the send before its payload is drained — the
+/// stream is left unconsumed and nothing spools. Unlike the CLA gate there
+/// is never a status report, report flags notwithstanding: the error return
+/// is the originator's notification, and even a reasonless (silent) Drop
+/// route surfaces as `Dropped(None)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn originate_route_drop_never_awaits_the_payload() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    bpa.register_routing_agent(
+        "drop-routes".to_string(),
+        Arc::new(StaticRoutingAgent::new(&[
+            (
+                "ipn:0.9.99".parse().unwrap(),
+                RouteAction::Drop(Some(ReasonCode::NoKnownRouteToDestinationFromHere)),
+                1,
+            ),
+            ("ipn:0.9.98".parse().unwrap(), RouteAction::Drop(None), 1),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    let oversized = |dest: &str| {
+        let (_, data) = Builder::new(source_eid.clone(), dest.parse().unwrap())
+            .with_flags(Flags {
+                receipt_report_requested: true,
+                delete_report_requested: true,
+                ..Default::default()
+            })
+            .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        data
+    };
+
+    // Reasoned Drop: the error returns while the payload source is parked
+    // forever — returning at all proves the decision never awaited the
+    // drain, and the cancelled spool persists nothing. The timeout only
+    // bounds a regression.
+    let data = oversized("ipn:0.9.99");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the route drop must not wait for the payload");
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(
+            ReasonCode::NoKnownRouteToDestinationFromHere
+        )))
+    ));
+
+    // Silent Drop: the originator still gets an error where the CLA gate
+    // drops silently.
+    let data = oversized("ipn:0.9.98");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the silent route drop must not wait for the payload");
+    assert!(matches!(result, Err(services::Error::Dropped(None))));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(
+        forwarded_rx.is_empty(),
+        "an originate rejection must not emit status reports"
+    );
+}
+
+// The ADU door refuses a bundle that expires at creation, as the raw door's
+// admission gate does: a zero lifetime surfaces as `Dropped(LifetimeExpired)`
+// with nothing admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adu_originate_refuses_a_zero_lifetime() {
+    let (bpa, _svc, forwarded_rx, _) = streamed_originate_setup().await;
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    let result = app
+        .sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.2.1".parse().unwrap(),
+            Bytes::from_static(b"expired"),
+            Duration::ZERO,
+            None,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// The raw door carries the validation the ADU door doesn't: hop-exhausted
+/// service bytes trip the lifetime/hop admission check, and the
+/// config-gated RFC 9171 validity checks (strict by default) now apply to
+/// raw sends at the same seat — each surfacing as `Dropped(reason)` to the
+/// caller, with nothing admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_applies_the_admission_gates() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // Hop-exhausted (count past limit): the lifetime/hop admission pair.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(1).unwrap(),
+            count: 2,
+        })
+        .with_payload(Cow::Borrowed(b"exhausted".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::HopLimitExceeded)))
+    ));
+
+    // Unprotected primary block: RFC 9171 §4.3.1, newly applied to raw
+    // sends.
+    let (_, data) = Builder::new(source_eid.clone(), dest.clone())
+        .with_crc_type(CrcType::None)
+        .with_payload(Cow::Borrowed(b"no integrity".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(
+            ReasonCode::BlockUnintelligible
+        )))
+    ));
+
+    // Clockless without a Bundle Age block: RFC 9171 §4.4.2.
+    let (_, data) = Builder::new(source_eid.clone(), dest)
+        .with_payload(Cow::Borrowed(b"no clock".as_slice()))
+        .build(CreationTimestamp::default())
+        .expect("Failed to build bundle");
+    let result = svc.sink.get().unwrap().send(&mut Bytes::from(data)).await;
+    assert!(matches!(
+        result,
+        Err(services::Error::Dropped(Some(ReasonCode::LifetimeExpired)))
+    ));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
+/// bundles carry service-authored ids, so the door cannot retry for them —
+/// and the first copy is unaffected: forwarded exactly once, the
+/// duplicate's staged data discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_duplicate_surfaces_to_the_caller() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+    let data = build_bundle(&source_eid, &dest, b"send once");
+
+    let mut first = data.clone();
+    let id = svc
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut first)
+        .await
+        .expect("first send admits");
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for forwarded bundle")
+    .expect("Channel closed");
+    assert_eq!(
+        parse(forwarded).expect("parse forwarded").bundle.primary.id,
+        id
+    );
+
+    let mut second = data;
+    let result = svc.sink.get().unwrap().send(&mut second).await;
+    assert!(matches!(result, Err(services::Error::DuplicateBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the duplicate must not forward");
+}
+
+/// An origination declaring more than `max_bundle_size` is refused before a
+/// byte spools, at both doors: the raw door from its headers' declared size
+/// (the header pass), the ADU door from its built bundle's declared size.
+/// The raw source parks after its first segments, so a refusal returning at
+/// all proves the door never drained the payload, and each refusal reports
+/// a declared size rather than a count of bytes taken.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_originate_refuses_before_the_payload() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .max_bundle_size(NonZeroU64::new(2048).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let svc = EchoService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
+        .await
+        .unwrap();
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+
+    // Raw: the headers declare the whole ~50 KB bundle. The timeout only
+    // bounds a regression.
+    let (_, data) = Builder::new("ipn:0.1.7".parse().unwrap(), "ipn:0.2.1".parse().unwrap())
+        .with_payload(Cow::Owned(vec![0x5A_u8; 50_000]))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let mut stream = ParkedReceiver::new(&data, 1000, 3);
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        svc.sink.get().unwrap().send(&mut stream),
+    )
+    .await
+    .expect("Timeout: the raw size refusal must not wait for the payload");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert_eq!(size, data.len() as u64, "the declared wire size");
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    // ADU: a 50 KB payload. The timeout only bounds a regression.
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        app.sink.get().unwrap().send(
+            "ipn:0.2.1".parse().unwrap(),
+            Bytes::from(vec![0u8; 50_000]),
+            Duration::from_secs(60),
+            None,
+        ),
+    )
+    .await
+    .expect("Timeout: the ADU size refusal must not wait");
+    match result {
+        Err(services::Error::PayloadTooLarge { size, max }) => {
+            assert!(size >= 50_000, "a declared size, got {size}");
+            assert_eq!(max, 2048);
+        }
+        other => panic!("expected PayloadTooLarge, got {other:?}"),
+    }
+
+    bpa.shutdown().await;
+}
+
 /// A builder-configured CLA goes live at `start`, not at `build`: activation
 /// waits for storage recovery, so the quiescent-store contract covers the
 /// configuration path exactly as it covers dynamic registrations.

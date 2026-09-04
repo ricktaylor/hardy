@@ -162,7 +162,7 @@ impl Dispatcher {
                 debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
                 return Received::Refused;
             }
-            Err(HeaderFailure::Invalid(report)) => {
+            Err(HeaderFailure::Invalid { report, .. }) => {
                 let reason = match report {
                     Some((bundle, reception, reason)) => {
                         // Complete but invalid, with a recoverable id: the
@@ -517,8 +517,9 @@ impl Dispatcher {
 
     // The config-gated RFC 9171 validity checks: policy requirements beyond
     // structural validity, checked pre-drain — everything they read is
-    // header material the keyed verify pass has already established.
-    fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
+    // header material the keyed verify pass has already established. Both
+    // input doors apply them (the originate raw door at its own gate).
+    pub(super) fn rfc9171_gate_reason(&self, hv: &HeaderVerify) -> Option<ReasonCode> {
         // RFC 9171 §4.3.1: "A CRC SHALL be present in the primary block
         // unless the bundle includes a BPSec Block Integrity Block whose
         // target is the primary block". `Maybe` coverage (undecryptable
