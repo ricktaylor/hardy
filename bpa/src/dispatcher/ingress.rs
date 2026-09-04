@@ -140,12 +140,9 @@ impl Dispatcher {
         // payload is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
         // a structural / truncation drop carries no recoverable bundle.
-        // The cap as an in-memory bound: on a 32-bit target a cap beyond the
-        // address space saturates — nothing larger could be buffered anyway.
-        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
         let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
             stream,
-            max_size,
+            self.max_bundle_size.get(),
             self.key_provider(),
         )
         .await
@@ -156,7 +153,11 @@ impl Dispatcher {
                 return Received::Refused;
             }
             Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}; refused");
+                // Covers both bounds `parse_headers` enforces: the
+                // accumulated header bytes and the declared whole-bundle
+                // size — an over-cap bundle, resident or still on the
+                // wire, refuses before a single payload byte drains.
+                debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
                 return Received::Refused;
             }
             Err(parse::HeaderFailure::Invalid(report)) => {
@@ -182,23 +183,6 @@ impl Dispatcher {
                 return Received::Disposed;
             }
         };
-
-        // The total wire size is declared by the header chain, so an
-        // over-cap bundle — resident or still on the wire — is refused
-        // here, before a single payload byte is drained or spooled: the CLA
-        // cancels the transfer and the peer retains custody. The spool's
-        // bound below stays as the defensive backstop; a producer exceeding
-        // its declaration trips the framing checks (Invalid) before any
-        // bound. The comparison stays in u64: the declared size may exceed
-        // this target's address space.
-        let declared = hv.bundle.encoded_len();
-        if declared > self.max_bundle_size.get() {
-            debug!(
-                "Bundle declares {declared} bytes, exceeding max_bundle_size {}; refused",
-                self.max_bundle_size
-            );
-            return Received::Refused;
-        }
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
         // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
@@ -289,7 +273,7 @@ impl Dispatcher {
         // as it arrives — feeding the payload CRC, the block+outer framing,
         // and each deferred BIB digest as the bytes stream past.
         let payload_start = bundle
-            .bundle
+            .bpv7
             .blocks
             .get(&1)
             .map_or(headers.len(), |b| b.payload_range().start as usize);
