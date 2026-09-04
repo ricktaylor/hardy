@@ -137,7 +137,7 @@ fn calculate_hmac<D>(
     flags: &ScopeFlags,
     key: &[u8],
     args: &bib::OperationArgs,
-) -> Result<hmac::digest::Output<hmac::Hmac<D>>, Error>
+) -> Result<hmac::Hmac<D>, Error>
 where
     D: hmac::EagerHash,
 {
@@ -209,7 +209,7 @@ where
         mac.update(payload.as_ref());
     }
 
-    Ok(mac.finalize().into_bytes())
+    Ok(mac)
 }
 
 enum KeyWrap {
@@ -316,15 +316,24 @@ impl Operation {
             });
 
         let results = Results(match variant {
-            ShaVariant::HMAC_256_256 => {
-                Box::from(calculate_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?.as_ref())
-            }
-            ShaVariant::HMAC_384_384 => {
-                Box::from(calculate_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?.as_ref())
-            }
-            ShaVariant::HMAC_512_512 => {
-                Box::from(calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?.as_ref())
-            }
+            ShaVariant::HMAC_256_256 => Box::from(
+                calculate_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?
+                    .finalize()
+                    .into_bytes()
+                    .as_ref(),
+            ),
+            ShaVariant::HMAC_384_384 => Box::from(
+                calculate_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?
+                    .finalize()
+                    .into_bytes()
+                    .as_ref(),
+            ),
+            ShaVariant::HMAC_512_512 => Box::from(
+                calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?
+                    .finalize()
+                    .into_bytes()
+                    .as_ref(),
+            ),
             ShaVariant::Unrecognised(_) => {
                 unreachable!("Unrecognised variants filtered before signing")
             }
@@ -386,7 +395,6 @@ impl Operation {
                 None => return Err(Error::IntegrityCheckFailed),
             }
             .map_err(|_| Error::IntegrityCheckFailed)?;
-            let cek = zeroize::Zeroizing::from(Box::from(cek));
 
             if self.verify_inner(&cek, &args)? {
                 Ok(())
@@ -418,16 +426,25 @@ impl Operation {
     fn verify_inner(&self, cek: &[u8], args: &bib::OperationArgs) -> Result<bool, Error> {
         match self.parameters.variant {
             ShaVariant::HMAC_256_256 => {
-                let mac = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
+                Ok(
+                    calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?
+                        .verify_slice(&self.results.0)
+                        .is_ok(),
+                )
             }
             ShaVariant::HMAC_384_384 => {
-                let mac = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
+                Ok(
+                    calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args)?
+                        .verify_slice(&self.results.0)
+                        .is_ok(),
+                )
             }
             ShaVariant::HMAC_512_512 => {
-                let mac = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
+                Ok(
+                    calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args)?
+                        .verify_slice(&self.results.0)
+                        .is_ok(),
+                )
             }
             ShaVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
         }

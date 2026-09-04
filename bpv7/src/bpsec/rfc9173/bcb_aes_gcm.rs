@@ -390,7 +390,6 @@ impl Operation {
                 _ => return Err(Error::DecryptionFailed),
             }
             .map_err(|_| Error::DecryptionFailed)?;
-            let cek = zeroize::Zeroizing::from(Box::<[u8]>::from(cek));
 
             self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
         } else {

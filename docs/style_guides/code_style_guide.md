@@ -206,6 +206,12 @@ extern crate alloc;
 - `hardy_async::sync::spin::{Mutex, RwLock, Once}` are for **O(1) critical sections only** — never hold a spin lock across an `.await`. For anything that awaits or does real work, use an async-aware lock.
 - Subsystems (CLAs, services, routing agents) follow the **Trait + Sink** pattern: a trait with `on_register(sink, …)` / `on_unregister()`, a `Sink` back-channel, and dropping the `Sink` triggers automatic unregistration. New pluggable components should match this shape.
 
+## Cryptographic Hygiene
+
+- **MAC, tag, and signature verification MUST be constant-time.** Never compare a computed authenticator against the received one with `==` — a short-circuiting comparison leaks how many leading bytes matched. Use the primitive's own verify API (`Mac::verify_slice`, an AEAD's built-in tag check); if none exists, compare through `subtle::ConstantTimeEq`.
+- **Cryptographic randomness comes from the OS-backed RNG only** (`rand::rngs::SysRng`). A non-cryptographic PRNG (`SmallRng`) is permitted only for values with no security role (public identifiers, cache sampling) and the use site MUST carry a comment saying so.
+- **Plaintext key material MUST NOT transit unzeroized buffers.** Any scratch buffer or return value holding a decrypted or unwrapped key is `zeroize::Zeroizing` (or explicitly zeroized on the error path), sized exactly so no conversion reallocates and strands an unwiped copy on the heap; `rfc9173::key_wrap::unwrap` is the pattern.
+
 ## Logging and Observability
 
 - Use the `tracing` macros (`tracing::debug!`, `error!`, `instrument`) for logging and spans — not `println!` / `eprintln!` in library or server code.
