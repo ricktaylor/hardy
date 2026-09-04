@@ -1,7 +1,7 @@
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::time::Duration;
 
-use hardy_cbor::encode::{Array, Raw, emit, emit_array};
+use hardy_cbor::encode::{Array, BytesHeader, Raw, emit, emit_array};
 use thiserror::Error;
 
 use crate::{HashMap, block, bundle, crc, creation_timestamp, eid, error, hop_info, primary_block};
@@ -175,6 +175,194 @@ impl<'a> Builder<'a> {
         })?;
 
         Ok((bundle::Bundle { primary, blocks }, data.into()))
+    }
+
+    /// Builds the bundle's wire *prefix* for a payload supplied as a
+    /// stream, alongside the parsed [`Bundle`](crate::Bundle) view and the
+    /// [`PayloadTrailer`] continuation.
+    ///
+    /// The prefix runs from the outer array head through the payload
+    /// block's byte-string head; the caller emits exactly `payload_len`
+    /// payload bytes after it — feeding each run to
+    /// [`PayloadTrailer::update`] — and terminates the wire form with the
+    /// bytes [`PayloadTrailer::finish`] returns (the payload block's CRC
+    /// field, if any, then the outer break). `prefix ++ payload ++ trailer`
+    /// is byte-for-byte the [`build`](Self::build) output for the same
+    /// inputs, so the assembled form parses canonically.
+    ///
+    /// The payload block itself is assembled here, not from resident data:
+    /// with no [`with_payload`](Self::with_payload) call the block gets
+    /// exactly the shape `with_payload` would give it (its flags recipe and
+    /// the builder-level CRC type); a template configured through
+    /// `with_payload` keeps its flags and CRC type, and only its resident
+    /// payload bytes are ignored.
+    pub fn build_stream(
+        self,
+        payload_len: u64,
+        timestamp: creation_timestamp::CreationTimestamp,
+    ) -> Result<StreamBuild, Error> {
+        let primary = primary_block::PrimaryBlock {
+            flags: self.bundle_flags,
+            id: bundle::Id {
+                source: self.source.clone(),
+                timestamp,
+                ..Default::default()
+            },
+            crc_type: self.crc_type,
+            destination: self.destination,
+            report_to: self.report_to.unwrap_or(self.source),
+            lifetime: self.lifetime,
+        };
+
+        let (payload_flags, payload_crc_type) = if self.payload.data.is_some() {
+            (self.payload.block.flags, self.payload.block.crc_type)
+        } else {
+            (
+                block::Flags {
+                    delete_bundle_on_failure: true,
+                    ..Default::default()
+                },
+                self.crc_type,
+            )
+        };
+
+        let mut blocks = HashMap::new();
+        let mut trailer = PayloadTrailer { digest: None };
+        let mut data = hardy_cbor::encode::try_emit_array(None, |a| {
+            // Emit primary block — extent captured in the outer wire
+            // stream, exactly as `build` does.
+            let primary_bytes = primary.emit()?;
+            let extent = a.emit(&Raw(&primary_bytes));
+            blocks.insert(
+                0,
+                primary_block::PrimaryBlock::as_block(primary.crc_type, extent),
+            );
+
+            // Emit extension blocks, numbered from 2 (primary is 0, payload
+            // is 1).
+            for (index, block) in self.extensions.into_iter().enumerate() {
+                let block_number = index as u64 + 2;
+                blocks.insert(block_number, block.build(block_number, a)?);
+            }
+
+            // The payload block header, hand-assembled to stop at the
+            // byte-string head: the payload bytes and the CRC value are
+            // supplied by the stream and the trailer.
+            let mut header = alloc::vec![if matches!(payload_crc_type, crc::CrcType::None) {
+                0x85
+            } else {
+                0x86
+            }];
+            header.extend(emit(&block::Type::Payload).0);
+            header.extend(emit(&1u64).0);
+            header.extend(emit(&payload_flags).0);
+            header.extend(emit(&payload_crc_type).0);
+            header.extend(emit(&BytesHeader(payload_len)).0);
+            let data_start = header.len() as u64;
+
+            // The trailer digest covers the block's bytes exactly as
+            // `crc::append_crc_value` digests them: the header now, the
+            // payload as it streams, the CRC head byte and zeroed value at
+            // finish. An unrecognised CRC type errors here.
+            if !matches!(payload_crc_type, crc::CrcType::None) {
+                let mut digest = crc::Digest::new(payload_crc_type)
+                    .map_err(|e| Error::InternalError(e.into()))?;
+                digest.push(&header);
+                trailer.digest = Some(digest);
+            }
+
+            let extent = a.emit(&Raw(&header));
+
+            // The block's extents span the full future wire form (the
+            // parser's `Partial` convention): the payload bytes and the CRC
+            // field (head byte + big-endian value) follow the prefix on the
+            // wire, so `encoded_len`/`payload_range` are exact while the
+            // resident-slice accessors return `None` on the prefix alone.
+            let crc_field_len = match payload_crc_type {
+                crc::CrcType::CRC16_X25 => 3,
+                crc::CrcType::CRC32_CASTAGNOLI => 5,
+                _ => 0,
+            };
+            blocks.insert(
+                1,
+                block::Block {
+                    block_type: block::Type::Payload,
+                    flags: payload_flags,
+                    crc_type: payload_crc_type,
+                    data: data_start..data_start + payload_len,
+                    extent: extent.start as u64
+                        ..extent.start as u64 + data_start + payload_len + crc_field_len,
+                    ..Default::default()
+                },
+            );
+            Ok::<_, Error>(())
+        })?;
+
+        // `try_emit_array(None, …)` closes the indefinite outer array; the
+        // break belongs after the streamed payload, where the trailer
+        // re-emits it.
+        let _break = data.pop();
+        debug_assert_eq!(_break, Some(0xFF));
+
+        Ok(StreamBuild {
+            bundle: bundle::Bundle { primary, blocks },
+            prefix: data.into(),
+            trailer,
+        })
+    }
+}
+
+/// The output of [`Builder::build_stream`]: the parsed bundle view, the
+/// resident wire prefix, and the payload-trailer continuation.
+pub struct StreamBuild {
+    /// The parsed bundle view. Block extents span the full future wire
+    /// form — the payload block's extent covers bytes that are not in
+    /// [`prefix`](Self::prefix) — so
+    /// [`encoded_len`](bundle::Bundle::encoded_len) and
+    /// [`payload_range`](block::Block::payload_range) are exact, while
+    /// [`Block::payload`](block::Block::payload) against the prefix alone
+    /// returns `None` for the payload block.
+    pub bundle: bundle::Bundle,
+    /// The wire bytes from the outer array head through the payload
+    /// block's byte-string head.
+    pub prefix: Box<[u8]>,
+    /// The emit-side continuation for the streamed payload.
+    pub trailer: PayloadTrailer,
+}
+
+/// The emit-side continuation for a streamed payload: feed the payload
+/// bytes through [`update`](Self::update) as they are emitted, then
+/// [`finish`](Self::finish) yields the bytes that terminate the wire form —
+/// the payload block's CRC field (when the block carries a CRC) followed by
+/// the outer array's break.
+pub struct PayloadTrailer {
+    digest: Option<crc::Digest>,
+}
+
+impl PayloadTrailer {
+    /// Absorbs a run of streamed payload bytes into the CRC digest. A
+    /// no-op when the payload block carries no CRC.
+    pub fn update(&mut self, data: &[u8]) {
+        if let Some(digest) = &mut self.digest {
+            digest.push(data);
+        }
+    }
+
+    /// Terminates the wire form: the payload block's CRC field (its head
+    /// byte and big-endian value over the block's bytes), then the outer
+    /// array's break. The caller must have fed exactly the declared
+    /// payload through [`update`](Self::update).
+    pub fn finish(self) -> Vec<u8> {
+        let Some(mut digest) = self.digest else {
+            return alloc::vec![0xFF];
+        };
+        let head = digest.cbor_head();
+        digest.push(&[head]);
+        digest.push_zeros();
+        let mut out = alloc::vec![head];
+        out.extend_from_slice(&digest.finalize());
+        out.push(0xFF);
+        out
     }
 }
 

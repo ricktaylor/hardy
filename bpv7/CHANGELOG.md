@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `builder::Builder::build_stream(payload_len, timestamp)` — the emit-side twin of the parser's `Partial` route, for building a bundle whose payload is supplied as a stream. Returns a `builder::StreamBuild`: the parsed `Bundle` view (block extents span the full future wire form, so `encoded_len`/`payload_range` are exact from the prefix alone), the resident wire prefix ending at the payload block's byte-string head, and a `builder::PayloadTrailer` continuation (`update` absorbs payload runs into the payload block's CRC digest; `finish` yields the CRC field and the outer break). `prefix ++ payload ++ trailer` is byte-for-byte the `build()` output for the same inputs.
 - Incremental payload-BIB verification for streaming ingress: `bpsec::bib::Operation::begin_verify` returns a `bpsec::bib::Verifier` pre-fed with every header-resident IPPT part; the caller feeds the payload's block-type-specific data as it streams (`update`) and settles with `finish` (constant-time tag compare). The verifier owns everything it needs — including key material *copied* into the MAC state, the recorded exception to keeping raw keys out of async scopes — so it is `Send` and may cross `await` points and task boundaries. `checks::begin_payload_verification` begins one verifier per deferred payload BIB (`VerifyFacts::deferred_bibs`) from header material alone, mirroring the resident path's skip rules (BCB-covered payload, `NoKey`).
 
 ### Changed
