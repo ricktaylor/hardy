@@ -20,6 +20,7 @@ use core::{marker::PhantomData, num::NonZeroUsize};
 
 // `encode::Bytes` is aliased: in this crate a bare `Bytes` reads as the
 // ubiquitous `bytes::Bytes` buffer, not a CBOR byte-string wrapper.
+use hardy_bpv7::eid::Eid;
 use hardy_cbor::{
     decode::{Error as DecodeError, FromCbor},
     encode::{Bytes as CborBytes, Encoder, ToCbor, emit},
@@ -115,13 +116,26 @@ impl<T> SlotHandle<T> {
 /// A Classifier's requested metadata changes, applied by the engine after the
 /// invocation returns.
 ///
-/// Carries annotation-slot writes only for now: the `class` and `route_key`
-/// fields arrive additively with the policy and routing tranches
+/// Carries annotation-slot writes and the bundle's routing inputs; the
+/// `class` field arrives additively with the policy tranche
 /// (`#[non_exhaustive]` keeps that growth non-breaking).
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct MetadataDelta {
     pub(crate) slots: Vec<SlotWrite>,
+    /// The table half of the bundle's `{table, key}` routing inputs. `Some`
+    /// writes the persisted value — per-field last-writer-wins across the
+    /// sequential chain — and `None` expresses no opinion, preserving it.
+    /// Table selection is a per-bundle routing decision, not a class
+    /// property; a class needing a specific table is a classifier that emits
+    /// it (`docs/routing_table_redesign.md`, "Multiple tables").
+    pub route_table: Option<u32>,
+    /// The key half: the EID the RIB walk looks up in place of the
+    /// destination. Same write semantics as `route_table`. Producers own the
+    /// skip-self discipline — never emit a key that resolves locally for a
+    /// bundle that must forward (`docs/routing_table_redesign.md`, "Key
+    /// selection").
+    pub route_key: Option<Eid>,
 }
 
 impl MetadataDelta {

@@ -17,6 +17,7 @@ use crate::{
         Blob, MetadataDelta, SlotHandle, SlotValue,
         state::{PolicyEpoch, SlotMap},
     },
+    routing::RoutingKey,
 };
 
 /// How a bundle entered this BPA's custody.
@@ -90,8 +91,8 @@ pub struct ExtensionFields {
 }
 
 // Output of the classifier chain: persisted, cleared and re-derived at
-// restart re-admission. The class and route_key fields arrive with the
-// policy and routing tranches (see bpa/docs/filter_subsystem_design.md).
+// restart re-admission. The class field arrives with the policy tranche
+// (see bpa/docs/filter_subsystem_design.md).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 struct Classification {
@@ -103,6 +104,15 @@ struct Classification {
         serde(default, skip_serializing_if = "SlotMap::is_empty")
     )]
     slots: SlotMap,
+    // The {table, key} the chain derived — persisted as the cache of the
+    // chain's output and resolved by the dispatcher at every lookup, the
+    // same struct rib.find consumes. The skip predicate keeps unkeyed
+    // records byte-identical to the prior serde shape.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "RoutingKey::is_unset")
+    )]
+    routing: RoutingKey,
     // Policy-epoch stamp for lazy restart re-admission — engine bookkeeping
     // with no accessor at all.
     #[cfg_attr(
@@ -117,7 +127,8 @@ struct Classification {
 /// Partitioned by write discipline: provenance (write-once arrival facts,
 /// read via [`received_at`](Self::received_at) / [`origin`](Self::origin)),
 /// the [`extensions`](Self::extensions) cache of parser-decoded extension
-/// fields, the classification group (placeholder), and BPA infrastructure
+/// fields, the classification group (annotation slots and the routing inputs,
+/// written only through [`apply`](Self::apply)), and BPA infrastructure
 /// references (crate-private). There is no `Default`: a defaulted provenance
 /// would fabricate a `received_at` and an origin, so records are built only
 /// through the constructors.
@@ -130,7 +141,7 @@ pub struct BundleMetadata {
     /// Parser-derived cache of decoded extension-block fields.
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub extensions: ExtensionFields,
-    // Classifier-chain output; empty until the filter tranches land.
+    // Classifier-chain output: annotation slots and the routing inputs.
     #[cfg_attr(feature = "serde", serde(flatten))]
     classification: Classification,
     // Wire-scoped block removals derived at ingress: RFC 9172 §5.1.1
@@ -201,6 +212,23 @@ impl BundleMetadata {
         &self.provenance.origin
     }
 
+    /// The `{table, key}` lookup inputs the Classifier chain derived — what
+    /// the dispatcher hands to the RIB at every lookup.
+    pub(crate) fn routing_key(&self) -> &RoutingKey {
+        &self.classification.routing
+    }
+
+    /// The Classifier-derived routing key, if one is set. The RIB walks this
+    /// EID in place of the destination.
+    pub fn route_key(&self) -> Option<&Eid> {
+        self.classification.routing.key.as_ref()
+    }
+
+    /// The Classifier-derived routing table, if one is set.
+    pub fn route_table(&self) -> Option<u32> {
+        self.classification.routing.table
+    }
+
     /// Reads an annotation slot, decoding the stored value.
     ///
     /// Handle-gated: only holders of the slot's [`SlotHandle`] can read it.
@@ -257,10 +285,11 @@ impl BundleMetadata {
     /// Applies a Classifier's delta — the only write path into the
     /// classification group.
     ///
-    /// Per-slot last-writer-wins. A value exceeding its slot's registered
-    /// size bound is dropped with a warning — never stored — keeping
-    /// metadata stores honest; an already-stored value survives the dropped
-    /// write.
+    /// Per-slot and per-field last-writer-wins: a `Some` routing field
+    /// writes, `None` expresses no opinion and preserves the stored value. A
+    /// slot value exceeding its registered size bound is dropped with a
+    /// warning — never stored — keeping metadata stores honest; an
+    /// already-stored value survives the dropped write.
     pub(crate) fn apply(&mut self, delta: MetadataDelta) {
         for write in delta.slots {
             if write.value.len() > write.max_size.get() {
@@ -274,6 +303,12 @@ impl BundleMetadata {
                 self.classification.slots.insert(write.name, write.value);
             }
         }
+        if let Some(table) = delta.route_table {
+            self.classification.routing.table = Some(table);
+        }
+        if let Some(key) = delta.route_key {
+            self.classification.routing.key = Some(key);
+        }
     }
 
     /// Clears the classification group for re-derivation (restart
@@ -282,6 +317,7 @@ impl BundleMetadata {
     #[allow(dead_code)] // wired to the re-admission path by the engine swap (C3)
     pub(crate) fn clear_classification(&mut self, epoch: PolicyEpoch) {
         self.classification.slots.clear();
+        self.classification.routing = RoutingKey::default();
         self.classification.epoch = epoch;
     }
 }
@@ -393,6 +429,55 @@ mod tests {
         // The oversized write is dropped, not truncated, and does not
         // clobber the previously stored value.
         assert_eq!(md.slot(&h), Some(7));
+    }
+
+    #[test]
+    fn routing_delta_applies_per_field() {
+        let key_a: Eid = "ipn:0.2.1".parse().unwrap();
+        let key_b: Eid = "ipn:0.3.1".parse().unwrap();
+        let mut md = BundleMetadata::originated();
+        assert!(md.route_key().is_none());
+        assert!(md.route_table().is_none());
+
+        // Key alone: the table half is untouched.
+        md.apply(MetadataDelta {
+            route_key: Some(key_a.clone()),
+            ..Default::default()
+        });
+        assert_eq!(md.route_key(), Some(&key_a));
+        assert_eq!(md.route_table(), None);
+
+        // Table alone: None on the key is no opinion — the stored key survives.
+        md.apply(MetadataDelta {
+            route_table: Some(7),
+            ..Default::default()
+        });
+        assert_eq!(md.route_table(), Some(7));
+        assert_eq!(md.route_key(), Some(&key_a));
+
+        // Last writer wins, per field.
+        md.apply(MetadataDelta {
+            route_key: Some(key_b.clone()),
+            ..Default::default()
+        });
+        assert_eq!(md.route_key(), Some(&key_b));
+        assert_eq!(md.route_table(), Some(7));
+    }
+
+    #[test]
+    fn clear_classification_resets_the_routing_inputs() {
+        let mut md = BundleMetadata::originated();
+
+        md.apply(MetadataDelta {
+            route_table: Some(1),
+            route_key: Some("ipn:0.2.1".parse().unwrap()),
+            ..Default::default()
+        });
+
+        md.clear_classification(PolicyEpoch(2));
+
+        assert!(md.route_key().is_none());
+        assert!(md.route_table().is_none());
     }
 
     #[test]

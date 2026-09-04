@@ -2677,6 +2677,84 @@ async fn egress_filter_sees_consistent_extents() {
     bpa.shutdown().await;
 }
 
+/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
+/// SR-shaped per-bundle override, honouring the skip-self discipline by
+/// keying only a foreign destination.
+struct KeyingClassifier;
+
+impl hardy_bpa::filter::Classifier for KeyingClassifier {
+    fn classify(
+        &self,
+        reader: &hardy_bpa::filter::BundleReader<'_>,
+    ) -> hardy_bpa::filter::Verdict<hardy_bpa::filter::slots::MetadataDelta> {
+        let mut delta = hardy_bpa::filter::slots::MetadataDelta::default();
+        if let Eid::Ipn { fqnn, .. } = &reader.primary().destination
+            && fqnn.node_number == 3
+        {
+            delta.route_key = Some("ipn:0.2.1".parse().unwrap());
+        }
+        hardy_bpa::filter::Verdict::Continue(delta)
+    }
+}
+
+/// A Classifier-written route_key persists in the record's metadata and
+/// drives the RIB lookup: a bundle whose destination has no route forwards
+/// via the route for its key. Without the key threading the bundle parks
+/// Waiting forever, so the forward event is the proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classifier_route_key_drives_the_lookup() {
+    let mut pack = hardy_bpa::filter::pack::FilterPack::new("test");
+    pack.originate_classifier("keyer", KeyingClassifier);
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
+    bpa.start(false).await;
+
+    // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla("test".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[remote_node],
+        )
+        .await
+        .unwrap();
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.3.99".parse().unwrap(),
+            Bytes::from_static(b"Keyed onward"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the keyed bundle to forward")
+    .expect("Channel closed");
+
+    bpa.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // Failing Application — always returns Err from on_deliver
 // ---------------------------------------------------------------------------
