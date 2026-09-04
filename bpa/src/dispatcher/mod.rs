@@ -16,6 +16,7 @@ mod originate;
 mod reassemble;
 mod report;
 mod restart;
+mod spool;
 
 // The default bound on a single reassembled bundle. Streaming producers
 // dissolved the transport-level caps that used to bound ingress implicitly,
