@@ -198,15 +198,21 @@ impl Dispatcher {
                 }
             }
             None => {
-                // No opportunity available — wait for one. A local
-                // destination waits for its service to register; anything
-                // else waits for a route.
+                // No opportunity available — wait for one, under the inputs
+                // the lookup walked. A local lookup EID (the key, else the
+                // destination) waits for its service to register; anything
+                // else waits for a route, including a table other than the
+                // default, which no registration can satisfy.
                 debug!("Storing bundle until a forwarding opportunity arises");
 
-                let parked = match self
-                    .node_ids
-                    .local_service_eid(&bundle.primary().destination)
-                {
+                let key = bundle.metadata.routing_key();
+                let service = match key.unknown_table() {
+                    Some(_) => None,
+                    None => self
+                        .node_ids
+                        .local_service_eid(key.lookup_eid(&bundle.primary().destination)),
+                };
+                let parked = match service {
                     Some(service) => bundle::BundleStatus::WaitingForService { service },
                     None => bundle::BundleStatus::Waiting,
                 };

@@ -11,7 +11,10 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     cla,
-    filter::{RewriteContext, Rewriter, pack::FilterPack},
+    filter::{
+        Classifier, ClassifyContext, RewriteContext, Rewriter, Verdict, pack::FilterPack,
+        slots::MetadataDelta,
+    },
     node_ids::NodeIds,
     routing::{RouteAction, RoutingAgent, RoutingSink, StaticRoutingAgent},
     services,
@@ -3411,6 +3414,179 @@ async fn egress_filter_sees_consistent_extents() {
         out.bundle.blocks[&1].payload(&out.data),
         Some(b"Hello remote".as_slice())
     );
+
+    bpa.shutdown().await;
+}
+
+/// Keys traffic for the unrouted ipn:0.3 node onto ipn:0.2.1 — the
+/// SR-shaped per-bundle override, honouring the skip-self discipline by
+/// keying only a foreign destination.
+struct KeyingClassifier;
+
+impl Classifier for KeyingClassifier {
+    fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        if let Eid::Ipn { fqnn, .. } = &ctx.bundle().primary.destination
+            && fqnn.node_number == 3
+        {
+            delta.route_key = Some("ipn:0.2.1".parse().unwrap());
+        }
+        Verdict::Continue(delta)
+    }
+}
+
+/// A Classifier-written route_key persists in the record's metadata and
+/// drives the RIB lookup: a bundle whose destination has no route forwards
+/// via the route for its key. Without the key threading the bundle parks
+/// Waiting forever, so the forward event is the proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn classifier_route_key_drives_the_lookup() {
+    let mut pack = FilterPack::new("test");
+    pack.originate_classifier("keyer", KeyingClassifier);
+    let bpa = Bpa::builder().add_filters(pack).build().await.unwrap();
+    bpa.start(false).await;
+
+    // A peer exists for ipn:0.2 only; ipn:0.3 has no route.
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+    let remote_node = NodeId::Ipn(IpnNodeId {
+        allocator_id: 0,
+        node_number: 2,
+    });
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[remote_node],
+        )
+        .await
+        .unwrap();
+
+    let (app, _app_rx) = TestApp::new();
+    bpa.register_application(Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            "ipn:0.3.99".parse().unwrap(),
+            Bytes::from_static(b"Keyed onward"),
+            Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout waiting for the keyed bundle to forward")
+    .expect("Channel closed");
+
+    bpa.shutdown().await;
+}
+
+/// Keys traffic for the unregistered local service ipn:0.1.77 onto
+/// ipn:0.2.1: a foreign key for a local destination.
+struct LocalKeyingClassifier;
+
+impl Classifier for LocalKeyingClassifier {
+    fn classify(&self, ctx: &ClassifyContext<'_>) -> Verdict<MetadataDelta> {
+        let mut delta = MetadataDelta::default();
+        if ctx.bundle().primary.destination == "ipn:0.1.77".parse().unwrap() {
+            delta.route_key = Some("ipn:0.2.1".parse().unwrap());
+        }
+        Verdict::Continue(delta)
+    }
+}
+
+// A bundle parks under the inputs its lookup walked: one addressed to an
+// unregistered local service but keyed onto a foreign EID waits for a route
+// to its key, not for its destination's service, so the key's route
+// appearing forwards it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_local_destination_waits_for_its_key_route() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let mut pack = FilterPack::new("test");
+    pack.ingress_classifier("keyer", LocalKeyingClassifier);
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .add_filters(pack)
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, forwarded_rx) = PipelineCla::new();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
+
+    // A fresh arrival executes its routing decision before the CLA's
+    // dispatch returns, so the bundle has parked once it does: nothing
+    // routes its key yet.
+    let (bundle, data) = Builder::new("ipn:0.3.1".parse().unwrap(), "ipn:0.1.77".parse().unwrap())
+        .with_payload(Cow::Borrowed(b"Keyed away".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
+
+    // The key's route appears.
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+
+    // Event-driven wait; the timeout only bounds a regression.
+    let forwarded = tokio::time::timeout(
+        tokio::time::Duration::from_secs(5),
+        forwarded_rx.recv_async(),
+    )
+    .await
+    .expect("Timeout: the keyed bundle must wait for its key's route")
+    .expect("Channel closed");
+    let parsed = parse(forwarded).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id, bundle.primary.id);
 
     bpa.shutdown().await;
 }

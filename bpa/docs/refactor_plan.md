@@ -15,7 +15,7 @@ The single working plan for the in-flight refactor effort: finishing the v0.3.0 
 1. ~~Extraction PRs and the cla-transfer-outcome chain merge~~ — done, all in main by #664.
 2. ~~Stack re-cut~~ — done (see below); the Commit 1 metadata partition rode it as planned.
 3. Filter Phases 2–3 target the current stack.
-4. Delta fields ride with their consuming tranches: `MetadataDelta` ships with annotation slots only in Phase 2; `class`/`route_key` arrive with the queue/policy and routing tranches respectively.
+4. Delta fields ride with their consuming tranches: `MetadataDelta` ships with annotation slots only in Phase 2; `route_key` and `route_table` ride the routing tranche's first step (#718), and `class` arrives with the queue/policy tranche.
 
 Every step ends green: `cargo fmt --check`, `clippy --locked --all-targets --all-features -- -D warnings`, workspace tests, bpv7 `no_std` check.
 
@@ -122,7 +122,7 @@ The queue architecture is a load-bearing streaming component: it replaces the st
 
 ## Queued behind other tranches (pointers, not tasks here)
 
-- `class` + `route_key` delta fields, `ClassPolicy`, the `[classes]` `bpa-server` provider (registered through the public Classifier trait), FlowControllers and the seat bindings → policy tranche (`policy_subsystem_redesign.md`), riding the queue tranche's mechanism; `route_key.unwrap_or(destination)`, tables, jumps, the FIB compile → routing tranche (`routing_table_redesign.md`).
+- `class` delta field, `ClassPolicy`, the `[classes]` `bpa-server` provider (registered through the public Classifier trait), FlowControllers and the seat bindings → policy tranche (`policy_subsystem_redesign.md`), riding the queue tranche's mechanism; tables, jumps, the FIB compile → routing tranche (`routing_table_redesign.md`), whose key-selection seam — the `route_key`/`route_table` delta fields and the `route_key.unwrap_or(destination)` lookup in the default table — landed with #718.
 - Scanner/verdict component and the virtual-CLA re-forward entry point → build when a consumer exists (filter doc Phase 4).
 
 ## Reference — gotchas
