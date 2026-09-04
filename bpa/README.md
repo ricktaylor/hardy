@@ -22,7 +22,7 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 ## Features
 
 - **Bundle routing**: RIB with ECMP, recursion detection, and reflection
-- **Filter pipeline**: Read (parallel) and write (sequential) filters at four hook points: ingress, deliver, originate, egress
+- **Filter pipeline**: construction-frozen packs of Verifier (read-only), Classifier (metadata-annotating), and Rewriter (extension-block-editing) filters at four hook points: ingress, originate, egress, deliver
 - **Pluggable storage**: `BundleStorage` and `MetadataStorage` traits with built-in in-memory implementations and optional LRU caching
 - **Channel state machine**: Hybrid memory/storage backpressure for egress queues
 - **Component registry**: Unified trait + sink pattern for CLAs, services, applications, and routing agents
@@ -32,7 +32,6 @@ The BPA is constructed via `BpaBuilder` and exposes a `BpaRegistration` trait th
 - Feature flag: `rfc9173` (default) -- enables RFC 9173 (BPSec) security contexts
 - Feature flag: `serde` -- enables serialization support for metadata and configuration
 - Feature flag: `instrument` -- enables `tracing` span instrumentation
-- Feature flag: `no-rfc9171-autoregister` -- disables automatic registration of the RFC 9171 validity filter
 
 ## Usage
 
@@ -47,7 +46,7 @@ let bpa = Bpa::builder()
     .build();
 
 // Start processing
-bpa.start(false);
+bpa.start(false).await;
 
 // Register components via the BpaRegistration trait
 bpa.register_cla(name, cla, policy).await?;

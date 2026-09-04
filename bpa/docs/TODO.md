@@ -1,8 +1,12 @@
 # bpa TODO
 
-## RFC 9171 §5.9 material-extents reassembly (overlapping fragments)
+## Fragmentation and ADU reassembly
 
-### Background
+All fragmentation-shaped work — the two sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is being consolidated in `fixing_fragmentation.md` (drafted, not yet in-tree), pending a decision once the bulk of the streaming work lands. Until that doc lands, the sections here remain the in-tree record.
+
+### RFC 9171 §5.9 material-extents reassembly (overlapping fragments)
+
+#### Background
 
 `Store::reassemble()` (`src/storage/adu_reassembly.rs`) requires the received fragments to tile `[0, total_adu_length)` exactly: contiguous, non-overlapping and complete. Overlapping fragment sets are rejected and the fragments dropped as `ReassemblyResult::Failed`.
 
@@ -10,14 +14,14 @@ RFC 9171 §5.9 is more permissive: overlapping fragments are legal on the wire (
 
 Hardy has never accepted overlap: the pre-tiling-check code also failed overlapping sets (payload-length sum ≠ total), except for the length-sum coincidence that silently delivered a corrupt ADU (2026-07-08 review findings #1/#4). The tiling check makes rejection deterministic and safe, but Hardy remains non-conformant for legitimately overlapping fragment sets.
 
-### What full §5.9 support needs
+#### What full §5.9 support needs
 
 - `FragmentSet` must hold *trimmed* ranges decided at insert time by arrival order: on insert, clip the new fragment's payload range against the extents already covered (possibly splitting it), rather than keying whole fragments by raw offset.
 - The completeness gate in `poll_fragments()` (`adu_totals >= total_adu_len`) must sum material extents, not raw payload lengths, or completion fires early on overlapping sets.
 - The copy loop in `reassemble()` then slices each stored payload sub-range; the tiling invariant holds by construction.
 - §5.9 requires the reassembled ADU to replace the payload of the fragment whose material extents include offset zero — the current "fragment 0" special-casing needs re-deriving from material extents, not from a raw offset-0 key.
 
-## Deletion status reports on reassembly failure
+### Deletion status reports on reassembly failure
 
 When reassembly fails (`ReassemblyResult::Failed`), `Store::adu_reassemble` deletes the held fragments directly against storage (`delete_data` + `tombstone_metadata`) and the dispatcher's `Failed` arm returns without action — no deletion status reports are generated. RFC 9171 §5.10 says a deletion status report SHOULD be generated per deleted bundle (each fragment is its own bundle, reported to its own report-to EID with its fragment offset/length) when the report flag is set and reporting is enabled.
 
@@ -25,13 +29,13 @@ The fix is plumbing, not policy: `adu_reassemble` should hand the fragment `Bund
 
 ## Ingress status-report conformance (invalid bundles, duplicates, expired arrivals)
 
-RFC 9171 pins the reception report's reason code: §5.6 Step 2 prescribes "No additional information" (Step 4's "Block unsupported" is the only other reception-report reason), and a parse/CRC failure routes through the §5.10 Bundle Deletion procedure, whose deletion report is what cites "Block unintelligible". The ingress invalid-bundle path instead sends a single reception report carrying the failure reason and no deletion report. This shape is shared by main and refactor/cla-streaming, and survives on refactor/parse and refactor/metadata in both invalid paths there (`parse_headers` failure and post-drain `finalize` failure) — only the lifetime/hop early gate on those branches emits the conforming reception-then-deletion pair. Fix when the parse refactoring is picked up post-v0.2.0: reception report with "No additional information", deletion report citing the failure reason.
+RFC 9171 pins the reception report's reason code: §5.6 Step 2 prescribes "No additional information" (Step 4's "Block unsupported" is the only other reception-report reason), and a parse/CRC failure routes through the §5.10 Bundle Deletion procedure, whose deletion report is what cites "Block unintelligible". The ingress invalid-bundle paths (`parse_headers` failure and post-drain `finalize` failure) instead send a single reception report carrying the failure reason and no deletion report; only the lifetime/hop early gate emits the conforming reception-then-deletion pair. Fix: reception report with "No additional information" plus a deletion report citing the failure reason — a natural companion to the filter redesign's Phase 3 work, which standardises drop reporting on the gate pattern ([`refactor_plan.md`](refactor_plan.md)).
 
 A second recorded §5.6 deviation, carried from the base pipeline: Step 4's first bullet makes the block-level `report_on_failure` flag alone the trigger for a "Block unsupported" reception report, independent of the bundle-level receipt flag that governs Step 2 — but every reception report we emit is gated on `receipt_report_requested` (`report_bundle_reception`), so a bundle that doesn't request reception reporting yet carries an unrecognised block with `report_on_failure` set is accepted/forwarded with no report at all. SHOULD-level, bounded by status reports being off by default. Fix (a force-emit path for the Step 4 case) belongs with the Phase-3 drop/report standardisation above rather than a bespoke gate now.
 
 Duplicates: RFC 9171 specifies no duplicate-bundle processing at all (the word does not appear), so §5.6 read literally reports reception on every arrival, including replays. Decision: duplicates SHOULD get a reception report — a sender may be intentionally repeating a bundle probing for status-report ACKs. Adopted: ingress reports reception before the duplicate check (matching refactor/parse).
 
-Expired arrivals are the deliberate exception: a bundle that arrives already expired is treated as if it never arrived — no reception report, no deletion report, no metadata entry — rather than amplifying already-dead traffic into report bundles. The refactor/parse early gate implements this silence for the lifetime case (`fix(bpa): suppress status reports for expired-at-ingress bundles`), matching `fix/mem-storage-watermark`'s ingress expiry gate; hop-exhaustion still emits the conforming reception-then-deletion pair. Bundles that expire *in custody* are unaffected: the validity filter, reaper, and `drop_bundle` paths still generate §5.10 deletion reports citing "Lifetime expired".
+Expired arrivals are the deliberate exception: a bundle that arrives already expired is treated as if it never arrived — no reception report, no deletion report, no metadata entry — rather than amplifying already-dead traffic into report bundles. The pre-drain early gate implements this silence for the lifetime case (hop-exhaustion still emits the reception-then-deletion pair). Bundles that expire *in custody* are unaffected: the validity filter, reaper, and `drop_bundle` paths still generate §5.10 deletion reports citing "Lifetime expired".
 
 ## Ingress parse-seam API shape (review items A-02/A-03/A-04)
 
@@ -56,6 +60,16 @@ Two layers of work:
 **Bespoke per-backend metrics** where only the backend knows the truth: sqlite database/WAL file size, localdisk store-directory bytes and file count, postgres connection-pool stats, s3 request retries. These need either per-crate `metrics` emission or a `stats()`-style trait extension sampled periodically — a trait-surface decision to make when the work is picked up.
 
 Documentation: a new backend-agnostic "Storage Operations" table in `docs/user-docs/operations/observability.md`, plus per-backend tables as bespoke metrics land.
+
+## Bufferless bundle and ADU lengths (streaming prerequisite)
+
+The streaming end-state removes the loaded whole buffer that `total_len = data.len()` measures at the delivery and forward doors, but both lengths are derivable from the persisted block index alone. `Bundle::encoded_len()` (`refactor/bpv7-parse`, arriving with the train cascade) names the whole-bundle derivation with its RFC anchors — the payload block MUST be last and a bundle SHALL be an indefinite-length CBOR array (both RFC 9171 §4.1), so the payload's bundle-absolute `extent.end` plus the one break byte is the encoded length. Because canonical CBOR gives the payload a definite-length head, the value is known at header-parse time, before the payload arrives — available to the early-filter gate, egress framing ([`streaming_pipeline_design.md`](streaming_pipeline_design.md) §6.2's "original bundle size"), the forward-before-store tee (§5.7), and any announce-style wire's `bundle_size`, none of which a commit-measured metadata field could serve. The ADU length needs no accessor at all: the payload block's `data` range is an interior range with no break-byte dependency.
+
+Remaining work when the consumers land:
+
+**Spool-commit cross-check.** The spool counts the bytes it writes; a commit-time `debug_assert!(counted == encoded_len())` catches index-vs-bytes drift without minting a second source of truth in metadata.
+
+**Pin the ADU-length definition at the Application door.** The announced size is the *stored* payload block data length, pre-BPSec-decryption — AES-GCM preserves plaintext length so the two coincide today, but a length-changing confidentiality suite would make the distinction real. Post-reassembly bundles re-derive both lengths from the reassembled bundle's index.
 
 ## Registration/routing concurrency races (whole-codebase review 2026-07-08, #14/#15)
 
@@ -97,10 +111,28 @@ Items dispositioned as follow-up work during the branch review; the merge-gating
 
 **Claim RAII guard (review round 3, R3-5).** The `forward_bundle` invariant "every exit after the claim must resolve it" is enforced today by a comment and reviewer vigilance — and its violation was review bug 1, so the failure mode is proven. A `Claim` guard around the claimed bundle (debug-assert, or conditionally restore to `Waiting`, on unresolved drop) turns the next regression into a test failure instead of a bundle invisible until expiry. Natural to build when the planned `requeue()` primitive lands, since both reshape the same call sites.
 
-**Per-forward `bundle_id` clone in `forward_bundle` (review round 3, S-7).** The `bundle.bundle.id.clone()` before the egress filter exists only for the rare filter-error restore path but costs an allocation on every egress. Unavoidable while `FilterEngine::exec` consumes the bundle without returning it on `Err`; the remedy is a filter-API shape change (return the bundle with the error, as the editor's `(_, e)` tuples do), noted for the post-stack ingress/egress rework.
-
 **Smaller notes, take-or-leave.** `TransferOutcome::Failed` carries no reason in the Rust trait while the wire deliberately does (`google.rpc.Status`), so Rust CLAs always send a constant placeholder — plumb a reason through when a CLA has one worth sending. `tcpclv4` has a small spawn-after-shutdown window (`forward` racing `on_unregister` can spawn a transmit task after `tasks.shutdown()` returned; tokio-util's `TaskTracker` allows spawning on a closed tracker) — the orphan resolves harmlessly, noted for the next time session-task lifetime guarantees matter. The two peer-removal sweeps run as two sequential statements and could be one `status IN (...)` UPDATE if removal rate ever matters. Gauge drift accumulates silently when a status write loses to a tombstone — a periodic recount fixes it if it ever shows.
 
 **Pipeline test de-flake pass.** Six sites in `bpa/tests/pipeline.rs` — find them by grepping for the `Known test-guide deviation` comment marker — carry a timed `sleep`/quiet-window that the test style guide forbids (synchronize on the event, not the clock). Replace each with an event-driven wait: a `#[cfg(test)]` parked-state hook for the ~100 ms quiesce sleeps, and a `shutdown().await` barrier (then assert-empty) for the quiet windows. These predate the parse refactor; batched here so the annotations reference a real item. (Related: the `on_deliver.rs` parallel-thread hang is Phase-3 Deliver-seat work — see the filter redesign plan.)
 
 **Tombstone-on-reject suppression (duplicate invalid bundles may re-report).** A duplicate *invalid* bundle (rejected before the metadata insert) isn't deduplicated — a replay re-parses and may re-report. Accepted for now: RFC 9171 status reports are off-by-default debugging aids, not acks, so a duplicate report is harmless. Suppressing via a tombstone-on-reject is deliberately deferred because the future compressed-status-report / custody work inverts the requirement (a resend then means "report lost, please re-report"), so that design must own the semantics. Referenced from the duplicate-check comment in `dispatcher/ingress.rs`.
+
+## Sink drop-cleanup via reconciler queue (replace spawn-from-Drop)
+
+All three Sink `Drop` impls (`src/cla/registry.rs`, `src/services/registry.rs`, `src/routing/agent/sink.rs`) enqueue their async unregistration by spawning a task from sync `Drop`. This is already non-blocking, but spawn-from-Drop allocates a task per drop, gets exactly-once semantics only from ad-hoc guards, and can silently not run when the pool is already cancelled during shutdown — only the routing sink checks `is_cancelled`.
+
+The tidy-up: `Drop` pushes a component identity onto an unbounded channel drained by one long-lived reconciler per registry — `Drop` stays plain sync code, delivery is exactly-once (an explicit `unregister()` leaves a stale id the reconciler no-ops on), and shutdown ordering becomes explicit (drain the reconciler before cancelling the pool). `refactor/sink-lifecycle` (`4d24e3f8`) already prototypes this shape for the CLA registry (`drop_tx` + `signal_dropped`); the work is applying the pattern uniformly across `cla::Sink`, `ServiceSink`, and `RoutingSink`. Design rationale in [`streaming_pipeline_design.md`](streaming_pipeline_design.md) §5.1.2; the channel-context alternative (`refactor/sink-to-context`) was considered and rejected — the Sink trait shape stays.
+
+Out of scope here: §5.1.2 also proposes replacing the per-method `Weak::upgrade()` call gating with an `alive: AtomicBool` load. That is an orthogonal hot-path change (call gating, not drop delivery) and should be weighed separately.
+
+## bpv7-parse review triage (2026-08-19) — bpa side
+
+Open bpa-side items from the `refactor/bpv7-parse` deep review (`references/reviews/bpv7-parse-review.md`, per-finding dispositions inline there) that no leg of the refactor train addresses. The bpv7-crate siblings live in `bpv7/docs/TODO.md` under the same heading.
+
+**No status report for structurally corrupt extension blocks (B4 residual).** The pre-drain gate restored reports for keyed-validation failures, but a bundle whose primary parses and whose extension block is *structurally* corrupt still hard-fails `BundleParser::push/finish` with no recoverable bundle id — no §5.6 report to `report_to`, only a `received.dropped` counter. Fixing it means recovering the primary-block fields from the partial parse (the parser has them by the time the bad block fails) and threading them to the report path. Related conformance shape: the reception-then-deletion report pairing already recorded in "Ingress status-report conformance" above.
+
+**Egress filters see pre-increment cached fields (B5 residual).** `forward.rs` replaces only `bundle.bpv7.blocks` after `update_extension_blocks`, so the Egress chain reads pre-increment `metadata.extensions.{previous_node, hop_count, age}` through the `BundleReader`. The wire is correct, and the engine rebuilds the structural bundle and wire form after each Rewriter's edits — but `metadata.extensions` is never refreshed on this path, so an egress Verifier enforcing a hop-count limit on this node reads the stale count. Either refresh the cached fields before the chain runs or document the filter-visible staleness as contract; Phase 3's Egress seat kills it structurally.
+
+**Hot-path structural re-parses (B8).** Four hot paths re-run `hardy_bpv7::parse::parse` on stored bytes the BPA has already parsed: `forward.rs` per forward *attempt* (repeated on every retry/requeue), `deliver.rs` per application delivery (to recover `bcb_ops` for payload decryption), `admin.rs` per admin record, and `adu_reassembly.rs` per fragment merge. The structural-bundle restructure kept the re-parses because OperationSets are not persisted. Candidates: persist/carry the OperationSets in metadata, or cache the parse alongside the loaded data. Natural home: the filters phase or a dedicated perf tranche; benchmark before and after. Sibling inside the bpv7 BPSec cascade (parse-review finding 5 / refactor-parse review R-07): `canonical_primary` re-decodes and CRC-re-verifies the primary block on every include-primary BIB/BCB operation, pure confirmation of an invariant the parser already enforced — pass an "already canonical" flag or cache the canonical primary bytes once per bundle so the IPPT/AAD path borrows raw.
+
+**De-flake `storage::channel::tests::test_hysteresis_recovery`.** Load-dependent timing flake (passes in isolation, fails occasionally under the full parallel run). Pre-existing hysteresis-timing sensitivity, untouched by the train; fix the test's timing assumptions rather than loosening the hysteresis.

@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - Adapted to the `hardy-bpa` deferred transfer-outcome CLA contract (new `Cla::forward` signature). Behaviour is unchanged: forwards remain terminal.
 
+### Fixed
+- An outbox file is consumed only when the BPA accepts the bundle (`Acceptance::Accepted`): a refused or failed dispatch now leaves the file in place for a later scan, where previously it was deleted regardless — destroying the bundle on a transient failure. A file larger than the BPA's `max_bundle_size` (learned at registration) is skipped with a warning instead of being read and offered to a certain refusal; the file is the operator's to clean up.
+
 ## [0.2.0]
 
 ### Changed

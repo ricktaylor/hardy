@@ -32,7 +32,12 @@ impl BenchCla {
 
 #[async_trait]
 impl cla::Cla for BenchCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
     async fn on_unregister(&self) {}
@@ -86,10 +91,10 @@ fn get_state() -> &'static BenchState {
             .unwrap();
 
             let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-            bpa.start(false);
+            bpa.start(false).await;
 
             let (cla, arrival_rx) = BenchCla::new();
-            bpa.register_cla("bench".to_string(), cla.clone(), None)
+            bpa.register_cla("bench".to_string(), cla.clone(), None, None)
                 .await
                 .unwrap();
 
@@ -171,14 +176,17 @@ fn throughput_benchmark(c: &mut Criterion) {
                 .unwrap();
 
             rt.block_on(async {
-                state
-                    .cla
-                    .sink
-                    .get()
-                    .unwrap()
-                    .dispatch(None, None, &mut Bytes::from(data))
-                    .await
-                    .unwrap();
+                assert_eq!(
+                    state
+                        .cla
+                        .sink
+                        .get()
+                        .unwrap()
+                        .dispatch(None, None, &mut Bytes::from(data))
+                        .await
+                        .unwrap(),
+                    cla::Acceptance::Accepted
+                );
                 state.arrival_rx.recv_async().await.unwrap();
             });
         })

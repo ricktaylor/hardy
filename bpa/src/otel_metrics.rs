@@ -242,9 +242,12 @@ pub fn reason_label(reason: &ReasonCode) -> &'static str {
 pub fn status_label(status: &crate::bundle::BundleStatus) -> &'static str {
     match status {
         crate::bundle::BundleStatus::New => "received",
+        crate::bundle::BundleStatus::DispatchPending => "dispatch_pending",
         crate::bundle::BundleStatus::Dispatching => "dispatching",
         crate::bundle::BundleStatus::ForwardPending { .. } => "forward_pending",
         crate::bundle::BundleStatus::ForwardAckPending { .. } => "forward_ack_pending",
+        crate::bundle::BundleStatus::DeliverPending { .. } => "deliver_pending",
+        crate::bundle::BundleStatus::DeliveryAckPending { .. } => "delivery_ack_pending",
         crate::bundle::BundleStatus::AduFragment { .. } => "fragment",
         crate::bundle::BundleStatus::Waiting => "waiting",
         crate::bundle::BundleStatus::WaitingForService { .. } => "waiting_for_service",

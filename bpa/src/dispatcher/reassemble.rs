@@ -1,45 +1,40 @@
 use trace_err::TraceErrResult;
 use tracing::{debug, warn};
 
-use super::Dispatcher;
+use super::{Dispatcher, ingress::Received};
 use crate::{
-    bundle::{Bundle, BundleMetadata, BundleStatus, ReadOnlyMetadata},
+    bundle::{Bundle, BundleMetadata, BundleStatus},
     storage::adu_reassembly::ReassemblyResult,
 };
 
 impl Dispatcher {
     pub async fn reassemble(&self, mut bundle: Bundle) {
-        let (storage_name, data, received_at) = match self.store.adu_reassemble(&bundle).await {
-            ReassemblyResult::NotReady => {
-                let status = BundleStatus::AduFragment {
-                    source: bundle.bundle.id.source.clone(),
-                    timestamp: bundle.bundle.id.timestamp.clone(),
-                };
-                self.store.update_status(&mut bundle, &status).await;
-                return self.store.watch_bundle(bundle).await;
-            }
-            ReassemblyResult::Failed => {
-                debug!("Fragment reassembly failed for bundle {}", bundle.bundle.id);
-                return;
-            }
-            ReassemblyResult::Done {
-                storage_name,
-                data,
-                received_at,
-            } => (storage_name, data, received_at),
-        };
+        let (storage_name, data, received_at, origin) =
+            match self.store.adu_reassemble(&bundle).await {
+                ReassemblyResult::NotReady => {
+                    let status = BundleStatus::AduFragment {
+                        source: bundle.id().source.clone(),
+                        timestamp: bundle.id().timestamp.clone(),
+                    };
+                    self.store.update_status(&mut bundle, &status).await;
+                    return self.store.watch_bundle(bundle).await;
+                }
+                ReassemblyResult::Failed => {
+                    debug!("Fragment reassembly failed for bundle {}", bundle.id());
+                    return;
+                }
+                ReassemblyResult::Done {
+                    storage_name,
+                    data,
+                    received_at,
+                    origin,
+                } => (storage_name, data, received_at, origin),
+            };
 
         metrics::counter!("bpa.bundle.reassembled").increment(1);
 
-        let metadata = BundleMetadata {
-            storage_name: Some(storage_name.clone()),
-            status: BundleStatus::New,
-            read_only: ReadOnlyMetadata {
-                received_at,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut metadata = BundleMetadata::new(received_at, origin);
+        metadata.storage_name = Some(storage_name.clone());
 
         // TODO: Just push the entire bundle into the stream
         let (tx, mut rx) = hardy_async::channel::bounded(1);
@@ -51,15 +46,16 @@ impl Dispatcher {
             // Box::pin breaks the recursive async type cycle:
             //   ingress_bundle → process_bundle → reassemble →
             //   process_received_bundle → ingress_bundle
-            Ok(Some((bundle, data))) => Box::pin(self.ingress_bundle(bundle, data)).await,
+            Received::Bundle(bundle, data) => Box::pin(self.ingress_bundle(bundle, data)).await,
             // The reassembled data we pre-stored is now orphaned — delete it.
-            Ok(None) => {
+            Received::Disposed => {
                 self.store.delete_data(&storage_name).await;
             }
-            // A reassembled ADU that trips the gate has no live transfer to
-            // refuse — log, and delete the orphaned pre-stored data.
-            Err(e) => {
-                warn!("Reassembled bundle rejected: {e}");
+            // A reassembled ADU has no live transfer to refuse (the one
+            // reachable refusal is the size cap — the refusal site logs it);
+            // delete the orphaned pre-stored data.
+            Received::Refused => {
+                warn!("Reassembled bundle refused, deleted");
                 self.store.delete_data(&storage_name).await;
             }
         }

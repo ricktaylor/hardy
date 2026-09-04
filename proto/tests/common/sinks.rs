@@ -83,8 +83,8 @@ impl cla::Sink for MockClaSink {
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&cla::ClaAddress>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<()> {
-        Ok(())
+    ) -> cla::Result<cla::Acceptance> {
+        Ok(cla::Acceptance::Accepted)
     }
 
     async fn add_peer(

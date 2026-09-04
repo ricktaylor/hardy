@@ -4,31 +4,31 @@
 | --- | --- |
 | **Component** | BPA — Bundle data I/O, spool-based streaming |
 | **Scope** | Transformer-based streaming, spool commit model, sequential-only storage |
-| **Status** | Living doc — partially implemented (streaming parser + CLA segment delivery landed; storage / egress / spool-ingress pending) |
+| **Status** | Living doc — partially implemented (streaming parser, CLA segment delivery, streamed ingress drain, pre-drain gate landed; storage / egress / tee'd spool pending) |
 | **Related** | `queue_architecture.md`, `storage_subsystem_design.md`, Editor (`bpv7/src/editor.rs`) |
 
 ## Implementation status (2026-08-28)
 
-This is a living document: the sections below mix shipped behaviour with design targets. Current state on `refactor/parse` (now stacked on the streaming-CLA work).
+This is a living document: the sections below mix shipped behaviour with design targets. Current state on the v0.3.0 stack (`refactor/parse` → `refactor/metadata`).
 
 **Landed**
 
-- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}` with the `PayloadTail` continuation for oversized streamed payloads (`finish` accepts the `Partial` `consumed` prefix), one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`).
+- Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
 - CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
-- `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`; the rich decoded view now lives in `bpa::Bpv7Bundle`.
-- The parse-mode pipelines collapsed (§9.3, largely done): one-shot keyed validation is `bundle::parse::parse_validate_with_provider`, and ingress is the split pre-drain/post-drain pair `bundle::parse::parse_headers` + `finalize_with_provider`.
-- An interim in-memory form of the early gate: ingress header-parses directly off the segment stream (`parse_headers`), runs the pre-drain lifetime/hop early-reject gate (`HeaderVerify::gate_reason`), and drains an oversized payload tail through `PayloadTail` (`dispatcher::ingress::drain_payload`).
+- Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the payload tail via `PayloadTail` (the whole-buffer `concat_stream` path is gone). The tail still accumulates in memory before `save` — that accumulator is the one seam to swap for streaming storage.
+- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection runs on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path).
+- Parse-mode collapse (§9.3) — the three `parse_{preserve,canonicalize,full}_with_provider` pipelines are gone; call sites compose the primitives (`bpa::bundle::parse`).
+- Decoded extension fields — pre-parsed at ingress into `BundleMetadata` (§2.3's open choice is resolved; the filter redesign partitions them as the **wire cache** group). The rich `bpa::Bpv7Bundle` view is replaced by structural `hardy_bpv7::Bundle` + metadata.
+- `RewrittenBundle` and the `Checked` / `Rewritten` / `Parsed` taxonomy removed from `bpv7`.
 
 **Interim (works, not yet the target shape)**
 
-- `drain_payload` spools the oversized tail into an in-memory `BytesMut` bounded by `max_bundle_size` — the single seam streaming storage will later replace; the tee'd spool (§5.7) and payload-never-in-RAM property (§2.5) are not yet realised. Only `dispatcher::local` still concatenates its stream (`stream::concat_stream`).
-- `checks::verify_payload`'s contiguous `data: &[u8]` input and `finalize_with_provider`'s whole-buffer parameter are interim in the same way: they work only because the drain spools to RAM. When the storage-spool tranche lands, the deferred payload-BIB verification should move into the drain continuation as a streaming digest fed per-segment (the pattern `PayloadTail` already uses for the CRC), deleting `verify_payload` rather than adapting it. Note this carries keyed HMAC state across the drain's awaits — a deliberate departure from the header pass's key-material rule that the spool-tranche design must re-adjudicate explicitly. The deferral seam itself (`HeaderVerify::deferred_bibs`) is the durable half.
-- Decoded extension fields (`previous_node` / `age` / `hop_count`) have left `bpv7::Bundle` (§7.1 achieved) but currently live on `bpa::Bpv7Bundle` rather than `BundleMetadata`.
+- `checks::verify_payload`'s contiguous `data: &[u8]` input and `finalize_with_provider`'s whole-buffer parameter are interim: they work only because the drain spools to RAM. When the storage-spool tranche lands, the deferred payload-BIB verification should move into the drain continuation as a streaming digest fed per-segment (the pattern `PayloadTail` already uses for the CRC), deleting `verify_payload` rather than adapting it. Note this carries keyed HMAC state across the drain's awaits — a deliberate departure from the header pass's key-material rule that the spool-tranche design must re-adjudicate explicitly. The deferral seam itself (`HeaderVerify::deferred_bibs`) is the durable half.
 - The `Partial`-route drain plumbing is the same class of interim: `parse_headers` hands back the resident `Bytes` plus an `Option<PayloadTail>` the caller must marry to the segment stream, and the accumulator above is what that marriage feeds. The target seam replaces the caller-side marriage with a validating pull-through: bpa wraps the CLA stream in a `Receiver<Segment>` decorator (working name `TailReceiver`) that pulls the inner receiver, feeds the sync `bpv7` `PayloadTail` checks (CRC, termination, anti-smuggling) plus an incremental digest per deferred payload BIB, and yields the same segment onward — so every downstream consumer takes a plain `Receiver<Segment>` (the interim RAM accumulator today, `BundleStorage::store()` after the spool tranche) and any tee composes visibly at the tee site (§5.5's chain in pull form). Layering is deliberate: `PayloadTail` stays no_std, sans-IO and independently fuzzable, and `bpv7` owns the digest framing (the RFC 9173 IPPT's scope-flagged header parts are resident; the block-type-specific payload data streams through), constructed from `HeaderVerify::deferred_bibs`; the async wrapper is bpa's. Captured payload-BCB op-sets are never spent at ingress — they ride the metadata to the §6.1.5 streaming transformers at forward/deliver.
 
 **Pending**
 
-- Streaming storage (§3 — `BundleStorage::load` is still `-> Result<Option<Bytes>>`), egress `Cla::write` + Transformer chain (§6), the configurable early-filter hook and spool ingress (§5.4–5.7; the hard-coded lifetime/hop gate above is the interim form), Phases 0/3+ of §10.
+- Streaming storage (§3 — `BundleStorage` still exposes `save(Bytes)` / `load -> Result<Option<Bytes>>`; swapping the ingress tail accumulator for `store()` is the remaining prerequisite for the payload-never-in-RAM property §2.5), egress `Cla::write` + Transformer chain (§6), tee'd spool ingress (§5.7), the §10 phases.
 
 Where a section below still describes the pre-implementation shape, the API names in this block are authoritative.
 
@@ -46,13 +46,13 @@ For Hardy's intended deployments (mixed-priority space DTN links, multi-tenant g
 
 ### 1.2. The 1GB Bundle as a Memory Ceiling
 
-Hardy's existing pipeline materialises the whole bundle in RAM at several stages: the CLA reassembles the full transfer, the parser takes a `&[u8]` covering all of it, storage writes that buffer in one operation, the filter receives `(Bundle, Bytes)`, and the same shape repeats on egress. For payloads of many MB this is not acceptable, and in space DTN it is not even close to acceptable. Concrete bottlenecks and the streaming architecture's response are catalogued in §2.5; peak per-bundle resident memory drops to the size of the header blocks (kilobytes) while the payload spools sequentially from CLA to disk on ingress and from disk to CLA on egress.
+The single-shot pipeline materialised the whole bundle in RAM at every stage. For payloads of many MB this is not acceptable, and in space DTN it is not even close to acceptable. §2.5 catalogues the materialisation points and which remain (storage write/read and egress); peak per-bundle resident memory drops to the size of the header blocks (kilobytes) while the payload spools sequentially from CLA to disk on ingress and from disk to CLA on egress.
 
 ### 1.3. Early Reject Reaches the Link Layer
 
 Rejecting after the header parse and before the payload arrives does not just save the BPA work — it propagates back to the wire. A TCPCLv4 CLA can issue XFER_REFUSE and reclaim the TCP transfer slot; a UDPCLv2 CLA stops accepting datagrams for the bundle in question; on a constrained radio link, an aware CLA can back off or tear the link down.
 
-On a space DTN where bandwidth and energy are both scarce, this is not a micro-optimisation — it is the difference between burning a contact window on rejected traffic and not. This is what makes the early-filter gate (§5.4) load-bearing rather than convenient.
+On a space DTN where bandwidth and energy are both scarce, this is not a micro-optimisation — it is the difference between burning a contact window on rejected traffic and not. This is what makes the pre-drain gate (§5.4) load-bearing rather than convenient.
 
 ## 2. Architecture
 
@@ -68,9 +68,9 @@ The total data under management may far exceed available RAM. Design proposals s
 
 ### 2.3. Bundle as PrimaryBlock plus Block Index
 
-The `Bundle` struct is **concrete** — a decoded `PrimaryBlock` alongside a `HashMap<u64, Block>` recording the structural index of extension blocks (byte extents, block types, flags, CRC types). The `PrimaryBlock` fields (source EID, destination EID, creation timestamp, lifetime, report-to EID, flags, CRC type) are decoded by the parser and live in `Bundle::primary` — they are the BPA's authoritative view of the bundle's identity and routing information, and the extra cost of carrying them parsed (rather than re-decoding from the wire bytes on demand) is warranted given how often the BPA needs them. Extension-block content is **not** decoded into the `Bundle`. Where the BPA pipeline needs decoded extension-block values, two options are open and the choice has not yet been finalised: decode on demand by the filter that needs them (using `bpv7`'s low-level CBOR primitives against the block's byte extent), or pre-parse at ingress and carry the values in `BundleMetadata`. The strong candidates for the latter are `BundleAge` and `PreviousNode`, since the pipeline references them frequently; `HopCount` is more borderline.
+The `Bundle` struct is **concrete** — a decoded `PrimaryBlock` alongside a `HashMap<u64, Block>` recording the structural index of extension blocks (byte extents, block types, flags, CRC types). The `PrimaryBlock` fields (source EID, destination EID, creation timestamp, lifetime, report-to EID, flags, CRC type) are decoded by the parser and live in `Bundle::primary` — they are the BPA's authoritative view of the bundle's identity and routing information, and the extra cost of carrying them parsed (rather than re-decoding from the wire bytes on demand) is warranted given how often the BPA needs them. Extension-block content is **not** decoded into the `Bundle`. Where the BPA pipeline needs decoded extension-block values, they are pre-parsed at ingress into `BundleMetadata` — the choice is resolved: `PreviousNode`, `BundleAge`, and `HopCount` are cached there (the filter redesign's **wire cache** group — a parser-derived cache of the stored bytes, never invalidated because stored bytes are immutable); anything else is decoded on demand from the block's byte extent.
 
-`BundleMetadata` is the BPA-internal pipeline-state structure (storage_name, status, ingress context, filter annotations like flow_label); the design intent is that it does not duplicate primary-block fields, which the BPA reads from `Bundle::primary`.
+`BundleMetadata` is the BPA-internal pipeline-state structure; `filter_subsystem_design.md` partitions it into provenance / wire cache / classification / infrastructure groups with per-group visibility. The design intent is unchanged: it does not duplicate primary-block fields, which the BPA reads from `Bundle::primary`.
 
 The Editor and filter implementations plan against the block index and produce **Transformers** (§6.1) — push-based streaming processors that receive stored bytes and emit transformed bytes. Block data is not accessed via the `Bundle` struct or a trait; it flows through the Transformer at execution time. Full struct details and crypto readiness in §7.
 
@@ -81,23 +81,23 @@ Bundle data I/O is fully sequential in both directions:
 - **Write (ingress)**: bytes arrive from the CLA in order and are written to storage sequentially. This is a **spool** — data flows through, is committed atomically, and is never modified in place.
 - **Read (egress)**: stored bytes are read sequentially and pushed through a Transformer chain. The Transformer captures header data as it flows past (for CRC computation, BPSec IPPT/AAD construction), substitutes or injects modified blocks, and passes through unchanged blocks. No random access is required.
 
-Sequential writes are the best-case I/O pattern for every backend (disk, SSD, NOR flash, S3). The sequential write model also enables **early drop**: the BPA can parse headers from the accumulation buffer and run early filters before the payload arrives. If rejected, the CLA cancels the transfer mid-stream — the payload is never received or stored (§5.4).
+Sequential writes are the best-case I/O pattern for every backend (disk, SSD, NOR flash, S3). The sequential write model also enables **early drop**: the BPA can parse headers from the accumulation buffer and run the pre-drain gate before the payload arrives. If rejected, the CLA cancels the transfer mid-stream — the payload is never received or stored (§5.4).
 
 ### 2.5. Memory Impact
 
 The 1GB memory ceiling (§1.2) is the most concrete demonstration of the architecture's effect. The tables below catalogue where Hardy's existing pipeline materialises bundle data in RAM, and what changes once the streaming architecture is in place.
 
-#### 2.5.1. Current Bottlenecks
+#### 2.5.1. Bottlenecks
 
-| # | Stage | Bottleneck | Memory |
-|---|-------|-----------|--------|
-| 1 | CLA reception | TCPCLv4 reassembles entire bundle before dispatch | 1GB alloc |
-| 2 | Parse | `RewrittenBundle::parse(&data)` needs complete `&[u8]` | 1GB resident |
-| 3 | Storage write | `BundleStorage::save(data)` — 1GB write while bundle is in RAM | 1GB I/O |
-| 4 | Filter reject | Cannot reject until after parse — all 1GB received and stored | Wasted |
-| 5 | Storage read | `BundleStorage::load()` reads entire 1GB back into memory | 1GB alloc |
-| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need second 1GB if buffer is shared | 1-2GB |
-| 7 | CLA forward | `CLA::forward(Bytes)` holds 1GB while transmitting | 1GB resident |
+| # | Stage | Bottleneck | Memory | State |
+|---|-------|-----------|--------|-------|
+| 1 | CLA reception | reassemble entire bundle before dispatch | 1GB alloc | resolved — segment streaming (§5.1) |
+| 2 | Parse | whole-buffer parse needs complete `&[u8]` | 1GB resident | resolved — streamed parser (§5.2) |
+| 3 | Storage write | `BundleStorage::save(Bytes)` — bundle in RAM through the write | 1GB I/O | remains — §3 / Phase A |
+| 4 | Reject timing | cannot reject until fully received and stored | wasted | resolved — pre-drain gate (§5.4) |
+| 5 | Storage read | `BundleStorage::load()` reads the whole bundle back | 1GB alloc | remains — §3 / Phase B |
+| 6 | Editor flatten | `flatten`/`flatten_inplace()` may need a second buffer | 1-2GB | remains — Transformer (§6.1) / Phase B |
+| 7 | CLA forward | `Cla::forward(Bytes)` holds the bundle while transmitting | 1GB resident | remains — `Cla::write` (§6.2) / Phase B |
 
 #### 2.5.2. With This Design
 
@@ -105,7 +105,7 @@ The 1GB memory ceiling (§1.2) is the most concrete demonstration of the archite
 |---|-------|--------|--------|
 | 1 | CLA reception | Chunks arrive via channel, no reassembly | Bounded |
 | 2 | Parse headers | Streamed parser, headers only | Kilobytes |
-| 3 | Early filter | Runs after headers, before payload | — |
+| 3 | Pre-drain gate | Runs after headers, before payload | — |
 | 4 | Payload to storage | Spools from CLA through pipeline to disk | Bounded |
 | 5 | Egress | Stored bytes stream through Transformer to CLA | Bounded |
 | 6 | CLA forward | Chunks via channel, no contiguous buffer | Bounded |
@@ -152,7 +152,9 @@ trait BundleStorage {
 
 Both `store` and `load` are fully sequential: every backend (local disk, SSD, NOR flash, S3, tape) handles these primitives naturally. The stream traits (§4) decouple the byte channel from the trait surface — each backend wraps whatever transport is most convenient.
 
-The `store` / `load` names match Hardy's existing storage convention and are unambiguous because the BPA is always the caller. Symmetric byte streaming on the CLA trait surfaces (§5.1, §6.2) uses `write(&dyn Receiver<Segment>)` instead — there the verb describes what the caller of the method is doing (§4).
+A **bounded head read needs no extra primitive**: the consumer calls `load` and drops its receiver once it has the bytes it wants (headers plus any declared payload peek); the backend sees `SendError` and stops streaming. Restart re-admission uses exactly this shape to re-supply filter invocation data (`filter_subsystem_design.md`), so the sequential-only model holds there too.
+
+The `store` / `load` names match Hardy's existing storage convention and are unambiguous because the BPA is always the caller. Byte streaming on the CLA egress surface (§6.2) uses `write(&dyn Receiver<Segment>)` — the verb describes what the caller of the method is doing (§4); the ingress method keeps the `dispatch` family (`Sink::dispatch_streamed`).
 
 ### 3.2. Commit and Abort
 
@@ -185,7 +187,7 @@ The trait surface stays implementation-agnostic. Internally, the producer side t
 
 Two operational cases trigger abort:
 
-- **Generational superseding**: a later generation's write filters complete and commit before an earlier generation's spool write finishes. The earlier generation is now obsolete — its producer drops without sending `Final`, and the spool task discards.
+- **Generational superseding**: a later generation's rewrite completes and commits before an earlier generation's spool write finishes. The earlier generation is now obsolete — its producer drops without sending `Final`, and the spool task discards.
 - **Forward-before-store**: the bundle is routed and streamed to the CLA (from the tee'd ingress data, §5.7) before the spool write completes. If the CLA confirms delivery and the bundle is tombstoned, the spool producer drops without committing — the staged data is discarded.
 
 The second case is the hot forward path optimisation: a small bundle tee'd during ingress may be forwarded and acknowledged before its spool write finishes.
@@ -230,13 +232,13 @@ pub enum RecvError {
 
 The `Result`-based shape (not `Option`) mirrors `closeable::Receiver` in `hardy-async` directly. Trait surfaces that need to distinguish graceful end from abort do so by carrying a `Segment` item type (§3.2); for those, `Err(Disconnected)` means "producer dropped without sending `Segment::Final`" — i.e. abort.
 
-The two traits are deliberately asymmetric in their receivers: `send` takes `&self` (fills commute — concurrent producers may share a sink), while `recv` takes `&mut self` (a receiver is a drain — each pull is a state transition of the one consumer's totally-ordered view, so exclusive access is the semantic contract, and implementors need no interior mutability). They are passed as `&dyn Sender<T>` / `&mut dyn Receiver<T>`, preserving object safety on the traits that consume them (`BundleStorage`, `MetadataStorage`, `Cla`, `ReadFilter`, `WriteFilter` — all held as `Arc<dyn ...>` chosen at runtime). The cost of `dyn` is one indirect call per item, negligible relative to underlying transport work.
+The two traits are deliberately asymmetric in their receivers: `send` takes `&self` (fills commute — concurrent producers may share a sink), while `recv` takes `&mut self` (a receiver is a drain — each pull is a state transition of the one consumer's totally-ordered view, so exclusive access is the semantic contract, and implementors need no interior mutability). They are passed as `&dyn Sender<T>` / `&mut dyn Receiver<T>`, preserving object safety on the traits that consume them (`BundleStorage`, `MetadataStorage`, `Cla` — all held as `Arc<dyn ...>` chosen at runtime). The cost of `dyn` is one indirect call per item, negligible relative to underlying transport work.
 
 Channel adapters live separately from the traits. The storage subsystem provides `ChannelSender<T>` wrapping `hardy_async::channel::Sender<T>`; the mirror `ChannelReceiver<T>` wraps `hardy_async::channel::Receiver<T>`. Tests use `Mutex<Vec<T>>`-backed collectors. None of these adapters appear in the trait surface.
 
 Byte streams use `Sender<Bytes>` and `Receiver<Bytes>` directly — no specialised aliases.
 
-**`Closeable` as the implementation primitive.** The `Sender<T>` / `Receiver<T>` pair is the natural abstraction over `Closeable` in `hardy-async`, which combines a channel with a cancellation token behind a single interface. Implementations that want cancellable cleanup — the registry's reconciler task (§5.1.2), per-call streaming receivers passed into `Sink::write`, anywhere a `select_biased!(cancel | recv)` pattern would otherwise be hand-rolled — compose naturally on top of `Closeable` without re-exposing the cancellation primitive in their trait surface.
+**`Closeable` as the implementation primitive.** The `Sender<T>` / `Receiver<T>` pair is the natural abstraction over `Closeable` in `hardy-async`, which combines a channel with a cancellation token behind a single interface. Implementations that want cancellable cleanup — the registry's reconciler task (§5.1.2), per-call streaming receivers passed into `Sink::dispatch_streamed`, anywhere a `select_biased!(cancel | recv)` pattern would otherwise be hand-rolled — compose naturally on top of `Closeable` without re-exposing the cancellation primitive in their trait surface.
 
 **Direction conventions for trait method parameters:**
 
@@ -253,7 +255,7 @@ Storage avoids the ambiguity entirely because the BPA is always the caller — `
 
 #### 5.1.1. Sink as Factory for Per-Bundle Channels
 
-The Sink stays as a `dyn Trait` — the abstraction boundary that lets the proto crate substitute a gRPC-streaming implementation for the local registry implementation invisibly to the CLA. What changes is the shape of the data-plane methods: rather than receiving complete bundles in memory, the Sink **manufactures a fresh per-bundle channel inside each `write()` call**, which lives only for the duration of that bundle. The Sink itself is not a long-lived channel; it is a factory that produces ephemeral ones on demand.
+The Sink stays as a `dyn Trait` — the abstraction boundary that lets the proto crate substitute a gRPC-streaming implementation for the local registry implementation invisibly to the CLA. What changes is the shape of the data-plane methods: rather than receiving complete bundles in memory, the Sink **manufactures a fresh per-bundle channel inside each `dispatch_streamed()` call**, which lives only for the duration of that bundle. The Sink itself is not a long-lived channel; it is a factory that produces ephemeral ones on demand.
 
 This framing matters for a handful of decisions that fall out of it:
 
@@ -302,13 +304,13 @@ trait Sink {
 }
 ```
 
-Streaming CLAs (e.g., TCPCLv4) construct a bounded channel, spawn a task that pushes each transfer segment as `Segment::Next` into the sender, and call `sink.write(&stream, ...)` to drive ingest. Backpressure propagates naturally through the bounded channel to TCP flow control. End of bundle is signalled by the CLA sending `Segment::Final`; the BPA observes it and finalises ingress. If the transfer is aborted (e.g., TCPCLv4 XFER_REFUSE arrives mid-stream), the CLA drops the sender without sending `Final` — the BPA sees `Err(Disconnected)` and discards the staged ingress state.
+Streaming CLAs (e.g., TCPCLv4) construct a bounded channel, spawn a task that pushes each transfer segment as `Segment::Next` into the sender, and call `sink.dispatch_streamed(&stream, ...)` to drive ingest. Backpressure propagates naturally through the bounded channel to TCP flow control. End of bundle is signalled by the CLA sending `Segment::Final`; the BPA observes it and finalises ingress. If the transfer is aborted (e.g., TCPCLv4 XFER_REFUSE arrives mid-stream), the CLA drops the sender without sending `Final` — the BPA sees `Err(Disconnected)` and discards the staged ingress state.
 
-If the BPA rejects mid-stream (e.g., early filter rejection), `write()` returns early; the CLA's pushing task sees `SendError` on its next push and tears down the wire transfer (e.g., emitting XFER_REFUSE on TCPCLv4).
+If the BPA stops reading mid-stream — a gate rejection, or an early acceptance that needs no further bytes (a duplicate identified from the headers) — `dispatch()` returns early and the CLA's pushing task sees `SendError` on its next push. That is only "stop pushing": the verdict rides `dispatch()`'s returned `Acceptance` — `Accepted` = acknowledge the transfer (on TCPCLv4 a still-open wire transfer is refused as already-complete rather than acknowledged); `Refused` = withhold the acknowledgement and tear down the wire transfer (e.g., XFER_REFUSE). An `Err` is never a verdict — it means the sink itself has failed.
 
 The BPA core only implements the streaming ingress path. (Implemented as the streamed-only `Sink::dispatch`; the §4 `write`/`read` naming convention was not adopted for this ingress method — it kept the `dispatch` family. The buffered `dispatch(Bytes, ..)` convenience existed as a provided default while the pair coexisted, and was removed when the pairs collapsed — callers pass whole buffers directly, `Bytes` being a `Receiver<Segment>`. Egress/filter surface naming is still open.)
 
-**Transitional convenience.** Retaining both `dispatch()` / `write()` (and likewise `Cla::forward()` / `Cla::write()` in §6.2) is transitional. Every existing CLA reads from a network stream and artificially materialises the full bundle before calling the non-streaming variant; all would benefit from migrating. Once migration is complete, the non-streaming methods can be removed.
+**Transitional convenience.** Retaining both `dispatch()` / `dispatch_streamed()` (and likewise `Cla::forward()` / `Cla::write()` in §6.2) is transitional. Every existing CLA reads from a network stream and artificially materialises the full bundle before calling the non-streaming variant; all would benefit from migrating. Once migration is complete, the non-streaming methods can be removed.
 
 ### 5.2. Streamed Parser
 
@@ -318,16 +320,21 @@ The parser lives in `bpv7::parse` as `BundleParser` and exposes a two-phase API:
 pub enum ParserProgress {
     NeedMore(usize),
     Ready(Bytes),
+    /// Headers and all BPSec blocks parsed, but the payload body exceeds
+    /// the buffer. `consumed` is everything received so far; `tail` is a
+    /// synchronous continuation (payload CRC, block/outer termination,
+    /// anti-smuggling checks) the caller feeds while draining the rest.
+    Partial { consumed: Bytes, tail: PayloadTail },
 }
 
 impl BundleParser {
     pub fn new(chunk_size: usize) -> Self;
 
     /// Phase 1: push each incoming chunk. Returns `NeedMore(n)` to
-    /// request more bytes, or `Ready(bytes)` once the bundle's
-    /// structure has been fully walked. `bytes` is the full
-    /// concatenation of everything pushed so far, ready to be
-    /// relayed into the spool in one piece.
+    /// request more bytes, `Ready(bytes)` once the bundle's structure
+    /// has been fully walked (`bytes` = the full concatenation, ready
+    /// to relay into the spool in one piece), or `Partial` for an
+    /// oversized payload (drain via `PayloadTail`).
     pub fn push(&mut self, data: Bytes) -> Result<ParserProgress, Error>;
 
     /// Phase 2: run the BPSec cross-block structural validation against
@@ -354,34 +361,34 @@ Internally a small state machine (`Start → PrimaryBlock → Blocks → Done`) 
 
 Splitting structural walk (`push`) from BPSec validation (`finish`) lets the caller hand `Ready(bytes)` to the spool immediately while `finish()` runs in parallel — the BPSec structural pass overlaps with the first spool write rather than serialising.
 
-#### 5.2.1. BPSec Verification as an Early Filter
+#### 5.2.1. BPSec Verification at the Gate
 
-**Keyed** BPSec operations (BIB hash verification, BCB decryption / tag verification) are **not** performed by the parser. They run as early filters, keeping key material and security policy out of the parser.
+**Keyed** BPSec operations (BIB hash verification, BCB decryption / tag verification) are **not** performed by the parser. They run at the pre-drain gate as fixed, KeyProvider-driven machinery, keeping key material and security policy out of the parser.
 
 **Keyless** structural validation of BPSec blocks **is** performed by the parser. RFC 9172 defines a set of inter-block structural rules — BCB MUST NOT target the primary block (§3.7), BCB MUST NOT target another BCB (§3.7), BIB MUST NOT target a BCB (§3.9), each block at most one BCB target (§3.9), BCBs MUST NOT set `delete_block_on_failure` (§3.7), BCBs targeting the payload MUST set `must_replicate` (§3.7), security operations unique per `(service, target)` (§2.6), every targeted block number must exist in the bundle — that are pure functions of the parsed `Bundle` index plus the Abstract Security Block contents of each BIB/BCB. No keys, no policy, no I/O.
 
 The parser handles BIBs and BCBs asymmetrically during the walk (zero cost for bundles with no security blocks):
 
 - **BCBs** are decoded inline during the block walk. The ASB (which describes what the BCB encrypts) is itself plaintext, so the parser parses each BCB's `OperationSet` as it sees it.
-- **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to a BPSec filter pass that has key access).
+- **BIBs** are recorded by block number in a pending list and decoded by `finish()`. The deferral is necessary because a BIB may itself be a BCB target — in which case its body is ciphertext until the BCB is decrypted. `finish()` parses every BIB whose body is plaintext; BIBs whose bodies are BCB-protected are skipped (their target blocks get `BibCoverage::Maybe`, deferred to the keyed verification step).
 
 `finish()` returns the `Bundle` index along with the pre-parsed BIB and BCB `OperationSet` maps, so downstream filters don't re-decode. The cross-block rules are applied here; on violation, `finish()` returns `Err` and the BPA aborts the spool write that ran in parallel. This is the earliest a structurally-malformed bundle can be rejected. The structural validators are exposed as `bpsec::{bib,bcb}::OperationSet::check` (composed by `bpv7::checks`) so offline tooling can run the same checks without standing up a filter pipeline.
 
-The early BPSec filter (running after the parser, with key access) has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — these are either deferred to a late filter or verified inline as a stream processor during payload spooling (§5.5).
+The keyed BPSec verification step (after the parser, with key access) has access to the accumulation buffer (all header blocks in memory) and the `Bundle` block index for structural navigation. Header-block BIBs are verified immediately. Payload-block BIBs require payload data — they are verified inline as the payload spools past (the deferred-BIB tee, §5.7).
 
-The split — keyless-structural in the parser, keyed-cryptographic in the filter — is the cleanest mapping of "what changes between deployments" onto layer boundaries. The structural rules are RFC-mandated and identical for every implementation; keys, key sources, and security policy vary by deployment.
+The split — keyless-structural in the parser, keyed-cryptographic in the gate's verification step — is the cleanest mapping of "what changes between deployments" onto layer boundaries. The structural rules are RFC-mandated and identical for every implementation; keys, key sources, and security policy vary by deployment.
 
 #### 5.2.2. Strict Canonicalisation
 
 The streaming parser **rejects** non-canonical CBOR as a hard parse error (`Error::NotCanonical`). There is no flag-and-defer mechanism and no late-stage canonicalisation filter: a bundle that doesn't already conform to RFC 9171 canonical encoding fails parse at the early-filter gate before any spool is opened.
 
-This is a tightening of the earlier design intent. The previous design flagged non-canonical blocks at parse time and rewrote them via a late canonicalisation filter after commit; that mechanism is dropped for three reasons:
+Rejection is chosen over the alternative — flag non-canonical blocks at parse and rewrite them after commit — for three reasons:
 
 - **Spool model fit.** Once bytes are committed, rewriting them in place is exactly the operation the spool model is trying to avoid.
 - **Implementation simplicity.** Non-canonical handling required a parallel code path on the hot path; rejection collapses it.
 - **Operational reality.** Well-behaved implementations produce canonical CBOR. Non-canonical bundles are an implementation bug at the source, not a workload to accommodate downstream.
 
-The old `RewrittenBundle::Rewritten` path — which conflated parsing with mutation and returned a `Vec<Span>` rewrite plan — is eliminated, as is the `Checked` / `Rewritten` / `Parsed` taxonomy in the previous parse surface (see §9.3 for the broader library / application split).
+There is no `RewrittenBundle` rewrite plan and no `Checked` / `Rewritten` / `Parsed` mode taxonomy in the parse surface (§9.3).
 
 **Parse failures do not generate status reports.** A bundle that failed to parse can't be trusted to identify its source: the primary-block fields the status-report flow would need (source EID, bundle ID, report-to EID) are exactly the fields whose decoding may itself have failed. Status reports are reserved for bundles that parsed successfully but were rejected later — by a filter, by a policy decision, or by an egress failure — where the `PrimaryBlock` is known-valid. There is no best-effort primary-block recovery for corrupted bundles.
 
@@ -397,153 +404,36 @@ The contiguity guarantee is "headers contiguous at the start of stored data," no
 
 Payload bytes that arrived after the parser completed continue to stream as subsequent chunks. This means that during egress, the Transformer (§6.1) receives header blocks first, allowing it to capture header data before the payload arrives.
 
-The `Span` model is **not needed at ingress** — it is internal to the Editor's Transformer (§6.1). At ingress, the accumulation buffer is mutated in place by pre-filters; the parser is pure and can be tested independently.
+The `Span` model is **not needed at ingress** — it is internal to the Editor's Transformer (§6.1). At ingress, the accumulation buffer is mutated only by the fixed finalize step; the parser is pure and can be tested independently.
 
-### 5.3. Filter Classification
+### 5.3. Filters in the Streaming Pipeline
 
-Filters are split into early and late hooks for both ingress and originate paths, plus egress and deliver:
+Filter design — kinds, hooks, registration, metadata, restart re-admission — is owned by [`filter_subsystem_design.md`](filter_subsystem_design.md). What matters to the byte pipeline is the shape of the contract: all three kinds (parallel **Verifier**; sequential **Classifier** at the input hooks; extension-block **Rewriter** at the output hooks) are payload-free, and each boundary has exactly one single-pass hook — Ingress on the pre-drain gate (§5.4), Originate pre-store, Egress in ClaSend between the per-hop rewrite and the BPSec seam, Deliver before payload decrypt.
 
-| Hook | When | Payload available? | Phase metadata |
-|------|------|-------------------|----------------|
-| `EarlyIngress` | After header parse, before payload | No | `&IngressMetadata` |
-| `EarlyOriginate` | After builder/parse, before spool write | No | `&IngressMetadata` |
-| `Ingress` (late) | After bundle fully stored | Yes (via storage) | `&IngressMetadata` |
-| `Originate` (late) | After bundle fully stored | Yes (via storage) | `&IngressMetadata` |
-| `Egress` | Bundle dequeued for forwarding | Yes (via storage) | `&EgressMetadata` |
-| `Deliver` | Bundle delivered to local service | Yes (via storage) | — |
+The byte contract keeps filters off the streaming path entirely:
 
-The originate-raw path (`local_dispatch_raw()`, bundles from services via gRPC) runs the same parser → early filter → canonicalise → spool pipeline as ingress, since service-provided bytes may be non-canonical. Only BPA-built bundles (`Builder`) skip canonicalisation.
+- An invocation receives `(&Bundle, data: &[u8])` — the resident header prefix plus, when a registered Classifier declared a payload peek, the first min(P, payload length) payload bytes. Block bodies are read through `bpv7`'s existing accessors (`Block::payload` / `Block::extract`), which return `None` for bytes not resident in `data`.
+- No filter receives a byte stream, holds a stream open, or blocks the drain: the hook runs on the accumulation buffer at the gate, and the payload spools past untouched.
+- Classifiers return a `MetadataDelta` (`class`, `route_key`, registered annotation slots) that the engine applies; the class drives the dispatch enqueue. Filters never mutate stored bytes — the egress Rewriter edits extension blocks per transmission attempt, in memory, so §6.4's read-only forward path holds by construction.
+- The originate-raw path (`local_dispatch_raw()`, bundles from services via gRPC) runs the same strict parser → gate pipeline as ingress — non-canonical service-provided bytes are rejected at parse (§5.2.2), never canonicalised.
 
-#### 5.3.1. Phase-Specific Metadata
+Built-in checks (validity, rfc9171 strictness) are pipeline code gated by `Config`, upstream of any registered filter; BPSec verification and the §5.1.1 failure-drop are fixed machinery (§5.2.1), never filters.
 
-Not all metadata needs to survive the bundle's full lifecycle. Phase-specific metadata is created for a processing phase and dropped when that phase completes:
+### 5.4. The Pre-Drain Gate
 
-- **`IngressMetadata`** — created at parse time, dropped after dispatch: per-block canonicalisation flags, ingress CLA identity and peer authentication status, accumulation buffer reference.
-- **`BundleMetadata`** — carried for the bundle's full lifecycle in storage: status, storage_name, received_at, flow label (set by early filters), routing state.
-- **`EgressMetadata`** — created when the bundle is dequeued for forwarding, dropped after CLA send completes or fails: target peer, CLA address, queue assignment, egress filter decisions.
+After all header blocks are parsed and before the payload arrives, the pre-drain gate runs: built-in checks, BPSec header verification, then the Ingress hook (Verifiers in parallel, then Classifiers).
 
-All filters receive `&BundleMetadata` (immutable). Write filters that need to update metadata send a `FilterOut::Metadata` replacement through their output stream (§5.3.3). This prevents `BundleMetadata` from becoming a dumping ground for phase-specific state.
+If the gate **rejects** (a built-in check, or a registered Ingress Verifier per `filter_subsystem_design.md`): the BPA returns from `Sink::dispatch()` without commencing a spool. The CLA's pushing task sees `SendError` on its next push and stops; the verdict itself is `dispatch()`'s returned `Acceptance` (the stream closing carries none) — a policy rejection of an invalid-by-headers bundle is *accepted-and-dropped* with reports, while a size-cap trip is `Refused`, from which the CLA cancels the wire transfer (e.g., TCPCLv4 XFER_REFUSE, UDPCLv2 stops accepting datagrams). For a 1GB payload from a rejected source, the BPA has received only the header blocks. Zero wasted I/O.
 
-#### 5.3.2. Filter Behaviour
+This is the mechanism behind the **link-layer-reach** motivator (§1.3): the BPA's reject decision propagates back to the wire, the CLA cancels the transfer mid-stream, and the link layer reclaims its resources without ever delivering the payload bytes. It is also effectively **DDoS protection**. Without the gate, a DTN node is trivially DoS-able: an attacker sends oversized bundles with forged sources, and the victim must receive, parse, store, and process the entire payload before deciding to reject. With it, the BPA inspects headers (~hundreds of bytes), rejects, and the CLA refuses the transfer mid-stream. The attacker pays for a few KB of headers; the victim pays nothing for the payload. This is critical for space DTN links where bandwidth is extremely scarce.
 
-**ReadFilters** make a filtering decision only — accept or reject. They cannot mutate bundle data or metadata.
+If the gate **accepts**: open a spool via `BundleStorage::store()`, push the accumulated header bytes as the first chunk, then forward subsequent CLA chunks through any configured transforms into the spool channel.
 
-**WriteFilters** can mutate both data and metadata, sending updates through their `&dyn Sender<FilterOut>` output.
-
-The early/late distinction controls what bytes filters receive, not which trait they use:
-
-- **Early filters** (before payload arrival) receive a `Receiver<Bytes>` that yields the accumulation buffer as a single `Bytes` then `None` — all header blocks in one chunk; payload is not available.
-  - *Early ReadFilter*: inspects headers, accepts/rejects (e.g., bundle validity, BPSec header-block BIB verification via Verifier §6.1.2).
-  - *Early WriteFilter*: inspects headers, can update metadata (e.g., set `flow_label` / priority) or configure inline transforms on the payload stream (§5.5).
-
-  Early filters cannot inspect payload content. This is critical for space DTN durability: if early filters accept, the original wire bytes are committed to storage before any data mutation occurs. A valid bundle is never lost because a mutation failed mid-stream.
-
-- **Late filters** (after bundle fully stored) receive a `Receiver<Bytes>` backed by `BundleStorage::load()`:
-  - *Late ReadFilter*: inspects payload content, accepts/rejects. Late read filters at the same level run in parallel via `Bytes::clone()` fan-out (§5.3.3).
-  - *Late WriteFilter*: rewrites the bundle via generational save (§5.6); can also update metadata via `FilterOut::Metadata`.
-
-**Canonicalisation** is *not* a pipeline stage. Non-canonical CBOR is a hard parse error at ingress (§5.2.2), so there is no canonicalisation filter and no generational rewrite for it. (Earlier drafts modelled it as a late write filter; that was dropped — see §5.2.2. The shipped parser rejects non-canonical encodings outright.)
-
-BPSec integrity and confidentiality are implemented as built-in filters, not as separate Signer/Encryptor/Verifier types. The filter implementations use the Editor and BPSec crypto primitives (§6.1.6) internally.
-
-#### 5.3.3. Filter API
-
-The current filter API receives `(Bundle, Bytes)` and returns `(Bundle, Bytes)`. This does not work in the streaming model because the full `Bytes` may not be in memory. The streaming API uses the stream traits from §4 directly: `Receiver<Bytes>` for input, `Sender<FilterOut>` for write-filter output:
-
-```rust
-enum FilterResult {
-    Continue,
-    Drop(Option<ReasonCode>),
-}
-
-enum FilterOut {
-    Data(Bytes),
-    Bundle(Bundle),
-    Metadata(BundleMetadata),
-}
-
-#[async_trait]
-trait ReadFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &Bundle,
-        metadata: &BundleMetadata,
-        input: &dyn Receiver<Bytes>,
-    ) -> Result<FilterResult>;
-}
-
-#[async_trait]
-trait WriteFilter: Send + Sync {
-    async fn filter(
-        &self,
-        bundle: &Bundle,
-        metadata: &BundleMetadata,
-        input: &dyn Receiver<Bytes>,
-        output: &dyn Sender<FilterOut>,
-    ) -> Result<FilterResult>;
-}
-```
-
-Both traits share `FilterResult` (accept or reject) and receive `&BundleMetadata` (immutable). The `Bundle` is the block index — offsets, types, flags. The filter uses the index to navigate the byte stream and slices into it to read block content.
-
-**ReadFilter** receives an input `Receiver<Bytes>` only. It pulls chunks via `input.recv().await` until `None`, inspecting block content, and returns accept/reject.
-
-**WriteFilter** receives both input and output. It reads from `input`, transforms, and pushes results through `output.send(...)`:
-
-- `FilterOut::Bundle(Bundle)` — updated block index, sent early so chained write filters can begin planning before byte streaming completes
-- `FilterOut::Metadata(BundleMetadata)` — updated metadata, sent as a full replacement (last one wins)
-- `FilterOut::Data(Bytes)` — transformed bundle bytes
-
-The filter sends `Bundle` and optionally `Metadata` through the output, then streams `Data`. No mutable borrow on `BundleMetadata` is needed; updates are sent as copies. The filter uses the Editor and Transformer internally — that is a private implementation detail.
-
-**Byte source varies by phase:**
-
-- Early filters: BPA wraps the accumulation buffer in a `Receiver<Bytes>` that yields a single chunk then `None`.
-- Late filters: BPA spawns a `BundleStorage::load()` task pushing into a channel, hands the receiver-side `Receiver<Bytes>` to the filter.
-- Egress filters: same as late — streamed from storage.
-
-The filter does not know or care which adapter backs the `Receiver<Bytes>`.
-
-**Parallel read filters** at the same dependency level each receive their own `&dyn Receiver<Bytes>`. The BPA reads from storage once and fans out via `Bytes::clone()` (refcount bump, not a data copy) into each filter's bounded channel. Backpressure propagates naturally.
-
-```
-load()
-  |
-  fan-out (Bytes::clone per filter)
-  |         |         |
-  v         v         v
-ReadFilter ReadFilter ReadFilter
-  (bounded)  (bounded)  (bounded)
-```
-
-**Write filters** run sequentially. The BPA wires the streams for a generational rewrite (§5.6):
-
-```
-load() → Receiver<Bytes> → WriteFilter
-                                |
-                                v
-                    Sender<FilterOut> → BPA routes:
-                        Bundle   → next filter's index
-                        Metadata → metadata store
-                        Data     → next filter's Receiver<Bytes>
-                                   (or store() on the last filter)
-```
-
-**Write filter chaining** pipelines through the stream traits: the BPA extracts `Data` variants from each filter's `Sender<FilterOut>` and exposes them as the next filter's `Receiver<Bytes>`, while routing `Bundle` and `Metadata` to the BPA's own state. The `Bundle` index is sent through the channel early — the next filter can begin planning before the previous filter finishes streaming. Only the final filter's output is spooled to storage as a single generational rewrite.
-
-### 5.4. Early Filter Gate
-
-After all header blocks are parsed and before the payload arrives, the early filter gate runs.
-
-If a pre-filter **rejects**: the BPA returns from `Sink::write()` without commencing a spool. The CLA's pushing task sees `SendError` on its next push and can cancel the transfer (e.g., TCPCLv4 XFER_REFUSE, UDPCLv2 stops accepting datagrams). For a 1GB payload from a rejected source, the BPA has received only the header blocks. Zero wasted I/O.
-
-This is the mechanism behind the **link-layer-reach** motivator (§1.3): the BPA's reject decision propagates back to the wire, the CLA cancels the transfer mid-stream, and the link layer reclaims its resources without ever delivering the payload bytes. It is also effectively **DDoS protection**. Without early filtering, a DTN node is trivially DoS-able: an attacker sends oversized bundles with forged sources, and the victim must receive, parse, store, and process the entire payload before deciding to reject. With early filtering, the BPA inspects headers (~hundreds of bytes), rejects, and the CLA refuses the transfer mid-stream. The attacker pays for a few KB of headers; the victim pays nothing for the payload. This is critical for space DTN links where bandwidth is extremely scarce.
-
-If a pre-filter **accepts**: open a spool via `BundleStorage::store()`, push the accumulated header bytes as the first chunk, then forward subsequent CLA chunks through any configured transforms into the spool channel.
+With a registered payload peek (`filter_subsystem_design.md`: P > 0), the hook runs once min(P, payload length) payload bytes have accumulated — a bounded extension of the same gate; the peek bytes sit on the invocation side of the spool boundary and are never cached or persisted.
 
 ### 5.5. Inline Payload Transforms and Durability
 
-A pre-filter may configure a transform on the payload stream. The primary use case is **security gateway payload decryption**.
+Security policy (fixed machinery, not a registered filter) may configure a transform on the payload stream. The primary use case is **security gateway payload decryption**.
 
 Ingress payload transforms use Transformers (§6.1) — the same push-based model used for egress. CRC verification uses a Verifier (§6.1.2) — the same push-based consumer model. These compose sequentially:
 
@@ -560,29 +450,27 @@ CLA chunks -> [CRC Verifier] -> [BPSec decrypt Transformer] -> spool channel
 
 ### 5.6. Generational Rewrites
 
-Bundle data has two generations during ingress: the original wire bytes, and the final output after all late write filters.
+Bundle data has at most two generations during ingress: the original wire bytes, and — only when fixed post-drain machinery must rewrite (e.g. the ingress-time payload-BIB insertion, §6.1.5) — a second generation produced by streaming generation 0 through the rewrite into a new spool.
 
 ```
 Generation 0: original wire-format bytes from CLA
   committed during Phase B (spool from CLA, §5.7)
 
   → load(gen0) → Receiver<Bytes>
-  → WriteFilter 1 (Receiver<Bytes> → Sender<FilterOut>)
-  → WriteFilter 2 (Receiver<Bytes> → Sender<FilterOut>)
-  → ...
+  → fixed rewrite machinery (e.g. payload-BIB insertion)
   → store() → new spool
 
-Generation 1: final output after all late write filters
+Generation 1: rewritten output
   committed (fsync + rename)
   metadata.update(storage_name = gen1)
   delete(gen0)
 ```
 
-Late write filters chain through the stream traits — each filter's `Sender<FilterOut>` output `Data` variants become the next filter's `Receiver<Bytes>` input (§5.3.3). No intermediate spools between filters. Only the final output is committed as a new generation.
+Registered filters never drive a generational rewrite — they do not mutate stored bytes (§5.3). Only the final output is committed as a new generation.
 
-**Crash recovery**: the metadata's `storage_name` always points to the last successfully committed generation. If the BPA crashes during write filter processing, the in-flight `store()` task's temp file has no metadata reference — cleaned up on recovery. The last committed generation is intact. Recovery reruns the write filters for the current processing phase from the last committed generation.
+**Crash recovery**: the metadata's `storage_name` always points to the last successfully committed generation. If the BPA crashes during the rewrite, the in-flight `store()` task's temp file has no metadata reference — cleaned up on recovery. The last committed generation is intact; recovery reruns the rewrite from it.
 
-If no late write filters mutate (or none are registered), generation 0 is the final generation — no rewrite occurs.
+In the common case there is nothing to rewrite and generation 0 is the final generation.
 
 ### 5.7. Complete Ingress Flow
 
@@ -590,7 +478,7 @@ If no late write filters mutate (or none are registered), generation 0 is the fi
 CLA wire
   | transfer segments (or complete Bytes via dispatch())
   v
-sink.write(stream: &dyn Receiver<Segment>, ...)
+sink.dispatch_streamed(stream: &dyn Receiver<Segment>, ...)
   | CLA pushes Segment::Next(bytes) into the channel feeding the Receiver
   | CLA sends Segment::Final(bytes) at end of bundle; drop without Final = abort
   v
@@ -598,13 +486,14 @@ Ingest
   |-- Phase A:
   |     accumulate + parse primary block
   |     accumulate + parse extension blocks
-  |     (non-canonical blocks flagged, not rewritten)
+  |     (non-canonical CBOR: hard parse error, §5.2.2)
   |
-  |-- Early filter gate (EarlyIngress) — read-only
-  |     includes BPSec header verification
-  |     sets flow_label / priority on BundleMetadata
+  |-- Pre-drain gate + Ingress hook — Verifiers ∥, then Classifiers
+  |     built-in checks (lifetime/hop/expiry) + BPSec header verification
+  |     Classifiers apply the MetadataDelta (class, route_key, slots)
+  |     (a declared payload peek waits for min(P, payload len) bytes)
   |
-  |     REJECT --> return from Sink::write()
+  |     REJECT --> return from Sink::dispatch_streamed()
   |               (zero I/O, no storage, no metadata)
   |
   |     ACCEPT --> spawn BundleStorage::store(spool_stream)
@@ -615,30 +504,28 @@ Ingest
   |-- Phase B (tee'd):
   |     payload chunks pulled from the CLA stream are tee'd:
   |       ├→ spool_sender.send(chunk)  [feeds store() task]
-  |       └→ late read filters         [Bytes::clone fan-out]
-  |            (payload inspection, BIB verification,
-  |             ingress-time HMAC computation)
+  |       └→ payload-BIB verification  [fixed pipeline: deferred_bibs,
+  |             incremental HMAC as the bytes stream past]
   |
   |-- on CLA stream closed (end of bundle):
   |     drop spool_sender → store() returns storage_name (fsync + rename)
-  |     Late write filter gate (Ingress) — mutating
-  |       canonicalise flagged blocks (if policy, generational rewrite)
-  |       other late filter mutations (generational rewrite)
-  '--   enqueue(dispatch, priority from early filter)
+  |     Finalize (fixed): deferred payload-BIB results,
+  |       §5.1.1 failure-drop / removal rewrites
+  '--   enqueue(dispatch; class from the Classifier chain)
         routing result available (started during Phase B)
 ```
 
-Routing lookup begins as soon as early filters accept and metadata is stored — it needs only `BundleMetadata` (destination, priority), not payload data. The lookup runs concurrently with payload spooling and late read filters. By the time late write filters complete and the bundle is ready for dispatch, the routing result is typically already available.
+Routing lookup begins as soon as the gate accepts and metadata is stored — it needs only `BundleMetadata` (destination, class), not payload data. The lookup runs concurrently with payload spooling; by the time the drain finalizes and the bundle is ready for dispatch, the routing result is typically already available.
 
-Late read filters that reject during spooling cause the spool task to be cancelled (token signalled). This wastes some I/O but is necessary: the BPA has accepted custody from the CLA after early filters pass, so spooling must begin immediately. A late read filter rejection is a policy decision to drop a bundle the BPA already owns.
+A payload-BIB failure detected during spooling cancels the spool task (token signalled). This wastes some I/O but is necessary: the BPA has accepted custody from the CLA once the gate passes, so spooling must begin immediately. A post-gate drop is a decision about a bundle the BPA already owns.
 
 ## 6. Egress: Storage to CLA
 
 ### 6.1. The Transformer Model
 
-The egress path is driven by **Transformers** — push-based streaming processors that consume stored bundle bytes sequentially and emit transformed bytes. Transformers are produced by the Editor and filter implementations during a planning phase that inspects the `Bundle` block index, then executed by the BPA pushing stored bytes through.
+The egress path is driven by **Transformers** — push-based streaming processors that consume stored bundle bytes sequentially and emit transformed bytes. Transformers are produced by the Editor and the BPSec egress stages during a planning phase that inspects the `Bundle` block index, then executed by the BPA pushing stored bytes through.
 
-**Caveat.** The Transformer model is the current proposal but the specific shape is provisional — the streaming parser refactor in flight will likely influence the final form of the late-filter trait surface, and the Transformer closure signature may evolve. The load-bearing properties (push-based, chunk-driven, no full-bundle materialisation, composable without random access) are what the rest of the design depends on; the precise interface is not.
+**Caveat.** The Transformer model is the current proposal but the specific shape is provisional — the specific closure signature may evolve as the egress executor is built. The load-bearing properties (push-based, chunk-driven, no full-bundle materialisation, composable without random access) are what the rest of the design depends on; the precise interface is not.
 
 #### 6.1.1. Transformer Interface
 
@@ -713,9 +600,9 @@ Same `Option<Bytes>` input contract. The Verifier captures primary block fields 
 
 Use cases:
 
-- **Early ingress**: Verifier pushed the accumulation buffer, validates header-block BIBs against in-memory header data.
+- **Ingress gate**: Verifier pushed the accumulation buffer, validates header-block BIBs against in-memory header data.
 - **Payload BIB**: Verifier runs alongside ingress spooling, receiving the same bytes that flow to storage.
-- **Filters**: a filter can run a Verifier alongside a Transformer, feeding the same input to both. The Verifier validates while the Transformer transforms; the filter infrastructure checks the Verifier's result before committing.
+- **Composed stages**: a stage can run a Verifier alongside a Transformer, feeding the same input to both; the executor checks the Verifier's result before committing.
 
 #### 6.1.3. Editor Produces a Transformer
 
@@ -730,11 +617,11 @@ The planning phase does not need `source_data` — it only inspects the block in
 
 #### 6.1.4. Chained Transformers
 
-Transformers compose by encapsulation. An outer filter wraps an inner filter's Transformer, processing its output:
+Transformers compose by encapsulation. An outer stage wraps an inner stage's Transformer, processing its output:
 
 ```
-Confidentiality filter
-  └─ Integrity filter
+Confidentiality stage
+  └─ Integrity stage
        └─ Editor's Transformer
             └─ (receives stored bytes)
 ```
@@ -742,16 +629,16 @@ Confidentiality filter
 Each stage has full structural knowledge at planning time:
 
 - **Editor** plans against the original `Bundle` index, produces a Transformer and an updated `Bundle` index reflecting its modifications.
-- **Integrity filter** uses the Editor to insert a BIB block, then wraps the Editor's Transformer. The wrapping Transformer:
+- The **integrity stage** uses the Editor to insert a BIB block, then wraps the Editor's Transformer. The wrapping Transformer:
   - Pushes input bytes into the Editor's Transformer
   - Receives the Editor's `Emit` outputs
   - Captures IPPT fields (primary block data) as they flow past
   - Buffers BIB target blocks, computes HMAC incrementally
   - Injects BIB blocks at the correct position
   - Emits its own output
-- **Confidentiality filter** wraps similarly — captures AAD from the primary block, buffers BCB target blocks, encrypts, and injects BCB blocks.
+- The **confidentiality stage** wraps similarly — captures AAD from the primary block, buffers BCB target blocks, encrypts, and injects BCB blocks.
 
-The `Signer` and `Encryptor` as standalone public types are **eliminated**. Their orchestration logic dissolves into the integrity and confidentiality filter implementations. The Editor remains as a general-purpose library component; BPSec crypto primitives remain as reusable low-level APIs (§6.1.6).
+The `Signer` and `Encryptor` as standalone public types are **eliminated**. Their orchestration logic dissolves into the BPSec egress machinery (the integrity and confidentiality stages). The Editor remains as a general-purpose library component; BPSec crypto primitives remain as reusable low-level APIs (§6.1.6).
 
 The outermost Transformer is the only thing the executor touches. Stored bytes flow in, CLA-ready bytes flow out. The layered planning and execution is invisible to the caller.
 
@@ -761,7 +648,7 @@ Header-target crypto (BIB/BCB on extension blocks) is handled naturally by the T
 
 Payload-target crypto has a **wire-format ordering constraint**: the BIB/BCB is an extension block that must appear before the payload block (RFC 9171 requires payload last), but its content (the HMAC digest or authentication tag) can only be computed after reading the entire payload. This is inherent to BPv7.
 
-**Payload BIB (HMAC) — two-pass at egress.** If an integrity filter adds a payload BIB at egress, the executor must read the stored bundle twice:
+**Payload BIB (HMAC) — two-pass at egress.** If the BPSec seam adds a payload BIB at egress, the executor must read the stored bundle twice:
 
 1. *First pass*: stream the payload through the Transformer to compute the HMAC incrementally (`mac.update()` is push-ready). The Transformer accumulates IPPT header fields and the HMAC digest but emits no output.
 2. *Second pass*: the Transformer now has the HMAC result. It emits header blocks, the BIB (with HMAC value), then passes through the payload to the CLA.
@@ -772,7 +659,7 @@ For local disk / NOR flash, the second read is essentially free (OS page cache).
 
 - The security gateway's ingress policy identifies bundles that need a payload BIB.
 - A Verifier-like consumer runs alongside payload spooling, computing the HMAC incrementally as bytes flow to storage.
-- The BIB is added as a late ingress filter (generational rewrite) after the HMAC is complete.
+- The BIB is added by a post-drain generational rewrite (§5.6) after the HMAC is complete.
 - At egress, the BIB is already stored — no extra work.
 
 This avoids the two-pass problem entirely. The HMAC is computed once, during the single ingress pass, and durably stored.
@@ -781,7 +668,7 @@ This avoids the two-pass problem entirely. The HMAC is computed once, during the
 
 #### 6.1.6. BPSec Low-Level API Surface
 
-The BPSec crypto primitives are reusable building blocks for filter implementations. They remain a low-level library, currently in `bpv7/src/bpsec/` (moving to `hardy-bundle` if and when that crate split lands — see §9.1):
+The BPSec crypto primitives are reusable building blocks for the BPSec machinery. They remain a low-level library, currently in `bpv7/src/bpsec/` (moving to `hardy-bundle` if and when that crate split lands — see §9.1):
 
 **IPPT/AAD construction** — the core of both signing and encryption. Constructs the integrity or authentication input from scope flags, primary block bytes, and target/security block header fields. The construction is a sequence of incremental updates:
 
@@ -790,7 +677,7 @@ scope_flags → [primary block bytes] → [target header fields]
   → [security header fields] → target payload bytes
 ```
 
-Each step is a `mac.update()` or AAD accumulation call. The filter provides these pieces as they flow through the Transformer — primary block captured early, target block header fields from the `Bundle` index, payload bytes streamed incrementally.
+Each step is a `mac.update()` or AAD accumulation call. The stage provides these pieces as they flow through the Transformer — primary block captured early, target block header fields from the `Bundle` index, payload bytes streamed incrementally.
 
 **Crypto operations:**
 
@@ -799,20 +686,20 @@ Each step is a `mac.update()` or AAD accumulation call. The filter provides thes
 
 **Key management** — `KeySource` trait, `Key` struct, AES key wrapping. Already clean and filter-agnostic.
 
-**Operation result types** — `Parameters`, `Results`, `OperationSet`. These are the CBOR serialization format for BIB/BCB block payloads. Filters use them to encode the BIB/BCB data that the Editor inserts.
+**Operation result types** — `Parameters`, `Results`, `OperationSet`. These are the CBOR serialization format for BIB/BCB block payloads. The machinery uses them to encode the BIB/BCB data that the Editor inserts.
 
 **What is removed:**
 
 - `BlockSet` trait — replaced by the Transformer's internal state capturing block data as it streams past
-- `Signer` struct — orchestration dissolves into integrity filter
-- `Encryptor` struct — orchestration dissolves into confidentiality filter
+- `Signer` struct — orchestration dissolves into the integrity stage
+- `Encryptor` struct — orchestration dissolves into the confidentiality stage
 - `EditorBlockSet` — no longer needed without `BlockSet`
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
 > **Landed state (2026-08, `feat/cla-forward-streamed`, then collapsed).** The streaming variant first landed as `Cla::forward_streamed` alongside the buffered `forward(Bytes)`, with a buffering default adapter bridging the pair. The pair has since been collapsed: `Cla::forward` is now the streamed-only method (keeping `forward`'s `bundle_id` correlation parameter, which the sketch predates), and the adapter body became the public helper `stream::buffer_stream` — it buffers the stream via `concat_stream`, enforces `total_len` exactly (with a `usize` pre-flight for 32-bit targets), and maps truncation to `StreamCancelled`, overrun to `PayloadTooLarge`, and short delivery to `PayloadUnderrun`. CLAs that need a contiguous bundle call it explicitly (marked `INTERIM BUFFERING` at each site). The dispatcher always forwards through the streamed door, passing the loaded bundle as `&mut Bytes` (a whole buffer is itself a one-segment `Receiver`) with `total_len = data.len()`. The egress executor, streamed storage `load`, and the Transformer-derived `total_len` below remain pending.
 
-The existing `Cla::forward(Bytes)` method is retained for CLAs that expect a complete bundle in memory. A new streaming variant takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring `Sink::write` from §5.1:
+The existing `Cla::forward(Bytes)` method is retained for CLAs that expect a complete bundle in memory. A new streaming variant takes a `Receiver<Segment>` from which the CLA pulls chunks, mirroring `Sink::dispatch_streamed` from §5.1:
 
 ```rust
 trait Cla {
@@ -862,8 +749,8 @@ The Transformer's output goes directly to the CLA — it is never written back t
 
 This means:
 
-- **Header segment growth is not a problem.** The Editor may add blocks, integrity filters may insert BIBs — but the output streams to the CLA, not back to storage.
-- **No generational rewrite for forwarding.** Generational saves (§5.6) are only for late filter mutations. The forward path is read-once, stream through Transformer, delete.
+- **Header segment growth is not a problem.** The Editor may add blocks, the integrity stage may insert BIBs — but the output streams to the CLA, not back to storage.
+- **No generational rewrite for forwarding.** Generational saves (§5.6) are only for the fixed post-drain rewrites. The forward path is read-once, stream through Transformer, delete.
 
 ### 6.5. Failure Handling
 
@@ -893,7 +780,7 @@ pub struct PrimaryBlock {
 
 Each extension `Block` records structural metadata only: byte extent in the wire data (`Range<u64>`), block type, flags, CRC type, BPSec coverage state (BIB / BCB references), and data range within the block extent. `u64` (rather than `usize`) is used so offsets remain valid on 32-bit targets where bundle storage may exceed `usize::MAX`. There is no `dyn Bundle` trait, no `BlockSet` trait, and no multiple implementations — a single concrete representation is used everywhere (parser output, Editor input, Transformer output).
 
-`BundleMetadata` is the BPA's pipeline-state structure, separate from `Bundle`. It currently carries `storage_name`, `status` (processing state), `ReadOnlyMetadata` (ingress context: received time, peer node, peer address, ingress CLA, next-hop EID), and `WritableMetadata` (filter-mutable annotations such as `flow_label`). The design intent is that decoded primary-block fields are read from `Bundle::primary` rather than duplicated in `BundleMetadata`; the port to that state is in progress.
+`BundleMetadata` is the BPA's pipeline-state structure, separate from `Bundle`. It carries the metadata partition of `filter_subsystem_design.md`: provenance / wire cache / classification / infrastructure groups with per-group visibility (`WritableMetadata` and `flow_label` are gone — classification replaced them). `status` is a field of the BPA's bundle record outside the metadata (queue assignment, interim shape), and the resolved next hop rides the `ForwardPending` queue-assignment record. Decoded primary-block fields are read from `Bundle::primary`, never duplicated in metadata.
 
 Clean separation: `bpv7` owns wire-format structure plus the authoritative decoded primary block; `bpa` owns pipeline state and operational semantics.
 
@@ -909,7 +796,7 @@ The parser returns the concrete `Bundle` (decoded `PrimaryBlock` plus extension-
 | BIB HMAC-SHA2 | `hmac` v0.13 | Yes (`mac.update()`) | **Low** — initialise with headers, push payload |
 | BCB AES-GCM | `aes-gcm` v0.10 | No (contiguous only) | **High** — need streaming wrapper or crate swap |
 
-AES-GCM is AES-CTR + GHASH, both inherently streamable. A streaming wrapper built on the low-level `aes` + `ghash` crates is feasible but deferred to the security gateway phase. The Transformer model makes this straightforward — the confidentiality filter's Transformer processes payload bytes incrementally as they flow through.
+AES-GCM is AES-CTR + GHASH, both inherently streamable. A streaming wrapper built on the low-level `aes` + `ghash` crates is feasible but deferred to the security gateway phase. The Transformer model makes this straightforward — the confidentiality stage's Transformer processes payload bytes incrementally as they flow through.
 
 ## 8. Storage Segmentation and Caching
 
@@ -944,6 +831,8 @@ No header segment caching is needed — the Transformer model does not require r
 
 Every backend handles the trait natively without adaptation layers.
 
+Backends differ in preferred **concurrency**, not just I/O pattern: S3 benefits from parallel streams, a single spinning disk wants few and sequential (N concurrent sequential streams degrade to seek thrash), and NOR flash is read-fast/write-slow. Concurrent stream count is therefore a scheduling input, not a backend-internal detail — the backend supplies **directional lane counts** (read lanes / write lanes, each `Option<NonZeroUsize>` with `None` = no preferred limit; in the policy doc's vocabulary a lane is one bounded-quantum service channel, and a resource's lane count is its honest parallelism) to the scheduling layer (`policy_subsystem_redesign.md`, the storage seat).
+
 ## 9. Crate Structure
 
 ### 9.1. Crate Responsibilities
@@ -959,7 +848,7 @@ The `Sender<T>` / `Receiver<T>` stream *traits* and their channel adapters (`Cha
 - CBOR encoding/decoding (`FromCbor`, `ToCbor`)
 - Block structures, CRC, EID, bundle types (`Block`, `Flags`, `Id`)
 - `Bundle` struct — concrete block index (`HashMap<u64, Block>`)
-- Parser — wire bytes → `Bundle` index + canonicalisation flags
+- Parser — wire bytes → `Bundle` index (strict canonical, §5.2.2); streaming `push`/`finish` + `PayloadTail`
 
 **`hardy-bundle`** (optional split, deferred) — bundle manipulation and Transformer production:
 
@@ -969,7 +858,7 @@ The `Sender<T>` / `Receiver<T>` stream *traits* and their channel adapters (`Cha
 - `Span` — internal to Editor's Transformer (not exposed)
 - BPSec low-level crypto APIs (IPPT/AAD construction, HMAC, AES-GCM, key management, operation result types)
 
-The `Signer` and `Encryptor` structs are eliminated; their orchestration logic moves into BPSec filter implementations in the `bpa` crate. The Editor and crypto primitives remain as reusable library components.
+The `Signer` and `Encryptor` structs are eliminated; their orchestration logic moves into the BPSec egress stages in the `bpa` crate. The Editor and crypto primitives remain as reusable library components.
 
 Whether to split `hardy-bundle` from `bpv7` is deferred until the Transformer interfaces stabilise. The Editor is tightly coupled to `bpv7` types; the split becomes a straightforward refactor once the boundary is clear.
 
@@ -979,23 +868,23 @@ Whether to split `hardy-bundle` from `bpv7` is deferred until the Transformer in
 - Storage traits and backends (`store()` / `load()` / `delete()`)
 - Cache (small bundle caching, take semantics)
 - Dispatcher, routing, queues, reaper
-- CLA/service registries; `Sink::write()` / `Cla::write()` surfaces
-- `BundleMetadata` — BPA-internal state (status, flow_label, decoded primary block fields, etc.)
-- Filter trait and infrastructure (uses `Receiver<Bytes>` for input, `Sender<FilterOut>` for write-filter output)
-- Built-in BPSec filters (integrity, confidentiality) — use Editor + crypto primitives to produce Transformers and Verifiers
-- Generational rewrite executor (loads stored bundle, pipes through write filter chain into a new `store()` call)
+- CLA/service registries; `Sink::dispatch_streamed()` / `Cla::write()` surfaces
+- `BundleMetadata` — BPA-internal state (provenance, wire cache, classification, infrastructure — the partition in `filter_subsystem_design.md`)
+- Filter traits and frozen per-hook chains (`filter_subsystem_design.md` — payload-free, no byte streams)
+- BPSec egress machinery (integrity, confidentiality stages) — uses Editor + crypto primitives to produce Transformers and Verifiers
+- Generational rewrite executor (loads stored bundle, pipes through the fixed rewrite machinery into a new `store()` call)
 
 ### 9.2. Dependency Graph
 
 ```
 hardy-async ← bpv7 ← [hardy-bundle] ← bpa
-(Sender,    (wire    (Editor,         (Filter trait,
- Receiver,    types,   Transformer,    BPSec filters,
+(Sender,    (wire    (Editor,         (filter chains,
+ Receiver,    types,   Transformer,    BPSec seams,
  channels)     Bundle   Verifier,       BundleMetadata,
                index,   BPSec crypto    egress executor,
                Parser)  primitives)     storage,
                                         cache,
-                                        Sink::write,
+                                        Sink::dispatch_streamed,
                                         Cla::write)
                             ↑                ↑
                         Services          CLAs
@@ -1005,13 +894,11 @@ hardy-async ← bpv7 ← [hardy-bundle] ← bpa
 - `hardy-bundle` (if split) depends on `bpv7` for wire types and `hardy-async` for stream traits, not on `bpa`.
 - **Services** depend on `hardy-bundle` (Builder, Editor, types) and `bpa` (Service trait).
 - **CLAs** depend on `bpa` (Cla trait, Sink) and `hardy-async` (Receiver for byte streaming) but not on `hardy-bundle` — they are pure transport, delivering wire bytes to the BPA.
-- **BPSec filters** (in `bpa`) use `hardy-bundle` for the Editor and crypto primitives. They are built-in filter implementations, not separate public APIs.
+- **BPSec machinery** (in `bpa`) uses `hardy-bundle` for the Editor and crypto primitives — built-in pipeline implementations, not separate public APIs.
 
 ### 9.3. Library/Application Responsibility Split
 
 The crate boundary follows a single principle: **`bpv7` owns wire-format truth; `bpa` owns operational meaning.** `bpv7` exposes the smallest set of building blocks that lets every consumer assemble what it needs. Consumer-specific helpers — anything that bakes in *how* a particular caller will interpret, route, or report on wire data — live at the call site, not in the library.
-
-This is more restrictive than the current architecture, which embeds dispatcher-flavoured behaviour (e.g., `RewrittenBundle`'s inline error → `ReasonCode` mapping, the three parse modes, decoded extension-block fields on `Bundle`) directly in `bpv7`. The streaming refactor unwinds that entanglement.
 
 **Concrete consequences:**
 
@@ -1019,11 +906,11 @@ This is more restrictive than the current architecture, which embeds dispatcher-
 
 - **Reason-code mapping is BPA policy.** The translation from a filter or policy outcome to a `status_report::ReasonCode` (`BlockUnsupported`, `BlockUnintelligible`, etc.) is a policy decision about how to interpret a rejection for reporting purposes. It lives at the BPA call site, not in `bpv7`. The `status_report::ReasonCode` enum stays in `bpv7` (it's part of the wire format for status report payloads), but the *mapping logic* is the dispatcher's.
 
-- **Decoded extension-block fields leave `Bundle`.** Today's `Bundle` carries `previous_node`, `age`, `hop_count` decoded from their respective extension blocks at parse time. After the refactor, `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1); extension-block content moves out of `Bundle`. Where the BPA needs decoded extension values, the choice is either decode-on-demand by the filter that needs them, or pre-parse selected fields into `BundleMetadata` at ingress (the design is open on this — `BundleAge` and `PreviousNode` are likely candidates for `BundleMetadata` caching given how often they're referenced, with `HopCount` more borderline). Either way, adding a new extension block type stops being a `bpv7` change. (Status: the fields have left `bpv7::Bundle`; they currently live on `bpa::Bpv7Bundle`, with the move to `BundleMetadata` / decode-on-demand still open.)
+- **Decoded extension-block fields live outside `Bundle`.** `Bundle` carries the decoded `PrimaryBlock` plus the structural index of extension blocks only (§7.1). `PreviousNode` / `BundleAge` / `HopCount` are pre-parsed at ingress into `BundleMetadata` (the filter redesign's wire-cache group); anything else is decoded on demand from the block's byte extent. Adding a new extension block type is not a `bpv7` change.
 
-- **The `Checked`/`Rewritten`/`Parsed` taxonomy collapses.** The three parse modes exist today to express dispatcher decisions (canonicalise? drop unsupported blocks? validate BPSec?) as parser variants. Once those decisions move to filter chain configuration, the taxonomy is redundant. `bpv7`'s in-memory parse surface collapses to a single sugar function over the streaming primitives, returning the structural `Parsed` for tools, tests, and builder round-trips. Production callers (the BPA) use the streaming parser directly. (Status: the `bpv7` collapse is done — `RewrittenBundle` and the taxonomy are gone. The `bpa` mode pipelines have collapsed too: one-shot keyed validation is `parse_validate_with_provider`, ingress is the `parse_headers` + `finalize_with_provider` split — see the status block at the top.)
+- **There is no parse-mode taxonomy.** Mode variants (canonicalise? drop unsupported blocks? validate BPSec?) would encode dispatcher decisions as parser variants; those decisions belong to pipeline configuration. `bpv7`'s in-memory parse surface is a single sugar function over the streaming primitives, returning the structural `Parsed` for tools, tests, and builder round-trips; production callers compose the primitives (`bpa::bundle::parse`).
 
-- **Reusable filter logic lives in `bpa`, not `bpv7`.** Common policy filters (hop count, bundle age, previous-node mutation) are filter implementations against `bpv7`'s lean `Bundle` index. They depend on `bpv7` for wire-format primitives but are not themselves `bpv7` types. Bundling them with the BPA (or in a shared `bpa::filters::common` module) keeps `bpv7` consumable by non-Hardy callers (CLA debug tools, external utilities) without dragging dispatcher policy along.
+- **Reusable pipeline policy lives in `bpa`, not `bpv7`.** The per-hop mutations (hop count, bundle age, previous-node) and validity checks are `bpa` pipeline code against `bpv7`'s lean `Bundle` index. They depend on `bpv7` for wire-format primitives but are not themselves `bpv7` types — which keeps `bpv7` consumable by non-Hardy callers (CLA debug tools, external utilities) without dragging dispatcher policy along.
 
 **The acceptance test** for whether something belongs in `bpv7` or `bpa`: *if BPA needs to query, route, or report by it, it's operational meaning and lives in `bpa`; if it's purely structural (byte extents, CBOR shapes, RFC-defined field decodings), it lives in `bpv7`.* The reason-code mapping policy fails this test — it's BPA's specific need, even though it consumes a `bpv7`-defined enum.
 
@@ -1043,61 +930,37 @@ Two entry points, each with a one-sentence purpose. `Parsed` is structural (deco
 
 > **Landed state (2026-08).** Phase 1's pull-side foundations and the door seams from Phase 3 item 2 plus the service-door twin are landed — now as the streamed-only `Sink::dispatch` and `ServiceSink::send` after the buffered/streamed pairs collapsed — with the interim whole-buffer accumulation in `bpa::stream::concat_stream` (and the exact-`total_len` `stream::buffer_stream` over it) standing in until Phase 2's storage streaming. The remaining items below are unstarted.
 
-### Phase 0: Transformer Prototype
+Landed work is recorded in the implementation-status block at the top; the phases below cover what remains, in dependency order. The filter subsystem is deliberately absent: filters receive no byte streams (§5.3), so that work proceeds independently (`refactor_plan.md`).
 
-1. Define `Transformer` type, `TransformResult` enum, `Verifier` type, `VerifyResult` enum
-2. Reshape `Bundle` struct: keep decoded `PrimaryBlock` (it earns its place — see §2.3 / §7.1), drop decoded extension-block values from the struct
-3. Move decoded field extraction to BPA-side helpers (destination, source, hop count, etc. decoded from accumulation buffer at ingress, stored in `BundleMetadata`)
-4. Refactor Editor to plan against `Bundle` index, produce a `Transformer` closure. `Vec<Span>` becomes internal to the closure. Remove `source_data` from `Editor::new()` and `rebuild()` — source bytes arrive via Transformer push.
-5. Remove `'a` lifetime from Editor
-6. Retain `flatten()` / `flatten_inplace()` for tests and backwards compatibility during transition
+### Phase A: Streaming Storage Write
 
-**Adjust blocks and CRC.** The `BlockTemplate::Adjust` variant — "same payload, different metadata" — is naturally handled by the Transformer model. When flags or CRC type change but payload does not, the Transformer emits the re-encoded header bytes (`New`), then passes through the original payload bytes as they arrive. CRC is computed incrementally over the new header + streamed payload using `crc` crate's `digest.update()`. No contiguous buffer is required. No `source_data` parameter is needed.
+1. Add the streaming write to `BundleStorage` (§3.1 `store(&dyn Receiver<Segment>)`, or an interim `save_stream`) across `bundle_mem`, `localdisk`, and `sqlite`, plus the `store.rs` wrapper
+2. Swap the ingress drain's in-memory tail accumulator for the spool — the one seam (status block)
+3. Recovery cleanup for uncommitted spool temp files
 
-### Phase 1: Stream Trait Foundations
+Result: the payload-never-in-RAM property (§2.5) on ingress.
 
-1. Define `Receiver<T>` trait alongside the existing `Sender<T>` in `hardy-async`
-2. Provide `ChannelReceiver<T>` adapter (mirror of `ChannelSender<T>`)
-3. Document the direction conventions (`Sender` parameter = method pushes; `Receiver` parameter = method pulls) in `hardy-async` rustdoc
+### Phase B: Transformer and Streaming Egress
 
-### Phase 2: Streaming Storage and Egress
+1. Define `Transformer` / `TransformResult` and `Verifier` / `VerifyResult` (§6.1); refactor the Editor to plan against the block index and produce a Transformer (`Vec<Span>` becomes closure state; `source_data` and the `'a` lifetime go; `flatten()` retained for tests during transition)
+2. Replace `BundleStorage::load -> Bytes` with the streaming `load(&str, &dyn Sender<Bytes>)` across backends
+3. Add `Cla::write(&dyn Receiver<Segment>, total_len)`; an adapter wraps `forward()` for non-streaming CLAs
+4. Egress executor: spawn `load()`, drive the Transformer chain, feed `Cla::write()`'s channel (§6.1.1)
+5. BPSec egress stages (integrity; confidentiality for header targets) as wrapping Transformers (§6.1.4); `Signer` / `Encryptor` orchestration dissolves into them
 
-1. Replace `BundleStorage::save()` / `load()` / `read_at()` with `store(&dyn Receiver<Segment>)` / `load(&str, &dyn Sender<Bytes>)` / `delete(&str)`
-2. Update each backend (localdisk, S3, in-memory, sqlite) to the new trait surface
-3. Add `Cla::write(&dyn Receiver<Segment>, total_len)` returning `ForwardBundleResult`; non-streaming adapter wraps `forward()`
-4. Implement egress executor: spawn `load()`, drive Transformer chain, feed `Cla::write()`'s channel
-5. Implement BPSec integrity filter — uses Editor + HMAC primitives to produce wrapping Transformer (§6.1.4)
-6. Implement BPSec confidentiality filter — uses Editor + AES-GCM primitives (header-block targets only in this phase)
-7. Remove `Signer` and `Encryptor` structs, `BlockSet` trait, `EditorBlockSet`
-8. Retain `flatten()` / `flatten_inplace()` for tests and small bundles
+### Phase C: Tee'd Ingress
 
-### Phase 3: Streamed Ingress
+1. Tee payload chunks to the deferred payload-BIB verifier during spooling (§5.7)
+2. Hot-forward tee: stream to the CLA from ingress data before spool commit (§3.2)
 
-1. Build streamed parser wrapper (accumulate + retry on `ParserProgress::NeedMore`)
-2. Add `Sink::write(&dyn Receiver<Segment>, ...)` returning `Result<()>`
-3. Implement pre-filter gate between header parse and payload streaming (EarlyIngress / EarlyOriginate hooks)
-4. Implement ingress Verifier for CRC and BIB validation
-5. Implement ingress Transformer for payload decryption
-6. Update TCPCLv4 to push transfer segments as `Segment::Next` into a `Receiver<Segment>` (terminating with `Segment::Final` on end-of-bundle or dropping on XFER_REFUSE) and call `Sink::write()`
+### Phase D: Security Gateway
 
-### Phase 4: Filter API Migration
+1. Streaming AES-GCM wrapper for payload BCB (§7.3)
+2. Inline decrypt Transformer at ingress; deferred commit for unverified payloads (§5.5)
 
-1. Migrate `ReadFilter` / `WriteFilter` to use `&dyn Receiver<Bytes>` for input and `&dyn Sender<FilterOut>` for write-filter output
-2. Remove `(Bundle, Bytes)` filter signatures
-3. Implement parallel read filter fan-out via `Bytes::clone()`
-4. Implement write filter chaining via stream traits
+### Queue integration
 
-### Phase 5: Security Gateway
-
-1. Implement streaming AES-GCM wrapper for payload BCB
-2. Implement inline decrypt Transformer for ingress
-3. Deferred commit model for unverified payloads
-4. Pre-filter BPSec policy integration
-
-### Phase 6: Integration with Queue Architecture
-
-1. Wire Ingest block into queue model (CLA `Receiver` input, `Sender` output to dispatch queue with priority from `flow_label`)
-2. Wire ClaSend block into queue model (`Receiver` input from per-peer CLA queue)
+Wiring Ingest and ClaSend into the queue model (class-driven FlowControllers) belongs to the queue/policy tranche — see `policy_subsystem_redesign.md`. Two couplings created by this design land there rather than here. **Storage bandwidth becomes a scheduled resource**: once `store()`/`load()` stream (Phases A/B), ingress spooling, egress streaming, generational rewrites, and reassembly contend for disk bandwidth — egress drain rate becomes min(link rate, storage read rate) — and the split, most acutely receive-versus-transmit during a bidirectional contact, is a discipline decision, not an accident of task scheduling (the policy doc's "second link" section; the pre-drain gate's ability to decline the payload drain, pushing queueing back into link-layer flow control, is one of that discipline's levers). **The log-jam invariant**: a small high-priority bundle must never wait behind a giant low-priority one, so every shared resource serves at bounded quantum — chunks for byte resources, items for count resources. The per-call channels of §5.1.1 and the sequential spool are what make chunk-quantum service *possible*; the policy tranche's disciplines (and, where a convergence layer cannot interleave an in-flight transfer, per-peer lanes via the `queue` parameter — the lane index, in the policy doc's queue/lane vocabulary) are what make it *hold* end to end.
 
 ## 11. Type Safety and Bundle Ownership
 
@@ -1114,4 +977,4 @@ Typestate within processing blocks (ensuring a bundle passes through required ga
 - **Dispatch, EgressController, Deliver, Admin, Reassemble** — these processing blocks work on `BundleMetadata`, not raw bytes.
 - **Recovery protocol** — three-phase recovery continues; in-flight spool task temp files (no metadata reference) are cleaned up on startup.
 - **Reaper** — operates on expiry indexes in `MetadataStorage`, deleting from `BundleStorage` as ground truth.
-- **Bundle data cache** — remains an LRU cache of small bundles; earlier proposals for header segment caching are dropped.
+- **Bundle data cache** — remains an LRU cache of small bundles (`CachedBundleStorage`); no header-segment caching (§8.2).

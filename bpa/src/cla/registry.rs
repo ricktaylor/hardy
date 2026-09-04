@@ -1,4 +1,4 @@
-use hardy_bpv7::eid::NodeId;
+use hardy_bpv7::eid::{Eid, NodeId};
 
 use super::*;
 
@@ -9,8 +9,13 @@ use super::*;
 // 4. Avoids OS mutex overhead on CLA lifecycle operations
 
 pub struct Cla {
-    pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::EgressPolicy>,
+    pub cla: Arc<dyn cla::Cla>,
+    pub policy: Arc<dyn policy::FlowControllerFactory>,
+    // Snapshotted at registration.
+    pub address_type: Option<ClaAddressType>,
+    // The effective dispatch size cap reported to the CLA at registration:
+    // the BPA's configured cap folded with the limit the CLA declared.
+    pub max_bundle_size: NonZeroU64,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -87,7 +92,7 @@ impl cla::Sink for Sink {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<()> {
+    ) -> Result<cla::Acceptance> {
         let cla = self.cla.upgrade().ok_or(cla::Error::Disconnected)?;
 
         // A CLA that unregisters mid-stream must not land its bundle: the
@@ -99,9 +104,18 @@ impl cla::Sink for Sink {
             inner: stream,
             token: cla.cancel.clone(),
         };
-        self.dispatcher
+        let verdict = self
+            .dispatcher
             .receive_bundle(cla.name.clone(), peer_node, peer_addr, &mut stream)
-            .await
+            .await;
+
+        // A refusal caused by that teardown is not a verdict on the bundle
+        // — the registration died. Report the dead sink instead, so the CLA
+        // does not mistake its own unregistration for a per-bundle refusal.
+        if matches!(verdict, cla::Acceptance::Refused) && cla.cancel.is_cancelled() {
+            return Err(cla::Error::Disconnected);
+        }
+        Ok(verdict)
     }
 
     async fn add_peer(&self, cla_addr: ClaAddress, node_ids: &[NodeId]) -> cla::Result<bool> {
@@ -146,9 +160,16 @@ impl Drop for Sink {
     }
 }
 
+// A CLA awaiting registration, held by the building-phase registry.
+struct PendingCla {
+    cla: Arc<dyn cla::Cla>,
+    policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+    max_bundle_size: Option<NonZeroU64>,
+}
+
 // CLA registry in the building phase — only insert() is available.
-pub(crate) struct ClaRegistryBuilder {
-    clas: ClaMap,
+pub struct ClaRegistryBuilder {
+    clas: HashMap<String, PendingCla>,
 }
 
 impl ClaRegistryBuilder {
@@ -162,19 +183,18 @@ impl ClaRegistryBuilder {
         &mut self,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> cla::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
             return Err(cla::Error::AlreadyExists(name));
         };
         info!("Inserted CLA: {name}");
-        e.insert(Arc::new(Cla {
-            cancel: hardy_async::CancellationToken::new(),
+        e.insert(PendingCla {
             cla,
-            peers: Default::default(),
-            name: Arc::from(name.as_str()),
-            policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
-        }));
+            policy,
+            max_bundle_size,
+        });
         Ok(())
     }
 
@@ -198,13 +218,14 @@ impl ClaRegistryBuilder {
             tasks: hardy_async::TaskPool::new(),
         });
 
-        for (_, cla) in self.clas {
+        for (name, pending) in self.clas {
             registry
                 .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
+                    name,
+                    pending.cla,
                     dispatcher,
-                    Some(cla.policy.clone()),
+                    pending.policy,
+                    pending.max_bundle_size,
                 )
                 .await?;
         }
@@ -214,7 +235,7 @@ impl ClaRegistryBuilder {
 }
 
 // CLA registry in the running phase — full register/unregister available.
-pub(crate) struct ClaRegistry {
+pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
     rib: Arc<routing::Rib>,
@@ -231,9 +252,10 @@ impl ClaRegistry {
     pub async fn forward(
         &self,
         peer_id: u32,
+        next_hop: Eid,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        self.peers.forward(peer_id, bundle).await
+        self.peers.forward(peer_id, next_hop, bundle).await
     }
 
     pub async fn shutdown(&self) {
@@ -256,8 +278,15 @@ impl ClaRegistry {
         name: String,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
+        max_bundle_size: Option<NonZeroU64>,
     ) -> cla::Result<Vec<NodeId>> {
+        // The effective cap: the BPA's configured max folded with whatever
+        // limit the CLA declared at registration.
+        let max_bundle_size = max_bundle_size.map_or(dispatcher.max_bundle_size(), |cla_cap| {
+            dispatcher.max_bundle_size().min(cla_cap)
+        });
+
         let address_type = cla.address_type();
         let entry = {
             let mut clas = self.clas.lock();
@@ -267,20 +296,23 @@ impl ClaRegistry {
             e.insert(Arc::new(Cla {
                 cancel: hardy_async::CancellationToken::new(),
                 cla,
+                address_type,
+                max_bundle_size,
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                    .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
             }))
             .clone()
         };
 
         // Register that the CLA is a handler for the address type
-        if let Some(address_type) = address_type {
+        if let Some(address_type) = entry.address_type {
             self.rib.add_address_type(address_type, entry.clone());
         }
 
         let node_ids: Vec<NodeId> = (&*self.node_ids).into();
+
         entry
             .cla
             .on_register(
@@ -290,6 +322,7 @@ impl ClaRegistry {
                     dispatcher: dispatcher.clone(),
                 }),
                 &node_ids,
+                entry.max_bundle_size,
             )
             .await;
 
@@ -314,7 +347,7 @@ impl ClaRegistry {
 
         cla.cla.on_unregister().await;
 
-        if let Some(address_type) = cla.cla.address_type() {
+        if let Some(address_type) = cla.address_type {
             self.rib.remove_address_type(&address_type);
         }
 
@@ -338,29 +371,22 @@ impl ClaRegistry {
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
-
-        // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
-        // If the cla.peers entry already exists, we clean up the orphaned peer_id.
-        let peer_id = self.peers.insert(peer.clone());
-
-        // Now try to insert into cla.peers (separate lock acquisition, no nesting)
-        let inserted = {
+        // Mint the id without publishing anything (reserved against reuse),
+        // then claim the address — the adjacency's natural key — so a
+        // duplicate exits before any peer state exists.
+        let peer_id = self.peers.reserve();
+        let claimed = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
                 hash_map::Entry::Vacant(e) => {
                     e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
-                hash_map::Entry::Occupied(_) => false, // Already exists
+                hash_map::Entry::Occupied(_) => false,
             }
         };
-
-        // If entry already existed, clean up the orphaned peer_id. The orphan
-        // was never started, so Peer::close() (via PeerTable::remove) is a no-op
-        // — close()/forward() skip an uninitialised cell rather than blocking.
-        if !inserted {
-            self.peers.remove(peer_id).await;
+        if !claimed {
+            self.peers.unreserve(peer_id);
             return false;
         }
 
@@ -368,17 +394,29 @@ impl ClaRegistry {
 
         debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
 
-        // Start the peer polling the queue
-        peer.start(
+        // Construct the peer complete, then publish: the table only ever
+        // holds working peers.
+        let peer = peers::Peer::start(
             self.poll_channel_depth,
-            cla,
+            cla.clone(),
             peer_id,
-            cla_addr,
+            cla_addr.clone(),
             self.store.clone(),
             dispatcher,
             &self.tasks,
         )
         .await;
+        self.peers.publish(peer_id, peer);
+
+        // Post-construction liveness re-check (whole-codebase review #14):
+        // a concurrent remove_peer/unregister_cla during construction has
+        // already taken the address entry — withdraw the published peer
+        // instead of installing RIB entries nothing will ever clean up.
+        let still_ours = matches!(cla.peers.lock().get(&cla_addr), Some((_, id)) if *id == peer_id);
+        if !still_ours {
+            self.peers.remove(peer_id).await;
+            return false;
+        }
 
         // Add RIB entry for each known EID.
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
@@ -433,6 +471,7 @@ mod tests {
             &self,
             sink: Box<dyn cla::Sink>,
             _node_ids: &[hardy_bpv7::eid::NodeId],
+            _max_bundle_size: core::num::NonZeroU64,
         ) {
             self.sink.call_once(|| sink);
         }
@@ -453,14 +492,18 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_registration() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla1 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
+        let result = bpa
+            .register_cla("test-cla".to_string(), cla1, None, None)
+            .await;
         assert!(result.is_ok(), "First CLA registration should succeed");
 
         let cla2 = Arc::new(TestCla::new());
-        let result = bpa.register_cla("test-cla".to_string(), cla2, None).await;
+        let result = bpa
+            .register_cla("test-cla".to_string(), cla2, None, None)
+            .await;
         assert!(
             matches!(result, Err(cla::Error::AlreadyExists(ref name)) if name == "test-cla"),
             "Duplicate CLA name should return AlreadyExists, got: {result:?}"
@@ -473,10 +516,10 @@ mod tests {
     #[tokio::test]
     async fn test_peer_lifecycle() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
 
@@ -509,10 +552,10 @@ mod tests {
     #[tokio::test]
     async fn test_cascading_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
-        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)
+        bpa.register_cla("cascade-cla".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
 
@@ -539,7 +582,7 @@ mod tests {
         // Re-registering with same name should now succeed (name freed)
         let cla2 = Arc::new(TestCla::new());
         let result = bpa
-            .register_cla("cascade-cla".to_string(), cla2, None)
+            .register_cla("cascade-cla".to_string(), cla2, None, None)
             .await;
         assert!(
             result.is_ok(),

@@ -25,14 +25,20 @@
 //!
 //! - On the fast path (in-memory buffer has space), the bundle is enqueued
 //!   directly. A subsequent poller cycle may *also* pull it from storage
-//!   and re-deliver it; consumers must tombstone delivered bundles to
-//!   suppress duplicates.
+//!   and re-deliver it.
 //! - On the slow path (buffer full), the in-memory copy is dropped on the
 //!   floor and the poller recovers it via `MetadataStorage::poll_pending`
 //!   filtered by the channel's target status. The drop is safe because the
 //!   bundle's status is already persisted (see above).
 //!
-//! Consumers that need exactly-once must tombstone each delivered bundle.
+//! Consumers therefore **must claim each received bundle out of the
+//! channel's target status** (a conditional `swap_status` from the received
+//! copy's snapshot) before acting on it, and drop copies that lose the
+//! swap. The target status must mean exactly "queued in this channel":
+//! while a bundle keeps it, the poller treats the bundle as recoverable and
+//! will re-push it. The dispatch queue claims `DispatchPending` →
+//! `Dispatching` on dequeue; the egress queues claim `ForwardPending` →
+//! `ForwardAckPending` before offering the transfer to a CLA.
 //!
 //! # State Machine
 //!
@@ -202,15 +208,36 @@ impl Sender {
     // SendError deliberately carries the bundle so the caller recovers
     // ownership; boxing it to shrink the Err variant would tax every send.
     #[allow(clippy::result_large_err)]
-    pub async fn send(&self, mut bundle: Bundle) -> Result<(), SendError> {
+    pub async fn send(&self, bundle: Bundle) -> Result<(), SendError> {
+        let status = self.shared.status.clone();
+        self.send_to(bundle, status).await
+    }
+
+    /// The channel's target status — its queue identity. A queue whose
+    /// assignment record carries per-bundle payload (`ForwardPending`'s
+    /// `next_hop`) holds a placeholder there; [`send_to`](Self::send_to)
+    /// supplies each bundle's real record.
+    pub fn queue_status(&self) -> &BundleStatus {
+        &self.shared.status
+    }
+
+    /// Offer a bundle with its full per-bundle assignment record; `status`
+    /// must name this channel's queue
+    /// ([`same_queue`](BundleStatus::same_queue)). See
+    /// [`send`](Self::send), which uses the channel's own target status.
+    // SendError deliberately carries the bundle so the caller recovers
+    // ownership; boxing it to shrink the Err variant would tax every send.
+    #[allow(clippy::result_large_err)]
+    pub async fn send_to(&self, mut bundle: Bundle, status: BundleStatus) -> Result<(), SendError> {
+        debug_assert!(
+            status.same_queue(&self.shared.status),
+            "send_to status names a different queue"
+        );
+
         // Conditional move into this queue from the sender's snapshot: a
         // duplicate copy of a bundle that has already moved on must lose
         // here, not stomp the live assignment (see the delivery contract)
-        if !self
-            .store
-            .swap_status(&mut bundle, &self.shared.status)
-            .await
-        {
+        if !self.store.swap_status(&mut bundle, &status).await {
             debug!("Bundle already moved on, dropping duplicate send");
             return Ok(());
         }
@@ -402,8 +429,10 @@ impl Store {
         let h = hardy_async::spawn!(self.tasks, "poll_pending_once", async move {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
-                // Just do some checks
-                if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
+                // Just do some checks. Queue-identity match: a recovered
+                // bundle's record may carry per-bundle payload the channel's
+                // target status cannot name.
+                if !bundle.has_expired() && bundle.status.same_queue(&shared_cloned.status) {
                     // Send into queue. A closeable send already parked on a full
                     // buffer is not woken by the channel's own close(), so race it
                     // against pool shutdown — otherwise store.shutdown() (which
@@ -450,38 +479,43 @@ mod tests {
 
     fn make_bundle(n: u32) -> Bundle {
         Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: hardy_bpv7::bundle::Id {
-                    source: format!("ipn:0.{n}.1").parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                    fragment_info: None,
+            bpv7: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: hardy_bpv7::bundle::Id {
+                        source: format!("ipn:0.{n}.1").parse().unwrap(),
+                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: "ipn:0.99.1".parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: core::time::Duration::from_secs(3600),
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: "ipn:0.99.1".parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         }
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
         let mut b = make_bundle(n);
-        b.bundle.lifetime = core::time::Duration::from_secs(0);
-        // Set received_at in the past so expiry is already passed
-        b.metadata.read_only.received_at =
-            time::OffsetDateTime::now_utc() - time::Duration::seconds(10);
+        b.bpv7.primary.lifetime = core::time::Duration::from_secs(0);
+        // received_at in the past so expiry has already passed
+        b.metadata = crate::bundle::BundleMetadata::new(
+            time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
+            crate::bundle::Origin::Originated,
+        );
         b
     }
 
+    // The channel key's adjacency is a placeholder, exactly as the peer
+    // queues configure it.
     const STATUS: BundleStatus = BundleStatus::ForwardPending {
         peer: 1,
-        queue: None,
+        queue: 0,
+        next_hop: hardy_bpv7::eid::Eid::Null,
     };
 
     // The delivery contract requires the bundle to already exist in metadata
@@ -615,8 +649,8 @@ mod tests {
                 .await
                 .expect("Timed out waiting for a bundle delivery")
                 .expect("Channel closed mid-drain");
-            store.tombstone_metadata(&b.bundle.id).await;
-            seen.insert(b.bundle.id);
+            store.tombstone_metadata(b.id()).await;
+            seen.insert(b.id().clone());
         }
         assert_eq!(
             seen.len(),
@@ -642,7 +676,7 @@ mod tests {
                         // immediately rather than spinning on a ready Err arm
                         // until the outer timeout.
                         let b = r.expect("Channel disconnected while awaiting re-open");
-                        store.tombstone_metadata(&b.bundle.id).await;
+                        store.tombstone_metadata(b.id()).await;
                     }
                 }
             }
@@ -725,8 +759,8 @@ mod tests {
         while seen.len() < 3 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -763,8 +797,8 @@ mod tests {
         while seen.len() < total as usize {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -803,8 +837,8 @@ mod tests {
         while seen.len() < 2 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id.source.clone());
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().source.clone());
                 }
                 _ => break,
             }
@@ -830,7 +864,7 @@ mod tests {
 
         // The bundle should arrive normally; verify it has the correct status
         let b = rx.recv().await.unwrap();
-        assert_eq!(b.metadata.status, STATUS);
+        assert_eq!(b.status, STATUS);
 
         drop(rx);
         tx.close();

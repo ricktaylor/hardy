@@ -22,8 +22,8 @@ impl cla::Sink for MockSink {
         _peer_node: Option<&NodeId>,
         _peer_addr: Option<&cla::ClaAddress>,
         _stream: &mut dyn hardy_bpa::stream::Receiver<hardy_bpa::cla::Segment>,
-    ) -> cla::Result<()> {
-        Ok(())
+    ) -> cla::Result<cla::Acceptance> {
+        Ok(cla::Acceptance::Accepted)
     }
 
     async fn add_peer(
@@ -57,13 +57,15 @@ impl hardy_bpa::bpa::BpaRegistration for MockBpa {
         &self,
         _name: String,
         cla: Arc<dyn cla::Cla>,
-        _policy: Option<Arc<dyn hardy_bpa::policy::EgressPolicy>>,
+        _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
+        _max_bundle_size: Option<core::num::NonZeroU64>,
     ) -> cla::Result<Vec<NodeId>> {
         let node_ids = vec![NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
             allocator_id: 0,
             node_number: 1,
         })];
-        cla.on_register(Box::new(MockSink), &node_ids).await;
+        cla.on_register(Box::new(MockSink), &node_ids, core::num::NonZeroU64::MAX)
+            .await;
         Ok(node_ids)
     }
 
@@ -145,7 +147,7 @@ pub async fn setup_listener() -> Arc<hardy_tcpclv4::Tcpclv4> {
     );
 
     MockBpa
-        .register_cla("fuzz-tcpclv4".to_string(), cla.clone(), None)
+        .register_cla("fuzz-tcpclv4".to_string(), cla.clone(), None, None)
         .await
         .expect("CLA registration should not fail");
 
@@ -162,7 +164,7 @@ pub async fn setup_connector() -> Arc<hardy_tcpclv4::Tcpclv4> {
     );
 
     MockBpa
-        .register_cla("fuzz-tcpclv4-active".to_string(), cla.clone(), None)
+        .register_cla("fuzz-tcpclv4-active".to_string(), cla.clone(), None, None)
         .await
         .expect("CLA registration should not fail");
 

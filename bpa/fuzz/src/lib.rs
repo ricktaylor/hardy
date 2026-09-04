@@ -109,7 +109,8 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
     bpa.start(cfg_select! {
         all(feature = "localdisk-storage", feature = "sqlite-storage") => true,
         _ => false,
-    });
+    })
+    .await;
 
     #[cfg(feature = "file-cla")]
     {
@@ -120,7 +121,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             })
             .expect("Failed to create file CLA"),
         );
-        bpa.register_cla("file-cla".to_string(), cla, None)
+        bpa.register_cla("file-cla".to_string(), cla, None, None)
             .await
             .expect("Failed to register CLA");
     }
@@ -138,7 +139,7 @@ impl Msg {
                 let bpa = new_bpa("fuzz").await;
 
                 let cla = std::sync::Arc::new(cla::NullCla::new());
-                bpa.register_cla("fuzz".to_string(), cla.clone(), None)
+                bpa.register_cla("fuzz".to_string(), cla.clone(), None, None)
                     .await
                     .expect("Failed to register CLA");
 

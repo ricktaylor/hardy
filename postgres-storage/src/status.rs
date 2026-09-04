@@ -13,6 +13,9 @@ pub enum BundleStatusKind {
     AduFragment,
     WaitingForService,
     ForwardAckPending,
+    DispatchPending,
+    DeliverPending,
+    DeliveryAckPending,
 }
 
 /// Error returned when a `BundleStatus` value cannot be represented in the postgres schema.
@@ -41,6 +44,8 @@ pub struct StatusFields {
     pub adu_ts_ms: Option<i64>,
     pub adu_ts_seq: Option<i64>,
     pub service_eid: Option<String>,
+    /// The adjacency EID a ForwardPending assignment resolved to.
+    pub next_hop: Option<String>,
 }
 
 impl StatusFields {
@@ -53,6 +58,7 @@ impl StatusFields {
             adu_ts_ms: None,
             adu_ts_seq: None,
             service_eid: None,
+            next_hop: None,
         }
     }
 
@@ -63,7 +69,8 @@ impl StatusFields {
             BundleStatusKind::Dispatching => Some(BundleStatus::Dispatching),
             BundleStatusKind::ForwardPending => Some(BundleStatus::ForwardPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
-                queue: self.queue_id.and_then(|q| u32::try_from(q).ok()),
+                queue: u32::try_from(self.queue_id?).ok()?,
+                next_hop: self.next_hop?.parse().ok()?,
             }),
             BundleStatusKind::AduFragment => {
                 let source: hardy_bpv7::eid::Eid = self.adu_source?.parse().ok()?;
@@ -85,6 +92,13 @@ impl StatusFields {
             BundleStatusKind::ForwardAckPending => Some(BundleStatus::ForwardAckPending {
                 peer: u32::try_from(self.peer_id?).ok()?,
             }),
+            BundleStatusKind::DispatchPending => Some(BundleStatus::DispatchPending),
+            BundleStatusKind::DeliverPending => Some(BundleStatus::DeliverPending {
+                service: self.service_eid?.parse().ok()?,
+            }),
+            BundleStatusKind::DeliveryAckPending => Some(BundleStatus::DeliveryAckPending {
+                service: self.service_eid?.parse().ok()?,
+            }),
         }
     }
 }
@@ -98,13 +112,19 @@ impl TryFrom<&BundleStatus> for StatusFields {
             BundleStatus::New => Self::with_kind(BundleStatusKind::New),
             BundleStatus::Waiting => Self::with_kind(BundleStatusKind::Waiting),
             BundleStatus::Dispatching => Self::with_kind(BundleStatusKind::Dispatching),
-            BundleStatus::ForwardPending { peer, queue } => Self {
+            BundleStatus::DispatchPending => Self::with_kind(BundleStatusKind::DispatchPending),
+            BundleStatus::ForwardPending {
+                peer,
+                queue,
+                next_hop,
+            } => Self {
                 peer_id: Some(
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
-                queue_id: queue
-                    .map(|q| i32::try_from(q).map_err(|_| StatusConversionError::QueueId(q)))
-                    .transpose()?,
+                queue_id: Some(
+                    i32::try_from(*queue).map_err(|_| StatusConversionError::QueueId(*queue))?,
+                ),
+                next_hop: Some(next_hop.to_string()),
                 ..Self::with_kind(BundleStatusKind::ForwardPending)
             },
             BundleStatus::AduFragment { source, timestamp } => {
@@ -130,6 +150,14 @@ impl TryFrom<&BundleStatus> for StatusFields {
                     i32::try_from(*peer).map_err(|_| StatusConversionError::PeerId(*peer))?,
                 ),
                 ..Self::with_kind(BundleStatusKind::ForwardAckPending)
+            },
+            BundleStatus::DeliverPending { service } => Self {
+                service_eid: Some(service.to_string()),
+                ..Self::with_kind(BundleStatusKind::DeliverPending)
+            },
+            BundleStatus::DeliveryAckPending { service } => Self {
+                service_eid: Some(service.to_string()),
+                ..Self::with_kind(BundleStatusKind::DeliveryAckPending)
             },
         })
     }

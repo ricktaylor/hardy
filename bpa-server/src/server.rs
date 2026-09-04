@@ -13,8 +13,7 @@ use hardy_async::TaskPool;
 use hardy_bpa::{
     bpa::Bpa,
     cla::Cla,
-    filter::{Filter, Hook, rfc9171::Rfc9171ValidityFilter},
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::RoutingAgent,
     storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
 };
@@ -22,8 +21,6 @@ use hardy_bpa::{
 use hardy_echo_service::EchoService;
 #[cfg(feature = "file-cla")]
 use hardy_file_cla::Cla as FileCla;
-#[cfg(feature = "ipn-legacy-filter")]
-use hardy_ipn_legacy_filter::IpnLegacyFilter;
 #[cfg(feature = "localdisk-storage")]
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
@@ -39,7 +36,7 @@ use hardy_tcpclv4::{Tcpclv4, tls};
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
-use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
+use crate::config::{Config, FlowControllerFactoryConfig, cla::ClaType, storage};
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -149,22 +146,14 @@ impl BpaServer {
         let mut builder = Bpa::builder()
             .node_ids(config.node_ids)
             .metadata_storage(metadata_storage)
-            .bundle_storage(bundle_storage)
-            .filter(
-                Hook::Ingress,
-                "rfc9171-validity",
-                &[],
-                Filter::Read(Arc::new({
-                    let mut filter = Rfc9171ValidityFilter::new();
-                    if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
-                        filter = filter.primary_block_integrity(enabled);
-                    }
-                    if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
-                        filter = filter.bundle_age_required(enabled);
-                    }
-                    filter
-                })),
-            );
+            .bundle_storage(bundle_storage);
+
+        if let Some(enabled) = config.rfc9171_validity.primary_block_integrity {
+            builder = builder.primary_block_integrity(enabled);
+        }
+        if let Some(enabled) = config.rfc9171_validity.bundle_age_required {
+            builder = builder.bundle_age_required(enabled);
+        }
 
         if let Some(status_reports) = config.status_reports {
             builder = builder.status_reports(status_reports);
@@ -201,15 +190,8 @@ impl BpaServer {
             builder = builder.no_cache();
         }
 
-        #[cfg(feature = "ipn-legacy-filter")]
-        if !config.ipn_legacy_nodes.0.is_empty() {
-            let filter = IpnLegacyFilter::new(config.ipn_legacy_nodes.0);
-            builder = builder.filter(
-                Hook::Egress,
-                "ipn-legacy",
-                &[],
-                Filter::Write(Arc::new(filter)),
-            );
+        if !config.ipn_legacy_nodes.is_empty() {
+            builder = builder.ipn_legacy_peers(config.ipn_legacy_nodes);
         }
 
         if let Some(sr_config) = config.static_routes {
@@ -269,13 +251,13 @@ impl BpaServer {
         // types: tolerated with a warning so a config can name policies
         // this build was not compiled with. A CLA that references one
         // fails below with the "references unknown policy" error.
-        let policies: HashMap<String, Arc<dyn EgressPolicy>> = config
+        let policies: HashMap<String, Arc<dyn FlowControllerFactory>> = config
             .policies
             .into_iter()
             .filter_map(
-                |(name, policy_config)| -> Option<(String, Arc<dyn EgressPolicy>)> {
+                |(name, policy_config)| -> Option<(String, Arc<dyn FlowControllerFactory>)> {
                     match policy_config {
-                        EgressPolicyConfig::Unknown => {
+                        FlowControllerFactoryConfig::Unknown => {
                             warn!("Ignoring policy '{name}' with unknown type");
                             None
                         }
@@ -285,7 +267,9 @@ impl BpaServer {
             .collect();
 
         for cla_config in config.clas {
-            let cla: Option<Arc<dyn Cla>> = match &cla_config.cla_type {
+            let cla: Option<(Arc<dyn Cla>, Option<core::num::NonZeroU64>)> = match &cla_config
+                .cla_type
+            {
                 #[cfg(feature = "tcpclv4")]
                 ClaType::TcpClv4(tcpcl) => {
                     let name = &cla_config.name;
@@ -346,16 +330,22 @@ impl BpaServer {
                         );
                     }
 
-                    Some(Arc::new(
-                        cla_builder
-                            .build()
-                            .with_context(|| format!("Failed to create CLA '{name}'"))?,
+                    let cla = cla_builder
+                        .build()
+                        .with_context(|| format!("Failed to create CLA '{name}'"))?;
+                    let max_bundle_size = Some(cla.max_bundle_size());
+                    Some((
+                        Arc::new(cla) as Arc<dyn hardy_bpa::cla::Cla>,
+                        max_bundle_size,
                     ))
                 }
                 #[cfg(feature = "file-cla")]
-                ClaType::File(file) => Some(Arc::new(FileCla::new(file).map_err(|e| {
-                    anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
-                })?)),
+                ClaType::File(file) => Some((
+                    Arc::new(FileCla::new(file).map_err(|e| {
+                        anyhow::anyhow!("Failed to create CLA '{}': {e}", cla_config.name)
+                    })?) as Arc<dyn hardy_bpa::cla::Cla>,
+                    None,
+                )),
                 ClaType::Other { cla_type, .. } => {
                     warn!(
                         "Ignoring CLA '{}' with unknown type '{cla_type}'",
@@ -364,7 +354,7 @@ impl BpaServer {
                     None
                 }
             };
-            let Some(cla) = cla else {
+            let Some((cla, max_bundle_size)) = cla else {
                 continue;
             };
 
@@ -381,7 +371,7 @@ impl BpaServer {
                 })
                 .transpose()?;
 
-            builder = builder.cla(cla_config.name, cla, egress_policy);
+            builder = builder.cla(cla_config.name, cla, egress_policy, max_bundle_size);
         }
 
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
@@ -400,7 +390,7 @@ impl BpaServer {
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
-        self.bpa.start(self.recover_storage);
+        self.bpa.start(self.recover_storage).await;
 
         #[cfg(feature = "grpc")]
         if let Some(grpc_config) = &self.grpc_config {

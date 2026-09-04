@@ -60,7 +60,12 @@ impl StreamingCla {
 
 #[async_trait]
 impl cla::Cla for StreamingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -126,7 +131,12 @@ impl BufferedCla {
 
 #[async_trait]
 impl cla::Cla for BufferedCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -147,6 +157,55 @@ impl cla::Cla for BufferedCla {
         let bundle = hardy_bpa::stream::buffer_stream(stream, total_len).await?;
         let _ = self.events_tx.send(Event::Forward(bundle));
         Ok(cla::ForwardBundleResult::Sent)
+    }
+}
+
+/// Fails every `forward` call synchronously, without pulling.
+struct FailingCla {
+    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
+    events_tx: flume::Sender<Event>,
+}
+
+impl FailingCla {
+    fn new() -> (Arc<Self>, flume::Receiver<Event>) {
+        let (tx, rx) = flume::bounded(16);
+        (
+            Arc::new(Self {
+                sink: hardy_async::sync::spin::Once::new(),
+                events_tx: tx,
+            }),
+            rx,
+        )
+    }
+}
+
+#[async_trait]
+impl cla::Cla for FailingCla {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
+        self.sink.call_once(|| sink);
+    }
+
+    async fn on_unregister(&self) {}
+
+    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+        None
+    }
+
+    async fn forward(
+        &self,
+        _lane: Option<u32>,
+        _cla_addr: &cla::ClaAddress,
+        _bundle_id: &hardy_bpv7::bundle::Id,
+        _total_len: u64,
+        _stream: &mut dyn Receiver<Segment>,
+    ) -> cla::Result<cla::ForwardBundleResult> {
+        let _ = self.events_tx.send(Event::Failed);
+        Err(cla::Error::StreamCancelled)
     }
 }
 
@@ -264,10 +323,10 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_cla_receives_single_final_segment() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(false);
-    bpa.register_cla("stream".to_string(), cla.clone(), None)
+    bpa.register_cla("stream".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -313,10 +372,10 @@ async fn streaming_cla_receives_single_final_segment() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_cla_receives_whole_bundle() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = BufferedCla::new();
-    bpa.register_cla("buffered".to_string(), cla.clone(), None)
+    bpa.register_cla("buffered".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -351,10 +410,10 @@ async fn buffered_cla_receives_whole_bundle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_is_requeued_and_retried() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(true);
-    bpa.register_cla("flaky".to_string(), cla.clone(), None)
+    bpa.register_cla("flaky".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -406,6 +465,48 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
 
     bpa.shutdown().await;
+}
+
+/// A synchronous per-transfer failure parks only that bundle, with no inline
+/// retry: a deterministic failure must not spin dispatch → forward → fail,
+/// so exactly one attempt occurs until the next routing or link event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_streamed_forward_does_not_retry_inline() {
+    let bpa = Bpa::builder().build().await.unwrap();
+    bpa.start(false).await;
+
+    let (cla, events_rx) = FailingCla::new();
+    bpa.register_cla("failing".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer-a".as_bytes().into()),
+            &[remote_node(2)],
+        )
+        .await
+        .unwrap();
+
+    let app = SendOnlyApp::new();
+    bpa.register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    originate(&app, b"One shot").await;
+
+    assert!(matches!(recv_event(&events_rx, 5).await, Event::Failed));
+
+    // The bundle is back in Waiting; with no routing or link event, no
+    // further attempt may occur. shutdown() is the barrier: it joins the
+    // pools, and the CLA mock records every attempt synchronously inside
+    // forward(), so any wrong re-attempt is in events_rx by the time it
+    // returns. No quiet window is involved.
+    bpa.shutdown().await;
+    assert!(
+        events_rx.is_empty(),
+        "A synchronous failure must not re-attempt without a routing event"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -520,4 +621,121 @@ async fn buffering_cla_rejects_stream_exceeding_total_len() {
         cla::Error::PayloadTooLarge { size, max: 4 } if size > 4
     ));
     assert!(events_rx.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Legacy IPN re-encode built-in (the per-hop rewrite stage)
+// ---------------------------------------------------------------------------
+
+/// Builds a BPA on an allocator-1 node — its 3-element IPN EIDs change bytes
+/// under the legacy re-encode — with the given legacy-peer patterns, wired
+/// to a buffering CLA and a send-only application.
+async fn legacy_fixture(patterns: &[&str]) -> (Bpa, Arc<SendOnlyApp>, flume::Receiver<Event>, Eid) {
+    let node_ids = hardy_bpa::node_ids::NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 1,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .ipn_legacy_peers(patterns.iter().map(|p| p.parse().unwrap()).collect())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (cla, events_rx) = BufferedCla::new();
+    bpa.register_cla("buffer".to_string(), cla.clone(), None, None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 1,
+                node_number: 2,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let app = SendOnlyApp::new();
+    let source_eid = bpa
+        .register_application(hardy_bpv7::eid::Service::Ipn(42), app.clone())
+        .await
+        .unwrap();
+    (bpa, app, events_rx, source_eid)
+}
+
+/// A next hop matching a configured legacy-peer pattern receives the bundle
+/// with `Ipn` source and destination re-encoded as `LegacyIpn` on the wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_peer_receives_two_element_encoding() {
+    let (bpa, app, events_rx, _) = legacy_fixture(&["ipn:1.2.*"]).await;
+
+    let dest: Eid = "ipn:1.2.99".parse().unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            dest,
+            Bytes::from_static(b"legacy"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let Event::Forward(data) = recv_event(&events_rx, 5).await else {
+        panic!("Expected a forwarded bundle");
+    };
+    let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
+    assert!(
+        matches!(parsed.bundle.primary.id.source, Eid::LegacyIpn { .. }),
+        "source must be re-encoded 2-element, got {:?}",
+        parsed.bundle.primary.id.source
+    );
+    assert!(
+        matches!(parsed.bundle.primary.destination, Eid::LegacyIpn { .. }),
+        "destination must be re-encoded 2-element, got {:?}",
+        parsed.bundle.primary.destination
+    );
+
+    assert!(events_rx.is_empty());
+    bpa.shutdown().await;
+}
+
+/// A next hop matching no configured pattern receives the canonical
+/// 3-element encoding untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_legacy_peer_keeps_canonical_encoding() {
+    let (bpa, app, events_rx, source_eid) = legacy_fixture(&["ipn:9.9.*"]).await;
+
+    let dest: Eid = "ipn:1.2.99".parse().unwrap();
+    app.sink
+        .get()
+        .unwrap()
+        .send(
+            dest.clone(),
+            Bytes::from_static(b"canonical"),
+            core::time::Duration::from_secs(3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let Event::Forward(data) = recv_event(&events_rx, 5).await else {
+        panic!("Expected a forwarded bundle");
+    };
+    let parsed = hardy_bpv7::parse::parse(data).expect("Failed to parse forwarded bundle");
+    assert_eq!(parsed.bundle.primary.id.source, source_eid);
+    assert_eq!(parsed.bundle.primary.destination, dest);
+
+    assert!(events_rx.is_empty());
+    bpa.shutdown().await;
 }

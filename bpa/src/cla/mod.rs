@@ -1,3 +1,5 @@
+use core::num::NonZeroU64;
+
 use super::*;
 use hardy_bpv7::bundle::Id;
 use thiserror::Error;
@@ -24,8 +26,7 @@ pub enum Error {
     Disconnected,
 
     /// The bundle stream ended before its final segment: the producer went
-    /// away mid-bundle, the partial bytes are discarded, and the transfer
-    /// must not be acknowledged to the peer.
+    /// away mid-bundle and the partial bytes are discarded.
     #[error("The bundle stream was cancelled before completion")]
     StreamCancelled,
 
@@ -160,13 +161,28 @@ impl core::fmt::Display for ClaAddress {
 }
 
 /// The result of a bundle forwarding attempt by a CLA.
+///
+/// The variants encode who owns the transfer when `forward` returns, not
+/// merely success or failure. An *unreliable* convergence layer is
+/// fire-and-forget and answers terminally: [`Sent`](Self::Sent) is all it
+/// will ever know. [`Accepted`](Self::Accepted) exists only for *reliable*
+/// convergence layers that learn their peer's acceptance later: returning
+/// early frees the egress lane while that acknowledgement is in flight, so
+/// a session can pipeline many transfers concurrently. This deferred
+/// callback is the pipelining seam — a `forward` that awaited the final
+/// outcome would serialize every lane on a wire round-trip. Local delivery
+/// has no analogue of `Accepted` because `on_deliver` completes in-process,
+/// with no round-trip to wait out.
 pub enum ForwardBundleResult {
-    /// The bundle was successfully sent.
+    /// The bundle was successfully sent, and no further outcome will be
+    /// reported — the terminal, fire-and-forget answer of an unreliable
+    /// convergence layer.
     Sent,
     /// The CLA has taken ownership of the bundle and will report the
     /// transfer's outcome later via [`Sink::transfer_outcome`]. The BPA
-    /// retains the bundle until the outcome arrives, the peer is removed,
-    /// or the bundle's lifetime expires.
+    /// retains the bundle until the outcome arrives or the peer is removed;
+    /// a lifetime that expires mid-transfer is enforced when the outcome
+    /// arrives, not by recalling the transfer.
     Accepted,
     /// The bundle could not be sent because the neighbor is no longer available.
     NoNeighbour,
@@ -174,6 +190,12 @@ pub enum ForwardBundleResult {
 
 /// The final outcome of a transfer previously answered
 /// [`ForwardBundleResult::Accepted`].
+///
+/// Today the outcome only resolves the retained bundle, but it is
+/// deliberately the peer-acceptance signal a future reliability /
+/// custody-transfer layer will consume — which is why reliable CLAs
+/// report it even though `Completed` and a fire-and-forget
+/// [`Sent`](ForwardBundleResult::Sent) currently resolve identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferOutcome {
     /// The bundle was handed to the far bundle node.
@@ -186,13 +208,39 @@ pub enum TransferOutcome {
     Failed,
 }
 
+/// The BPA's acceptance verdict for a dispatched bundle — the return value
+/// of [`Sink::dispatch`], and its only carrier.
+///
+/// Refusal is a normal protocol outcome, not an error: a CLA acts on it by
+/// withholding its transfer acknowledgement, and carries on. Faults that
+/// make the sink unusable travel as [`Error`] instead.
+#[must_use = "the verdict decides whether the transfer may be acknowledged"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acceptance {
+    /// The BPA accepted the bundle: the CLA may acknowledge the transfer to
+    /// its peer. Acceptance includes internal disposal — a bundle that is
+    /// invalid, unwanted, or a duplicate is accepted and then dropped inside
+    /// the BPA (with status reports where requested). Refusal would invite
+    /// the previous node's custody/retransmission machinery to resend, and a
+    /// resend of invalid content is byte-identical and can never succeed —
+    /// so the first BPA to detect the problem accepts the bundle and
+    /// terminates it.
+    Accepted,
+    /// The BPA refused acceptance: the CLA must not acknowledge the
+    /// transfer, leaving its peer responsible for the bundle. Refusal is
+    /// reserved for transfers the BPA could not take at all — a truncated
+    /// stream (a resend may succeed), or a bundle over the BPA's size cap
+    /// (the peer must stop offering it here).
+    Refused,
+}
+
 /// The primary trait for a Convergence Layer Adapter (CLA).
 ///
 /// A CLA is responsible for adapting the Bundle Protocol to a specific underlying
 /// transport, such as TCP, UDP, or a custom link-layer protocol. It handles the
 /// transmission and reception of bundles over its specific medium.
 ///
-/// CLAs are often wrapped by an [`EgressPolicy`](crate::policy::EgressPolicy)
+/// CLAs are often wrapped by an [`FlowControllerFactory`](crate::policy::FlowControllerFactory)
 /// to add more complex behaviors like rate limiting or prioritization.
 ///
 /// # Sink Lifecycle
@@ -220,7 +268,7 @@ pub enum TransferOutcome {
 /// }
 ///
 /// impl Cla for MyCla {
-///     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+///     async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId], max_bundle_size: NonZeroU64) {
 ///         self.inner.call_once(|| ClaInner { sink: sink.into() });
 ///     }
 ///     // ...
@@ -240,7 +288,22 @@ pub trait Cla: Send + Sync {
     /// # Arguments
     /// * `sink` - Communication channel back to the BPA. Must be stored.
     /// * `node_ids` - The BPA's own node identifiers.
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[hardy_bpv7::eid::NodeId]);
+    /// * `max_bundle_size` - The *effective* size cap: the minimum of the
+    ///   BPA's configured cap (which [`Sink::dispatch`] enforces — a larger
+    ///   bundle is [`Refused`](Acceptance::Refused)) and the limit this CLA
+    ///   declared at registration. The CLA should propagate it into
+    ///   its transfer limits (e.g. an advertised transfer MRU) so an
+    ///   over-cap transfer is never offered — refusal is deterministic, so
+    ///   a peer that keeps offering the same bundle loops forever. The BPA
+    ///   always enforces a cap, so the value is definite; a remote proxy
+    ///   that cannot learn the far BPA's cap (one predating this value)
+    ///   passes [`NonZeroU64::MAX`] — effectively uncapped.
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        node_ids: &[hardy_bpv7::eid::NodeId],
+        max_bundle_size: NonZeroU64,
+    );
 
     /// Called when the CLA is being unregistered.
     ///
@@ -352,18 +415,30 @@ pub trait Sink: Send + Sync {
 
     /// Dispatches a received bundle (as a stream of segments) to the BPA's `Dispatcher` for processing.
     ///
+    /// Returns the [`Acceptance`] verdict for the transfer — its only
+    /// carrier: [`Accepted`](Acceptance::Accepted) means the CLA may
+    /// acknowledge the transfer to its peer, [`Refused`](Acceptance::Refused)
+    /// means it must not. `Err(_)` is reserved for faults that make the sink
+    /// unusable (the registration or the BPA has gone away) — never for a
+    /// verdict.
+    ///
+    /// The stream itself carries no verdict. The BPA may stop pulling — and
+    /// drop its end of `stream` — at any point: it may already have decided
+    /// to accept (a duplicate identified from the headers needs no further
+    /// bytes) or not yet have decided anything. A producer that sees
+    /// [`SendError`](crate::stream::SendError) must stop pushing segments and
+    /// then take the verdict from `dispatch`'s return value, never from the
+    /// stream closing.
+    ///
     /// A producer that drops its sender before [`Segment::Final`] has
-    /// truncated the bundle; the implementation must surface an error
-    /// (never a silent `Ok`), so the CLA withholds its transfer
-    /// acknowledgement and the peer can retransmit.
+    /// truncated the bundle; the implementation must surface that as
+    /// [`Refused`](Acceptance::Refused) (never a silent acceptance), so the
+    /// CLA withholds its transfer acknowledgement and the peer can
+    /// retransmit.
     ///
     /// A caller holding a complete bundle in memory dispatches it as a
     /// one-segment stream, since `Bytes` implements [`stream::Receiver`](crate::stream::Receiver):
     /// `sink.dispatch(&mut bundle, ..).await`.
-    ///
-    /// Producers: a failed send into the stream means the consumer has given
-    /// up on the transfer (size cap, dead registration, shutdown); stop
-    /// streaming and discard.
     ///
     /// The optional `peer_node` and `peer_addr` parameters provide ingress context:
     /// - `peer_node`: The node identifier of the peer that sent this bundle, if known
@@ -378,7 +453,7 @@ pub trait Sink: Send + Sync {
         peer_node: Option<&hardy_bpv7::eid::NodeId>,
         peer_addr: Option<&ClaAddress>,
         stream: &mut dyn crate::stream::Receiver<Segment>,
-    ) -> Result<()>;
+    ) -> Result<Acceptance>;
 
     /// Notifies the BPA that a new peer (or neighbour) has been discovered at a given `ClaAddress`.
     ///

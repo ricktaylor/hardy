@@ -18,7 +18,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     eid::{Eid, IpnNodeId, NodeId, Service},
     parse::parse,
-    status_report::{AdministrativeRecord, ReasonCode},
+    status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
 use std::{
     borrow::Cow,
@@ -173,22 +173,24 @@ impl services::Service for BufferedService {
     }
 }
 
-/// Holds every delivery open until released, then drains the stream and
-/// completes `Ok`: a delivery deliberately still in flight when something
-/// else (the expiry reaper) resolves the bundle.
+/// Holds every delivery open until released, then either drains the stream
+/// and completes `Ok` or defers with an error: a delivery deliberately
+/// still in flight across the bundle's expiry.
 struct HoldingService {
     sink: hardy_async::sync::spin::Once<Box<dyn services::ServiceSink>>,
+    failing: bool,
     started_tx: flume::Sender<()>,
     release_rx: flume::Receiver<()>,
 }
 
 impl HoldingService {
-    fn new() -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+    fn new(failing: bool) -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
         let (started_tx, started_rx) = flume::bounded(1);
         let (release_tx, release_rx) = flume::bounded(1);
         (
             Arc::new(Self {
                 sink: hardy_async::sync::spin::Once::new(),
+                failing,
                 started_tx,
                 release_rx,
             }),
@@ -213,11 +215,17 @@ impl services::Service for HoldingService {
         _total_len: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> services::Result<()> {
-        let _ = self.started_tx.send(());
+        // send_async: a sync flume send here can park a runtime worker if a
+        // regression ever produces a duplicate delivery, wedging the whole
+        // runtime (timers included) instead of failing the test.
+        let _ = self.started_tx.send_async(()).await;
         let _ = self.release_rx.recv_async().await;
-        // The race under test is the completion claim, not the stream: the
-        // delivery's buffer was loaded before the reaper ran, so it still
-        // drains to Final.
+        if self.failing {
+            return Err(services::Error::StreamCancelled);
+        }
+        // The race under test is the resolution claim, not the stream: the
+        // delivery's buffer was loaded before the bundle expired, so it
+        // still drains to Final.
         loop {
             match stream.recv().await {
                 Ok(Segment::Final(_)) | Err(_) => break,
@@ -256,7 +264,12 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -332,7 +345,7 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     )
     .unwrap();
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let inbound = build_bundle(
         &"ipn:0.2.1".parse().unwrap(),
@@ -341,15 +354,18 @@ async fn bpa_with_inbound(payload: &[u8]) -> (Bpa, Bytes) {
     );
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut inbound.clone())
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut inbound.clone())
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     (bpa, inbound)
 }
@@ -371,7 +387,7 @@ async fn streaming_service_receives_single_final_segment() {
     )
     .unwrap();
     let bpa = Bpa::builder().node_ids(node_ids).build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (svc, events_rx) = StreamingService::new(false);
     bpa.register_service(Service::Ipn(7), svc.clone())
@@ -379,23 +395,26 @@ async fn streaming_service_receives_single_final_segment() {
         .unwrap();
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(
-            None,
-            None,
-            &mut build_bundle(
-                &"ipn:0.2.1".parse().unwrap(),
-                &"ipn:0.1.7".parse().unwrap(),
-                b"ping",
-            ),
-        )
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(
+                None,
+                None,
+                &mut build_bundle(
+                    &"ipn:0.2.1".parse().unwrap(),
+                    &"ipn:0.1.7".parse().unwrap(),
+                    b"ping",
+                ),
+            )
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     let Event::Streamed {
         bundle_id,
@@ -464,31 +483,17 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
 
     failing_svc.sink.get().unwrap().unregister().await;
 
-    // The failed delivery parks the bundle *after* the service reports the
-    // failure, so a single registration can race the park; each fresh
-    // registration re-triggers the WaitingForService poll.
-    let mut redelivery = None;
-    for i in 0.. {
-        let (svc, events_rx) = StreamingService::new(false);
-        bpa.register_service(Service::Ipn(7), svc.clone())
-            .await
-            .unwrap();
-        // Known test-guide deviation: a timed retry loop, not an
-        // event-driven wait. Scheduled for rewrite against the Phase 3
-        // Deliver seat (see bpa/docs/refactor_plan.md).
-        if let Ok(Ok(event)) = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            events_rx.recv_async(),
-        )
+    // A single fresh registration suffices: the failed delivery's park
+    // re-checks the routing snapshot, so whichever side the park lands on —
+    // before this registration's WaitingForService poll, or after it (the
+    // registration changed the table mid-flight) — the bundle re-enters
+    // dispatch and reaches the new service. The timeout only bounds a
+    // regression.
+    let (svc, events_rx) = StreamingService::new(false);
+    bpa.register_service(Service::Ipn(7), svc.clone())
         .await
-        {
-            redelivery = Some(event);
-            break;
-        }
-        assert!(i < 20, "Timed out waiting for the re-delivery");
-        svc.sink.get().unwrap().unregister().await;
-    }
-    let Some(Event::Streamed { segments, .. }) = redelivery else {
+        .unwrap();
+    let Event::Streamed { segments, .. } = recv_event(&events_rx, 10).await else {
         panic!("Expected re-delivery through the streamed door");
     };
     assert!(matches!(segments.last(), Some(Segment::Final(_))));
@@ -496,12 +501,45 @@ async fn failed_streamed_delivery_parks_and_redelivers() {
     bpa.shutdown().await;
 }
 
-/// A bundle that expires while its delivery is in flight is resolved
-/// exactly once. The reaper wins the conditional terminal claim and sends
-/// the only deletion report; the delivery's completion loses the claim and
-/// stays silent instead of contradicting it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn expiry_mid_delivery_resolves_once() {
+/// Decode the status report carried by a captured report bundle.
+fn decode_report(segments: &[Segment]) -> BundleStatusReport {
+    let Some(Segment::Final(report)) = segments.last() else {
+        panic!("Expected a whole report bundle");
+    };
+    let parsed = parse(report.clone()).expect("Failed to parse report bundle");
+    let payload = parsed
+        .bundle
+        .blocks
+        .get(&1)
+        .unwrap()
+        .payload(&parsed.data)
+        .expect("Report payload extent out of bounds");
+    let AdministrativeRecord::BundleStatusReport(status) =
+        hardy_cbor::decode::parse(payload).expect("Failed to parse admin record");
+    status
+}
+
+/// Shared rig for the mid-delivery expiry tests: node ipn:0.1 with report
+/// capture at ipn:0.1.9; bundle A (ipn:0.2.1 → ipn:0.1.7, 2 s lifetime,
+/// deletion report requested) fails a first delivery — parking it as
+/// WaitingForService, on the reaper's watch — and is then re-delivered to a
+/// [`HoldingService`] that holds it open across its expiry. A companion
+/// bundle B (ipn:0.2.2 → ipn:0.1.6, same lifetime, created after A) has no
+/// service at all, so it parks as WaitingForService at dispatch and is
+/// reaped normally: B's LifetimeExpired deletion report is the
+/// deterministic signal that the reaper's expiry pass has run past A's
+/// (earlier) expiry — and popped A's watch entry — while A was verifiably
+/// still held. Had the reaper wrongly reaped in-flight A, A expires first,
+/// so A's report would arrive *before* B's and fail the first source
+/// assertion.
+async fn expiry_mid_delivery_rig(
+    holding_fails: bool,
+) -> (
+    Bpa,
+    Arc<MetadataMemStorage>,
+    flume::Receiver<Event>,
+    flume::Sender<()>,
+) {
     let node_ids = NodeIds::try_from(
         [NodeId::Ipn(IpnNodeId {
             allocator_id: 0,
@@ -518,7 +556,7 @@ async fn expiry_mid_delivery_resolves_once() {
         .build()
         .await
         .unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     // Deletion reports are addressed to ipn:0.1.9: a local capture service.
     let (reports, reports_rx) = StreamingService::new(false);
@@ -526,7 +564,7 @@ async fn expiry_mid_delivery_resolves_once() {
         .await
         .unwrap();
 
-    // A first delivery attempt fails, parking the bundle as
+    // A first delivery attempt fails, parking bundle A as
     // WaitingForService — which is also what places it on the reaper's
     // expiry watch list.
     let (failing_svc, failing_rx) = StreamingService::new(true);
@@ -546,21 +584,24 @@ async fn expiry_mid_delivery_resolves_once() {
         .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    bpa.register_cla("ingress".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
     assert!(matches!(recv_event(&failing_rx, 5).await, Event::Failed));
 
     // Re-register with a service that holds the redelivery open across
     // the bundle's expiry.
     failing_svc.sink.get().unwrap().unregister().await;
-    let (svc, started_rx, release_tx) = HoldingService::new();
+    let (svc, started_rx, release_tx) = HoldingService::new(holding_fails);
     bpa.register_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
@@ -571,44 +612,61 @@ async fn expiry_mid_delivery_resolves_once() {
         .expect("Timed out waiting for the delivery to start")
         .expect("Holding service gone");
 
-    // ...when the bundle expires: the reaper resolves it, and the deletion
-    // report (the only report this bundle requests) reaches report_to.
-    let Event::Streamed { segments, .. } = recv_event(&reports_rx, 10).await else {
-        panic!("Expected the deletion report at report_to");
-    };
+    // ...now create companion B: local destination, no registered service —
+    // it parks as WaitingForService straight from dispatch (never Waiting).
+    let (_, data) = Builder::new("ipn:0.2.2".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
+        .with_report_to("ipn:0.1.9".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_lifetime(Duration::from_millis(2000))
+        .with_payload(Cow::Borrowed(b"reap me".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    assert_eq!(
+        cla.sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
-    // Pin the winner's identity: the report is the *reaper's* deletion
-    // report, citing LifetimeExpired. If the claim logic ever inverted,
-    // a delivered/deleted pair from the completion would fail here.
-    let Some(Segment::Final(report)) = segments.last() else {
-        panic!("Expected a whole report bundle");
+    // The reaper's expiry pass: B — delivery never commenced — is reaped
+    // honestly, while held A, in DeliveryAckPending since before the pass,
+    // is deferred.
+    let Event::Streamed { segments, .. } = recv_event(&reports_rx, 10).await else {
+        panic!("Expected the companion's deletion report at report_to");
     };
-    let parsed = parse(report.clone()).expect("Failed to parse report bundle");
-    let payload = parsed
-        .bundle
-        .blocks
-        .get(&1)
-        .unwrap()
-        .payload(&parsed.data)
-        .expect("Report payload extent out of bounds");
-    let AdministrativeRecord::BundleStatusReport(status) =
-        hardy_cbor::decode::parse(payload).expect("Failed to parse admin record");
+    let status = decode_report(&segments);
+    assert_eq!(
+        status.bundle_id.source,
+        "ipn:0.2.2".parse::<Eid>().unwrap(),
+        "first report must be the never-commenced companion's, not the held delivery's"
+    );
     assert!(status.deleted.is_some(), "expected a deletion assertion");
-    assert!(status.received.is_none() && status.delivered.is_none());
     assert_eq!(status.reason, ReasonCode::LifetimeExpired);
 
-    // Release the held delivery: its completion must lose the terminal
-    // claim silently, with no delivered/deleted reporting after the
-    // reaper's. shutdown() is the barrier: it joins the pools, so by the
-    // time it returns a wrongly-emitted second report has either been
-    // delivered (visible on reports_rx) or persisted-then-stranded when
-    // the dispatch channel closed (visible as live metadata below).
-    // Both are asserted empty; no quiet window is involved.
-    release_tx.send(()).expect("Holding service gone");
+    (bpa, metadata_store, reports_rx, release_tx)
+}
+
+/// Assert that shutdown leaves no further reports and no live metadata.
+/// shutdown() is the barrier: it joins the pools, so by the time it
+/// returns a wrongly-emitted extra report has either been delivered
+/// (visible on reports_rx) or persisted-then-stranded when the dispatch
+/// channel closed (visible as live metadata). Both are asserted empty; no
+/// quiet window is involved.
+async fn assert_fully_resolved(
+    bpa: Bpa,
+    metadata_store: &MetadataMemStorage,
+    reports_rx: &flume::Receiver<Event>,
+) {
     bpa.shutdown().await;
     assert!(
         reports_rx.is_empty(),
-        "the completed delivery re-resolved the expired bundle"
+        "an expired bundle was resolved more than once"
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(16);
     metadata_store
@@ -620,6 +678,58 @@ async fn expiry_mid_delivery_resolves_once() {
         live_rx.recv().await.is_err(),
         "a resolved bundle left live metadata behind"
     );
+}
+
+/// A bundle that expires while its delivery is in flight is resolved
+/// exactly once — by the delivery. Once a delivery has commenced the BPA
+/// is committed: the service consumes the bundle, so a "deleted: lifetime
+/// expired" report would be a lie. The reaper defers the in-flight bundle,
+/// and the released completion wins the terminal claim, reporting the
+/// deletion as a completed delivery (NoAdditionalInformation) — never
+/// LifetimeExpired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expiry_mid_delivery_resolves_once() {
+    let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(false).await;
+
+    // Release the held delivery: it completes and claims the resolution.
+    release_tx.send(()).expect("Holding service gone");
+    let Event::Streamed { segments, .. } = recv_event(&reports_rx, 10).await else {
+        panic!("Expected the completed delivery's deletion report at report_to");
+    };
+    let status = decode_report(&segments);
+    assert_eq!(status.bundle_id.source, "ipn:0.2.1".parse::<Eid>().unwrap());
+    assert!(status.deleted.is_some(), "expected a deletion assertion");
+    assert!(status.received.is_none() && status.delivered.is_none());
+    assert_eq!(
+        status.reason,
+        ReasonCode::NoAdditionalInformation,
+        "a consumed delivery must not be reported as expired"
+    );
+
+    assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
+}
+
+/// Deferral does not launder expiry: when the held delivery is instead
+/// *failed* by the service, nothing was consumed — the park from
+/// DeliveryAckPending wins, re-arms the expiry watch, and the reaper then
+/// resolves the expired bundle honestly with LifetimeExpired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_delivery_expires_honestly() {
+    let (bpa, metadata_store, reports_rx, release_tx) = expiry_mid_delivery_rig(true).await;
+
+    // Release: the service defers the delivery, and the already-expired
+    // bundle is reaped from its park.
+    release_tx.send(()).expect("Holding service gone");
+    let Event::Streamed { segments, .. } = recv_event(&reports_rx, 10).await else {
+        panic!("Expected the deferred bundle's deletion report at report_to");
+    };
+    let status = decode_report(&segments);
+    assert_eq!(status.bundle_id.source, "ipn:0.2.1".parse::<Eid>().unwrap());
+    assert!(status.deleted.is_some(), "expected a deletion assertion");
+    assert!(status.received.is_none() && status.delivered.is_none());
+    assert_eq!(status.reason, ReasonCode::LifetimeExpired);
+
+    assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
 }
 
 // ---------------------------------------------------------------------------

@@ -125,8 +125,7 @@ impl From<WatchConfig> for Option<WatchMode> {
     }
 }
 
-// Configuration for built-in application services.
-// The RFC9171 validity checks: absent keys defer to the filter's own
+// The RFC9171 validity checks: absent keys defer to the BPA's own
 // defaults (all checks enabled).
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields, default, rename_all = "kebab-case")]
@@ -141,7 +140,7 @@ pub struct Rfc9171ValidityConfig {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "config")]
-pub enum EgressPolicyConfig {
+pub enum FlowControllerFactoryConfig {
     #[serde(other)]
     Unknown,
 }
@@ -195,7 +194,7 @@ pub struct Config {
     // Maximum size in bytes of a single reassembled bundle at ingress or
     // origination; absent defers to the BPA default.
     #[serde(default)]
-    pub max_bundle_size: Option<NonZeroUsize>,
+    pub max_bundle_size: Option<core::num::NonZeroU64>,
 
     // Endpoint IDs (EIDs) that identify this node (e.g. "ipn:1.0", "dtn://my-node/")
     #[serde(default)]
@@ -218,10 +217,10 @@ pub struct Config {
     #[serde(default)]
     pub storage: storage::StorageConfig,
 
-    // IPN legacy node patterns for the egress rewriting filter.
-    #[cfg(feature = "ipn-legacy-filter")]
+    // EID patterns for next hops requiring legacy 2-element IPN encoding
+    // (the BPA's per-hop re-encode built-in).
     #[serde(default)]
-    pub ipn_legacy_nodes: hardy_ipn_legacy_filter::Config,
+    pub ipn_legacy_nodes: Vec<hardy_eid_patterns::EidPattern>,
 
     // RFC9171 bundle validity checks.
     #[serde(default)]
@@ -241,7 +240,7 @@ pub struct Config {
 
     /// Named egress policies, referenced by CLAs
     #[serde(default)]
-    pub policies: HashMap<String, EgressPolicyConfig>,
+    pub policies: HashMap<String, FlowControllerFactoryConfig>,
 
     /// Convergence Layer Adaptors (CLAs)
     #[serde(default)]

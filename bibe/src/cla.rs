@@ -1,10 +1,13 @@
 use alloc::borrow::Cow;
-use core::num::NonZeroU32;
+use core::{
+    num::{NonZeroU32, NonZeroU64},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     Bytes, async_trait,
-    cla::{Cla, ClaAddress, ForwardBundleResult, Sink},
+    cla::{Acceptance, Cla, ClaAddress, ForwardBundleResult, Sink},
     stream::{Receiver, buffer_stream},
 };
 use hardy_bpv7::{
@@ -26,6 +29,10 @@ use crate::Error;
 pub struct BibeCla {
     tunnel_source: Eid,
     sink: Once<Box<dyn Sink>>,
+    // The BPA's dispatch size cap, learned at registration (0 = not yet
+    // registered): an encapsulated outer bundle over the cap would be
+    // refused deterministically, so it is never dispatched.
+    max_bundle_size: AtomicU64,
 }
 
 impl BibeCla {
@@ -34,6 +41,7 @@ impl BibeCla {
         Self {
             tunnel_source,
             sink: Once::new(),
+            max_bundle_size: AtomicU64::new(0),
         }
     }
 
@@ -68,13 +76,13 @@ impl BibeCla {
     // a complete bundle in memory, so it enters the BPA as a one-segment
     // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
     // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
-    pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
-        self.sink
+    pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<Acceptance, Error> {
+        Ok(self
+            .sink
             .get()
             .ok_or(Error::NotRegistered)?
             .dispatch(None, None, &mut bundle)
-            .await?;
-        Ok(())
+            .await?)
     }
 
     /// Encapsulate an inner bundle into an outer bundle.
@@ -108,8 +116,15 @@ impl BibeCla {
 
 #[async_trait]
 impl Cla for BibeCla {
-    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        _node_ids: &[NodeId],
+        max_bundle_size: NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
+        self.max_bundle_size
+            .store(max_bundle_size.get(), Ordering::Relaxed);
         debug!("BIBE CLA registered");
     }
 
@@ -161,9 +176,26 @@ impl Cla for BibeCla {
             }
         };
 
+        // Pre-check against the BPA's dispatch size cap: encapsulation grows
+        // the bundle, and an over-cap outer would be refused
+        // deterministically on every retry. (cap == 0 only before
+        // registration, when no forward can arrive.)
+        let cap = self.max_bundle_size.load(Ordering::Relaxed);
+        if cap > 0 && outer.len() as u64 > cap {
+            warn!(
+                "BIBE outer bundle exceeds the BPA's max bundle size ({} > {cap})",
+                outer.len()
+            );
+            return Ok(ForwardBundleResult::NoNeighbour);
+        }
+
         // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
-            Ok(()) => Ok(ForwardBundleResult::Sent),
+            Ok(Acceptance::Accepted) => Ok(ForwardBundleResult::Sent),
+            Ok(Acceptance::Refused) => {
+                warn!("BIBE outer bundle refused by the BPA");
+                Ok(ForwardBundleResult::NoNeighbour)
+            }
             Err(e) => {
                 warn!("BIBE dispatch failed: {e}");
                 Ok(ForwardBundleResult::NoNeighbour)

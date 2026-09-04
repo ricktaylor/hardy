@@ -63,15 +63,41 @@ impl NodeIds {
 
     /// Returns `true` if the EID identifies this node (matches any of our
     /// node IDs, ignoring the service component).
+    ///
+    /// Unlike [`local_service_eid`](Self::local_service_eid), a `LocalNode`
+    /// EID is local even when no ipn node ID is configured: it names this
+    /// node by definition, whether or not a canonical service key exists.
     pub(crate) fn is_local(&self, eid: &Eid) -> bool {
+        matches!(eid, Eid::LocalNode(_)) || self.local_service_eid(eid).is_some()
+    }
+
+    /// If `eid` addresses a service on this node, return the canonical
+    /// registration EID for that service — the exact key
+    /// [`resolve_eid`](Self::resolve_eid) produces and service registration
+    /// polls with. `LegacyIpn` and `LocalNode` forms normalise to `Ipn`;
+    /// non-local EIDs return `None`.
+    pub(crate) fn local_service_eid(&self, eid: &Eid) -> Option<Eid> {
         match eid {
-            Eid::Null => false,
-            Eid::LocalNode(_) => true,
-            Eid::Ipn { fqnn, .. } | Eid::LegacyIpn { fqnn, .. } => {
-                self.ipn.is_some_and(|id| id == *fqnn)
+            Eid::LocalNode(_) => self.expand_local_node(eid),
+            Eid::Ipn {
+                fqnn,
+                service_number,
             }
-            Eid::Dtn { node_name, .. } => self.dtn.as_ref().is_some_and(|id| id == node_name),
-            _ => false,
+            | Eid::LegacyIpn {
+                fqnn,
+                service_number,
+            } => (self.ipn == Some(*fqnn)).then_some(Eid::Ipn {
+                fqnn: *fqnn,
+                service_number: *service_number,
+            }),
+            Eid::Dtn {
+                node_name,
+                service_name,
+            } => (self.dtn.as_ref() == Some(node_name)).then(|| Eid::Dtn {
+                node_name: node_name.clone(),
+                service_name: service_name.clone(),
+            }),
+            _ => None,
         }
     }
 

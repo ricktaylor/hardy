@@ -1,19 +1,33 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
     pub async fn forward_bundle(
         &self,
         cla: &dyn cla::Cla,
         peer: u32,
-        queue: Option<u32>,
+        lane: Option<u32>,
         cla_addr: &cla::ClaAddress,
         bundle: bundle::Bundle,
     ) {
+        // The queue-assignment record carries the resolved adjacency, and
+        // the claim below overwrites the status — take it first. The egress
+        // channel only delivers this queue's assignments, so any other
+        // status here is a stale copy whose owner resolves it elsewhere.
+        let bundle::BundleStatus::ForwardPending { next_hop, .. } = &bundle.status else {
+            debug!("Bundle reached forwarding without a queue assignment, dropping copy");
+            return;
+        };
+        let next_hop = next_hop.clone();
+
         // Get bundle data from store, now we know we need it!
         let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
+
+        // Snapshot the routing table before the claim: the parks below
+        // re-check it to close the park-vs-poll window (see park_bundle).
+        let seen = self.rib.table_snapshot();
 
         // Claim the bundle out of its peer queue before the in-memory rewrite
         // below and before offering it. The claim must be a conditional swap:
@@ -39,91 +53,77 @@ impl Dispatcher {
 
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
-        // pair, so the rebuilt block map must replace the pre-rewrite one. The
-        // pre-rewrite blocks are kept: the rewrite is in-memory only, and a
-        // bundle parked back to Waiting must persist metadata that indexes
-        // the stored (un-rewritten) data.
-        let (pre_rewrite, data) = match self.update_extension_blocks(&bundle, data) {
+        // pair, so the rebuilt block map must replace the pre-rewrite one.
+        // The rewrite is in-memory only: parks persist status alone, and a
+        // re-dispatch re-enters from the persisted representation (see
+        // park_bundle), so no failure exit needs to restore the pre-rewrite
+        // map.
+        let data = match self.update_extension_blocks(&bundle, data, &next_hop) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
-                // Conditional: the reaper can resolve the claimed bundle at
-                // any await, and the park must not resurrect a tombstone.
-                if self
-                    .store
-                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                    .await
-                {
-                    self.store.watch_bundle(bundle).await;
-                }
-                return;
+                return self
+                    .park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
             }
-            Ok((new_bundle, data)) => (
-                core::mem::replace(&mut bundle.bundle.blocks, new_bundle.blocks),
-                data,
-            ),
+            Ok((new_bundle, data)) => {
+                bundle.bpv7.blocks = new_bundle.blocks;
+                data
+            }
         };
 
+        // Egress chain: registered Rewriters extend the fixed rewrite above,
+        // then Verifiers gate the final pre-BPSec wire form.
         // - Runs after dequeue from ForwardPending, just before CLA send
-        // - Modifications are in-memory only (like Deliver), NOT persisted
+        // - Edits are in-memory only (like Deliver), NOT persisted
         // - If send fails or peer goes down, bundle returns to Waiting and may
-        //   route to a different peer, so Egress will run again with fresh context
+        //   route to a different peer, so Egress runs again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        // - On Drop result: call drop_bundle() and return early
         //
         // Every exit below this point must resolve the claim taken above:
-        // ForwardAckPending has no storage poller, so a bundle left there is
-        // invisible until peer removal, restart, or expiry.
-        let bundle_id = bundle.bundle.id.clone();
-        let (mut bundle, mut data) = match self
-            .filter_engine
-            .exec(filter::Hook::Egress, bundle, data, self.key_provider())
-            .await
-        {
-            Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
-            Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
+        // ForwardAckPending has no storage poller and the reaper defers its
+        // expiry, so a bundle left there is invisible until the outcome
+        // arrives, the peer is removed, or the BPA restarts.
+        let (bundle, mut data) =
+            match self
+                .filters
+                .run_egress(bundle, data, &next_hop, &*self.key_provider)
+            {
+                Ok(filter::ChainOutcome::Continue(bundle, data)) => (bundle, data),
+                Ok(filter::ChainOutcome::Drop(bundle, Some(reason))) => {
                     return self.drop_bundle(bundle, reason).await;
-                } else {
+                }
+                Ok(filter::ChainOutcome::Drop(bundle, None)) => {
                     return self.delete_bundle(bundle).await;
                 }
-            }
-            Err(e) => {
-                error!("Egress filter execution failed: {e}");
+                Err((bundle, e)) => {
+                    error!("Egress filter chain failed: {e}");
 
-                // The filter consumed the claimed bundle, so re-fetch it and
-                // conditionally return the claim to Waiting for a fresh
-                // routing decision. Losing the swap means a sweep or the
-                // reaper resolved the bundle first.
-                if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.metadata.status == (bundle::BundleStatus::ForwardAckPending { peer })
-                    && self
-                        .store
-                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                        .await
-                {
-                    self.store.watch_bundle(bundle).await;
+                    // The chain hands the claimed bundle back: return the claim
+                    // to Waiting for a fresh routing decision, CAS-clean. Losing
+                    // the park means a sweep or the reaper resolved it first.
+                    return self
+                        .park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                        .await;
                 }
-                return;
-            }
-        };
+            };
 
         // And pass to CLA: the whole bundle is in hand, so it travels as a
         // single Final segment.
         let total_len = data.len() as u64;
         match cla
-            .forward(queue, cla_addr, &bundle.bundle.id, total_len, &mut data)
+            .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => {
                 // The terminal claim is a conditional tombstone: the reaper
-                // races a bundle that expires during a synchronous transmit,
-                // and losing the claim means its deletion report has gone
-                // out. The forwarded report is suppressed with the rest:
-                // a lost resolution never happened.
+                // defers in-flight transfers, but a peer sweep can still
+                // resolve the bundle mid-transmit, and losing the claim means
+                // its resolution has gone out. The forwarded report is
+                // suppressed with the rest: a lost resolution never happened.
                 if !self.store.tombstone_if(&bundle).await {
                     debug!(
                         "Forward completion for {} lost the resolution race, ignored",
-                        bundle.bundle.id
+                        bundle.id()
                     );
                     return;
                 }
@@ -137,37 +137,41 @@ impl Dispatcher {
             }
             Ok(cla::ForwardBundleResult::Accepted) => {
                 // The CLA owns the transfer; the bundle stays in
-                // ForwardAckPending until the outcome arrives, the peer is
-                // removed, or the bundle's lifetime expires.
+                // ForwardAckPending until the outcome arrives or the peer is
+                // removed. The watch stays armed even though the expiry pass
+                // defers this status: if a peer sweep parks the bundle before
+                // its expiry, the live entry still reaps it promptly.
                 return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
+                // Link-scoped evidence: the neighbour is gone. Return the
+                // bundle to Waiting, and reset the whole peer queue so its
+                // bundles await a fresh routing decision alongside it.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
+                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
+                self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
+
+                // Bundle-scoped evidence about a single transfer: park only
+                // this bundle, leaving the rest of the peer's queue alone —
+                // resetting the queue is the response to link-scoped
+                // evidence, above. Unlike the deferred `Failed` outcome,
+                // which is paced by a network round trip, a synchronous
+                // failure can be deterministic and instantaneous, so
+                // re-running dispatch inline here could spin; the retry
+                // waits in Waiting for the next routing or link event —
+                // park_bundle re-dispatches at most once, and only if such
+                // an event landed while this transfer was in flight.
+                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
+                    .await;
             }
         }
-
-        // Synchronous failure: this bundle never entered the channel. Restore
-        // the pre-rewrite Bundle (the stored data is the un-rewritten
-        // original) and return it to Waiting for a fresh routing decision
-        // along with the rest of the peer's queue.
-        bundle.bundle.blocks = pre_rewrite;
-        // Conditional for the same reason: losing the swap means the reaper
-        // or a sweep resolved the bundle while the CLA held the call.
-        if self
-            .store
-            .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-            .await
-        {
-            self.store.watch_bundle(bundle).await;
-        }
-        self.store.reset_peer_queue(peer).await;
     }
 
     // Resolves a deferred transfer outcome reported by `cla` for a bundle it
@@ -188,10 +192,10 @@ impl Dispatcher {
             return;
         };
 
-        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.metadata.status else {
+        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.status else {
             debug!(
                 "Transfer outcome for bundle {bundle_id} that is not awaiting one ({:?}), ignored",
-                bundle.metadata.status
+                bundle.status
             );
             return;
         };
@@ -245,18 +249,27 @@ impl Dispatcher {
                 // routing decision now, rather than parking in Waiting (whose
                 // semantic is "nowhere to go") or resetting the whole peer
                 // queue (link-scoped evidence). Dispatch parks the bundle in
-                // Waiting itself if no route remains.
+                // Waiting itself if no route remains, and its expiry
+                // checkpoint drops a bundle that expired during the deferred
+                // transfer.
                 self.dispatch_bundle(bundle).await
             }
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
+        next_hop: &Eid,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+        // We read the cached extension fields (`hop_count` / `age` from
+        // `metadata.extensions`) to rebuild the wire blocks, but never write the
+        // bumped values back: `forward_bundle` deletes the bundle on a successful
+        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
+        // in-memory cache is never observed again after this rewrite.
+        //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
         let hardy_bpv7::parse::Parsed {
@@ -270,7 +283,7 @@ impl Dispatcher {
         // meaningful to report to, and a conformant parser (ours included)
         // rejects the combination.
         let report_on_failure =
-            !bundle.bundle.flags.is_admin_record && !bundle.bundle.id.source.is_null();
+            !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
@@ -282,7 +295,9 @@ impl Dispatcher {
             })
             .with_data(
                 hardy_cbor::encode::emit(
-                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+                    &self
+                        .node_ids
+                        .get_admin_endpoint(&bundle.primary().destination),
                 )
                 .0
                 .into(),
@@ -290,7 +305,7 @@ impl Dispatcher {
             .rebuild();
 
         // Increment Hop Count
-        if let Some(hop_count) = &bundle.bundle.hop_count {
+        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
@@ -311,7 +326,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || !bundle.bundle.id.timestamp.is_clocked() {
+        if bundle.metadata.extensions.age.is_some() || !bundle.id().timestamp.is_clocked() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())
@@ -328,6 +343,40 @@ impl Dispatcher {
                 })
                 .with_data(hardy_cbor::encode::emit(&bundle_age).0.into())
                 .rebuild();
+        }
+
+        // Config-driven legacy-EID re-encode: a next hop matching the
+        // configured patterns requires 2-element IPN encoding, so Ipn
+        // source/destination re-encode as LegacyIpn. Wire adaptation only:
+        // the caller installs the rebuilt block map (extents index the
+        // re-encoded bytes) but never the rebuilt primary — the record's
+        // primary, and with it the bundle id every store operation is keyed
+        // on, keeps the canonical encoding.
+        if self.ipn_legacy_peers.iter().any(|p| p.matches(next_hop)) {
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.id().source
+            {
+                editor = editor
+                    .with_source(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
+            if let Eid::Ipn {
+                fqnn,
+                service_number,
+            } = &bundle.primary().destination
+            {
+                editor = editor
+                    .with_destination(Eid::LegacyIpn {
+                        fqnn: *fqnn,
+                        service_number: *service_number,
+                    })
+                    .map_err(|(_, e)| e)?;
+            }
         }
 
         // rebuild_bundle() returns a Bundle whose block extents index the

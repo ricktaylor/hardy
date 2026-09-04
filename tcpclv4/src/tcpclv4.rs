@@ -17,6 +17,10 @@ use crate::error::Error;
 struct Inner {
     sink: Arc<dyn Sink>,
     node_ids: Arc<[NodeId]>,
+    // The advertised transfer MRU: the configured value clamped to the
+    // BPA's dispatch size cap, so a peer is never invited to send a
+    // transfer the BPA would deterministically refuse.
+    transfer_mru: NonZeroU64,
 }
 
 /// TCPCLv4 Convergence Layer Adapter (RFC 9174).
@@ -84,6 +88,13 @@ impl Tcpclv4 {
         }
     }
 
+    /// The configured transfer MRU — the largest bundle this entity accepts
+    /// on the wire. Declare it to `register_cla` so the BPA folds it into
+    /// the effective `max_bundle_size` reported back at registration.
+    pub fn max_bundle_size(&self) -> NonZeroU64 {
+        self.transfer_mru
+    }
+
     /// Unregisters this CLA from the BPA.
     pub async fn unregister(&self) {
         if let Some(inner) = self.inner.get() {
@@ -126,7 +137,7 @@ impl Tcpclv4 {
             contact_timeout: self.contact_timeout,
             keepalive_interval: self.keepalive_interval,
             segment_mru: self.segment_mru,
-            transfer_mru: self.transfer_mru,
+            transfer_mru: inner.transfer_mru,
             node_ids: inner.node_ids.clone(),
             sink: inner.sink.clone(),
             registry: self.registry.clone(),
@@ -167,7 +178,23 @@ impl Cla for Tcpclv4 {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, sink)))]
-    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn Sink>,
+        node_ids: &[NodeId],
+        max_bundle_size: NonZeroU64,
+    ) {
+        // The effective cap already folds this entity's declared transfer
+        // MRU (`Cla::max_bundle_size`) with the BPA's own; the min is kept
+        // as a cheap guard against a registrar that ignored the declaration.
+        let transfer_mru = self.transfer_mru.min(max_bundle_size);
+        if transfer_mru < self.transfer_mru {
+            info!(
+                "Transfer MRU clamped from {} to the BPA's max bundle size {transfer_mru}",
+                self.transfer_mru
+            );
+        }
+
         // Registration consumes the entity's sink slot and its bound
         // listener sockets, so it succeeds exactly once
         let mut first_registration = false;
@@ -176,6 +203,7 @@ impl Cla for Tcpclv4 {
             Inner {
                 sink: sink.into(),
                 node_ids: node_ids.into(),
+                transfer_mru,
             }
         });
         if !first_registration {

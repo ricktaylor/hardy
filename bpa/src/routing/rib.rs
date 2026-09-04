@@ -8,6 +8,7 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
@@ -25,7 +26,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet,
-    bundle::{Bpv7Bundle, Bundle, BundleMetadata},
+    bundle::Bundle,
     cla::{ClaAddressType, registry::Cla},
     dispatcher::Dispatcher,
     hash_map::Entry as HashMapEntry,
@@ -38,9 +39,19 @@ use crate::{
 pub enum DispatchAction {
     AdminEndpoint,
     Deliver(Arc<Service>),
-    Forward(u32),
+    Forward {
+        /// The selected CLA peer.
+        peer: u32,
+        /// The adjacency EID whose forward entry the lookup matched —
+        /// carried into the peer queue's assignment record.
+        next_hop: Eid,
+    },
     Drop(Option<ReasonCode>),
 }
+
+/// An opaque identity token for a point-in-time route table, captured by
+/// [`Rib::table_snapshot`] and compared by [`Rib::table_changed_since`].
+pub struct RibSnapshot(Arc<RouteTable>);
 
 pub struct Rib {
     snapshot: ArcSwap<RouteTable>,
@@ -132,17 +143,18 @@ impl Rib {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
-    pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
+    pub fn find(&self, bundle: &Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
-        let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        let result =
+            table.find_recurse(&bundle.primary().destination, true, &mut HashSet::new())?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
             previous = bundle
                 .previous_node()
-                .unwrap_or_else(|| bundle.bundle.id.source.clone());
+                .unwrap_or_else(|| bundle.id().source.clone());
             table.find_recurse(&previous, false, &mut HashSet::new())?
         } else {
             result
@@ -152,15 +164,28 @@ impl Rib {
             LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
             LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
-            LookupResult::Forward(peer, next_hop) => {
-                bundle.metadata.read_only.next_hop = Some(next_hop.clone());
-                Some(DispatchAction::Forward(peer))
-            }
-            LookupResult::ForwardEcmp(peers) => {
-                self.select_peer(peers, &bundle.bundle, &mut bundle.metadata)
-            }
+            LookupResult::Forward(peer, next_hop) => Some(DispatchAction::Forward {
+                peer,
+                next_hop: next_hop.clone(),
+            }),
+            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
             LookupResult::Reflect => None,
         }
+    }
+
+    /// Capture an identity token for the current route table contents.
+    ///
+    /// Every table mutation publishes a fresh `Arc` (and no-op mutations
+    /// publish nothing), so comparing tokens detects whether *any* routing
+    /// change — route, peer, or service registration — landed in between.
+    /// The token holds the table alive, so the comparison is ABA-free.
+    pub fn table_snapshot(&self) -> RibSnapshot {
+        RibSnapshot(self.snapshot.load_full())
+    }
+
+    /// Whether the route table has changed since `seen` was captured.
+    pub fn table_changed_since(&self, seen: &RibSnapshot) -> bool {
+        !Arc::ptr_eq(&seen.0, &self.snapshot.load_full())
     }
 
     pub fn find_service(&self, to: &Eid) -> Option<Arc<Service>> {
@@ -175,7 +200,6 @@ impl Rib {
         &self,
         mut peers: Vec<(u32, &Eid)>,
         bundle: &Bpv7Bundle,
-        metadata: &mut BundleMetadata,
     ) -> Option<DispatchAction> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
@@ -185,17 +209,18 @@ impl Rib {
         trace!(peers = ?peers, "Forward to CLA peers");
 
         let idx = if peers.len() > 1 {
-            (self.ecmp_hash_state.hash_one((
-                &bundle.id.source,
-                &bundle.destination,
-                &metadata.writable.flow_label,
-            )) % (peers.len() as u64)) as usize
+            (self
+                .ecmp_hash_state
+                .hash_one((&bundle.primary.id.source, &bundle.primary.destination))
+                % (peers.len() as u64)) as usize
         } else {
             0
         };
         let (peer, next_hop) = peers.swap_remove(idx);
-        metadata.read_only.next_hop = Some(next_hop.clone());
-        Some(DispatchAction::Forward(peer))
+        Some(DispatchAction::Forward {
+            peer,
+            next_hop: next_hop.clone(),
+        })
     }
 
     pub(crate) async fn add(
@@ -293,7 +318,15 @@ impl Rib {
                     self.poll_waiting_notify.notify_one();
                 }
             }
-            Action::Internal(InternalAction::Local(_)) => {
+            Action::Internal(InternalAction::Local(ref service)) => {
+                // The service is going: bundles queued in its delivery
+                // channel re-park to await the next registration (the local
+                // analogue of the peer sweeps above). In-flight deliveries
+                // (DeliveryAckPending) are untouched — they resolve
+                // themselves.
+                if let Some(eid) = service.queue_eid() {
+                    self.store.reset_service_queue(eid).await;
+                }
                 self.poll_waiting_notify.notify_one();
             }
             _ => {}
@@ -532,23 +565,23 @@ mod tests {
 
     fn make_bundle(destination: &str) -> Bundle {
         Bundle {
-            bundle: Bpv7Bundle {
-                id: BundleId {
-                    source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: CreationTimestamp::now(),
-                    fragment_info: None,
+            bpv7: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: BundleId {
+                        source: "ipn:0.99.1".parse().unwrap(),
+                        timestamp: CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: destination.parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: Duration::from_secs(3600),
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: destination.parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         }
     }
 
@@ -564,9 +597,12 @@ mod tests {
         let rib = make_rib();
         add_local_forward(&rib, ipn_node(2), 42);
 
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(42))));
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 42, .. })
+        ));
     }
 
     #[test]
@@ -581,9 +617,12 @@ mod tests {
         );
         add_local_forward(&rib, ipn_node(10), 99);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(99))));
+        let bundle = make_bundle("ipn:0.50.1");
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 99, .. })
+        ));
     }
 
     #[test]
@@ -608,23 +647,22 @@ mod tests {
         );
         add_local_forward(&rib, ipn_node(3), 77);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(77))));
+        let bundle = make_bundle("ipn:0.50.1");
+        let Some(DispatchAction::Forward { peer: 77, next_hop }) = rib.find(&bundle) else {
+            panic!("Via chain must resolve to the adjacent neighbour's peer");
+        };
 
-        // The next-hop handed to egress filters must be the adjacent neighbour
-        // (ipn:0.3.0), not the first intermediate gateway (ipn:0.40.0).
-        assert_eq!(
-            bundle.metadata.read_only.next_hop,
-            Some("ipn:0.3.0".parse().unwrap()),
-        );
+        // The next-hop carried into the queue assignment must be the adjacent
+        // neighbour (ipn:0.3.0), not the first intermediate gateway
+        // (ipn:0.40.0).
+        assert_eq!(next_hop, "ipn:0.3.0".parse().unwrap());
     }
 
     #[test]
     fn test_no_route() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.50.1");
+        let result = rib.find(&bundle);
         assert!(result.is_none());
     }
 
@@ -646,8 +684,8 @@ mod tests {
             10,
         );
 
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Recursive route should return None (wait), not Drop"
@@ -667,9 +705,12 @@ mod tests {
         add_local_forward(&rib, ipn_node(4), 77);
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(77))));
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 77, .. })
+        ));
     }
 
     #[test]
@@ -691,8 +732,8 @@ mod tests {
         );
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.find(&mut bundle);
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        let result = rib.find(&bundle);
         assert!(result.is_none());
     }
 
@@ -716,18 +757,18 @@ mod tests {
         add_local_forward(&rib, ipn_node(10), 10);
         add_local_forward(&rib, ipn_node(11), 11);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result1 = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.50.1");
+        let result1 = rib.find(&bundle);
         let peer1 = match result1 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
-        bundle2.bundle.id = bundle.bundle.id.clone();
-        let result2 = rib.find(&mut bundle2);
+        bundle2.bpv7.primary.id = bundle.id().clone();
+        let result2 = rib.find(&bundle2);
         let peer2 = match result2 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -751,10 +792,10 @@ mod tests {
         assert_eq!(peers, Some([42, 43].into()));
 
         // find resolves deterministically to one of them
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
         let peer = match result {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
         assert!(
@@ -764,10 +805,10 @@ mod tests {
 
         // Same bundle deterministically picks the same peer
         let mut bundle2 = make_bundle("ipn:0.2.1");
-        bundle2.bundle.id = bundle.bundle.id.clone();
-        let result2 = rib.find(&mut bundle2);
+        bundle2.bpv7.primary.id = bundle.id().clone();
+        let result2 = rib.find(&bundle2);
         let peer2 = match result2 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
         assert_eq!(peer, peer2, "ECMP selection must be deterministic");
@@ -776,8 +817,8 @@ mod tests {
     #[test]
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.0");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.0");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "Admin EID should resolve to AdminEndpoint, got {result:?}"
@@ -787,8 +828,8 @@ mod tests {
     #[test]
     fn test_unregistered_local_waits() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.99");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.99");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Unregistered local service should wait (no route), got {result:?}"
@@ -802,16 +843,15 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service {
-                service: ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-                cancel: hardy_async::CancellationToken::new(),
-            }))),
+            Action::Internal(InternalAction::Local(Arc::new(Service::new(
+                ServiceImpl::LowLevel(Arc::new(NullService)),
+                EidService::Ipn(42),
+            )))),
             1,
         );
 
-        let mut bundle = make_bundle("ipn:0.1.42");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.42");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::Deliver(_))),
             "got {result:?}"
@@ -825,16 +865,15 @@ mod tests {
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service {
-                service: ServiceImpl::LowLevel(Arc::new(NullService)),
-                service_id: EidService::Ipn(42),
-                cancel: hardy_async::CancellationToken::new(),
-            }))),
+            Action::Internal(InternalAction::Local(Arc::new(Service::new(
+                ServiceImpl::LowLevel(Arc::new(NullService)),
+                EidService::Ipn(42),
+            )))),
             1,
         );
 
-        let mut bundle = make_bundle("ipn:0.2.42");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.42");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Remote EID should not match local service route, got {result:?}"
@@ -844,8 +883,8 @@ mod tests {
     #[test]
     fn test_admin_endpoint_matches_concrete() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.0");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.0");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "got {result:?}"
@@ -865,8 +904,8 @@ mod tests {
             10,
         );
 
-        let mut bundle = make_bundle("ipn:0.1.99");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.99");
+        let result = rib.find(&bundle);
         assert!(
             matches!(
                 result,

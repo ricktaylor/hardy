@@ -2,12 +2,12 @@ use super::*;
 use hardy_bpv7::status_report::AdministrativeRecord;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn administrative_bundle(&self, bundle: bundle::Bundle) {
         metrics::counter!("bpa.admin_record.received").increment(1);
 
         // This is a bundle for an Admin Endpoint
-        if !bundle.bundle.flags.is_admin_record {
+        if !bundle.primary().flags.is_admin_record {
             debug!(
                 "Received a bundle for an administrative endpoint that isn't marked as an administrative record"
             );
@@ -96,7 +96,7 @@ impl Dispatcher {
                         service
                             .on_status_notify(
                                 &report.bundle_id,
-                                &bundle.bundle.id.source,
+                                &bundle.id().source,
                                 services::StatusNotify::Received,
                                 report.reason,
                                 assertion.0,
@@ -107,7 +107,7 @@ impl Dispatcher {
                         service
                             .on_status_notify(
                                 &report.bundle_id,
-                                &bundle.bundle.id.source,
+                                &bundle.id().source,
                                 services::StatusNotify::Forwarded,
                                 report.reason,
                                 assertion.0,
@@ -118,7 +118,7 @@ impl Dispatcher {
                         service
                             .on_status_notify(
                                 &report.bundle_id,
-                                &bundle.bundle.id.source,
+                                &bundle.id().source,
                                 services::StatusNotify::Delivered,
                                 report.reason,
                                 assertion.0,
@@ -129,7 +129,7 @@ impl Dispatcher {
                         service
                             .on_status_notify(
                                 &report.bundle_id,
-                                &bundle.bundle.id.source,
+                                &bundle.id().source,
                                 services::StatusNotify::Deleted,
                                 report.reason,
                                 assertion.0,
@@ -144,8 +144,11 @@ impl Dispatcher {
                         service: report.bundle_id.source.clone(),
                     };
 
-                    self.store.update_status(&mut bundle, &desired).await;
-                    self.store.watch_bundle(bundle).await;
+                    // Conditional: the reaper can resolve the bundle at any
+                    // await, and the park must not resurrect a tombstone.
+                    if self.store.swap_status(&mut bundle, &desired).await {
+                        self.store.watch_bundle(bundle).await;
+                    }
                 }
             }
         }
