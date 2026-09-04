@@ -331,9 +331,7 @@ mod tests {
     fn hmac_key(kid: &str) -> Key {
         Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![0xAA; 32].into(),
-            },
+            key_type: Type::symmetric(vec![0xAA; 32]),
             key_algorithm: Some(KeyAlgorithm::HS256),
             operations: Some([Operation::Sign, Operation::Verify].into()),
             key_use: Some(Use::Signature),
@@ -344,9 +342,7 @@ mod tests {
     fn aes_key(kid: &str) -> Key {
         Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![0xBB; 32].into(),
-            },
+            key_type: Type::symmetric(vec![0xBB; 32]),
             key_algorithm: Some(KeyAlgorithm::A256KW),
             enc_algorithm: Some(EncAlgorithm::A256GCM),
             operations: Some(
@@ -630,9 +626,7 @@ mod tests {
     fn a2_source(role: SecurityRole) -> PatternKeySource {
         let key = Key {
             id: Some("a2-key".into()),
-            key_type: Type::OctetSequence {
-                key: b"abcdefghijklmnop".to_vec().into(),
-            },
+            key_type: Type::symmetric(b"abcdefghijklmnop".to_vec()),
             key_algorithm: Some(KeyAlgorithm::A128KW),
             enc_algorithm: Some(EncAlgorithm::A128GCM),
             operations: Some([Operation::UnwrapKey, Operation::Decrypt].into()),
@@ -737,9 +731,7 @@ mod tests {
     fn make_source(kid: &str) -> PatternKeySource {
         let key = Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![1, 2, 3].into(),
-            },
+            key_type: Type::symmetric(vec![1, 2, 3]),
             operations: Some([Operation::Verify].into()),
             ..Default::default()
         };

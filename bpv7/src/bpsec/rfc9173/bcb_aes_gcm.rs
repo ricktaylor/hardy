@@ -547,7 +547,7 @@ mod tests {
     // decrypt through the size-dispatching decrypt_gcm and check the round trip.
     #[test]
     fn decrypt_accepts_8_to_16_byte_iv() {
-        let key = [0x42u8; 32];
+        let key = rand_bytes::<32>().unwrap();
         let aad: &[u8] = b"associated data";
         let plaintext: &[u8] = b"confidential payload";
 
@@ -589,7 +589,7 @@ mod tests {
     // boundary too, independently of the Parameters::from_cbor bound.
     #[test]
     fn decrypt_rejects_out_of_range_iv() {
-        let key = [0x42u8; 32];
+        let key = rand_bytes::<32>().unwrap();
         let op = Operation {
             parameters: Arc::new(Parameters {
                 iv: alloc::vec![0xAB; 7].into(),
