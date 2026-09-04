@@ -10,6 +10,9 @@ use hardy_bpv7::{
     eid, hop_info, parse,
 };
 use std::collections::HashSet;
+
+mod common;
+use common::generated_k;
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -497,7 +500,7 @@ fn remove_block_rejects_security_block() {
         "kty": "oct",
         "alg": "HS256+A128KW",
         "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
-        "k": "AAAAAAAAAAAAAAAAAAAAAA"
+        "k": generated_k(16)
     }))
     .unwrap();
 

@@ -60,3 +60,14 @@ pub fn make_unknown_context_asb(target: u64) -> Vec<u8> {
     });
     encoder.build()
 }
+
+/// Base64url (no padding) of `len` freshly generated random bytes: a JWK
+/// `k` value for tests where the key's value is immaterial.
+pub fn generated_k(len: usize) -> String {
+    use base64::prelude::*;
+    use rand::TryRng;
+
+    let mut buf = vec![0u8; len];
+    rand::rngs::SysRng.try_fill_bytes(&mut buf).unwrap();
+    BASE64_URL_SAFE_NO_PAD.encode(buf)
+}
