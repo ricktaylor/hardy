@@ -323,7 +323,12 @@ impl Default for Block {
 impl Block {
     /// Bundle-absolute byte offsets of the block's payload within the
     /// wire stream. Honest `Range<u64>` — callers that have the bundle
-    /// in memory cast to `usize` at the slice point.
+    /// in memory cast to `usize` at the slice point. For a parsed bundle
+    /// only the payload block's `end` can run large: the parser bounds every
+    /// pre-payload offset to 256 MiB
+    /// ([`Error::ExtensionBlocksTooLarge`](crate::Error::ExtensionBlocksTooLarge)),
+    /// so any other range — and the payload's `start` — converts to `usize`
+    /// infallibly.
     pub fn payload_range(&self) -> Range<u64> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }

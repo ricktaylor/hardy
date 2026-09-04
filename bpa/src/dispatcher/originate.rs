@@ -273,11 +273,10 @@ impl Dispatcher {
         // The validating decorator settles the drain verdict — the same
         // machinery as CLA ingress, mapped to the caller's error surface
         // instead of status reports.
-        let payload_start = record
-            .bpv7
-            .blocks
-            .get(&1)
-            .map_or(headers.len(), |b| b.payload_range().start as usize);
+        let payload_start = record.bpv7.blocks.get(&1).map_or(headers.len(), |b| {
+            usize::try_from(b.payload_range().start)
+                .expect("parse bounds pre-payload offsets to usize")
+        });
         let tail_rx = ValidatingReceiver::new(
             stream,
             tail,

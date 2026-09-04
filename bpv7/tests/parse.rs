@@ -233,6 +233,47 @@ fn crafted_max_extent_payload() {
     );
 }
 
+// An extension block whose declared body pushes its extent past the 256 MiB
+// pre-payload bound must be rejected from the declaration alone — a typed
+// `ExtensionBlocksTooLarge`, not a `NeedMoreData` invitation to spool a
+// quarter-gigabyte the parser must reject anyway. Only a handful of real
+// bytes are ever fed.
+#[test]
+fn oversized_extension_block_rejected_from_declaration() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"x".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // Keep the outer array head + primary block, then graft an extension
+    // block — array(5)[type=7, num=2, flags=0, crc=none, data=bstr(len)] with
+    // the canonical 4-byte length head (256 MiB fits u32): 5 array/field
+    // bytes + a 5-byte byte-string head, so the body starts 10 bytes after
+    // the block and the extent ends right where the body does (no CRC
+    // trailer).
+    let prim_end = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&0)
+        .expect("primary block")
+        .extent
+        .end;
+    let len: u64 = 256 * 1024 * 1024;
+
+    let mut evil = good[..prim_end as usize].to_vec();
+    evil.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x5A]);
+    evil.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&evil)),
+            Err(Error::ExtensionBlocksTooLarge(end)) if end == prim_end + 10 + len
+        ),
+        "oversized extension block must fail with the typed bound error"
+    );
+}
+
 // Requirement: Trailing Data
 #[test]
 fn trailing_data() {
