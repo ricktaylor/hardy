@@ -8,6 +8,7 @@ use hardy_async::{
     sync::{Mutex, spin},
 };
 use hardy_bpv7::{
+    bundle::Bundle as Bpv7Bundle,
     eid::{Eid, NodeId},
     status_report::ReasonCode,
 };
@@ -25,7 +26,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet,
-    bundle::{Bpv7Bundle, Bundle, BundleMetadata},
+    bundle::{Bundle, BundleMetadata},
     cla::{ClaAddressType, registry::Cla},
     dispatcher::Dispatcher,
     hash_map::Entry as HashMapEntry,
@@ -132,17 +133,20 @@ impl Rib {
         self.tasks.shutdown().await;
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
         let table = self.snapshot.load();
 
-        let result = table.find_recurse(&bundle.bundle.destination, true, &mut HashSet::new())?;
+        // Precise field borrow: the lookup result keeps this Eid borrowed,
+        // and the match arms below mutate `bundle.metadata`.
+        let result =
+            table.find_recurse(&bundle.bpv7.primary.destination, true, &mut HashSet::new())?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
             previous = bundle
                 .previous_node()
-                .unwrap_or_else(|| bundle.bundle.id.source.clone());
+                .unwrap_or_else(|| bundle.id().source.clone());
             table.find_recurse(&previous, false, &mut HashSet::new())?
         } else {
             result
@@ -153,11 +157,11 @@ impl Rib {
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
             LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
             LookupResult::Forward(peer, next_hop) => {
-                bundle.metadata.read_only.next_hop = Some(next_hop.clone());
+                bundle.metadata.next_hop = Some(next_hop.clone());
                 Some(DispatchAction::Forward(peer))
             }
             LookupResult::ForwardEcmp(peers) => {
-                self.select_peer(peers, &bundle.bundle, &mut bundle.metadata)
+                self.select_peer(peers, &bundle.bpv7, &mut bundle.metadata)
             }
             LookupResult::Reflect => None,
         }
@@ -186,15 +190,15 @@ impl Rib {
 
         let idx = if peers.len() > 1 {
             (self.ecmp_hash_state.hash_one((
-                &bundle.id.source,
-                &bundle.destination,
+                &bundle.primary.id.source,
+                &bundle.primary.destination,
                 &metadata.writable.flow_label,
             )) % (peers.len() as u64)) as usize
         } else {
             0
         };
         let (peer, next_hop) = peers.swap_remove(idx);
-        metadata.read_only.next_hop = Some(next_hop.clone());
+        metadata.next_hop = Some(next_hop.clone());
         Some(DispatchAction::Forward(peer))
     }
 
@@ -532,23 +536,23 @@ mod tests {
 
     fn make_bundle(destination: &str) -> Bundle {
         Bundle {
-            bundle: Bpv7Bundle {
-                id: BundleId {
-                    source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: CreationTimestamp::now(),
-                    fragment_info: None,
+            bpv7: hardy_bpv7::bundle::Bundle {
+                primary: hardy_bpv7::primary_block::PrimaryBlock {
+                    id: BundleId {
+                        source: "ipn:0.99.1".parse().unwrap(),
+                        timestamp: CreationTimestamp::now(),
+                        fragment_info: None,
+                    },
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: destination.parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: Duration::from_secs(3600),
                 },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: destination.parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
                 blocks: Default::default(),
             },
-            metadata: Default::default(),
+            metadata: crate::bundle::BundleMetadata::originated(),
+            status: crate::bundle::BundleStatus::New,
         }
     }
 
@@ -614,10 +618,7 @@ mod tests {
 
         // The next-hop handed to egress filters must be the adjacent neighbour
         // (ipn:0.3.0), not the first intermediate gateway (ipn:0.40.0).
-        assert_eq!(
-            bundle.metadata.read_only.next_hop,
-            Some("ipn:0.3.0".parse().unwrap()),
-        );
+        assert_eq!(bundle.metadata.next_hop, Some("ipn:0.3.0".parse().unwrap()),);
     }
 
     #[test]
@@ -667,7 +668,7 @@ mod tests {
         add_local_forward(&rib, ipn_node(4), 77);
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(matches!(result, Some(DispatchAction::Forward(77))));
     }
@@ -691,7 +692,7 @@ mod tests {
         );
 
         let mut bundle = make_bundle("ipn:0.5.1");
-        bundle.bundle.previous_node = Some("ipn:0.4.0".parse().unwrap());
+        bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
         let result = rib.find(&mut bundle);
         assert!(result.is_none());
     }
@@ -724,7 +725,7 @@ mod tests {
         };
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
-        bundle2.bundle.id = bundle.bundle.id.clone();
+        bundle2.bpv7.primary.id = bundle.id().clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
             Some(DispatchAction::Forward(p)) => p,
@@ -764,7 +765,7 @@ mod tests {
 
         // Same bundle deterministically picks the same peer
         let mut bundle2 = make_bundle("ipn:0.2.1");
-        bundle2.bundle.id = bundle.bundle.id.clone();
+        bundle2.bpv7.primary.id = bundle.id().clone();
         let result2 = rib.find(&mut bundle2);
         let peer2 = match result2 {
             Some(DispatchAction::Forward(p)) => p,

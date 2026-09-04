@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok((bundle, _nokey)) => bundle,
+            Ok((bundle, _extracted, _nokey)) => bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -37,7 +37,7 @@ impl Dispatcher {
         };
 
         // Reconcile with metadata store
-        if let Some(metadata) = self.store.confirm_exists(&bundle.id).await {
+        if let Some((metadata, status)) = self.store.confirm_exists(&bundle.primary.id).await {
             if metadata.storage_name.as_ref() != Some(&storage_name) {
                 // Metadata references a different copy — this one is a duplicate
                 if metadata.storage_name.is_none() {
@@ -53,16 +53,22 @@ impl Dispatcher {
                 return;
             }
 
-            // Resume processing based on checkpoint status
-            let bundle = bundle::Bundle { metadata, bundle };
-            match &bundle.metadata.status {
+            // Resume processing based on the checkpoint status, pairing the
+            // stored record with the freshly-parsed bundle — the bytes on
+            // disk stay authoritative for the wire half.
+            let bundle = bundle::Bundle {
+                bpv7: bundle,
+                metadata,
+                status,
+            };
+            match &bundle.status {
                 bundle::BundleStatus::New => {
                     // Ingress filter not yet complete — run full ingress
                     self.ingress_bundle(bundle, data).await;
                 }
                 bundle::BundleStatus::Dispatching => {
                     // Ingress filter done — enqueue for routing
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
                 }
                 bundle::BundleStatus::ForwardPending { .. }
@@ -72,7 +78,7 @@ impl Dispatcher {
                     // outcome can never arrive (outcome-unknown) — reset to
                     // Waiting
                     let mut bundle = bundle;
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.store
                         .update_status(&mut bundle, &bundle::BundleStatus::Waiting)
                         .await;
@@ -82,22 +88,15 @@ impl Dispatcher {
                 // - WaitingForService: poll_service_waiting on service re-registration
                 // - AduFragment: fragment reassembly polling
                 _ => {
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                 }
             }
         } else {
             // Orphan — data exists but no metadata. Run the full receive
             // pipeline (process_received_bundle: parse, block removal,
             // canonicalization, storage, reporting, and Ingress filter).
-            let metadata = bundle::BundleMetadata {
-                status: bundle::BundleStatus::New,
-                storage_name: Some(storage_name.clone()),
-                read_only: bundle::ReadOnlyMetadata {
-                    received_at: file_time,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
+            let mut metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
+            metadata.storage_name = Some(storage_name.clone());
 
             // TODO: Just push the entire bundle into the stream
             let (tx, mut rx) = hardy_async::channel::bounded(1);
@@ -191,8 +190,12 @@ mod tests {
             self.0.replace(bundle).await
         }
 
-        async fn update_status(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.update_status(bundle).await
+        async fn update_status(
+            &self,
+            bundle_id: &Id,
+            status: &bundle::BundleStatus,
+        ) -> StorageResult<()> {
+            self.0.update_status(bundle_id, status).await
         }
 
         async fn swap_status(
@@ -221,8 +224,12 @@ mod tests {
         async fn confirm_exists(
             &self,
             bundle_id: &Id,
-        ) -> StorageResult<Option<bundle::BundleMetadata>> {
-            Ok(self.0.get(bundle_id).await?.map(|b| b.metadata))
+        ) -> StorageResult<Option<(bundle::BundleMetadata, bundle::BundleStatus)>> {
+            Ok(self
+                .0
+                .get(bundle_id)
+                .await?
+                .map(|bundle| (bundle.metadata, bundle.status)))
         }
 
         async fn remove_unconfirmed(
@@ -298,20 +305,19 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let (parsed, _) = crate::bundle::parse::parse_validate_with_provider(
+        let (parsed, _, _) = crate::bundle::parse::parse_validate_with_provider(
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
         .unwrap();
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
-            bundle: parsed,
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
-                storage_name: Some(storage_name),
-                ..Default::default()
-            },
+            bpv7: parsed,
+            metadata,
+            status: bundle::BundleStatus::ForwardAckPending { peer: 7 },
         };
-        let id = bundle.bundle.id.clone();
+        let id = bundle.id().clone();
         assert!(metadata_store.insert(&bundle).await.unwrap());
 
         let node_ids = crate::node_ids::NodeIds::try_from(
@@ -339,7 +345,6 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("Recovered bundle missing from metadata store")
-                .metadata
                 .status;
             if status == bundle::BundleStatus::Waiting {
                 break;

@@ -191,8 +191,24 @@ mod tests {
             handles.push(
                 hardy_async::spawn!(caller_pool, "outer_task", async move {
                     let bundle = Bundle {
-                        bundle: Default::default(),
-                        metadata: Default::default(),
+                        bpv7: hardy_bpv7::bundle::Bundle {
+                            primary: hardy_bpv7::primary_block::PrimaryBlock {
+                                id: hardy_bpv7::bundle::Id {
+                                    source: "ipn:1.0".parse().unwrap(),
+                                    timestamp:
+                                        hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
+                                    fragment_info: None,
+                                },
+                                flags: Default::default(),
+                                crc_type: Default::default(),
+                                destination: "ipn:99.0".parse().unwrap(),
+                                report_to: Default::default(),
+                                lifetime: core::time::Duration::from_secs(3600),
+                            },
+                            blocks: Default::default(),
+                        },
+                        metadata: crate::bundle::BundleMetadata::originated(),
+                        status: crate::bundle::BundleStatus::New,
                     };
                     let result = engine
                         .exec(

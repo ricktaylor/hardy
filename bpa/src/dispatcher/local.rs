@@ -63,16 +63,16 @@ impl Dispatcher {
                 }
             }
 
-            let (raw, data) = builder
+            let (bundle, data) = builder
                 .with_payload(alloc::borrow::Cow::Borrowed(&payload))
                 .build(hardy_bpv7::creation_timestamp::CreationTimestamp::now())
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
             let data = Bytes::from(data);
-            let bundle = crate::bundle::parse::rich_from_built(raw, &data)
+            let extracted = crate::bundle::parse::extract_from_built(&bundle, &data)
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
-            let r = self.originate_bundle(bundle, data).await;
+            let r = self.originate_bundle(bundle, extracted, data).await;
             if !matches!(r, Err(services::Error::DuplicateBundle)) {
                 break r;
             }
@@ -119,38 +119,39 @@ impl Dispatcher {
         // the bytes are stored and forwarded as received. As the origin we must be
         // able to process HopCount / unclocked BundleAge, so an undecryptable one
         // is fatal.
-        let (bundle, nokey) =
+        let (bundle, extracted, nokey) =
             crate::bundle::parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
         crate::bundle::parse::reject_undecryptable_liveness(
             &nokey,
-            bundle.id.timestamp.is_clocked(),
+            bundle.primary.id.timestamp.is_clocked(),
         )?;
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
-        if &bundle.id.source != expected_source {
+        if &bundle.primary.id.source != expected_source {
             return Err(services::Error::InvalidDestination(
-                bundle.id.source.clone(),
+                bundle.primary.id.source.clone(),
             ));
         }
 
-        self.originate_bundle(bundle, data).await
+        self.originate_bundle(bundle, extracted, data).await
     }
 
     async fn originate_bundle(
         self: &Arc<Self>,
-        bundle: bundle::Bpv7Bundle,
+        bundle: hardy_bpv7::bundle::Bundle,
+        extensions: bundle::ExtensionFields,
         data: Bytes,
     ) -> Result<hardy_bpv7::bundle::Id, services::Error> {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.extensions = extensions;
         let bundle = bundle::Bundle {
-            metadata: bundle::BundleMetadata {
-                status: bundle::BundleStatus::Dispatching,
-                ..Default::default()
-            },
-            bundle,
+            bpv7: bundle,
+            metadata,
+            status: bundle::BundleStatus::Dispatching,
         };
 
         // Run Originate filter (pure in-memory)
@@ -170,13 +171,13 @@ impl Dispatcher {
         metrics::counter!("bpa.bundle.originated").increment(1);
         metrics::counter!("bpa.bundle.originated.bytes").increment(data.len() as u64);
 
-        let bundle_id = bundle.bundle.id.clone();
-        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).increment(1.0);
+        let bundle_id = bundle.id().clone();
+        metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
         self.dispatch_bundle(bundle).await;
         Ok(bundle_id)
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub(super) async fn deliver_bundle(
         &self,
         service: Arc<services::registry::Service>,
@@ -211,7 +212,7 @@ impl Dispatcher {
                 // Pass raw bundle bytes to low-level services: the whole
                 // bundle is in hand, so it travels as a single Final segment.
                 let total_len = data.len() as u64;
-                svc.on_deliver(&bundle.bundle.id, bundle.expiry(), total_len, &mut data)
+                svc.on_deliver(bundle.id(), bundle.expiry(), total_len, &mut data)
                     .await
             }
             services::registry::ServiceImpl::Application(app) => {
@@ -273,9 +274,9 @@ impl Dispatcher {
                 // so it travels as a single Final segment.
                 let total_len = payload.len() as u64;
                 app.on_deliver(
-                    &bundle.bundle.id,
+                    bundle.id(),
                     bundle.expiry(),
-                    bundle.bundle.flags.app_ack_requested,
+                    bundle.primary().flags.app_ack_requested,
                     total_len,
                     &mut payload,
                 )
@@ -292,7 +293,7 @@ impl Dispatcher {
             let service_eid = self
                 .node_ids
                 .resolve_eid(&service.service_id)
-                .unwrap_or_else(|_| bundle.bundle.destination.clone());
+                .unwrap_or_else(|_| bundle.primary().destination.clone());
             let desired = bundle::BundleStatus::WaitingForService {
                 service: service_eid,
             };
@@ -312,7 +313,7 @@ impl Dispatcher {
         if !self.store.tombstone_if(&bundle).await {
             debug!(
                 "Delivery completion for {} lost the resolution race, ignored",
-                bundle.bundle.id
+                bundle.id()
             );
             return;
         }
