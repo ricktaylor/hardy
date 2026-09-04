@@ -51,8 +51,6 @@ use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
 use crate::error::Error;
 #[cfg(feature = "grpc")]
 use crate::grpc::GrpcServer;
-#[cfg(feature = "grpc")]
-use crate::keyfile;
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -411,7 +409,6 @@ impl BpaServer {
                     path: tls.identity.key_file.clone(),
                     source,
                 })?;
-                keyfile::check_permissions(&tls.identity.key_file);
                 let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
 
                 if tls.client_auth != ClientAuth::Off {

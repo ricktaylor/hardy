@@ -5,7 +5,7 @@
 //! in-crate suites do not reach — BPA-initiated teardown, connection
 //! loss with a parked announcement, and simultaneous unregistration.
 
-use std::{future::pending, sync::Arc, time::Duration};
+use std::{error::Error as _, future::pending, net::SocketAddr, sync::Arc, time::Duration};
 
 use hardy_async::TaskPool;
 use hardy_bpa::{
@@ -21,9 +21,16 @@ use hardy_proto::{
     client::{BpaClient, RegistrationHandle},
     server::ApplicationServiceImpl,
 };
-use tokio::net::TcpListener;
-use tokio::sync::{Barrier, mpsc};
-use tonic::transport::{Server, server::TcpIncoming};
+use tokio::{
+    io::copy_bidirectional,
+    net::{TcpListener, TcpStream},
+    sync::{Barrier, mpsc},
+    task::{JoinHandle, JoinSet},
+};
+use tonic::{
+    Code, Status,
+    transport::{Server, server::TcpIncoming},
+};
 
 async fn timeout<F: Future>(future: F) -> F::Output {
     // The timeout only bounds a regression: the wait it wraps is event-driven.
@@ -36,6 +43,7 @@ struct Served {
     bpa: Arc<Bpa>,
     // Held live: dropping the pool would tear the sessions.
     tasks: TaskPool,
+    address: SocketAddr,
     url: String,
 }
 
@@ -69,8 +77,29 @@ async fn serve() -> Served {
     Served {
         bpa,
         tasks,
+        address,
         url: format!("http://{address}"),
     }
+}
+
+// A byte-level TCP proxy in front of `upstream`, so a test can sever
+// live connections without trailers: aborting the returned task drops
+// its `JoinSet`, which aborts every per-connection pump and closes both
+// sockets mid-stream. Returns the address to dial and the task to abort.
+async fn killable_proxy(upstream: SocketAddr) -> (SocketAddr, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let proxy = tokio::spawn(async move {
+        let mut connections = JoinSet::new();
+        loop {
+            let (mut inbound, _) = listener.accept().await.unwrap();
+            let mut outbound = TcpStream::connect(upstream).await.unwrap();
+            connections.spawn(async move {
+                let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+            });
+        }
+    });
+    (address, proxy)
 }
 
 // The lifecycle events an application observes, in arrival order.
@@ -282,6 +311,11 @@ async fn a_client_unregister_round_trips() {
     app.sink().unregister().await;
     expect_unregistered(&mut events).await;
 
+    // The handle observes the round-tripped close as a clean end.
+    timeout(handle.join())
+        .await
+        .expect("a round-tripped unregister must end the session cleanly");
+
     // The service id is free again.
     let (successor, mut successor_events) = LifecycleApp::new();
     let _successor = register_retrying(&client, &successor, 9).await;
@@ -462,6 +496,13 @@ async fn a_server_restart_disconnects_the_client() {
     served.tasks.shutdown().await;
     expect_unregistered(&mut events).await;
 
+    // The bridge tears its sessions down with clean trailers, so the
+    // handle reads a bridge loss as the BPA closing the session, not a
+    // stream failure; the orphaned sink below carries the error.
+    timeout(handle.join())
+        .await
+        .expect("a bridge teardown must read as a clean close");
+
     let result = app
         .sink()
         .send(
@@ -476,6 +517,48 @@ async fn a_server_restart_disconnects_the_client() {
         matches!(result, Err(services::Error::Disconnected)),
         "a dead session must fail the send as disconnected"
     );
+
+    served.bpa.shutdown().await;
+}
+
+/// A hard transport loss surfaces the actual failure through the
+/// registration handle: a connection killed without trailers ends the
+/// session with the transport's own error carried whole (nothing
+/// flattened to a category), unlike the clean `Ok` of an orderly close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transport_loss_surfaces_the_session_error() {
+    let served = serve().await;
+    // The client dials through a killable proxy, because only severing
+    // the TCP connection itself ends the stream without trailers; every
+    // in-process teardown closes it cleanly.
+    let (proxy_address, proxy) = killable_proxy(served.address).await;
+    let client = BpaClient::new(format!("http://{proxy_address}"), TaskPool::new()).unwrap();
+
+    let (app, mut events) = LifecycleApp::new();
+    let handle = client
+        .register_application(Service::Ipn(9), app.clone())
+        .await
+        .unwrap();
+    expect_registered(&mut events).await;
+
+    // Kill the transport underneath the live session.
+    proxy.abort();
+
+    // The ending bubbles as the transport's own status: tonic reports
+    // the severed connection as `Unknown` carrying the I/O failure as
+    // its source, and both survive to the handle.
+    let Err(services::Error::Internal(e)) = timeout(handle.join()).await else {
+        panic!("a killed transport must end the session with its own error");
+    };
+    let status = e
+        .downcast::<Status>()
+        .expect("the session error must be the transport's own status");
+    assert_eq!(status.code(), Code::Unknown);
+    assert!(
+        status.source().is_some(),
+        "the transport failure's source chain must survive to the handle"
+    );
+    expect_unregistered(&mut events).await;
 
     served.bpa.shutdown().await;
 }

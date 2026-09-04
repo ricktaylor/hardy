@@ -16,6 +16,7 @@ pub struct Identity {
     pub cert_file: PathBuf,
 
     // The private key (PEM: PKCS#8, PKCS#1, or SEC1) matching `cert-file`.
+    // `Config::warn_insecure_keys` checks its file permissions at startup.
     #[serde(alias = "private-key-file")]
     pub key_file: PathBuf,
 }

@@ -5,13 +5,10 @@
 // ordered define-before-reference: the wire conversions, the sink, the
 // forwarding runner, the event loop, then the handshake.
 
-use core::{
-    num::{NonZeroU32, NonZeroUsize},
-    ops::ControlFlow,
-};
+use core::{num::NonZeroU32, ops::ControlFlow};
 use std::sync::Arc;
 
-use hardy_async::{BoundedTaskPool, CancellationToken};
+use hardy_async::{CancellationToken, TaskPool};
 use hardy_bpa::{
     Bytes, async_trait,
     cla::{self, Cla, ForwardBundleResult, Sink, TransferOutcome},
@@ -55,6 +52,14 @@ fn cla_error(status: Status) -> cla::Error {
         Code::Cancelled => cla::Error::StreamCancelled,
         _ => cla::Error::Internal(status.into()),
     }
+}
+
+// The session-ending counterpart of `cla_error`: a server-classified
+// status recovers as its exact domain error, any other ending is
+// carried whole so awaiting the registration handle shows the actual
+// failure (see `session_error`).
+fn cla_session_error(status: Status) -> cla::Error {
+    recover_cla_error(&status).unwrap_or_else(|| cla::Error::Internal(status.into()))
 }
 
 // The registration's sink: every call is a token-gated RPC of the
@@ -289,15 +294,16 @@ async fn run_forwarding(
     }
 }
 
-// How many announced forwardings one registration executes at once:
-// beyond it the announcement loop waits for a slot, which backpressures
-// the session stream and through it the BPA, the same client-side
-// self-defence the delivery surfaces have.
-const MAX_CONCURRENT_FORWARDINGS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
-
 // The session's event loop: each announced forwarding is executed on its
-// own task so a slow transfer never stalls the next announcement, bounded
-// by [`MAX_CONCURRENT_FORWARDINGS`]. Returns `Ok(())` when the session
+// own task so a slow transfer never stalls the next announcement. The
+// pool is deliberately unbounded, unlike the delivery surfaces:
+// forwarding concurrency is BPA-driven (the BPA holds one `Cla::forward`
+// call open per egress queue and announces a queue's next bundle only
+// when the current one resolves), so a well-behaved BPA cannot flood
+// this pool, and a client-side bound would couple unrelated peers: a
+// stalled transfer to one peer would hold a slot for minutes and starve
+// announcements bound for healthy peers, while also stopping this loop
+// from observing the stream's end. Returns `Ok(())` when the session
 // ends cleanly (the client's shutdown or a server half-close) and `Err`
 // when the stream fails; the caller owns the CLA's `on_unregister`.
 pub async fn run_session(
@@ -311,12 +317,12 @@ pub async fn run_session(
     // the client's shutdown (it is a child of `cancel`) and at this
     // session's own end.
     let session_cancel = cancel.child_token();
-    let forwardings = BoundedTaskPool::new(MAX_CONCURRENT_FORWARDINGS);
+    let forwardings = TaskPool::new();
     let result = loop {
         let SubscribeResponse { event } = match next_event(&mut events, &cancel).await {
             ControlFlow::Continue(response) => response,
             ControlFlow::Break(None) => break Ok(()),
-            ControlFlow::Break(Some(status)) => break Err(cla_error(status)),
+            ControlFlow::Break(Some(status)) => break Err(cla_session_error(status)),
         };
         let Some(event) = event else {
             warn!("Ignoring event with no payload");
@@ -331,12 +337,9 @@ pub async fn run_session(
                 let client = client.clone();
                 let token = token.clone();
                 let cancel = session_cancel.clone();
-                // Awaited, so a full pool backpressures the announcement
-                // loop rather than spawning without bound.
                 hardy_async::spawn!(forwardings, "cla_forward", async move {
                     run_forwarding(cla, client, token, forwarding, cancel).await
-                })
-                .await;
+                });
             }
         }
     };

@@ -21,6 +21,9 @@ use tonic::transport::{Channel, Endpoint};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
+// `services` here is this crate's per-surface session machinery; it
+// collides with `hardy_bpa::services`, whose trait-side types therefore
+// stay path-qualified throughout this file.
 use super::services;
 use crate::DEFAULT_MAX_FRAME_SIZE;
 
@@ -38,8 +41,8 @@ pub enum EndpointError {
     InvalidEndpoint(#[source] Box<dyn core::error::Error + Send + Sync>),
 }
 
-/// A live registration: the identity it bound, a handle to its running
-/// session, and a caller-data slot.
+/// A live registration: the identity it bound and a handle to its
+/// running session.
 ///
 /// `register_*` returns this immediately, once the registration handshake
 /// has completed: [`id`](Self::id) is the bound endpoint (an
@@ -55,42 +58,20 @@ pub enum EndpointError {
 /// Dropping the handle **detaches** the session (it keeps running on the
 /// client's pool until the pool shuts down); the registration ends when
 /// the component drops or unregisters its sink, not when this handle is
-/// dropped. [`with`](Self::with) attaches caller data (default `()`) that
-/// then lives and drops with the handle.
+/// dropped.
+#[must_use = "dropping the handle detaches the session; await it to observe how the session ends"]
 #[derive(Debug)]
-pub struct RegistrationHandle<Id, E, T = ()> {
+pub struct RegistrationHandle<Id, E> {
     id: Id,
-    data: T,
     session: JoinHandle<Result<(), E>>,
 }
 
-impl<Id, E, T> RegistrationHandle<Id, E, T> {
+impl<Id, E> RegistrationHandle<Id, E> {
     /// The identity the registration bound: the endpoint for an
     /// application or service, the BPA node ids for a CLA or routing
     /// agent.
     pub fn id(&self) -> &Id {
         &self.id
-    }
-
-    /// The caller data carried alongside the session (see
-    /// [`with`](Self::with)).
-    pub fn data(&self) -> &T {
-        &self.data
-    }
-
-    /// The caller data, mutably.
-    pub fn data_mut(&mut self) -> &mut T {
-        &mut self.data
-    }
-
-    /// Attaches caller data to the handle, to live and drop with it: the
-    /// component's `Arc`, a config, a metrics label, a teardown token.
-    pub fn with<U>(self, data: U) -> RegistrationHandle<Id, E, U> {
-        RegistrationHandle {
-            id: self.id,
-            data,
-            session: self.session,
-        }
     }
 
     /// Awaits the session to its end, consuming the handle: `Ok(())` on a
@@ -108,10 +89,9 @@ impl<Id, E, T> RegistrationHandle<Id, E, T> {
     }
 }
 
-impl<Id, E, T> IntoFuture for RegistrationHandle<Id, E, T>
+impl<Id, E> IntoFuture for RegistrationHandle<Id, E>
 where
     Id: Send + 'static,
-    T: Send + 'static,
     E: From<Box<dyn core::error::Error + Send + Sync>> + Send + 'static,
 {
     type Output = Result<(), E>;
@@ -369,18 +349,14 @@ impl BpaClient {
         application.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let app = application.clone();
         let session = hardy_async::spawn!(self.tasks, "application_session", async move {
             let result =
-                services::application::run_session(events, collector, app.clone(), cancel).await;
-            app.on_unregister().await;
+                services::application::run_session(events, collector, application.clone(), cancel)
+                    .await;
+            application.on_unregister().await;
             result
         });
-        Ok(RegistrationHandle {
-            id: eid,
-            data: (),
-            session,
-        })
+        Ok(RegistrationHandle { id: eid, session })
     }
 
     /// Registers an application under a BPA-assigned service id. The
@@ -399,18 +375,14 @@ impl BpaClient {
         application.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let app = application.clone();
         let session = hardy_async::spawn!(self.tasks, "application_session", async move {
             let result =
-                services::application::run_session(events, collector, app.clone(), cancel).await;
-            app.on_unregister().await;
+                services::application::run_session(events, collector, application.clone(), cancel)
+                    .await;
+            application.on_unregister().await;
             result
         });
-        Ok(RegistrationHandle {
-            id: eid,
-            data: (),
-            session,
-        })
+        Ok(RegistrationHandle { id: eid, session })
     }
 
     /// Registers a low-level service under an explicit service id: it
@@ -444,18 +416,13 @@ impl BpaClient {
         service.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let svc = service.clone();
         let session = hardy_async::spawn!(self.tasks, "service_session", async move {
             let result =
-                services::service::run_session(events, collector, svc.clone(), cancel).await;
-            svc.on_unregister().await;
+                services::service::run_session(events, collector, service.clone(), cancel).await;
+            service.on_unregister().await;
             result
         });
-        Ok(RegistrationHandle {
-            id: eid,
-            data: (),
-            session,
-        })
+        Ok(RegistrationHandle { id: eid, session })
     }
 
     /// Registers a low-level service under a BPA-assigned service id. The
@@ -473,18 +440,13 @@ impl BpaClient {
         service.on_register(&eid, Box::new(sink)).await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let svc = service.clone();
         let session = hardy_async::spawn!(self.tasks, "service_session", async move {
             let result =
-                services::service::run_session(events, collector, svc.clone(), cancel).await;
-            svc.on_unregister().await;
+                services::service::run_session(events, collector, service.clone(), cancel).await;
+            service.on_unregister().await;
             result
         });
-        Ok(RegistrationHandle {
-            id: eid,
-            data: (),
-            session,
-        })
+        Ok(RegistrationHandle { id: eid, session })
     }
 
     /// Registers a routing agent: it pushes routes into the BPA's RIB via
@@ -507,7 +469,6 @@ impl BpaClient {
         agent.on_register(Box::new(sink), &node_ids).await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let agent = agent.clone();
         let session = hardy_async::spawn!(self.tasks, "routing_session", async move {
             let result = services::routing::run_session(events, cancel).await;
             agent.on_unregister().await;
@@ -515,7 +476,6 @@ impl BpaClient {
         });
         Ok(RegistrationHandle {
             id: node_ids,
-            data: (),
             session,
         })
     }
@@ -557,16 +517,20 @@ impl BpaClient {
             .await;
 
         let cancel = self.tasks.cancel_token().clone();
-        let cla = convergence_layer.clone();
         let session = hardy_async::spawn!(self.tasks, "cla_session", async move {
-            let result =
-                services::cla::run_session(events, cla.clone(), cancel, client, token).await;
-            cla.on_unregister().await;
+            let result = services::cla::run_session(
+                events,
+                convergence_layer.clone(),
+                cancel,
+                client,
+                token,
+            )
+            .await;
+            convergence_layer.on_unregister().await;
             result
         });
         Ok(RegistrationHandle {
             id: node_ids,
-            data: (),
             session,
         })
     }

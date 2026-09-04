@@ -1,4 +1,4 @@
-// The routing surface: the `routing.v1` wire served against the routing
+// The routing surface: the `hardy.routing.v1` wire served against the routing
 // surface of a BPA. This is the template minus the data plane: routing
 // agents are push-only, so the session carries only the Registration
 // event and then anchors the registration's liveness, and the two
@@ -251,7 +251,7 @@ impl RoutingAgentService for RoutingAgentServiceImpl {
 mod tests {
     use hardy_bpa::{Bytes, bpa::Bpa};
     #[cfg(feature = "client")]
-    use hardy_bpv7::eid::NodeId;
+    use hardy_bpv7::{eid::NodeId, status_report::ReasonCode};
     #[cfg(feature = "client")]
     use hardy_eid_patterns::EidPattern;
     use tokio::sync::mpsc::Sender;
@@ -266,7 +266,7 @@ mod tests {
         *,
     };
     use crate::routing::{
-        Register, RouteAction, Unregister, route_action::Action,
+        Drop, Register, RouteAction, Unregister, route_action::Action,
         routing_agent_service_client::RoutingAgentServiceClient,
         routing_agent_service_server::RoutingAgentServiceServer,
     };
@@ -348,10 +348,19 @@ mod tests {
         }
     }
 
-    // A `via` route action to a client next hop.
+    // A `via` route action to a remote next hop.
     fn via(eid: &str) -> RouteAction {
         RouteAction {
             action: Some(Action::Via(eid.to_string())),
+        }
+    }
+
+    // A `drop` route action carrying an explicit reason code.
+    fn drop_with_reason(reason_code: u64) -> RouteAction {
+        RouteAction {
+            action: Some(Action::Drop(Drop {
+                reason_code: Some(reason_code),
+            })),
         }
     }
 
@@ -518,6 +527,40 @@ mod tests {
         harness.bpa.shutdown().await;
     }
 
+    // RFC 9171 reserves status-report reason code 255: the wire refuses
+    // it, while an unassigned code is carried through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reserved_drop_reason_is_rejected() {
+        let mut harness = harness().await;
+        let registered = register(&mut harness.client, "test-agent").await;
+
+        let status = add_route(
+            &mut harness.client,
+            registered.token.clone(),
+            "ipn:2.*",
+            drop_with_reason(255),
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+
+        assert!(
+            add_route(
+                &mut harness.client,
+                registered.token,
+                "ipn:2.*",
+                drop_with_reason(254),
+                100,
+            )
+            .await
+            .unwrap()
+            .added
+        );
+
+        harness.bpa.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_forged_token_is_rejected() {
         let mut harness = harness().await;
@@ -676,6 +719,14 @@ mod tests {
         );
         assert!(sink.remove_route(&pattern, &action, 50).await.unwrap());
         assert!(!sink.remove_route(&pattern, &action, 50).await.unwrap());
+
+        // The reserved drop reason is refused by the sink before it
+        // reaches the wire, the same refusal the server gives it.
+        let reserved = routing::RouteAction::Drop(Some(ReasonCode::Unassigned(255)));
+        assert!(matches!(
+            sink.add_route(pattern.clone(), reserved, 60).await,
+            Err(routing::Error::Internal(_))
+        ));
 
         sink.unregister().await;
         harness.bpa.shutdown().await;

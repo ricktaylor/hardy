@@ -235,9 +235,13 @@ impl GrpcServer {
                     .await;
                 tokio::time::sleep(drain_timeout).await;
             } => {
-                warn!(
-                    "gRPC connections did not drain within {drain_timeout:?}, abandoning them"
-                );
+                // A zero deadline is the configured immediate cut, not a
+                // failure to drain.
+                if !drain_timeout.is_zero() {
+                    warn!(
+                        "gRPC connections did not drain within {drain_timeout:?}, abandoning them"
+                    );
+                }
             }
         }
         Ok(())

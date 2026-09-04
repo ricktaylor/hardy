@@ -14,6 +14,8 @@ mod services;
 
 pub use bpa_client::{BpaClient, EndpointError, RegistrationHandle};
 
+use core::num::NonZeroUsize;
+
 // The request channel of one data-plane transfer (Send/Dispatch/Receive/
 // Forward): the metadata message, then chunks written one at a time under
 // backpressure. The capacity is load-bearing, not a tuning knob:
@@ -25,3 +27,11 @@ pub(crate) const TRANSFER_REQUEST_CAPACITY: usize = 2;
 // The request channel of a Subscribe session: the Register handshake plus
 // a later Unregister, with headroom.
 pub(crate) const SUBSCRIBE_REQUEST_CAPACITY: usize = 4;
+
+// How many announced deliveries one registration collects at once, on the
+// application and service surfaces alike: enough that one slow collection
+// does not serialise the rest, small enough that a single registration
+// cannot monopolise its connection. Beyond the bound, the announcement
+// loop waits for a slot, which backpressures the session stream and
+// through it the BPA, by design.
+pub(crate) const MAX_CONCURRENT_DELIVERIES: NonZeroUsize = NonZeroUsize::new(4).unwrap();

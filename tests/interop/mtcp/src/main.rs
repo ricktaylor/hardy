@@ -6,6 +6,7 @@ mod listen;
 
 use std::{path::PathBuf, sync::Arc};
 
+use anyhow::Context;
 use clap::Parser;
 use hardy_async::{TaskPool, sync::spin::Once};
 use hardy_bpv7::eid::NodeId;
@@ -41,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
-    inner_main(config).await.inspect_err(|e| error!("{e}"))
+    inner_main(config).await.inspect_err(|e| error!("{e:#}"))
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
@@ -53,7 +54,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     info!("Connecting to BPA at {}", config.bpa_address);
 
     let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
-        .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
+        .context("Invalid BPA address")?;
 
     // Register: the registration handle returns once the handshake completes (a
     // failure returns here), and its session runs on the pool until the
@@ -64,7 +65,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     let handle = client
         .register_cla(config.cla_name.clone(), cla.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
+        .context("CLA registration failed")?;
     info!(
         "CLA {} registered, node IDs: {:?}",
         config.cla_name,
@@ -76,8 +77,17 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
     );
 
     let result = handle.await;
+    // Read before `shutdown`, which cancels the token itself.
+    let locally_stopped = tasks.is_cancelled();
     tasks.shutdown().await;
     info!("Stopped");
 
-    result.map_err(|e| anyhow::anyhow!("CLA session ended: {e}"))
+    match result {
+        Ok(()) if locally_stopped => Ok(()),
+        // A clean end without a local shutdown is the BPA closing the
+        // session; this daemon never unregisters unprompted, so exit
+        // nonzero and let a supervisor restart it once the BPA is back.
+        Ok(()) => Err(anyhow::anyhow!("The BPA closed the CLA session")),
+        Err(e) => Err(e).context("CLA session ended"),
+    }
 }

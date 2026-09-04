@@ -36,7 +36,7 @@ The tests follow one doctrine, uniform across the suites:
 5. **The delivery commit is ack-gated, and pinned in every arm** (APP-14 through APP-16, APP-13, and the SDK's APP-22): completion is the client's ack, never the last chunk. A cancel after the final chunk, a full receipt followed by silence, an ack racing ahead of the final chunk (a protocol violation), and a session death mid-collection all leave the bundle parked and re-announced; only a conforming ack commits.
 6. **The send-to-self roundtrip is the smoke test of each payload surface** (APP-02, SVC-02, and the dispatch-and-forward loop CLA-02): it proves the announce-and-collect pipeline live end to end, byte-for-byte where the surface promises it (the service surface returns the stored bundle exactly; the CLA surface asserts the announced size and payload survival, because the BPA rewrites extension blocks at egress).
 
-The tests live beside the code they pin, as `#[cfg(test)]` modules in `src/server/session.rs`, `src/server/services/mod.rs` (the shared hold table), and `src/server/services/{application,service,cla,routing}.rs`, with the shared harness and fixtures in an inline `#[cfg(test)] pub mod tests` in `mod.rs` cross-imported by path. The ten SDK-driven in-crate tests and the eight cross-crate lifecycle tests are additionally gated on the `client` feature, because they drive the bridges through `BpaClient` instead of the generated clients.
+The tests live beside the code they pin, as `#[cfg(test)]` modules in `src/server/session.rs`, `src/server/services/mod.rs` (the shared hold table), and `src/server/services/{application,service,cla,routing}.rs`, with the shared harness and fixtures in an inline `#[cfg(test)] pub mod tests` in `mod.rs` cross-imported by path. The ten SDK-driven in-crate tests and the nine cross-crate lifecycle tests are additionally gated on the `client` feature, because they drive the bridges through `BpaClient` instead of the generated clients.
 
 ## 3. Test Suites
 
@@ -149,7 +149,8 @@ The tests live beside the code they pin, as `#[cfg(test)]` modules in `src/serve
 | **RTE-05** | `a_forged_token_is_rejected` | As APP-07 | Implemented |
 | **RTE-06** | `a_dropped_stream_tears_the_session_down` | Dropping the rpc without `Unregister` fires the response-stream guard on the routing surface and invalidates the token | Implemented |
 | **RTE-07** | `unregister_ends_the_session_and_invalidates_the_token` | As APP-25 | Implemented |
-| **RTE-08** | `client_sdk_roundtrip` | A routing agent behind `BpaClient` drives add/remove idempotence through its sink | Implemented (`client` feature) |
+| **RTE-08** | `client_sdk_roundtrip` | A routing agent behind `BpaClient` drives add/remove idempotence through its sink, and the sink refuses the reserved drop reason before it reaches the wire | Implemented (`client` feature) |
+| **RTE-09** | `a_reserved_drop_reason_is_rejected` | RFC 9171's reserved reason code 255 in a `drop` action is `INVALID_ARGUMENT`, while an unassigned code is carried through (the inbound half of the reserved-code contract; the SDK's outbound refusal rides RTE-08) | Implemented |
 
 The response-stream guard is now pinned on all four surfaces (APP-08, SVC-09, CLA-09, RTE-06); the pool-shutdown broadcast is pinned where it is cheapest to observe (APP-09, APP-17). The CLA-specific residue of a *silently vanished* client mid-`Forward` (rendezvous claimed, chunks in flight) remains part of the deferred lifecycle suite below, because it needs a killable transport.
 
@@ -157,31 +158,32 @@ The response-stream guard is now pinned on all four surfaces (APP-08, SVC-09, CL
 
 The in-crate tests are `#[cfg(test)]` modules inside the crate; the lifecycle tests are an integration test in `proto/tests/`. Both compile only with the `server` feature (and, for the SDK-driven tests, the `client` feature):
 
-- `cargo test -p hardy-proto --features server` runs the 59 in-crate wire and unit tests that do not need the SDK.
-- `cargo test -p hardy-proto --all-features` runs all 77, adding the ten SDK-driven in-crate tests and the eight cross-crate lifecycle tests.
-- CI runs the workspace with `--all-features`, so all 77 run on every change.
+- `cargo test -p hardy-proto --features server` runs the 60 in-crate wire and unit tests that do not need the SDK.
+- `cargo test -p hardy-proto --all-features` runs all 79, adding the ten SDK-driven in-crate tests and the nine cross-crate lifecycle tests.
+- CI runs the workspace with `--all-features`, so all 79 run on every change.
 - Building the crate requires `protoc` (the schemas compile in `build.rs`).
 
 All wire tests use the multi-threaded tokio runtime (`worker_threads = 2`), because a single-threaded runtime would serialise the server, the client, and the BPA's dispatcher tasks against each other.
 
 ## 5. The cross-crate lifecycle suite
 
-The lifecycle scenarios live in `proto/tests/lifecycle.rs`: eight tests driving the `BpaClient` SDK against a served bridge through the crate's public surface only.
+The lifecycle scenarios live in `proto/tests/lifecycle.rs`: nine tests driving the `BpaClient` SDK against a served bridge through the crate's public surface only.
 
 | Test ID | Test function | What it pins |
 | :--- | :--- | :--- |
-| **LIF-01** | `a_client_unregister_round_trips` | A client `Unregister` ends the session, the SDK surfaces `on_unregister`, and the service id frees for a successor registration |
+| **LIF-01** | `a_client_unregister_round_trips` | A client `Unregister` ends the session, the SDK surfaces `on_unregister`, the registration handle resolves `Ok`, and the service id frees for a successor registration |
 | **LIF-02** | `bpa_initiated_teardown_reaches_the_client` | Shutting the BPA down unregisters the bridge's component, ends the wire session, and the SDK surfaces `on_unregister` |
 | **LIF-03** | `connection_loss_defers_announced_bundles` | A dead client's parked, uncollected bundle is re-announced to the endpoint's next registration, which collects it whole |
 | **LIF-04** | `simultaneous_unregister_settles` | Unregistration from both ends settles with neither side hanging and exactly one observed `on_unregister` |
 | **LIF-05** | `dropping_the_sink_unregisters` | An application that never stores its sink has disconnected by definition: the dropped sink half-closes the session, the server unregisters it, and the SDK surfaces `on_unregister` |
-| **LIF-06** | `a_server_restart_disconnects_the_client` | A bridge teardown (a restart from the client's view) surfaces `on_unregister`; the orphaned sink fails rather than blocking, its token dead |
+| **LIF-06** | `a_server_restart_disconnects_the_client` | A bridge teardown (a restart from the client's view) surfaces `on_unregister` and reads as a clean close on the handle; the orphaned sink fails rather than blocking, its token dead |
 | **LIF-07** | `shutdown_interrupts_a_stuck_delivery` | An `on_deliver` that never returns is abandoned on client pool shutdown, and the session still runs its unregistration to completion |
 | **LIF-08** | `deliveries_collect_concurrently` | Two announced bundles are inside `on_deliver` at once, so a slow collection does not stall the next announcement |
+| **LIF-09** | `a_transport_loss_surfaces_the_session_error` | A connection killed without trailers is a stream failure, not a close: the registration handle yields the transport's own error carried whole (code and source chain intact), and the SDK still surfaces `on_unregister` |
 
 Still deferred, with the reasons unchanged:
 
 | Scenario | Why it is deferred |
 | :--- | :--- |
-| **Silent transport death** | Distinguishing silent peer death, keepalive detection timing, and half-open connections from graceful stream closures needs a killable transport (a proxy or a hard-killed process); the in-process suite can only sever sessions cooperatively |
+| **Silent transport death** | Distinguishing silent peer death, keepalive detection timing, and half-open connections from graceful stream closures needs a transport that can go quiet without closing (a proxy or a hard-killed process); the in-process suite can kill connections outright (LIF-09) but cannot leave them silently half-open, which is what keepalive detection needs |
 | **CLA vanished-client mid-`Forward` residue** | Abandonment and dropped-session teardown are pinned in-crate (CLA-03, CLA-09); a client vanishing mid-`Forward` drive (the rendezvous claimed, chunks in flight) should be pinned end to end once a killable transport exists |

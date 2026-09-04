@@ -6,6 +6,7 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use anyhow::Context;
 use hardy_async::{CancellationToken, TaskPool};
 use hardy_proto::client::BpaClient;
 use hardy_tcpclv4::{Tcpclv4, tls};
@@ -109,7 +110,7 @@ impl Tcpclv4Server {
         info!("Connecting to BPA at {}", self.bpa_address);
 
         let client = BpaClient::new(self.bpa_address.clone(), self.tasks.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid BPA address: {e}"))?;
+            .context("Invalid BPA address")?;
 
         // Register: the registration handle returns once the handshake completes (a
         // failure returns here), and its session runs on the pool. There
@@ -118,7 +119,7 @@ impl Tcpclv4Server {
         let handle = client
             .register_cla(self.cla_name.clone(), self.cla.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
+            .context("CLA registration failed")?;
         info!(
             "CLA {} registered, node IDs: {:?}",
             self.cla_name,
@@ -146,10 +147,20 @@ impl Tcpclv4Server {
         // connection. The registration ran its own `on_unregister`, so
         // teardown here is just the remaining tasks.
         let result = handle.await;
+        // Read before `shutdown`, which cancels the token itself.
+        let locally_stopped = self.tasks.is_cancelled();
         self.tasks.shutdown().await;
         info!("Stopped");
 
-        result.map_err(|e| anyhow::anyhow!("CLA session ended: {e}"))
+        match result {
+            Ok(()) if locally_stopped => Ok(()),
+            // A clean end without a local shutdown is the BPA closing the
+            // session; this daemon never unregisters unprompted, so exit
+            // nonzero and let a supervisor restart it once the BPA is
+            // back.
+            Ok(()) => Err(anyhow::anyhow!("The BPA closed the CLA session")),
+            Err(e) => Err(e).context("CLA session ended"),
+        }
     }
 
     // Dials `peer` until a session is established or the server is

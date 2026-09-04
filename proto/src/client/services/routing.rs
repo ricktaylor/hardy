@@ -6,6 +6,8 @@
 // end. Declarations are ordered define-before-reference: the wire
 // conversions, the sink, the event loop, then the handshake.
 
+use core::ops::ControlFlow;
+
 use hardy_async::CancellationToken;
 use hardy_bpa::{
     Bytes, async_trait,
@@ -18,17 +20,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status, Streaming, transport::Channel};
 use tracing::warn;
 
-use core::ops::ControlFlow;
-
 use super::super::SUBSCRIBE_REQUEST_CAPACITY;
 use super::next_event;
 use crate::{
     MAX_MESSAGE_SIZE,
     error_status::recover_routing_error,
     routing::{
-        AddRouteRequest, Register, RemoveRouteRequest, SubscribeRequest, SubscribeResponse,
-        Unregister, routing_agent_service_client::RoutingAgentServiceClient, subscribe_request,
-        subscribe_response,
+        AddRouteRequest, Register, RemoveRouteRequest, RouteActionError, SubscribeRequest,
+        SubscribeResponse, Unregister, routing_agent_service_client::RoutingAgentServiceClient,
+        subscribe_request, subscribe_response,
     },
 };
 
@@ -47,6 +47,14 @@ fn routing_error(status: Status) -> routing::Error {
         Code::AlreadyExists => routing::Error::AlreadyExists(status.message().to_string()),
         _ => routing::Error::Internal(status.into()),
     }
+}
+
+// The session-ending counterpart of `routing_error`: a server-classified
+// status recovers as its exact domain error, any other ending is
+// carried whole so awaiting the registration handle shows the actual
+// failure (see `session_error`).
+fn routing_session_error(status: Status) -> routing::Error {
+    recover_routing_error(&status).unwrap_or_else(|| routing::Error::Internal(status.into()))
 }
 
 // The registration's sink: every call is a token-gated RPC of the
@@ -82,7 +90,11 @@ impl RoutingSink for GrpcRoutingSink {
             .add_route(AddRouteRequest {
                 session_token: self.token.clone(),
                 pattern: pattern.to_string(),
-                action: Some((&action).into()),
+                action: Some(
+                    (&action)
+                        .try_into()
+                        .map_err(|e: RouteActionError| routing::Error::Internal(e.into()))?,
+                ),
                 priority,
             })
             .await
@@ -103,7 +115,13 @@ impl RoutingSink for GrpcRoutingSink {
             .remove_route(RemoveRouteRequest {
                 session_token: self.token.clone(),
                 pattern: pattern.to_string(),
-                action: Some(action.into()),
+                // Fallible for the same reserved-reason refusal as
+                // `add_route`.
+                action: Some(
+                    action
+                        .try_into()
+                        .map_err(|e: RouteActionError| routing::Error::Internal(e.into()))?,
+                ),
                 priority,
             })
             .await
@@ -133,7 +151,7 @@ pub async fn run_session(
                 }
             }
             ControlFlow::Break(None) => return Ok(()),
-            ControlFlow::Break(Some(status)) => return Err(routing_error(status)),
+            ControlFlow::Break(Some(status)) => return Err(routing_session_error(status)),
         }
     }
 }

@@ -1,4 +1,4 @@
-// The application surface: the `application.v1` wire served against
+// The application surface: the `hardy.application.v1` wire served against
 // the registration surface of a BPA. Declarations are ordered
 // define-before-reference: the wire conversions, the component as the
 // BPA sees it, the session's helpers, then the rpc service; within
@@ -375,6 +375,8 @@ mod tests {
         Register, Unregister, application_service_client::ApplicationServiceClient,
         application_service_server::ApplicationServiceServer, receive_response,
     };
+    #[cfg(feature = "client")]
+    use crate::client::MAX_CONCURRENT_DELIVERIES;
     use crate::server::{DATA_CHANNEL_DEPTH, session::Sessions};
 
     struct Harness {
@@ -1641,7 +1643,7 @@ mod tests {
 
         // Far more than the SDK's concurrent-delivery bound, so replies are
         // generated from several deliveries in flight at once.
-        let count = 32;
+        let count = MAX_CONCURRENT_DELIVERIES.get() * 8;
         let seed = collector.sink.get().unwrap();
         for i in 0..count {
             seed.send(
