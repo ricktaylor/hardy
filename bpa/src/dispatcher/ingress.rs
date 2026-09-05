@@ -1,7 +1,5 @@
 use alloc::sync::Arc;
 
-use futures::join;
-use hardy_async::CancellationToken;
 use hardy_bpv7::{
     block::BibCoverage, bpsec::bcb, crc::CrcType, eid::NodeId, status_report::ReasonCode,
 };
@@ -255,17 +253,31 @@ impl Dispatcher {
         // Every arrival spools through the store's streaming seam — the
         // resident head may include payload bytes, or the whole bundle, so
         // there is one store path, not a resident/streamed fork. The door
-        // owns the validation: a `ValidatingReceiver` decorates the arrival,
-        // and `Dispatcher::spool` is the pure store rig (spawned store-side
-        // task, bounded-channel pump, cancellation) driving it. The gate
-        // decisions run alongside; a Disposed decision cancels the spool
-        // through the shared token. For a complete-at-head arrival the
-        // decorator settles from its head segment alone, and the pump
-        // performs the stream's terminal pull: per the `Segment` contract a
-        // completed stream's producer has dropped (`RecvError`) or keeps
-        // yielding the empty `Final` (the whole-buffer receivers), so the
-        // pull cannot park.
+        // owns the validation: a `ValidatingReceiver` decorates the arrival
+        // and `Store::save_stream` is the validation-blind drain. For a
+        // complete-at-head arrival the decorator settles from its head
+        // segment alone, and the drain performs the stream's terminal pull:
+        // per the `Segment` contract a completed stream's producer has
+        // dropped (`RecvError`) or keeps yielding the empty `Final` (the
+        // whole-buffer receivers), so the pull cannot park.
         debug_assert!(bundle.metadata.storage_name.is_none());
+
+        // The gate decisions settle before the payload drains: the Ingress
+        // chain's verdict shapes the save itself — a Classifier may set the
+        // storage QoS the spool must honour — so the drain strictly follows
+        // the chain and the route lookup. A rejected arrival returns here
+        // having spooled nothing; the producer learns the verdict from the
+        // door's return, never from the stream.
+        let GateVerdict::Proceed {
+            mut bundle,
+            action,
+            seen,
+        } = self
+            .decide_at_gate(bundle, headers.clone(), &bcb_ops, report)
+            .await
+        else {
+            return Received::Disposed;
+        };
 
         // The deferred-BIB verifiers were begun by the header pass, in the
         // same keyed scope as the header verify; the decorator absorbs the
@@ -277,29 +289,21 @@ impl Dispatcher {
             .blocks
             .get(&1)
             .map_or(headers.len(), |b| b.payload_range().start as usize);
-        let mut tail_rx = ValidatingReceiver::new(
-            stream,
-            tail,
-            deferred_verifiers,
-            headers.clone(),
-            payload_start,
-        );
+        let mut tail_rx =
+            ValidatingReceiver::new(stream, tail, deferred_verifiers, headers, payload_start);
 
-        let cancel = CancellationToken::new();
-        let spool = self.spool(&mut tail_rx, cancel.clone());
-        let decide = async {
-            let verdict = self.decide_at_gate(bundle, headers, &bcb_ops, report).await;
-            if matches!(verdict, GateVerdict::Disposed) {
-                cancel.cancel();
-            }
-            verdict
-        };
-        let (outcome, verdict) = join!(spool, decide);
+        // Drain the admitted arrival into the store, bounded by
+        // `max_bundle_size` as the defensive backstop (the declared size was
+        // already enforced at parse; a producer exceeding its declaration
+        // trips the framing checks first). 32-bit: a cap beyond the address
+        // space saturates — nothing larger could be spooled to RAM anyway.
+        let max_size = usize::try_from(self.max_bundle_size.get()).unwrap_or(usize::MAX);
+        let outcome = self.store.save_stream(&mut tail_rx, max_size).await;
 
         // Settle the decorator's verdict against the save. A save the
         // verdict then rejects was staged before the verdict settled — the
         // discard half of the streaming contract, owed by this door now
-        // that the spool is validation-blind.
+        // that the drain is validation-blind.
         let outcome = match outcome {
             Ok((storage_name, len)) => match tail_rx.finish() {
                 Ok(()) => Ok((storage_name, len)),
@@ -308,28 +312,13 @@ impl Dispatcher {
                     Err(failure)
                 }
             },
-            // Any drain failure — an ended pump, a deliberate cancel, or
-            // the spool's defensive bound — settles through the decorator's
-            // verdict; nothing was persisted.
+            // Any drain failure — an ended stream or the defensive bound —
+            // settles through the decorator's verdict; nothing was
+            // persisted.
             Err(_) => Err(tail_rx
                 .finish()
                 .err()
                 .unwrap_or(ValidationFailure::Truncated)),
-        };
-
-        let GateVerdict::Proceed {
-            mut bundle,
-            action,
-            seen,
-        } = verdict
-        else {
-            // Rejected and reported by the decision, which cancelled the
-            // spool; a save that raced the cancel is discarded here — the
-            // canceller owes the discard.
-            if let Ok((storage_name, _)) = outcome {
-                self.store.delete_data(&storage_name).await;
-            }
-            return Received::Disposed;
         };
 
         // Settle the store from the spool's outcome. The bundle is stored
@@ -350,8 +339,8 @@ impl Dispatcher {
                 // Complete but unacceptable: the transfer was accepted,
                 // so this node owns the bundle and terminates it —
                 // reported like the sibling gate drops (RFC 9171
-                // §5.6/§5.10). Nothing remains staged: the spool
-                // discarded any save with the rejection.
+                // §5.6/§5.10). Nothing remains staged: the settle above
+                // discarded any save the verdict rejected.
                 debug!("Streamed payload rejected: {failure}");
                 metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
                 self.report_bundle_reception(
@@ -423,10 +412,11 @@ impl Dispatcher {
     }
 
     // The gate decisions for an admitted header chain: the Ingress filter
-    // chain, then the route lookup — the decision of record. For a streamed
-    // arrival these run while the payload spools concurrently; a `Disposed`
-    // verdict makes the caller cancel the spool, so a rejected bundle is
-    // never persisted. All rejection counting and reporting happens here.
+    // chain, then the route lookup — the decision of record. These settle
+    // before the payload drains — a Classifier's verdict (storage QoS)
+    // shapes the save that follows, and a `Disposed` verdict returns with
+    // nothing spooled or persisted. All rejection counting and reporting
+    // happens here.
     async fn decide_at_gate(
         &self,
         bundle: bundle::Bundle,

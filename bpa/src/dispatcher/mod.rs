@@ -16,7 +16,6 @@ mod originate;
 mod reassemble;
 mod report;
 mod restart;
-mod spool;
 mod validate;
 
 // The default bound on a single reassembled bundle. Streaming producers

@@ -7,11 +7,11 @@
 //! — one incremental [`bib::Verifier`] per deferred payload BIB. An input
 //! door (CLA ingress today; the raw originate door when it streams) marries
 //! those to the arrival's segment stream through a [`ValidatingReceiver`],
-//! then hands it to [`Dispatcher::spool`](super::Dispatcher::spool): the
-//! validation is invisible downstream, surfacing only as a pull that fails
-//! when the bytes are bad, with the categorised verdict settled by `finish`
-//! once the spool returns — and mapped by each door to its own surface
-//! (status reports at ingress, a `services::Error` at originate).
+//! then drains it through `Store::save_stream`: the validation is invisible
+//! downstream, surfacing only as a pull that fails when the bytes are bad,
+//! with the categorised verdict settled by `finish` once the drain returns —
+//! and mapped by each door to its own surface (status reports at ingress, a
+//! `services::Error` at originate).
 
 use hardy_async::async_trait;
 use hardy_bpv7::{bpsec::bib, parse::PayloadTail, status_report::ReasonCode};
@@ -71,11 +71,9 @@ impl ValidationFailure {
 // `PayloadTail` (payload CRC, block/outer break, anti-smuggling) and the
 // block-type-specific data prefix to every verifier, before flowing onward —
 // one receiver carries the whole bundle, ready to drive
-// `Dispatcher::spool`. The validation is invisible downstream, surfacing
+// `Store::save_stream`. The validation is invisible downstream, surfacing
 // only as a pull that fails when the bytes are bad, with the categorised
-// verdict settled by `finish` once the drain returns. Cancellation is the
-// spool's job: its pump races the token, so a cancelled drain simply stops
-// being pulled and settles as `ValidationFailure::Truncated`.
+// verdict settled by `finish` once the drain returns.
 pub struct ValidatingReceiver<'a> {
     inner: &'a mut dyn Receiver<Segment>,
     // The resident prefix, yielded as the first segment so one receiver

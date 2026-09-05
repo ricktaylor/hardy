@@ -16,8 +16,8 @@ This is a living document: the sections below mix shipped behaviour with design 
 - Streaming parser — `bpv7::parse::BundleParser` (`push` / `finish`), `ParserProgress::{NeedMore, Ready, Partial}`, one-shot sugar `bpv7::parse::parse(Bytes) -> Parsed`. `Partial { consumed, tail: PayloadTail }` is the deferred-payload signal: `push` returns it at the payload boundary and the caller drains the remaining payload through `PayloadTail` (CRC + termination + anti-smuggling checks) without re-buffering headers. Non-canonical CBOR is a hard parse error (§5.2.2). Keyless BPSec structural checks are `bpsec::{bib,bcb}::OperationSet::check`.
 - CLA segment delivery — `cla::Segment::{Next, Final}` and the streamed-only `Sink::dispatch(&mut dyn Receiver<Segment>)` (the buffered/streamed trait pairs were collapsed; no `Bytes` variant remains). Stream traits `Sender<T>` / `Receiver<T>` live in `bpa::stream` with adapters over `hardy_async::channel`.
 - Streamed ingress drain — `dispatcher::ingress` drives the parser per `Segment` and drains the bundle through a `ValidatingReceiver` (below, yielding the resident head first so one receiver carries the whole bundle) into one `Store::save_stream(&mut dyn Receiver<Segment>)` call: the store owns the spool, so the pipeline already assumes an asynchronous streaming store, and the reject paths already stage-then-discard as the streaming contract requires.
-- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection, the config-gated RFC 9171 validity checks, and the Ingress filter chain all run on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path). A gate drop is pre-custody and never persisted. The RIB lookup also runs at the gate as the routing decision of record — an explicit Drop route rejects here without awaiting the payload, cancelling the concurrent spool mid-stream, and the commit executes the carried decision (§5.7's routing-at-commit, both halves).
-- `ValidatingReceiver` validating drain (§5.5's pull-through) — the dispatcher's shared `Receiver<Segment>` decorator, wrapped by an input door over its arrival stream: as each segment flows through it feeds the sync `PayloadTail` checks (payload CRC, block/outer breaks, anti-smuggling) plus one incremental digest per deferred payload BIB, then yields the same segment onward; the categorised verdict (`Truncated` / `Invalid` / `IntegrityFailed`) is read from `finish()` after the spool returns, and the door owns the discard of a save the verdict rejects. Layering is as designed: `PayloadTail` and the digest framing are `bpv7`'s (no_std, sans-IO), the async wrapper is bpa's — and validation is the door's, so `Dispatcher::spool` stays a pure store rig any door can drive (the originate doors decorate their own streams).
+- Pre-drain gate — `bundle::parse::parse_headers` + `HeaderVerify::gate_reason`: lifetime/hop/expiry rejection, the config-gated RFC 9171 validity checks, and the Ingress filter chain all run on the accumulation buffer before the payload drain (§5.4's early reject in interim form; link-layer reach-back per §1.3 rides the CLA's streaming dispatch path). A gate drop is pre-custody and never persisted. The RIB lookup also runs at the gate as the routing decision of record — an explicit Drop route rejects here before the drain begins, with nothing spooled, and the commit executes the carried decision (§5.7's routing-at-commit, both halves).
+- `ValidatingReceiver` validating drain (§5.5's pull-through) — the dispatcher's shared `Receiver<Segment>` decorator, wrapped by an input door over its arrival stream: as each segment flows through it feeds the sync `PayloadTail` checks (payload CRC, block/outer breaks, anti-smuggling) plus one incremental digest per deferred payload BIB, then yields the same segment onward; the categorised verdict (`Truncated` / `Invalid` / `IntegrityFailed`) is read from `finish()` after the drain returns, and the door owns the discard of a save the verdict rejects. Layering is as designed: `PayloadTail` and the digest framing are `bpv7`'s (no_std, sans-IO), the async wrapper is bpa's — and validation is the door's, so the store drain (`Store::save_stream`) stays validation-blind and any door can drive it (the originate doors decorate their own streams).
 - Deferred payload-BIB verification is streaming — `checks::begin_payload_verification` begins a `bpsec::bib::Verifier` per BIB the header verify deferred, *inside `parse_headers`' keyed scope* (`HeaderVerify::deferred_verifiers`): the `!Send` `KeySource` is resolved once per bundle and never crosses an `await`; only the `Send` verifiers — copied key material, the recorded exception documented on `bib::Verifier` — ride the drain. `checks::verify_payload` and `finalize_with_provider` are deleted, resolving the key-material re-adjudication this block previously flagged.
 - Unified ingress pipeline, one metadata write — the CLA, reassembly, and restart in-feeds share `process_received_bundle`; the single `insert_metadata` at `Dispatching` carries the Ingress chain's classifier deltas (`New` is an in-memory marker that never persists), and the dispatch send's CAS to `DispatchPending` is the queue commit.
 - No editing on input — the bundle is stored exactly as received; §5.1.1 failure-drops and unrecognised-deletable removals are *scheduled* in `BundleMetadata::to_remove` and applied per attempt at the output doors (the egress rewrite head in `forward.rs`, the deliver strip). Captured payload-BCB op-sets are likewise never spent at ingress — delivery re-derives them from the stored bytes (the §6.1.5 transformers make that streaming).
@@ -28,7 +28,7 @@ This is a living document: the sections below mix shipped behaviour with design 
 **Interim (works, not yet the target shape)**
 
 - The spool's destination is still RAM: `Store::save_stream` accumulates its segment stream (bounded by `max_bundle_size`) and commits via `BundleStorage::save(Bytes)` on the final segment. The seam now lives *inside the store wrapper*, behind the target signature — one `Receiver<Segment>` in, storage name out — so the storage-spool tranche swaps `save_stream`'s body (and the backend trait) for the streamed write (§3) without touching pipeline code: every stage upstream already sees a plain `Receiver<Segment>`, and ingress already deletes a staged save whose post-stream validation fails (the discard half of the contract).
-- The drain is concurrent: `Dispatcher::spool` — a spawned store-side task fed by a bounded-channel pump over the door's decorated stream — races the gate decisions, with a cancel token aborting the spool on a chain or route drop — §5.7's shape, landed. What remains interim is only the spool's RAM destination above.
+- The drain follows the gate decisions: the Ingress chain's verdict shapes the save itself — a Classifier may set the storage QoS the spool must honour — so the door drains its decorated stream through one `Store::save_stream` call only once the chain and the route lookup have settled, and a rejected arrival spools nothing (§5.7's ordering, landed). What remains interim is only the spool's RAM destination above.
 
 **Pending**
 
@@ -445,7 +445,7 @@ Ingress payload transforms use Transformers (§6.1) — the same push-based mode
 CLA chunks -> [CRC Verifier] -> [BPSec decrypt Transformer] -> spool channel
 ```
 
-**AES-GCM streaming decryption**: AES-GCM uses CTR mode internally and can decrypt chunk by chunk. Authentication tag verification is deferred until the final chunk. The spool must not be committed until tag verification succeeds; on failure the spool task is cancelled via its token and discards the staged data.
+**AES-GCM streaming decryption**: AES-GCM uses CTR mode internally and can decrypt chunk by chunk. Authentication tag verification is deferred until the final chunk. The spool must not be committed until tag verification succeeds; on failure the drain stops and the staged data is discarded.
 
 **Durability.** In space DTN scenarios, bundle data is extremely precious. Once the CLA receives the last byte, the BPA must not lose it.
 
@@ -500,10 +500,12 @@ Ingest
   |     REJECT --> return from Sink::dispatch_streamed()
   |               (zero I/O, no storage, no metadata)
   |
-  |     ACCEPT --> spawn BundleStorage::store(spool_stream)
+  |     ACCEPT --> route lookup at the gate — the decision of record
+  |               (needs only headers + metadata; an explicit Drop
+  |               rejects with nothing spooled)
+  |               spawn BundleStorage::store(spool_stream)
   |               push complete header segment as first Segment::Next
   |               MetadataStorage::store()
-  |               start routing lookup (async, needs only metadata)
   |
   |-- Phase B (tee'd):
   |     payload chunks pulled from the CLA stream are tee'd:
@@ -516,12 +518,12 @@ Ingest
   |     Finalize (fixed): deferred payload-BIB results,
   |       §5.1.1 failure-drop / removal rewrites
   '--   enqueue(dispatch; class from the Classifier chain)
-        routing result available (started during Phase B)
+        execute the carried routing decision
 ```
 
-Routing lookup begins as soon as the gate accepts and metadata is stored — it needs only `BundleMetadata` (destination, class), not payload data. The lookup runs concurrently with payload spooling; by the time the drain finalizes and the bundle is ready for dispatch, the routing result is typically already available.
+The gate decisions — the Ingress chain, then the routing lookup — settle before a payload byte spools. This ordering is load-bearing, not incidental: a Classifier's verdict shapes the save itself (the class it assigns carries the storage QoS the spool must honour), so the drain cannot begin until the chain has run; and the route lookup needs only headers + metadata, so running it at the gate costs the payload nothing while letting an explicit Drop route reject with zero spool I/O.
 
-A payload-BIB failure detected during spooling cancels the spool task (token signalled). This wastes some I/O but is necessary: the BPA has accepted custody from the CLA once the gate passes, so spooling must begin immediately. A post-gate drop is a decision about a bundle the BPA already owns.
+A payload-BIB failure detected during the drain ends it — the failing pull stops the spool and the staged data is discarded. This wastes some I/O but is necessary: the BPA has accepted custody from the CLA once the gate passes, so the drain runs to its verdict. A post-gate drop is a decision about a bundle the BPA already owns.
 
 ## 6. Egress: Storage to CLA
 

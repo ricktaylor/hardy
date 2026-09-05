@@ -3839,7 +3839,7 @@ async fn early_route_drop_never_awaits_the_payload() {
 
     // Reasoned Drop: accepted with one combined report, while the payload
     // source is parked forever — the verdict returning at all proves the
-    // decision never awaited the drain, and the cancelled spool persists
+    // decision never awaited the drain, and a rejected arrival spools
     // nothing. The timeout only bounds a regression.
     let data = oversized("ipn:0.9.99");
     let mut stream = ParkedReceiver::new(&data, 1000, 3);
