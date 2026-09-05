@@ -51,13 +51,11 @@
 //!
 //! Uses lock-free CAS operations for state transitions on the hot path.
 
-use core::{
-    result::Result,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::result::Result;
 
 use futures::{FutureExt, pin_mut, select_biased};
 use hardy_async::{Notify, closeable::TrySendError};
+use portable_atomic::{AtomicUsize, Ordering};
 use trace_err::*;
 use tracing::debug;
 
