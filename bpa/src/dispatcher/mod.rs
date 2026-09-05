@@ -176,14 +176,20 @@ impl Dispatcher {
         self.max_bundle_size
     }
 
-    // The cap as an in-memory accumulation bound: no policy leaves only the
-    // allocator's addressable bound, and any configured cap was clamped to
-    // it at construction, so the narrowing cannot fail.
+    // The cap in the wire domain, where declared lengths are compared: no
+    // policy leaves only the allocator's addressable bound, and any
+    // configured cap was clamped to it at construction.
+    fn max_bundle_size_wire(&self) -> u64 {
+        self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get()
+    }
+
+    // The cap as an in-memory accumulation bound: the wire cap, which the
+    // construction-time clamp guarantees fits a `usize`.
     // TODO: interim seam — the streaming pipeline derives the whole-bundle
     // length in the u64 domain and spools payloads to storage, removing this
     // usize-domain bound entirely (see docs/streaming_pipeline_design.md).
     fn max_bundle_size_mem(&self) -> usize {
-        usize::try_from(self.max_bundle_size.unwrap_or(ADDRESSABLE_CAP).get())
+        usize::try_from(self.max_bundle_size_wire())
             .trace_expect("cap clamped to the addressable bound at construction")
     }
 
