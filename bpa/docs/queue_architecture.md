@@ -29,7 +29,7 @@ graph LR
 
 ### Processing blocks
 
-- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool to `BundleStorage::store()`, write the metadata record once, and execute the routing decision directly. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
+- **Ingest** — drive `Sink::write(&dyn Receiver<Segment>)` from the CLA, stream bytes through the parser, the pre-drain gate, and the Ingress filter chain (a single pass — there is no late ingress pass, see [filter_subsystem_design.md](filter_subsystem_design.md)), run the route lookup (the routing decision of record), spool through `Store::save_stream()`, write the metadata record once, and execute the routing decision directly. (See [streaming_pipeline_design.md](streaming_pipeline_design.md) §5 for the chunked ingress flow.)
 - **Originate** — receive from local service, run originate filters, checkpoint to storage
 - **Dispatch** — RIB lookup, fan-out to deliver/admin/reassemble/wait queues. For forwarding, enqueues to a per-peer queue
 - **EgressController** — consumer of per-peer queue. Classifies bundles, rate-limits and reorders by traffic class (HTB scheduling), enqueues to a per-peer CLA queue
