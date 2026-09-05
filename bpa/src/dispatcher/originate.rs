@@ -42,38 +42,31 @@ use crate::{
 };
 
 impl Dispatcher {
-    /// Originate a bundle around an application payload (the ADU door).
+    /// Originate a bundle around a resident application payload (the ADU
+    /// door).
     ///
-    /// The `Builder` output is valid by construction, so nothing here
-    /// parses or validates: the streamed build's view carries the record's
-    /// facts and the bytes go to the shared admission stage as a resident
-    /// stream (`Bytes` is a `Receiver<Segment>`). The id is unique by
-    /// construction (`CreationTimestamp::now` is process-monotonic), so
-    /// [`DuplicateBundle`](services::Error::DuplicateBundle) can only mean
-    /// a collision with a pre-restart bundle; the caller may resend.
+    /// Pure sugar over [`originate_streamed`](Self::originate_streamed): a
+    /// resident payload is a one-segment stream (`Bytes` is a
+    /// `Receiver<Segment>`), and its length is the declaration.
     #[cfg_attr(feature = "instrument", instrument(skip(self, payload)))]
     pub async fn originate(
         &self,
         source: Eid,
         destination: Eid,
-        payload: Bytes,
+        mut payload: Bytes,
         lifetime: Duration,
         flags: Option<services::SendOptions>,
     ) -> Result<Id, services::Error> {
-        // Built once, no rebuild-and-retry: `CreationTimestamp::now` issues
-        // process-monotonic (time, sequence) pairs, so the id is unique by
-        // construction and `DuplicateBundle` can only mean a collision with
-        // a pre-restart bundle (a wall clock that stepped backwards across a
-        // restart, per RFC 9171 §4.2.7) — surfaced to the caller, who may
-        // resend; the store's atomic insert refusal remains the backstop.
-        let declared = payload.len() as u64;
-        let built = self
-            .originate_builder(source, destination, lifetime, &flags)
-            .build_stream(declared, CreationTimestamp::now())
-            .map_err(|e| services::Error::Internal(e.into()))?;
-
-        let mut payload = payload;
-        self.admit_built(built, &mut payload, declared).await
+        let total_len = payload.len() as u64;
+        self.originate_streamed(
+            source,
+            destination,
+            total_len,
+            &mut payload,
+            lifetime,
+            flags,
+        )
+        .await
     }
 
     /// Originate a bundle around an application payload supplied as a
@@ -84,10 +77,12 @@ impl Dispatcher {
     /// over- or under-delivering producer is rejected
     /// ([`PayloadTooLarge`](services::Error::PayloadTooLarge) /
     /// [`PayloadUnderrun`](services::Error::PayloadUnderrun)) with nothing
-    /// persisted. The stream is one-shot, so a duplicate id (a
-    /// same-millisecond timestamp collision, vanishingly rare) surfaces as
-    /// [`DuplicateBundle`](services::Error::DuplicateBundle) rather than
-    /// retrying; the caller may resend.
+    /// persisted. The bundle id is unique by construction —
+    /// `CreationTimestamp::now` issues process-monotonic `(time, sequence)`
+    /// pairs — so
+    /// [`DuplicateBundle`](services::Error::DuplicateBundle) can only mean
+    /// a collision with a pre-restart bundle (a wall clock that stepped
+    /// backwards across a restart); the caller may resend.
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     pub async fn originate_streamed(
         &self,
@@ -395,8 +390,8 @@ impl Dispatcher {
         bundle.metadata.storage_name = Some(storage_name);
 
         // `insert_metadata` is the authoritative atomic duplicate check;
-        // the duplicate loses its staged data and the door decides whether
-        // to retry (the ADU door rebuilds with a fresh timestamp).
+        // the duplicate loses its staged data and `DuplicateBundle`
+        // surfaces to the door's caller.
         if !self.store.insert_metadata(&bundle).await {
             if let Some(storage_name) = &bundle.metadata.storage_name {
                 self.store.delete_data(storage_name).await;
