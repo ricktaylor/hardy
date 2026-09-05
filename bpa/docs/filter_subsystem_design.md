@@ -49,7 +49,7 @@ The evidence base for the taxonomy. Every processing point in the in→out pipel
 | Pre-drain gate: lifetime / hop exhaustion (`gate_reason`) + the config-gated RFC 9171 checks (`rfc9171_gate_reason`) | read (reject) | no — spec/config |
 | **★ Ingress hook** — registered Verifiers ∥, then Classifiers | read + annotate (delta) | **yes — the hook** (headers + metadata, no payload) |
 | Route lookup at the gate — the decision of record (an explicit Drop route rejects before the drain) | read (reject) | already — RoutingAgent |
-| Payload drain/spool through `TailReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
+| Payload drain/spool through `ValidatingReceiver` (payload CRC, breaks, deferred block-1 BIB digests) | write (accumulate), read (reject) | no — parser/BPSec owns |
 | §5.1.1 failure-drops + unrecognised-block removals — *scheduled* in `to_remove` metadata, applied per attempt at the output doors; stored bytes stay as-received | write (meta) | no |
 | Persist; reception report (§5.6, before dedup); dedup | write | storage trait; reports fixed |
 | Execute the gate's routing decision directly (no dispatch-queue transit) | queue op | no |
