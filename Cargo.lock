@@ -1900,6 +1900,7 @@ dependencies = [
  "hex-literal",
  "lru 0.18.2",
  "metrics",
+ "portable-atomic",
  "rand 0.10.2",
  "serde",
  "thiserror",

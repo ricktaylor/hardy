@@ -17,9 +17,10 @@ rfc9173 = ["hardy-bpv7/rfc9173"]
 no-rfc9171-autoregister = []
 tokio = ["std", "hardy-async/tokio"]
 serde = ["dep:serde","dep:base64","hardy-bpv7/serde","hardy-eid-patterns/serde"]
-critical-section = ["hardy-bpv7/critical-section"]
+critical-section = ["hardy-bpv7/critical-section", "portable-atomic/critical-section"]
 std = [
     "hardy-async/std",
+    "portable-atomic/std",
     "time/std",
     "hardy-bpv7/std",
     "hardy-eid-patterns/std",
@@ -51,6 +52,7 @@ rand = { version = "0.10", default-features = false, features = ["alloc", "sys_r
 hashbrown = "0.17"
 foldhash = { version = "0.2", default-features = false }
 lru = { version = "0.18", default-features = false }
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
 thiserror = { version = "2", default-features = false }
 arc-swap = "1"
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
