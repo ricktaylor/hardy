@@ -1,5 +1,6 @@
 use hardy_async::async_trait;
 use hardy_bpv7::eid::Eid;
+use portable_atomic::{AtomicU32, Ordering};
 use tracing::{error, info};
 
 use crate::{Arc, Bytes, HashMap, Weak, dispatcher, node_ids, routing, services};
@@ -213,7 +214,7 @@ impl ServiceRegistryBuilder {
     ) -> services::Result<Arc<ServiceRegistry>> {
         let registry = Arc::new(ServiceRegistry {
             services: hardy_async::sync::spin::Mutex::new(self.services),
-            next_dynamic: core::sync::atomic::AtomicU32::new(DYNAMIC_SERVICE_BASE),
+            next_dynamic: AtomicU32::new(DYNAMIC_SERVICE_BASE),
             tasks: hardy_async::TaskPool::new(),
         });
 
@@ -232,7 +233,7 @@ const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
 
 pub(crate) struct ServiceRegistry {
     services: hardy_async::sync::spin::Mutex<ServiceMap>,
-    next_dynamic: core::sync::atomic::AtomicU32,
+    next_dynamic: AtomicU32,
     tasks: hardy_async::TaskPool,
 }
 
@@ -309,9 +310,7 @@ impl ServiceRegistry {
     }
 
     fn allocate_dynamic_id(&self) -> hardy_bpv7::eid::Service {
-        let id = self
-            .next_dynamic
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let id = self.next_dynamic.fetch_add(1, Ordering::Relaxed);
         hardy_bpv7::eid::Service::Ipn(id)
     }
 

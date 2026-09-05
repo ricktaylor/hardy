@@ -9,6 +9,21 @@ use crate::error::{CaptureFieldErr, require_canonical};
 
 static GLOBAL_COUNTER: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
 
+// The last `(time, sequence)` pair issued by [`CreationTimestamp::now`],
+// packed as `dtn_millisecs << SEQ_BITS | sequence` in one atomic so issuance
+// is lock-free and strictly monotonic per process: bundles created in the
+// same millisecond take ascending sequence numbers, and a wall clock that
+// steps backwards never re-issues an earlier pair.
+#[cfg(feature = "std")]
+static LAST_ISSUED: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(0);
+
+// 2^20 sequence numbers per millisecond leaves 44 bits of DTN milliseconds —
+// good until the year 2557. Issuing more than 2^20 bundles in one
+// millisecond rolls the excess into the next millisecond's pairs, which
+// stays unique and self-corrects as the clock catches up.
+#[cfg(feature = "std")]
+const SEQ_BITS: u32 = 20;
+
 /// Represents the BPv7 Creation Timestamp, a tuple of creation time and a sequence number.
 ///
 /// As defined in RFC 9171, the creation timestamp is a tuple `[time, sequence]`.
@@ -33,17 +48,35 @@ pub struct CreationTimestamp {
 impl CreationTimestamp {
     /// Creates a new `CreationTimestamp` based on the current system time.
     ///
-    /// The creation time is set to the current UTC time. The sequence number
-    /// is derived from the nanoseconds part of the timestamp to provide uniqueness
-    /// for bundles created in the same millisecond.
+    /// The creation time is set to the current UTC time, and every call
+    /// returns a `(time, sequence)` pair strictly greater than any pair this
+    /// process has issued before — bundles created in the same millisecond
+    /// take ascending sequence numbers, so a caller never needs to check the
+    /// result for a collision with its own earlier bundles. (Uniqueness
+    /// across process restarts still rests on the wall clock moving
+    /// forward, per RFC 9171 §4.2.7.)
     ///
     /// This function is only available when the `std` feature is enabled.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
-        let timestamp = time::OffsetDateTime::now_utc();
+        let candidate = dtn_time::DtnTime::saturating_from(time::OffsetDateTime::now_utc())
+            .millisecs()
+            << SEQ_BITS;
+        let next = |last: u64| last.saturating_add(1).max(candidate);
+        // fetch_update returns the previous value; re-apply `next` for the
+        // pair this call actually issued.
+        let issued = next(
+            LAST_ISSUED
+                .fetch_update(
+                    portable_atomic::Ordering::Relaxed,
+                    portable_atomic::Ordering::Relaxed,
+                    |last| Some(next(last)),
+                )
+                .expect("fetch_update closure is infallible"),
+        );
         Self {
-            sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
-            creation_time: Some(dtn_time::DtnTime::saturating_from(timestamp)),
+            creation_time: Some(dtn_time::DtnTime::new(issued >> SEQ_BITS)),
+            sequence_number: issued & ((1 << SEQ_BITS) - 1),
         }
     }
 
@@ -102,10 +135,10 @@ impl CreationTimestamp {
     /// forward by the sequence number for sub-millisecond ordering. Returns
     /// `None` if the `creation_time` is not set.
     ///
-    /// The sequence number is an unrestricted `u64` on the wire and need not be
-    /// nanoseconds — [`CreationTimestamp::now`] uses the sub-millisecond
-    /// nanosecond remainder, but other implementations use plain counters. The
-    /// nudge is therefore clamped below the millisecond resolution of
+    /// The sequence number is an unrestricted `u64` on the wire and need not
+    /// be nanoseconds — [`CreationTimestamp::now`] issues a per-millisecond
+    /// counter, and other implementations vary. The nudge is therefore
+    /// clamped below the millisecond resolution of
     /// [`DtnTime`](dtn_time::DtnTime), so a sender-chosen sequence number
     /// cannot shift the result outside the creation millisecond.
     pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
