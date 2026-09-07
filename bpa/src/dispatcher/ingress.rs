@@ -26,6 +26,14 @@ use crate::{
     stream::{ConcatError, Receiver},
 };
 
+/// Count a drop of a received bundle, labelled by reason. Every drop site in
+/// the received pipeline increments this counter exactly once (see the drop
+/// accounting note on `receive_bundle`); a new drop site calls this rather
+/// than respelling the counter name and label vocabulary.
+fn count_received_dropped(reason: &ReasonCode) {
+    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(reason)).increment(1);
+}
+
 // An arrival the gate decisions (Ingress chain + route lookup) admitted.
 // The gate returns `None` for a rejection, which it has already counted and
 // reported.
@@ -182,8 +190,7 @@ impl Dispatcher {
                     }
                     None => ReasonCode::BlockUnintelligible,
                 };
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                    .increment(1);
+                count_received_dropped(&reason);
                 return Received::Disposed;
             }
         };
@@ -203,8 +210,7 @@ impl Dispatcher {
         // re-checks lifetime post-store in the ingress filter — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                .increment(1);
+            count_received_dropped(&reason);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -231,8 +237,7 @@ impl Dispatcher {
         // structural validity (deployments may relax them), reported like
         // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                .increment(1);
+            count_received_dropped(&reason);
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
@@ -354,8 +359,7 @@ impl Dispatcher {
                 // §5.6/§5.10). Nothing remains staged: the settle above
                 // discarded any save the verdict rejected.
                 debug!("Streamed payload rejected: {failure}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&reason))
-                    .increment(1);
+                count_received_dropped(&reason);
                 self.report_bundle_reception(
                     &bundle.bpv7,
                     bundle.metadata.received_at(),
@@ -465,7 +469,7 @@ impl Dispatcher {
                 Ok(ChainOutcome::Continue(bundle, _)) => bundle,
                 Ok(ChainOutcome::Drop(bundle, reason)) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&label)).increment(1);
+                    count_received_dropped(&label);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -479,7 +483,7 @@ impl Dispatcher {
                     // The resident prefix failed the chain's own decode pass —
                     // an internal inconsistency, since it parsed at reception.
                     error!("Ingress filter chain failed: {e}");
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    count_received_dropped(&ReasonCode::BlockUnintelligible);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -504,8 +508,7 @@ impl Dispatcher {
         let decision = self.rib.decide(&bundle);
         if let Some(DispatchAction::Drop(reason)) = decision.action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => reason_label(&label))
-                .increment(1);
+            count_received_dropped(&label);
             // Drop-with-reason reports like the sibling gate drops;
             // Drop-without-reason is silent — not even the reception
             // report, which a bundle dropped by dispatch's delete_bundle
