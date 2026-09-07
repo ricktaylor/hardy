@@ -1,7 +1,7 @@
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
-    storage,
+    bundle::{Bundle, BundleStatus},
+    storage::{self, ConfirmResponse},
     stream::Sender,
 };
 use sqlx::{FromRow, PgPool, migrate::Migrate};
@@ -372,7 +372,7 @@ impl storage::MetadataStorage for PostgresStorage {
     async fn update_status(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-        status: &hardy_bpa::bundle::BundleStatus,
+        status: &BundleStatus,
     ) -> storage::Result<()> {
         let bundle_key = bundle_id.to_key();
         let sf = status::StatusFields::try_from(status)?;
@@ -476,7 +476,7 @@ impl storage::MetadataStorage for PostgresStorage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
+    ) -> storage::Result<Option<ConfirmResponse>> {
         let bundle_key = bundle_id.to_key();
 
         // Atomic: SELECT + DELETE in one transaction so a concurrent

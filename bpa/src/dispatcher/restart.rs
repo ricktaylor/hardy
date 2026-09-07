@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok((bundle, _extracted, _nokey)) => bundle,
+            Ok(validated) => validated.bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -133,7 +133,7 @@ mod tests {
     use crate::{
         bpa::{Bpa, BpaRegistration},
         storage::{
-            BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage,
+            BundleMemStorage, BundleStorage, ConfirmResponse, MetadataMemStorage, MetadataStorage,
             Result as StorageResult,
         },
         stream::Sender,
@@ -221,10 +221,7 @@ mod tests {
 
         async fn start_recovery(&self) {}
 
-        async fn confirm_exists(
-            &self,
-            bundle_id: &Id,
-        ) -> StorageResult<Option<(bundle::BundleMetadata, bundle::BundleStatus)>> {
+        async fn confirm_exists(&self, bundle_id: &Id) -> StorageResult<Option<ConfirmResponse>> {
             Ok(self
                 .0
                 .get(bundle_id)
@@ -305,11 +302,12 @@ mod tests {
         .unwrap();
         let data = Bytes::from(data);
         let storage_name = data_store.save(data.clone()).await.unwrap();
-        let (parsed, _, _) = crate::bundle::parse::parse_validate_with_provider(
+        let parsed = crate::bundle::parse::parse_validate_with_provider(
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
-        .unwrap();
+        .unwrap()
+        .bundle;
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {

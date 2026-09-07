@@ -1,5 +1,4 @@
-use hardy_bpv7::creation_timestamp::CreationTimestamp;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{creation_timestamp::CreationTimestamp, eid::Eid};
 
 /// Processing status of a bundle within the BPA pipeline.
 ///

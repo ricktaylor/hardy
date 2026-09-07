@@ -13,6 +13,7 @@ use super::store::Store;
 use crate::{
     Arc, Bytes, HashMap,
     bundle::{Bundle, BundleStatus, Origin},
+    otel_metrics::status_label,
 };
 
 pub enum ReassemblyResult {
@@ -61,7 +62,15 @@ impl Store {
         for (bundle_id, storage_name, _) in fragments.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&status)).decrement(1.0);
+            // Only the polled siblings were parked to AduFragment; the trigger
+            // fragment (the one completing the set) is still in its own status,
+            // so decrement its own gauge label, not AduFragment's.
+            let state = if bundle_id == bundle.id() {
+                status_label(&bundle.status)
+            } else {
+                status_label(&status)
+            };
+            metrics::gauge!("bpa.bundle.status", "state" => state).decrement(1.0);
         }
 
         match result {

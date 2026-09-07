@@ -23,6 +23,10 @@ pub type Error = Box<dyn core::error::Error + Send + Sync>;
 /// Result alias for storage operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
+/// The stored record halves [`MetadataStorage::confirm_exists`] returns: the
+/// bundle's metadata and its typed status.
+pub type ConfirmResponse = (BundleMetadata, BundleStatus);
+
 /// The `MetadataStorage` trait defines the interface for storing and managing bundle metadata.
 ///
 /// This trait provides a set of asynchronous methods for interacting with the metadata storage,
@@ -128,10 +132,7 @@ pub trait MetadataStorage: Send + Sync {
     ///
     /// Non-persistent backends (e.g. in-memory) have nothing to recover, so
     /// this returns `Ok(None)`.
-    async fn confirm_exists(
-        &self,
-        bundle_id: &Id,
-    ) -> Result<Option<(BundleMetadata, BundleStatus)>>;
+    async fn confirm_exists(&self, bundle_id: &Id) -> Result<Option<ConfirmResponse>>;
 
     /// Final step of the startup recovery protocol. Removes all metadata
     /// entries that were not confirmed via `confirm_exists()` since the last

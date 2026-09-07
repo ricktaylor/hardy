@@ -1,3 +1,5 @@
+use core::time::Duration;
+
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     hop_info::HopInfo,
@@ -69,7 +71,7 @@ pub struct ExtensionFields {
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub age: Option<core::time::Duration>,
+    pub age: Option<Duration>,
     /// Hop limit and current hop count for the bundle (Hop Count block).
     #[cfg_attr(
         feature = "serde",
@@ -166,6 +168,14 @@ impl BundleMetadata {
     /// current time.
     pub fn originated() -> Self {
         Self::new(OffsetDateTime::now_utc(), Origin::Originated)
+    }
+
+    /// Completes the record with the parse-derived extension fields, so
+    /// construction stays a single expression.
+    #[must_use]
+    pub fn with_extensions(mut self, extensions: ExtensionFields) -> Self {
+        self.extensions = extensions;
+        self
     }
 
     /// Wall-clock time when the bundle entered this BPA's custody.

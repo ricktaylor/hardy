@@ -31,9 +31,10 @@ use hardy_bpv7::{
     Bundle as Bpv7Bundle, block, bpsec, bundle_age, checks, editor::Chunk, parse, rewrite,
     status_report::ReasonCode,
 };
+use time::OffsetDateTime;
 use tracing::debug;
 
-use super::ExtensionFields;
+use super::{ExtensionFields, expiry};
 use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 
 // ---------------------------------------------------------------------------
@@ -104,23 +105,36 @@ pub fn reception_reason_for(
 // Validate — one-shot keyed validation of a complete buffer, no rewriting
 // ---------------------------------------------------------------------------
 
-/// One-shot keyed validation of a complete in-memory bundle. Returns the
-/// validated structural [`Bpv7Bundle`], its decoded [`ExtensionFields`],
-/// **and** `nokey_ext` — the §C8 extension blocks
-/// that were BCB-encrypted but undecryptable (no key). It produces those facts;
-/// it does **not** adjudicate them — whether an undecryptable block is fatal is a
-/// call-site policy (see [`reject_undecryptable_liveness`]). This keeps
-/// extension-block policy at the point of use, matching the eventual
-/// decode-on-demand model rather than baking it into the parse layer.
+/// Result of [`parse_validate_with_provider`]: the validated structural
+/// bundle, its decoded extension fields, and the §C8 no-key facts — one value,
+/// so a bundle and the fields decoded from its bytes travel together.
+pub struct Validated {
+    pub bundle: Bpv7Bundle,
+    pub extensions: ExtensionFields,
+    /// The §C8 extension blocks that were BCB-encrypted but undecryptable
+    /// (no key) — facts for the call site to adjudicate (see
+    /// [`reject_undecryptable_liveness`]).
+    pub nokey_ext: Vec<(u64, block::Type)>,
+}
+
+/// One-shot keyed validation of a complete in-memory bundle. Returns a
+/// [`Validated`]: the structural [`Bpv7Bundle`], its decoded
+/// [`ExtensionFields`], **and** [`nokey_ext`](Validated::nokey_ext) — the §C8
+/// extension blocks that were BCB-encrypted but undecryptable (no key). It
+/// produces those facts; it does **not** adjudicate them — whether an
+/// undecryptable block is fatal is a call-site policy (see
+/// [`reject_undecryptable_liveness`]). This keeps extension-block policy at
+/// the point of use, matching the eventual decode-on-demand model rather than
+/// baking it into the parse layer.
 ///
 /// No block removal, no rewriting — non-canonical CBOR is rejected at parse
 /// (RFC 9171 §4.1), and re-emitting it is a configurable mutating-filter concern
 /// (see `docs/streaming_pipeline_design.md` §5.2.2), not standard-parser work.
-#[allow(clippy::result_large_err, clippy::type_complexity)]
+#[allow(clippy::result_large_err)]
 pub fn parse_validate_with_provider<F>(
     data: Bytes,
     key_provider: F,
-) -> Result<(Bpv7Bundle, ExtensionFields, Vec<(u64, block::Type)>), hardy_bpv7::Error>
+) -> Result<Validated, hardy_bpv7::Error>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
@@ -155,8 +169,12 @@ where
     }
 
     // §D — extract extension fields; the caller writes them into metadata.
-    let extracted = extract_extension_block_fields(&data, &bundle.blocks, &decrypted)?;
-    Ok((bundle, extracted, facts.nokey_ext.into_vec()))
+    let extensions = extract_extension_block_fields(&data, &bundle.blocks, &decrypted)?;
+    Ok(Validated {
+        bundle,
+        extensions,
+        nokey_ext: facts.nokey_ext.into_vec(),
+    })
 }
 
 /// A liveness-critical extension block a forwarding node can't process without
@@ -175,10 +193,9 @@ fn is_liveness_critical(block_type: block::Type, is_clocked: bool) -> bool {
 
 /// Call-site NoKey policy: reject a bundle carrying a liveness-critical extension
 /// block that couldn't be decrypted (no key) — see [`is_liveness_critical`].
-/// `nokey` is the second element of [`parse_validate_with_provider`]'s result
-/// (equivalently `VerifyFacts::nokey_ext`). A node that accepts/forwards applies
-/// this; a restart re-check tolerates a key that has since rotated away and skips
-/// it.
+/// `nokey` is [`Validated::nokey_ext`] (equivalently `VerifyFacts::nokey_ext`).
+/// A node that accepts/forwards applies this; a restart re-check tolerates a
+/// key that has since rotated away and skips it.
 pub fn reject_undecryptable_liveness(
     nokey: &[(u64, block::Type)],
     is_clocked: bool,
@@ -204,7 +221,7 @@ pub fn reject_undecryptable_liveness(
 /// post-drain payload verify and rewrite.
 pub struct HeaderVerify {
     pub bundle: Bpv7Bundle,
-    pub extracted: ExtensionFields,
+    pub extensions: ExtensionFields,
     /// Unrecognised / unsupported blocks to drop in the post-drain §E rewrite.
     pub to_remove: HashSet<u64>,
     /// Reception-report reason chosen from the §A `report_on_failure` facts
@@ -220,28 +237,18 @@ pub struct HeaderVerify {
 }
 
 impl HeaderVerify {
-    /// Header-only early-reject reason, if any: the bundle is past its lifetime,
-    /// or a Hop Count block has reached its limit. Computed straight off the
-    /// parsed primary + extracted extension fields, so the streaming gate can
-    /// run it before the payload is drained (no reshape into the rich form).
-    pub fn gate_reason(&self, received_at: time::OffsetDateTime) -> Option<ReasonCode> {
-        let primary = &self.bundle.primary;
-        let creation = primary.id.timestamp.as_datetime().unwrap_or_else(|| {
-            // No clock: creation = ingress time − Bundle Age.
-            received_at.saturating_sub(
-                self.extracted
-                    .age
-                    .unwrap_or_default()
-                    .try_into()
-                    .expect("bundle age in ms is within time::Duration's i64-second range"),
-            )
-        });
-        let expiry =
-            creation.saturating_add(primary.lifetime.try_into().unwrap_or(time::Duration::MAX));
-        if expiry <= time::OffsetDateTime::now_utc() {
+    /// Header-only early-reject reason, if any: the bundle is past its lifetime
+    /// (the shared [`expiry`] rule, so the gate and the post-store validity
+    /// filter agree), or a Hop Count block has reached its limit. Computed
+    /// straight off the parsed primary + extracted extension fields, so the
+    /// streaming gate can run it before the payload is drained.
+    pub fn gate_reason(&self, received_at: OffsetDateTime) -> Option<ReasonCode> {
+        if expiry(&self.bundle.primary, self.extensions.age, received_at)
+            <= OffsetDateTime::now_utc()
+        {
             Some(ReasonCode::LifetimeExpired)
         } else if self
-            .extracted
+            .extensions
             .hop_count
             .as_ref()
             .is_some_and(|h| h.count > h.limit)
@@ -362,10 +369,10 @@ where
     } = parsed;
     let key_source = key_provider(&bundle, &headers);
     match verify_headers(&headers, &*key_source, &mut bundle, &bcb_ops, &mut bib_ops) {
-        Ok((extracted, to_remove, report_reason, deferred_bibs)) => Ok((
+        Ok((extensions, to_remove, report_reason, deferred_bibs)) => Ok((
             HeaderVerify {
                 bundle,
-                extracted,
+                extensions,
                 to_remove,
                 report_reason,
                 deferred_bibs,
@@ -475,18 +482,18 @@ fn verify_headers(
     // `finalize_with_provider` passes an empty rewrite map (see the §E note
     // there; non-canonical CBOR is rejected at parse). Extension blocks only —
     // never the payload, so header-resident.
-    let extracted = extract_extension_block_fields(headers, &bundle.blocks, &decrypted)?;
+    let extensions = extract_extension_block_fields(headers, &bundle.blocks, &decrypted)?;
 
-    Ok((extracted, to_remove, report_reason, facts.deferred_bibs))
+    Ok((extensions, to_remove, report_reason, facts.deferred_bibs))
 }
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the
 /// queued §E block removals — both against the now-resident full bundle `whole`.
 /// Returns the (possibly-rewritten) structural [`Bpv7Bundle`]. The decoded extension
 /// fields are *not* returned: they were captured at header time
-/// ([`HeaderVerify::extracted`]) and the §E rewrite only removes blocks (never
+/// ([`HeaderVerify::extensions`]) and the §E rewrite only removes blocks (never
 /// a still-decodable well-known extension block), so the caller pairs the bundle
-/// with the `extracted` it already holds. The key source is rebuilt here
+/// with the `extensions` it already holds. The key source is rebuilt here
 /// (synchronously, never held across the drain's `await`) from the structural
 /// `bundle`. On a keyed failure returns the structural bundle for a status report.
 #[allow(clippy::result_large_err, clippy::type_complexity)]
@@ -779,8 +786,9 @@ mod tests {
 
         // Validate: a fact, not a verdict — the Ok is what lets restart
         // tolerate the bundle; the accept/forward call sites then reject it.
-        let (_, _, nokey) =
-            parse_validate_with_provider(encrypted, no_keys).expect("validate returns the facts");
+        let nokey = parse_validate_with_provider(encrypted, no_keys)
+            .expect("validate returns the facts")
+            .nokey_ext;
         assert_eq!(nokey, vec![(hop_block, block::Type::HopCount)]);
         assert!(matches!(
             reject_undecryptable_liveness(&nokey, true),

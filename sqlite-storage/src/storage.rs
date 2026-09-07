@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
-    storage::{self, MetadataStorage},
+    bundle::{Bundle, BundleStatus},
+    storage::{self, ConfirmResponse, MetadataStorage},
     stream::Sender,
 };
 
@@ -417,7 +417,7 @@ impl MetadataStorage for SqliteStorage {
     async fn confirm_exists(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
-    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
+    ) -> storage::Result<Option<ConfirmResponse>> {
         let id = serde_json::to_vec(bundle_id)?;
         let Some((bundle, status_code, p1, p2, p3))  = self
             .write(move |conn| {

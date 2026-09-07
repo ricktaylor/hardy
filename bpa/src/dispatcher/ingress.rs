@@ -182,7 +182,7 @@ impl Dispatcher {
                 debug!("Bundle arrived already expired; dropped");
                 return Ok(None);
             }
-            metadata.extensions = hv.extracted;
+            metadata.extensions = hv.extensions;
             let bundle = bundle::Bundle::new(hv.bundle, metadata);
             self.report_bundle_reception(&bundle, ReasonCode::NoAdditionalInformation)
                 .await;
@@ -209,9 +209,9 @@ impl Dispatcher {
 
         // Post-drain finalize: verify the deferred block-1 BIB targets and apply
         // §E rewrites. The decoded extension fields were captured at header time
-        // and the §E rewrite only removes blocks, so move `hv.extracted` into the
+        // and the §E rewrite only removes blocks, so move `hv.extensions` into the
         // metadata now (`take` leaves `hv` intact for finalize, which ignores it).
-        metadata.extensions = core::mem::take(&mut hv.extracted);
+        metadata.extensions = core::mem::take(&mut hv.extensions);
         let (bundle, chunks, report_reason) = match parse::finalize_with_provider(
             &whole,
             hv,

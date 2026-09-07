@@ -256,19 +256,18 @@ impl Level {
                         // Re-validate the filter's output (non-canonical is
                         // rejected, not rewritten); store its bytes as-is. We
                         // forward it, so an undecryptable liveness block is fatal.
-                        let (raw, extracted, nokey) =
-                            crate::bundle::parse::parse_validate_with_provider(
-                                new_data.clone(),
-                                key_provider,
-                            )?;
-                        crate::bundle::parse::reject_undecryptable_liveness(
-                            &nokey,
-                            raw.primary.id.timestamp.is_clocked(),
+                        let validated = crate::bundle::parse::parse_validate_with_provider(
+                            new_data.clone(),
+                            key_provider,
                         )?;
-                        bundle.bpv7 = raw;
+                        crate::bundle::parse::reject_undecryptable_liveness(
+                            &validated.nokey_ext,
+                            validated.bundle.primary.id.timestamp.is_clocked(),
+                        )?;
+                        bundle.bpv7 = validated.bundle;
                         // The rewrite changed the bytes, so refresh the cached
                         // extension fields from the re-parse.
-                        bundle.metadata.extensions = extracted;
+                        bundle.metadata.extensions = validated.extensions;
                         *data = new_data;
                     }
                 }

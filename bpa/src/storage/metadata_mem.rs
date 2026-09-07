@@ -6,9 +6,9 @@ use lru::LruCache;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
-use super::{MetadataStorage, Result};
+use super::{ConfirmResponse, MetadataStorage, Result};
 use crate::{
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     stream::Sender,
 };
 
@@ -335,10 +335,7 @@ impl MetadataStorage for MetadataMemStorage {
         // No-op for in-memory store
     }
 
-    async fn confirm_exists(
-        &self,
-        _bundle_id: &Id,
-    ) -> Result<Option<(BundleMetadata, BundleStatus)>> {
+    async fn confirm_exists(&self, _bundle_id: &Id) -> Result<Option<ConfirmResponse>> {
         Ok(None)
     }
 

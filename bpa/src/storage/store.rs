@@ -7,10 +7,10 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, reaper::Reaper};
+use super::{BundleStorage, ConfirmResponse, MetadataStorage, reaper::Reaper};
 use crate::{
     Arc, Bytes,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
     stream::Sender,
 };
@@ -176,7 +176,7 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<(BundleMetadata, BundleStatus)> {
+    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<ConfirmResponse> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await

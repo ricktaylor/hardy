@@ -69,10 +69,10 @@ impl Dispatcher {
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
             let data = Bytes::from(data);
-            let extracted = crate::bundle::parse::extract_from_built(&bundle, &data)
+            let extensions = crate::bundle::parse::extract_from_built(&bundle, &data)
                 .map_err(|e| services::Error::Internal(e.into()))?;
 
-            let r = self.originate_bundle(bundle, extracted, data).await;
+            let r = self.originate_bundle(bundle, extensions, data).await;
             if !matches!(r, Err(services::Error::DuplicateBundle)) {
                 break r;
             }
@@ -119,22 +119,23 @@ impl Dispatcher {
         // the bytes are stored and forwarded as received. As the origin we must be
         // able to process HopCount / unclocked BundleAge, so an undecryptable one
         // is fatal.
-        let (bundle, extracted, nokey) =
+        let validated =
             crate::bundle::parse::parse_validate_with_provider(data.clone(), self.key_provider())?;
         crate::bundle::parse::reject_undecryptable_liveness(
-            &nokey,
-            bundle.primary.id.timestamp.is_clocked(),
+            &validated.nokey_ext,
+            validated.bundle.primary.id.timestamp.is_clocked(),
         )?;
 
         // Verify source matches the registered service endpoint
         // (registration already validated that the EID belongs to our node)
-        if &bundle.primary.id.source != expected_source {
+        if &validated.bundle.primary.id.source != expected_source {
             return Err(services::Error::InvalidDestination(
-                bundle.primary.id.source.clone(),
+                validated.bundle.primary.id.source.clone(),
             ));
         }
 
-        self.originate_bundle(bundle, extracted, data).await
+        self.originate_bundle(validated.bundle, validated.extensions, data)
+            .await
     }
 
     async fn originate_bundle(
@@ -146,11 +147,9 @@ impl Dispatcher {
         // Wrap in bundle::Bundle with Dispatching status so that restart
         // recovery skips the Ingress filter (originated bundles only run the
         // Originate filter, never the Ingress filter).
-        let mut metadata = bundle::BundleMetadata::originated();
-        metadata.extensions = extensions;
         let bundle = bundle::Bundle {
             bpv7: bundle,
-            metadata,
+            metadata: bundle::BundleMetadata::originated().with_extensions(extensions),
             status: bundle::BundleStatus::Dispatching,
         };
 

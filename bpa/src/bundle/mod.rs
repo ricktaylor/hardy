@@ -3,8 +3,8 @@ mod status;
 
 pub(crate) mod parse;
 
-pub use metadata::{BundleMetadata, ExtensionFields, Origin, WritableMetadata};
-pub use status::BundleStatus;
+pub use self::metadata::{BundleMetadata, ExtensionFields, Origin, WritableMetadata};
+pub use self::status::BundleStatus;
 
 use hardy_bpv7::{
     bundle::{Bundle as Bpv7Bundle, Id},
@@ -61,32 +61,21 @@ impl Bundle {
     /// extension field ([`ExtensionFields::age`]) — the RFC 9171 recovery of
     /// creation time on a node with no clock.
     pub fn creation_time(&self) -> OffsetDateTime {
-        self.primary()
-            .id
-            .timestamp
-            .as_datetime()
-            .unwrap_or_else(|| {
-                self.metadata
-                    .received_at()
-                    // No clock: creation = received time − Bundle Age. Saturate an
-                    // out-of-range age (the field is `pub`, so not necessarily
-                    // wire-decoded) like `expiry()` saturates `lifetime`.
-                    .saturating_sub(
-                        self.metadata
-                            .extensions
-                            .age
-                            .unwrap_or_default()
-                            .try_into()
-                            .unwrap_or(Duration::MAX),
-                    )
-            })
+        creation_time(
+            self.primary(),
+            self.metadata.extensions.age,
+            self.metadata.received_at(),
+        )
     }
 
     /// When the bundle's lifetime ends: [`creation_time`](Self::creation_time)
     /// plus the primary block's lifetime, saturating.
     pub fn expiry(&self) -> OffsetDateTime {
-        self.creation_time()
-            .saturating_add(self.primary().lifetime.try_into().unwrap_or(Duration::MAX))
+        expiry(
+            self.primary(),
+            self.metadata.extensions.age,
+            self.metadata.received_at(),
+        )
     }
 
     /// Whether [`expiry`](Self::expiry) has already passed.
@@ -113,6 +102,36 @@ impl Bundle {
                 _ => None,
             })
     }
+}
+
+/// The RFC 9171 creation-time rule, shared by [`Bundle::creation_time`] and
+/// the pre-store ingress gate ([`parse::HeaderVerify::gate_reason`]): the
+/// primary block's timestamp when the source is clocked, else `received_at`
+/// minus the Bundle Age extension field. Saturates an out-of-range age (the
+/// callers' age fields are `pub`, so not necessarily wire-decoded), like
+/// [`expiry`] saturates `lifetime`.
+///
+/// `core::time::Duration` stays qualified in this module: the imported
+/// `Duration` is `time::Duration`, the arithmetic type of the results.
+pub(crate) fn creation_time(
+    primary: &PrimaryBlock,
+    age: Option<core::time::Duration>,
+    received_at: OffsetDateTime,
+) -> OffsetDateTime {
+    primary.id.timestamp.as_datetime().unwrap_or_else(|| {
+        received_at.saturating_sub(age.unwrap_or_default().try_into().unwrap_or(Duration::MAX))
+    })
+}
+
+/// Expiry under the same rule: [`creation_time`] plus the primary block's
+/// lifetime, saturating.
+pub(crate) fn expiry(
+    primary: &PrimaryBlock,
+    age: Option<core::time::Duration>,
+    received_at: OffsetDateTime,
+) -> OffsetDateTime {
+    creation_time(primary, age, received_at)
+        .saturating_add(primary.lifetime.try_into().unwrap_or(Duration::MAX))
 }
 
 #[cfg(test)]
