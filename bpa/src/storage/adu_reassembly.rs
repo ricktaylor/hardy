@@ -91,9 +91,7 @@ impl Store {
         let source = bundle.id().source.clone();
         let timestamp = bundle.id().timestamp.clone();
         let fragment_info = bundle
-            .bpv7
-            .primary
-            .id
+            .id()
             .fragment_info
             .as_ref()
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
@@ -384,7 +382,7 @@ mod tests {
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
 
     use super::*;
-    use crate::bundle::BundleMetadata;
+    use crate::bundle::{BundleMetadata, tests::test_bundle_with_id};
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Store {
@@ -422,25 +420,8 @@ mod tests {
     }
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
-        let bundle = Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: id.clone(),
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: "ipn:0.2.1".parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: core::time::Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: {
-                let mut m = BundleMetadata::originated();
-                m.storage_name = Some(storage_name.clone());
-                m
-            },
-            status: BundleStatus::New,
-        };
+        let mut bundle = test_bundle_with_id(id.clone(), "ipn:0.2.1");
+        bundle.metadata.storage_name = Some(storage_name.clone());
         store.insert_metadata(&bundle).await;
     }
 
@@ -727,15 +708,8 @@ mod tests {
 
         // Store fragment 0 metadata with the full parsed Bundle (reassemble
         // passes it to Editor::new which needs the blocks map, not just the ID)
-        let meta_bundle = Bundle {
-            bpv7: bundle0.clone(),
-            metadata: {
-                let mut m = BundleMetadata::originated();
-                m.storage_name = Some(name0.clone());
-                m
-            },
-            status: BundleStatus::New,
-        };
+        let mut meta_bundle = Bundle::new(bundle0.clone(), BundleMetadata::originated());
+        meta_bundle.metadata.storage_name = Some(name0.clone());
         store.insert_metadata(&meta_bundle).await;
 
         // Get payload ranges from the parsed bundles

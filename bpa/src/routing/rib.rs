@@ -483,13 +483,11 @@ impl Rib {
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroUsize;
-    use core::time::Duration;
 
-    use hardy_bpv7::bundle::Id as BundleId;
-    use hardy_bpv7::creation_timestamp::CreationTimestamp;
     use hardy_bpv7::eid::{IpnNodeId, Service as EidService};
 
     use super::*;
+    use crate::bundle::tests::test_bundle;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
@@ -535,25 +533,7 @@ mod tests {
     }
 
     fn make_bundle(destination: &str) -> Bundle {
-        Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: BundleId {
-                        source: "ipn:0.99.1".parse().unwrap(),
-                        timestamp: CreationTimestamp::now(),
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: destination.parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: crate::bundle::BundleMetadata::originated(),
-            status: crate::bundle::BundleStatus::New,
-        }
+        test_bundle("ipn:0.99.1", destination)
     }
 
     fn ipn_node(n: u32) -> NodeId {

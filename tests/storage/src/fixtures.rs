@@ -1,5 +1,14 @@
-use super::*;
+use core::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use hardy_bpa::{bundle::Origin, cla::ClaAddress};
+use hardy_bpv7::{
+    bundle::{Bundle as Bpv7Bundle, FragmentInfo, Id},
+    hop_info::HopInfo,
+    primary_block::PrimaryBlock,
+};
+
+use super::*;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -9,12 +18,9 @@ fn next_seq() -> u64 {
 
 /// A minimal valid bpv7 bundle for storage fixtures: explicit identity and
 /// lifetime, defaults for the fields the storage layer never reads.
-fn make_bpv7(
-    id: hardy_bpv7::bundle::Id,
-    lifetime: core::time::Duration,
-) -> hardy_bpv7::bundle::Bundle {
-    hardy_bpv7::bundle::Bundle {
-        primary: hardy_bpv7::primary_block::PrimaryBlock {
+fn make_bpv7(id: Id, lifetime: Duration) -> Bpv7Bundle {
+    Bpv7Bundle {
+        primary: PrimaryBlock {
             id,
             flags: Default::default(),
             crc_type: Default::default(),
@@ -33,24 +39,22 @@ pub fn ingress_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        hardy_bpv7::bundle::Id {
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
         },
-        core::time::Duration::from_secs(3600),
+        Duration::from_secs(3600),
     );
 
     let mut metadata = BundleMetadata::ingress(
         "test-cla".into(),
         Some("ipn:1.0".parse().unwrap()),
-        Some(hardy_bpa::cla::ClaAddress::Tcp(
-            "127.0.0.1:4556".parse().unwrap(),
-        )),
+        Some(ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap())),
     );
     metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
-    metadata.extensions.age = Some(core::time::Duration::from_millis(1234));
-    metadata.extensions.hop_count = Some(hardy_bpv7::hop_info::HopInfo {
+    metadata.extensions.age = Some(Duration::from_millis(1234));
+    metadata.extensions.hop_count = Some(HopInfo {
         limit: 32,
         count: 3,
     });
@@ -67,12 +71,12 @@ pub fn random_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        hardy_bpv7::bundle::Id {
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
         },
-        core::time::Duration::from_secs(3600),
+        Duration::from_secs(3600),
     );
 
     bundle::Bundle {
@@ -90,17 +94,17 @@ pub fn bundle_with_status(
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        hardy_bpv7::bundle::Id {
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
         },
-        core::time::Duration::from_secs(3600),
+        Duration::from_secs(3600),
     );
 
     bundle::Bundle {
         bpv7,
-        metadata: BundleMetadata::new(received_at, hardy_bpa::bundle::Origin::Originated),
+        metadata: BundleMetadata::new(received_at, Origin::Originated),
         status,
     }
 }
@@ -112,7 +116,7 @@ pub fn bundle_with_status(
 pub fn bundle_with_expiry(
     status: BundleStatus,
     creation_time: time::OffsetDateTime,
-    lifetime: core::time::Duration,
+    lifetime: Duration,
 ) -> bundle::Bundle {
     let seq = next_seq();
 
@@ -120,7 +124,7 @@ pub fn bundle_with_expiry(
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
     let bpv7 = make_bpv7(
-        hardy_bpv7::bundle::Id {
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: ts,
             fragment_info: None,
@@ -144,15 +148,15 @@ pub fn bundle_with_fragment(
     let seq = next_seq();
 
     let bpv7 = make_bpv7(
-        hardy_bpv7::bundle::Id {
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
-            fragment_info: Some(hardy_bpv7::bundle::FragmentInfo {
+            fragment_info: Some(FragmentInfo {
                 offset,
                 total_adu_length,
             }),
         },
-        core::time::Duration::from_secs(3600),
+        Duration::from_secs(3600),
     );
 
     bundle::Bundle {

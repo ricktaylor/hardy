@@ -438,7 +438,10 @@ mod tests {
     use hashbrown::HashSet;
 
     use super::*;
-    use crate::storage::{BundleMemStorage, MetadataMemStorage};
+    use crate::{
+        bundle::tests::{test_bundle, test_expired_bundle},
+        storage::{BundleMemStorage, MetadataMemStorage},
+    };
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
@@ -449,36 +452,11 @@ mod tests {
     }
 
     fn make_bundle(n: u32) -> Bundle {
-        Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: hardy_bpv7::bundle::Id {
-                        source: format!("ipn:0.{n}.1").parse().unwrap(),
-                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: "ipn:0.99.1".parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: core::time::Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: crate::bundle::BundleMetadata::originated(),
-            status: crate::bundle::BundleStatus::New,
-        }
+        test_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
-        let mut b = make_bundle(n);
-        b.bpv7.primary.lifetime = core::time::Duration::from_secs(0);
-        // received_at in the past so expiry has already passed
-        b.metadata = crate::bundle::BundleMetadata::new(
-            time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
-            crate::bundle::Origin::Originated,
-        );
-        b
+        test_expired_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     const STATUS: BundleStatus = BundleStatus::ForwardPending {

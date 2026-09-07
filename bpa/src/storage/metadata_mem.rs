@@ -449,9 +449,7 @@ impl MetadataStorage for MetadataMemStorage {
             .filter_map(|(_, v)| v.live())
             .filter(|v| &v.status == status)
             .filter_map(|v| {
-                v.bpv7
-                    .primary
-                    .id
+                v.id()
                     .fragment_info
                     .as_ref()
                     .map(|fi| (fi.offset, v.clone()))
@@ -498,31 +496,14 @@ impl MetadataStorage for MetadataMemStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::tests::{test_bundle, test_expired_bundle};
 
     fn small(max_bundles: usize) -> MetadataMemStorage {
         MetadataMemStorage::new(NonZeroUsize::new(max_bundles))
     }
 
     fn make_bundle(n: u32) -> Bundle {
-        Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: hardy_bpv7::bundle::Id {
-                        source: format!("ipn:0.{n}.1").parse().unwrap(),
-                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: "ipn:0.99.1".parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: core::time::Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: crate::bundle::BundleMetadata::originated(),
-            status: BundleStatus::New,
-        }
+        test_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     // A full cache must evict an expired tombstone in preference to a live
@@ -647,14 +628,7 @@ mod tests {
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
-        let mut b = make_bundle(n);
-        b.bpv7.primary.lifetime = core::time::Duration::from_secs(0);
-        // received_at in the past so expiry has already passed
-        b.metadata = crate::bundle::BundleMetadata::new(
-            time::OffsetDateTime::now_utc() - time::Duration::seconds(10),
-            crate::bundle::Origin::Originated,
-        );
-        b
+        test_expired_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     // Evicting a bundle that has already expired is housekeeping, not data

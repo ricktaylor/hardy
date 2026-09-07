@@ -315,26 +315,12 @@ pub async fn meta_10_poll_adu_fragments(store: Arc<dyn MetadataStorage>) {
 
     assert_eq!(results.len(), 2, "should return both fragments");
     assert_eq!(
-        results[0]
-            .bpv7
-            .primary
-            .id
-            .fragment_info
-            .as_ref()
-            .unwrap()
-            .offset,
+        results[0].id().fragment_info.as_ref().unwrap().offset,
         0,
         "first should be offset=0"
     );
     assert_eq!(
-        results[1]
-            .bpv7
-            .primary
-            .id
-            .fragment_info
-            .as_ref()
-            .unwrap()
-            .offset,
+        results[1].id().fragment_info.as_ref().unwrap().offset,
         100,
         "second should be offset=100"
     );

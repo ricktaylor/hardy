@@ -296,7 +296,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{bundle_mem, metadata_mem};
+    use crate::{
+        bundle::tests::test_bundle,
+        storage::{bundle_mem, metadata_mem},
+    };
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
@@ -307,25 +310,7 @@ mod tests {
     }
 
     fn make_bundle(dest: &str) -> Bundle {
-        Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: Id {
-                        source: "ipn:0.99.1".parse().unwrap(),
-                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: dest.parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: core::time::Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: crate::bundle::BundleMetadata::originated(),
-            status: BundleStatus::New,
-        }
+        test_bundle("ipn:0.99.1", dest)
     }
 
     // Store a bundle and then store a duplicate — second insert should return false.

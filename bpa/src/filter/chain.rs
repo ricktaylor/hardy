@@ -323,6 +323,7 @@ impl FilterChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::tests::test_bundle;
     use hardy_async::async_trait;
     use hardy_bpv7::status_report::ReasonCode;
 
@@ -532,25 +533,7 @@ mod tests {
     async fn run_chain(builder: &FilterChainBuilder) -> ExecResult {
         let chain = builder.build();
         let pool = hardy_async::TaskPool::new();
-        let bundle = Bundle {
-            bpv7: hardy_bpv7::bundle::Bundle {
-                primary: hardy_bpv7::primary_block::PrimaryBlock {
-                    id: hardy_bpv7::bundle::Id {
-                        source: "ipn:1.0".parse().unwrap(),
-                        timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: "ipn:99.0".parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime: core::time::Duration::from_secs(3600),
-                },
-                blocks: Default::default(),
-            },
-            metadata: crate::bundle::BundleMetadata::originated(),
-            status: crate::bundle::BundleStatus::New,
-        };
+        let bundle = test_bundle("ipn:1.0", "ipn:99.0");
         chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)
             .await

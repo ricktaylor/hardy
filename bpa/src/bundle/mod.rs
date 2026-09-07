@@ -135,35 +135,67 @@ pub(crate) fn expiry(
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
+
+    // `core::time::Duration` stays qualified here too: `super::*` brings in
+    // the `time::Duration` the expiry arithmetic uses.
+
+    // Shared minimal bundle record: `now` timestamp, one-hour lifetime, no
+    // extension blocks, `Originated` provenance, `New` status. Tests override
+    // individual fields on the returned value.
+    pub fn test_bundle(source: &str, destination: &str) -> Bundle {
+        test_bundle_with_id(
+            Id {
+                source: source.parse().unwrap(),
+                timestamp: CreationTimestamp::now(),
+                fragment_info: None,
+            },
+            destination,
+        )
+    }
+
+    // `test_bundle` with a caller-supplied full `Id` (fragment tests).
+    pub fn test_bundle_with_id(id: Id, destination: &str) -> Bundle {
+        Bundle::new(
+            Bpv7Bundle {
+                primary: PrimaryBlock {
+                    id,
+                    flags: Default::default(),
+                    crc_type: Default::default(),
+                    destination: destination.parse().unwrap(),
+                    report_to: Default::default(),
+                    lifetime: core::time::Duration::from_secs(3600),
+                },
+                blocks: Default::default(),
+            },
+            BundleMetadata::originated(),
+        )
+    }
+
+    // `test_bundle` already past its expiry: zero lifetime and a
+    // `received_at` in the past.
+    pub fn test_expired_bundle(source: &str, destination: &str) -> Bundle {
+        let mut bundle = test_bundle(source, destination);
+        bundle.bpv7.primary.lifetime = core::time::Duration::ZERO;
+        bundle.metadata = BundleMetadata::new(
+            OffsetDateTime::now_utc() - Duration::seconds(10),
+            Origin::Originated,
+        );
+        bundle
+    }
 
     fn make_bundle(
         timestamp: CreationTimestamp,
         age: Option<core::time::Duration>,
         lifetime: core::time::Duration,
     ) -> Bundle {
-        let mut metadata = BundleMetadata::originated();
-        metadata.extensions.age = age;
-        Bundle::new(
-            Bpv7Bundle {
-                primary: PrimaryBlock {
-                    id: Id {
-                        source: "ipn:0.99.1".parse().unwrap(),
-                        timestamp,
-                        fragment_info: None,
-                    },
-                    flags: Default::default(),
-                    crc_type: Default::default(),
-                    destination: "ipn:0.1.99".parse().unwrap(),
-                    report_to: Default::default(),
-                    lifetime,
-                },
-                blocks: Default::default(),
-            },
-            metadata,
-        )
+        let mut bundle = test_bundle("ipn:0.99.1", "ipn:0.1.99");
+        bundle.bpv7.primary.id.timestamp = timestamp;
+        bundle.bpv7.primary.lifetime = lifetime;
+        bundle.metadata.extensions.age = age;
+        bundle
     }
 
     // When creation timestamp is zero (unknown), creation_time() should
