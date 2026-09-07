@@ -50,7 +50,7 @@ Full reference: [`docs/style_guides/code_style_guide.md`](./docs/style_guides/co
 - **32-bit safe.** Hardy targets 32-bit. Never `as usize` a wire-derived `u64` length — compare in `u64` first, then `try_from`.
 - **Errors are `thiserror` enums** with a `#[error("…")]` per variant; modules expose `pub type Result<T> = core::result::Result<T, Error>`. Give sub-parsers focused leaf error types rather than reusing a crate-root `Error`.
 - **`no_std` core.** `cbor`, `bpv7`, and `bpa` are `no_std` + `alloc`; gate `std` behind a feature, don't assume it.
-- **Secrets never reach `Display`, `Debug`, or logs — no exceptions.** Key material, tokens, and credentials MUST have a redacting `Debug` (length or kid, never bytes), MUST NOT be interpolated into error messages, and raw key bytes MUST live in `zeroize::Zeroizing` (`bpsec::key::Type` is the pattern).
+- **Secrets never reach `Display`, `Debug`, or logs — no exceptions.** Raw symmetric key bytes live only in `bpsec::key::SecretBytes` (self-redacting, zeroized on drop); other secret types (tokens, credentials) MUST have a redacting `Debug` (length or kid, never bytes), MUST NOT be interpolated into error messages, and MUST keep raw bytes in `zeroize::Zeroizing`.
 - **Cryptographic hygiene — no exceptions.** MAC/tag/signature verification MUST be constant-time (the primitive's verify API, never `==`); cryptographic randomness MUST come from `SysRng` (a non-crypto PRNG only for non-security values, with a comment saying so); plaintext key material MUST NOT transit unzeroized buffers, including error paths.
 - **Comments describe the present.** No "moved from / replaces the old X / now takes Y" porting narration — git holds that history.
 

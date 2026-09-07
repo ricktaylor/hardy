@@ -32,7 +32,7 @@ fn rejects_hop_limit_256() {
 fn accepts_hop_limit_1() {
     let body = hex!("820100");
     let (v, _, _) = HopInfo::from_cbor(&body).unwrap();
-    assert_eq!(v.limit, 1);
+    assert_eq!(v.limit.get(), 1);
     assert_eq!(v.count, 0);
 }
 
@@ -42,6 +42,6 @@ fn accepts_hop_limit_255() {
     // [255, 0] — uint 255 encoded as `0x18 0xFF`
     let body = hex!("82 18 ff 00");
     let (v, _, _) = HopInfo::from_cbor(&body).unwrap();
-    assert_eq!(v.limit, 255);
+    assert_eq!(v.limit.get(), 255);
     assert_eq!(v.count, 0);
 }

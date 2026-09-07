@@ -27,8 +27,11 @@ pub enum Error {
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
+        source: Box<Error>,
     },
+
+    #[error("unknown-scheme SSP is not a single CBOR data item")]
+    InvalidSsp,
 
     /// Indicates a violation of the canonical CBOR encoding requirements
     /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
@@ -54,10 +57,10 @@ impl From<hardy_cbor::decode::Error> for Error {
 }
 
 impl crate::error::HasInvalidField for Error {
-    fn invalid_field(
-        field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self {
-        Error::InvalidField { field, source }
+    fn invalid_field(field: &'static str, source: Self) -> Self {
+        Error::InvalidField {
+            field,
+            source: Box::new(source),
+        }
     }
 }

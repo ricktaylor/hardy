@@ -3,7 +3,7 @@
 //! BPSec pipeline composition lives in `tests/checks.rs`; the streaming
 //! push-parser in `tests/streaming.rs`.
 
-use core::iter::repeat_n;
+use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
 use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
@@ -55,7 +55,7 @@ fn indefinite_length_block_data_is_rejected() {
         panic!("expected InvalidField, got {err:?}");
     };
     assert!(
-        matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+        matches!(source.as_ref(), Error::NotCanonical),
         "expected NotCanonical, got {source:?}"
     );
 }
@@ -87,7 +87,7 @@ fn invalid_flags() {
 #[test]
 fn hop_count_extraction() {
     let hop = hop_info::HopInfo {
-        limit: 30,
+        limit: NonZeroU8::new(30).unwrap(),
         count: 0,
     };
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -108,7 +108,7 @@ fn hop_count_extraction() {
         .payload(&parsed.data)
         .expect("HopCount body in bundle");
     let hop_count = hardy_cbor::decode::parse::<hop_info::HopInfo>(body).unwrap();
-    assert_eq!(hop_count.limit, 30);
+    assert_eq!(hop_count.limit.get(), 30);
     assert_eq!(hop_count.count, 0);
 }
 
@@ -117,7 +117,7 @@ fn hop_count_extraction() {
 fn extension_block_parsing() {
     // Build a bundle with hop count — verifies HopCount extension is parsed
     let hop = hop_info::HopInfo {
-        limit: 10,
+        limit: NonZeroU8::new(10).unwrap(),
         count: 3,
     };
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -350,7 +350,7 @@ fn block_gate_rejects_tag_head_as_not_canonical() {
             panic!("a tag run of {run} at a block position must fail the block gate");
         };
         assert!(
-            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            matches!(source.as_ref(), Error::NotCanonical),
             "expected NotCanonical, got {source:?}"
         );
     }
@@ -386,15 +386,15 @@ fn tagged_block_field_is_rejected_as_not_canonical() {
     else {
         panic!("a tagged block number must fail its field parse");
     };
-    let Some(Error::InvalidField {
+    let Error::InvalidField {
         field: "block number",
         source: inner,
-    }) = source.downcast_ref::<Error>()
+    } = source.as_ref()
     else {
         panic!("expected the inner error to name the block number, got {source:?}");
     };
     assert!(
-        matches!(inner.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+        matches!(inner.as_ref(), Error::NotCanonical),
         "expected NotCanonical, got {inner:?}"
     );
 }
@@ -454,7 +454,7 @@ fn non_tag24_block_data_head_is_rejected() {
             panic!("{why} on block data must fail the block-data gate");
         };
         assert!(
-            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            matches!(source.as_ref(), Error::NotCanonical),
             "{why}: expected NotCanonical, got {source:?}"
         );
     }
@@ -546,15 +546,15 @@ fn encoded_len_is_the_wire_length() {
 
 // Wire-input structural block rules (RFC 9171 §4.1): duplicate, misnumbered,
 // misplaced, and missing blocks. On this API an invalid bundle surfaces as
-// `Err(Error::…)` from `parse::parse`; the status-report reason code the
-// original suite also asserted is now the BPA's concern, not the parser's.
+// `Err(Error::…)` from `parse::parse`; emitting the corresponding
+// status-report reason code is the BPA's concern, not the parser's.
 mod block_rules {
     use bytes::Bytes;
     use hardy_bpv7::{Error, block, parse};
-    use hardy_cbor::{decode::skip_value, encode::emit};
+    use hardy_cbor::encode::emit;
 
     use super::build_minimal_bundle;
-    use super::common::{insert_after_primary, make_block};
+    use super::common::{end_of_primary, insert_after_primary, make_block};
 
     // RFC 9171 §4.1: at most one payload block, and it must be last. A
     // second payload (block number 1) necessarily leaves a block-number-1
@@ -573,8 +573,8 @@ mod block_rules {
         );
     }
 
-    // RFC 9171 §4.4.2/§4.4.3: PreviousNode, BundleAge, and HopCount blocks
-    // must not occur more than once.
+    // RFC 9171 §4.4.1, §4.4.2, and §4.4.3: PreviousNode, BundleAge, and
+    // HopCount blocks must not occur more than once.
     #[test]
     fn duplicate_bundle_age_block_rejected() {
         let data = build_minimal_bundle();
@@ -591,7 +591,7 @@ mod block_rules {
         );
     }
 
-    // RFC 9171 §4.2.1: block numbers must be unique within a bundle.
+    // RFC 9171 §4.1: block numbers must be unique within a bundle.
     #[test]
     fn duplicate_block_number_rejected() {
         let data = build_minimal_bundle();
@@ -629,12 +629,7 @@ mod block_rules {
     #[test]
     fn missing_payload_rejected() {
         let data = build_minimal_bundle();
-        assert_eq!(
-            data[0], 0x9F,
-            "bundle should start with an indefinite array"
-        );
-        let (_, primary_len) = skip_value(&data[1..], 16).expect("should skip the primary block");
-        let mut modified = data[..1 + primary_len].to_vec();
+        let mut modified = data[..end_of_primary(&data)].to_vec();
         modified.push(0xFF);
         let Err(err) = parse::parse(Bytes::from(modified)) else {
             panic!("a bundle with no payload must be rejected");
@@ -646,22 +641,24 @@ mod block_rules {
     }
 }
 
-// CRC framing (RFC 9171 §4.2.2) and BPSec target rules (RFC 9172 §3.7)
-// through parse::parse.
-mod crc_and_bpsec_rules {
+// CRC framing (RFC 9171 §4.2.1 and §4.2.2) through parse::parse.
+mod crc_rules {
     use bytes::Bytes;
-    use hardy_bpv7::{Error, bpsec, crc, parse};
-    // Aliased: `encode::Bytes` collides with `bytes::Bytes` imported above.
-    use hardy_cbor::encode::{Bytes as CborBytes, emit_array};
+    use hardy_bpv7::{Error, crc, parse};
+    // Aliased: `decode::Error` collides with the bpv7 `Error`, and
+    // `encode::Bytes` with `bytes::Bytes`, both imported above.
+    use hardy_cbor::{
+        decode::Error as CborError,
+        encode::{Bytes as CborBytes, emit_array},
+    };
 
     use super::build_minimal_bundle;
-    use super::common::{insert_after_primary, make_block, make_unknown_context_asb};
+    use super::common::insert_after_primary;
 
     // A block whose element count contradicts its declared CRC type is a
     // malformed block. On this parser the CRC value's presence is framed by
-    // the block array's arity, so a mismatch surfaces at the CBOR layer,
-    // wrapped as an InvalidField over the "block" (rather than as a distinct
-    // MissingCrc / UnexpectedCrcValue).
+    // the block array's arity, so a mismatch surfaces at the CBOR layer as
+    // an arity mismatch, wrapped as the block field error.
     #[test]
     fn missing_crc_value_rejected() {
         let data = build_minimal_bundle();
@@ -674,12 +671,19 @@ mod crc_and_bpsec_rules {
             a.emit(&CborBytes(&[0xDE, 0xAD]));
         });
         let modified = insert_after_primary(&data, &[&block]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(Error::InvalidField {
+            field: "block",
+            source,
+        }) = parse::parse(Bytes::from(modified))
+        else {
             panic!("a block declaring a CRC but carrying none must be rejected");
         };
         assert!(
-            matches!(err, Error::InvalidField { field: "block", .. }),
-            "missing CRC value, got: {err:?}"
+            matches!(
+                source.as_ref(),
+                Error::InvalidCBOR(CborError::AdditionalItems)
+            ),
+            "missing CRC value, got: {source:?}"
         );
     }
 
@@ -696,16 +700,23 @@ mod crc_and_bpsec_rules {
             a.emit(&CborBytes(&[0x00, 0x00]));
         });
         let modified = insert_after_primary(&data, &[&block]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(Error::InvalidField {
+            field: "block",
+            source,
+        }) = parse::parse(Bytes::from(modified))
+        else {
             panic!("a CRC value with crc_type=none must be rejected");
         };
         assert!(
-            matches!(err, Error::InvalidField { field: "block", .. }),
-            "unexpected CRC value, got: {err:?}"
+            matches!(
+                source.as_ref(),
+                Error::InvalidCBOR(CborError::AdditionalItems)
+            ),
+            "unexpected CRC value, got: {source:?}"
         );
     }
 
-    // RFC 9171 §4.2.2: only CRC types 0-2 are defined.
+    // RFC 9171 §4.2.1: only CRC types 0-2 are defined.
     #[test]
     fn unrecognised_crc_type_rejected() {
         let data = build_minimal_bundle();
@@ -726,8 +737,17 @@ mod crc_and_bpsec_rules {
             "unrecognised CRC type, got: {err:?}"
         );
     }
+}
 
-    // RFC 9172 §3.7: a BCB targeting the payload must set must_replicate.
+// BPSec target rules (RFC 9172 §3.8) through parse::parse.
+mod bpsec_rules {
+    use bytes::Bytes;
+    use hardy_bpv7::{Error, bpsec, parse};
+
+    use super::build_minimal_bundle;
+    use super::common::{insert_after_primary, make_block, make_unknown_context_asb};
+
+    // RFC 9172 §3.8: a BCB targeting the payload must set must_replicate.
     #[test]
     fn bcb_targeting_payload_without_must_replicate_rejected() {
         let data = build_minimal_bundle();
@@ -742,7 +762,7 @@ mod crc_and_bpsec_rules {
         );
     }
 
-    // RFC 9172 §3.7: a BCB must not target the primary block.
+    // RFC 9172 §3.8: a BCB must not target the primary block.
     #[test]
     fn bcb_targeting_primary_block_rejected() {
         let data = build_minimal_bundle();

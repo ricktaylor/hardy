@@ -18,7 +18,7 @@ use hardy_bpv7::{
 use std::collections::HashMap;
 
 mod common;
-use common::generated_k;
+use self::common::rand_k;
 // Signer works on a parse-shaped `Bundle`; re-parse the builder output to
 // get one with real wire extents.
 fn reparse(
@@ -57,7 +57,7 @@ fn sign_primary_removes_crc_and_verifies() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![key.clone()]);
@@ -112,7 +112,7 @@ fn remove_integrity_clears_target_coverage() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![key.clone()]);

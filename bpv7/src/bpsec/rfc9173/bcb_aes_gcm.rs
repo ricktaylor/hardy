@@ -10,14 +10,17 @@ use hardy_cbor::{
     encode::{Array, Encoder, Raw, ToCbor},
 };
 
-use super::{ScopeFlags, canonical_primary, key_wrap, rand_bytes};
+use super::{ScopeFlags, canonical_primary, iv::Iv, key_wrap::KeyWrap, rand_array, rand_bytes};
 use crate::{
-    CaptureFieldErr, HashMap,
+    HashMap,
     bpsec::{Context, Error, bcb, key, parse},
     eid,
 };
+/// The RFC 9173 §4.3.2 variant parameter. A foreign wire value is a
+/// legitimate RFC 9172 pass-through state, carried as `Unrecognised`;
+/// the encrypt key checks never produce it, so it cannot reach the
+/// cipher dispatch.
 #[allow(clippy::upper_case_acronyms)]
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AesVariant {
     A128GCM,
@@ -57,7 +60,7 @@ impl FromCbor for AesVariant {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Parameters {
-    pub iv: Box<[u8]>,
+    pub iv: Iv,
     pub variant: AesVariant,
     pub key: Option<Box<[u8]>>,
     pub flags: ScopeFlags,
@@ -87,14 +90,11 @@ impl Parameters {
             }
         }
 
-        // RFC 9173 §4.3.1: the IV length MUST be between 8 and 16 bytes.
-        let iv = iv.ok_or(Error::MissingContextParameter(1))?;
-        if !(8..=16).contains(&iv.len()) {
-            return Err(Error::InvalidIvLength(iv.len()));
-        }
+        // The RFC 9173 §4.3.1 length bound lives in `Iv::from_bytes`.
+        let iv: Box<[u8]> = iv.ok_or(Error::MissingContextParameter(1))?;
 
         Ok(Self {
-            iv,
+            iv: Iv::from_bytes(&iv)?,
             variant: variant.unwrap_or_default(),
             key,
             flags: flags.unwrap_or_default(),
@@ -120,7 +120,7 @@ impl ToCbor for Parameters {
             for b in 1..=4 {
                 if mask & (1 << b) != 0 {
                     match b {
-                        1 => a.emit(&(b, &hardy_cbor::encode::Bytes(&self.iv))),
+                        1 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.iv.as_slice()))),
                         2 => a.emit(&(b, &self.variant)),
                         3 => a.emit(&(b, &hardy_cbor::encode::Bytes(self.key.as_ref().unwrap()))),
                         4 => a.emit(&(b, &self.flags)),
@@ -206,18 +206,18 @@ fn build_data(flags: &ScopeFlags, args: &bcb::OperationArgs) -> Result<Vec<u8>, 
     Ok(encoder.build())
 }
 
-#[allow(clippy::type_complexity)]
+// Deliberately generic over the cipher (and hence its nonce size) for the
+// 8-16 byte IV round-trip test, so the slice-to-nonce conversion stays.
 fn encrypt_inner<C: aes_gcm::aead::Aead>(
     cipher: C,
-    iv: Box<[u8]>,
+    iv: &[u8],
     aad: &[u8],
     msg: &[u8],
-) -> Result<(Box<[u8]>, Box<[u8]>), Error> {
-    let nonce =
-        <&aes_gcm::aead::Nonce<C>>::try_from(iv.as_ref()).map_err(|_| Error::EncryptionFailed)?;
+) -> Result<Box<[u8]>, Error> {
+    let nonce = <&aes_gcm::aead::Nonce<C>>::try_from(iv).map_err(|_| Error::EncryptionFailed)?;
     cipher
         .encrypt(nonce, aes_gcm::aead::Payload { msg, aad })
-        .map(|r| (r.into(), iv))
+        .map(Into::into)
         .map_err(|_| Error::EncryptionFailed)
 }
 
@@ -250,38 +250,41 @@ impl Operation {
             return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()));
         }
 
-        let (cek, variant) = match &jwk.key_algorithm {
-            Some(key::KeyAlgorithm::A128KW)
-            | Some(key::KeyAlgorithm::A192KW)
-            | Some(key::KeyAlgorithm::A256KW) => {
-                if let Some(ops) = &jwk.operations
-                    && !ops.contains(&key::Operation::WrapKey)
-                {
-                    return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+        // Bind the wrap algorithm once; the wrap step below dispatches
+        // through it instead of re-matching `jwk.key_algorithm`. `None`
+        // means direct use of the KEK.
+        let key_wrap = match &jwk.key_algorithm {
+            Some(key::KeyAlgorithm::A128KW) => Some(KeyWrap::Aes128),
+            Some(key::KeyAlgorithm::A192KW) => Some(KeyWrap::Aes192),
+            Some(key::KeyAlgorithm::A256KW) => Some(KeyWrap::Aes256),
+            Some(key::KeyAlgorithm::Direct) | None => None,
+            _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
+        };
+
+        if key_wrap.is_some()
+            && let Some(ops) = &jwk.operations
+            && !ops.contains(&key::Operation::WrapKey)
+        {
+            return Err(Error::InvalidKey(key::Operation::WrapKey, jwk.clone()));
+        }
+
+        let variant = match &jwk.enc_algorithm {
+            Some(key::EncAlgorithm::A128GCM) => AesVariant::A128GCM,
+            None | Some(key::EncAlgorithm::A256GCM) => AesVariant::A256GCM,
+            _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
+        };
+
+        let cek = if key_wrap.is_some() {
+            Some(zeroize::Zeroizing::from(match variant {
+                AesVariant::A128GCM => rand_bytes::<16>()?,
+                AesVariant::A256GCM => rand_bytes::<32>()?,
+                // Dead in practice: the match above never yields it.
+                AesVariant::Unrecognised(_) => {
+                    return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()));
                 }
-                match &jwk.enc_algorithm {
-                    Some(key::EncAlgorithm::A128GCM) => (
-                        Some(zeroize::Zeroizing::from(rand_bytes::<16>()?)),
-                        AesVariant::A128GCM,
-                    ),
-                    None | Some(key::EncAlgorithm::A256GCM) => (
-                        Some(zeroize::Zeroizing::from(rand_bytes::<32>()?)),
-                        AesVariant::A256GCM,
-                    ),
-                    _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
-                }
-            }
-            Some(key::KeyAlgorithm::Direct) | None => (
-                None,
-                match &jwk.enc_algorithm {
-                    Some(key::EncAlgorithm::A128GCM) => AesVariant::A128GCM,
-                    None | Some(key::EncAlgorithm::A256GCM) => AesVariant::A256GCM,
-                    _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
-                },
-            ),
-            _ => {
-                return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()));
-            }
+            }))
+        } else {
+            None
         };
 
         let key::Type::OctetSequence { key: kek } = &jwk.key_type else {
@@ -290,44 +293,33 @@ impl Operation {
 
         let aad = build_data(&scope_flags, &args)?;
 
-        let active_cek = cek
-            .as_ref()
-            .map_or(kek.as_ref(), |cek: &zeroize::Zeroizing<Box<[u8]>>| {
-                cek.as_ref()
-            });
+        let active_cek = cek.as_ref().map_or(
+            kek.expose_secret(),
+            |cek: &zeroize::Zeroizing<Box<[u8]>>| cek.as_ref(),
+        );
 
-        let (ciphertext, iv) = match variant {
+        // 12-byte IV: the RFC 9173 §4.3.1 SHOULD.
+        let iv = Iv::B12(rand_array::<12>()?);
+
+        let ciphertext = match variant {
             AesVariant::A128GCM => aes_gcm::Aes128Gcm::new_from_slice(active_cek)
                 .map_err(|e| Error::Algorithm(e.to_string()))
-                .and_then(|cipher| {
-                    encrypt_inner(cipher, rand_bytes::<12>()?, &aad, payload.as_ref())
-                }),
+                .and_then(|cipher| encrypt_inner(cipher, iv.as_slice(), &aad, payload.as_ref())),
             AesVariant::A256GCM => aes_gcm::Aes256Gcm::new_from_slice(active_cek)
                 .map_err(|e| Error::Algorithm(e.to_string()))
-                .and_then(|cipher| {
-                    encrypt_inner(cipher, rand_bytes::<12>()?, &aad, payload.as_ref())
-                }),
+                .and_then(|cipher| encrypt_inner(cipher, iv.as_slice(), &aad, payload.as_ref())),
+            // Dead in practice: the enc-algorithm match above never yields it.
             AesVariant::Unrecognised(_) => {
-                unreachable!("Unrecognised variants filtered before encryption")
+                Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone()))
             }
         }?;
 
-        let key = if let Some(cek) = cek {
+        let key = if let (Some(cek), Some(key_wrap)) = (&cek, key_wrap) {
             Some(
-                match &jwk.key_algorithm {
-                    Some(key::KeyAlgorithm::A128KW) => {
-                        key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek)
-                    }
-                    Some(key::KeyAlgorithm::A192KW) => {
-                        key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek)
-                    }
-                    Some(key::KeyAlgorithm::A256KW) => {
-                        key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek)
-                    }
-                    _ => unreachable!("Key algorithm validated during key lookup"),
-                }
-                .map_err(Error::Algorithm)?
-                .into(),
+                key_wrap
+                    .wrap_key(kek.expose_secret(), cek)
+                    .map_err(Error::Algorithm)?
+                    .into(),
             )
         } else {
             None
@@ -378,17 +370,12 @@ impl Operation {
             };
 
             let cek = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes128>(kek.as_ref(), wrapped_cek)
-                }
-                Some(key::KeyAlgorithm::A192KW) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes192>(kek.as_ref(), wrapped_cek)
-                }
-                Some(key::KeyAlgorithm::A256KW) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes256>(kek.as_ref(), wrapped_cek)
-                }
+                Some(key::KeyAlgorithm::A128KW) => KeyWrap::Aes128,
+                Some(key::KeyAlgorithm::A192KW) => KeyWrap::Aes192,
+                Some(key::KeyAlgorithm::A256KW) => KeyWrap::Aes256,
                 _ => return Err(Error::DecryptionFailed),
             }
+            .unwrap_key(kek.expose_secret(), wrapped_cek)
             .map_err(|_| Error::DecryptionFailed)?;
 
             self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
@@ -408,7 +395,7 @@ impl Operation {
                 return Err(Error::DecryptionFailed);
             };
 
-            self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
+            self.decrypt_middle(jwk.enc_algorithm, cek.expose_secret(), &aad, data.as_ref())
         }
     }
 
@@ -426,18 +413,18 @@ impl Operation {
             (AesVariant::A256GCM, Some(key::EncAlgorithm::A256GCM) | None) => {
                 self.decrypt_gcm::<aes_gcm::aes::Aes256>(cek, aad, data)
             }
+            // A foreign wire variant is a legitimate RFC 9172 pass-through
+            // state; this node just cannot decrypt it.
             (AesVariant::Unrecognised(_), _) => Err(Error::UnsupportedOperation),
             _ => Err(Error::DecryptionFailed),
         }
     }
 
-    // AES-GCM decryption dispatched on the wire IV length. RFC 9173 §4.3.1
-    // permits any IV of 8-16 bytes; aes-gcm parameterises the cipher by its
-    // nonce size, so the runtime length is matched to the corresponding
-    // `AesGcm<Aes, Un>` type (decrypt_inner is generic over the cipher). Encrypt
-    // always emits 12-byte IVs (the RFC's SHOULD); this only widens acceptance
-    // on decrypt. Parameters::from_cbor already bounds the length to 8-16, so
-    // the fallthrough is defensive.
+    // AES-GCM decryption dispatched on the IV size. RFC 9173 §4.3.1 permits
+    // any IV of 8-16 bytes; aes-gcm parameterises the cipher by its nonce
+    // size, so each `Iv` arm hands its exact-size array to the corresponding
+    // `AesGcm<Aes, Un>` type. Encrypt always emits 12-byte IVs (the RFC's
+    // SHOULD); this only widens acceptance on decrypt.
     fn decrypt_gcm<Aes>(
         &self,
         cek: &[u8],
@@ -450,35 +437,42 @@ impl Operation {
             + KeyInit,
     {
         macro_rules! decrypt_sized {
-            ($n:ty) => {{
+            ($n:ty, $iv:expr) => {{
                 let cipher = aes_gcm::AesGcm::<Aes, $n>::new_from_slice(cek)
                     .map_err(|_| Error::DecryptionFailed)?;
-                self.decrypt_inner(cipher, aad, data)
-                    .ok_or(Error::DecryptionFailed)
+                // `From<[u8; N]>` is infallible: the arm proves the size.
+                self.decrypt_inner(
+                    cipher,
+                    aes_gcm::aead::Nonce::<aes_gcm::AesGcm<Aes, $n>>::from(*$iv),
+                    aad,
+                    data,
+                )
+                .ok_or(Error::DecryptionFailed)
             }};
         }
 
-        match self.parameters.iv.len() {
-            8 => decrypt_sized!(U8),
-            9 => decrypt_sized!(U9),
-            10 => decrypt_sized!(U10),
-            11 => decrypt_sized!(U11),
-            12 => decrypt_sized!(U12),
-            13 => decrypt_sized!(U13),
-            14 => decrypt_sized!(U14),
-            15 => decrypt_sized!(U15),
-            16 => decrypt_sized!(U16),
-            n => Err(Error::InvalidIvLength(n)),
+        // Exhaustive: an out-of-range IV is not a value of the type.
+        match &self.parameters.iv {
+            Iv::B8(iv) => decrypt_sized!(U8, iv),
+            Iv::B9(iv) => decrypt_sized!(U9, iv),
+            Iv::B10(iv) => decrypt_sized!(U10, iv),
+            Iv::B11(iv) => decrypt_sized!(U11, iv),
+            Iv::B12(iv) => decrypt_sized!(U12, iv),
+            Iv::B13(iv) => decrypt_sized!(U13, iv),
+            Iv::B14(iv) => decrypt_sized!(U14, iv),
+            Iv::B15(iv) => decrypt_sized!(U15, iv),
+            Iv::B16(iv) => decrypt_sized!(U16, iv),
         }
     }
 
     fn decrypt_inner<C: aes_gcm::aead::Aead + aes_gcm::aead::AeadInOut>(
         &self,
         cipher: C,
+        nonce: aes_gcm::aead::Nonce<C>,
         aad: &[u8],
         msg: &[u8],
     ) -> Option<zeroize::Zeroizing<Box<[u8]>>> {
-        let nonce = <&aes_gcm::aead::Nonce<C>>::try_from(self.parameters.iv.as_ref()).ok()?;
+        let nonce = &nonce;
         if let Some(tag) = self.results.0.as_ref() {
             let tag = <&aes_gcm::aead::Tag<C>>::try_from(tag.as_ref()).ok()?;
             let mut msg = zeroize::Zeroizing::new(Box::<[u8]>::from(msg));
@@ -510,24 +504,19 @@ pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>), Error> {
-    let parameters = Arc::from(
-        Parameters::from_cbor(asb.parameters, data)
-            .map_field_err::<Error>("RFC9173 AES-GCM parameters")?,
-    );
-
-    // Unpack results
-    let mut operations = HashMap::with_capacity(asb.results.len());
-    for (target, results) in asb.results {
-        operations.insert(
-            target,
+    asb.into_operations(
+        data,
+        "RFC9173 AES-GCM parameters",
+        "RFC9173 AES-GCM results",
+        Parameters::from_cbor,
+        Results::from_cbor,
+        |parameters, results| {
             bcb::Operation::AES_GCM(Operation {
-                parameters: parameters.clone(),
-                results: Results::from_cbor(results, data)
-                    .map_field_err::<Error>("RFC9173 AES-GCM results")?,
-            }),
-        );
-    }
-    Ok((asb.source, operations))
+                parameters,
+                results,
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -552,10 +541,10 @@ mod tests {
 
         macro_rules! roundtrip {
             ($n:ty, $len:expr) => {{
-                let iv: Box<[u8]> = alloc::vec![0xAB; $len].into();
+                let iv = Iv::from_bytes(&alloc::vec![0xAB; $len]).unwrap();
                 let cipher =
                     aes_gcm::AesGcm::<aes_gcm::aes::Aes256, $n>::new_from_slice(&key).unwrap();
-                let (ct, _) = encrypt_inner(cipher, iv.clone(), aad, plaintext).unwrap();
+                let ct = encrypt_inner(cipher, iv.as_slice(), aad, plaintext).unwrap();
                 let (ciphertext, tag) = ct.split_at(ct.len() - 16);
                 let op = Operation {
                     parameters: Arc::new(Parameters {
@@ -584,27 +573,8 @@ mod tests {
         roundtrip!(aes_gcm::aes::cipher::consts::U16, 16);
     }
 
-    // RFC 9173 §4.3.1: the decrypt-level size dispatch pins the lower
-    // boundary too, independently of the Parameters::from_cbor bound.
-    #[test]
-    fn decrypt_rejects_out_of_range_iv() {
-        let key = rand_bytes::<32>().unwrap();
-        let op = Operation {
-            parameters: Arc::new(Parameters {
-                iv: alloc::vec![0xAB; 7].into(),
-                variant: AesVariant::A256GCM,
-                key: None,
-                flags: ScopeFlags::default(),
-            }),
-            results: Results(None),
-        };
-        assert!(matches!(
-            op.decrypt_gcm::<aes_gcm::aes::Aes256>(&key, b"aad", b"data"),
-            Err(Error::InvalidIvLength(7))
-        ));
-    }
-
-    // RFC 9173 §4.3.1: an IV outside the 8-16 byte range is rejected at parse.
+    // RFC 9173 §4.3.1: an IV outside the 8-16 byte range is rejected at
+    // parse, the one remaining runtime check (`Iv::from_bytes`).
     #[test]
     fn parameters_reject_out_of_range_iv() {
         // Parameter 1 (IV) as a 20-byte CBOR byte string: 0x54 head + 20 bytes.
@@ -614,6 +584,15 @@ mod tests {
         assert!(matches!(
             Parameters::from_cbor(params, &data),
             Err(Error::InvalidIvLength(20))
+        ));
+
+        // A 7-byte IV (0x47 head + 7 bytes) pins the lower boundary.
+        let mut data = alloc::vec![0x47u8];
+        data.extend_from_slice(&[0u8; 7]);
+        let params: HashMap<u64, Range<usize>> = [(1, 0..data.len())].into_iter().collect();
+        assert!(matches!(
+            Parameters::from_cbor(params, &data),
+            Err(Error::InvalidIvLength(7))
         ));
 
         // A 12-byte IV (0x4C head + 12 bytes) is accepted.

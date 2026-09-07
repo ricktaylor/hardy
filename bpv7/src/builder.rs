@@ -1,5 +1,5 @@
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use core::time::Duration;
+use core::{num::NonZeroU8, time::Duration};
 
 use hardy_cbor::encode::{Array, Raw, emit, emit_array};
 use thiserror::Error;
@@ -308,7 +308,7 @@ pub struct BundleTemplate {
     /// The lifetime of the bundle.
     pub lifetime: Option<Duration>,
     /// The hop_limit of the bundle.
-    pub hop_limit: Option<u64>,
+    pub hop_limit: Option<NonZeroU8>,
 }
 
 impl From<BundleTemplate> for Builder<'_> {

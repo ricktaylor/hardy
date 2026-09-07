@@ -210,13 +210,13 @@ extern crate alloc;
 
 - **MAC, tag, and signature verification MUST be constant-time.** Never compare a computed authenticator against the received one with `==` — a short-circuiting comparison leaks how many leading bytes matched. Use the primitive's own verify API (`Mac::verify_slice`, an AEAD's built-in tag check); if none exists, compare through `subtle::ConstantTimeEq`.
 - **Cryptographic randomness comes from the OS-backed RNG only** (`rand::rngs::SysRng`). A non-cryptographic PRNG (`SmallRng`) is permitted only for values with no security role (public identifiers, cache sampling) and the use site MUST carry a comment saying so.
-- **Plaintext key material MUST NOT transit unzeroized buffers.** Any scratch buffer or return value holding a decrypted or unwrapped key is `zeroize::Zeroizing` (or explicitly zeroized on the error path), sized exactly so no conversion reallocates and strands an unwiped copy on the heap; `rfc9173::key_wrap::unwrap` is the pattern.
+- **Plaintext key material MUST NOT transit unzeroized buffers.** Allocate the buffer inside `zeroize::Zeroizing` before any plaintext is written into it, so every exit path (including `?` and unwind) wipes it in `Drop` and no conversion can strand an unwiped copy on the heap; `rfc9173::key_wrap::unwrap` is the pattern.
 
 ## Logging and Observability
 
 - Use the `tracing` macros (`tracing::debug!`, `error!`, `instrument`) for logging and spans — not `println!` / `eprintln!` in library or server code.
 - Keep log levels meaningful: `error!` for faults needing attention, `debug!`/`trace!` for diagnostics. Don't log per-bundle at `info!` on hot paths.
-- **Secrets never reach `Display`, `Debug`, or logs — no exceptions.** Key material, session tokens, and other credentials MUST have a hand-written redacting `Debug` (print the length or the key id, never the bytes) and MUST NOT be interpolated into error messages or log lines. Types holding raw key bytes MUST wrap them in `zeroize::Zeroizing` so they are wiped on drop.
+- **Secrets never reach `Display`, `Debug`, or logs — no exceptions.** Raw symmetric key bytes live only in `bpsec::key::SecretBytes` (self-redacting `Debug`, no `Display`, zeroized on drop), so containers embedding it can derive `Debug`. Secret types owned by other crates (session tokens, credentials) MUST have a redacting `Debug` (print the length or the key id, never the bytes), MUST NOT be interpolated into error messages or log lines, and MUST wrap raw bytes in `zeroize::Zeroizing` so they are wiped on drop.
 
 ## Cargo and Dependencies
 

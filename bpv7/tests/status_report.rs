@@ -316,22 +316,22 @@ fn tagged_status_flag_is_rejected_as_not_canonical() {
     else {
         panic!("a tagged status flag must fail the status-information parse");
     };
-    let Some(Error::InvalidField {
+    let Error::InvalidField {
         field: "received status",
         source,
-    }) = source.downcast_ref::<Error>()
+    } = source.as_ref()
     else {
         panic!("expected the error to name the received status, got {source:?}");
     };
-    let Some(Error::InvalidField {
+    let Error::InvalidField {
         field: "status",
         source,
-    }) = source.downcast_ref::<Error>()
+    } = source.as_ref()
     else {
         panic!("expected the inner error to name the status flag, got {source:?}");
     };
     assert!(
-        matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+        matches!(source.as_ref(), Error::NotCanonical),
         "expected NotCanonical, got {source:?}"
     );
 }

@@ -64,18 +64,15 @@ fn invalid_crc() {
         else {
             panic!("corrupted {crc_type:?} must fail as a primary-block field error");
         };
-        let Some(Error::InvalidField {
+        let Error::InvalidField {
             field: "CRC value",
             source,
-        }) = source.downcast_ref::<Error>()
+        } = source.as_ref()
         else {
             panic!("the primary-block failure must name the CRC value, got {source:?}");
         };
         assert!(
-            matches!(
-                source.downcast_ref::<Error>(),
-                Some(Error::InvalidCrc(crc::Error::IncorrectCrc))
-            ),
+            matches!(source.as_ref(), Error::InvalidCrc(crc::Error::IncorrectCrc)),
             "expected IncorrectCrc for {crc_type:?}, got: {source:?}"
         );
     }
@@ -118,10 +115,7 @@ fn primary_block_validation() {
         panic!("version 6 must fail as an InvalidField primary-block error");
     };
     assert!(
-        matches!(
-            source.downcast_ref::<Error>(),
-            Some(Error::InvalidVersion(6))
-        ),
+        matches!(source.as_ref(), Error::InvalidVersion(6)),
         "the primary-block failure must be InvalidVersion(6), got {source}"
     );
 }
@@ -131,7 +125,7 @@ fn primary_block_validation() {
 // them. Field order per RFC 9171 §4.3.1: version, flags, crc_type,
 // destination, source, report_to, creation timestamp, lifetime[, offset,
 // total].
-fn emit_primary(flags: u64, fragment_fields: Option<(u64, u64)>) -> Vec<u8> {
+fn emit_primary(flags: u64, fragment_fields: Option<bundle::FragmentInfo>) -> Vec<u8> {
     emit_array(Some(if fragment_fields.is_some() { 10 } else { 8 }), |a| {
         a.emit(&7u64); // version
         a.emit(&flags);
@@ -144,7 +138,11 @@ fn emit_primary(flags: u64, fragment_fields: Option<(u64, u64)>) -> Vec<u8> {
             1,
         ));
         a.emit(&86_400_000u64); // lifetime (ms)
-        if let Some((offset, total_adu_length)) = fragment_fields {
+        if let Some(bundle::FragmentInfo {
+            offset,
+            total_adu_length,
+        }) = fragment_fields
+        {
             a.emit(&offset);
             a.emit(&total_adu_length);
         }
@@ -157,7 +155,13 @@ fn emit_primary(flags: u64, fragment_fields: Option<(u64, u64)>) -> Vec<u8> {
 #[test]
 fn fragment_primary_block_parsing() {
     // Interior fragment: offset zero.
-    let data = emit_primary(0x01, Some((0, 5000)));
+    let data = emit_primary(
+        0x01,
+        Some(bundle::FragmentInfo {
+            offset: 0,
+            total_adu_length: 5000,
+        }),
+    );
     let (block, _, _) = PrimaryBlock::from_cbor(&data).expect("should parse");
     assert!(block.flags.is_fragment);
     assert_eq!(
@@ -169,7 +173,13 @@ fn fragment_primary_block_parsing() {
     );
 
     // Boundary: offset == total ADU length is legal (empty final fragment).
-    let data = emit_primary(0x01, Some((5000, 5000)));
+    let data = emit_primary(
+        0x01,
+        Some(bundle::FragmentInfo {
+            offset: 5000,
+            total_adu_length: 5000,
+        }),
+    );
     let (block, _, _) = PrimaryBlock::from_cbor(&data).expect("should parse");
     assert_eq!(
         block.id.fragment_info,
@@ -180,7 +190,13 @@ fn fragment_primary_block_parsing() {
     );
 
     // offset > total ADU length is rejected during the primary-block parse.
-    let data = emit_primary(0x01, Some((5001, 5000)));
+    let data = emit_primary(
+        0x01,
+        Some(bundle::FragmentInfo {
+            offset: 5001,
+            total_adu_length: 5000,
+        }),
+    );
     assert!(
         matches!(
             PrimaryBlock::from_cbor(&data),
@@ -196,7 +212,13 @@ fn fragment_primary_block_parsing() {
 // be the CRC value, and an unsigned integer there fails that field's parse.
 #[test]
 fn non_fragment_with_fragment_fields_rejected() {
-    let data = emit_primary(0x00, Some((40, 5000)));
+    let data = emit_primary(
+        0x00,
+        Some(bundle::FragmentInfo {
+            offset: 40,
+            total_adu_length: 5000,
+        }),
+    );
     let Err(Error::InvalidField {
         field: "CRC value",
         source,
@@ -206,11 +228,8 @@ fn non_fragment_with_fragment_fields_rejected() {
     };
     assert!(
         matches!(
-            source.downcast_ref::<Error>(),
-            Some(Error::InvalidCBOR(CborError::IncorrectType(
-                "Definite-length Byte String",
-                _
-            )))
+            source.as_ref(),
+            Error::InvalidCBOR(CborError::IncorrectType("Definite-length Byte String", _))
         ),
         "expected an incorrect-type CRC value, got {source:?}"
     );
@@ -222,7 +241,13 @@ fn non_fragment_with_fragment_fields_rejected() {
 fn fragment_bundle_parsing() {
     fn make_bundle(offset: u64, total: u64) -> Vec<u8> {
         let mut data = vec![0x9Fu8]; // indefinite-length bundle array
-        data.extend_from_slice(&emit_primary(0x01, Some((offset, total))));
+        data.extend_from_slice(&emit_primary(
+            0x01,
+            Some(bundle::FragmentInfo {
+                offset,
+                total_adu_length: total,
+            }),
+        ));
         // Payload block [1, 1, flags=0, crc_type=0, data]
         data.extend_from_slice(&emit_array(Some(5), |a| {
             a.emit(&1u64);
@@ -256,10 +281,7 @@ fn fragment_bundle_parsing() {
         panic!("invalid fragment offset should fail as a primary-block error");
     };
     assert!(
-        matches!(
-            source.downcast_ref::<Error>(),
-            Some(Error::InvalidFragmentInfo(5001, 5000))
-        ),
+        matches!(source.as_ref(), Error::InvalidFragmentInfo(5001, 5000)),
         "expected InvalidFragmentInfo(5001, 5000), got: {source:?}"
     );
 }

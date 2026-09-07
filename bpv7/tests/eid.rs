@@ -51,11 +51,11 @@ fn normalising_roundtrip() {
 fn unknown_scheme_cbor_roundtrip() {
     let input = hex!("82 03 43 010203");
     let (eid, shortest) = parse::<(Eid, bool)>(&input).expect("should parse");
-    let Eid::Unknown { scheme: 3, data } = &eid else {
+    let Eid::Unknown { scheme: 3, ssp } = &eid else {
         panic!("expected Eid::Unknown with scheme 3, got {eid:?}");
     };
     assert_eq!(
-        data.as_ref(),
+        ssp.as_cbor(),
         hex!("43 010203").as_slice(),
         "stashed SSP bytes"
     );
@@ -65,18 +65,6 @@ fn unknown_scheme_cbor_roundtrip() {
         input,
         "re-emit must reproduce the wire form exactly"
     );
-    assert!(eid.to_string().starts_with("unknown(3):"));
-}
-
-// Display must not panic when the stashed data is truncated or garbage;
-// it falls back to an error description.
-#[test]
-fn unknown_scheme_display_handles_garbage() {
-    // 43 announces a 3-byte string but only 1 byte follows.
-    let eid = Eid::Unknown {
-        scheme: 3,
-        data: hex!("43 01").as_slice().into(),
-    };
     assert!(eid.to_string().starts_with("unknown(3):"));
 }
 
@@ -341,8 +329,8 @@ fn cbor_ipn_bad_arity_rejected() {
     ));
 }
 
-/// RFC 9171 §4.1: the scheme uint MUST be encoded as a single byte (0x01
-/// for dtn). A non-shortest encoding such as `0x18 0x01` is rejected.
+// RFC 9171 §4.1: the scheme uint MUST be encoded as a single byte (0x01
+// for dtn). A non-shortest encoding such as `0x18 0x01` is rejected.
 #[test]
 fn non_shortest_scheme_uint_rejected() {
     // [scheme=18 01 (non-shortest 1), "//node/"]
@@ -356,9 +344,9 @@ fn non_shortest_scheme_uint_rejected() {
     ));
 }
 
-/// RFC 9171 §4.1 carveout: indefinite-length outer EID array is permitted
-/// but the returned `shortest` flag must be `false` so callers can opt
-/// to re-emit in canonical form.
+// RFC 9171 §4.1 carveout: indefinite-length outer EID array is permitted
+// but the returned `shortest` flag must be `false` so callers can opt
+// to re-emit in canonical form.
 #[test]
 fn indefinite_outer_array_accepted_but_flagged() {
     // 9f ... ff = indefinite-length array of [1, "//node/"]
@@ -371,9 +359,9 @@ fn indefinite_outer_array_accepted_but_flagged() {
     );
 }
 
-/// RFC 9171 §4.2.5.1.1: dtn null MUST be encoded as `uint 0`. The legacy
-/// `Text("none")` form is accepted but must flag `shortest = false` to
-/// queue a rewrite. The canonical `uint 0` form must flag `shortest = true`.
+// RFC 9171 §4.2.5.1.1: dtn null MUST be encoded as `uint 0`. The legacy
+// `Text("none")` form is accepted but must flag `shortest = false` to
+// queue a rewrite. The canonical `uint 0` form must flag `shortest = true`.
 #[test]
 fn dtn_null_canonicality() {
     // [1, "none"]: non-canonical form
@@ -389,18 +377,22 @@ fn dtn_null_canonicality() {
     assert!(shortest, "uint 0 form should flag shortest=true");
 }
 
-/// RFC 9171 §4.1: unexpected tags on a CBOR item are a canonicality
-/// violation. A tagged dtn SSP (e.g. tag 0 wrapping the text) must be
-/// rejected as `NotCanonical` rather than as a structural type error.
+// RFC 9171 §4.1: unexpected tags on a CBOR item are a canonicality
+// violation. A tagged dtn SSP (e.g. tag 0 wrapping the text) must be
+// rejected as `NotCanonical` rather than as a structural type error.
 #[test]
 fn tagged_dtn_ssp_rejected_as_not_canonical() {
     // [1, tag-0("none")]: tag on SSP
     let bytes = hex!("82 01 c0 64 6e6f6e65");
-    assert!(matches!(
-        expect_cbor_error(&bytes),
-        Error::InvalidField {
-            field: "'dtn' scheme-specific part",
-            ..
-        }
-    ));
+    let Error::InvalidField {
+        field: "'dtn' scheme-specific part",
+        source,
+    } = expect_cbor_error(&bytes)
+    else {
+        panic!("a tagged dtn SSP must fail the SSP field parse");
+    };
+    assert!(
+        matches!(source.as_ref(), Error::NotCanonical),
+        "expected NotCanonical, got {source:?}"
+    );
 }

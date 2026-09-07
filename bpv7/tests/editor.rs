@@ -1,7 +1,8 @@
 //! Integration tests for `hardy_bpv7::editor::Editor` — building, mutating,
 //! and rebuilding bundles through the public API.
 
-use core::time::Duration;
+use core::{num::NonZeroU8, time::Duration};
+
 use hardy_bpv7::{
     Bundle, block,
     bpsec::{key, rfc9173::ScopeFlags, signer},
@@ -12,7 +13,7 @@ use hardy_bpv7::{
 use std::collections::HashSet;
 
 mod common;
-use common::generated_k;
+use self::common::rand_k;
 // Build a bundle, parse it, return (bundle, data) ready for editing.
 fn make_bundle() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
@@ -29,7 +30,7 @@ fn make_bundle() -> (Bundle, Box<[u8]>) {
 fn make_bundle_with_hop_count() -> (Bundle, Box<[u8]>) {
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
         .with_hop_count(&hop_info::HopInfo {
-            limit: 30,
+            limit: NonZeroU8::new(30).unwrap(),
             count: 0,
         })
         .with_payload("Hello".as_bytes().into())
@@ -451,7 +452,7 @@ fn flatten_inplace_mixed_shift() {
         .unwrap();
     let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), long)
         .with_hop_count(&hop_info::HopInfo {
-            limit: 30,
+            limit: NonZeroU8::new(30).unwrap(),
             count: 1,
         })
         .with_payload("payload-bytes-here".as_bytes().into())
@@ -500,7 +501,7 @@ fn remove_block_rejects_security_block() {
         "kty": "oct",
         "alg": "HS256+A128KW",
         "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
 

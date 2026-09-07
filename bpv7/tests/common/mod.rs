@@ -1,22 +1,25 @@
-//! Shared byte-splicing fixtures for the bpv7 integration tests: helpers
-//! for hand-crafting malformed wire input. Lives under `tests/common/` so
-//! cargo treats it as a module, not its own test binary.
+//! Shared fixtures for the bpv7 integration tests: byte-splicing helpers
+//! for hand-crafting malformed wire input, plus a fresh-key generator for
+//! JWK fixtures. Lives under `tests/common/` so cargo treats it as a
+//! module, not its own test binary.
 //!
 //! Different test binaries use different subsets, so unused helpers per
 //! binary are expected.
 #![allow(dead_code)]
 
+use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use hardy_bpv7::eid::Eid;
 use hardy_cbor::{
     decode::skip_value,
     encode::{Bytes, Encoder, emit_array},
 };
+use rand::{TryRng, rngs::SysRng};
 
 // A generous CBOR nesting bound for skipping a primary block: a flat
 // array whose deepest members are EID and timestamp arrays.
 const PRIMARY_BLOCK_SKIP_DEPTH: usize = 16;
 
-/// A canonical block `[type, number, flags, crc_type=none, data]`.
+// A canonical block `[type, number, flags, crc_type=none, data]`.
 pub fn make_block(block_type: u64, block_number: u64, flags: u64, payload: &[u8]) -> Vec<u8> {
     emit_array(Some(5), |a| {
         a.emit(&block_type);
@@ -27,15 +30,20 @@ pub fn make_block(block_type: u64, block_number: u64, flags: u64, payload: &[u8]
     })
 }
 
-/// Splice raw block bytes in between the primary block and the payload block.
-pub fn insert_after_primary(data: &[u8], blocks: &[&[u8]]) -> Vec<u8> {
+// Byte offset one past the primary block of a serialised bundle.
+pub fn end_of_primary(data: &[u8]) -> usize {
     assert_eq!(
         data[0], 0x9F,
         "bundle should start with an indefinite array"
     );
     let (_, primary_len) =
         skip_value(&data[1..], PRIMARY_BLOCK_SKIP_DEPTH).expect("should skip the primary block");
-    let insert_pos = 1 + primary_len;
+    1 + primary_len
+}
+
+// Splice raw block bytes in between the primary block and the payload block.
+pub fn insert_after_primary(data: &[u8], blocks: &[&[u8]]) -> Vec<u8> {
+    let insert_pos = end_of_primary(data);
 
     let mut modified = data[..insert_pos].to_vec();
     for block in blocks {
@@ -45,8 +53,8 @@ pub fn insert_after_primary(data: &[u8], blocks: &[&[u8]]) -> Vec<u8> {
     modified
 }
 
-/// An Abstract Syntax Block (a CBOR sequence, not an array) with an
-/// unrecognised security context, one target, and one empty result set.
+// An Abstract Syntax Block (a CBOR sequence, not an array) with an
+// unrecognised security context, one target, and one empty result set.
 pub fn make_unknown_context_asb(target: u64) -> Vec<u8> {
     let mut encoder = Encoder::new();
     encoder.emit_array(Some(1), |a| {
@@ -61,13 +69,10 @@ pub fn make_unknown_context_asb(target: u64) -> Vec<u8> {
     encoder.build()
 }
 
-/// Base64url (no padding) of `len` freshly generated random bytes: a JWK
-/// `k` value for tests where the key's value is immaterial.
-pub fn generated_k(len: usize) -> String {
-    use base64::prelude::*;
-    use rand::TryRng;
-
+// Base64url (no padding) of `len` freshly generated random bytes: a JWK
+// `k` value for tests where the key's value is immaterial.
+pub fn rand_k(len: usize) -> String {
     let mut buf = vec![0u8; len];
-    rand::rngs::SysRng.try_fill_bytes(&mut buf).unwrap();
+    SysRng.try_fill_bytes(&mut buf).unwrap();
     BASE64_URL_SAFE_NO_PAD.encode(buf)
 }

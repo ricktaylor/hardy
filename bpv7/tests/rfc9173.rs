@@ -12,7 +12,7 @@ use hardy_bpv7::{
 use std::collections::HashMap;
 
 mod common;
-use common::generated_k;
+use self::common::rand_k;
 // Helper function to count blocks of a specific type
 fn count_blocks_of_type(bundle: &Bundle, block_type: Type) -> usize {
     bundle
@@ -404,7 +404,7 @@ fn test_wrapped_key_sign_and_verify() {
         "kty": "oct",
         "alg": "HS256+A128KW",
         "key_ops": ["sign", "verify", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![kek.clone()]);
@@ -441,8 +441,8 @@ fn test_wrapped_key_wrong_kek() {
             .unwrap();
 
     // Two distinct KEKs: signing uses one, verification the other.
-    let kek_k = generated_k(16);
-    let wrong_k = generated_k(16);
+    let kek_k = rand_k(16);
+    let wrong_k = rand_k(16);
     assert_ne!(
         kek_k, wrong_k,
         "the wrong KEK must differ from the signing KEK"
@@ -503,7 +503,7 @@ fn test_sign_then_encrypt() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let enc_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -512,7 +512,7 @@ fn test_sign_then_encrypt() {
         "alg": "A128KW",
         "enc": "A128GCM",
         "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
     let sign_keys = key::KeySet::new(vec![sign_key.clone()]);
@@ -625,7 +625,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let enc_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -634,7 +634,7 @@ fn test_rfc9173_decrypt_payload_leaves_bib_encrypted() {
         "alg": "A128KW",
         "enc": "A128GCM",
         "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
     let all_keys = key::KeySet::new(vec![sign_key.clone(), enc_key.clone()]);
@@ -754,7 +754,7 @@ fn test_bib_removal_and_readd() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![sign_key.clone()]);
@@ -871,7 +871,7 @@ fn test_encrypt_then_sign_fails() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let enc_key: key::Key = serde_json::from_value(serde_json::json!({
@@ -880,7 +880,7 @@ fn test_encrypt_then_sign_fails() {
         "alg": "A128KW",
         "enc": "A128GCM",
         "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
     let all_keys = key::KeySet::new(vec![sign_key.clone(), enc_key.clone()]);
@@ -939,7 +939,7 @@ fn test_signature_tamper_detection() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![sign_key.clone()]);
@@ -1010,7 +1010,7 @@ fn test_bcb_without_bib_removal() {
         "alg": "A128KW",
         "enc": "A128GCM",
         "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
     let keys = key::KeySet::new(vec![enc_key.clone()]);
@@ -1085,7 +1085,7 @@ fn test_remove_encryption_fails_on_unencrypted_block() {
             "alg": "A128KW",
             "enc": "A128GCM",
             "key_ops": ["wrapKey", "encrypt", "unwrapKey", "decrypt"],
-            "k": generated_k(16)
+            "k": rand_k(16)
         }]
     }))
     .unwrap();
@@ -1169,7 +1169,7 @@ fn test_encrypt_bib_directly_fails() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
 
@@ -1206,7 +1206,7 @@ fn test_encrypt_bib_directly_fails() {
         "alg": "A128KW",
         "enc": "A128GCM",
         "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-        "k": generated_k(16)
+        "k": rand_k(16)
     }))
     .unwrap();
 
@@ -1255,7 +1255,7 @@ fn test_sign_primary_block_with_crc() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
 
@@ -1315,7 +1315,7 @@ fn test_sign_primary_block_with_crc_no_scope_flags() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
 
@@ -1369,7 +1369,7 @@ fn test_sign_removes_crc_from_target_block() {
         "kty": "oct",
         "alg": "HS256",
         "key_ops": ["sign", "verify"],
-        "k": generated_k(18)
+        "k": rand_k(18)
     }))
     .unwrap();
 

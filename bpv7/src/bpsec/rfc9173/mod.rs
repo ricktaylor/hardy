@@ -10,7 +10,9 @@ use crate::{bpsec::Error, primary_block};
 pub(crate) mod bcb_aes_gcm;
 pub(crate) mod bib_hmac_sha2;
 
+mod iv;
 mod key_wrap;
+mod mac_tag;
 
 /// Return the bytes to feed into BPSec IPPT/AAD for the primary block.
 ///
@@ -29,6 +31,14 @@ pub(super) fn canonical_primary(raw: &[u8]) -> Result<Cow<'_, [u8]>, Error> {
 
 fn rand_bytes<const N: usize>() -> Result<Box<[u8]>, Error> {
     let mut buf = vec![0u8; N].into_boxed_slice();
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut buf)
+        .map_err(|e| Error::Algorithm(e.to_string()))?;
+    Ok(buf)
+}
+
+fn rand_array<const N: usize>() -> Result<[u8; N], Error> {
+    let mut buf = [0u8; N];
     rand::rngs::SysRng
         .try_fill_bytes(&mut buf)
         .map_err(|e| Error::Algorithm(e.to_string()))?;

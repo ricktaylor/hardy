@@ -6,9 +6,41 @@ use alloc::{
 };
 
 use aes_kw::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockSizeUser, KeyInit, consts::U16};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
-pub fn wrap<C>(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String>
+/// An AES key-wrap (RFC 3394) algorithm, selected from a JWK `alg` by
+/// the security contexts. Owns the per-cipher dispatch for both
+/// directions, so the contexts never name the cipher types themselves.
+#[derive(Clone, Copy)]
+pub enum KeyWrap {
+    Aes128,
+    Aes192,
+    Aes256,
+}
+
+impl KeyWrap {
+    pub fn wrap_key(self, kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Aes128 => wrap::<aes_kw::aes::Aes128>(kek, cek),
+            Self::Aes192 => wrap::<aes_kw::aes::Aes192>(kek, cek),
+            Self::Aes256 => wrap::<aes_kw::aes::Aes256>(kek, cek),
+        }
+    }
+
+    pub fn unwrap_key(
+        self,
+        kek: &[u8],
+        wrapped_key: &[u8],
+    ) -> Result<Zeroizing<Box<[u8]>>, String> {
+        match self {
+            Self::Aes128 => unwrap::<aes_kw::aes::Aes128>(kek, wrapped_key),
+            Self::Aes192 => unwrap::<aes_kw::aes::Aes192>(kek, wrapped_key),
+            Self::Aes256 => unwrap::<aes_kw::aes::Aes256>(kek, wrapped_key),
+        }
+    }
+}
+
+fn wrap<C>(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String>
 where
     C: BlockCipherEncrypt + BlockSizeUser<BlockSize = U16>,
     aes_kw::AesKw<C>: KeyInit,
@@ -20,26 +52,18 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// The output is the plaintext CEK: zeroized on drop, and the scratch
-/// buffer is created at the exact output size so the boxing below never
-/// reallocates and no unzeroized copy is left on the heap.
-pub fn unwrap<C>(kek: &[u8], wrapped_key: &[u8]) -> Result<Zeroizing<Box<[u8]>>, String>
+// Unwraps an AES-KW wrapped CEK. The plaintext buffer is owned by
+// `Zeroizing` while still all-zero, so every exit path, including `?`,
+// wipes it on drop.
+fn unwrap<C>(kek: &[u8], wrapped_key: &[u8]) -> Result<Zeroizing<Box<[u8]>>, String>
 where
     C: BlockCipherDecrypt + BlockSizeUser<BlockSize = U16>,
     aes_kw::AesKw<C>: KeyInit,
 {
     let kw = aes_kw::AesKw::<C>::new_from_slice(kek).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; wrapped_key.len().saturating_sub(8)];
-    match kw.unwrap_key(wrapped_key, &mut buf) {
-        Ok(out) => {
-            debug_assert_eq!(out.len(), buf.len());
-            Ok(Zeroizing::new(buf.into_boxed_slice()))
-        }
-        Err(e) => {
-            // A failed unwrap may still have written plaintext into the
-            // scratch buffer.
-            buf.zeroize();
-            Err(e.to_string())
-        }
-    }
+    let mut buf: Zeroizing<Box<[u8]>> =
+        Zeroizing::new(vec![0u8; wrapped_key.len().saturating_sub(8)].into_boxed_slice());
+    kw.unwrap_key(wrapped_key, &mut buf)
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
 }

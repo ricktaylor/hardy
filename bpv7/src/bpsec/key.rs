@@ -74,8 +74,73 @@ pub struct Key {
     pub key_use: Option<Use>,
 }
 
+/// Raw symmetric key bytes: zeroized on drop, length-only `Debug`, no
+/// `Display`, base64url in serde (JWK `k`). The bytes are reachable only
+/// through the deliberately named [`SecretBytes::expose_secret`].
+#[derive(Clone)]
+pub struct SecretBytes(Zeroizing<Box<[u8]>>);
+
+impl SecretBytes {
+    /// Builds the secret from raw bytes.
+    ///
+    /// The input is moved into a zeroize guard before any conversion, so
+    /// no reallocation can strand an unwiped copy on the heap. Callers
+    /// passing a borrowed slice should wipe their own source buffer.
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        let guarded = Zeroizing::new(bytes.into());
+        let mut out = Zeroizing::new(alloc::vec![0u8; guarded.len()].into_boxed_slice());
+        out.copy_from_slice(&guarded);
+        Self(out)
+    }
+
+    /// Deliberate access to the raw bytes for cryptographic use.
+    pub fn expose_secret(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "secret({} bytes)", self.0.len())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for SecretBytes {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // Wiped temporary; the wire form is the JWK base64url string.
+        let b64 = Zeroizing::new(BASE64_URL_SAFE_NO_PAD.encode(&*self.0));
+        s.serialize_str(&b64)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SecretBytes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: Zeroizing<String> = Zeroizing::new(serde::Deserialize::deserialize(d)?);
+        // Decode into a wiped buffer sized by the base64 estimate, then
+        // copy into an exactly-sized buffer: no unwiped temporaries.
+        let mut buf = Zeroizing::new(alloc::vec![0u8; decoded_len_estimate(s.len())]);
+        let n = BASE64_URL_SAFE_NO_PAD
+            .decode_slice(s.as_bytes(), &mut buf)
+            .map_err(serde::de::Error::custom)?;
+        let mut out = Zeroizing::new(alloc::vec![0u8; n].into_boxed_slice());
+        out.copy_from_slice(&buf[..n]);
+        Ok(Self(out))
+    }
+}
+
 /// JWK key type (`kty`) as defined in RFC 7517.
-#[derive(Default, Clone)]
+// The `Debug` derive is safe: `SecretBytes` self-redacts.
+#[derive(Default, Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "kty"))]
 pub enum Type {
@@ -88,13 +153,8 @@ pub enum Type {
     #[cfg_attr(feature = "serde", serde(rename = "oct"))]
     OctetSequence {
         /// The raw symmetric key bytes, base64url-encoded for serialization.
-        /// Zeroized on drop.
         #[cfg_attr(feature = "serde", serde(rename = "k"))]
-        #[cfg_attr(
-            feature = "serde",
-            serde(serialize_with = "serialize_key", deserialize_with = "deserialize_key")
-        )]
-        key: Zeroizing<Box<[u8]>>,
+        key: SecretBytes,
     },
     /// Unrecognized key type.
     #[default]
@@ -106,51 +166,16 @@ impl Type {
     /// Builds a symmetric octet-sequence key (`kty: oct`) from raw bytes.
     ///
     /// The bytes are zeroized on drop; callers do not need to handle the
-    /// [`Zeroizing`] wrapper themselves.
-    pub fn octet_sequence(key: impl Into<Box<[u8]>>) -> Self {
+    /// [`SecretBytes`] wrapper themselves.
+    pub fn octet_sequence(key: impl Into<Vec<u8>>) -> Self {
         Self::OctetSequence {
-            key: Zeroizing::new(key.into()),
-        }
-    }
-}
-
-// Hand-written so the raw key bytes can never reach logs or error output:
-// an octet sequence prints only its length.
-impl fmt::Debug for Type {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EllipticCurve => f.write_str("EC"),
-            Self::RSA => f.write_str("RSA"),
-            Self::OctetSequence { key } => write!(f, "oct({} bytes)", key.len()),
-            Self::Unknown => f.write_str("Unknown"),
+            key: SecretBytes::new(key),
         }
     }
 }
 
 #[cfg(feature = "serde")]
-use base64::prelude::*;
-
-#[cfg(feature = "serde")]
-fn serialize_key<S>(k: &[u8], s: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    s.serialize_str(BASE64_URL_SAFE_NO_PAD.encode(k).as_str())
-}
-
-#[cfg(feature = "serde")]
-fn deserialize_key<'de, D>(deserializer: D) -> Result<Zeroizing<Box<[u8]>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    // First, deserialize the YAML value as a simple String.
-    let s: String = serde::Deserialize::deserialize(deserializer)?;
-
-    BASE64_URL_SAFE_NO_PAD
-        .decode(s.as_bytes())
-        .map_err(serde::de::Error::custom)
-        .map(|v| Zeroizing::new(v.into()))
-}
+use base64::{decoded_len_estimate, prelude::*};
 
 /// JWK public key use (`use`) as defined in RFC 7517 Section 4.2.
 #[derive(Debug, Clone, Eq, PartialEq)]

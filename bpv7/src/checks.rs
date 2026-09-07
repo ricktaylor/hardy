@@ -58,7 +58,8 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, Error>
 where
     T: FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    T::Error: From<hardy_cbor::decode::Error>,
+    Error: From<T::Error>,
 {
     hardy_cbor::decode::parse_exact::<T>(data).map_field_err(field)
 }

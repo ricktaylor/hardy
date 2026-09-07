@@ -78,11 +78,12 @@ fn parse_and_rewrite(
 fn parse_exact<T>(data: &[u8], field: &'static str) -> Result<T, hardy_bpv7::Error>
 where
     T: hardy_cbor::decode::FromCbor,
-    T::Error: From<hardy_cbor::decode::Error> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    T::Error: From<hardy_cbor::decode::Error>,
+    hardy_bpv7::Error: From<T::Error>,
 {
     hardy_cbor::decode::parse_exact::<T>(data).map_err(|e| hardy_bpv7::Error::InvalidField {
         field,
-        source: e.into(),
+        source: Box::new(e.into()),
     })
 }
 

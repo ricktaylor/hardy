@@ -1103,21 +1103,20 @@ impl BundleParser {
 }
 
 /// Extract a `NeedMoreData` shortfall from an error, seeing through the
-/// `InvalidField` field-label chain that `parse_canonical` wraps around errors
-/// from nested field parses. `NeedMoreData` always means "the input is
-/// truncated here", never "this is malformed", so any occurrence in the chain
-/// is a genuine need-more signal for the streaming `push` loop. Returns the
-/// innermost shortfall (a lower-bound hint for buffer reservation).
-///
-/// The chain is not homogeneous: field wrappers box the *raw*
-/// [`CborError`] (`require_canonical`, scalar `block.parse()` sites) or an
-/// [`eid::Error`] (EID fields) just as readily as a nested [`Error`], so every
-/// wrapped type a chunk boundary can truncate inside must be seen through
-/// here — a missed one turns "feed me more" into a bogus structural reject.
+/// `InvalidField` field-label chain that wrap-time conversion builds around
+/// errors from nested field parses. `NeedMoreData` always means "the input
+/// is truncated here", never "this is malformed", so any occurrence in the
+/// chain is a genuine need-more signal for the streaming `push` loop.
+/// Returns the innermost shortfall (a lower-bound hint for buffer
+/// reservation). Every wrapper in the chain is typed, so each domain is a
+/// total match here: a new wrapped domain is a compile error, not a
+/// silently missed feed-me-more signal.
 fn need_more(e: &Error) -> Option<usize> {
     match e {
         Error::InvalidCBOR(e) => cbor_need_more(e),
-        Error::InvalidField { source, .. } => boxed_need_more(source.as_ref()),
+        Error::InvalidEid(e) => eid_need_more(e),
+        Error::InvalidBPSec(e) => bpsec_need_more(e),
+        Error::InvalidField { source, .. } => need_more(source),
         _ => None,
     }
 }
@@ -1132,20 +1131,17 @@ fn cbor_need_more(e: &CborError) -> Option<usize> {
 fn eid_need_more(e: &eid::Error) -> Option<usize> {
     match e {
         eid::Error::InvalidCBOR(e) => cbor_need_more(e),
-        eid::Error::InvalidField { source, .. } => boxed_need_more(source.as_ref()),
+        eid::Error::InvalidField { source, .. } => eid_need_more(source),
         _ => None,
     }
 }
 
-fn boxed_need_more(source: &(dyn core::error::Error + 'static)) -> Option<usize> {
-    if let Some(e) = source.downcast_ref::<Error>() {
-        need_more(e)
-    } else if let Some(e) = source.downcast_ref::<CborError>() {
-        cbor_need_more(e)
-    } else if let Some(e) = source.downcast_ref::<eid::Error>() {
-        eid_need_more(e)
-    } else {
-        None
+fn bpsec_need_more(e: &bpsec::Error) -> Option<usize> {
+    match e {
+        bpsec::Error::InvalidCBOR(e) => cbor_need_more(e),
+        bpsec::Error::InvalidEid(e) => eid_need_more(e),
+        bpsec::Error::InvalidField { source, .. } => bpsec_need_more(source),
+        _ => None,
     }
 }
 
@@ -1268,8 +1264,8 @@ pub(super) fn parse_item<T>(
 ) -> Result<(T, bool), Error>
 where
     T: hardy_cbor::decode::FromCbor,
-    <T as hardy_cbor::decode::FromCbor>::Error:
-        From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
+    <T as hardy_cbor::decode::FromCbor>::Error: From<CborError>,
+    Error: From<<T as hardy_cbor::decode::FromCbor>::Error>,
 {
     let (Untagged(v), s): (Untagged<T>, bool) = block.parse().map_field_err::<Error>(field)?;
     Ok((v, s))

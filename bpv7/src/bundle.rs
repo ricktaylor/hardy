@@ -368,12 +368,26 @@ pub mod id {
         #[error("Failed to decode {field}: {source}")]
         InvalidField {
             field: &'static str,
-            source: Box<dyn core::error::Error + Send + Sync>,
+            source: Box<Error>,
         },
+
+        /// An EID field failed to parse.
+        #[error(transparent)]
+        InvalidEid(#[from] eid::Error),
+
+        /// A bundle-domain field (the creation timestamp) failed to parse.
+        #[error(transparent)]
+        InvalidBundle(Box<crate::Error>),
 
         /// An error occurred during CBOR decoding.
         #[error(transparent)]
         InvalidCBOR(#[from] hardy_cbor::decode::Error),
+    }
+
+    impl From<crate::Error> for Error {
+        fn from(e: crate::Error) -> Self {
+            Self::InvalidBundle(Box::new(e))
+        }
     }
 }
 
@@ -381,11 +395,11 @@ trait CaptureFieldIdErr<T> {
     fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error>;
 }
 
-impl<T, E: Into<Box<dyn core::error::Error + Send + Sync>>> CaptureFieldIdErr<T> for Result<T, E> {
+impl<T, E: Into<id::Error>> CaptureFieldIdErr<T> for Result<T, E> {
     fn map_field_id_err(self, field: &'static str) -> Result<T, id::Error> {
         self.map_err(|e| id::Error::InvalidField {
             field,
-            source: e.into(),
+            source: Box::new(e.into()),
         })
     }
 }

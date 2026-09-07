@@ -5,6 +5,8 @@ typically part of the bundle's primary block and is used to prevent infinite
 loops and to control the bundle's lifetime in the network.
 */
 
+use core::num::NonZeroU8;
+
 use hardy_cbor::{
     decode::{FromCbor, parse_array},
     encode::{Encoder, ToCbor},
@@ -15,11 +17,12 @@ use crate::{Error, error::require_canonical};
 ///
 /// The hop limit is the maximum number of hops a bundle is allowed to traverse,
 /// while the hop count is the number of hops it has already traversed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HopInfo {
-    /// The maximum number of hops the bundle is allowed to traverse.
-    pub limit: u64,
+    /// The maximum number of hops the bundle is allowed to traverse
+    /// (RFC 9171 §4.4.3 range `1..=255`, guaranteed by the type).
+    pub limit: NonZeroU8,
     /// The number of hops the bundle has already traversed.
     pub count: u64,
 }
@@ -28,7 +31,7 @@ impl ToCbor for HopInfo {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit(&(&self.limit, &self.count))
+        encoder.emit(&(&u64::from(self.limit.get()), &self.count))
     }
 }
 
@@ -43,18 +46,20 @@ impl FromCbor for HopInfo {
     ///   * Indefinite-length array encoding is accepted (§4.1 carveout)
     ///     and reflected in the returned `shortest` flag as `false` so
     ///     callers can opt to re-emit in canonical form.
-    ///   * `limit` MUST be in `1..=255` (§4.4.3); otherwise rejected
-    ///     with `InvalidHopLimit`. The `count` field has no RFC-mandated
+    ///   * A wire `limit` outside `1..=255` (§4.4.3) is rejected with
+    ///     `InvalidHopLimit`. The `count` field has no RFC-mandated
     ///     range (only a SHOULD that it start at 0 and increment).
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         parse_array(data, |a, shortest, tags| {
             if !shortest || !tags.is_empty() {
                 return Err(Error::NotCanonical);
             }
-            let limit = require_canonical(a, "hop limit", Error::NotCanonical)?;
-            if limit == 0 || limit > 255 {
-                return Err(Error::InvalidHopLimit(limit));
-            }
+            let raw: u64 = require_canonical(a, "hop limit", Error::NotCanonical)?;
+            // Untrusted-wire boundary conversion into the range-proving type.
+            let limit = u8::try_from(raw)
+                .ok()
+                .and_then(NonZeroU8::new)
+                .ok_or(Error::InvalidHopLimit(raw))?;
             let count = require_canonical(a, "hop count", Error::NotCanonical)?;
             // `shortest` here means "would round-trip to identical bytes
             // under canonical emission" — i.e. the array was definite-

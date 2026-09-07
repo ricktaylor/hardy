@@ -32,8 +32,16 @@ pub enum Error {
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
+        source: Box<Error>,
     },
+
+    /// An EID field within the status report failed to parse.
+    #[error(transparent)]
+    InvalidEid(#[from] crate::eid::Error),
+
+    /// A bundle-domain field (e.g. the creation timestamp) failed to parse.
+    #[error(transparent)]
+    InvalidBundle(Box<crate::Error>),
 
     /// Indicates a violation of the canonical CBOR encoding requirements
     /// from RFC 9171 §4.1 — non-shortest scalar encoding, non-shortest
@@ -59,12 +67,18 @@ impl From<hardy_cbor::decode::Error> for Error {
     }
 }
 
+impl From<crate::Error> for Error {
+    fn from(e: crate::Error) -> Self {
+        Self::InvalidBundle(Box::new(e))
+    }
+}
+
 impl crate::error::HasInvalidField for Error {
-    fn invalid_field(
-        field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self {
-        Error::InvalidField { field, source }
+    fn invalid_field(field: &'static str, source: Self) -> Self {
+        Error::InvalidField {
+            field,
+            source: Box::new(source),
+        }
     }
 }
 
@@ -344,10 +358,7 @@ impl FromCbor for BundleStatusReport {
                 .map_field_err::<Error>("fragment offset")?
             {
                 if !s {
-                    return Err(Error::invalid_field(
-                        "fragment offset",
-                        Box::new(Error::NotCanonical),
-                    ));
+                    return Err(Error::invalid_field("fragment offset", Error::NotCanonical));
                 }
                 let total_adu_length =
                     require_canonical(a, "fragment total ADU length", Error::NotCanonical)?;

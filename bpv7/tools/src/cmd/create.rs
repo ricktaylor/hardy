@@ -1,3 +1,5 @@
+use core::num::NonZeroU8;
+
 use super::*;
 use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid};
 #[derive(Parser, Debug)]
@@ -48,9 +50,9 @@ pub struct Command {
     #[arg(short, long)]
     lifetime: Option<humantime::Duration>,
 
-    /// The optional hop_limit of the bundle.
+    /// The optional hop_limit of the bundle (RFC 9171 §4.4.3: 1 to 255).
     #[arg(short('H'), long = "hop-limit")]
-    hop_limit: Option<u64>,
+    hop_limit: Option<NonZeroU8>,
 }
 
 impl Command {
