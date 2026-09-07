@@ -71,6 +71,12 @@ pub enum Error {
     #[error("Invalid bundle destination {0}")]
     InvalidDestination(Eid),
 
+    /// The bundle is a fragment. Fragmentation is a forwarding-time action
+    /// (RFC 9171 §5.8) — a source never emits fragments — so the raw
+    /// originate door rejects a service-built fragment outright.
+    #[error("Cannot originate a bundle fragment")]
+    FragmentedBundle,
+
     /// The bundle stream was cancelled: the producer dropped its sender
     /// before delivering the final segment, so no complete bundle arrived.
     #[error("The bundle stream was cancelled before completion")]

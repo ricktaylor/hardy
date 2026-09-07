@@ -185,8 +185,11 @@ impl Dispatcher {
     /// runs the same strict parser and keyed header verification as CLA
     /// ingress (non-canonical input is rejected, never rewritten; the
     /// bytes are stored and forwarded as received), the source must match
-    /// the registered endpoint, and the lifetime/hop admission and
-    /// config-gated RFC 9171 validity checks apply at the same pre-drain
+    /// the registered endpoint, a fragment is rejected outright
+    /// ([`FragmentedBundle`](services::Error::FragmentedBundle) —
+    /// fragmentation is a forwarding-time action, never a source-time
+    /// one), and the lifetime/hop admission and config-gated RFC 9171
+    /// validity checks apply at the same pre-drain
     /// seat. A producer that goes away before the final segment cancels
     /// the send: nothing is stored, and the caller gets
     /// [`StreamCancelled`](services::Error::StreamCancelled).
@@ -220,6 +223,14 @@ impl Dispatcher {
             return Err(services::Error::InvalidDestination(
                 hv.bundle.primary.id.source.clone(),
             ));
+        }
+
+        // Fragmentation is a forwarding-time action (RFC 9171 §5.8): a
+        // source never emits fragments, and admitting one would let a
+        // service fabricate pieces of an ADU it never sent whole. A header
+        // fact, settled before the gates with nothing spooled.
+        if hv.bundle.primary.id.fragment_info.is_some() {
+            return Err(services::Error::FragmentedBundle);
         }
 
         let mut metadata = bundle::BundleMetadata::originated();
