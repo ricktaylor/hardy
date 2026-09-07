@@ -232,8 +232,11 @@ impl Dispatcher {
     /// runs the same strict parser and keyed header verification as CLA
     /// ingress (non-canonical input is rejected, never rewritten; the
     /// bytes are stored and forwarded as received), the source must match
-    /// the registered endpoint, and the lifetime/hop admission and
-    /// config-gated RFC 9171 validity checks apply at the same pre-drain
+    /// the registered endpoint, a fragment is rejected outright
+    /// ([`FragmentedBundle`](Error::FragmentedBundle) —
+    /// fragmentation is a forwarding-time action, never a source-time
+    /// one), and the lifetime/hop admission and config-gated RFC 9171
+    /// validity checks apply at the same pre-drain
     /// seat. A producer that goes away before the final segment cancels
     /// the send: nothing is stored, and the caller gets
     /// [`StreamCancelled`](Error::StreamCancelled).
@@ -277,6 +280,14 @@ impl Dispatcher {
             return Err(Error::InvalidDestination(
                 hv.bundle.primary.id.source.clone(),
             ));
+        }
+
+        // Fragmentation is a forwarding-time action (RFC 9171 §5.8): a
+        // source never emits fragments, and admitting one would let a
+        // service fabricate pieces of an ADU it never sent whole. A header
+        // fact, settled before the gates with nothing spooled.
+        if hv.bundle.primary.id.fragment_info.is_some() {
+            return Err(Error::FragmentedBundle);
         }
 
         let mut metadata = BundleMetadata::originated();
@@ -371,11 +382,11 @@ impl Dispatcher {
     // decisions (Originate chain, then the route lookup — the decision of
     // record) settle first, the spool follows, the door's stream verdict
     // settles against the save, and the admitted record is written once and
-    // its routing decision executed through `execute_admitted`. Originated
-    // bundles do not transit the dispatch queue (`DispatchPending` belongs to
-    // the re-dispatch paths) beyond its admin-endpoint and fragment arms,
-    // mirroring fresh CLA arrivals; a crash between the insert and the
-    // execution recovers through restart's `Dispatching` arm.
+    // its routing decision executed through `execute_admitted`, as for a
+    // fresh CLA arrival. Only the admin-endpoint arm transits the dispatch
+    // queue (no origination is a fragment: the raw door rejects one, and the
+    // Builder cannot make one); a crash between the insert and the execution
+    // recovers through restart's `Dispatching` arm.
     //
     // `stream` is the door's whole-bundle byte source (`head` included);
     // `settle` maps the door's post-drain verdict — a `ValidatingReceiver`'s
@@ -463,7 +474,7 @@ impl Dispatcher {
 
         // Execute the routing decision of record as at CLA ingress: decided
         // again if the table changed during the drain, with the
-        // admin-endpoint and fragment arms queued for the processing pool.
+        // admin-endpoint arm queued for the processing pool.
         self.execute_admitted(bundle, decision).await;
         Ok(bundle_id)
     }

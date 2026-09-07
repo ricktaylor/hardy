@@ -24,7 +24,7 @@ use hardy_bpa::{
 use hardy_bpv7::{
     block::{Flags as BlockFlags, Type},
     builder::Builder,
-    bundle::{Flags, Id},
+    bundle::{Flags, FragmentInfo, Id},
     crc::CrcType,
     creation_timestamp::CreationTimestamp,
     dtn_time::DtnTime,
@@ -5377,6 +5377,43 @@ async fn raw_originate_applies_the_admission_gates() {
     // The completed shutdown is the barrier proving the absence.
     bpa.shutdown().await;
     assert!(forwarded_rx.is_empty(), "nothing was admitted");
+}
+
+/// A service-built fragment is rejected at the raw door: fragmentation is
+/// a forwarding-time action (RFC 9171 §5.8), so a source never emits
+/// fragments — the send surfaces `FragmentedBundle` and nothing is
+/// admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_originate_rejects_a_fragment() {
+    let (bpa, svc, forwarded_rx, source_eid) = streamed_originate_setup().await;
+    let dest: Eid = "ipn:0.2.1".parse().unwrap();
+
+    // A valid bundle, rewritten as a self-declared fragment: the editor
+    // sets the fragment flag from the fragment_info and re-emits canonical
+    // bytes, so only the fragment fact can trip the door.
+    let (_, data) = Builder::new(source_eid, dest)
+        .with_payload(Cow::Borrowed(b"a piece of an adu".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    let Parsed {
+        bundle: raw, data, ..
+    } = parse(Bytes::from(data)).expect("parse the built bundle");
+    let editor = Editor::new(&raw, &data)
+        .with_fragment_info(Some(FragmentInfo {
+            offset: 0,
+            total_adu_length: 1024,
+        }))
+        .map_err(|(_, e)| e)
+        .expect("set fragment info");
+    let chunks = editor.rebuild().expect("rebuild the fragment");
+    let mut fragment = Chunk::flatten_bytes(chunks, data);
+
+    let result = svc.sink.get().unwrap().send(&mut fragment).await;
+    assert!(matches!(result, Err(services::Error::FragmentedBundle)));
+
+    // The completed shutdown is the barrier proving the absence.
+    bpa.shutdown().await;
+    assert!(forwarded_rx.is_empty(), "the fragment must not be admitted");
 }
 
 /// A duplicate raw send surfaces `DuplicateBundle` to the caller — service
