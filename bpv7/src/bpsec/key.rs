@@ -107,7 +107,7 @@ impl Type {
     ///
     /// The bytes are zeroized on drop; callers do not need to handle the
     /// [`Zeroizing`] wrapper themselves.
-    pub fn symmetric(key: impl Into<Box<[u8]>>) -> Self {
+    pub fn octet_sequence(key: impl Into<Box<[u8]>>) -> Self {
         Self::OctetSequence {
             key: Zeroizing::new(key.into()),
         }
