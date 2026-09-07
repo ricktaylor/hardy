@@ -108,6 +108,9 @@ impl Dispatcher {
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress runs again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
+        // - `metadata.extensions` still carries the as-received decode (it
+        //   mirrors the stored bytes); this attempt's bumped hop count / age
+        //   live only in the (bundle, data) pair handed down the chain
         let (bundle, mut data) =
             match self
                 .filters
@@ -254,9 +257,13 @@ impl Dispatcher {
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
         // We read the cached extension fields (`hop_count` / `age` from
         // `metadata.extensions`) to rebuild the wire blocks, but never write the
-        // bumped values back: `forward_bundle` deletes the bundle on a successful
-        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
-        // in-memory cache is never observed again after this rewrite.
+        // bumped values back: the rewrite is per-attempt and in-memory only, and
+        // the cache mirrors the stored bytes, which stay as received. The cache
+        // IS observed again after this rewrite — a park's reaper expiry watch
+        // reads `extensions.age` (and wants the original, un-bumped value), and
+        // the Egress chain sees the as-received values, not this attempt's
+        // bumped wire form: egress filters must derive per-attempt facts from
+        // the (bundle, data) pair they are handed, never from the cache.
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.

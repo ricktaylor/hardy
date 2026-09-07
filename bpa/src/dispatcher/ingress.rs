@@ -20,6 +20,15 @@ use crate::{
     stream::Receiver,
 };
 
+/// Count a drop of a received bundle, labelled by reason. Every drop site in
+/// the received pipeline increments this counter exactly once (see the drop
+/// accounting note on `receive_bundle`); a new drop site calls this rather
+/// than respelling the counter name and label vocabulary.
+fn count_received_dropped(reason: &ReasonCode) {
+    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(reason))
+        .increment(1);
+}
+
 // The verdict of the gate decisions (Ingress chain + route lookup) for one
 // arrival. `Disposed` rejections have already been counted and reported.
 //
@@ -138,56 +147,53 @@ impl Dispatcher {
         // payload is spooled. `Err` carries an optional recoverable bundle to
         // report before dropping (reporting stays here — we own the machinery);
         // a structural / truncation drop carries no recoverable bundle.
-        let (hv, headers, tail, bcb_ops) = match parse::parse_headers(
-            stream,
-            self.max_bundle_size.get(),
-            self.key_provider(),
-        )
-        .await
-        {
-            Ok(parts) => parts,
-            Err(parse::HeaderFailure::Cancelled) => {
-                debug!("Bundle stream cancelled mid-header; refused");
-                return Received::Refused;
-            }
-            Err(parse::HeaderFailure::TooLarge { size, max }) => {
-                // Covers both bounds `parse_headers` enforces: the
-                // accumulated header bytes and the declared whole-bundle
-                // size — an over-cap bundle, resident or still on the
-                // wire, refuses before a single payload byte drains.
-                debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
-                return Received::Refused;
-            }
-            Err(parse::HeaderFailure::Invalid { report, .. }) => {
-                let reason = match report {
-                    Some((bundle, reason)) => {
-                        // Complete but invalid, with a recoverable id: the
-                        // drop is reported like the sibling gate and drain
-                        // drops (RFC 9171 §5.6/§5.10). A structural failure
-                        // (`None`) has no id to report: the §4.1 discard,
-                        // outside the reception state machine.
-                        self.report_bundle_reception(
-                            &bundle,
-                            metadata.received_at(),
-                            parse::ReceptionReport::Requested,
-                            Some(reason),
-                        )
-                        .await;
-                        reason
-                    }
-                    None => ReasonCode::BlockUnintelligible,
-                };
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
-                return Received::Disposed;
-            }
-        };
+        let (hv, headers, tail, bcb_ops) =
+            match parse::parse_headers(stream, self.max_bundle_size.get(), self.key_provider())
+                .await
+            {
+                Ok(parts) => parts,
+                Err(parse::HeaderFailure::Cancelled) => {
+                    debug!("Bundle stream cancelled mid-header; refused");
+                    return Received::Refused;
+                }
+                Err(parse::HeaderFailure::TooLarge { size, max }) => {
+                    // Covers both bounds `parse_headers` enforces: the
+                    // accumulated header bytes and the declared whole-bundle
+                    // size — an over-cap bundle, resident or still on the
+                    // wire, refuses before a single payload byte drains.
+                    debug!("Bundle exceeds max_bundle_size: {size} > {max}; refused");
+                    return Received::Refused;
+                }
+                Err(parse::HeaderFailure::Invalid { report, .. }) => {
+                    let reason = match report {
+                        Some((bundle, reason)) => {
+                            // Complete but invalid, with a recoverable id: the
+                            // drop is reported like the sibling gate and drain
+                            // drops (RFC 9171 §5.6/§5.10). A structural failure
+                            // (`None`) has no id to report: the §4.1 discard,
+                            // outside the reception state machine.
+                            self.report_bundle_reception(
+                                &bundle,
+                                metadata.received_at(),
+                                parse::ReceptionReport::Requested,
+                                Some(reason),
+                            )
+                            .await;
+                            reason
+                        }
+                        None => ReasonCode::BlockUnintelligible,
+                    };
+                    count_received_dropped(&reason);
+                    return Received::Disposed;
+                }
+            };
 
         // Early-reject gate (lifetime / hop) before the payload is drained, so a
         // dead bundle is dropped having spooled nothing. (`Bundle::has_expired`
         // re-checks lifetime post-store in the ingress filter — a cheap, harmless
         // overlap.)
         if let Some(reason) = hv.gate_reason(metadata.received_at()) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            count_received_dropped(&reason);
             if let ReasonCode::LifetimeExpired = reason {
                 // A bundle that arrives already expired is treated as if it
                 // never arrived, not amplified into report traffic — §5.10
@@ -213,7 +219,7 @@ impl Dispatcher {
         // structural validity (deployments may relax them), reported like
         // any other gated drop (§5.6/§5.10).
         if let Some(reason) = self.rfc9171_gate_reason(&hv) {
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+            count_received_dropped(&reason);
             self.report_bundle_reception(
                 &hv.bundle,
                 metadata.received_at(),
@@ -341,7 +347,7 @@ impl Dispatcher {
                 // §5.6/§5.10). Nothing remains staged: the settle above
                 // discarded any save the verdict rejected.
                 debug!("Streamed payload rejected: {failure}");
-                metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&reason)).increment(1);
+                count_received_dropped(&reason);
                 self.report_bundle_reception(
                     &bundle.bpv7,
                     bundle.metadata.received_at(),
@@ -451,7 +457,7 @@ impl Dispatcher {
                 Ok(filter::ChainOutcome::Continue(bundle, _)) => bundle,
                 Ok(filter::ChainOutcome::Drop(bundle, reason)) => {
                     let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+                    count_received_dropped(&label);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -465,7 +471,7 @@ impl Dispatcher {
                     // The resident prefix failed the chain's own decode pass —
                     // an internal inconsistency, since it parsed at reception.
                     error!("Ingress filter chain failed: {e}");
-                    metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);
+                    count_received_dropped(&ReasonCode::BlockUnintelligible);
                     self.report_bundle_reception(
                         &bundle.bpv7,
                         bundle.metadata.received_at(),
@@ -492,7 +498,7 @@ impl Dispatcher {
         let action = self.rib.find(&bundle);
         if let Some(routing::DispatchAction::Drop(reason)) = action {
             let label = reason.unwrap_or(ReasonCode::NoAdditionalInformation);
-            metrics::counter!("bpa.bundle.received.dropped", "reason" => otel_metrics::reason_label(&label)).increment(1);
+            count_received_dropped(&label);
             // Drop-with-reason reports like the sibling gate drops;
             // Drop-without-reason is silent, exactly as dispatch's
             // delete_bundle path.
