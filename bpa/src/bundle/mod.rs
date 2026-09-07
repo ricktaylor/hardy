@@ -27,10 +27,8 @@ pub struct Bundle {
     pub bpv7: Bpv7Bundle,
     /// BPA-local metadata: ingress info, decoded extension fields, annotations.
     pub metadata: BundleMetadata,
-    /// Current processing status within the BPA pipeline. Pipeline state, not
-    /// a persisted fact: excluded from the serialized record — metadata
-    /// backends persist it out-of-band in typed, queryable columns and set
-    /// this field when they decode.
+    /// Current processing status within the BPA pipeline. Excluded from the
+    /// serialized record — see [`BundleStatus`] for the persistence contract.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub status: BundleStatus,
 }
@@ -56,6 +54,12 @@ impl Bundle {
         &self.bpv7.primary
     }
 
+    /// The bundle's creation time.
+    ///
+    /// For an unclocked source (a zero creation timestamp), falls back to
+    /// [`received_at`](BundleMetadata::received_at) minus the Bundle Age
+    /// extension field ([`ExtensionFields::age`]) — the RFC 9171 recovery of
+    /// creation time on a node with no clock.
     pub fn creation_time(&self) -> OffsetDateTime {
         self.primary()
             .id
@@ -78,11 +82,14 @@ impl Bundle {
             })
     }
 
+    /// When the bundle's lifetime ends: [`creation_time`](Self::creation_time)
+    /// plus the primary block's lifetime, saturating.
     pub fn expiry(&self) -> OffsetDateTime {
         self.creation_time()
             .saturating_add(self.primary().lifetime.try_into().unwrap_or(Duration::MAX))
     }
 
+    /// Whether [`expiry`](Self::expiry) has already passed.
     #[inline]
     pub fn has_expired(&self) -> bool {
         self.expiry() <= OffsetDateTime::now_utc()

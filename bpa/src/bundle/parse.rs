@@ -44,9 +44,10 @@ use crate::{HashMap, HashSet, cla::Segment, stream::Receiver};
 /// output — a structural `Bundle` plus its wire bytes — so any PreviousNode /
 /// BundleAge / HopCount the builder emitted reaches the bundle's metadata. Used
 /// by the locally-originated paths (`dispatcher::local`, `dispatcher::report`)
-/// that build a bundle and immediately wrap it; the keyed parse pipelines above
-/// would do this same extraction after redundant BPSec validation a freshly-built
-/// bundle doesn't need.
+/// that build a bundle and immediately wrap it; the keyed parse pipelines
+/// ([`parse_validate_with_provider`], [`parse_headers`]) would do this same
+/// extraction after redundant BPSec validation a freshly-built bundle doesn't
+/// need.
 pub fn extract_from_built(
     bundle: &Bpv7Bundle,
     data: &[u8],

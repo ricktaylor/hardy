@@ -10,9 +10,8 @@ use crate::{Arc, cla::ClaAddress};
 
 /// How a bundle entered this BPA's custody.
 ///
-/// Part of the bundle's provenance: persisted, write-once. At Egress the
-/// transit predicate is a type-level match: a bundle is transit traffic iff
-/// its origin is [`Ingress`](Origin::Ingress).
+/// Part of the bundle's provenance: persisted, write-once. A bundle is
+/// transit traffic iff its origin is [`Ingress`](Origin::Ingress).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Origin {
@@ -52,9 +51,10 @@ struct Provenance {
 
 /// Decoded well-known extension-block fields, derived from the bundle's bytes.
 ///
-/// Produced by the parse pipelines (`bundle::parse`) and recorded here when
-/// the bundle's content is parsed — at ingress, on local build, or on
-/// re-parse. Never invalidated: the stored bytes are immutable.
+/// A cache, not a source of truth: produced by the parse pipelines
+/// (`bundle::parse`) and recorded here whenever the bundle's bytes are parsed
+/// — at ingress, on local build, or on re-parse. The sites that rewrite the
+/// bytes re-record it; nothing re-validates it after the fact.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ExtensionFields {
