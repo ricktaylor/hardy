@@ -6,10 +6,7 @@ impl Dispatcher {
     /// Queue a bundle for dispatch processing.
     /// The caller must ensure the bundle status is already `Dispatching`.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
-        debug_assert!(matches!(
-            bundle.metadata.status,
-            bundle::BundleStatus::Dispatching
-        ));
+        debug_assert!(matches!(bundle.status, bundle::BundleStatus::Dispatching));
 
         if self.dispatch_tx.send(bundle).await.is_err() {
             debug!("Dispatch queue closed, bundle dropped");
@@ -53,7 +50,7 @@ impl Dispatcher {
     /// | `None` | Wait for route | `Dispatching` → `Waiting` |
     ///
     /// See [Routing Design](../../docs/routing_subsystem_design.md) for RIB lookup details.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn process_bundle(
         &self,
         mut bundle: bundle::Bundle,
@@ -75,7 +72,7 @@ impl Dispatcher {
             }
             Some(routing::DispatchAction::Deliver(service)) => {
                 // Check for reassembly
-                if bundle.bundle.id.fragment_info.is_some() {
+                if bundle.id().fragment_info.is_some() {
                     // Reassemble the bundle before delivery
                     self.reassemble(bundle).await
                 } else {

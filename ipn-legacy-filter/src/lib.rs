@@ -55,7 +55,7 @@ impl IpnLegacyFilter {
 #[async_trait]
 impl WriteFilter for IpnLegacyFilter {
     async fn filter(&self, bundle: &Bundle, data: &[u8]) -> Result<WriteResult, hardy_bpa::Error> {
-        let Some(next_hop) = &bundle.metadata.read_only.next_hop else {
+        let Some(next_hop) = &bundle.metadata.next_hop else {
             return Ok(WriteResult::Continue(None, None));
         };
 
@@ -63,8 +63,8 @@ impl WriteFilter for IpnLegacyFilter {
             return Ok(WriteResult::Continue(None, None));
         }
 
-        let needs_source = matches!(bundle.bundle.id.source, Eid::Ipn { .. });
-        let needs_dest = matches!(bundle.bundle.destination, Eid::Ipn { .. });
+        let needs_source = matches!(bundle.id().source, Eid::Ipn { .. });
+        let needs_dest = matches!(bundle.primary().destination, Eid::Ipn { .. });
 
         if !needs_source && !needs_dest {
             return Ok(WriteResult::Continue(None, None));
@@ -80,7 +80,7 @@ impl WriteFilter for IpnLegacyFilter {
         if let Eid::Ipn {
             fqnn,
             service_number,
-        } = &bundle.bundle.id.source
+        } = &bundle.id().source
         {
             editor = editor
                 .with_source(Eid::LegacyIpn {
@@ -93,7 +93,7 @@ impl WriteFilter for IpnLegacyFilter {
         if let Eid::Ipn {
             fqnn,
             service_number,
-        } = &bundle.bundle.destination
+        } = &bundle.primary().destination
         {
             editor = editor
                 .with_destination(Eid::LegacyIpn {
@@ -130,21 +130,13 @@ mod tests {
             .build(CreationTimestamp::now())
             .unwrap();
 
-        let mut metadata = BundleMetadata::default();
-        metadata.read_only.next_hop = next_hop.map(|nh| nh.parse().unwrap());
+        let mut metadata = BundleMetadata::originated();
+        metadata.next_hop = next_hop.map(|nh| nh.parse().unwrap());
 
         let bundle = Bundle {
-            bundle: hardy_bpa::bundle::Bpv7Bundle {
-                id: raw.primary.id,
-                flags: raw.primary.flags,
-                crc_type: raw.primary.crc_type,
-                destination: raw.primary.destination,
-                report_to: raw.primary.report_to,
-                lifetime: raw.primary.lifetime,
-                blocks: raw.blocks,
-                ..Default::default()
-            },
+            bpv7: raw,
             metadata,
+            status: hardy_bpa::bundle::BundleStatus::New,
         };
         (bundle, data.into())
     }

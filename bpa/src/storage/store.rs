@@ -7,10 +7,10 @@ use tracing::error;
 #[cfg(feature = "instrument")]
 use tracing::instrument;
 
-use super::{BundleStorage, MetadataStorage, reaper::Reaper};
+use super::{BundleStorage, ConfirmResponse, MetadataStorage, reaper::Reaper};
 use crate::{
     Arc, Bytes,
-    bundle::{Bundle, BundleMetadata, BundleStatus},
+    bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
     stream::Sender,
 };
@@ -75,7 +75,7 @@ impl Store {
     /// Takes a bundle with pre-populated metadata (e.g., from filter processing).
     /// Updates the storage_name field after saving data.
     /// Returns false if duplicate bundle already exists.
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
         let storage_name = self.save_data(data.clone()).await;
@@ -140,7 +140,7 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
             .insert(bundle)
@@ -156,10 +156,10 @@ impl Store {
             .await
             .trace_expect("Failed to get metadata")?;
 
-        if &m.bundle.id != bundle_id {
+        if m.id() != bundle_id {
             error!(
                 "Metadata store failed to return correct bundle: {} != {bundle_id}",
-                m.bundle.id
+                m.id()
             );
             None
         } else {
@@ -176,14 +176,14 @@ impl Store {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<BundleMetadata> {
+    pub async fn confirm_exists(&self, bundle_id: &Id) -> Option<ConfirmResponse> {
         self.metadata_storage
             .confirm_exists(bundle_id)
             .await
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn update_metadata(&self, bundle: &Bundle) {
         self.metadata_storage
             .replace(bundle)
@@ -191,15 +191,15 @@ impl Store {
             .trace_expect("Failed to replace metadata")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
-        if bundle.metadata.status != *status {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+        if bundle.status != *status {
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
 
-            bundle.metadata.status = status.clone();
+            bundle.status = status.clone();
             self.metadata_storage
-                .update_status(bundle)
+                .update_status(bundle.id(), status)
                 .await
                 .trace_expect("Failed to update bundle status");
         }
@@ -208,19 +208,19 @@ impl Store {
     // Compare-and-swap from the caller's snapshot status: the arbiter for
     // writers racing the peer sweeps, the expiry reaper, and each other.
     // Gauges move only when the swap wins.
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub async fn swap_status(&self, bundle: &mut Bundle, status: &BundleStatus) -> bool {
         let swapped = self
             .metadata_storage
-            .swap_status(&bundle.bundle.id, &bundle.metadata.status, status)
+            .swap_status(bundle.id(), &bundle.status, status)
             .await
             .trace_expect("Failed to swap bundle status");
 
         if swapped {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.metadata.status)).decrement(1.0);
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
 
-            bundle.metadata.status = status.clone();
+            bundle.status = status.clone();
         }
 
         swapped
@@ -232,10 +232,10 @@ impl Store {
     // bundle never transits a status another queue's poller could recover.
     // The caller owns the follow-up data deletion and gauge accounting
     // (delete_bundle tolerates the already-present tombstone).
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
     pub async fn tombstone_if(&self, bundle: &Bundle) -> bool {
         self.metadata_storage
-            .tombstone_if(&bundle.bundle.id, &bundle.metadata.status)
+            .tombstone_if(bundle.id(), &bundle.status)
             .await
             .trace_expect("Failed to tombstone bundle metadata")
     }
@@ -296,7 +296,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{bundle_mem, metadata_mem};
+    use crate::{
+        bundle::tests::test_bundle,
+        storage::{bundle_mem, metadata_mem},
+    };
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
@@ -307,25 +310,7 @@ mod tests {
     }
 
     fn make_bundle(dest: &str) -> Bundle {
-        Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: Id {
-                    source: "ipn:0.99.1".parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                    fragment_info: None,
-                },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: dest.parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
-                blocks: Default::default(),
-            },
-            metadata: Default::default(),
-        }
+        test_bundle("ipn:0.99.1", dest)
     }
 
     // Store a bundle and then store a duplicate — second insert should return false.

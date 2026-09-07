@@ -1,7 +1,7 @@
 use super::*;
 
 impl Dispatcher {
-    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip(self,cla,bundle),fields(bundle.id = %bundle.id())))]
     pub async fn forward_bundle(
         &self,
         cla: &dyn cla::Cla,
@@ -58,7 +58,7 @@ impl Dispatcher {
                 return;
             }
             Ok((new_bundle, data)) => (
-                core::mem::replace(&mut bundle.bundle.blocks, new_bundle.blocks),
+                core::mem::replace(&mut bundle.bpv7.blocks, new_bundle.blocks),
                 data,
             ),
         };
@@ -73,7 +73,7 @@ impl Dispatcher {
         // Every exit below this point must resolve the claim taken above:
         // ForwardAckPending has no storage poller, so a bundle left there is
         // invisible until peer removal, restart, or expiry.
-        let bundle_id = bundle.bundle.id.clone();
+        let bundle_id = bundle.id().clone();
         let (mut bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Egress, bundle, data, self.key_provider())
@@ -95,7 +95,7 @@ impl Dispatcher {
                 // routing decision. Losing the swap means a sweep or the
                 // reaper resolved the bundle first.
                 if let Some(mut bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.metadata.status == (bundle::BundleStatus::ForwardAckPending { peer })
+                    && bundle.status == (bundle::BundleStatus::ForwardAckPending { peer })
                     && self
                         .store
                         .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
@@ -111,7 +111,7 @@ impl Dispatcher {
         // single Final segment.
         let total_len = data.len() as u64;
         match cla
-            .forward(queue, cla_addr, &bundle.bundle.id, total_len, &mut data)
+            .forward(queue, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
             Ok(cla::ForwardBundleResult::Sent) => {
@@ -123,7 +123,7 @@ impl Dispatcher {
                 if !self.store.tombstone_if(&bundle).await {
                     debug!(
                         "Forward completion for {} lost the resolution race, ignored",
-                        bundle.bundle.id
+                        bundle.id()
                     );
                     return;
                 }
@@ -142,32 +142,50 @@ impl Dispatcher {
                 return self.store.watch_bundle(bundle).await;
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
-                // The neighbour has gone, kill the queue
+                // Link-scoped evidence: the neighbour is gone. Restore the
+                // pre-rewrite blocks (the stored data is the un-rewritten
+                // original), return the bundle to Waiting, and reset the
+                // whole peer queue so its bundles await a fresh routing
+                // decision alongside it.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
+                bundle.bpv7.blocks = pre_rewrite;
+                // Conditional: the reaper can resolve the claimed bundle at
+                // any await, and the park must not resurrect a tombstone.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
+                self.store.reset_peer_queue(peer).await;
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
-                debug!("Failed to forward bundle to peer {peer}: {e}, clearing queue assignment");
+                debug!("Failed to forward bundle to peer {peer}: {e}, returning it to Waiting");
+
+                // Bundle-scoped evidence about a single transfer: park only
+                // this bundle, leaving the rest of the peer's queue alone —
+                // resetting the queue is the response to link-scoped
+                // evidence, above. Unlike the deferred `Failed` outcome,
+                // which is paced by a network round trip, a synchronous
+                // failure can be deterministic and instantaneous, so
+                // re-running dispatch inline here could spin; the retry
+                // waits in Waiting for the next routing or link event.
+                bundle.bpv7.blocks = pre_rewrite;
+                // Conditional: the reaper can resolve the claimed bundle at
+                // any await, and the park must not resurrect a tombstone.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    self.store.watch_bundle(bundle).await;
+                }
             }
         }
-
-        // Synchronous failure: this bundle never entered the channel. Restore
-        // the pre-rewrite Bundle (the stored data is the un-rewritten
-        // original) and return it to Waiting for a fresh routing decision
-        // along with the rest of the peer's queue.
-        bundle.bundle.blocks = pre_rewrite;
-        // Conditional for the same reason: losing the swap means the reaper
-        // or a sweep resolved the bundle while the CLA held the call.
-        if self
-            .store
-            .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-            .await
-        {
-            self.store.watch_bundle(bundle).await;
-        }
-        self.store.reset_peer_queue(peer).await;
     }
 
     // Resolves a deferred transfer outcome reported by `cla` for a bundle it
@@ -188,10 +206,10 @@ impl Dispatcher {
             return;
         };
 
-        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.metadata.status else {
+        let bundle::BundleStatus::ForwardAckPending { peer } = bundle.status else {
             debug!(
                 "Transfer outcome for bundle {bundle_id} that is not awaiting one ({:?}), ignored",
-                bundle.metadata.status
+                bundle.status
             );
             return;
         };
@@ -251,12 +269,18 @@ impl Dispatcher {
         }
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.bundle.id)))]
+    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     fn update_extension_blocks(
         &self,
         bundle: &bundle::Bundle,
         source_data: Bytes,
     ) -> Result<(hardy_bpv7::Bundle, Bytes), hardy_bpv7::editor::Error> {
+        // We read the cached extension fields (`hop_count` / `age` from
+        // `metadata.extensions`) to rebuild the wire blocks, but never write the
+        // bumped values back: `forward_bundle` deletes the bundle on a successful
+        // send, or returns it to `Waiting` (re-fetched fresh) on failure, so the
+        // in-memory cache is never observed again after this rewrite.
+        //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
         let hardy_bpv7::parse::Parsed {
@@ -270,7 +294,7 @@ impl Dispatcher {
         // meaningful to report to, and a conformant parser (ours included)
         // rejects the combination.
         let report_on_failure =
-            !bundle.bundle.flags.is_admin_record && !bundle.bundle.id.source.is_null();
+            !bundle.primary().flags.is_admin_record && !bundle.id().source.is_null();
 
         // Previous Node Block
         let mut editor = hardy_bpv7::editor::Editor::new(&raw, &source_data)
@@ -282,7 +306,9 @@ impl Dispatcher {
             })
             .with_data(
                 hardy_cbor::encode::emit(
-                    &self.node_ids.get_admin_endpoint(&bundle.bundle.destination),
+                    &self
+                        .node_ids
+                        .get_admin_endpoint(&bundle.primary().destination),
                 )
                 .0
                 .into(),
@@ -290,7 +316,7 @@ impl Dispatcher {
             .rebuild();
 
         // Increment Hop Count
-        if let Some(hop_count) = &bundle.bundle.hop_count {
+        if let Some(hop_count) = &bundle.metadata.extensions.hop_count {
             editor = editor
                 .insert_block(hardy_bpv7::block::Type::HopCount)
                 .map_err(|(_, e)| e)?
@@ -311,7 +337,7 @@ impl Dispatcher {
         }
 
         // Update Bundle Age, if required
-        if bundle.bundle.age.is_some() || !bundle.bundle.id.timestamp.is_clocked() {
+        if bundle.metadata.extensions.age.is_some() || !bundle.id().timestamp.is_clocked() {
             // We have a bundle age block already, or no valid clock at bundle source
             // So we must add an updated bundle age block
             let bundle_age = (time::OffsetDateTime::now_utc() - bundle.creation_time())

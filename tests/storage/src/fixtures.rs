@@ -1,5 +1,14 @@
-use super::*;
+use core::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use hardy_bpa::{bundle::Origin, cla::ClaAddress};
+use hardy_bpv7::{
+    bundle::{Bundle as Bpv7Bundle, FragmentInfo, Id},
+    hop_info::HopInfo,
+    primary_block::PrimaryBlock,
+};
+
+use super::*;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -7,27 +16,73 @@ fn next_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Create a bundle with a unique ID, status `Waiting`, and a 1-hour lifetime.
-pub fn random_bundle() -> bundle::Bundle {
+/// A minimal valid bpv7 bundle for storage fixtures: explicit identity and
+/// lifetime, defaults for the fields the storage layer never reads.
+fn make_bpv7(id: Id, lifetime: Duration) -> Bpv7Bundle {
+    Bpv7Bundle {
+        primary: PrimaryBlock {
+            id,
+            flags: Default::default(),
+            crc_type: Default::default(),
+            destination: "ipn:99.0".parse().unwrap(),
+            report_to: Default::default(),
+            lifetime,
+        },
+        blocks: Default::default(),
+    }
+}
+
+/// Create a bundle received from a peer CLA, with every persisted metadata
+/// group populated: an `Origin::Ingress` provenance and decoded extension
+/// fields. Exercises the exact blob shape the SQL backends serialize.
+pub fn ingress_bundle() -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
+    let bpv7 = make_bpv7(
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
-        ..Default::default()
-    };
+        Duration::from_secs(3600),
+    );
 
-    let mut meta = BundleMetadata::default();
-    meta.status = BundleStatus::Waiting;
+    let mut metadata = BundleMetadata::ingress(
+        "test-cla".into(),
+        Some("ipn:1.0".parse().unwrap()),
+        Some(ClaAddress::Tcp("127.0.0.1:4556".parse().unwrap())),
+    );
+    metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
+    metadata.extensions.age = Some(Duration::from_millis(1234));
+    metadata.extensions.hop_count = Some(HopInfo {
+        limit: 32,
+        count: 3,
+    });
 
     bundle::Bundle {
-        bundle: bpv7,
-        metadata: meta,
+        bpv7,
+        metadata,
+        status: BundleStatus::Waiting,
+    }
+}
+
+/// Create a bundle with a unique ID, status `Waiting`, and a 1-hour lifetime.
+pub fn random_bundle() -> bundle::Bundle {
+    let seq = next_seq();
+
+    let bpv7 = make_bpv7(
+        Id {
+            source: format!("ipn:{seq}.0").parse().unwrap(),
+            timestamp: CreationTimestamp::now(),
+            fragment_info: None,
+        },
+        Duration::from_secs(3600),
+    );
+
+    bundle::Bundle {
+        bpv7,
+        metadata: BundleMetadata::originated(),
+        status: BundleStatus::Waiting,
     }
 }
 
@@ -38,24 +93,19 @@ pub fn bundle_with_status(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
+    let bpv7 = make_bpv7(
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
             fragment_info: None,
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
-        ..Default::default()
-    };
-
-    let mut meta = BundleMetadata::default();
-    meta.status = status;
-    meta.read_only.received_at = received_at;
+        Duration::from_secs(3600),
+    );
 
     bundle::Bundle {
-        bundle: bpv7,
-        metadata: meta,
+        bpv7,
+        metadata: BundleMetadata::new(received_at, Origin::Originated),
+        status,
     }
 }
 
@@ -66,30 +116,26 @@ pub fn bundle_with_status(
 pub fn bundle_with_expiry(
     status: BundleStatus,
     creation_time: time::OffsetDateTime,
-    lifetime: core::time::Duration,
+    lifetime: Duration,
 ) -> bundle::Bundle {
     let seq = next_seq();
 
     let ts = CreationTimestamp::try_from(creation_time)
         .unwrap_or_else(|_| CreationTimestamp::from_parts(None, seq));
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
+    let bpv7 = make_bpv7(
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: ts,
             fragment_info: None,
         },
-        destination: "ipn:99.0".parse().unwrap(),
         lifetime,
-        ..Default::default()
-    };
-
-    let mut meta = BundleMetadata::default();
-    meta.status = status;
+    );
 
     bundle::Bundle {
-        bundle: bpv7,
-        metadata: meta,
+        bpv7,
+        metadata: BundleMetadata::originated(),
+        status,
     }
 }
 
@@ -101,26 +147,22 @@ pub fn bundle_with_fragment(
 ) -> bundle::Bundle {
     let seq = next_seq();
 
-    let bpv7 = hardy_bpa::bundle::Bpv7Bundle {
-        id: hardy_bpv7::bundle::Id {
+    let bpv7 = make_bpv7(
+        Id {
             source: format!("ipn:{seq}.0").parse().unwrap(),
             timestamp: CreationTimestamp::now(),
-            fragment_info: Some(hardy_bpv7::bundle::FragmentInfo {
+            fragment_info: Some(FragmentInfo {
                 offset,
                 total_adu_length,
             }),
         },
-        destination: "ipn:99.0".parse().unwrap(),
-        lifetime: core::time::Duration::from_secs(3600),
-        ..Default::default()
-    };
-
-    let mut meta = BundleMetadata::default();
-    meta.status = status;
+        Duration::from_secs(3600),
+    );
 
     bundle::Bundle {
-        bundle: bpv7,
-        metadata: meta,
+        bpv7,
+        metadata: BundleMetadata::originated(),
+        status,
     }
 }
 

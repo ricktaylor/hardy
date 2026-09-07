@@ -256,15 +256,18 @@ impl Level {
                         // Re-validate the filter's output (non-canonical is
                         // rejected, not rewritten); store its bytes as-is. We
                         // forward it, so an undecryptable liveness block is fatal.
-                        let (rich, nokey) = crate::bundle::parse::parse_validate_with_provider(
+                        let validated = crate::bundle::parse::parse_validate_with_provider(
                             new_data.clone(),
                             key_provider,
                         )?;
                         crate::bundle::parse::reject_undecryptable_liveness(
-                            &nokey,
-                            rich.id.timestamp.is_clocked(),
+                            &validated.nokey_ext,
+                            validated.bundle.primary.id.timestamp.is_clocked(),
                         )?;
-                        bundle.bundle = rich;
+                        bundle.bpv7 = validated.bundle;
+                        // The rewrite changed the bytes, so refresh the cached
+                        // extension fields from the re-parse.
+                        bundle.metadata.extensions = validated.extensions;
                         *data = new_data;
                     }
                 }
@@ -320,6 +323,7 @@ impl FilterChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle::tests::test_bundle;
     use hardy_async::async_trait;
     use hardy_bpv7::status_report::ReasonCode;
 
@@ -529,10 +533,7 @@ mod tests {
     async fn run_chain(builder: &FilterChainBuilder) -> ExecResult {
         let chain = builder.build();
         let pool = hardy_async::TaskPool::new();
-        let bundle = Bundle {
-            bundle: Default::default(),
-            metadata: Default::default(),
-        };
+        let bundle = test_bundle("ipn:1.0", "ipn:99.0");
         chain
             .exec(&pool, bundle, Bytes::new(), hardy_bpv7::bpsec::no_keys)
             .await

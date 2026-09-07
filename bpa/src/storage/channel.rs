@@ -403,7 +403,7 @@ impl Store {
             let mut pushed_one = false;
             while let Ok(bundle) = inner_rx.recv().await {
                 // Just do some checks
-                if !bundle.has_expired() && bundle.metadata.status == shared_cloned.status {
+                if !bundle.has_expired() && bundle.status == shared_cloned.status {
                     // Send into queue. A closeable send already parked on a full
                     // buffer is not woken by the channel's own close(), so race it
                     // against pool shutdown — otherwise store.shutdown() (which
@@ -438,7 +438,10 @@ mod tests {
     use hashbrown::HashSet;
 
     use super::*;
-    use crate::storage::{BundleMemStorage, MetadataMemStorage};
+    use crate::{
+        bundle::tests::{test_bundle, test_expired_bundle},
+        storage::{BundleMemStorage, MetadataMemStorage},
+    };
 
     fn make_store() -> Arc<Store> {
         Arc::new(Store::new(
@@ -449,34 +452,11 @@ mod tests {
     }
 
     fn make_bundle(n: u32) -> Bundle {
-        Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: hardy_bpv7::bundle::Id {
-                    source: format!("ipn:0.{n}.1").parse().unwrap(),
-                    timestamp: hardy_bpv7::creation_timestamp::CreationTimestamp::now(),
-                    fragment_info: None,
-                },
-                flags: Default::default(),
-                crc_type: Default::default(),
-                destination: "ipn:0.99.1".parse().unwrap(),
-                report_to: Default::default(),
-                lifetime: core::time::Duration::from_secs(3600),
-                previous_node: None,
-                age: None,
-                hop_count: None,
-                blocks: Default::default(),
-            },
-            metadata: Default::default(),
-        }
+        test_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     fn make_expired_bundle(n: u32) -> Bundle {
-        let mut b = make_bundle(n);
-        b.bundle.lifetime = core::time::Duration::from_secs(0);
-        // Set received_at in the past so expiry is already passed
-        b.metadata.read_only.received_at =
-            time::OffsetDateTime::now_utc() - time::Duration::seconds(10);
-        b
+        test_expired_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
     const STATUS: BundleStatus = BundleStatus::ForwardPending {
@@ -615,8 +595,8 @@ mod tests {
                 .await
                 .expect("Timed out waiting for a bundle delivery")
                 .expect("Channel closed mid-drain");
-            store.tombstone_metadata(&b.bundle.id).await;
-            seen.insert(b.bundle.id);
+            store.tombstone_metadata(b.id()).await;
+            seen.insert(b.id().clone());
         }
         assert_eq!(
             seen.len(),
@@ -642,7 +622,7 @@ mod tests {
                         // immediately rather than spinning on a ready Err arm
                         // until the outer timeout.
                         let b = r.expect("Channel disconnected while awaiting re-open");
-                        store.tombstone_metadata(&b.bundle.id).await;
+                        store.tombstone_metadata(b.id()).await;
                     }
                 }
             }
@@ -725,8 +705,8 @@ mod tests {
         while seen.len() < 3 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -763,8 +743,8 @@ mod tests {
         while seen.len() < total as usize {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id);
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().clone());
                 }
                 _ => break,
             }
@@ -803,8 +783,8 @@ mod tests {
         while seen.len() < 2 {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Ok(b)) => {
-                    store.tombstone_metadata(&b.bundle.id).await;
-                    seen.insert(b.bundle.id.source.clone());
+                    store.tombstone_metadata(b.id()).await;
+                    seen.insert(b.id().source.clone());
                 }
                 _ => break,
             }
@@ -830,7 +810,7 @@ mod tests {
 
         // The bundle should arrive normally; verify it has the correct status
         let b = rx.recv().await.unwrap();
-        assert_eq!(b.metadata.status, STATUS);
+        assert_eq!(b.status, STATUS);
 
         drop(rx);
         tx.close();

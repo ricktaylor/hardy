@@ -12,7 +12,8 @@ use tracing::{debug, error};
 use super::store::Store;
 use crate::{
     Arc, Bytes, HashMap,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleStatus, Origin},
+    otel_metrics::status_label,
 };
 
 pub enum ReassemblyResult {
@@ -25,10 +26,13 @@ pub enum ReassemblyResult {
     /// expiry estimate for no-clock sources (creation = received_at − age)
     /// under-ages the bundle by the whole reassembly window if the reassembled
     /// bundle carries a later fragment's arrival time.
+    /// `origin` is the provenance of that earliest-arriving fragment, carried
+    /// onto the reassembled bundle for the same reason.
     Done {
         storage_name: Arc<str>,
         data: Bytes,
         received_at: OffsetDateTime,
+        origin: Origin,
     },
     /// All fragments arrived but reassembly failed (corrupt/misaligned data).
     /// Fragment data has already been deleted; caller should drop the trigger bundle.
@@ -37,14 +41,15 @@ pub enum ReassemblyResult {
 
 struct FragmentSet {
     received_at: OffsetDateTime,
+    origin: Origin,
     adus: HashMap<u64, (Bpv7Id, Arc<str>, Range<usize>)>,
 }
 
 impl Store {
     pub async fn adu_reassemble(&self, bundle: &Bundle) -> ReassemblyResult {
         let status = BundleStatus::AduFragment {
-            source: bundle.bundle.id.source.clone(),
-            timestamp: bundle.bundle.id.timestamp.clone(),
+            source: bundle.id().source.clone(),
+            timestamp: bundle.id().timestamp.clone(),
         };
 
         let Some(fragments) = self.poll_fragments(bundle, &status).await else {
@@ -57,7 +62,15 @@ impl Store {
         for (bundle_id, storage_name, _) in fragments.adus.values() {
             self.delete_data(storage_name).await;
             self.tombstone_metadata(bundle_id).await;
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&status)).decrement(1.0);
+            // Only the polled siblings were parked to AduFragment; the trigger
+            // fragment (the one completing the set) is still in its own status,
+            // so decrement its own gauge label, not AduFragment's.
+            let state = if bundle_id == bundle.id() {
+                status_label(&bundle.status)
+            } else {
+                status_label(&status)
+            };
+            metrics::gauge!("bpa.bundle.status", "state" => state).decrement(1.0);
         }
 
         match result {
@@ -65,6 +78,7 @@ impl Store {
                 storage_name,
                 data,
                 received_at: fragments.received_at,
+                origin: fragments.origin,
             },
             None => ReassemblyResult::Failed,
         }
@@ -74,18 +88,17 @@ impl Store {
         // Poll the store for the other fragments
         let cancel_token = self.tasks.cancel_token().clone();
 
-        let source = bundle.bundle.id.source.clone();
-        let timestamp = bundle.bundle.id.timestamp.clone();
+        let source = bundle.id().source.clone();
+        let timestamp = bundle.id().timestamp.clone();
         let fragment_info = bundle
-            .bundle
-            .id
+            .id()
             .fragment_info
             .as_ref()
             .trace_expect("Unfragmented bundle got into adu_reassemble?!");
 
         let total_adu_len = fragment_info.total_adu_length;
         let r = bundle
-            .bundle
+            .bpv7
             .blocks
             .get(&1)
             .trace_expect("Bundle without payload?!")
@@ -97,11 +110,12 @@ impl Store {
 
         let mut adu_totals = payload.len() as u64;
         let mut results = FragmentSet {
-            received_at: bundle.metadata.read_only.received_at,
+            received_at: bundle.metadata.received_at(),
+            origin: bundle.metadata.origin().clone(),
             adus: [(
                 fragment_info.offset,
                 (
-                    bundle.bundle.id.clone(),
+                    bundle.id().clone(),
                     bundle
                         .metadata
                         .storage_name
@@ -136,12 +150,12 @@ impl Store {
                                 break (adu_totals >= total_adu_len).then_some(results);
                             };
 
-                            if source == bundle.bundle.id.source &&
-                                timestamp == bundle.bundle.id.timestamp &&
-                                let Some(fragment_info) = &bundle.bundle.id.fragment_info
+                            if source == bundle.id().source &&
+                                timestamp == bundle.id().timestamp &&
+                                let Some(fragment_info) = &bundle.bpv7.primary.id.fragment_info
                             {
                                 let r = bundle
-                                    .bundle
+                                    .bpv7
                                     .blocks
                                     .get(&1)
                                     .trace_expect("Bundle fragment without payload?!")
@@ -155,10 +169,14 @@ impl Store {
 
                                 adu_totals = adu_totals.saturating_add(payload.len() as u64);
 
-                                results.received_at = results.received_at.min(bundle.metadata.read_only.received_at);
+                                let received_at = bundle.metadata.received_at();
+                                if received_at < results.received_at {
+                                    results.received_at = received_at;
+                                    results.origin = bundle.metadata.origin().clone();
+                                }
                                 results.adus.insert(fragment_info.offset,
                                     (
-                                        bundle.bundle.id,
+                                        bundle.bpv7.primary.id,
                                         bundle.metadata
                                             .storage_name
                                             .trace_expect("Invalid bundle in reassembly?!"),
@@ -173,7 +191,8 @@ impl Store {
                     }
                 }
             }
-        ).1
+        )
+        .1
     }
 
     async fn reassemble(&self, results: &FragmentSet) -> Option<(Arc<str>, Bytes)> {
@@ -363,7 +382,7 @@ mod tests {
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
 
     use super::*;
-    use crate::bundle::BundleMetadata;
+    use crate::bundle::{BundleMetadata, tests::test_bundle_with_id};
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
     fn make_store() -> Store {
@@ -389,40 +408,20 @@ mod tests {
         store.save_data(Bytes::from(data.to_vec())).await
     }
 
-    /// Structural parse + reshape to the rich `crate::bundle::Bpv7Bundle`
-    /// the BPA wrapper expects. Used by tests that build bundles via
-    /// `Editor::flatten` and need to feed them back through the BPA's
-    /// `Bundle { bundle, metadata }` container; the keyed validate pipeline
-    /// (`parse_validate_with_provider`) would just do this same reshape after
-    /// redundant BPSec validation.
-    fn rich_from_bytes(data: &[u8]) -> crate::bundle::Bpv7Bundle {
-        let hardy_bpv7::parse::Parsed { bundle: raw, .. } =
+    /// Structural parse into the `hardy_bpv7::bundle::Bundle` the BPA wrapper
+    /// expects. Used by tests that build bundles via `Editor::flatten` and need
+    /// to feed them back through the BPA's `Bundle { bundle, metadata }`
+    /// container; the keyed validate pipeline (`parse_validate_with_provider`)
+    /// would just do this same parse after redundant BPSec validation.
+    fn bundle_from_bytes(data: &[u8]) -> hardy_bpv7::bundle::Bundle {
+        let hardy_bpv7::parse::Parsed { bundle, .. } =
             hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
-        crate::bundle::Bpv7Bundle {
-            id: raw.primary.id,
-            flags: raw.primary.flags,
-            crc_type: raw.primary.crc_type,
-            destination: raw.primary.destination,
-            report_to: raw.primary.report_to,
-            lifetime: raw.primary.lifetime,
-            blocks: raw.blocks,
-            ..Default::default()
-        }
+        bundle
     }
 
     async fn store_fragment_metadata(store: &Store, id: &Bpv7Id, storage_name: &Arc<str>) {
-        let bundle = Bundle {
-            bundle: crate::bundle::Bpv7Bundle {
-                id: id.clone(),
-                destination: "ipn:0.2.1".parse().unwrap(),
-                lifetime: core::time::Duration::from_secs(3600),
-                ..Default::default()
-            },
-            metadata: BundleMetadata {
-                storage_name: Some(storage_name.clone()),
-                ..Default::default()
-            },
-        };
+        let mut bundle = test_bundle_with_id(id.clone(), "ipn:0.2.1");
+        bundle.metadata.storage_name = Some(storage_name.clone());
         store.insert_metadata(&bundle).await;
     }
 
@@ -434,6 +433,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(5, (id, "unused".into(), 0..5))].into(),
         };
 
@@ -460,6 +460,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
         };
 
@@ -487,6 +488,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (8, (id1, name1, 0..5))].into(),
         };
 
@@ -512,6 +514,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..9))].into(),
         };
 
@@ -539,6 +542,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (5, (id1, name1, 0..5))].into(),
         };
 
@@ -564,6 +568,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5))].into(),
         };
 
@@ -593,6 +598,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (3, (id1, name1, 0..5))].into(),
         };
 
@@ -622,6 +628,7 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [(0, (id0, name0, 0..5)), (1 << 32, (id1, name1, 0..5))].into(),
         };
 
@@ -691,11 +698,9 @@ mod tests {
 
         // We control these bytes (they came from `Editor::flatten` of the
         // complete bundle), so a structural parse is enough — no need to
-        // run keyed BPSec validation. The BPA `Bundle { bundle, metadata }`
-        // container below still holds the rich `crate::bundle::Bpv7Bundle`,
-        // so reshape inline.
-        let bundle0 = rich_from_bytes(&frag0_data);
-        let bundle1 = rich_from_bytes(&frag1_data);
+        // run keyed BPSec validation.
+        let bundle0 = bundle_from_bytes(&frag0_data);
+        let bundle1 = bundle_from_bytes(&frag1_data);
 
         // Store fragment data
         let name0 = store_bytes(&store, &frag0_data).await;
@@ -703,13 +708,8 @@ mod tests {
 
         // Store fragment 0 metadata with the full parsed Bundle (reassemble
         // passes it to Editor::new which needs the blocks map, not just the ID)
-        let meta_bundle = Bundle {
-            bundle: bundle0.clone(),
-            metadata: BundleMetadata {
-                storage_name: Some(name0.clone()),
-                ..Default::default()
-            },
-        };
+        let mut meta_bundle = Bundle::new(bundle0.clone(), BundleMetadata::originated());
+        meta_bundle.metadata.storage_name = Some(name0.clone());
         store.insert_metadata(&meta_bundle).await;
 
         // Get payload ranges from the parsed bundles
@@ -720,9 +720,10 @@ mod tests {
 
         let fragments = FragmentSet {
             received_at: OffsetDateTime::now_utc(),
+            origin: Origin::Originated,
             adus: [
-                (0, (bundle0.id.clone(), name0, payload0_range)),
-                (5, (bundle1.id.clone(), name1, payload1_range)),
+                (0, (bundle0.primary.id.clone(), name0, payload0_range)),
+                (5, (bundle1.primary.id.clone(), name1, payload1_range)),
             ]
             .into(),
         };

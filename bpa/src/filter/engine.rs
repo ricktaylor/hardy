@@ -156,7 +156,7 @@ mod tests {
     use hardy_async::async_trait;
 
     use super::*;
-    use crate::filter::ReadResult;
+    use crate::{bundle::tests::test_bundle, filter::ReadResult};
 
     struct PassFilter;
 
@@ -190,10 +190,7 @@ mod tests {
             let engine = engine.clone();
             handles.push(
                 hardy_async::spawn!(caller_pool, "outer_task", async move {
-                    let bundle = Bundle {
-                        bundle: Default::default(),
-                        metadata: Default::default(),
-                    };
+                    let bundle = test_bundle("ipn:1.0", "ipn:99.0");
                     let result = engine
                         .exec(
                             Hook::Ingress,
