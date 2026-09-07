@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod ping;

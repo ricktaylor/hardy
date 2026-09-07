@@ -1,0 +1,543 @@
+//! Integration tests for the structural parser — `hardy_bpv7::parse`'s
+//! public-API acceptance and rejection decisions on wire bytes. Keyed
+//! BPSec pipeline composition lives in `tests/checks.rs`; the streaming
+//! push-parser in `tests/streaming.rs`.
+
+use core::iter::repeat_n;
+
+use bytes::Bytes;
+use hardy_bpv7::{Error, block, builder, crc, creation_timestamp, hop_info, parse};
+// Aliased: collides with the bpv7 `Error` imported above.
+use hardy_cbor::decode::Error as CborError;
+use hex_literal::hex;
+
+// Build a minimal valid bundle and return its serialised bytes.
+fn build_minimal_bundle() -> Box<[u8]> {
+    builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap()
+        .1
+}
+
+// RFC 9171 §4.3.2 is categorical for block-type-specific data: "a single
+// definite-length CBOR byte string, i.e., a CBOR byte string that is not of
+// indefinite length" — a specific override of §4.1's general
+// "indefinite-length items are not prohibited" carve-out. The parser rejects
+// an indefinite-length data field by design and deliberately does not
+// exercise §4.1's "MAY accept ... and transform it into conformant BP
+// structure" robustness clause.
+#[test]
+fn indefinite_length_block_data_is_rejected() {
+    // Primary (ipn EIDs, no CRC) + payload block [1, 1, flags 0, crc 0, data]
+    // + outer break.
+    let definite = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85010100004548454c4c4f" // data = definite-length bstr "HELLO"
+        "ff"
+    );
+    // Byte-identical except the payload data is an indefinite-length byte
+    // string of two chunks, "HEL" + "LO".
+    let indefinite = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "85010100005f4348454c424c4fff" // data = 0x5f, "HEL", "LO", break
+        "ff"
+    );
+
+    parse::parse(Bytes::copy_from_slice(&definite)).expect("the definite-length twin must parse");
+
+    let Err(err) = parse::parse(Bytes::copy_from_slice(&indefinite)) else {
+        panic!("indefinite-length block data must be rejected");
+    };
+    let Error::InvalidField { source, .. } = &err else {
+        panic!("expected InvalidField, got {err:?}");
+    };
+    assert!(
+        matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+        "expected NotCanonical, got {source:?}"
+    );
+}
+
+// Requirement: LLR 1.1.15
+#[test]
+fn invalid_flags() {
+    // From Stephan Havermans testing. The bundle's primary block has a
+    // null source EID and one of its extension blocks has
+    // `report_on_failure` set — forbidden by RFC 9171 §4.2.3.
+    //
+    // `parse` catches this during structural parsing and bails before a
+    // `Bundle` is constructed, so the error propagates as a bare
+    // `Err(Error::InvalidFlags)`.
+    const BUNDLE: &[u8] = &hex!(
+        "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
+    );
+    assert!(matches!(
+        parse::parse(Bytes::from_static(BUNDLE)),
+        Err(Error::InvalidFlags)
+    ));
+}
+
+// NOTE: LLR 1.1.33 (Bundle Age required when Creation Time is zero) is enforced
+// by the BPA rfc9171-filter, not the parser. The parser accepts such bundles for
+// compatibility with RFC 9173 test vectors.
+
+// Requirement: LLR 1.1.34
+#[test]
+fn hop_count_extraction() {
+    let hop = hop_info::HopInfo {
+        limit: 30,
+        count: 0,
+    };
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_hop_count(&hop)
+        .with_payload("Hello".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    // Decode the HopCount block body directly via its bpv7 CBOR type.
+    let hc_block = parsed
+        .bundle
+        .blocks
+        .values()
+        .find(|b| matches!(b.block_type, block::Type::HopCount))
+        .expect("HopCount block present");
+    let body = hc_block
+        .payload(&parsed.data)
+        .expect("HopCount body in bundle");
+    let hop_count = hardy_cbor::decode::parse::<hop_info::HopInfo>(body).unwrap();
+    assert_eq!(hop_count.limit, 30);
+    assert_eq!(hop_count.count, 0);
+}
+
+// Requirement: LLR 1.1.19
+#[test]
+fn extension_block_parsing() {
+    // Build a bundle with hop count — verifies HopCount extension is parsed
+    let hop = hop_info::HopInfo {
+        limit: 10,
+        count: 3,
+    };
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_hop_count(&hop)
+        .with_payload("Test".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+
+    // HopCount block present (interpretation into a typed field is a
+    // hardy-bpa concern — here we just confirm the block parsed).
+    assert!(
+        parsed
+            .bundle
+            .blocks
+            .values()
+            .any(|b| matches!(b.block_type, block::Type::HopCount))
+    );
+
+    // Payload block exists
+    assert!(parsed.bundle.blocks.contains_key(&1));
+}
+
+// Requirement: LLR 1.1.12
+#[test]
+fn truncated_bundle() {
+    let data = build_minimal_bundle();
+
+    // Truncation detection lives at the CBOR layer — test it directly via
+    // `parse` rather than the canonicalize/Parsed orchestrators (whose
+    // truncation behaviour is just whatever the parser returns). Every
+    // truncation point surfaces as a CBOR shortfall.
+    for len in [0, 1, 2, 5, data.len() / 2, data.len() - 1] {
+        assert!(
+            matches!(
+                parse::parse(Bytes::copy_from_slice(&data[..len])),
+                Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+            ),
+            "parse: truncated at {len} bytes should report a CBOR shortfall"
+        );
+    }
+}
+
+// A large payload (> chunk_size) that is truncated must not parse as
+// complete. The streaming-fallback branch in parse_blocks returns Ok
+// even when the buffer is short; parse() must detect and reject it.
+#[test]
+fn truncated_large_payload() {
+    // 50 000-byte payload triggers the streaming fallback whenever the
+    // buffer is truncated (the shortfall greatly exceeds chunk_size).
+    let (_, full_data) =
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+
+    // Confirm the complete bundle parses successfully.
+    assert!(
+        parse::parse(Bytes::copy_from_slice(&full_data)).is_ok(),
+        "complete large-payload bundle should parse"
+    );
+
+    // Truncate to just the primary block + payload block header (well before
+    // the payload body ends). parse() must report the shortfall, not Ok.
+    let truncated = &full_data[..200];
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(truncated)),
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+        ),
+        "truncated large-payload bundle must not parse as complete"
+    );
+}
+
+// A payload byte-string whose declared length pushes the payload block's
+// `extent.end` to exactly `usize::MAX`, then truncated so the streaming
+// fallback is taken. parse()'s post-finish completeness check must report a
+// truncation error, not overflow on `payload_end + 1`.
+#[test]
+fn crafted_max_extent_payload() {
+    let (_, good) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload("Hi".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // Locate the payload block start by parsing — the primary block's size
+    // varies with the creation-timestamp encoding, so it can't be hardcoded.
+    // Then graft a fresh CRC-32 payload block header (`86 01 01 04 02 5b` + an
+    // 8-byte length) declaring a byte string whose length pushes the block's
+    // extent.end to exactly u64::MAX:
+    //   extent.end = block_start + header(14) + len + crc_trailer(5)
+    // so len = u64::MAX - block_start - 19.
+    let block_start = parse::parse(Bytes::copy_from_slice(&good))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start;
+    let len = u64::MAX - block_start - 19;
+
+    let mut evil = good[..block_start as usize].to_vec();
+    evil.extend_from_slice(&[0x86, 0x01, 0x01, 0x04, 0x02, 0x5b]);
+    evil.extend_from_slice(&len.to_be_bytes());
+
+    // Must return a truncation error, not panic on overflow.
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&evil)),
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+        ),
+        "crafted max-extent payload must be rejected, not overflow"
+    );
+}
+
+// Requirement: Trailing Data
+#[test]
+fn trailing_data() {
+    let data = build_minimal_bundle();
+    let mut with_trailing = data.to_vec();
+    with_trailing.push(0xFF);
+
+    // Trailing data is detected by `parse::finish` (payload extent doesn't
+    // reach the end of `data`). The check lives at the structural-parse
+    // layer; every higher orchestrator just propagates the resulting
+    // `Err(AdditionalData)`.
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&with_trailing)),
+            Err(Error::AdditionalData)
+        ),
+        "parse with trailing data should return Err(AdditionalData)"
+    );
+}
+
+// Requirement: LLR 1.1.14
+//
+// RFC 9171 §4.1 (normative) requires the bundle to be a CBOR
+// indefinite-length array — the only legal outer-array head byte is 0x9F.
+// Appendix B's CDDL `bpv7_start = bundle / #6.55799(bundle)` permits a
+// self-describing tag wrapper but is explicitly informational and
+// subordinate to the textual spec; the parser therefore rejects the tag
+// form outright rather than treating it as a non-canonical encoding.
+#[test]
+fn non_canonical_rewriting_rejects_outer_tag() {
+    let data = build_minimal_bundle();
+    assert_eq!(
+        data[0], 0x9F,
+        "Bundle should start with indefinite array marker"
+    );
+
+    let mut tagged = Vec::with_capacity(data.len() + 3);
+    tagged.extend_from_slice(&[0xD9, 0xD9, 0xF7]); // Tag 55799
+    tagged.extend_from_slice(&data);
+
+    // The tag-wrapped form is rejected at the parse layer's first-byte
+    // gate (the first byte isn't 0x9F), and the error reports the byte.
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&tagged)),
+        Err(Error::NotABundle(0xD9))
+    ));
+}
+
+// RFC 9171 §4.1: the only legal outer-array head byte is 0x9F. The
+// first-byte gate classifies everything else from that single byte, with
+// error variants that carry no owned data — adversarial garbage is rejected
+// without a heap allocation. Only the head byte is stamped below; the gate
+// never reads further.
+#[test]
+fn first_byte_gate_classifies_non_bundles() {
+    let mut data = build_minimal_bundle().into_vec();
+
+    // A definite-length outer array is the §4.1 canonical violation.
+    data[0] = 0x82;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::NotCanonical)
+    ));
+
+    // 0x06 is the version byte opening an RFC 5050 (BPv6) primary block.
+    data[0] = 0x06;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::PossibleBpv6)
+    ));
+
+    // A CBOR map head cannot start a bundle at all; the error reports the
+    // offending byte.
+    data[0] = 0xA1;
+    assert!(matches!(
+        parse::parse(Bytes::copy_from_slice(&data)),
+        Err(Error::NotABundle(0xA1))
+    ));
+}
+
+// RFC 9171 §4.1 permits no CBOR tags on a block array, so a tag head at a
+// block position can never become valid input. The block gate refuses a
+// tag run from its first byte without reading it — adversarial garbage at
+// the BPA's core ingress must not buy per-tag work or a per-tag
+// allocation on the reject path (the one constant field-label box
+// aside) — and classifies it as the §4.1 violation it is.
+// (The bounded-work property itself is not observable from here; this
+// pins the classification that provides it.)
+#[test]
+fn block_gate_rejects_tag_head_as_not_canonical() {
+    let data = build_minimal_bundle();
+    let block_start = parse::parse(Bytes::copy_from_slice(&data))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start as usize;
+
+    // A single tag and a long run classify identically: the gate never
+    // reads past the first byte of the run.
+    for run in [1, 65_536] {
+        let mut evil = data[..block_start].to_vec();
+        evil.extend(repeat_n(0xC0, run));
+        evil.extend_from_slice(&data[block_start..]);
+
+        let Err(Error::InvalidField {
+            field: "block",
+            source,
+        }) = parse::parse(Bytes::from(evil))
+        else {
+            panic!("a tag run of {run} at a block position must fail the block gate");
+        };
+        assert!(
+            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            "expected NotCanonical, got {source:?}"
+        );
+    }
+}
+
+// The same enforcement covers every scalar field: the canonical field
+// helpers refuse a tag run from its first byte, classified as
+// `NotCanonical` and labelled with the field it preceded.
+#[test]
+fn tagged_block_field_is_rejected_as_not_canonical() {
+    let data = build_minimal_bundle();
+    let block_start = parse::parse(Bytes::copy_from_slice(&data))
+        .unwrap()
+        .bundle
+        .blocks
+        .get(&1)
+        .expect("payload block")
+        .extent
+        .start as usize;
+
+    // The payload block opens [type, number, ...]: 0x86 (6 items, with
+    // CRC) 0x01 0x01. Tag the block number.
+    assert_eq!(&data[block_start..block_start + 3], &[0x86, 0x01, 0x01]);
+    let mut evil = data.to_vec();
+    evil.insert(block_start + 2, 0xC0);
+
+    // Field errors inside a block header carry two labels: the failing
+    // field, wrapped again as the failing block.
+    let Err(Error::InvalidField {
+        field: "block",
+        source,
+    }) = parse::parse(Bytes::from(evil))
+    else {
+        panic!("a tagged block number must fail its field parse");
+    };
+    let Some(Error::InvalidField {
+        field: "block number",
+        source: inner,
+    }) = source.downcast_ref::<Error>()
+    else {
+        panic!("expected the inner error to name the block number, got {source:?}");
+    };
+    assert!(
+        matches!(inner.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+        "expected NotCanonical, got {inner:?}"
+    );
+}
+
+// RFC 9171 Appendix B permits an optional `#6.24` tag (CBOR-embedded
+// content) on block-type-specific data — the one grammar position where a
+// tag is legal at all. `D8 18` is the only shortest-form head for tag 24,
+// so a legally tagged block body must parse, with the data extent
+// covering the byte-string contents alone.
+#[test]
+fn tag24_block_data_is_accepted() {
+    // The same primary block as `indefinite_length_block_data_is_rejected`
+    // (ipn EIDs, no CRC anywhere, so the payload block can be crafted
+    // without recomputing a CRC), with the payload data tagged `#6.24`.
+    let tagged = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "8501010000d8184548454c4c4f" // data = #6.24(bstr "HELLO")
+        "ff"
+    );
+
+    let parsed = parse::parse(Bytes::copy_from_slice(&tagged))
+        .expect("a #6.24-tagged block body must parse");
+    let payload = parsed.bundle.blocks.get(&1).expect("payload block");
+    assert_eq!(
+        payload.payload(&parsed.data).expect("payload in bundle"),
+        b"HELLO",
+        "the data extent must cover the byte-string contents, not the tag"
+    );
+}
+
+// Appendix B permits `#6.24` and nothing else on block data: any other
+// tag head — including tag 24 in a non-shortest form — and any second
+// consecutive tag is a §4.1 canonical violation, classified from at most
+// three bytes without reading a tag run.
+#[test]
+fn non_tag24_block_data_head_is_rejected() {
+    for (bad_head, why) in [
+        (hex!("c0").as_slice(), "#6.0"),
+        (hex!("d817").as_slice(), "#6.23 in non-shortest form"),
+        (hex!("d90018").as_slice(), "#6.24 in non-shortest form"),
+        (hex!("d818c0").as_slice(), "#6.24 followed by a second tag"),
+    ] {
+        let mut evil = hex!(
+            "9f88070000820282010282028202018202820201820018281a000f4240"
+            "8501010000" // payload block up to the data field
+        )
+        .to_vec();
+        evil.extend_from_slice(bad_head);
+        evil.extend_from_slice(&hex!("4548454c4c4f")); // bstr "HELLO"
+        evil.push(0xFF);
+
+        let Err(Error::InvalidField {
+            field: "block",
+            source,
+        }) = parse::parse(Bytes::from(evil))
+        else {
+            panic!("{why} on block data must fail the block-data gate");
+        };
+        assert!(
+            matches!(source.downcast_ref::<Error>(), Some(Error::NotCanonical)),
+            "{why}: expected NotCanonical, got {source:?}"
+        );
+    }
+}
+
+// A buffer ending exactly on the lone `0xD8` of a possible `D8 18`
+// (#6.24) block-data head is a truncation, not a canonicality verdict:
+// the byte that decides between the two has not arrived yet, so the
+// classification must be `NeedMoreData` for a streamed caller to resume.
+#[test]
+fn truncated_tag24_block_data_head_needs_more() {
+    let truncated = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "8501010000d8" // payload block cut after the first tag-head byte
+    );
+    assert!(
+        matches!(
+            parse::parse(Bytes::copy_from_slice(&truncated)),
+            Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
+        ),
+        "a lone trailing 0xD8 must report a CBOR shortfall, not NotCanonical"
+    );
+}
+
+// Requirement: LLR 1.1.22
+#[test]
+fn crc16_bundle() {
+    let (_, data) = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_crc_type(crc::CrcType::CRC16_X25)
+        .with_payload("CRC16 test".as_bytes().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap();
+
+    // Parse and verify CRC type via parse (primary block field).
+    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    assert!(
+        matches!(parsed.bundle.primary.crc_type, crc::CrcType::CRC16_X25),
+        "CRC type should be CRC-16"
+    );
+}
+
+// Requirement: LLR 1.1.1
+#[test]
+fn ccsds_compliance() {
+    // CCSDS 734.20-O-1 requires BPv7 per RFC 9171:
+    // - Indefinite-length outer array
+    // - Version 7 in primary block
+    // - Valid CRC on primary block
+    // - Payload block present
+    let data = build_minimal_bundle();
+
+    // Indefinite-length array marker
+    assert_eq!(data[0], 0x9F, "Bundle must use indefinite-length array");
+
+    // Break code at end
+    assert_eq!(
+        data[data.len() - 1],
+        0xFF,
+        "Bundle must end with break code"
+    );
+
+    // Parse and verify structural compliance via primitives.
+    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    assert!(
+        parsed.bundle.blocks.contains_key(&1),
+        "Payload block (block 1) must be present"
+    );
+    assert!(
+        !matches!(parsed.bundle.primary.crc_type, crc::CrcType::None),
+        "Primary block must have a CRC"
+    );
+}
+
+// Requirement: RFC 9171 §4.1 — the payload block is the last block and one
+// break byte closes the bundle, so the encoded length is a pure function
+// of the block index, for built and parsed bundles alike.
+#[test]
+fn encoded_len_is_the_wire_length() {
+    let (bundle, data) =
+        builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload("Hello".as_bytes().into())
+            .build(creation_timestamp::CreationTimestamp::now())
+            .unwrap();
+    assert_eq!(bundle.encoded_len(), data.len() as u64);
+
+    let parsed = parse::parse(Bytes::from(data)).expect("round-trip parse");
+    assert_eq!(parsed.bundle.encoded_len(), parsed.data.len() as u64);
+}

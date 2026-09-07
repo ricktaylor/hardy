@@ -15,15 +15,15 @@ All LLRs assigned to this module pass (15 pass, 2 N/A).
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1.1.1** | CCSDS Bundle Protocol compliance | Pass | `parse.rs::ccsds_compliance` | CLI CREATE + VALID suites | 1.2 |
 | **1.1.12** | Incomplete item detection | Pass | `parse.rs::truncated_bundle` | — | 1.2 |
-| **1.1.14** | Bundle rewriting indication | Pass | `parse.rs::non_canonical_rewriting` | REWRITE-01 | 1.2 |
-| **1.1.15** | Primary block validation | Pass | `parse.rs::tests` (invalid flags) | VALID-01 | 1.2 |
+| **1.1.14** | Bundle rewriting indication | Pass | `parse.rs::non_canonical_rewriting_rejects_outer_tag` | REWRITE-01 | 1.2 |
+| **1.1.15** | Primary block validation | Pass | `parse.rs::invalid_flags` | VALID-01 | 1.2 |
 | **1.1.19** | Extension block parsing | Pass | `parse.rs::extension_block_parsing` | EXT-02, EXT-05, add/remove-block | 1.2 |
 | **1.1.21** | CRC validation | Pass | `primary_block.rs::valid_crc`, `invalid_crc` | VALID-01 | 1.2 |
 | **1.1.22** | CRC types (16/32) | Pass | `primary_block.rs::crc_types_supported`, `parse.rs::crc16_bundle` | CREATE-01 (CRC-32) | 1.2 |
 | **1.1.23** | IPN 3-element CBOR encoding | Pass | `eid/cbor_tests.rs` | — | 1.2 |
 | **1.1.24** | IPN legacy 2-element detection | Pass | `eid/cbor_tests.rs` | — | 1.2 |
 | **1.1.25** | Valid canonical bundle generation | Pass | `builder.rs::test_builder`, `test_template` | CREATE-01..03, PIPE-01 | 1.2 |
-| **1.1.30** | Rewriting rules for unknown blocks | Pass | `parse.rs::unknown_block_discard` | REWRITE-01 | 1.2 |
+| **1.1.30** | Rewriting rules for unknown blocks | Pass | `checks.rs::unknown_block_discard` | REWRITE-01 | 1.2 |
 | **1.1.33** | Bundle Age for expiry | N/A | Enforced by BPA rfc9171-filter, not parser | — | 1.2 |
 | **1.1.34** | Hop Count processing | Pass | `parse.rs::hop_count_extraction` | EXT-02 (add hop-count) | 1.2 |
 | **2.1.1** | BPSec integrity/confidentiality | Pass | 18 tests in `tests/rfc9173.rs` | SIGN + ENC suites (12 tests) | 2.3, 2.4 |

@@ -11,6 +11,7 @@ use hardy_bpv7::{
     creation_timestamp, parse,
     parse::{BundleParser, ParserProgress, PayloadTail},
 };
+use hex_literal::hex;
 // A bundle with a payload far larger than any sane parser chunk size, so the
 // streaming fallback fires once the payload header is passed.
 fn large_payload_bundle() -> Box<[u8]> {
@@ -369,4 +370,51 @@ fn byte_by_byte_push_reaches_ready() {
     );
     let parsed = parser.finish(whole).unwrap();
     assert_eq!(parsed.bundle.primary.id.source, "ipn:1.0".parse().unwrap());
+}
+
+// Regression: a valid `#6.24`-tagged block body whose `D8 18` head straddles
+// a chunk boundary. When a push ends exactly on the lone `0xD8`, the
+// block-data tag guard must report the shortfall as `NeedMore` — not
+// misclassify the half-arrived head as a permanent `NotCanonical` reject and
+// drop an otherwise-valid bundle. Byte-by-byte pushes force every boundary,
+// including that one.
+#[test]
+fn byte_by_byte_push_of_tag24_block_data_reaches_ready() {
+    // A hand-crafted bundle (no CRCs) whose payload data is
+    // #6.24(bstr "HELLO") — Hardy's own encoder never emits the tag, so
+    // this is receive-side interop input by construction.
+    let full = hex!(
+        "9f88070000820282010282028202018202820201820018281a000f4240"
+        "8501010000d8184548454c4c4f"
+        "ff"
+    );
+
+    let mut parser = BundleParser::default();
+    let mut ready = None;
+    for (i, b) in full.iter().enumerate() {
+        match parser
+            .push(Bytes::copy_from_slice(&[*b]))
+            .unwrap_or_else(|e| panic!("push of byte {i} must not hard-fail: {e:?}"))
+        {
+            ParserProgress::NeedMore(_) => {
+                assert!(
+                    i + 1 < full.len(),
+                    "parser still hungry after the last byte"
+                )
+            }
+            ParserProgress::Ready(whole) => {
+                ready = Some(whole);
+                break;
+            }
+            ParserProgress::Partial { .. } => panic!("small payload must not go Partial"),
+        }
+    }
+
+    let whole = ready.expect("parser should reach Ready at the final byte");
+    let parsed = parser.finish(whole).unwrap();
+    let payload = parsed.bundle.blocks.get(&1).expect("payload block");
+    assert_eq!(
+        payload.payload(&parsed.data).expect("payload in bundle"),
+        b"HELLO"
+    );
 }

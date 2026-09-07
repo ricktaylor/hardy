@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
+
 ### Changed
 - **BREAKING (behaviour):** non-canonical bundle framing is now a hard parse error (`Error::NotCanonical`). The parser no longer records non-shortest framing for later repair: `bundle validate` loses its "non-canonical but semantically valid" diagnostic, and `bundle rewrite` no longer repairs framing (its repair now covers PreviousNode/HopCount bodies only).
+- **BREAKING:** new variants `Error::PossibleBpv6` and `Error::NotABundle(u8)` on the non-`#[non_exhaustive]` `Error` enum can break exhaustive `match` arms. The classification of data that cannot start a BPv7 bundle also changed: the first-byte gate now returns `PossibleBpv6` (CBOR unsigned integer 6, the opening byte of an RFC 5050 primary block), `NotCanonical` (definite-length outer array), or `NotABundle` carrying the offending first byte, where previous releases returned `InvalidCBOR(IncorrectType(..))`.
+- CBOR tags at grammar positions that permit none — every scalar and structured field, and the block-array head — are now rejected from the first byte of the tag run, without reading it (decoded via the new `hardy-cbor` `Untagged` wrapper; its cbor-level `UnexpectedTag` is translated to each error domain's `NotCanonical`, so the observable classification is unchanged from previous releases, which read the entire run before rejecting). The one position permitting a tag (`#6.24` on block data) enforces the same fixed-byte bound by hand. This keeps ingress rejection of adversarial tag runs free of per-tag work and per-tag allocation (a scalar-field reject still boxes its one constant field-label error).
 
 ## [0.6.0]
 

@@ -38,7 +38,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     let rfc9171_filter = hardy_bpa::filter::rfc9171::Rfc9171ValidityFilter::new()
         .primary_block_integrity(!args.lax_rfc9171)
         .bundle_age_required(!args.lax_rfc9171);
-    let bpa = std::sync::Arc::new(
+    let bpa = alloc::sync::Arc::new(
         hardy_bpa::bpa::Bpa::builder()
             .status_reports(true)
             .node_ids(node_ids)
@@ -46,7 +46,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
                 hardy_bpa::filter::Hook::Ingress,
                 "rfc9171-validity",
                 &[],
-                hardy_bpa::filter::Filter::Read(std::sync::Arc::new(rfc9171_filter)),
+                hardy_bpa::filter::Filter::Read(alloc::sync::Arc::new(rfc9171_filter)),
             )
             .build()
             .await
@@ -56,7 +56,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
     // Add a default 'drop' route, we don't want to cache locally
     bpa.register_routing_agent(
         "ping".to_string(),
-        std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+        alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
             "*:**".parse().unwrap(),
             hardy_bpa::routing::RouteAction::Drop(Some(
                 hardy_bpv7::status_report::ReasonCode::NoKnownRouteToDestinationFromHere,
@@ -78,7 +78,7 @@ async fn exec_async(args: &Command) -> anyhow::Result<ExitCode> {
 
 async fn exec_builtin_cla(
     args: &Command,
-    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &alloc::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
     match args.cla.as_str() {
         "tcpclv4" => {}
@@ -108,7 +108,7 @@ async fn exec_builtin_cla(
         );
     }
 
-    let cla = std::sync::Arc::new(
+    let cla = alloc::sync::Arc::new(
         builder
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create CLA '{}': {e}", args.cla))?,
@@ -147,7 +147,7 @@ async fn exec_builtin_cla(
     if args.destination.service().is_some() {
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
@@ -162,7 +162,7 @@ async fn exec_builtin_cla(
 
 async fn exec_external_cla(
     args: &Command,
-    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &alloc::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
     // Start gRPC server with CLA service
     let tasks = hardy_async::TaskPool::new();
@@ -236,7 +236,7 @@ async fn exec_external_cla(
 
         bpa.register_routing_agent(
             "ping-target".to_string(),
-            std::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
+            alloc::sync::Arc::new(hardy_bpa::routing::StaticRoutingAgent::new(&[(
                 args.destination.clone().into(),
                 hardy_bpa::routing::RouteAction::Via(peer.into()),
                 1,
@@ -260,18 +260,50 @@ async fn exec_external_cla(
 
 async fn run_ping(
     args: &Command,
-    bpa: &std::sync::Arc<hardy_bpa::bpa::Bpa>,
+    bpa: &alloc::sync::Arc<hardy_bpa::bpa::Bpa>,
 ) -> anyhow::Result<ExitCode> {
     let tasks = hardy_async::TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    let stats = exec_inner(args, bpa.as_ref(), tasks.cancel_token()).await?;
+    let service = alloc::sync::Arc::new(service::Service::new(args));
 
+    // Set by the deadline task alone, so an expired deadline can be told apart
+    // from an operator's Ctrl+C when choosing the exit code — both cancel the
+    // same token, but only the former is a failure.
+    let timed_out = alloc::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // A session deadline is a scheduled Ctrl+C, so drive it through the same
+    // cancellation token the session already observes. Racing the session future
+    // against a sleep would instead drop it wherever it was suspended, leaving a
+    // bundle on the wire but never recorded. Waiting on the token rather than
+    // sleeping bare also lets this task exit as soon as the pool shuts down
+    // after a normal run.
+    if let Some(t) = args.timeout {
+        let cancel = tasks.cancel_token().clone();
+        let timed_out = timed_out.clone();
+        hardy_async::spawn!(tasks, "ping_deadline", async move {
+            if tokio::time::timeout(*t, cancel.cancelled()).await.is_err() {
+                timed_out.store(true, std::sync::atomic::Ordering::Relaxed);
+                cancel.cancel();
+            }
+        });
+    }
+
+    exec_inner(args, bpa.as_ref(), tasks.cancel_token(), service.clone()).await?;
+
+    let stats = service.statistics();
+    service.print_summary(&stats);
     tasks.shutdown().await;
 
     bpa.shutdown().await;
 
-    if stats.received > 0 {
+    // iputils `ping -c N -w D` exits 1 when the deadline arrives having received
+    // fewer than N replies, so a run the deadline truncated is a failure even
+    // when everything it managed to send was answered.
+    let truncated = timed_out.load(std::sync::atomic::Ordering::Relaxed)
+        && args.count.is_some_and(|count| stats.received < count);
+
+    if stats.received > 0 && !truncated {
         Ok(ExitCode::Success)
     } else {
         Ok(ExitCode::NoResponse)
@@ -282,8 +314,8 @@ async fn exec_inner(
     args: &Command,
     bpa: &dyn BpaRegistration,
     cancel_token: &tokio_util::sync::CancellationToken,
-) -> anyhow::Result<service::Statistics> {
-    let service = std::sync::Arc::new(service::Service::new(args));
+    service: alloc::sync::Arc<service::Service>,
+) -> anyhow::Result<()> {
     if let Some(service_id) = args.source.as_ref().and_then(|eid| eid.service()) {
         bpa.register_service(service_id, service.clone()).await
     } else {
@@ -322,11 +354,7 @@ async fn exec_inner(
             eprintln!("Timeout waiting for responses");
         }
     }
-
-    // Print summary statistics
-    service.print_summary();
-
-    Ok(service.statistics())
+    Ok(())
 }
 
 pub fn exec(args: Command) -> ! {

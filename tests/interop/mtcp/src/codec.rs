@@ -46,15 +46,15 @@ impl tokio_util::codec::Decoder for MtcpCodec {
         match hardy_cbor::decode::parse_value(src, |value, _shortest, tags| {
             if !tags.is_empty() {
                 return Err(hardy_cbor::decode::Error::IncorrectType(
-                    "Untagged Byte String".into(),
-                    "Tagged value".into(),
+                    "Untagged Byte String",
+                    value.item_type(tags),
                 ));
             }
             match value {
                 hardy_cbor::decode::Value::Bytes(range) => Ok(range),
                 other => Err(hardy_cbor::decode::Error::IncorrectType(
-                    "Byte String".into(),
-                    other.type_name(false),
+                    "Byte String",
+                    other.item_type(tags),
                 )),
             }
         }) {

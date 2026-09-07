@@ -240,35 +240,34 @@ impl Service {
     }
 
     // Print summary statistics in IP ping format.
-    pub fn print_summary(&self) {
+    //
+    // Takes the snapshot the caller also derives the exit code from, so that a
+    // response arriving mid-teardown cannot make the two disagree.
+    pub fn print_summary(&self, stats: &Statistics) {
         let state = self.state.lock().trace_expect("Failed to lock state mutex");
 
         println!();
         println!("--- {} ping statistics ---", self.destination);
 
-        if state.stats.corrupted > 0 {
+        if stats.corrupted > 0 {
             println!(
                 "{} bundles transmitted, {} received, {} corrupted, {:.0}% loss",
-                state.stats.sent,
-                state.stats.received,
-                state.stats.corrupted,
-                state.stats.loss_percent()
+                stats.sent,
+                stats.received,
+                stats.corrupted,
+                stats.loss_percent()
             );
         } else {
             println!(
                 "{} bundles transmitted, {} received, {:.0}% loss",
-                state.stats.sent,
-                state.stats.received,
-                state.stats.loss_percent()
+                stats.sent,
+                stats.received,
+                stats.loss_percent()
             );
         }
 
-        if let (Some(min), Some(avg), Some(max)) = (
-            state.stats.min_rtt,
-            state.stats.avg_rtt(),
-            state.stats.max_rtt,
-        ) {
-            let stddev = state.stats.stddev_rtt().unwrap_or_default();
+        if let (Some(min), Some(avg), Some(max)) = (stats.min_rtt, stats.avg_rtt(), stats.max_rtt) {
+            let stddev = stats.stddev_rtt().unwrap_or_default();
             println!(
                 "rtt min/avg/max/stddev = {}/{}/{}/{}",
                 humantime::format_duration(min),

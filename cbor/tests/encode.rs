@@ -1,85 +1,105 @@
 use hardy_cbor::encode::*;
 use hex_literal::hex;
 
-#[test]
-fn rfc_tests() {
-    // RFC 8949, Appendix A:
-    // https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
+// Encodes a single value and returns just the bytes, dropping the
+// `ToCbor::Result` payload that byte-only assertions don't care about.
+fn enc<T>(value: &T) -> Vec<u8>
+where
+    T: ToCbor + ?Sized,
+{
+    emit(value).0
+}
 
-    assert_eq!(*emit(&0).0, hex!("00"));
-    assert_eq!(*emit(&1).0, hex!("01"));
-    assert_eq!(*emit(&10).0, hex!("0a"));
-    assert_eq!(*emit(&23).0, hex!("17"));
-    assert_eq!(*emit(&24).0, hex!("1818"));
-    assert_eq!(*emit(&25).0, hex!("1819"));
-    assert_eq!(*emit(&100).0, hex!("1864"));
-    assert_eq!(*emit(&1000).0, hex!("1903e8"));
-    assert_eq!(*emit(&1000000).0, hex!("1a000f4240"));
-    assert_eq!(*emit(&1000000000000u64).0, hex!("1b000000e8d4a51000"));
-    assert_eq!(
-        *emit(&18446744073709551615u64).0,
-        hex!("1bffffffffffffffff")
-    );
+// The rfc_* tests below cover RFC 8949, Appendix A:
+// https://www.rfc-editor.org/rfc/rfc8949.html#section-appendix.a
+
+#[test]
+fn rfc_unsigned_integers() {
+    assert_eq!(enc(&0), hex!("00"));
+    assert_eq!(enc(&1), hex!("01"));
+    assert_eq!(enc(&10), hex!("0a"));
+    assert_eq!(enc(&23), hex!("17"));
+    assert_eq!(enc(&24), hex!("1818"));
+    assert_eq!(enc(&25), hex!("1819"));
+    assert_eq!(enc(&100), hex!("1864"));
+    assert_eq!(enc(&1000), hex!("1903e8"));
+    assert_eq!(enc(&1000000), hex!("1a000f4240"));
+    assert_eq!(enc(&1000000000000u64), hex!("1b000000e8d4a51000"));
+    assert_eq!(enc(&18446744073709551615u64), hex!("1bffffffffffffffff"));
 
     /* We do not support BIGNUMs */
-    //assert_eq!(*emit(18446744073709551616).0, hex!("c249010000000000000000"));
-    //assert_eq!(*emit(-18446744073709551616).0, hex!("3bffffffffffffffff"));
-    //assert_eq!(*emit(-18446744073709551617).0, hex!("c349010000000000000000"));
+    //assert_eq!(enc(18446744073709551616), hex!("c249010000000000000000"));
+    //assert_eq!(enc(-18446744073709551616), hex!("3bffffffffffffffff"));
+    //assert_eq!(enc(-18446744073709551617), hex!("c349010000000000000000"));
+}
 
-    assert_eq!(*emit(&-1).0, hex!("20"));
-    assert_eq!(*emit(&-10).0, hex!("29"));
-    assert_eq!(*emit(&-100).0, hex!("3863"));
-    assert_eq!(*emit(&-1000).0, hex!("3903e7"));
-    assert_eq!(*emit(&0.0).0, hex!("f90000"));
-    assert_eq!(*emit(&-0.0).0, hex!("f98000"));
-    assert_eq!(*emit(&1.0).0, hex!("f93c00"));
-    assert_eq!(*emit(&1.1).0, hex!("fb3ff199999999999a"));
-    assert_eq!(*emit(&1.5).0, hex!("f93e00"));
-    assert_eq!(*emit(&65504.0).0, hex!("f97bff"));
-    assert_eq!(*emit(&100000.0).0, hex!("fa47c35000"));
-    assert_eq!(*emit(&3.4028234663852886e+38).0, hex!("fa7f7fffff"));
-    assert_eq!(*emit(&1.0e+300).0, hex!("fb7e37e43c8800759c"));
-    assert_eq!(*emit(&5.960464477539063e-8).0, hex!("f90001"));
-    assert_eq!(*emit(&0.00006103515625).0, hex!("f90400"));
-    assert_eq!(*emit(&-4.0).0, hex!("f9c400"));
-    assert_eq!(*emit(&-4.1).0, hex!("fbc010666666666666"));
-    assert_eq!(*emit(&half::f16::INFINITY).0, hex!("f97c00"));
-    assert_eq!(*emit(&half::f16::NAN).0, hex!("f97e00"));
-    assert_eq!(*emit(&half::f16::NEG_INFINITY).0, hex!("f9fc00"));
+#[test]
+fn rfc_negative_integers() {
+    assert_eq!(enc(&-1), hex!("20"));
+    assert_eq!(enc(&-10), hex!("29"));
+    assert_eq!(enc(&-100), hex!("3863"));
+    assert_eq!(enc(&-1000), hex!("3903e7"));
+}
+
+#[test]
+fn rfc_floats() {
+    assert_eq!(enc(&0.0), hex!("f90000"));
+    assert_eq!(enc(&-0.0), hex!("f98000"));
+    assert_eq!(enc(&1.0), hex!("f93c00"));
+    assert_eq!(enc(&1.1), hex!("fb3ff199999999999a"));
+    assert_eq!(enc(&1.5), hex!("f93e00"));
+    assert_eq!(enc(&65504.0), hex!("f97bff"));
+    assert_eq!(enc(&100000.0), hex!("fa47c35000"));
+    assert_eq!(enc(&3.4028234663852886e+38), hex!("fa7f7fffff"));
+    assert_eq!(enc(&1.0e+300), hex!("fb7e37e43c8800759c"));
+    assert_eq!(enc(&5.960464477539063e-8), hex!("f90001"));
+    assert_eq!(enc(&0.00006103515625), hex!("f90400"));
+    assert_eq!(enc(&-4.0), hex!("f9c400"));
+    assert_eq!(enc(&-4.1), hex!("fbc010666666666666"));
+    assert_eq!(enc(&half::f16::INFINITY), hex!("f97c00"));
+    assert_eq!(enc(&half::f16::NAN), hex!("f97e00"));
+    assert_eq!(enc(&half::f16::NEG_INFINITY), hex!("f9fc00"));
     // RFC 8949 §4.2.2: NaN canonically encodes as the half-precision 0xf97e00,
     // like the infinities in §4.2.1 above (was previously emitted full-width).
-    assert_eq!(*emit(&f32::NAN).0, hex!("f97e00"));
-    assert_eq!(*emit(&f64::NAN).0, hex!("f97e00"));
+    assert_eq!(enc(&f32::NAN), hex!("f97e00"));
+    assert_eq!(enc(&f64::NAN), hex!("f97e00"));
 
     /* According to https://www.rfc-editor.org/rfc/rfc8949.html#section-4.2.1
     +-INF data should go smaller when canonically encoding */
     assert_eq!(
-        *emit(&f32::INFINITY).0,
+        enc(&f32::INFINITY),
         hex!("f97c00") /*hex!("fa7f800000")*/
     );
     assert_eq!(
-        *emit(&f32::NEG_INFINITY).0,
+        enc(&f32::NEG_INFINITY),
         hex!("f9fc00") /*hex!("faff800000")*/
     );
     assert_eq!(
-        *emit(&f64::INFINITY).0,
+        enc(&f64::INFINITY),
         hex!("f97c00") /*hex!("fb7ff0000000000000")*/
     );
     assert_eq!(
-        *emit(&f64::NEG_INFINITY).0,
+        enc(&f64::NEG_INFINITY),
         hex!("f9fc00") /*hex!("fbfff0000000000000")*/
     );
+}
 
-    assert_eq!(*emit(&false).0, hex!("f4"));
-    assert_eq!(*emit(&true).0, hex!("f5"));
-    assert_eq!(*emit(&None::<i32>).0, hex!("f7"));
+#[test]
+fn rfc_simple_values() {
+    assert_eq!(enc(&false), hex!("f4"));
+    assert_eq!(enc(&true), hex!("f5"));
+    assert_eq!(enc(&None::<i32>), hex!("f7"));
+}
+
+#[test]
+fn rfc_tags() {
     assert_eq!(
-        *emit(&Tagged::<0, _>("2013-03-21T20:04:00Z")).0,
+        enc(&Tagged::<0, _>("2013-03-21T20:04:00Z")),
         hex!("c074323031332d30332d32315432303a30343a30305a")
     );
-    assert_eq!(*emit(&Tagged::<1, _>(&1363896240)).0, hex!("c11a514b67b0"));
+    assert_eq!(enc(&Tagged::<1, _>(&1363896240)), hex!("c11a514b67b0"));
     assert_eq!(
-        *emit(&Tagged::<1, _>(&1363896240.5)).0,
+        enc(&Tagged::<1, _>(&1363896240.5)),
         hex!("c1fb41d452d9ec200000")
     );
     assert_eq!(
@@ -91,26 +111,34 @@ fn rfc_tests() {
         (hex!("d818456449455446").into(), 3..8)
     );
     assert_eq!(
-        *emit(&Tagged::<32, _>("http://www.example.com")).0,
+        enc(&Tagged::<32, _>("http://www.example.com")),
         hex!("d82076687474703a2f2f7777772e6578616d706c652e636f6d")
     );
+}
+
+#[test]
+fn rfc_strings() {
     assert_eq!(emit(&Bytes(&[])), (hex!("40").into(), 1..1));
     assert_eq!(
         emit(&Bytes(&hex!("01020304"))),
         (hex!("4401020304").into(), 1..5)
     );
-    assert_eq!(*emit("").0, hex!("60"));
-    assert_eq!(*emit("a").0, hex!("6161"));
-    assert_eq!(*emit("IETF").0, hex!("6449455446"));
-    assert_eq!(*emit("\"\\").0, hex!("62225c"));
-    assert_eq!(*emit("\u{00fc}").0, hex!("62c3bc"));
-    assert_eq!(*emit("\u{6c34}").0, hex!("63e6b0b4"));
+    assert_eq!(enc(""), hex!("60"));
+    assert_eq!(enc("a"), hex!("6161"));
+    assert_eq!(enc("IETF"), hex!("6449455446"));
+    assert_eq!(enc("\"\\"), hex!("62225c"));
+    assert_eq!(enc("\u{00fc}"), hex!("62c3bc"));
+    assert_eq!(enc("\u{6c34}"), hex!("63e6b0b4"));
     assert_eq!(
-        *emit("\u{10151}" /* surrogate pair: \u{d800}\u{dd51} */).0,
+        enc("\u{10151}" /* surrogate pair: \u{d800}\u{dd51} */),
         hex!("64f0908591")
     );
+}
+
+#[test]
+fn rfc_definite_arrays_maps() {
     assert_eq!(*emit_array(Some(0), |_| {}), hex!("80"));
-    assert_eq!(*emit::<[u16; 0]>(&[]).0, hex!("80"));
+    assert_eq!(enc::<[u16; 0]>(&[]), hex!("80"));
     assert_eq!(
         *emit_array(Some(3), |a| {
             a.emit(&1);
@@ -119,8 +147,8 @@ fn rfc_tests() {
         }),
         hex!("83010203")
     );
-    assert_eq!(*emit(&(1, 2, 3)).0, hex!("83010203"));
-    assert_eq!(*emit(&[1, 2, 3]).0, hex!("83010203"));
+    assert_eq!(enc(&(1, 2, 3)), hex!("83010203"));
+    assert_eq!(enc(&[1, 2, 3]), hex!("83010203"));
     assert_eq!(
         *emit_array(Some(3), |a| {
             a.emit(&1);
@@ -135,10 +163,10 @@ fn rfc_tests() {
         }),
         hex!("8301820203820405")
     );
-    assert_eq!(*emit(&(1, &(2, 3), &(4, 5))).0, hex!("8301820203820405"));
-    assert_eq!(*emit(&(1, &[2, 3], &(4, 5))).0, hex!("8301820203820405"));
-    assert_eq!(*emit(&(1, &(2, 3), &[4, 5])).0, hex!("8301820203820405"));
-    assert_eq!(*emit(&(1, &[2, 3], &[4, 5])).0, hex!("8301820203820405"));
+    assert_eq!(enc(&(1, &(2, 3), &(4, 5))), hex!("8301820203820405"));
+    assert_eq!(enc(&(1, &[2, 3], &(4, 5))), hex!("8301820203820405"));
+    assert_eq!(enc(&(1, &(2, 3), &[4, 5])), hex!("8301820203820405"));
+    assert_eq!(enc(&(1, &[2, 3], &[4, 5])), hex!("8301820203820405"));
     assert_eq!(
         *emit_array(Some(25), |a| {
             for i in 1..=25 {
@@ -148,7 +176,7 @@ fn rfc_tests() {
         hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
     );
     assert_eq!(
-        *emit((1..=25).collect::<Vec<u8>>().as_slice()).0,
+        enc((1..=25).collect::<Vec<u8>>().as_slice()),
         hex!("98190102030405060708090a0b0c0d0e0f101112131415161718181819")
     );
 
@@ -217,6 +245,10 @@ fn rfc_tests() {
         }),
         hex!("a56161614161626142616361436164614461656145")
     );
+}
+
+#[test]
+fn rfc_indefinite_items() {
     assert_eq!(
         *emit_byte_stream(|s| {
             s.emit(&hex!("0102"));
@@ -425,4 +457,43 @@ fn rfc_tests() {
         }),
         hex!("bf6346756ef563416d7421ff")
     );
+}
+
+// A definite-length header is written eagerly from the declared count, so
+// a count that disagrees with the emitted items would produce malformed
+// CBOR on the wire. The encoder panics instead.
+#[test]
+#[should_panic(expected = "Too many items added to definite length sequence")]
+fn definite_array_overfill() {
+    emit_array(Some(1), |a| {
+        a.emit(&1);
+        a.emit(&2);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Definite length sequence is short of items")]
+fn definite_array_underfill() {
+    emit_array(Some(2), |a| {
+        a.emit(&1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Too many items added to definite length sequence")]
+fn definite_map_overfill() {
+    emit_map(Some(1), |m| {
+        m.emit(&1);
+        m.emit(&2);
+        m.emit(&3);
+    });
+}
+
+#[test]
+#[should_panic(expected = "Definite length sequence is short of items")]
+fn definite_map_underfill() {
+    emit_map(Some(2), |m| {
+        m.emit(&1);
+        m.emit(&2);
+    });
 }
