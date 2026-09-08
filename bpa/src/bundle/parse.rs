@@ -362,25 +362,15 @@ where
     // the recoverable `bundle` is returned so the caller need only emit a reception
     // report; on success it moves into the returned `HeaderVerify`.
     let parse::Parsed {
-        mut bundle,
+        bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
         ..
     } = parsed;
     let key_source = key_provider(&bundle, &headers);
-    match verify_headers(&headers, &*key_source, &mut bundle, &bcb_ops, &mut bib_ops) {
-        Ok((extensions, to_remove, report_reason, deferred_bibs)) => Ok((
-            HeaderVerify {
-                bundle,
-                extensions,
-                to_remove,
-                report_reason,
-                deferred_bibs,
-            },
-            headers,
-            tail,
-        )),
-        Err(error) => {
+    match verify_headers(&headers, &*key_source, bundle, &bcb_ops, &mut bib_ops) {
+        Ok(hv) => Ok((hv, headers, tail)),
+        Err((bundle, error)) => {
             debug!("Invalid bundle received: {error}");
             Err(HeaderFailure::Invalid(Some((
                 bundle,
@@ -392,28 +382,50 @@ where
 
 /// Header verification (§A classify → §B/§C8/§C7 verify → §D extract) against the
 /// resident `headers` buffer — the `consumed` prefix for an oversized streamed
-/// payload, or the whole bundle otherwise. Mutates `bundle.blocks` (BIB coverage
-/// stamps). Returns the extracted extension fields, the blocks to remove, the
-/// reception-report reason, and — drained out of `bib_ops` by the keyed verify —
-/// the deferred block-1 (payload) op-sets that [`finalize_with_provider`]
-/// re-verifies once the payload is resident; the §E removals are deferred there
-/// too.
-#[allow(clippy::type_complexity)]
+/// payload, or the whole bundle otherwise. Takes the structural bundle by value
+/// and returns it inside the assembled [`HeaderVerify`] (BIB coverage stamps
+/// applied, the deferred block-1 op-sets drained out of `bib_ops` for
+/// [`finalize_with_provider`] to re-verify once the payload is resident; the §E
+/// removals are deferred there too). On a keyed failure the recoverable bundle
+/// rides the error, mirroring `finalize_with_provider`.
+#[allow(clippy::result_large_err)]
 fn verify_headers(
+    headers: &[u8],
+    key_source: &dyn bpsec::key::KeySource,
+    mut bundle: Bpv7Bundle,
+    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
+    bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
+) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error)> {
+    // The facts helper keeps `?` ergonomics; this is the one place the
+    // recoverable bundle is paired into either arm.
+    match header_facts(headers, key_source, &mut bundle, bcb_ops, bib_ops) {
+        Ok(facts) => Ok(HeaderVerify {
+            bundle,
+            extensions: facts.extensions,
+            to_remove: facts.to_remove,
+            report_reason: facts.report_reason,
+            deferred_bibs: facts.deferred_bibs,
+        }),
+        Err(e) => Err((bundle, e)),
+    }
+}
+
+/// The bundle-independent half of [`HeaderVerify`]: what the header pass
+/// establishes about the bundle it verified.
+struct HeaderFacts {
+    extensions: ExtensionFields,
+    to_remove: HashSet<u64>,
+    report_reason: ReasonCode,
+    deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
+}
+
+fn header_facts(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     bundle: &mut Bpv7Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<
-    (
-        ExtensionFields,
-        HashSet<u64>,
-        ReasonCode,
-        HashMap<u64, bpsec::bib::OperationSet>,
-    ),
-    hardy_bpv7::Error,
-> {
+) -> Result<HeaderFacts, hardy_bpv7::Error> {
     // §A — classify; collect deletables; the report_* facts feed the
     // reception-report reason below.
     let classification = checks::classify_unsupported(&bundle.blocks, bcb_ops, bib_ops, &[])?;
@@ -484,7 +496,12 @@ fn verify_headers(
     // never the payload, so header-resident.
     let extensions = extract_extension_block_fields(headers, &bundle.blocks, &decrypted)?;
 
-    Ok((extensions, to_remove, report_reason, facts.deferred_bibs))
+    Ok(HeaderFacts {
+        extensions,
+        to_remove,
+        report_reason,
+        deferred_bibs: facts.deferred_bibs,
+    })
 }
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the

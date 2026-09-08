@@ -42,13 +42,11 @@ impl Dispatcher {
     /// Construct the dispatcher and return it with a deferred-start closure
     /// for the dispatch-queue consumer.
     ///
-    /// The consumer must not start until
-    /// [`set_cla_registry`](Self::set_cla_registry) has been called: the
-    /// dispatch channel's storage poller recovers persisted
-    /// `DispatchPending` bundles as soon as the consumer drains them, and
-    /// processing one dereferences the CLA registry — starting the consumer
-    /// before the registry is wired panics the processing task and strands
-    /// the claimed bundle in `Dispatching`.
+    /// The closure demands the CLA registry by value and wires it before
+    /// spawning the consumer, because the dispatch channel's storage poller
+    /// recovers persisted `DispatchPending` bundles as soon as the consumer
+    /// drains them, and processing one dereferences the registry. It owns
+    /// the channel receiver, so a second start path cannot exist.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         status_reports: bool,
@@ -60,7 +58,7 @@ impl Dispatcher {
         rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
         filter_engine: Arc<filter::FilterEngine>,
-    ) -> (Arc<Self>, impl FnOnce(&Arc<Self>)) {
+    ) -> (Arc<Self>, impl FnOnce(Arc<cla::registry::ClaRegistry>)) {
         if status_reports {
             warn!("Bundle status reports are enabled");
         }
@@ -91,7 +89,9 @@ impl Dispatcher {
             max_bundle_size: max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE).get(),
         });
 
-        (dispatcher, |d| {
+        let d = dispatcher.clone();
+        (dispatcher, move |cla_registry| {
+            d.cla_registry.call_once(|| cla_registry);
             let dispatcher = d.clone();
             hardy_async::spawn!(d.tasks, "dispatch_queue_consumer", async move {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
@@ -99,11 +99,9 @@ impl Dispatcher {
         })
     }
 
-    pub fn set_cla_registry(&self, cla_registry: Arc<cla::registry::ClaRegistry>) {
-        self.cla_registry.call_once(|| cla_registry);
-    }
-
     fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {
+        // Other readers (poll_waiting, driven from Rib::start) cannot be
+        // proven wired by the type system; this expect is the backstop.
         self.cla_registry
             .get()
             .trace_expect("CLA registry not initialized")
@@ -220,32 +218,42 @@ impl Dispatcher {
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
     }
 
-    /// Create a per-service delivery queue: the hybrid storage channel whose
-    /// target status is `DeliverPending { service }`, plus its consumer
-    /// task. The channel's creation-time poll recovers any bundle already
-    /// persisted in that status for this EID. Mirrors the per-peer egress
-    /// queues (`cla::peers`), including their serialization: one delivery at
-    /// a time per service, in queue order.
-    pub fn start_delivery_queue(
-        self: &Arc<Self>,
-        service: Arc<services::registry::Service>,
+    /// Create a per-service delivery channel: the hybrid storage channel
+    /// whose target status is `DeliverPending { service }`. The channel's
+    /// creation-time poll recovers any bundle already persisted in that
+    /// status for this EID. The sender becomes the `Service`'s constructor
+    /// argument; the receiver goes to
+    /// [`start_delivery_queue`](Self::start_delivery_queue) once the
+    /// service is published.
+    pub fn new_delivery_channel(
+        &self,
         service_eid: &Eid,
-    ) -> storage::channel::Sender {
-        let (tx, rx) = self.store.channel(
+    ) -> (
+        storage::channel::Sender,
+        hardy_async::closeable::Receiver<bundle::Bundle>,
+    ) {
+        self.store.channel(
             bundle::BundleStatus::DeliverPending {
                 service: service_eid.clone(),
             },
             self.poll_channel_depth,
-        );
+        )
+    }
 
+    /// Spawn a published service's delivery consumer. Mirrors the per-peer
+    /// egress queues (`cla::peers`), including their serialization: one
+    /// delivery at a time per service, in queue order.
+    pub fn start_delivery_queue(
+        self: &Arc<Self>,
+        service: Arc<services::registry::Service>,
+        rx: hardy_async::closeable::Receiver<bundle::Bundle>,
+    ) {
         let dispatcher = self.clone();
         hardy_async::spawn!(self.tasks, "delivery_queue_poller", async move {
             while let Ok(bundle) = rx.recv().await {
                 dispatcher.deliver_bundle(service.clone(), bundle).await;
             }
         });
-
-        tx
     }
 
     pub async fn poll_service_waiting(self: &Arc<Self>, source: &Eid) {

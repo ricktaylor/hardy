@@ -251,6 +251,14 @@ impl Bpa {
             .start(self.dispatcher.clone(), recover_storage)
             .await;
 
+        // Only now activate the builder-configured CLAs and services: the
+        // quiescent-store precondition above covers the configuration path
+        // exactly as it covers dynamic registrations.
+        self.cla_registry.start(&self.dispatcher).await;
+        self.service_registry
+            .start(&self.node_ids, &self.rib, &self.dispatcher)
+            .await;
+
         // Start the RIB
         self.rib.start(self.dispatcher.clone());
     }
@@ -273,9 +281,7 @@ impl Bpa {
 
         self.rib.shutdown_agents().await;
         self.cla_registry.shutdown().await;
-        self.service_registry
-            .shutdown(&self.node_ids, &self.rib)
-            .await;
+        self.service_registry.shutdown(&self.rib).await;
         self.dispatcher.shutdown().await;
         self.rib.shutdown().await;
         self.store.shutdown().await;

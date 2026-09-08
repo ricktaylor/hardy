@@ -49,7 +49,17 @@ impl Dispatcher {
         let data = match payload_result {
             Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                 // TODO: We are unable to decrypt the payload, what do we do?
-                return self.store.watch_bundle(bundle).await;
+                // Park in Waiting so each routing event retries the decrypt
+                // (keys can arrive later); the reaper still expires it. A
+                // lost swap means another resolver got there first.
+                if self
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
+                    .await
+                {
+                    return self.store.watch_bundle(bundle).await;
+                }
+                return;
             }
             Err(e) => {
                 debug!("Received an invalid administrative record: {e}");
@@ -140,9 +150,16 @@ impl Dispatcher {
                     // Just delete the bundle, there's no required counters or reporting
                     self.delete_bundle(bundle).await;
                 } else {
-                    let desired = bundle::BundleStatus::WaitingForService {
-                        service: report.bundle_id.source.clone(),
-                    };
+                    // Park under the canonical registration EID — the exact
+                    // key poll_service_waiting matches on registration — with
+                    // the same foreign-EID fallback shape as deliver_bundle
+                    // (a report about another node's bundle never matches a
+                    // local registration either way).
+                    let service = self
+                        .node_ids
+                        .local_service_eid(&report.bundle_id.source)
+                        .unwrap_or_else(|| report.bundle_id.source.clone());
+                    let desired = bundle::BundleStatus::WaitingForService { service };
 
                     // Conditional: the reaper can resolve the bundle at any
                     // await, and the park must not resurrect a tombstone.

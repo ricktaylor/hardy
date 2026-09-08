@@ -25,31 +25,37 @@ pub struct Service {
     // Cancelled at unregistration; every in-flight stream of this
     // registration races it and fails immediately.
     pub cancel: hardy_async::CancellationToken,
-    // Set once at registration activation: the canonical registration EID
-    // and this registration's delivery queue (the local analogue of a
-    // peer's egress queues).
-    queue: hardy_async::sync::spin::Once<ServiceQueue>,
-}
-
-struct ServiceQueue {
+    // The canonical registration EID — the exact key the DeliverPending
+    // claim, the unregister sweep, and poll_service_waiting match on.
     eid: Eid,
+    // This registration's delivery queue (the local analogue of a peer's
+    // egress queues).
     tx: storage::channel::Sender,
 }
 
 impl Service {
-    pub fn new(service: ServiceImpl, service_id: hardy_bpv7::eid::Service) -> Self {
-        Self {
+    /// The sole constructor: a reachable `Service` always carries its live
+    /// delivery queue and its canonical registration EID, so no consumer
+    /// can observe a half-built registration.
+    pub fn new(
+        service: ServiceImpl,
+        service_id: hardy_bpv7::eid::Service,
+        eid: Eid,
+        tx: storage::channel::Sender,
+    ) -> Arc<Self> {
+        Arc::new(Self {
             service,
             service_id,
             cancel: hardy_async::CancellationToken::new(),
-            queue: hardy_async::sync::spin::Once::new(),
-        }
+            eid,
+            tx,
+        })
     }
 
     /// Queue a bundle into this service's delivery channel.
     ///
     /// `Err(bundle)` hands ownership back for parking (the mirror of
-    /// `Peer::forward`): the queue is closed or was never activated.
+    /// `Peer::forward`): the queue has closed (unregistration).
     // Err(bundle) deliberately hands ownership back to the caller; boxing
     // the bundle to shrink the Err variant would tax every call site.
     #[allow(clippy::result_large_err)]
@@ -57,25 +63,19 @@ impl Service {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        let Some(queue) = self.queue.get() else {
-            return Err(bundle);
-        };
-        queue
-            .tx
+        self.tx
             .send(bundle)
             .await
             .map_err(|storage::channel::SendError(b)| b)
     }
 
-    /// The canonical registration EID, available once activated.
-    pub fn queue_eid(&self) -> Option<&Eid> {
-        self.queue.get().map(|q| &q.eid)
+    /// The canonical registration EID.
+    pub fn eid(&self) -> &Eid {
+        &self.eid
     }
 
     fn close_queue(&self) {
-        if let Some(queue) = self.queue.get() {
-            queue.tx.close();
-        }
+        self.tx.close();
     }
     pub async fn on_status_notify(
         &self,
@@ -138,7 +138,6 @@ struct Sink {
     /// Full EID for this service (pre-resolved at activation time)
     eid: Eid,
     registry: Arc<ServiceRegistry>,
-    node_ids: Arc<node_ids::NodeIds>,
     rib: Arc<routing::Rib>,
     dispatcher: Arc<dispatcher::Dispatcher>,
 }
@@ -146,10 +145,7 @@ struct Sink {
 impl Sink {
     async fn unregister_inner(&self) {
         if let Some(service) = self.service.upgrade()
-            && let Err(e) = self
-                .registry
-                .unregister(service, &self.node_ids, &self.rib)
-                .await
+            && let Err(e) = self.registry.unregister(service, &self.rib).await
         {
             error!("Failed to unregister service: {e}");
         }
@@ -213,10 +209,9 @@ impl Drop for Sink {
     fn drop(&mut self) {
         if let Some(service) = self.service.upgrade() {
             let registry = self.registry.clone();
-            let node_ids = self.node_ids.clone();
             let rib = self.rib.clone();
             hardy_async::spawn!(self.registry.tasks, "sink_drop_cleanup", async move {
-                if let Err(e) = registry.unregister(service, &node_ids, &rib).await {
+                if let Err(e) = registry.unregister(service, &rib).await {
                     error!("Failed to unregister service: {e}");
                 }
             });
@@ -227,7 +222,7 @@ impl Drop for Sink {
 type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
 pub struct ServiceRegistryBuilder {
-    services: ServiceMap,
+    services: Vec<(hardy_bpv7::eid::Service, ServiceImpl)>,
 }
 
 impl ServiceRegistryBuilder {
@@ -247,33 +242,28 @@ impl ServiceRegistryBuilder {
                 service_id.to_string(),
             ));
         }
-        if self.services.contains_key(&service_id) {
+        if self.services.iter().any(|(id, _)| *id == service_id) {
             return Err(services::Error::ServiceIdInUse(service_id.to_string()));
         }
-        let service = Arc::new(Service::new(service, service_id.clone()));
-        self.services.insert(service_id.clone(), service);
         info!("Inserted service: {service_id}");
+        self.services.push((service_id, service));
         Ok(())
     }
 
-    pub async fn build(
-        self,
-        node_ids: &node_ids::NodeIds,
-        rib: &Arc<routing::Rib>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> services::Result<Arc<ServiceRegistry>> {
-        let registry = Arc::new(ServiceRegistry {
-            services: hardy_async::sync::spin::Mutex::new(self.services),
+    /// Construct the registry with the configured registrations parked.
+    /// Activation happens in [`ServiceRegistry::start`], after storage
+    /// recovery — registrations must not race the consistency check — so
+    /// configuration errors are surfaced here, where the build can fail.
+    pub fn build(self, node_ids: &node_ids::NodeIds) -> services::Result<Arc<ServiceRegistry>> {
+        for (service_id, _) in &self.services {
+            node_ids.resolve_eid(service_id)?;
+        }
+        Ok(Arc::new(ServiceRegistry {
+            services: hardy_async::sync::spin::Mutex::new(Default::default()),
+            pending: hardy_async::sync::spin::Mutex::new(self.services),
             next_dynamic: AtomicU32::new(DYNAMIC_SERVICE_BASE),
             tasks: hardy_async::TaskPool::new(),
-        });
-
-        let ids: Vec<_> = registry.services.lock().keys().cloned().collect();
-        for id in ids {
-            registry.register(&id, node_ids, rib, dispatcher).await?;
-        }
-
-        Ok(registry)
+        }))
     }
 }
 
@@ -283,12 +273,35 @@ const DYNAMIC_SERVICE_BASE: u32 = 0x8000_0000;
 
 pub struct ServiceRegistry {
     services: hardy_async::sync::spin::Mutex<ServiceMap>,
+    // Builder-configured registrations, parked until `start` activates them
+    // after storage recovery.
+    pending: hardy_async::sync::spin::Mutex<Vec<(hardy_bpv7::eid::Service, ServiceImpl)>>,
     next_dynamic: AtomicU32,
     tasks: hardy_async::TaskPool,
 }
 
 impl ServiceRegistry {
-    pub async fn shutdown(&self, node_ids: &node_ids::NodeIds, rib: &Arc<routing::Rib>) {
+    /// Activate the builder-configured registrations, in configuration
+    /// order. Called by `Bpa::start` once storage recovery has completed:
+    /// a registration going live earlier would race the consistency check.
+    pub async fn start(
+        self: &Arc<Self>,
+        node_ids: &node_ids::NodeIds,
+        rib: &Arc<routing::Rib>,
+        dispatcher: &Arc<dispatcher::Dispatcher>,
+    ) {
+        let pending = core::mem::take(&mut *self.pending.lock());
+        for (service_id, service) in pending {
+            // Validated at build; a failure here is a bug, not a config error.
+            if let Err(e) = self
+                .register(&service_id, service, node_ids, rib, dispatcher)
+                .await
+            {
+                error!("Failed to activate configured service {service_id}: {e}");
+            }
+        }
+    }
+    pub async fn shutdown(&self, rib: &Arc<routing::Rib>) {
         let services = self
             .services
             .lock()
@@ -301,7 +314,7 @@ impl ServiceRegistry {
         }
 
         for service in services {
-            if let Err(e) = self.unregister_service(service, node_ids, rib).await {
+            if let Err(e) = self.unregister_service(service, rib).await {
                 error!("Failed to unregister service: {e}");
             }
         }
@@ -317,8 +330,14 @@ impl ServiceRegistry {
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        self.insert_inner(service_id.clone(), ServiceImpl::LowLevel(service))?;
-        self.register(&service_id, node_ids, rib, dispatcher).await
+        self.register(
+            &service_id,
+            ServiceImpl::LowLevel(service),
+            node_ids,
+            rib,
+            dispatcher,
+        )
+        .await
     }
 
     pub async fn register_application(
@@ -329,8 +348,14 @@ impl ServiceRegistry {
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        self.insert_inner(service_id.clone(), ServiceImpl::Application(application))?;
-        self.register(&service_id, node_ids, rib, dispatcher).await
+        self.register(
+            &service_id,
+            ServiceImpl::Application(application),
+            node_ids,
+            rib,
+            dispatcher,
+        )
+        .await
     }
 
     /// Register a service with a dynamically assigned IPN service number.
@@ -364,44 +389,38 @@ impl ServiceRegistry {
         hardy_bpv7::eid::Service::Ipn(id)
     }
 
-    fn insert_inner(
-        &self,
-        service_id: hardy_bpv7::eid::Service,
-        service: ServiceImpl,
-    ) -> services::Result<()> {
-        if node_ids::service_is_admin_endpoint(&service_id) {
-            return Err(services::Error::AdministrativeEndpoint(
-                service_id.to_string(),
-            ));
-        }
-        let mut services = self.services.lock();
-        if services.contains_key(&service_id) {
-            return Err(services::Error::ServiceIdInUse(service_id.to_string()));
-        }
-        let service = Arc::new(Service::new(service, service_id.clone()));
-        services.insert(service_id.clone(), service);
-        Ok(())
-    }
-
     async fn register(
         self: &Arc<Self>,
         service_id: &hardy_bpv7::eid::Service,
+        service: ServiceImpl,
         node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
     ) -> services::Result<Eid> {
-        let service = self.services.lock().get(service_id).cloned().unwrap();
+        if node_ids::service_is_admin_endpoint(service_id) {
+            return Err(services::Error::AdministrativeEndpoint(
+                service_id.to_string(),
+            ));
+        }
         let eid = node_ids.resolve_eid(service_id)?;
 
-        // Create the delivery queue before the RIB route is published: a
-        // Deliver action must never see a service without a live queue. The
+        // Construct the service complete — the delivery queue and canonical
+        // EID are constructor arguments — then publish atomically with the
+        // duplicate check: nothing reachable is ever half-built, and the
+        // RIB (added below) only ever sees a deliverable service. The
         // channel's creation-time poll recovers any DeliverPending bundles
-        // left over from a previous registration under the same EID.
-        let tx = dispatcher.start_delivery_queue(service.clone(), &eid);
-        service.queue.call_once(|| ServiceQueue {
-            eid: eid.clone(),
-            tx,
-        });
+        // left over from a previous registration under the same EID; a
+        // duplicate's channel is dropped unconsumed, closing it.
+        let (tx, rx) = dispatcher.new_delivery_channel(&eid);
+        let service = Service::new(service, service_id.clone(), eid.clone(), tx);
+        {
+            let mut services = self.services.lock();
+            if services.contains_key(service_id) {
+                return Err(services::Error::ServiceIdInUse(service_id.to_string()));
+            }
+            services.insert(service_id.clone(), service.clone());
+        }
+        dispatcher.start_delivery_queue(service.clone(), rx);
 
         let _ = rib.add_service(eid.clone(), service.clone()).await;
 
@@ -409,7 +428,6 @@ impl ServiceRegistry {
             service: Arc::downgrade(&service),
             eid: eid.clone(),
             registry: self.clone(),
-            node_ids: Arc::new(node_ids.clone()),
             rib: rib.clone(),
             dispatcher: dispatcher.clone(),
         };
@@ -436,14 +454,13 @@ impl ServiceRegistry {
     async fn unregister(
         &self,
         service: Arc<Service>,
-        node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
         let service = self.services.lock().remove(&service.service_id);
 
         if let Some(service) = service {
             metrics::gauge!("bpa.service.registered").decrement(1.0);
-            self.unregister_service(service, node_ids, rib).await?;
+            self.unregister_service(service, rib).await?;
         }
         Ok(())
     }
@@ -451,7 +468,6 @@ impl ServiceRegistry {
     async fn unregister_service(
         &self,
         service: Arc<Service>,
-        node_ids: &node_ids::NodeIds,
         rib: &Arc<routing::Rib>,
     ) -> services::Result<()> {
         // First: wake every in-flight stream of this registration.
@@ -462,7 +478,7 @@ impl ServiceRegistry {
         // by the RIB removal below.
         service.close_queue();
 
-        let eid = node_ids.resolve_eid(&service.service_id)?;
+        let eid = service.eid().clone();
         rib.remove_service(&eid, service.clone()).await;
 
         match &service.service {

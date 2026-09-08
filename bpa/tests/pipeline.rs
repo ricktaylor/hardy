@@ -2537,3 +2537,60 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
         "a resolved bundle re-entered Waiting"
     );
 }
+
+// ---------------------------------------------------------------------------
+
+/// A builder-configured CLA goes live at `start`, not at `build`: activation
+/// waits for storage recovery, so the quiescent-store contract covers the
+/// configuration path exactly as it covers dynamic registrations.
+#[tokio::test]
+async fn configured_endpoints_activate_at_start() {
+    struct ProbeCla {
+        registered: hardy_async::sync::spin::Once<()>,
+    }
+
+    #[async_trait]
+    impl cla::Cla for ProbeCla {
+        async fn on_register(&self, _sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+            self.registered.call_once(|| ());
+        }
+
+        async fn on_unregister(&self) {}
+
+        fn lane_count(&self) -> Option<NonZeroU32> {
+            None
+        }
+
+        async fn forward(
+            &self,
+            _lane: Option<u32>,
+            _cla_addr: &cla::ClaAddress,
+            _bundle_id: &Id,
+            _total_len: u64,
+            _stream: &mut dyn Receiver<Segment>,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            Ok(cla::ForwardBundleResult::Sent)
+        }
+    }
+
+    let probe = Arc::new(ProbeCla {
+        registered: hardy_async::sync::spin::Once::new(),
+    });
+    let bpa = Bpa::builder()
+        .cla("probe", probe.clone(), None)
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        probe.registered.get().is_none(),
+        "a configured CLA must not go live before start"
+    );
+
+    bpa.start(false).await;
+    assert!(
+        probe.registered.get().is_some(),
+        "start activates the configured CLA"
+    );
+
+    bpa.shutdown().await;
+}

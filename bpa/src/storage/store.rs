@@ -76,7 +76,9 @@ impl Store {
     /// Store bundle data and metadata atomically.
     /// Takes a bundle with pre-populated metadata (e.g., from filter processing).
     /// Updates the storage_name field after saving data.
-    /// Returns false if duplicate bundle already exists.
+    /// Returns false if — and only if — a duplicate bundle already exists:
+    /// a backend failure aborts, like every other storage seat, so `false`
+    /// can never misreport a storage outage as a duplicate.
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn store(&self, bundle: &mut Bundle, data: &Bytes) -> bool {
         // Write to bundle storage
@@ -85,27 +87,21 @@ impl Store {
         // Update storage_name in existing metadata
         bundle.metadata.storage_name = Some(storage_name);
 
-        // Write to metadata store
-        match self.metadata_storage.insert(bundle).await {
-            Ok(true) => true,
-            Ok(false) => {
-                // We have a duplicate, remove the duplicate from the bundle store
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.delete_data(storage_name).await;
-                }
-                false
+        // Write to metadata store. A failing backend is a failing disk: the
+        // BPA does not limp on against it.
+        if self
+            .metadata_storage
+            .insert(bundle)
+            .await
+            .trace_expect("Failed to insert metadata")
+        {
+            true
+        } else {
+            // We have a duplicate, remove the duplicate from the bundle store
+            if let Some(storage_name) = &bundle.metadata.storage_name {
+                self.delete_data(storage_name).await;
             }
-            Err(e) => {
-                error!("Failed to insert metadata: {e}");
-
-                // Storage backend failure - clean up the bundle data and
-                // return false so the caller abandons this bundle.
-                // The storage engine itself should decide if this is fatal.
-                if let Some(storage_name) = &bundle.metadata.storage_name {
-                    self.delete_data(storage_name).await;
-                }
-                false
-            }
+            false
         }
     }
 
@@ -318,7 +314,7 @@ mod tests {
     use super::*;
     use crate::{
         bundle::tests::test_bundle,
-        storage::{bundle_mem, metadata_mem},
+        storage::{Result, bundle_mem, metadata_mem},
     };
 
     fn make_store() -> Arc<Store> {
@@ -390,5 +386,109 @@ mod tests {
 
         // Original data should still be accessible
         assert!(store.load_data(&first_storage_name).await.is_some());
+    }
+
+    // A metadata-backend failure aborts — it must never surface as the
+    // duplicate `false`, which callers are entitled to retry against.
+    #[tokio::test]
+    #[should_panic(expected = "Failed to insert metadata")]
+    async fn metadata_backend_failure_aborts() {
+        use hardy_async::async_trait;
+        use hardy_bpv7::eid::Eid;
+
+        use crate::stream::Sender;
+
+        struct FailingMetadata;
+
+        #[async_trait]
+        impl MetadataStorage for FailingMetadata {
+            async fn get(&self, _bundle_id: &Id) -> Result<Option<Bundle>> {
+                unimplemented!()
+            }
+            async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
+                Err("backend down".into())
+            }
+            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
+                unimplemented!()
+            }
+            async fn update_status(&self, _bundle_id: &Id, _status: &BundleStatus) -> Result<()> {
+                unimplemented!()
+            }
+            async fn swap_status(
+                &self,
+                _bundle_id: &Id,
+                _expected: &BundleStatus,
+                _status: &BundleStatus,
+            ) -> Result<bool> {
+                unimplemented!()
+            }
+            async fn tombstone_if(
+                &self,
+                _bundle_id: &Id,
+                _expected: &BundleStatus,
+            ) -> Result<bool> {
+                unimplemented!()
+            }
+            async fn tombstone(&self, _bundle_id: &Id) -> Result<()> {
+                unimplemented!()
+            }
+            async fn start_recovery(&self) {}
+            async fn confirm_exists(
+                &self,
+                _bundle_id: &Id,
+            ) -> Result<Option<super::super::ConfirmResponse>> {
+                unimplemented!()
+            }
+            async fn remove_unconfirmed(&self, _stream: &dyn Sender<Bundle>) -> Result<()> {
+                unimplemented!()
+            }
+            async fn reset_peer_queue(&self, _peer: u32) -> Result<u64> {
+                unimplemented!()
+            }
+            async fn reset_peer_ack_pending(&self, _peer: u32) -> Result<u64> {
+                unimplemented!()
+            }
+            async fn reset_service_queue(&self, _service: &Eid) -> Result<u64> {
+                unimplemented!()
+            }
+            async fn poll_expiry(&self, _stream: &dyn Sender<Bundle>, _limit: usize) -> Result<()> {
+                unimplemented!()
+            }
+            async fn poll_waiting(&self, _stream: &dyn Sender<Bundle>) -> Result<()> {
+                unimplemented!()
+            }
+            async fn poll_service_waiting(
+                &self,
+                _source: Eid,
+                _stream: &dyn Sender<Bundle>,
+            ) -> Result<()> {
+                unimplemented!()
+            }
+            async fn poll_adu_fragments(
+                &self,
+                _stream: &dyn Sender<Bundle>,
+                _status: &BundleStatus,
+            ) -> Result<()> {
+                unimplemented!()
+            }
+            async fn poll_pending(
+                &self,
+                _stream: &dyn Sender<Bundle>,
+                _status: &BundleStatus,
+                _limit: usize,
+            ) -> Result<()> {
+                unimplemented!()
+            }
+        }
+
+        let store = Arc::new(Store::new(
+            core::num::NonZeroUsize::new(16).unwrap(),
+            Arc::new(FailingMetadata),
+            Arc::new(bundle_mem::BundleMemStorage::new(None, None)),
+        ));
+        let data = Bytes::from(vec![0x11u8; 32]);
+        let mut bundle = make_bundle("ipn:0.5.1");
+
+        store.store(&mut bundle, &data).await;
     }
 }

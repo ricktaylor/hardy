@@ -41,9 +41,8 @@ impl Dispatcher {
         // process issued and there is nothing to retry. `DuplicateBundle`
         // surfaces a duplicate already in the store (in practice a
         // pre-restart bundle after a backward clock step, made vanishingly
-        // unlikely by the nanosecond-seeded sequence floor) or a
-        // metadata-storage failure, which `Store::store` currently folds
-        // into the same `false`.
+        // unlikely by the nanosecond-seeded sequence floor) — and only
+        // that: a metadata-storage failure aborts inside `Store::store`.
         let mut builder =
             hardy_bpv7::builder::Builder::new(source, destination.clone()).with_lifetime(lifetime);
 
@@ -162,7 +161,10 @@ impl Dispatcher {
             return Err(services::Error::Dropped(None));
         };
 
-        // Now store (single persist operation, preserves filter-modified metadata)
+        // Now store (single persist operation, preserves filter-modified
+        // metadata). False means duplicate and nothing else — a backend
+        // failure aborts inside store() — so the retry loop in
+        // local_dispatch can never spin against a storage outage.
         if !self.store.store(&mut bundle, &data).await {
             return Err(services::Error::DuplicateBundle);
         }
@@ -187,14 +189,11 @@ impl Dispatcher {
         };
 
         // The claim key and every park below use the canonical registration
-        // EID — the exact key `poll_service_waiting` matches on
-        // re-registration. The bundle's own destination can be a different
-        // Eid variant for the same endpoint (e.g. LegacyIpn vs Ipn) and
-        // would never match.
-        let service_eid = self
-            .node_ids
-            .resolve_eid(&service.service_id)
-            .unwrap_or_else(|_| bundle.primary().destination.clone());
+        // EID stored at construction — the exact key `poll_service_waiting`
+        // matches on re-registration. The bundle's own destination can be a
+        // different Eid variant for the same endpoint (e.g. LegacyIpn vs
+        // Ipn) and would never match.
+        let service_eid = service.eid().clone();
 
         // Snapshot the routing table before the claim: the parks below
         // re-check it to close the park-vs-poll window (see park_bundle).

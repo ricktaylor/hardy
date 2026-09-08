@@ -179,38 +179,28 @@ impl ClaRegistryBuilder {
         Ok(())
     }
 
-    // Transition to the running registry by registering all inserted CLAs.
-    pub async fn build(
+    // Transition to the running registry with the configured CLAs parked.
+    // Activation happens in [`ClaRegistry::start`], after storage recovery:
+    // `Cla::on_register` opens listeners (tcpclv4), and registrations must
+    // not race the consistency check.
+    pub fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: &Arc<routing::Rib>,
         store: &Arc<storage::store::Store>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> cla::Result<Arc<ClaRegistry>> {
+    ) -> Arc<ClaRegistry> {
         let peers = Arc::new(cla::peers::PeerTable::new());
-        let registry = Arc::new(ClaRegistry {
+        Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
+            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_values().collect()),
             rib: rib.clone(),
             store: store.clone(),
             peers,
             poll_channel_depth,
             tasks: hardy_async::TaskPool::new(),
-        });
-
-        for (_, cla) in self.clas {
-            registry
-                .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
-                    dispatcher,
-                    Some(cla.policy.clone()),
-                )
-                .await?;
-        }
-
-        Ok(registry)
+        })
     }
 }
 
@@ -218,6 +208,9 @@ impl ClaRegistryBuilder {
 pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
+    // Builder-configured CLAs, parked until `start` activates them after
+    // storage recovery.
+    pending: hardy_async::sync::spin::Mutex<Vec<Arc<Cla>>>,
     rib: Arc<routing::Rib>,
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
@@ -226,6 +219,28 @@ pub struct ClaRegistry {
 }
 
 impl ClaRegistry {
+    /// Activate the builder-configured CLAs, in configuration order.
+    /// Called by `Bpa::start` once storage recovery has completed: a CLA
+    /// going live earlier would race the consistency check.
+    pub async fn start(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
+        let pending = core::mem::take(&mut *self.pending.lock());
+        for cla in pending {
+            // The builder pre-checked duplicate names; a failure here is a
+            // bug, not a config error.
+            if let Err(e) = self
+                .register(
+                    cla.name.to_string(),
+                    cla.cla.clone(),
+                    dispatcher,
+                    Some(cla.policy.clone()),
+                )
+                .await
+            {
+                error!("Failed to activate configured CLA {}: {e}", cla.name);
+            }
+        }
+    }
+
     // Err(bundle) deliberately hands ownership back to the caller; boxing
     // the bundle to shrink the Err variant would tax every call site.
     #[allow(clippy::result_large_err)]

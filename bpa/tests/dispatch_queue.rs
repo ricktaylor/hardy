@@ -409,9 +409,10 @@ async fn stale_poller_duplicate_never_redelivers() {
 
     // Dispatch a marker bundle to the other service. It enters the dispatch
     // queue strictly after the injected duplicate (the injection completed
-    // above), and the consumer handles the queue in order — so once the
-    // marker's delivery starts, the duplicate has already been through the
-    // dequeue claim, while the first delivery is verifiably still held.
+    // above), so once the marker's delivery starts, the duplicate has been
+    // dequeued into its own claim task while the first delivery is
+    // verifiably still held; the claim's resolution itself is enforced by
+    // the shutdown barrier below, which joins the processing pool.
     let (_, marker_data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"marker".as_slice()))
@@ -444,4 +445,249 @@ async fn stale_poller_duplicate_never_redelivers() {
         "a stale poller copy must lose the dequeue claim, not redeliver"
     );
     assert_eq!(marker_svc.deliveries.load(Ordering::SeqCst), 1);
+}
+
+// ---------------------------------------------------------------------------
+// A metadata store that parks one bundle's dequeue claim
+// ---------------------------------------------------------------------------
+
+/// Delegates to [`MetadataMemStorage`], parking the dequeue claim
+/// (`DispatchPending` → `Dispatching`) of one designated bundle until
+/// released, so the test can prove other bundles' claims proceed
+/// concurrently.
+struct ClaimGate {
+    inner: MetadataMemStorage,
+    gated: Mutex<Option<Id>>,
+    entered_tx: flume::Sender<()>,
+    release_rx: flume::Receiver<()>,
+}
+
+impl ClaimGate {
+    fn new() -> (Arc<Self>, flume::Receiver<()>, flume::Sender<()>) {
+        let (entered_tx, entered_rx) = flume::unbounded();
+        let (release_tx, release_rx) = flume::unbounded();
+        (
+            Arc::new(Self {
+                inner: MetadataMemStorage::new(None),
+                gated: Mutex::new(None),
+                entered_tx,
+                release_rx,
+            }),
+            entered_rx,
+            release_tx,
+        )
+    }
+}
+
+#[async_trait]
+impl MetadataStorage for ClaimGate {
+    async fn get(&self, bundle_id: &Id) -> storage::Result<Option<Bundle>> {
+        self.inner.get(bundle_id).await
+    }
+
+    async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
+        self.inner.insert(bundle).await
+    }
+
+    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
+        self.inner.replace(bundle).await
+    }
+
+    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> storage::Result<()> {
+        self.inner.update_status(bundle_id, status).await
+    }
+
+    async fn swap_status(
+        &self,
+        bundle_id: &Id,
+        expected: &BundleStatus,
+        status: &BundleStatus,
+    ) -> storage::Result<bool> {
+        // One-shot: the channel is at-least-once, so a poller-recovered
+        // second copy of the gated bundle must not park here too and strand
+        // itself past the single release.
+        let gate =
+            *expected == BundleStatus::DispatchPending && *status == BundleStatus::Dispatching && {
+                let mut gated = self.gated.lock().unwrap();
+                if gated.as_ref() == Some(bundle_id) {
+                    *gated = None;
+                    true
+                } else {
+                    false
+                }
+            };
+        if gate {
+            let _ = self.entered_tx.send(());
+            let _ = self.release_rx.recv_async().await;
+        }
+        self.inner.swap_status(bundle_id, expected, status).await
+    }
+
+    async fn tombstone_if(&self, bundle_id: &Id, expected: &BundleStatus) -> storage::Result<bool> {
+        self.inner.tombstone_if(bundle_id, expected).await
+    }
+
+    async fn tombstone(&self, bundle_id: &Id) -> storage::Result<()> {
+        self.inner.tombstone(bundle_id).await
+    }
+
+    async fn start_recovery(&self) {
+        self.inner.start_recovery().await
+    }
+
+    async fn confirm_exists(
+        &self,
+        bundle_id: &Id,
+    ) -> storage::Result<Option<(BundleMetadata, BundleStatus)>> {
+        self.inner.confirm_exists(bundle_id).await
+    }
+
+    async fn remove_unconfirmed(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
+        self.inner.remove_unconfirmed(stream).await
+    }
+
+    async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
+        self.inner.reset_peer_queue(peer).await
+    }
+
+    async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
+        self.inner.reset_peer_ack_pending(peer).await
+    }
+
+    async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
+        self.inner.reset_service_queue(service).await
+    }
+
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
+        self.inner.poll_expiry(stream, limit).await
+    }
+
+    async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
+        self.inner.poll_waiting(stream).await
+    }
+
+    async fn poll_service_waiting(
+        &self,
+        source: Eid,
+        stream: &dyn Sender<Bundle>,
+    ) -> storage::Result<()> {
+        self.inner.poll_service_waiting(source, stream).await
+    }
+
+    async fn poll_adu_fragments(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+    ) -> storage::Result<()> {
+        self.inner.poll_adu_fragments(stream, status).await
+    }
+
+    async fn poll_pending(
+        &self,
+        stream: &dyn Sender<Bundle>,
+        status: &BundleStatus,
+        limit: usize,
+    ) -> storage::Result<()> {
+        self.inner.poll_pending(stream, status, limit).await
+    }
+}
+
+/// The dequeue claim runs inside the pooled processing task, so one
+/// bundle's slow claim write must not serialize the whole dispatch queue:
+/// a second bundle is claimed and delivered while the first claim is still
+/// in flight.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_claim_does_not_serialize_dispatch() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let (metadata_store, claim_entered_rx, claim_release_tx) = ClaimGate::new();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .metadata_storage(metadata_store.clone())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    // Both services complete deliveries immediately.
+    let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
+    drop(a_release_tx);
+    bpa.register_service(Service::Ipn(7), svc_a.clone())
+        .await
+        .unwrap();
+    let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
+    drop(b_release_tx);
+    bpa.register_service(Service::Ipn(8), svc_b.clone())
+        .await
+        .unwrap();
+
+    let cla = IngressCla::new();
+    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+
+    // Bundle A's dequeue claim parks at the gate.
+    let (bundle_a, data_a) =
+        Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+            .with_lifetime(Duration::from_secs(3600))
+            .with_payload(Cow::Borrowed(b"slow claim".as_slice()))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+    *metadata_store.gated.lock().unwrap() = Some(bundle_a.primary.id);
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut Bytes::from(data_a))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        claim_entered_rx.recv_async(),
+    )
+    .await
+    .expect("Timed out waiting for A's claim to park")
+    .expect("Storage wrapper gone");
+
+    // Bundle B is dispatched while A's claim is verifiably still held: its
+    // delivery starting is the proof that claims overlap. (The timeout only
+    // bounds a regression — an inline claim would serialize B behind A.)
+    let (_, data_b) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+        .with_lifetime(Duration::from_secs(3600))
+        .with_payload(Cow::Borrowed(b"overtakes".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    cla.sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut Bytes::from(data_b))
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        b_started_rx.recv_async(),
+    )
+    .await
+    .expect("Timed out waiting for B's delivery while A's claim is held")
+    .expect("Service B gone");
+
+    // Release A and drain: shutdown joins the pools, so A's delivery has
+    // completed by the time it returns.
+    claim_release_tx.send(()).expect("Storage wrapper gone");
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        a_started_rx.recv_async(),
+    )
+    .await
+    .expect("Timed out waiting for A's delivery")
+    .expect("Service A gone");
+    bpa.shutdown().await;
+
+    assert_eq!(svc_a.deliveries.load(Ordering::SeqCst), 1);
+    assert_eq!(svc_b.deliveries.load(Ordering::SeqCst), 1);
 }

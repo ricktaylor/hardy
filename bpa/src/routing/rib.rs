@@ -322,9 +322,7 @@ impl Rib {
                 // analogue of the peer sweeps above). In-flight deliveries
                 // (DeliveryAckPending) are untouched — they resolve
                 // themselves.
-                if let Some(eid) = service.queue_eid() {
-                    self.store.reset_service_queue(eid).await;
-                }
+                self.store.reset_service_queue(service.eid()).await;
                 self.poll_waiting_notify.notify_one();
             }
             _ => {}
@@ -519,7 +517,15 @@ mod tests {
     use crate::services::tests::NullService;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
 
-    fn make_rib() -> Arc<Rib> {
+    fn make_store() -> Arc<Store> {
+        Arc::new(Store::new(
+            NonZeroUsize::new(16).unwrap(),
+            Arc::new(MetadataMemStorage::new(None)),
+            Arc::new(BundleMemStorage::new(None, None)),
+        ))
+    }
+
+    fn make_rib_from(store: Arc<Store>) -> Arc<Rib> {
         let node_ids = Arc::new(NodeIds {
             ipn: Some(IpnNodeId {
                 allocator_id: 0,
@@ -528,13 +534,29 @@ mod tests {
             dtn: None,
         });
 
-        let store = Arc::new(Store::new(
-            NonZeroUsize::new(16).unwrap(),
-            Arc::new(MetadataMemStorage::new(None)),
-            Arc::new(BundleMemStorage::new(None, None)),
-        ));
-
         Arc::new(Rib::new(node_ids, store, 1))
+    }
+
+    fn make_rib() -> Arc<Rib> {
+        make_rib_from(make_store())
+    }
+
+    /// A complete `Service` for route entries: `Service::new` demands the
+    /// delivery queue and canonical EID, so the test wires a real channel.
+    fn make_service(store: &Arc<Store>, eid: &str) -> Arc<Service> {
+        let eid: Eid = eid.parse().unwrap();
+        let (tx, _rx) = store.channel(
+            crate::bundle::BundleStatus::DeliverPending {
+                service: eid.clone(),
+            },
+            1,
+        );
+        Service::new(
+            ServiceImpl::LowLevel(Arc::new(NullService)),
+            EidService::Ipn(42),
+            eid,
+            tx,
+        )
     }
 
     fn add_route(rib: &Rib, pattern: &str, source: &str, action: Action, priority: u32) {
@@ -803,17 +825,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_concrete_service_matches() {
-        let rib = make_rib();
+    #[tokio::test]
+    async fn test_concrete_service_matches() {
+        let store = make_store();
+        let rib = make_rib_from(store.clone());
         add_route(
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service::new(
-                ServiceImpl::LowLevel(Arc::new(NullService)),
-                EidService::Ipn(42),
-            )))),
+            Action::Internal(InternalAction::Local(make_service(&store, "ipn:0.1.42"))),
             1,
         );
 
@@ -825,17 +845,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_concrete_service_ignores_remote_eid() {
-        let rib = make_rib();
+    #[tokio::test]
+    async fn test_concrete_service_ignores_remote_eid() {
+        let store = make_store();
+        let rib = make_rib_from(store.clone());
         add_route(
             &rib,
             "ipn:0.1.42",
             "services",
-            Action::Internal(InternalAction::Local(Arc::new(Service::new(
-                ServiceImpl::LowLevel(Arc::new(NullService)),
-                EidService::Ipn(42),
-            )))),
+            Action::Internal(InternalAction::Local(make_service(&store, "ipn:0.1.42"))),
             1,
         );
 

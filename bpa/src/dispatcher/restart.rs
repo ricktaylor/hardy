@@ -74,43 +74,32 @@ impl Dispatcher {
                     self.dispatch_bundle(bundle).await;
                 }
                 bundle::BundleStatus::ForwardPending { .. }
-                | bundle::BundleStatus::ForwardAckPending { .. } => {
+                | bundle::BundleStatus::ForwardAckPending { .. }
+                | bundle::BundleStatus::DeliverPending { .. }
+                | bundle::BundleStatus::DeliveryAckPending { .. } => {
                     // Peer IDs and CLA registrations are stale after restart —
                     // queued bundles re-route, and an in-flight transfer's
-                    // outcome can never arrive (outcome-unknown) — reset to
-                    // Waiting. The reset is a conditional swap from the
-                    // status recovery read: registration is gated until
+                    // outcome can never arrive (outcome-unknown) — so transfer
+                    // checkpoints reset to Waiting. Service registrations do
+                    // not survive a restart either: queued and in-flight
+                    // deliveries re-park as WaitingForService, recovered when
+                    // the service (re-)registers. The reset is a conditional
+                    // swap from the recovery read: registration is gated until
                     // recovery completes, but a checkpoint that has somehow
                     // moved on is live state this reset must not stomp.
+                    let parked = match &bundle.status {
+                        bundle::BundleStatus::DeliverPending { service }
+                        | bundle::BundleStatus::DeliveryAckPending { service } => {
+                            bundle::BundleStatus::WaitingForService {
+                                service: service.clone(),
+                            }
+                        }
+                        _ => bundle::BundleStatus::Waiting,
+                    };
                     let mut bundle = bundle;
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-                    if !self
-                        .store
-                        .swap_status(&mut bundle, &bundle::BundleStatus::Waiting)
-                        .await
-                    {
-                        debug!("Recovered transfer checkpoint moved on, leaving it be");
-                    }
-                }
-                bundle::BundleStatus::DeliverPending { service }
-                | bundle::BundleStatus::DeliveryAckPending { service } => {
-                    // Service registrations do not survive a restart: queued
-                    // and in-flight deliveries re-park as WaitingForService,
-                    // recovered when the service (re-)registers. Channel
-                    // statuses never outlive their channel. Conditional swap
-                    // for the same reason as the transfer arm above.
-                    let service = service.clone();
-                    let mut bundle = bundle;
-                    metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
-                    if !self
-                        .store
-                        .swap_status(
-                            &mut bundle,
-                            &bundle::BundleStatus::WaitingForService { service },
-                        )
-                        .await
-                    {
-                        debug!("Recovered delivery checkpoint moved on, leaving it be");
+                    if !self.store.swap_status(&mut bundle, &parked).await {
+                        debug!("Recovered checkpoint moved on, leaving it be");
                     }
                 }
                 // Other statuses are handled by their respective recovery mechanisms:

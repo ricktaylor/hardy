@@ -23,22 +23,25 @@ impl Dispatcher {
         self: Arc<Self>,
         dispatch_rx: hardy_async::closeable::Receiver<bundle::Bundle>,
     ) {
-        while let Ok(mut bundle) = dispatch_rx.recv().await {
-            // Claim the bundle out of DispatchPending before spending a pool
-            // slot on it: the channel is at-least-once (its storage poller
-            // can push a copy already snapshotted before this claim), so a
-            // copy that loses the swap is a duplicate and is dropped here.
-            if !self
-                .store
-                .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
-                .await
-            {
-                debug!("Bundle already claimed for processing, dropping duplicate copy");
-                continue;
-            }
-
+        while let Ok(bundle) = dispatch_rx.recv().await {
             let dispatcher = self.clone();
             hardy_async::spawn!(self.processing_pool, "process_bundle", async move {
+                let mut bundle = bundle;
+                // Claim the bundle out of DispatchPending: the channel is
+                // at-least-once (its storage poller can push a copy already
+                // snapshotted before this claim), so a copy that loses the
+                // swap is a duplicate and is dropped here. The claim runs
+                // inside the pooled task so claims for successive bundles
+                // overlap — the pool permit is the consumer's only await.
+                if !dispatcher
+                    .store
+                    .swap_status(&mut bundle, &bundle::BundleStatus::Dispatching)
+                    .await
+                {
+                    debug!("Bundle already claimed for processing, dropping duplicate copy");
+                    return;
+                }
+
                 dispatcher
                     .process_bundle(bundle, dispatcher.cla_registry())
                     .await;
@@ -111,16 +114,15 @@ impl Dispatcher {
                     // Queue to the service's delivery channel
                     if let Err(bundle) = service.deliver(bundle).await {
                         // The service unregistered between the RIB lookup and
-                        // the send: park for the next registration.
+                        // the send: park for the next registration, under
+                        // the canonical registration EID stored at
+                        // construction — the exact key the re-registration
+                        // poll matches.
                         debug!("Service delivery queue closed, parking bundle");
-                        let service_eid = self
-                            .node_ids
-                            .resolve_eid(&service.service_id)
-                            .unwrap_or_else(|_| bundle.primary().destination.clone());
                         self.park_bundle(
                             bundle,
                             bundle::BundleStatus::WaitingForService {
-                                service: service_eid,
+                                service: service.eid().clone(),
                             },
                             &seen,
                         )
