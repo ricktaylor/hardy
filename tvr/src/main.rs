@@ -1,8 +1,8 @@
+use std::{path::PathBuf, sync::Arc};
+
+use anyhow::Context;
 use clap::Parser;
 use hardy_async::TaskPool;
-use hardy_bpa::bpa::BpaRegistration;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{error, info};
 
 mod config;
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
 
-    inner_main(config).await.inspect_err(|e| error!("{e}"))
+    inner_main(config).await.inspect_err(|e| error!("{e:#}"))
 }
 
 async fn inner_main(config: config::Config) -> anyhow::Result<()> {
@@ -83,7 +83,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         "Contact plan file reload attempts"
     );
 
-    // Create scheduler channel (handle available immediately, task starts after registration)
+    // Create scheduler channel (handle available immediately, task starts after handle)
     let (scheduler_handle, scheduler_rx) = scheduler::channel();
 
     // Create the routing agent
@@ -92,28 +92,37 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
         scheduler_handle.clone(),
     ));
 
-    // Connect to BPA and register as a RoutingAgent
-    info!("Connecting to BPA at {}", config.bpa_address);
-
-    let remote_bpa = hardy_proto::client::RemoteBpa::new(config.bpa_address);
-
-    let node_ids = remote_bpa
-        .register_routing_agent(config.agent_name.clone(), agent.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("RoutingAgent registration failed: {e}"))?;
-
-    info!(
-        "Routing agent '{}' registered, node IDs: {:?}",
-        config.agent_name,
-        node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
-    );
-
     let tasks = TaskPool::new();
     hardy_async::signal::listen_for_cancel(&tasks);
 
-    // Start scheduler task (sink is now available after registration)
+    // Connect to BPA and register as a RoutingAgent
+    info!("Connecting to BPA at {}", config.bpa_address);
+
+    let client = hardy_proto::client::BpaClient::new(config.bpa_address, tasks.clone())
+        .context("Invalid BPA address")?;
+
+    // Register: the registration handle returns once the handshake completes, so the
+    // sink is stored and the node ids are known before we start the
+    // scheduler. The session runs on the pool; there is no automatic
+    // re-registration (a supervisor restarts the process).
+    let handle = client
+        .register_routing_agent(config.agent_name.clone(), agent.clone())
+        .await
+        .context("RoutingAgent registration failed")?;
+    info!(
+        "Routing agent '{}' registered, node IDs: {:?}",
+        config.agent_name,
+        handle
+            .id()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+    );
+
+    // Start scheduler task (the sink is available now that handle
+    // has completed).
     {
-        let sink = agent.sink().expect("sink should be set after registration");
+        let sink = agent.sink().expect("sink should be set after handle");
         scheduler::start(scheduler_rx, sink, &tasks);
     }
 
@@ -144,7 +153,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
-                error!("Failed to load contact plan: {e}");
+                error!("Failed to load contact plan: {e:#}");
             }
         }
         if let Some(watch_mode) = config.watch.into() {
@@ -188,7 +197,7 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
                                     .increment(1);
                             }
                             Err(e) => {
-                                error!("Failed to reload contact plan: {e}");
+                                error!("Failed to reload contact plan: {e:#}");
                                 metrics::counter!("tvr_file_reloads", "outcome" => "error")
                                     .increment(1);
                             }
@@ -202,14 +211,23 @@ async fn inner_main(config: config::Config) -> anyhow::Result<()> {
 
     info!("Started successfully");
 
-    tasks.cancel_token().cancelled().await;
-
-    // Gracefully unregister from the BPA
-    agent.unregister().await;
-
+    // The handle resolves on every ending: the signal path (SIGINT/
+    // SIGTERM cancel the pool, which ends the session cleanly), the BPA
+    // closing the session, or a lost connection. The stream teardown is
+    // the unregistration: the BPA withdraws this agent's routes on it.
+    let result = handle.await;
+    // Read before `shutdown`, which cancels the token itself.
+    let locally_stopped = tasks.is_cancelled();
     tasks.shutdown().await;
-
     info!("Stopped");
 
-    Ok(())
+    match result {
+        Ok(()) if locally_stopped => Ok(()),
+        // A clean end without a local shutdown is the BPA closing the
+        // session: the routes are withdrawn with it and nothing here
+        // re-installs them, so exit nonzero and let a supervisor restart
+        // the process.
+        Ok(()) => Err(anyhow::anyhow!("The BPA closed the routing session")),
+        Err(e) => Err(e).context("Routing session lost"),
+    }
 }

@@ -4,8 +4,11 @@
 // The `config` module is pure data; turning that data into running
 // subsystems is this module's job, inline in `BpaServer::new`. Crate-local
 // runtime types construct themselves from config (`PatternKeySource::load`,
-// `StaticRoutesAgent`).
+// `StaticRoutesAgent`); the gRPC front end is assembled by the `grpc`
+// module.
 
+#[cfg(feature = "grpc")]
+use std::fs;
 use std::{collections::HashMap, io::ErrorKind, sync::Arc};
 
 use anyhow::Context;
@@ -28,18 +31,26 @@ use hardy_ipn_legacy_filter::IpnLegacyFilter;
 use hardy_localdisk_storage::LocalDiskStorage;
 #[cfg(feature = "postgres-storage")]
 use hardy_postgres_storage::PostgresStorage;
-#[cfg(feature = "grpc")]
-use hardy_proto::server::GrpcServer;
 #[cfg(feature = "s3-storage")]
 use hardy_s3_storage::S3Storage;
 #[cfg(feature = "sqlite-storage")]
 use hardy_sqlite_storage::SqliteStorage;
 #[cfg(feature = "tcpclv4")]
 use hardy_tcpclv4::{Tcpclv4, tls};
+#[cfg(feature = "grpc")]
+use tokio::sync::oneshot;
+#[cfg(feature = "grpc")]
+use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tracing::{info, warn};
 
 use crate::bpsec::{self, PatternKeyProvider, PatternKeySource};
+#[cfg(feature = "grpc")]
+use crate::config::tls::ClientAuth;
 use crate::config::{Config, EgressPolicyConfig, cla::ClaType, storage};
+#[cfg(feature = "grpc")]
+use crate::error::Error;
+#[cfg(feature = "grpc")]
+use crate::grpc::GrpcServer;
 use crate::static_routes::StaticRoutesAgent;
 
 // The standalone server around a [`hardy_bpa::Bpa`]: the BPA plus what
@@ -49,7 +60,8 @@ pub struct BpaServer {
     bpa: Arc<Bpa>,
     recover_storage: bool,
     #[cfg(feature = "grpc")]
-    grpc_config: Option<hardy_proto::server::Config>,
+    // The composed gRPC front end, not yet serving.
+    grpc: Option<GrpcServer>,
     tasks: TaskPool,
 }
 
@@ -68,9 +80,6 @@ impl BpaServer {
         #[allow(unused_variables)] upgrade_storage: bool,
         recover_storage: bool,
     ) -> anyhow::Result<Self> {
-        #[cfg(feature = "grpc")]
-        let grpc_config = config.grpc;
-
         // The upgrade flag is consumed only by persistent backends, so a
         // memory-only build leaves it unused.
         let metadata_storage: Arc<dyn MetadataStorage> = match &config.storage.metadata {
@@ -386,11 +395,55 @@ impl BpaServer {
 
         let bpa = Arc::new(builder.build().await.map_err(anyhow::Error::from_boxed)?);
 
+        #[cfg(feature = "grpc")]
+        let grpc = if let Some(grpc) = config.grpc {
+            // Turn the gRPC TLS schema into the listener's `ServerTlsConfig`:
+            // the identity to present, and the optional mutual-TLS trust
+            // anchor. `client-auth` other than `off` requires `ca-certs`.
+            let tls = if let Some(tls) = grpc.tls {
+                let cert = fs::read(&tls.identity.cert_file).map_err(|source| Error::TlsRead {
+                    path: tls.identity.cert_file.clone(),
+                    source,
+                })?;
+                let key = fs::read(&tls.identity.key_file).map_err(|source| Error::TlsRead {
+                    path: tls.identity.key_file.clone(),
+                    source,
+                })?;
+                let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
+
+                if tls.client_auth != ClientAuth::Off {
+                    let ca_certs = tls.ca_certs.ok_or(Error::TlsClientAuthWithoutCaCerts)?;
+                    let ca = fs::read(&ca_certs).map_err(|source| Error::TlsRead {
+                        path: ca_certs,
+                        source,
+                    })?;
+                    server_tls = server_tls
+                        .client_ca_root(Certificate::from_pem(ca))
+                        .client_auth_optional(tls.client_auth == ClientAuth::Optional);
+                }
+                Some(server_tls)
+            } else {
+                None
+            };
+
+            Some(GrpcServer::new(
+                grpc.address,
+                grpc.services,
+                grpc.drain_timeout,
+                tls,
+                grpc.http2,
+                &bpa,
+                &tasks,
+            )?)
+        } else {
+            None
+        };
+
         Ok(Self {
             bpa,
             recover_storage,
             #[cfg(feature = "grpc")]
-            grpc_config,
+            grpc,
             tasks,
         })
     }
@@ -400,36 +453,51 @@ impl BpaServer {
     // the pool's cancellation token (the composition root wires signals to
     // it) and shut down gracefully.
     pub async fn run(self) -> anyhow::Result<()> {
-        self.bpa.start(self.recover_storage);
+        let Self {
+            bpa,
+            recover_storage,
+            #[cfg(feature = "grpc")]
+            grpc,
+            tasks,
+        } = self;
 
+        bpa.start(recover_storage);
+
+        // A gRPC transport failure fires this channel; a clean cancel-driven
+        // shutdown leaves the sender to drop. Checked after shutdown so the
+        // failure keys the process exit status, matching a bind failure.
         #[cfg(feature = "grpc")]
-        if let Some(grpc_config) = &self.grpc_config {
-            let server = GrpcServer::new(grpc_config, self.bpa.clone())
-                .map_err(|e| anyhow::anyhow!("Failed to create gRPC server: {e}"))?;
-            let cancel = self.tasks.cancel_token().clone();
-            hardy_async::spawn!(self.tasks, "grpc_server", async move {
-                if let Err(e) = server.serve(cancel).await {
-                    tracing::error!("gRPC server failed: {e}");
+        let grpc_failure = if let Some(grpc) = grpc {
+            let cancel = tasks.cancel_token().clone();
+            let (tx, rx) = oneshot::channel();
+            hardy_async::spawn!(tasks, "grpc_server", async move {
+                if let Err(e) = grpc.serve(cancel).await {
+                    let _ = tx.send(e);
                 }
             });
-        }
+            Some(rx)
+        } else {
+            None
+        };
 
         info!("Started successfully");
 
-        self.tasks.cancel_token().cancelled().await;
+        tasks.cancel_token().cancelled().await;
 
-        self.shutdown().await;
+        tasks.shutdown().await;
+        bpa.shutdown().await;
 
         info!("Stopped");
 
-        Ok(())
-    }
+        // After `shutdown` the serve task has ended, so the sender is either
+        // fired (transport failure) or dropped (clean shutdown).
+        #[cfg(feature = "grpc")]
+        if let Some(rx) = grpc_failure
+            && let Ok(err) = rx.await
+        {
+            return Err(err.into());
+        }
 
-    // Stops the server, in dependency order: the background tasks (gRPC
-    // front end, BPSec watcher) are wound down before the BPA they drive
-    // work into.
-    async fn shutdown(&self) {
-        self.tasks.shutdown().await;
-        self.bpa.shutdown().await;
+        Ok(())
     }
 }

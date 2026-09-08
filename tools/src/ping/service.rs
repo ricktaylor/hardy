@@ -599,10 +599,10 @@ impl hardy_bpa::services::Service for Service {
         &self,
         _bundle_id: &Id,
         _expiry: time::OffsetDateTime,
-        total_len: u64,
+        bundle_size: u64,
         stream: &mut dyn Receiver<Segment>,
     ) -> hardy_bpa::services::Result<()> {
-        let data = buffer_stream(stream, total_len).await?;
+        let data = buffer_stream(stream, bundle_size).await?;
 
         // Record receive time immediately for accurate RTT
         let receive_time = time::OffsetDateTime::now_utc();

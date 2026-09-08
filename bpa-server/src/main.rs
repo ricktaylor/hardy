@@ -9,6 +9,8 @@ use self::server::BpaServer;
 mod bpsec;
 mod config;
 mod error;
+#[cfg(feature = "grpc")]
+mod grpc;
 mod server;
 mod static_routes;
 
@@ -57,6 +59,8 @@ async fn main() -> anyhow::Result<()> {
     let _guard = configure_tracing(config.log_level);
 
     info!("{} version {} starting...", PKG_NAME, PKG_VERSION);
+
+    config.warn_insecure_keys();
 
     // Process policy lives here: the top-level task pool and the wiring of
     // SIGINT/SIGTERM to its cancellation token.

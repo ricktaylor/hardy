@@ -1,0 +1,262 @@
+// The client's two transfer adapters, one per direction, bridging the
+// wire's chunked-transfer grammar and the BPA's [`Segment`] stream:
+//
+// - [`Reader`] adapts an incoming gRPC stream into a
+//   [`Receiver<Segment>`], so a component consumes a transfer it
+//   collects (a Receive) or forwards through the same pull interface as
+//   any other stream.
+// - [`Writer`] adapts the other direction: it pulls a borrowed
+//   [`Segment`] stream and pushes wire chunks onto a transfer it sends.
+//
+// The server's counterparts are `server::adapter::{Reader, Writer}`.
+
+use core::{future::Future, mem, pin::Pin};
+
+use hardy_bpa::{
+    async_trait,
+    stream::{Receiver, RecvError, Segment},
+};
+use tokio::sync::mpsc::Sender;
+use tonic::Streaming;
+use tracing::debug;
+
+use crate::stream::{Ack, Cancel, Chunk, chunks};
+
+// -------------------------------------------------------------------
+// Reader: wire -> Segment
+// -------------------------------------------------------------------
+
+// The open halves of one transfer: the running RPC's response stream
+// and its request sender, the latter kept so an unfinished transfer can
+// be abandoned with the wire's in-band cancel.
+type Wire<Response, Request> = (Streaming<Response>, Sender<Request>);
+
+// The in-flight open of a lazy transfer, boxed so the state can hold it.
+type Opening<Response, Request> =
+    Pin<Box<dyn Future<Output = Option<Wire<Response, Request>>> + Send>>;
+
+// Issues the RPC on the first pull, yielding the transfer's halves or
+// `None` if the open fails. Boxed so a [`Reader`] can hold it before the
+// first pull without naming the future.
+type Opener<Response, Request> = Box<dyn FnOnce() -> Opening<Response, Request> + Send>;
+
+// The `Open` variant is the common, hot state (an eager transfer starts
+// there, and a lazy one transits to it on the first pull); the other
+// variants are transient, so boxing the large variant to even the sizes
+// would only add an allocation to the path that matters.
+#[allow(clippy::large_enum_variant)]
+enum State<Response, Request> {
+    // Not yet opened: the RPC is issued on the first pull, so a
+    // component that never pulls never opens the transfer.
+    Pending(Opener<Response, Request>),
+    // The RPC is being opened. The in-flight future lives in the state,
+    // not in a pull's stack frame, so a `recv` dropped mid-open (a lost
+    // `select!` race) leaves the open resumable by the next pull instead
+    // of destroying the reader.
+    Opening(Opening<Response, Request>),
+    Open {
+        chunks: Streaming<Response>,
+        requests: Sender<Request>,
+    },
+    // The open failed, or the transfer ended.
+    Closed,
+}
+
+// Adapts an incoming gRPC stream into a [`Receiver<Segment>`]: each
+// `recv` pulls one wire chunk and hands it over as a segment (HTTP/2
+// flow control stalls the BPA beyond its window if the consumer pauses),
+// and the wire's last chunk is the final segment. A withdrawal, a
+// failure, or a stream ending without the last chunk ends it as
+// truncation, never completion. A collection commits only through
+// [`acknowledge`](Self::acknowledge): dropping it unacknowledged
+// abandons it, whether or not the last chunk was pulled, and the bundle
+// stays held for a later attempt.
+pub struct Reader<Response, Request: Cancel> {
+    state: State<Response, Request>,
+    // Set once the last chunk arrives: an unfinished drop still owes the
+    // wire an explicit in-band cancel, a finished one abandons by the
+    // call ending without an ack.
+    completed: bool,
+}
+
+impl<Response, Request: Cancel> Reader<Response, Request> {
+    // An already-open transfer (a Forward or Dispatch execution): the
+    // RPC is running before the first pull.
+    pub fn new(chunks: Streaming<Response>, requests: Sender<Request>) -> Self {
+        Self {
+            state: State::Open { chunks, requests },
+            completed: false,
+        }
+    }
+
+    // A lazily-opened collection: `open` issues the RPC on the first
+    // pull, so a component that holds an announced delivery without
+    // pulling never opens it and the bundle stays parked for a later
+    // registration.
+    pub fn lazy<F, Fut>(open: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Option<Wire<Response, Request>>> + Send + 'static,
+    {
+        let opener: Opener<Response, Request> = Box::new(move || Box::pin(open()));
+        Self {
+            state: State::Pending(opener),
+            completed: false,
+        }
+    }
+
+    // Whether the wire's last chunk has been pulled. A completed
+    // collection is committed by [`acknowledge`](Self::acknowledge), not
+    // by the pull itself, and Drop sends no cancel for one.
+    pub fn is_complete(&self) -> bool {
+        self.completed
+    }
+
+    // Acknowledges a completed collection and waits for the server to
+    // take the ack. The ack goes on the request side; the server records
+    // it, commits the bundle, then closes the response. Draining the
+    // response to that end is the client's half of the commit handshake:
+    // it keeps the call alive so the ack demonstrably reaches the server
+    // (dropping a still-open call instead resets it and may discard the
+    // ack in flight); the commit itself can still lose a shutdown or
+    // expiry race server-side, costing only a duplicate re-delivery. A
+    // collection short of its last chunk is never acknowledged: an early
+    // ack is a protocol violation, so a component that accepts without
+    // receiving to completion abandons the delivery instead. Only the
+    // collection Readers have an ack-capable request type, hence the
+    // method-level bound.
+    pub async fn acknowledge(&mut self)
+    where
+        Request: Ack,
+    {
+        if !self.completed {
+            return;
+        }
+        let State::Open { chunks, requests } = &mut self.state else {
+            return;
+        };
+        let _ = requests.try_send(Request::ack());
+        while matches!(chunks.message().await, Ok(Some(_))) {}
+    }
+}
+
+#[async_trait]
+impl<Response, Request> Receiver<Segment> for Reader<Response, Request>
+where
+    Response: Chunk + Send + 'static,
+    Request: Cancel + Send + 'static,
+{
+    async fn recv(&mut self) -> Result<Segment, RecvError> {
+        // Open on the first pull, at most once. The opener converts to
+        // its future synchronously (no await between the take and the
+        // store), and the future is awaited from inside the state, so
+        // the whole open is cancellation-safe: a pull dropped mid-open
+        // resumes the same open on its next pull.
+        if matches!(self.state, State::Pending(_)) {
+            let State::Pending(open) = mem::replace(&mut self.state, State::Closed) else {
+                unreachable!()
+            };
+            self.state = State::Opening(open());
+        }
+        if let State::Opening(open) = &mut self.state {
+            let opened = open.as_mut().await;
+            match opened {
+                Some((chunks, requests)) => self.state = State::Open { chunks, requests },
+                None => {
+                    self.state = State::Closed;
+                    return Err(RecvError);
+                }
+            }
+        }
+
+        let State::Open { chunks, .. } = &mut self.state else {
+            return Err(RecvError);
+        };
+        match chunks.message().await {
+            Ok(Some(message)) => match message.into_chunk() {
+                Some(segment) => {
+                    if matches!(segment, Segment::Final(_)) {
+                        self.completed = true;
+                    }
+                    Ok(segment)
+                }
+                None => Err(RecvError),
+            },
+            Ok(None) => Err(RecvError),
+            Err(status) => {
+                // The `Receiver` contract cannot carry the `Status`, so
+                // it is logged before folding into `RecvError`.
+                debug!("Transfer stream failed: {status}");
+                Err(RecvError)
+            }
+        }
+    }
+}
+
+impl<Response, Request: Cancel> Drop for Reader<Response, Request> {
+    // Dropping an unacknowledged collection abandons it. Short of the
+    // last chunk the abandonment is the explicit in-band cancel; past it
+    // no cancel is sent, because the drop already ends the call without
+    // an ack, which the server reads as the same abandonment, and a
+    // transfer reader (a Forward, a Dispatch) that ran to completion
+    // owes no message at all. A collection never opened has no request
+    // side to cancel, and one dropped mid-open abandons the whole call
+    // (the in-flight future owns the request sender), which the server
+    // sees as a transport-level cancellation.
+    //
+    // The `try_send` is reliable, not best-effort: the request channel
+    // has room for every message this side queues plus the cancel, so a
+    // failed `try_send` means the channel is closed, and a closed
+    // channel means the call has already ended and no cancel is owed.
+    fn drop(&mut self) {
+        if !self.completed
+            && let State::Open { requests, .. } = &self.state
+        {
+            let _ = requests.try_send(Request::cancel());
+        }
+    }
+}
+
+// -------------------------------------------------------------------
+// Writer: Segment -> wire
+// -------------------------------------------------------------------
+
+// Adapts a borrowed [`Segment`] stream onto a transfer's request side:
+// [`write_all`](Self::write_all) pulls segments and pushes wire chunks
+// while the call runs. The write counterpart of [`Reader`], used by the
+// sinks that send a transfer to the BPA.
+pub struct Writer<'a, Request> {
+    requests: &'a Sender<Request>,
+}
+
+impl<'a, Request: Chunk + Cancel> Writer<'a, Request> {
+    pub fn new(requests: &'a Sender<Request>) -> Self {
+        Self { requests }
+    }
+
+    // Drains `stream` onto the wire, one chunk per send. A producer that
+    // gives up before its final segment aborts in-band, so the BPA
+    // discards the partial transfer; a closed request channel (the call
+    // already ended) just stops the pump.
+    pub async fn write_all(self, stream: &mut dyn Receiver<Segment>) {
+        loop {
+            let segment = match stream.recv().await {
+                Ok(segment) => segment,
+                Err(_) => {
+                    let _ = self.requests.send(Request::cancel()).await;
+                    return;
+                }
+            };
+            let last = matches!(segment, Segment::Final(_));
+
+            for segment in chunks(segment) {
+                if self.requests.send(Request::chunk(segment)).await.is_err() {
+                    return;
+                }
+            }
+            if last {
+                return;
+            }
+        }
+    }
+}

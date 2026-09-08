@@ -75,13 +75,6 @@ impl TvrAgent {
     pub fn sink(&self) -> Option<Arc<dyn RoutingSink>> {
         self.sink.get().cloned()
     }
-
-    // Explicitly unregister from the BPA.
-    pub async fn unregister(&self) {
-        if let Some(sink) = self.sink.get() {
-            sink.unregister().await;
-        }
-    }
 }
 
 #[hardy_bpa::async_trait]

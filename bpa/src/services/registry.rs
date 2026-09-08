@@ -1,8 +1,15 @@
+use core::time::Duration;
+
 use hardy_async::async_trait;
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::{bundle::Id, eid::Eid, status_report::ReasonCode};
+use time::OffsetDateTime;
 use tracing::{error, info};
 
-use crate::{Arc, Bytes, HashMap, Weak, dispatcher, node_ids, routing, services};
+use crate::{
+    Arc, HashMap, Weak, dispatcher, node_ids, routing,
+    services::{self, StatusNotify},
+    stream::{CancellableReceiver, Receiver, Segment},
+};
 
 // ServiceRegistry uses hardy_async::sync::spin::Mutex because:
 // 1. All operations are O(1) HashMap lookups/inserts
@@ -29,18 +36,18 @@ pub struct Service {
 impl Service {
     pub async fn on_status_notify(
         &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
+        bundle_id: &Id,
         from: &Eid,
-        kind: services::StatusNotify,
-        reason: hardy_bpv7::status_report::ReasonCode,
-        timestamp: Option<time::OffsetDateTime>,
+        kind: StatusNotify,
+        reason: ReasonCode,
+        timestamp: Option<OffsetDateTime>,
     ) {
         match &self.service {
             ServiceImpl::LowLevel(svc) => {
                 svc.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
-            services::registry::ServiceImpl::Application(app) => {
+            ServiceImpl::Application(app) => {
                 app.on_status_notify(bundle_id, from, kind, reason, timestamp)
                     .await
             }
@@ -104,6 +111,25 @@ impl Sink {
             error!("Failed to unregister service: {e}");
         }
     }
+
+    // A component that unregisters mid-send must not originate its
+    // bundle: the registration's token races every pull, so teardown
+    // wakes the wrapped stream immediately — even parked behind a
+    // stalled producer — and the send surfaces as cancelled. Sink-side,
+    // so the dispatcher's stream consumers stay registration-agnostic.
+    fn cancellable<'a>(
+        &self,
+        stream: &'a mut dyn Receiver<Segment>,
+    ) -> services::Result<CancellableReceiver<'a, Segment>> {
+        let service = self
+            .service
+            .upgrade()
+            .ok_or(services::Error::Disconnected)?;
+        Ok(CancellableReceiver {
+            inner: stream,
+            token: service.cancel.clone(),
+        })
+    }
 }
 
 #[async_trait]
@@ -112,26 +138,10 @@ impl services::ServiceSink for Sink {
         self.unregister_inner().await
     }
 
-    async fn send(
-        &self,
-        stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        let service = self
-            .service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
-        // A service that unregisters mid-send must not originate its bundle:
-        // the registration's token races every pull, so teardown wakes this
-        // stream immediately — even parked behind a stalled producer — and
-        // the send surfaces as cancelled. Sink-side, so the dispatcher's
-        // stream consumers stay registration-agnostic.
-        let mut stream = crate::stream::CancellableReceiver {
-            inner: stream,
-            token: service.cancel.clone(),
-        };
+    async fn send(&self, stream: &mut dyn Receiver<Segment>) -> services::Result<Id> {
+        let mut stream = self.cancellable(stream)?;
         self.dispatcher
-            .local_dispatch_raw_streamed(&self.eid, &mut stream)
+            .local_dispatch_raw(&self.eid, &mut stream)
             .await
     }
 }
@@ -145,16 +155,21 @@ impl services::ApplicationSink for Sink {
     async fn send(
         &self,
         destination: Eid,
-        data: Bytes,
-        lifetime: core::time::Duration,
+        lifetime: Duration,
         options: Option<services::SendOptions>,
-    ) -> services::Result<hardy_bpv7::bundle::Id> {
-        self.service
-            .upgrade()
-            .ok_or(services::Error::Disconnected)?;
-
+        size_hint: Option<u64>,
+        stream: &mut dyn Receiver<Segment>,
+    ) -> services::Result<Id> {
+        let mut stream = self.cancellable(stream)?;
         self.dispatcher
-            .local_dispatch(self.eid.clone(), destination, data, lifetime, options)
+            .local_dispatch(
+                self.eid.clone(),
+                destination,
+                lifetime,
+                options,
+                size_hint,
+                &mut stream,
+            )
             .await
     }
 }
@@ -176,6 +191,7 @@ impl Drop for Sink {
 
 type ServiceMap = HashMap<hardy_bpv7::eid::Service, Arc<Service>>;
 
+/// Inserts a fresh [`Service`] into `services`, rejecting a duplicate id.
 pub(crate) struct ServiceRegistryBuilder {
     services: ServiceMap,
 }
@@ -329,7 +345,7 @@ impl ServiceRegistry {
             service_id: service_id.clone(),
             cancel: hardy_async::CancellationToken::new(),
         });
-        services.insert(service_id.clone(), service);
+        services.insert(service_id, service);
         Ok(())
     }
 
@@ -357,7 +373,21 @@ impl ServiceRegistry {
             ServiceImpl::LowLevel(s) => s.on_register(&eid, Box::new(sink)).await,
             ServiceImpl::Application(a) => a.on_register(&eid, Box::new(sink)).await,
         }
-        dispatcher.poll_service_waiting(&eid).await;
+
+        // Re-announce parked bundles off the registration path: an
+        // announcement can block on the component (a remote session's
+        // bounded event buffer drains only after registration returns),
+        // so awaiting the poll here could deadlock registration against
+        // its own announcements. The poll's status CAS keeps
+        // overlapping polls safe.
+        {
+            let dispatcher = dispatcher.clone();
+            let eid = eid.clone();
+            hardy_async::spawn!(self.tasks, "poll_service_waiting", async move {
+                dispatcher.poll_service_waiting(&eid).await;
+            });
+        }
+
         metrics::gauge!("bpa.service.registered").increment(1.0);
         Ok(eid)
     }
@@ -429,21 +459,21 @@ mod tests {
         async fn on_unregister(&self) {}
         async fn on_deliver(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
-            _expiry: time::OffsetDateTime,
+            _bundle_id: &Id,
+            _expiry: OffsetDateTime,
             _ack_requested: bool,
-            _total_len: u64,
-            _stream: &mut dyn crate::stream::Receiver<crate::stream::Segment>,
+            _adu_size: u64,
+            _stream: &mut dyn Receiver<Segment>,
         ) -> services::Result<()> {
             Ok(())
         }
         async fn on_status_notify(
             &self,
-            _bundle_id: &hardy_bpv7::bundle::Id,
+            _bundle_id: &Id,
             _from: &hardy_bpv7::eid::Eid,
             _kind: services::StatusNotify,
-            _reason: hardy_bpv7::status_report::ReasonCode,
-            _timestamp: Option<time::OffsetDateTime>,
+            _reason: ReasonCode,
+            _timestamp: Option<OffsetDateTime>,
         ) {
         }
     }
