@@ -653,7 +653,7 @@ async fn assert_fully_resolved(
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(16);
     metadata_store
-        .poll_expiry(&live_tx, 16)
+        .poll_expiry(&live_tx)
         .await
         .expect("Failed to poll metadata store");
     drop(live_tx);

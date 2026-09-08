@@ -613,52 +613,67 @@ impl MetadataStorage for SqliteStorage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         debug_assert!(
             from_status(&BundleStatus::New).0 == 0,
             "Status code mismatch"
         ); // Ensure status codes match
 
-        let bundles = self
-            .read(move |conn| {
-                conn.prepare_cached(
-                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
-                        WHERE bundle IS NOT NULL AND status_code != 0
-                        ORDER BY expiry ASC
-                        LIMIT ?1",
-                )?
-                .query_map((limit as isize,), |row| {
-                    Ok((
-                        row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(Into::into)
-            })
-            .await?;
+        // Keyset pages: the consumer closes the stream once it has what it
+        // needs, so each page is fetched only if the previous one was
+        // consumed whole.
+        const PAGE_SIZE: usize = 64;
+        let mut cursor: Option<(String, i64)> = None;
+        loop {
+            let page_cursor = cursor.clone();
+            let bundles = self
+                .read(move |conn| {
+                    let (expiry, rowid) = page_cursor
+                        .unwrap_or_else(|| (String::new(), 0));
+                    conn.prepare_cached(
+                        "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
+                            WHERE bundle IS NOT NULL AND status_code != 0 AND (expiry, rowid) > (?1, ?2)
+                            ORDER BY expiry ASC, rowid ASC
+                            LIMIT ?3",
+                    )?
+                    .query_map((expiry, rowid, PAGE_SIZE as isize), |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Into::into)
+                })
+                .await?;
 
-        for (bundle, status_code, p1, p2, p3) in bundles {
-            match serde_json::from_slice::<Bundle>(&bundle) {
-                Ok(mut bundle) => {
-                    if let Some(status) = to_status(status_code, p1, p2, p3) {
-                        bundle.status = status;
-                        if stream.send(bundle).await.is_err() {
-                            // The other end is shutting down - get out
-                            break;
+            let full_page = bundles.len() == PAGE_SIZE;
+            for (rowid, expiry, bundle, status_code, p1, p2, p3) in bundles {
+                cursor = Some((expiry, rowid));
+                match serde_json::from_slice::<Bundle>(&bundle) {
+                    Ok(mut bundle) => {
+                        if let Some(status) = to_status(status_code, p1, p2, p3) {
+                            bundle.status = status;
+                            if stream.send(bundle).await.is_err() {
+                                // The other end is shutting down - get out
+                                return Ok(());
+                            }
+                        } else {
+                            warn!("Failed to unpack metadata status: code = {status_code}");
                         }
-                    } else {
-                        warn!("Failed to unpack metadata status: code = {status_code}");
                     }
+                    Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
                 }
-                Err(e) => warn!("Garbage bundle found and dropped from metadata: {e}"),
+            }
+            if !full_page {
+                return Ok(());
             }
         }
-
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]

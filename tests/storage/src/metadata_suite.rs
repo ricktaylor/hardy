@@ -186,9 +186,10 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     let bundle_c =
         fixtures::bundle_with_expiry(BundleStatus::New, now, core::time::Duration::from_secs(100));
     // Bundles D and E: the in-flight hand-off states. `New` is the ONLY
-    // status poll_expiry may exclude — hand-off deferral is the reaper's
-    // decision, made against fresh status at expiry time, so a backend that
-    // pre-filters these hides them from the caller's policy.
+    // status poll_expiry may exclude — the scan is status-blind, and
+    // hand-off deferral is the reaper's policy, applied caller-side against
+    // fresh status at expiry time, so a backend that pre-filters these
+    // hides them from the caller's policy.
     let bundle_d = fixtures::bundle_with_expiry(
         BundleStatus::ForwardAckPending { peer: 7 },
         now,
@@ -211,7 +212,7 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     // Full poll: D, B, E, A in expiry order — C (New) excluded, both
     // hand-off states included
     let sink = super::VecSink::<bundle::Bundle>::new();
-    store.poll_expiry(&sink, 10).await.unwrap();
+    store.poll_expiry(&sink).await.unwrap();
     let results = sink.into_inner();
 
     assert_eq!(results.len(), 4, "only the New-status bundle is excluded");
@@ -232,12 +233,14 @@ pub async fn meta_07_poll_expiry(store: Arc<dyn MetadataStorage>) {
     );
     assert_eq!(results[3].id(), bundle_a.id(), "latest expiry comes last");
 
-    // Limit test: limit=1 should return only the earliest-expiry bundle
-    let sink = super::VecSink::<bundle::Bundle>::new();
-    store.poll_expiry(&sink, 1).await.unwrap();
+    // Early close: the consumer terminates the scan by closing the stream,
+    // so a sink that refuses after one row sees exactly the earliest-expiry
+    // bundle and the backend stops there.
+    let sink = super::CappedSink::<bundle::Bundle>::new(1);
+    store.poll_expiry(&sink).await.unwrap();
     let results = sink.into_inner();
 
-    assert_eq!(results.len(), 1, "limit=1 should return exactly 1 bundle");
+    assert_eq!(results.len(), 1, "a closed stream ends the scan");
     assert_eq!(results[0].id(), bundle_d.id());
 }
 

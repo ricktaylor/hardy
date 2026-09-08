@@ -360,7 +360,7 @@ async fn assert_fully_resolved(
     );
     let (live_tx, live_rx) = hardy_async::channel::bounded(16);
     metadata_store
-        .poll_expiry(&live_tx, 16)
+        .poll_expiry(&live_tx)
         .await
         .expect("Failed to poll metadata store");
     drop(live_tx);
@@ -419,4 +419,116 @@ async fn failed_transfer_expires_at_dispatch() {
     assert_eq!(status.reason, ReasonCode::LifetimeExpired);
 
     assert_fully_resolved(bpa, &metadata_store, &reports_rx).await;
+}
+
+/// Expired-but-deferred hand-offs at the head of the expiry order must not
+/// starve the reaper. With a cache of two, two never-resolved transfers own
+/// the earliest expiries: they fill the cache, are deferred at expiry, and
+/// keep heading every storage scan. The refill's budget counts only
+/// accepted rows, so the reapable bundle behind them is still recovered,
+/// reaped, and reported — a deferred row can never pin the scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_handoffs_do_not_starve_expiry() {
+    let node_ids = NodeIds::try_from(
+        [NodeId::Ipn(IpnNodeId {
+            allocator_id: 0,
+            node_number: 1,
+        })]
+        .as_slice(),
+    )
+    .unwrap();
+    let bpa = Bpa::builder()
+        .node_ids(node_ids)
+        .status_reports(true)
+        .poll_channel_depth(core::num::NonZeroUsize::new(2).unwrap())
+        .build()
+        .await
+        .unwrap();
+    bpa.start(false).await;
+
+    let (reports, reports_rx) = CaptureService::new();
+    bpa.register_service(Service::Ipn(9), reports.clone())
+        .await
+        .unwrap();
+
+    let (cla, accepted_rx) = AcceptingCla::new();
+    bpa.register_cla("accepting".to_string(), cla.clone(), None)
+        .await
+        .unwrap();
+    cla.sink
+        .get()
+        .unwrap()
+        .add_peer(
+            cla::ClaAddress::Private("peer".as_bytes().into()),
+            &[NodeId::Ipn(IpnNodeId {
+                allocator_id: 0,
+                node_number: 3,
+            })],
+        )
+        .await
+        .unwrap();
+
+    let ingress = IngressCla::new();
+    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
+        .await
+        .unwrap();
+
+    // Two transfers with the earliest expiries, accepted by the CLA and
+    // never resolved: expired-but-deferred hand-offs filling the cache.
+    for (source, destination) in [("ipn:0.2.1", "ipn:0.3.1"), ("ipn:0.2.2", "ipn:0.3.2")] {
+        let (_, data) = Builder::new(source.parse().unwrap(), destination.parse().unwrap())
+            .with_lifetime(Duration::from_millis(1000))
+            .with_payload(Cow::Borrowed(b"stuck transfer".as_slice()))
+            .build(CreationTimestamp::now())
+            .expect("Failed to build bundle");
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            accepted_rx.recv_async(),
+        )
+        .await
+        .expect("Timed out waiting for the transfer to be accepted")
+        .expect("Accepting CLA gone");
+    }
+
+    // The probe: a later expiry, parked with no registered service, deletion
+    // report requested. Its report arriving proves the reaper scanned past
+    // the two deferred rows heading the expiry order.
+    let (_, data) = Builder::new("ipn:0.2.3".parse().unwrap(), "ipn:0.1.6".parse().unwrap())
+        .with_report_to("ipn:0.1.9".parse().unwrap())
+        .with_flags(Flags {
+            delete_report_requested: true,
+            ..Default::default()
+        })
+        .with_lifetime(Duration::from_millis(3000))
+        .with_payload(Cow::Borrowed(b"reap me".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    ingress
+        .sink
+        .get()
+        .unwrap()
+        .dispatch(None, None, &mut Bytes::from(data))
+        .await
+        .unwrap();
+
+    // Event-driven; the timeout only bounds a regression (a starved reaper
+    // never delivers this report).
+    let Event::Streamed { segments } = recv_event(&reports_rx, 15).await;
+    let status = decode_report(&segments);
+    assert_eq!(
+        status.bundle_id.source,
+        "ipn:0.2.3".parse::<Eid>().unwrap(),
+        "the probe behind the deferred hand-offs must still be reaped"
+    );
+    assert!(status.deleted.is_some(), "expected a deletion assertion");
+    assert_eq!(status.reason, ReasonCode::LifetimeExpired);
+
+    bpa.shutdown().await;
 }

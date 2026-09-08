@@ -451,7 +451,7 @@ mod tests {
             async fn reset_service_queue(&self, _service: &Eid) -> Result<u64> {
                 unimplemented!()
             }
-            async fn poll_expiry(&self, _stream: &dyn Sender<Bundle>, _limit: usize) -> Result<()> {
+            async fn poll_expiry(&self, _stream: &dyn Sender<Bundle>) -> Result<()> {
                 unimplemented!()
             }
             async fn poll_waiting(&self, _stream: &dyn Sender<Bundle>) -> Result<()> {

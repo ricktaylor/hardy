@@ -162,10 +162,16 @@ pub trait MetadataStorage: Send + Sync {
     /// themselves. Returns the number of bundles reset.
     async fn reset_service_queue(&self, service: &Eid) -> Result<u64>;
 
-    /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
-    /// and ordered by expiry, to `stream`. Stops early if `stream.send`
-    /// returns `Err(SendError(_))`.
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()>;
+    /// Pushes live bundles, ordered by expiry ascending, to `stream`, until
+    /// the rows are exhausted or `stream.send` returns `Err(SendError(_))`:
+    /// the consumer closes the stream once it has what it needs, so the
+    /// backend never decides how many rows matter — a status-blind ordered
+    /// scan. The one exclusion is `BundleStatus::New` (a record ingress has
+    /// not finished committing — storage lifecycle, not dispatch policy; it
+    /// retires with the planned removal of the persisted `New` status).
+    /// Which statuses defer expiry is the reaper's policy, applied
+    /// caller-side.
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
     /// Pushes all `BundleStatus::Waiting` bundles, snapshotted at the time of
     /// the call and ordered by received time, to `stream`. Stops early if

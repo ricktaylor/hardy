@@ -193,8 +193,8 @@ impl MetadataStorage for SweepGate {
         self.inner.reset_service_queue(service).await
     }
 
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
-        self.inner.poll_expiry(stream, limit).await
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
+        self.inner.poll_expiry(stream).await
     }
 
     async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {

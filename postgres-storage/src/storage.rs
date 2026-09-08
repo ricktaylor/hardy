@@ -625,17 +625,17 @@ impl storage::MetadataStorage for PostgresStorage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         let mut conn = begin_snapshot(&self.pool).await?;
 
         // UNIX_EPOCH as the initial keyset cursor: all BIGSERIAL ids start at 1,
-        // so (UNIX_EPOCH, 0) is strictly less than every real row.
+        // so (UNIX_EPOCH, 0) is strictly less than every real row. The consumer
+        // closes the stream once it has what it needs, so each page is fetched
+        // only if the previous one was consumed whole.
         let mut last_expiry = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
-        let mut sent: usize = 0;
 
         loop {
-            let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, ExpiryRow>(
                 "SELECT id, expiry, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
@@ -648,7 +648,7 @@ impl storage::MetadataStorage for PostgresStorage {
             .bind(status::BundleStatusKind::New)
             .bind(last_expiry)
             .bind(last_id)
-            .bind(page_limit)
+            .bind(self.poll_page_size)
             .fetch_all(&mut *conn)
             .await?;
 
@@ -667,11 +667,6 @@ impl storage::MetadataStorage for PostgresStorage {
                     // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
-                sent += 1;
-            }
-
-            if sent >= limit {
-                break;
             }
         }
 

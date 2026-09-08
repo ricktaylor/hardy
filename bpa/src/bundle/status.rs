@@ -66,9 +66,34 @@ pub enum BundleStatus {
     },
     /// Waiting for a future forwarding opportunity (e.g., scheduled contact).
     Waiting,
-    /// Delivered to a local service and awaiting its response or acknowledgement.
+    /// Parked awaiting a service registration for this endpoint (the local
+    /// analogue of [`Waiting`](Self::Waiting)): set when dispatch or a
+    /// delivery exit finds no registered service, and by the unregister
+    /// sweep and restart re-park. Recovered by the registration-time poll.
     WaitingForService {
-        /// EID of the service that is processing this bundle.
+        /// Canonical registration EID of the service the bundle awaits.
         service: Eid,
     },
+}
+
+impl BundleStatus {
+    /// Whether the expiry reaper defers a bundle in this status: an
+    /// in-flight hand-off cannot be recalled from the wire or the service,
+    /// so expiring it would report a deletion that did not happen. Each
+    /// hand-off resolves its own outcome, and every non-terminal exit
+    /// re-arms the reaper watch. The match is exhaustive so a new status
+    /// must choose a side here, not fall into "reap it" by omission.
+    pub(crate) fn defers_expiry(&self) -> bool {
+        match self {
+            Self::ForwardAckPending { .. } | Self::DeliveryAckPending { .. } => true,
+            Self::New
+            | Self::DispatchPending
+            | Self::Dispatching
+            | Self::ForwardPending { .. }
+            | Self::DeliverPending { .. }
+            | Self::AduFragment { .. }
+            | Self::Waiting
+            | Self::WaitingForService { .. } => false,
+        }
+    }
 }

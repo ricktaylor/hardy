@@ -387,7 +387,7 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .inner
             .lock()
@@ -400,7 +400,7 @@ impl MetadataStorage for MetadataMemStorage {
 
         entries.sort_unstable_by_key(|b| b.expiry());
 
-        for e in entries.into_iter().take(limit) {
+        for e in entries {
             if stream.send(e).await.is_err() {
                 break;
             }

@@ -102,11 +102,14 @@ impl Dispatcher {
                         debug!("Recovered checkpoint moved on, leaving it be");
                     }
                 }
-                // Other statuses are handled by their respective recovery mechanisms:
-                // - Waiting: poll_waiting recovery
-                // - WaitingForService: poll_service_waiting on service re-registration
-                // - AduFragment: fragment reassembly polling
-                _ => {
+                // Handled by their own recovery mechanisms — poll_waiting,
+                // poll_service_waiting on re-registration, and fragment
+                // reassembly polling respectively. No wildcard: a new status
+                // must choose its re-admission here, not silently assume
+                // some poller recovers it.
+                bundle::BundleStatus::Waiting
+                | bundle::BundleStatus::WaitingForService { .. }
+                | bundle::BundleStatus::AduFragment { .. } => {
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                 }
             }
@@ -267,12 +270,8 @@ mod tests {
             self.0.reset_service_queue(service).await
         }
 
-        async fn poll_expiry(
-            &self,
-            stream: &dyn Sender<bundle::Bundle>,
-            limit: usize,
-        ) -> StorageResult<()> {
-            self.0.poll_expiry(stream, limit).await
+        async fn poll_expiry(&self, stream: &dyn Sender<bundle::Bundle>) -> StorageResult<()> {
+            self.0.poll_expiry(stream).await
         }
 
         async fn poll_waiting(&self, stream: &dyn Sender<bundle::Bundle>) -> StorageResult<()> {
