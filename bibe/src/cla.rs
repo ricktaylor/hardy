@@ -1,23 +1,21 @@
-use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use core::num::NonZeroU32;
 
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     Bytes, async_trait,
-    cla::{Cla, ClaAddress, ForwardBundleResult, Sink},
+    cla::{Cla, ClaAddress, ForwardBundleResult, Result as ClaResult, Segment, Sink},
     stream::{Receiver, buffer_stream},
 };
 use hardy_bpv7::{
-    builder::Builder,
     bundle::Id,
-    creation_timestamp::CreationTimestamp,
     eid::{Eid, NodeId},
-    parse::Parsed,
 };
-use hardy_cbor::encode::{emit, emit_array};
+use hardy_cbor::{decode, encode};
 use tracing::{debug, warn};
 
-use crate::Error;
+use crate::{Error, pdu};
+
 /// BIBE CLA for encapsulation.
 ///
 /// Implements `forward()` to encapsulate bundles and re-inject them into the BPA.
@@ -50,7 +48,7 @@ impl BibeCla {
     /// will be encapsulated with `decap_endpoint` as the outer destination.
     pub async fn add_tunnel(&self, tunnel_id: NodeId, decap_endpoint: Eid) -> Result<(), Error> {
         // Encode the decap endpoint as CBOR
-        let cbor_bytes = emit(&decap_endpoint).0;
+        let cbor_bytes = encode::emit(&decap_endpoint).0;
         let cla_addr = ClaAddress::Private(cbor_bytes.into());
 
         // Register as a peer - this creates the local route entry
@@ -68,45 +66,13 @@ impl BibeCla {
     // a complete bundle in memory, so it enters the BPA as a one-segment
     // stream (`Bytes` is a `stream::Receiver`). This is a deliberate stepping stone toward
     // the full streaming pipeline; see bpa/docs/streaming_pipeline_design.md.
-    pub(crate) async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
+    pub async fn dispatch(&self, mut bundle: Bytes) -> Result<(), Error> {
         self.sink
             .get()
             .ok_or(Error::NotRegistered)?
             .dispatch(None, None, &mut bundle)
             .await?;
         Ok(())
-    }
-
-    /// Encapsulate an inner bundle into an outer bundle.
-    pub fn encapsulate(&self, inner: Bytes, outer_dest: Eid) -> Result<Bytes, Error> {
-        // Parse inner bundle structurally to read its lifetime.
-        let Parsed {
-            data: inner,
-            bundle: parsed_bundle,
-            ..
-        } = hardy_bpv7::parse::parse(inner)?;
-        let lifetime = parsed_bundle.primary.lifetime;
-
-        // Build outer bundle with BIBE-PDU payload:
-        // [transmission-id, total-length, segmented-offset, encapsulated-bundle-segment]
-        // For complete bundles: [0, 0, 0, bundle-bytes]
-        let payload = emit_array(Some(4), |a| {
-            a.emit(&0u64); // transmission-id
-            a.emit(&0u64); // total-length
-            a.emit(&0u64); // segmented-offset
-
-            // encapsulated-bundle-segment, as a definite-length byte string
-            // (a bare `&[u8]` would encode as a CBOR array of integers, which
-            // decapsulation rejects)
-            a.emit(&hardy_cbor::encode::Bytes(inner.as_ref()));
-        });
-
-        let (_bundle, data) = Builder::new(self.tunnel_source.clone(), outer_dest)
-            .with_lifetime(lifetime)
-            .with_payload(Cow::Owned(payload))
-            .build(CreationTimestamp::now())?;
-
-        Ok(data.into())
     }
 }
 
@@ -136,8 +102,8 @@ impl Cla for BibeCla {
         cla_addr: &ClaAddress,
         _bundle_id: &Id,
         total_len: u64,
-        stream: &mut dyn Receiver<hardy_bpa::cla::Segment>,
-    ) -> hardy_bpa::cla::Result<ForwardBundleResult> {
+        stream: &mut dyn Receiver<Segment>,
+    ) -> ClaResult<ForwardBundleResult> {
         let bundle = buffer_stream(stream, total_len).await?;
 
         // Decode destination EID from CBOR in ClaAddress
@@ -146,7 +112,7 @@ impl Cla for BibeCla {
             return Ok(ForwardBundleResult::NoNeighbour);
         };
 
-        let outer_dest: Eid = match hardy_cbor::decode::parse(dest_bytes) {
+        let outer_dest: Eid = match decode::parse(dest_bytes) {
             Ok(eid) => eid,
             Err(e) => {
                 warn!("Failed to decode destination EID from ClaAddress: {e}");
@@ -157,7 +123,7 @@ impl Cla for BibeCla {
         debug!("BIBE encapsulating bundle to {outer_dest}");
 
         // Encapsulate the bundle
-        let outer = match self.encapsulate(bundle, outer_dest) {
+        let outer = match pdu::encapsulate(&self.tunnel_source, bundle, outer_dest) {
             Ok(outer) => outer,
             Err(e) => {
                 warn!("BIBE encapsulation failed: {e}");

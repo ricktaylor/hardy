@@ -1,8 +1,12 @@
-use super::*;
+use alloc::vec::Vec;
+
+use hardy_bpv7::eid::{Eid, NodeId, Service};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// Configuration for BIBE tunnel endpoints.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Config {
     /// Source EID for outer bundles created by encapsulation.
     pub tunnel_source: Eid,
@@ -29,7 +33,7 @@ pub struct Config {
 /// The `decap_endpoint` is the actual service endpoint (e.g., `ipn:100.12`)
 /// that receives the outer bundle for decapsulation.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Tunnel {
     /// The tunnel NodeId that becomes routable (used in `via` routes).
     pub tunnel: NodeId,
