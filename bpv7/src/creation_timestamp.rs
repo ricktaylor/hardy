@@ -4,10 +4,29 @@ As per RFC 9171, it combines a timestamp with a sequence number to ensure that e
 given source node can be uniquely identified, even if created at the same time.
 */
 
+use portable_atomic::{AtomicU64, Ordering};
+
 use super::*;
 use crate::error::{CaptureFieldErr, require_canonical};
 
-static GLOBAL_COUNTER: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
+static GLOBAL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+// The last `(time, sequence)` pair issued by [`CreationTimestamp::now`],
+// packed as `dtn_millisecs << SEQ_BITS | sequence` in one atomic so issuance
+// is lock-free and strictly monotonic per process: bundles created in the
+// same millisecond take ascending sequence numbers, and a wall clock that
+// steps backwards never re-issues an earlier pair.
+#[cfg(feature = "std")]
+static LAST_ISSUED: AtomicU64 = AtomicU64::new(0);
+
+// 2^20 sequence numbers per millisecond leaves 44 bits of DTN milliseconds —
+// good until the year 2557 (a clock reading past that clamps rather than
+// wraps). A fresh millisecond's first sequence number is seeded from the
+// sub-millisecond nanoseconds (< 2^20), leaving at least ~48K in-millisecond
+// pairs; issuing more rolls the excess into the next millisecond's pairs,
+// which stays unique and self-corrects as the clock catches up.
+#[cfg(feature = "std")]
+const SEQ_BITS: u32 = 20;
 
 /// Represents the BPv7 Creation Timestamp, a tuple of creation time and a sequence number.
 ///
@@ -33,17 +52,49 @@ pub struct CreationTimestamp {
 impl CreationTimestamp {
     /// Creates a new `CreationTimestamp` based on the current system time.
     ///
-    /// The creation time is set to the current UTC time. The sequence number
-    /// is derived from the nanoseconds part of the timestamp to provide uniqueness
-    /// for bundles created in the same millisecond.
+    /// With a well-behaved system clock the creation time is truly the
+    /// current UTC time (as DTN milliseconds), and every call returns a
+    /// `(time, sequence)` pair strictly greater than any pair this process
+    /// has issued before, so a caller never needs to check the result for a
+    /// collision with its own earlier bundles. When the two conflict,
+    /// monotonicity wins over the clock: after a backward clock step (or a
+    /// burst past the sequence range) pairs keep climbing from the last
+    /// issued value while the wall clock catches up. A transient *forward*
+    /// clock spike consequently pins issuance high until the clock catches
+    /// up or the process restarts — deliberate, since stepping back down
+    /// could re-issue a pair minted during the spike.
+    ///
+    /// Uniqueness across process restarts rests on the wall clock moving
+    /// forward (RFC 9171 §4.2.7); each fresh millisecond's sequence numbers
+    /// start from the sub-millisecond nanoseconds, so even a restart across
+    /// a backward clock step is overwhelmingly unlikely to re-issue a
+    /// pre-restart pair.
     ///
     /// This function is only available when the `std` feature is enabled.
     #[cfg(feature = "std")]
     pub fn now() -> Self {
-        let timestamp = time::OffsetDateTime::now_utc();
+        let now = time::OffsetDateTime::now_utc();
+        let candidate = (dtn_time::DtnTime::saturating_from(now)
+            .millisecs()
+            .min(u64::MAX >> SEQ_BITS)
+            << SEQ_BITS)
+            | u64::from(now.nanosecond() % 1_000_000);
+        let mut last = LAST_ISSUED.load(Ordering::Relaxed);
+        let issued = loop {
+            let next = last.saturating_add(1).max(candidate);
+            match LAST_ISSUED.compare_exchange_weak(
+                last,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break next,
+                Err(actual) => last = actual,
+            }
+        };
         Self {
-            sequence_number: (timestamp.nanosecond() % 1_000_000) as u64,
-            creation_time: Some(dtn_time::DtnTime::saturating_from(timestamp)),
+            creation_time: Some(dtn_time::DtnTime::new(issued >> SEQ_BITS)),
+            sequence_number: issued & ((1 << SEQ_BITS) - 1),
         }
     }
 
@@ -56,7 +107,7 @@ impl CreationTimestamp {
     pub fn new_sequential() -> Self {
         Self {
             creation_time: None,
-            sequence_number: GLOBAL_COUNTER.fetch_add(1, portable_atomic::Ordering::Relaxed),
+            sequence_number: GLOBAL_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -102,10 +153,10 @@ impl CreationTimestamp {
     /// forward by the sequence number for sub-millisecond ordering. Returns
     /// `None` if the `creation_time` is not set.
     ///
-    /// The sequence number is an unrestricted `u64` on the wire and need not be
-    /// nanoseconds — [`CreationTimestamp::now`] uses the sub-millisecond
-    /// nanosecond remainder, but other implementations use plain counters. The
-    /// nudge is therefore clamped below the millisecond resolution of
+    /// The sequence number is an unrestricted `u64` on the wire and need not
+    /// be nanoseconds — [`CreationTimestamp::now`] issues a per-millisecond
+    /// counter, and other implementations vary. The nudge is therefore
+    /// clamped below the millisecond resolution of
     /// [`DtnTime`](dtn_time::DtnTime), so a sender-chosen sequence number
     /// cannot shift the result outside the creation millisecond.
     pub fn as_datetime(&self) -> Option<time::OffsetDateTime> {
