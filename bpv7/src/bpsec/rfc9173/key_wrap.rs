@@ -8,6 +8,8 @@ use alloc::{
 use aes_kw::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockSizeUser, KeyInit, consts::U16};
 use zeroize::Zeroizing;
 
+use crate::bpsec::key::KeyAlgorithm;
+
 /// An AES key-wrap (RFC 3394) algorithm, selected from a JWK `alg` by
 /// the security contexts. Owns the per-cipher dispatch for both
 /// directions, so the contexts never name the cipher types themselves.
@@ -19,6 +21,40 @@ pub enum KeyWrap {
 }
 
 impl KeyWrap {
+    /// The cipher a bare `A*KW` JWK `alg` names, or `None` for any other
+    /// algorithm — including the compound `HS*+A*KW` forms, which name a
+    /// MAC alongside the wrap and so belong only to a context that
+    /// performs one.
+    pub fn from_bare_alg(alg: KeyAlgorithm) -> Option<Self> {
+        match alg {
+            KeyAlgorithm::A128KW => Some(Self::Aes128),
+            KeyAlgorithm::A192KW => Some(Self::Aes192),
+            KeyAlgorithm::A256KW => Some(Self::Aes256),
+            _ => None,
+        }
+    }
+
+    /// The cipher a JWK `alg` names in any form, bare or compound: the
+    /// wrap half of an `HS*+A*KW` is the same AES-KW as the `A*KW` it
+    /// ends in.
+    pub fn from_alg(alg: KeyAlgorithm) -> Option<Self> {
+        match alg {
+            KeyAlgorithm::HS256_A128KW
+            | KeyAlgorithm::HS384_A128KW
+            | KeyAlgorithm::HS512_A128KW => Some(Self::Aes128),
+
+            KeyAlgorithm::HS256_A192KW
+            | KeyAlgorithm::HS384_A192KW
+            | KeyAlgorithm::HS512_A192KW => Some(Self::Aes192),
+
+            KeyAlgorithm::HS256_A256KW
+            | KeyAlgorithm::HS384_A256KW
+            | KeyAlgorithm::HS512_A256KW => Some(Self::Aes256),
+
+            alg => Self::from_bare_alg(alg),
+        }
+    }
+
     pub fn wrap_key(self, kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String> {
         match self {
             Self::Aes128 => wrap::<aes_kw::aes::Aes128>(kek, cek),

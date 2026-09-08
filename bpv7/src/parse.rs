@@ -1108,9 +1108,13 @@ impl BundleParser {
 /// is truncated here", never "this is malformed", so any occurrence in the
 /// chain is a genuine need-more signal for the streaming `push` loop.
 /// Returns the innermost shortfall (a lower-bound hint for buffer
-/// reservation). Every wrapper in the chain is typed, so each domain is a
-/// total match here: a new wrapped domain is a compile error, not a
-/// silently missed feed-me-more signal.
+/// reservation).
+///
+/// Each domain gets its own recursive helper, and every arm that is not a
+/// wrapper or a shortfall falls through to `None`. A newly wrapped domain
+/// therefore needs an arm added here by hand: without one it reads as "not
+/// a shortfall", and the streaming `push` loop reports the truncation as
+/// malformed input instead of asking for more.
 fn need_more(e: &Error) -> Option<usize> {
     match e {
         Error::InvalidCBOR(e) => cbor_need_more(e),

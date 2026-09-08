@@ -254,11 +254,11 @@ impl Operation {
         // through it instead of re-matching `jwk.key_algorithm`. `None`
         // means direct use of the KEK.
         let key_wrap = match &jwk.key_algorithm {
-            Some(key::KeyAlgorithm::A128KW) => Some(KeyWrap::Aes128),
-            Some(key::KeyAlgorithm::A192KW) => Some(KeyWrap::Aes192),
-            Some(key::KeyAlgorithm::A256KW) => Some(KeyWrap::Aes256),
             Some(key::KeyAlgorithm::Direct) | None => None,
-            _ => return Err(Error::InvalidKey(key::Operation::Encrypt, jwk.clone())),
+            Some(alg) => Some(
+                KeyWrap::from_bare_alg(*alg)
+                    .ok_or_else(|| Error::InvalidKey(key::Operation::Encrypt, jwk.clone()))?,
+            ),
         };
 
         if key_wrap.is_some()
@@ -369,14 +369,12 @@ impl Operation {
                 return Err(Error::DecryptionFailed);
             };
 
-            let cek = match &jwk.key_algorithm {
-                Some(key::KeyAlgorithm::A128KW) => KeyWrap::Aes128,
-                Some(key::KeyAlgorithm::A192KW) => KeyWrap::Aes192,
-                Some(key::KeyAlgorithm::A256KW) => KeyWrap::Aes256,
-                _ => return Err(Error::DecryptionFailed),
-            }
-            .unwrap_key(kek.expose_secret(), wrapped_cek)
-            .map_err(|_| Error::DecryptionFailed)?;
+            let cek = jwk
+                .key_algorithm
+                .and_then(KeyWrap::from_bare_alg)
+                .ok_or(Error::DecryptionFailed)?
+                .unwrap_key(kek.expose_secret(), wrapped_cek)
+                .map_err(|_| Error::DecryptionFailed)?;
 
             self.decrypt_middle(jwk.enc_algorithm, cek.as_ref(), &aad, data.as_ref())
         } else {

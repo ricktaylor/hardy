@@ -218,27 +218,6 @@ where
     Ok(mac)
 }
 
-fn as_key_wrap(alg: Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
-    match alg {
-        Some(key::KeyAlgorithm::A128KW)
-        | Some(key::KeyAlgorithm::HS256_A128KW)
-        | Some(key::KeyAlgorithm::HS384_A128KW)
-        | Some(key::KeyAlgorithm::HS512_A128KW) => Some(KeyWrap::Aes128),
-
-        Some(key::KeyAlgorithm::A192KW)
-        | Some(key::KeyAlgorithm::HS256_A192KW)
-        | Some(key::KeyAlgorithm::HS384_A192KW)
-        | Some(key::KeyAlgorithm::HS512_A192KW) => Some(KeyWrap::Aes192),
-
-        Some(key::KeyAlgorithm::A256KW)
-        | Some(key::KeyAlgorithm::HS256_A256KW)
-        | Some(key::KeyAlgorithm::HS384_A256KW)
-        | Some(key::KeyAlgorithm::HS512_A256KW) => Some(KeyWrap::Aes256),
-
-        _ => None,
-    }
-}
-
 fn as_variant(alg: Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
     match alg {
         Some(key::KeyAlgorithm::HS256)
@@ -288,7 +267,7 @@ impl Operation {
 
         let variant = as_variant(jwk.key_algorithm)
             .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
-        let key_wrap = as_key_wrap(jwk.key_algorithm);
+        let key_wrap = jwk.key_algorithm.and_then(KeyWrap::from_alg);
 
         let cek = if let Some(key_wrap) = &key_wrap {
             if let Some(ops) = &jwk.operations
@@ -372,7 +351,9 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            let cek = as_key_wrap(jwk.key_algorithm)
+            let cek = jwk
+                .key_algorithm
+                .and_then(KeyWrap::from_alg)
                 .ok_or(Error::IntegrityCheckFailed)?
                 .unwrap_key(key.expose_secret(), wrapped_cek)
                 .map_err(|_| Error::IntegrityCheckFailed)?;

@@ -81,9 +81,12 @@ fn unknown_scheme_display_is_total_for_undecodable_ssp() {
     let Eid::Unknown { scheme: 5, .. } = &eid else {
         panic!("expected Eid::Unknown with scheme 5, got {eid:?}");
     };
-    assert_eq!(
-        eid.to_string(),
-        "unknown(5):error: InvalidUtf8(Utf8Error { valid_up_to: 0, error_len: Some(1) })"
+    // Only the crate-owned prefix is pinned: the tail is the `Debug` of
+    // `core::str::Utf8Error`, which is std's to change.
+    let rendered = eid.to_string();
+    assert!(
+        rendered.starts_with("unknown(5):error: InvalidUtf8"),
+        "Display must stay total and name the decode failure, got {rendered:?}"
     );
 }
 
