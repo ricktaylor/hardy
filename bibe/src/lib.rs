@@ -15,19 +15,21 @@ as virtual peers, making them routable via standard BPA forwarding.
 
 extern crate alloc;
 
+use alloc::{sync::Arc, vec::Vec};
+
+use hardy_bpa::bpa::BpaRegistration;
+use hardy_bpv7::eid::{Eid, NodeId, Service};
+use thiserror::Error as ThisError;
+use tracing::debug;
+
+use crate::{cla::BibeCla, service::DecapService};
+
 mod cla;
 mod config;
+mod pdu;
 mod service;
 
 pub use config::{Config, Tunnel};
-
-// Common imports for submodules (accessed via `use super::*;`)
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
-
-use hardy_async::sync::spin::Once;
-use hardy_bpa::{Bytes, async_trait, bpa::BpaRegistration};
-use hardy_bpv7::eid::{Eid, NodeId, Service};
-use tracing::{debug, warn};
 
 /// BIBE tunnel endpoint manager.
 ///
@@ -41,8 +43,8 @@ pub struct Bibe {
     tunnels: Vec<Tunnel>,
 
     // Internal components
-    cla: Arc<cla::BibeCla>,
-    decap_service: Arc<service::DecapService>,
+    cla: Arc<BibeCla>,
+    decap_service: Arc<DecapService>,
 }
 
 impl Bibe {
@@ -52,8 +54,8 @@ impl Bibe {
     ///
     /// * `config` - The configuration for this BIBE instance.
     pub fn new(config: &Config) -> Self {
-        let cla = Arc::new(cla::BibeCla::new(config.tunnel_source.clone()));
-        let decap_service = Arc::new(service::DecapService::new(cla.clone()));
+        let cla = Arc::new(BibeCla::new(config.tunnel_source.clone()));
+        let decap_service = Arc::new(DecapService::new(cla.clone()));
 
         Self {
             decap_service_id: config.decap_service_id.clone(),
@@ -133,7 +135,11 @@ impl Bibe {
 }
 
 /// Errors from BIBE operations.
-#[derive(Debug, thiserror::Error)]
+///
+/// The wrapped source types are named by path: every one of them is called
+/// `Error`, so importing them would collide with each other and with this
+/// enum.
+#[derive(Debug, ThisError)]
 pub enum Error {
     /// CLA not registered with BPA yet.
     #[error("CLA not registered with BPA")]
@@ -141,6 +147,9 @@ pub enum Error {
     /// Invalid CLA address format.
     #[error("Invalid CLA address format")]
     InvalidAddress,
+    /// The BIBE-PDU is a segment of a larger bundle; segmentation is not supported.
+    #[error("Segmented BIBE-PDUs are not supported")]
+    SegmentedPdu,
     /// Failed to parse bundle.
     #[error(transparent)]
     BundleParse(#[from] hardy_bpv7::Error),
