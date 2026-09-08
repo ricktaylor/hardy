@@ -392,116 +392,102 @@ where
 fn verify_headers(
     headers: &[u8],
     key_source: &dyn bpsec::key::KeySource,
-    mut bundle: Bpv7Bundle,
+    bundle: Bpv7Bundle,
     bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
     bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
 ) -> Result<HeaderVerify, (Bpv7Bundle, hardy_bpv7::Error)> {
-    // The facts helper keeps `?` ergonomics; this is the one place the
-    // recoverable bundle is paired into either arm.
-    match header_facts(headers, key_source, &mut bundle, bcb_ops, bib_ops) {
-        Ok(facts) => Ok(HeaderVerify {
-            bundle,
-            extensions: facts.extensions,
-            to_remove: facts.to_remove,
-            report_reason: facts.report_reason,
-            deferred_bibs: facts.deferred_bibs,
-        }),
-        Err(e) => Err((bundle, e)),
-    }
-}
+    // Assembled up front with empty facts; the verification closure fills
+    // them in place (keeping `?` ergonomics — its borrow ends at the call),
+    // and the recoverable bundle rides whichever arm results.
+    let mut hv = HeaderVerify {
+        bundle,
+        extensions: ExtensionFields::default(),
+        to_remove: HashSet::new(),
+        report_reason: ReasonCode::NoAdditionalInformation,
+        deferred_bibs: HashMap::new(),
+    };
 
-/// The bundle-independent half of [`HeaderVerify`]: what the header pass
-/// establishes about the bundle it verified.
-struct HeaderFacts {
-    extensions: ExtensionFields,
-    to_remove: HashSet<u64>,
-    report_reason: ReasonCode,
-    deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
-}
+    let verified = (|hv: &mut HeaderVerify| {
+        // §A — classify; collect deletables; the report_* facts feed the
+        // reception-report reason below.
+        let classification =
+            checks::classify_unsupported(&hv.bundle.blocks, bcb_ops, bib_ops, &[])?;
 
-fn header_facts(
-    headers: &[u8],
-    key_source: &dyn bpsec::key::KeySource,
-    bundle: &mut Bpv7Bundle,
-    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
-    bib_ops: &mut HashMap<u64, bpsec::bib::OperationSet>,
-) -> Result<HeaderFacts, hardy_bpv7::Error> {
-    // §A — classify; collect deletables; the report_* facts feed the
-    // reception-report reason below.
-    let classification = checks::classify_unsupported(&bundle.blocks, bcb_ops, bib_ops, &[])?;
-
-    let mut to_remove: HashSet<u64> = HashSet::new();
-    to_remove.extend(classification.unrecognised_deletable.iter().copied());
-    for n in &classification.bib_deletable {
-        to_remove.insert(*n);
-        bib_ops.remove(n);
-    }
-
-    // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal for
-    // HopCount and unclocked BundleAge; a §C8/§B decrypt failure is rejected.
-    // `verify` drains the deferred block-1 (payload) op-sets out of `bib_ops`,
-    // handing them back owned in `facts.deferred_bibs`; `bcb_ops` is only
-    // borrowed.
-    let mut decrypted = HashMap::new();
-    let to_update_seed: HashMap<u64, Vec<u8>> = HashMap::new();
-    let facts = checks::verify(
-        headers,
-        key_source,
-        &mut bundle.blocks,
-        bcb_ops,
-        bib_ops,
-        &mut decrypted,
-        &to_update_seed,
-    )?;
-
-    // RFC 9172 §5.1.1 failure-drop. `facts.failed` carries only blocks whose
-    // ciphertext failed authentication (corrupt) — undecipherable (NoKey) blocks
-    // go to `facts.nokey_ext` and are handled below. A corrupt *payload* (block 1)
-    // discards the whole bundle; a corrupt *non-payload* target is discarded and
-    // the bundle forwarded (applied in the §E rewrite via `to_remove`). Only the
-    // failed target is queued: the editor cascade strips it from its covering
-    // BCB's OperationSet and drops the BCB only once it empties. A shared BCB
-    // with a surviving co-target must stay — the payload is decrypted only at
-    // delivery, so it always survives here, and naming the BCB itself in the
-    // request would strand its ciphertext (`StrandsCiphertext`) and panic
-    // `apply_rewrites`. §C8 never decrypts the payload and a payload BCB is
-    // decrypted at delivery, so the block-1 branch is defensive. A corrupt
-    // liveness-critical target can't be stripped-and-forwarded — see
-    // `is_liveness_critical` — so it's fatal, exactly as its undecipherable
-    // counterpart is below.
-    let is_clocked = bundle.primary.id.timestamp.is_clocked();
-    for &target in &facts.failed {
-        if target == 1
-            || bundle
-                .blocks
-                .get(&target)
-                .is_some_and(|b| is_liveness_critical(b.block_type, is_clocked))
-        {
-            return Err(bpsec::Error::DecryptionFailed.into());
+        hv.to_remove
+            .extend(classification.unrecognised_deletable.iter().copied());
+        for n in &classification.bib_deletable {
+            hv.to_remove.insert(*n);
+            bib_ops.remove(n);
         }
-        to_remove.insert(target);
+
+        // §B + §C8 + §C7 — composed keyed verification. NoKey on §C8 is fatal for
+        // HopCount and unclocked BundleAge; a §C8/§B decrypt failure is rejected.
+        // `verify` drains the deferred block-1 (payload) op-sets out of `bib_ops`,
+        // handing them back owned in `facts.deferred_bibs`; `bcb_ops` is only
+        // borrowed.
+        let mut decrypted = HashMap::new();
+        let to_update_seed: HashMap<u64, Vec<u8>> = HashMap::new();
+        let facts = checks::verify(
+            headers,
+            key_source,
+            &mut hv.bundle.blocks,
+            bcb_ops,
+            bib_ops,
+            &mut decrypted,
+            &to_update_seed,
+        )?;
+
+        // RFC 9172 §5.1.1 failure-drop. `facts.failed` carries only blocks whose
+        // ciphertext failed authentication (corrupt) — undecipherable (NoKey) blocks
+        // go to `facts.nokey_ext` and are handled below. A corrupt *payload* (block 1)
+        // discards the whole bundle; a corrupt *non-payload* target is discarded and
+        // the bundle forwarded (applied in the §E rewrite via `to_remove`). Only the
+        // failed target is queued: the editor cascade strips it from its covering
+        // BCB's OperationSet and drops the BCB only once it empties. A shared BCB
+        // with a surviving co-target must stay — the payload is decrypted only at
+        // delivery, so it always survives here, and naming the BCB itself in the
+        // request would strand its ciphertext (`StrandsCiphertext`) and panic
+        // `apply_rewrites`. §C8 never decrypts the payload and a payload BCB is
+        // decrypted at delivery, so the block-1 branch is defensive. A corrupt
+        // liveness-critical target can't be stripped-and-forwarded — see
+        // `is_liveness_critical` — so it's fatal, exactly as its undecipherable
+        // counterpart is below.
+        let is_clocked = hv.bundle.primary.id.timestamp.is_clocked();
+        for &target in &facts.failed {
+            if target == 1
+                || hv
+                    .bundle
+                    .blocks
+                    .get(&target)
+                    .is_some_and(|b| is_liveness_critical(b.block_type, is_clocked))
+            {
+                return Err(bpsec::Error::DecryptionFailed.into());
+            }
+            hv.to_remove.insert(target);
+        }
+        // Anything still in `facts.failed` here was queued for failure-drop (the
+        // fatal cases returned above) — surface that in the reception report.
+        hv.report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
+
+        // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
+        // other undecipherable block is forwarded intact for a downstream acceptor.
+        reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
+
+        // §D — decode the well-known extension fields; the caller records them in
+        // the bundle's metadata. Decode only: no canonical re-emission is queued —
+        // `finalize_with_provider` passes an empty rewrite map (see the §E note
+        // there; non-canonical CBOR is rejected at parse). Extension blocks only —
+        // never the payload, so header-resident.
+        hv.extensions = extract_extension_block_fields(headers, &hv.bundle.blocks, &decrypted)?;
+        hv.deferred_bibs = facts.deferred_bibs;
+
+        Ok::<_, hardy_bpv7::Error>(())
+    })(&mut hv);
+
+    match verified {
+        Ok(()) => Ok(hv),
+        Err(e) => Err((hv.bundle, e)),
     }
-    // Anything still in `facts.failed` here was queued for failure-drop (the
-    // fatal cases returned above) — surface that in the reception report.
-    let report_reason = reception_reason_for(&classification, !facts.failed.is_empty());
-
-    // Ingress accepts/forwards, so an undecipherable liveness block is fatal; any
-    // other undecipherable block is forwarded intact for a downstream acceptor.
-    reject_undecryptable_liveness(&facts.nokey_ext, is_clocked)?;
-
-    // §D — decode the well-known extension fields; the caller records them in
-    // the bundle's metadata. Decode only: no canonical re-emission is queued —
-    // `finalize_with_provider` passes an empty rewrite map (see the §E note
-    // there; non-canonical CBOR is rejected at parse). Extension blocks only —
-    // never the payload, so header-resident.
-    let extensions = extract_extension_block_fields(headers, &bundle.blocks, &decrypted)?;
-
-    Ok(HeaderFacts {
-        extensions,
-        to_remove,
-        report_reason,
-        deferred_bibs: facts.deferred_bibs,
-    })
 }
 
 /// Post-drain finalize: verify the deferred block-1 BIB targets and apply the

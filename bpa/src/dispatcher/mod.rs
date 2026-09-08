@@ -19,6 +19,40 @@ mod restart;
 const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
     core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
 
+/// The resolution of a hand-off offer: every exit of `offer_to_cla` and
+/// `offer_to_service` is one of these variants, consumed exactly once by
+/// `Dispatcher::resolve_offer`. `ForwardAckPending`/`DeliveryAckPending`
+/// have no storage poller and the reaper defers their expiry, so a claim an
+/// offer left unresolved would be a bundle invisible until restart — this
+/// return type makes that unwritable.
+#[must_use = "a hand-off claim must be resolved"]
+enum OfferOutcome {
+    /// The hand-off completed: the bundle left the node (transfer) or was
+    /// consumed by the service (delivery).
+    Completed(bundle::Bundle),
+    /// Terminal failure: drop with the reason (reported), or delete
+    /// silently when the filter gave none.
+    Dropped(bundle::Bundle, Option<ReasonCode>),
+    /// Park for a future opportunity, closing the park-vs-poll window
+    /// against the routing snapshot captured when the flight began.
+    Parked(bundle::Bundle, bundle::BundleStatus, routing::RibSnapshot),
+    /// Deliberate detach: the CLA owns the transfer (`Accepted`) and
+    /// resolves the claim later via `transfer_outcome`.
+    Detached(bundle::Bundle),
+    /// Re-enter dispatch for a fresh routing decision.
+    Redispatch(bundle::Bundle),
+    /// Another resolver (a sweep, the reaper, a duplicate outcome) claimed
+    /// the bundle first; its resolution stands.
+    Lost,
+}
+
+/// Which hand-off produced an [`OfferOutcome`] — completion reports and
+/// counters differ.
+enum OfferKind {
+    Forward,
+    Delivery,
+}
+
 pub(crate) struct Dispatcher {
     tasks: hardy_async::TaskPool,
     processing_pool: hardy_async::BoundedTaskPool,
@@ -216,6 +250,57 @@ impl Dispatcher {
         self.store.tombstone_metadata(bundle.id()).await;
 
         metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
+    }
+
+    /// Resolve a hand-off offer's outcome — the single consumer of
+    /// [`OfferOutcome`], shared by forwarding and delivery.
+    async fn resolve_offer(&self, kind: OfferKind, outcome: OfferOutcome) {
+        match outcome {
+            OfferOutcome::Completed(bundle) => {
+                // The terminal claim is a conditional tombstone: a
+                // concurrent resolver (a peer sweep mid-transfer, a restart
+                // re-park) may have got there first, and losing the claim
+                // means its resolution has gone out — this one stays silent
+                // rather than contradict it.
+                if !self.store.tombstone_if(&bundle).await {
+                    debug!(
+                        "Hand-off completion for {} lost the resolution race, ignored",
+                        bundle.id()
+                    );
+                    return;
+                }
+                match kind {
+                    OfferKind::Forward => {
+                        metrics::counter!("bpa.bundle.forwarded").increment(1);
+                        self.report_bundle_forwarded(&bundle).await;
+                    }
+                    OfferKind::Delivery => {
+                        metrics::counter!("bpa.bundle.delivered").increment(1);
+                        self.report_bundle_delivery(&bundle).await;
+                    }
+                }
+                // Not drop_bundle(): a completed hand-off is not a
+                // 'dropped bundle'.
+                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
+                    .await;
+                self.delete_bundle(bundle).await
+            }
+            OfferOutcome::Dropped(bundle, Some(reason)) => self.drop_bundle(bundle, reason).await,
+            OfferOutcome::Dropped(bundle, None) => self.delete_bundle(bundle).await,
+            OfferOutcome::Parked(bundle, parked, seen) => {
+                self.park_bundle(bundle, parked, &seen).await
+            }
+            OfferOutcome::Detached(bundle) => {
+                // The counterparty owns the hand-off and resolves the claim
+                // later (`transfer_outcome`). The watch stays armed even
+                // though the expiry pass defers this status: if a peer
+                // sweep parks the bundle before its expiry, the live entry
+                // still reaps it promptly.
+                self.store.watch_bundle(bundle).await
+            }
+            OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
+            OfferOutcome::Lost => {}
+        }
     }
 
     /// Create a per-service delivery channel: the hybrid storage channel

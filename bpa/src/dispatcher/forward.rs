@@ -19,9 +19,16 @@ impl Dispatcher {
         // re-check it to close the park-vs-poll window (see park_bundle).
         let seen = self.rib.table_snapshot();
 
+        // A transfer commits at the claim below — the reaper defers an
+        // in-flight hand-off — so never commence one for a bundle that has
+        // already expired: resolve it as the reaper would.
+        if bundle.has_expired() {
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+        }
+
         // Claim the bundle out of its peer queue before the in-memory rewrite
-        // below and before offering it. The claim must be a conditional swap:
-        // the egress channel delivers at-least-once, so a duplicate copy
+        // in the offer and before offering it. The claim must be a conditional
+        // swap: the egress channel delivers at-least-once, so a duplicate copy
         // recovered by the storage poller must lose here rather than produce
         // a second offer. It must happen first: a deferred outcome can arrive
         // on another task the instant the CLA accepts, and transfer_outcome()
@@ -41,6 +48,30 @@ impl Dispatcher {
             return;
         }
 
+        // Claim-to-resolution is one expression: the offer's outcome is the
+        // claim's resolution.
+        self.resolve_offer(
+            OfferKind::Forward,
+            self.offer_to_cla(cla, peer, lane, cla_addr, bundle, data, seen)
+                .await,
+        )
+        .await
+    }
+
+    /// Offer a claimed bundle to its CLA. Runs strictly inside the
+    /// `ForwardAckPending` claim: every exit is an [`OfferOutcome`] the
+    /// caller resolves, so the claim cannot dangle.
+    #[allow(clippy::too_many_arguments)]
+    async fn offer_to_cla(
+        &self,
+        cla: &dyn cla::Cla,
+        peer: u32,
+        lane: Option<u32>,
+        cla_addr: &cla::ClaAddress,
+        mut bundle: bundle::Bundle,
+        data: Bytes,
+        seen: routing::RibSnapshot,
+    ) -> OfferOutcome {
         // Increment Hop Count, etc... The rewrite shifts block extents, and
         // the Egress filters below receive (bundle, data) as a consistent
         // pair, so the rebuilt block map must replace the pre-rewrite one.
@@ -51,9 +82,7 @@ impl Dispatcher {
         let data = match self.update_extension_blocks(&bundle, data) {
             Err(e) => {
                 warn!("Failed to update extension blocks: {e}");
-                return self
-                    .park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
-                    .await;
+                return OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen);
             }
             Ok((new_bundle, data)) => {
                 bundle.bpv7.blocks = new_bundle.blocks;
@@ -66,12 +95,6 @@ impl Dispatcher {
         // - If send fails or peer goes down, bundle returns to Waiting and may
         //   route to a different peer, so Egress will run again with fresh context
         // - BPSec blocks (BIB/BCB) should be added here, may be peer-specific
-        // - On Drop result: call drop_bundle() and return early
-        //
-        // Every exit below this point must resolve the claim taken above:
-        // ForwardAckPending has no storage poller and the reaper defers its
-        // expiry, so a bundle left there is invisible until the outcome
-        // arrives, the peer is removed, or the BPA restarts.
         let bundle_id = bundle.id().clone();
         let (bundle, mut data) = match self
             .filter_engine
@@ -80,26 +103,23 @@ impl Dispatcher {
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
             Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
-                    return self.drop_bundle(bundle, reason).await;
-                } else {
-                    return self.delete_bundle(bundle).await;
-                }
+                return OfferOutcome::Dropped(bundle, reason);
             }
             Err(e) => {
                 error!("Egress filter execution failed: {e}");
 
                 // The filter consumed the claimed bundle, so re-fetch it and
                 // conditionally return the claim to Waiting for a fresh
-                // routing decision. Losing the park means a sweep or the
-                // reaper resolved the bundle first.
-                if let Some(bundle) = self.store.get_metadata(&bundle_id).await
-                    && bundle.status == (bundle::BundleStatus::ForwardAckPending { peer })
-                {
-                    self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
-                        .await;
-                }
-                return;
+                // routing decision. A re-fetch that finds the bundle moved
+                // on means a sweep or the reaper resolved it first.
+                return match self.store.get_metadata(&bundle_id).await {
+                    Some(bundle)
+                        if bundle.status == (bundle::BundleStatus::ForwardAckPending { peer }) =>
+                    {
+                        OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
+                    }
+                    _ => OfferOutcome::Lost,
+                };
             }
         };
 
@@ -110,45 +130,24 @@ impl Dispatcher {
             .forward(lane, cla_addr, bundle.id(), total_len, &mut data)
             .await
         {
-            Ok(cla::ForwardBundleResult::Sent) => {
-                // The terminal claim is a conditional tombstone: the reaper
-                // defers in-flight transfers, but a peer sweep can still
-                // resolve the bundle mid-transmit, and losing the claim means
-                // its resolution has gone out. The forwarded report is
-                // suppressed with the rest: a lost resolution never happened.
-                if !self.store.tombstone_if(&bundle).await {
-                    debug!(
-                        "Forward completion for {} lost the resolution race, ignored",
-                        bundle.id()
-                    );
-                    return;
-                }
-                metrics::counter!("bpa.bundle.forwarded").increment(1);
-                self.report_bundle_forwarded(&bundle).await;
-
-                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
-                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
-                    .await;
-                return self.delete_bundle(bundle).await;
-            }
+            Ok(cla::ForwardBundleResult::Sent) => OfferOutcome::Completed(bundle),
             Ok(cla::ForwardBundleResult::Accepted) => {
                 // The CLA owns the transfer; the bundle stays in
                 // ForwardAckPending until the outcome arrives or the peer is
-                // removed. The watch stays armed even though the expiry pass
-                // defers this status: if a peer sweep parks the bundle before
-                // its expiry, the live entry still reaps it promptly.
-                return self.store.watch_bundle(bundle).await;
+                // removed.
+                OfferOutcome::Detached(bundle)
             }
             Ok(cla::ForwardBundleResult::NoNeighbour) => {
                 // Link-scoped evidence: the neighbour is gone. Return the
                 // bundle to Waiting, and reset the whole peer queue so its
-                // bundles await a fresh routing decision alongside it.
+                // bundles await a fresh routing decision alongside it. The
+                // sweep touches only ForwardPending, never this claimed
+                // bundle, so it can run before the park.
                 debug!(
                     "CLA indicates neighbour has gone, clearing queue assignment for peer {peer}"
                 );
-                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
-                    .await;
                 self.store.reset_peer_queue(peer).await;
+                OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
             Err(e) => {
                 metrics::counter!("bpa.bundle.forwarding.failed").increment(1);
@@ -164,8 +163,7 @@ impl Dispatcher {
                 // waits in Waiting for the next routing or link event —
                 // park_bundle re-dispatches at most once, and only if such
                 // an event landed while this transfer was in flight.
-                self.park_bundle(bundle, bundle::BundleStatus::Waiting, &seen)
-                    .await;
+                OfferOutcome::Parked(bundle, bundle::BundleStatus::Waiting, seen)
             }
         }
     }
@@ -204,28 +202,16 @@ impl Dispatcher {
         }
 
         // Claim the bundle: the snapshot checks above race the peer sweep,
-        // the expiry reaper, and duplicate outcomes, and losing the claim
-        // means one of them resolved the bundle first.
+        // the expiry reaper, and duplicate outcomes, and losing the claim —
+        // resolve_offer's conditional tombstone for a completion, the
+        // Dispatching swap below for a failure — means one of them resolved
+        // the bundle first. A completion must not hop through Dispatching:
+        // that status is recoverable by the dispatch queue's storage poller
+        // mid-resolution, driving a duplicate transmission after delivery.
         match outcome {
             cla::TransferOutcome::Completed => {
-                // The terminal claim is a conditional tombstone: a status hop
-                // through Dispatching here is recoverable by the dispatch
-                // queue's storage poller mid-resolution, driving a duplicate
-                // transmission after delivery.
-                if !self.store.tombstone_if(&bundle).await {
-                    debug!(
-                        "Transfer outcome for bundle {bundle_id} lost the resolution race, ignored"
-                    );
-                    return;
-                }
-
-                metrics::counter!("bpa.bundle.forwarded").increment(1);
-                self.report_bundle_forwarded(&bundle).await;
-
-                // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
-                self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
-                    .await;
-                self.delete_bundle(bundle).await
+                self.resolve_offer(OfferKind::Forward, OfferOutcome::Completed(bundle))
+                    .await
             }
             cla::TransferOutcome::Failed => {
                 if !self
@@ -248,7 +234,8 @@ impl Dispatcher {
                 // Waiting itself if no route remains, and its expiry
                 // checkpoint drops a bundle that expired during the deferred
                 // transfer.
-                self.dispatch_bundle(bundle).await
+                self.resolve_offer(OfferKind::Forward, OfferOutcome::Redispatch(bundle))
+                    .await
             }
         }
     }
@@ -351,5 +338,142 @@ impl Dispatcher {
             new_bundle,
             hardy_bpv7::editor::Chunk::flatten_bytes(chunks, source_data),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroUsize;
+
+    use hardy_bpv7::{
+        bundle::Id,
+        eid::{IpnNodeId, NodeId},
+    };
+
+    use super::*;
+    use crate::{
+        node_ids::NodeIds,
+        storage::{BundleMemStorage, BundleStorage, MetadataMemStorage, MetadataStorage},
+    };
+
+    struct RecordingCla {
+        offers_tx: flume::Sender<Id>,
+    }
+
+    #[async_trait]
+    impl cla::Cla for RecordingCla {
+        fn lane_count(&self) -> Option<core::num::NonZeroU32> {
+            None
+        }
+
+        async fn on_register(&self, _sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {}
+
+        async fn on_unregister(&self) {}
+
+        async fn forward(
+            &self,
+            _lane: Option<u32>,
+            _cla_addr: &cla::ClaAddress,
+            bundle_id: &Id,
+            _total_len: u64,
+            _stream: &mut dyn crate::stream::Receiver<cla::Segment>,
+        ) -> cla::Result<cla::ForwardBundleResult> {
+            let _ = self.offers_tx.send(bundle_id.clone());
+            Ok(cla::ForwardBundleResult::Sent)
+        }
+    }
+
+    /// `forward_bundle` never commences a transfer for an expired bundle:
+    /// the pre-claim expiry checkpoint resolves it as `LifetimeExpired`
+    /// before the CLA sees an offer. Driven as a direct call because this
+    /// is exactly the egress fast path's shape — a bundle that expired
+    /// while queued arrives here from the in-memory buffer, bypassing the
+    /// storage poller's expiry filter.
+    #[tokio::test]
+    async fn expired_queued_bundle_is_never_offered() {
+        let metadata_store = Arc::new(MetadataMemStorage::new(None));
+        let data_store = Arc::new(BundleMemStorage::new(None, None));
+        let store = Arc::new(storage::store::Store::new(
+            NonZeroUsize::new(16).unwrap(),
+            metadata_store.clone(),
+            data_store.clone(),
+        ));
+        let node_ids = Arc::new(
+            NodeIds::try_from(
+                [NodeId::Ipn(IpnNodeId {
+                    allocator_id: 0,
+                    node_number: 1,
+                })]
+                .as_slice(),
+            )
+            .unwrap(),
+        );
+        let rib = routing::RibBuilder::new()
+            .build(node_ids.clone(), store.clone())
+            .await
+            .unwrap();
+        let (dispatcher, _start) = Dispatcher::new(
+            false,
+            NonZeroUsize::new(16).unwrap(),
+            NonZeroUsize::new(4).unwrap(),
+            None,
+            node_ids,
+            store,
+            rib,
+            Arc::new(crate::keys::NullKeyProvider),
+            Arc::new(filter::FilterEngine::new()),
+        );
+
+        // Seed the record exactly as the egress queue holds it: data
+        // stored, metadata parked in ForwardPending, expired at build.
+        let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+        let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
+            Some(hardy_bpv7::dtn_time::DtnTime::saturating_from(past)),
+            1,
+        );
+        let (_, data) = hardy_bpv7::builder::Builder::new(
+            "ipn:0.2.1".parse().unwrap(),
+            "ipn:0.3.2".parse().unwrap(),
+        )
+        .with_lifetime(core::time::Duration::from_secs(60))
+        .with_payload(b"expired in queue".to_vec().into())
+        .build(timestamp)
+        .unwrap();
+        let data = Bytes::from(data);
+        let storage_name = data_store.save(data.clone()).await.unwrap();
+        let parsed =
+            crate::bundle::parse::parse_validate_with_provider(data, hardy_bpv7::bpsec::no_keys)
+                .unwrap()
+                .bundle;
+        let mut metadata = bundle::BundleMetadata::originated();
+        metadata.storage_name = Some(storage_name);
+        let bundle = bundle::Bundle {
+            bpv7: parsed,
+            metadata,
+            status: bundle::BundleStatus::ForwardPending { peer: 7, queue: 0 },
+        };
+        let bundle_id = bundle.id().clone();
+        assert!(metadata_store.insert(&bundle).await.unwrap());
+
+        let (offers_tx, offers_rx) = flume::bounded(16);
+        let cla = RecordingCla { offers_tx };
+        dispatcher
+            .forward_bundle(
+                &cla,
+                7,
+                None,
+                &cla::ClaAddress::Private("peer".as_bytes().into()),
+                bundle,
+            )
+            .await;
+
+        assert!(
+            offers_rx.try_recv().is_err(),
+            "an expired bundle must never be offered to the CLA"
+        );
+        assert!(
+            metadata_store.get(&bundle_id).await.unwrap().is_none(),
+            "the expired bundle is resolved terminally as LifetimeExpired"
+        );
     }
 }
