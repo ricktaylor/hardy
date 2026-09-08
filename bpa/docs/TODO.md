@@ -4,6 +4,10 @@
 
 All fragmentation-shaped work — the two sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is being consolidated in [`fixing_fragmentation.md`](fixing_fragmentation.md), pending a decision once the bulk of the streaming work lands. Until that decision is taken, the sections here remain the authoritative record.
 
+### Concurrent final fragments both park NotReady (2026 dispatch review, finding 6)
+
+`poll_fragments` only sees siblings already parked in `AduFragment` status, so when the last two fragments of an ADU are processed concurrently each polls while the other is still `Dispatching`, both conclude the set is incomplete, both park, and nothing ever re-triggers reassembly (reproduced with a delegating metadata store holding the two polls open across each other). Deliberately not patched in place: the fix would land in `poll_fragments`/`reassemble`, which the settled redesign in [`fixing_fragmentation.md`](fixing_fragmentation.md) deletes wholesale — its ledger-driven completion has no park-vs-poll window. Another motivating instance of the shape problem that redesign exists to fix.
+
 ### RFC 9171 §5.9 material-extents reassembly (overlapping fragments)
 
 #### Background
@@ -114,6 +118,10 @@ Items dispositioned as follow-up work during the branch review; the merge-gating
 **`PeerId` newtype (review round 3, R3-4).** bpa has ~23 bare `peer: u32` sites, roughly half from the transfer-outcome branch (`ForwardAckPending { peer }`, `owns_peer`, `reset_peer_ack_pending`, the outcome plumbing). The hazard is concrete: `ForwardPending { peer, queue }` carries two u32-domain identifiers and the sqlite codec flattens both into adjacent positional `i64`s. A `PeerId(u32)` newtype (with `QueueId` as its natural sibling) makes cross-assignment unrepresentable end-to-end and gives the postgres `i32` narrowing a single home. Sequence after the refactor stack — it collides with `refactor/metadata`'s churn.
 
 **Per-forward `bundle_id` clone in `forward_bundle` (review round 3, S-7).** The `bundle.id().clone()` before the egress filter exists only for the rare filter-error restore path but costs an allocation on every egress. Unavoidable while `FilterEngine::exec` consumes the bundle without returning it on `Err`; the remedy is a filter-API shape change (return the bundle with the error, as the editor's `(_, e)` tuples do), noted for the post-stack ingress/egress rework.
+
+**The `bpa.bundle.status` gauge wants one owning module (2026 dispatch review, finding 29).** The gauge is hand-balanced at ~20 raw metric sites across seven files, and drift accumulates silently when a status write loses a race (see the note below). One owning module in `otel_metrics.rs` with `admit`/`transition`/`remove` verbs — the metric name and label vocabulary private to it — turns the balance into a local property. Deferred from the dispatch review as cross-cutting churn outside that branch's correctness story.
+
+**Stored-but-uncommitted data cleanup wants a guard (2026 dispatch review, finding 30).** Every ingress failure path repeats the delete-the-saved-blob cleanup by hand. A `DataGuard` owning the saved name — sync `Drop` signalling a janitor task, defused when the name lands in the inserted record — deletes the five caller-side cleanup sites and makes a missed cleanup unrepresentable. Deferred with finding 29.
 
 **Smaller notes, take-or-leave.** `TransferOutcome::Failed` carries no reason in the Rust trait while the wire deliberately does (`google.rpc.Status`), so Rust CLAs always send a constant placeholder — plumb a reason through when a CLA has one worth sending. `tcpclv4` has a small spawn-after-shutdown window (`forward` racing `on_unregister` can spawn a transmit task after `tasks.shutdown()` returned; tokio-util's `TaskTracker` allows spawning on a closed tracker) — the orphan resolves harmlessly, noted for the next time session-task lifetime guarantees matter. The two peer-removal sweeps run as two sequential statements and could be one `status IN (...)` UPDATE if removal rate ever matters. Gauge drift accumulates silently when a status write loses to a tombstone — a periodic recount fixes it if it ever shows.
 

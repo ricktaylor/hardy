@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use super::*;
 
 /// A no-op egress policy that uses a single FIFO queue with no prioritization.
@@ -30,7 +32,7 @@ pub trait FlowController: Send + Sync {
 
 /// Defines an egress policy for a CLA, managing how outgoing bundles are prioritized and scheduled.
 ///
-/// An `FlowControllerFactory` allows for sophisticated traffic management, such as implementing
+/// A `FlowControllerFactory` allows for sophisticated traffic management, such as implementing
 /// quality of service (QoS) by classifying bundles into different queues.
 #[async_trait]
 pub trait FlowControllerFactory: Send + Sync {
@@ -40,7 +42,7 @@ pub trait FlowControllerFactory: Send + Sync {
     /// the policy's own naming: relative priority and scheduling between
     /// queues are internal policy decisions — index 0 is only guaranteed to
     /// exist (it is the clamp target for an out-of-range assignment).
-    fn queue_count(&self) -> core::num::NonZeroU32;
+    fn queue_count(&self) -> NonZeroU32;
 
     /// Creates a new [`FlowController`] that implements this policy for a given CLA.
     ///

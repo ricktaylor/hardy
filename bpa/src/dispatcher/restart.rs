@@ -349,24 +349,18 @@ mod tests {
             .unwrap();
         bpa.start(true).await;
 
-        // Recovery replays the stored bundle and resets it to Waiting
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            let status = metadata_store
+        // start(true) awaits recovery to completion, so the reset is
+        // visible the moment it returns — no wait is involved.
+        assert_eq!(
+            metadata_store
                 .get(&id)
                 .await
                 .unwrap()
                 .expect("Recovered bundle missing from metadata store")
-                .status;
-            if status == bundle::BundleStatus::Waiting {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for recovery to reset the transfer, status: {status:?}"
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        }
+                .status,
+            bundle::BundleStatus::Waiting,
+            "start(true) resolves only after recovery reset the transfer"
+        );
 
         // A route to the destination appears; the bundle is re-offered
         let (offers_tx, offers_rx) = flume::bounded(16);
@@ -596,32 +590,21 @@ mod tests {
             .unwrap();
         bpa.start(true).await;
 
-        // Recovery re-parks both as WaitingForService under the same key
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            let mut statuses = Vec::new();
-            for id in &ids {
-                statuses.push(
-                    metadata_store
-                        .get(id)
-                        .await
-                        .unwrap()
-                        .expect("Recovered bundle missing from metadata store")
-                        .status,
-                );
-            }
-            if statuses.iter().all(|s| {
-                *s == (bundle::BundleStatus::WaitingForService {
+        // start(true) awaits recovery to completion, so both re-parks are
+        // visible the moment it returns — no wait is involved.
+        for id in &ids {
+            assert_eq!(
+                metadata_store
+                    .get(id)
+                    .await
+                    .unwrap()
+                    .expect("Recovered bundle missing from metadata store")
+                    .status,
+                bundle::BundleStatus::WaitingForService {
                     service: service_eid.clone(),
-                })
-            }) {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "Timeout waiting for recovery to re-park the deliveries, statuses: {statuses:?}"
+                },
+                "start(true) resolves only after recovery re-parked the delivery"
             );
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
 
         // The service registers: its WaitingForService poll delivers both.

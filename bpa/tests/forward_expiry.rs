@@ -5,6 +5,8 @@
 //! dropped as `LifetimeExpired` at the dispatch expiry checkpoint.
 
 use core::{num::NonZeroU32, time::Duration};
+use std::{borrow::Cow, sync::Arc};
+
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
@@ -22,7 +24,6 @@ use hardy_bpv7::{
     parse::parse,
     status_report::{AdministrativeRecord, BundleStatusReport, ReasonCode},
 };
-use std::{borrow::Cow, sync::Arc};
 
 // ---------------------------------------------------------------------------
 

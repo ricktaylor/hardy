@@ -395,10 +395,10 @@ impl ClaRegistry {
         .await;
         reservation.publish(peer);
 
-        // Post-construction liveness re-check (whole-codebase review #14):
-        // a concurrent remove_peer/unregister_cla during construction has
-        // already taken the address entry — withdraw the published peer
-        // instead of installing RIB entries nothing will ever clean up.
+        // Post-construction liveness re-check: a concurrent
+        // remove_peer/unregister_cla during construction has already taken
+        // the address entry — withdraw the published peer instead of
+        // installing RIB entries nothing will ever clean up.
         let still_ours = matches!(cla.peers.lock().get(&cla_addr), Some((_, id)) if *id == peer_id);
         if !still_ours {
             self.peers.remove(peer_id).await;

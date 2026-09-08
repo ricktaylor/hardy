@@ -1,3 +1,5 @@
+use core::num::NonZeroU32;
+
 use super::*;
 
 /// A pass-through egress controller: every bundle transmits on the next
@@ -31,8 +33,8 @@ impl FlowControllerFactory {
 
 #[async_trait]
 impl policy::FlowControllerFactory for FlowControllerFactory {
-    fn queue_count(&self) -> core::num::NonZeroU32 {
-        core::num::NonZeroU32::MIN
+    fn queue_count(&self) -> NonZeroU32 {
+        NonZeroU32::MIN
     }
 
     async fn new_controller(
