@@ -7,11 +7,11 @@ use alloc::{
 use core::fmt;
 
 use hardy_cbor::{
-    decode::parse_value,
+    // Aliased: collides with this module's own `Error`.
+    decode::{Error as CborError, parse_value, skip_value},
     encode::{Encoder, Raw, ToCbor},
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
-use thiserror::Error;
 // Encode set matching RFC 3986 unreserved characters (keeps alphanumerics, -, _, ., ~)
 const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -164,6 +164,30 @@ impl fmt::Display for Service {
     }
 }
 
+/// The scheme-specific part of an unrecognised-scheme EID: guaranteed to
+/// be exactly one well-formed CBOR data item, so it can be re-emitted
+/// verbatim and always displayed.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnknownSsp(Box<[u8]>);
+
+impl UnknownSsp {
+    /// Fails with [`Error::InvalidSsp`] unless `data` is exactly one
+    /// well-formed CBOR data item.
+    pub fn new(data: Box<[u8]>) -> Result<Self, Error> {
+        let (_, len) = skip_value(&data, 16).map_err(Error::InvalidCBOR)?;
+        if len != data.len() {
+            // Trailing bytes after the first data item.
+            return Err(Error::InvalidSsp);
+        }
+        Ok(Self(data))
+    }
+
+    /// The validated single-item CBOR encoding of the SSP.
+    pub fn as_cbor(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// A Bundle Protocol Endpoint Identifier (EID) as defined in RFC 9171 Section 4.2.5.1.
 #[derive(Default, Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
@@ -202,8 +226,8 @@ pub enum Eid {
     Unknown {
         /// The numeric scheme code.
         scheme: u64,
-        /// The scheme-specific content as raw CBOR.
-        data: Box<[u8]>,
+        /// The scheme-specific content: one well-formed CBOR data item.
+        ssp: UnknownSsp,
     },
 }
 
@@ -328,18 +352,9 @@ impl ToCbor for Eid {
                     encoder.emit(&(2, &[fqdn.allocator_id, fqdn.node_number, *service_number]))
                 }
             }
-            Eid::Unknown { scheme, data } => encoder.emit(&(scheme, Raw(data))),
+            Eid::Unknown { scheme, ssp } => encoder.emit(&(scheme, Raw(ssp.as_cbor()))),
         }
     }
-}
-
-#[derive(Error, Debug)]
-enum DisplayError {
-    #[error(transparent)]
-    Decode(#[from] hardy_cbor::decode::Error),
-
-    #[error(transparent)]
-    Fmt(#[from] fmt::Error),
 }
 
 impl From<Eid> for String {
@@ -385,15 +400,18 @@ impl fmt::Display for Eid {
                     percent_encode(node_name.node_name.as_bytes(), URI_ENCODE_SET)
                 )
             }
-            Eid::Unknown { scheme, data } => {
-                let r = parse_value(data, |mut value, _, _| {
-                    write!(f, "unknown({scheme}):{value:?}").map_err(Into::<DisplayError>::into)?;
-                    value.skip(16).map_err(Into::<DisplayError>::into)
-                });
-                match r {
-                    Ok(_) => Ok(()),
-                    Err(DisplayError::Fmt(e)) => Err(e),
-                    Err(DisplayError::Decode(e)) => write!(f, "unknown({scheme}):error: {e:?}"),
+            Eid::Unknown { scheme, ssp } => {
+                match parse_value(ssp.as_cbor(), |mut value, _, _| {
+                    let r = write!(f, "unknown({scheme}):{value:?}");
+                    value.skip(16)?;
+                    Ok::<_, CborError>(r)
+                }) {
+                    Ok((r, _)) => r,
+                    // The SSP is well-formed CBOR by construction, but need
+                    // not be decodable (e.g. a text string that is not valid
+                    // UTF-8). Display must stay total: returning `fmt::Error`
+                    // on a healthy stream aborts `format!`.
+                    Err(e) => write!(f, "unknown({scheme}):error: {e:?}"),
                 }
             }
         }

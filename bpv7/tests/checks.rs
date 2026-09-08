@@ -9,6 +9,9 @@ use hardy_bpv7::{
 };
 use std::collections::{HashMap, HashSet};
 
+mod common;
+use self::common::{insert_after_primary, make_block, rand_k};
+
 /// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
 /// shape the pipeline tests are written against.
 #[allow(clippy::type_complexity)]
@@ -164,24 +167,8 @@ fn unknown_block_discard() {
 
     // Insert an unknown extension block (type 999) with delete_block_on_failure flag
     // between the primary block and the payload block.
-    let unknown_block = hardy_cbor::encode::emit_array(Some(5), |a| {
-        a.emit(&999u64); // block type
-        a.emit(&2u64); // block number
-        a.emit(&0x10u64); // flags: delete_block_on_failure
-        a.emit(&0u64); // CRC type: none
-        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD, 0xBE, 0xEF]));
-    });
-
-    assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
-
-    let (_, primary_len) =
-        hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
-
-    let insert_pos = 1 + primary_len;
-    let mut modified = Vec::with_capacity(data.len() + unknown_block.len());
-    modified.extend_from_slice(&data[..insert_pos]);
-    modified.extend_from_slice(&unknown_block);
-    modified.extend_from_slice(&data[insert_pos..]);
+    let unknown_block = make_block(999, 2, 0x10, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    let modified = insert_after_primary(&data, &[&unknown_block]);
 
     // Preserve-mode semantics demonstrated via primitives: parse keeps every
     // block, classify_unsupported identifies block 2 as deletable,
@@ -216,20 +203,6 @@ fn unknown_block_discard() {
     );
 }
 
-// Splice an extension block (already encoded as a 5-element block array)
-// into `data` immediately after the primary block.
-fn splice_after_primary(data: &[u8], block: &[u8]) -> Vec<u8> {
-    assert_eq!(data[0], 0x9F, "Bundle should start with indefinite array");
-    let (_, primary_len) =
-        hardy_cbor::decode::skip_value(&data[1..], 16).expect("Should skip primary block");
-    let insert_pos = 1 + primary_len;
-    let mut modified = Vec::with_capacity(data.len() + block.len());
-    modified.extend_from_slice(&data[..insert_pos]);
-    modified.extend_from_slice(block);
-    modified.extend_from_slice(&data[insert_pos..]);
-    modified
-}
-
 // Splice a BCB carrying an unrecognised security context (id 99) targeting
 // the payload (block 1) into `data` as block number 2, with the given block
 // processing `flags`. `flags` must include must-replicate (0x01) — required
@@ -255,7 +228,7 @@ fn splice_unrecognised_bcb(data: &[u8], flags: u64) -> Vec<u8> {
         a.emit(&0u64); // CRC type: none
         a.emit(&hardy_cbor::encode::Bytes(&asb));
     });
-    splice_after_primary(data, &bcb_block)
+    insert_after_primary(data, &[&bcb_block])
 }
 
 // Requirement: RFC 9172 §7.1 — the §A facts distinguish an unsupported
@@ -275,14 +248,8 @@ fn classify_distinguishes_security_kind() {
 
     // Control: an unknown (non-security) block with report_on_failure (0x02)
     // → only the block fact fires.
-    let unknown_block = hardy_cbor::encode::emit_array(Some(5), |a| {
-        a.emit(&999u64); // block type
-        a.emit(&2u64); // block number
-        a.emit(&0x02u64); // flags: report_on_failure
-        a.emit(&0u64); // CRC type: none
-        a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
-    });
-    let modified = splice_after_primary(&build_minimal_bundle(), &unknown_block);
+    let unknown_block = make_block(999, 2, 0x02, &[0xDE, 0xAD]);
+    let modified = insert_after_primary(&build_minimal_bundle(), &[&unknown_block]);
     let (_, raw_bundle, bcb_ops, bib_ops) =
         raw_parse_tuple(Bytes::copy_from_slice(&modified)).unwrap();
     let classification =
@@ -316,27 +283,35 @@ fn unsupported_security_delete_bundle_errors() {
 mod cascade_reencryption_tests {
     use super::*;
 
+    // Fresh per call: a test binds the key once and passes it to every
+    // path that must agree on it.
     fn sign_key() -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({
             "kid": "ipn:2.1",
             "kty": "oct",
             "alg": "HS256",
             "key_ops": ["sign", "verify"],
-            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+            "k": rand_k(18)
         }))
         .unwrap()
     }
 
-    fn enc_key() -> bpsec::key::Key {
+    // Wrong-key tests bind the `k` value explicitly so distinctness from
+    // the wrong key can be asserted structurally.
+    fn enc_key_with_k(k: &str) -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({
             "kid": "ipn:2.1",
             "kty": "oct",
             "alg": "A128KW",
             "enc": "A128GCM",
             "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAA"
+            "k": k
         }))
         .unwrap()
+    }
+
+    fn enc_key() -> bpsec::key::Key {
+        enc_key_with_k(&rand_k(16))
     }
 
     // Hand-construct a bundle byte sequence with a payload plus an unknown
@@ -348,22 +323,9 @@ mod cascade_reencryption_tests {
                 .with_payload(b"payload data".as_slice().into())
                 .build(creation_timestamp::CreationTimestamp::now())
                 .unwrap();
-        let unknown = hardy_cbor::encode::emit_array(Some(5), |a| {
-            a.emit(&999u64);
-            a.emit(&2u64);
-            a.emit(&0x10u64); // delete_block_on_failure
-            a.emit(&0u64); // CRC: none
-            a.emit(&hardy_cbor::encode::Bytes(&[0xDE, 0xAD]));
-        });
-        assert_eq!(base[0], 0x9F);
-        let (_, primary_len) =
-            hardy_cbor::decode::skip_value(&base[1..], 16).expect("skip primary");
-        let insert_pos = 1 + primary_len;
-        let mut out = Vec::with_capacity(base.len() + unknown.len());
-        out.extend_from_slice(&base[..insert_pos]);
-        out.extend_from_slice(&unknown);
-        out.extend_from_slice(&base[insert_pos..]);
-        out
+        // delete_block_on_failure (0x10)
+        let unknown = make_block(999, 2, 0x10, &[0xDE, 0xAD]);
+        insert_after_primary(&base, &[&unknown])
     }
 
     // Sign the named targets under a single BIB (HMAC-SHA2, default scope
@@ -425,7 +387,7 @@ mod cascade_reencryption_tests {
         let opset: bpsec::bcb::OperationSet =
             hardy_cbor::decode::parse(bcb_payload).expect("decode BCB");
         match opset.operations().get(&target).expect("BCB op for target") {
-            bpsec::bcb::Operation::AES_GCM(op) => op.parameters.iv.clone(),
+            bpsec::bcb::Operation::AES_GCM(op) => op.parameters.iv.as_slice().into(),
             bpsec::bcb::Operation::Unrecognised(..) => panic!("expected AES-GCM"),
         }
     }
@@ -570,7 +532,14 @@ mod cascade_reencryption_tests {
     #[test]
     fn corrupt_covered_bib_is_failure_dropped() {
         let sign_k = sign_key();
-        let enc_k = enc_key();
+        // Bind both `k` values so the wrong-key premise is structural.
+        let enc_k_val = rand_k(16);
+        let wrong_k_val = rand_k(16);
+        assert_ne!(
+            enc_k_val, wrong_k_val,
+            "the wrong key must differ from the encryption key"
+        );
+        let enc_k = enc_key_with_k(&enc_k_val);
 
         // Build a bundle where the payload BIB is BCB-encrypted.
         // sign(payload) → encrypt(payload) auto-encrypts the BIB covering it.
@@ -594,15 +563,7 @@ mod cascade_reencryption_tests {
 
         // A wrong enc key with the same kid → decrypt attempt produces
         // DecryptionFailed (not NoKey) at the §B BIB-decryption stage.
-        let wrong_enc_k: bpsec::key::Key = serde_json::from_value(serde_json::json!({
-            "kid": "ipn:2.1",
-            "kty": "oct",
-            "alg": "A128KW",
-            "enc": "A128GCM",
-            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
-        }))
-        .unwrap();
+        let wrong_enc_k = enc_key_with_k(&wrong_k_val);
         let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
 
         // parse_full_for_test applies §5.1.1 failure-drop: the corrupt BIB
@@ -645,15 +606,11 @@ mod cascade_reencryption_tests {
              724e16e61f837488e127212b59ac91f8a86287b7d07630a122ff"
         )
         .to_vec();
-        // Flip one byte of the BIB's ciphertext: the block-3 body is the
-        // 70-byte string right after its `58 46` bytes header.
-        let pos = data
-            .windows(2)
-            .position(|w| w == hex_literal::hex!("5846"))
-            .expect("BIB body header present")
-            + 2;
-        data[pos] ^= 0x01;
 
+        // The RFC 9173 Appendix A.4 conformance keys, pinned together with
+        // the wire capture above: the vector can only be regenerated with
+        // these exact keys, and the test needs keys that CAN decrypt so
+        // that the byte flip below is what breaks verification.
         let keys: bpsec::key::KeySet = serde_json::from_value(serde_json::json!({
             "keys": [
                 {
@@ -673,6 +630,21 @@ mod cascade_reencryption_tests {
             ]
         }))
         .unwrap();
+
+        // The pristine vector decrypts and verifies cleanly with these
+        // keys, proving the byte flip below is load-bearing.
+        let (pristine, _) = parse_full_for_test(&data, &keys)
+            .expect("the pristine A.4 vector must parse cleanly with the pinned keys");
+        assert!(pristine.blocks.contains_key(&3), "pristine BIB survives");
+
+        // Flip one byte of the BIB's ciphertext: the block-3 body is the
+        // 70-byte string right after its `58 46` bytes header.
+        let pos = data
+            .windows(2)
+            .position(|w| w == hex_literal::hex!("5846"))
+            .expect("BIB body header present")
+            + 2;
+        data[pos] ^= 0x01;
 
         let (bundle, chunks) = parse_full_for_test(&data, &keys)
             .expect("§5.1.1 failure-drop: bundle survives a corrupt target of a shared BCB");
@@ -696,7 +668,14 @@ mod cascade_reencryption_tests {
     #[test]
     fn remove_blocks_failure_drop_with_undecryptable_bib() {
         let sign_k = sign_key();
-        let enc_k = enc_key();
+        // Bind both `k` values so the wrong-key premise is structural.
+        let enc_k_val = rand_k(16);
+        let wrong_k_val = rand_k(16);
+        assert_ne!(
+            enc_k_val, wrong_k_val,
+            "the wrong key must differ from the encryption key"
+        );
+        let enc_k = enc_key_with_k(&enc_k_val);
 
         // sign([2]) → encrypt(2): the encryptor auto-encrypts the BIB
         // covering block 2, so the resulting bundle has:
@@ -716,15 +695,7 @@ mod cascade_reencryption_tests {
 
         // Wrong enc key (same kid, wrong bytes) → DecryptionFailed (not
         // NoKey) when remove_blocks tries to stage the BIB in step 2.
-        let wrong_enc_k: bpsec::key::Key = serde_json::from_value(serde_json::json!({
-            "kid": "ipn:2.1",
-            "kty": "oct",
-            "alg": "A128KW",
-            "enc": "A128GCM",
-            "key_ops": ["encrypt", "decrypt", "wrapKey", "unwrapKey"],
-            "k": "AAAAAAAAAAAAAAAAAAAAAQ"
-        }))
-        .unwrap();
+        let wrong_enc_k = enc_key_with_k(&wrong_k_val);
         let wrong_keys = bpsec::key::KeySet::new(vec![sign_k, wrong_enc_k]);
 
         // §5.1.1 failure-drop at the editor level: include the corrupt
@@ -974,19 +945,15 @@ mod deferred_payload_bib_tests {
             "kty": "oct",
             "alg": "HS256",
             "key_ops": ["sign", "verify"],
-            "k": "c2VjcmV0X3NpZ25pbmdfa2V5"
+            "k": rand_k(18)
         }))
         .unwrap()
-    }
-
-    fn keys() -> bpsec::key::KeySet {
-        bpsec::key::KeySet::new(vec![sign_key()])
     }
 
     // A bundle whose payload (block 1) is signed under a BIB and is far larger
     // than any sane parser chunk, so the streaming parser must report `Partial`
     // before the payload body is resident.
-    fn signed_large_payload() -> Box<[u8]> {
+    fn signed_large_payload(key: &bpsec::key::Key) -> Box<[u8]> {
         let (_, base) =
             builder::Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
                 .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
@@ -998,12 +965,20 @@ mod deferred_payload_bib_tests {
                 1,
                 bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
-                &sign_key(),
+                key,
             )
             .map_err(|(_, e)| e)
             .unwrap()
             .rebuild()
             .unwrap()
+    }
+
+    // Bind the key once; the signed bundle and the verifying KeySet derive
+    // from the same binding.
+    fn signed_payload_and_keys() -> (Box<[u8]>, bpsec::key::KeySet) {
+        let key = sign_key();
+        let full = signed_large_payload(&key);
+        (full, bpsec::key::KeySet::new(vec![key]))
     }
 
     // Drive the streaming parser until the payload body overflows the buffer,
@@ -1027,8 +1002,7 @@ mod deferred_payload_bib_tests {
     // op-set over owned; the map then verifies against the full bundle.
     #[test]
     fn payload_bib_deferred_then_verified() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
 
         let Parsed {
             data: consumed,
@@ -1079,8 +1053,7 @@ mod deferred_payload_bib_tests {
     // A tampered payload body fails the deferred BIB at the `verify_payload` pass.
     #[test]
     fn payload_bib_tamper_fails() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
 
         let Parsed {
             data: consumed,
@@ -1126,8 +1099,7 @@ mod deferred_payload_bib_tests {
     // is non-empty and `iter` names that block.
     #[test]
     fn verify_all_bibs_defers_nonempty_on_headers_only_buffer() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
 
         let Parsed {
             data: consumed,
@@ -1159,8 +1131,7 @@ mod deferred_payload_bib_tests {
     // defers nothing — the non-streaming path is unchanged.
     #[test]
     fn all_resident_verifies_inline_without_deferring() {
-        let full = signed_large_payload();
-        let keys = keys();
+        let (full, keys) = signed_payload_and_keys();
 
         let (data, mut raw, bcb_ops, mut bib_ops) =
             raw_parse_tuple(Bytes::copy_from_slice(&full)).unwrap();

@@ -105,8 +105,11 @@ pub enum Error {
     #[error("Failed to parse {field}: {source}")]
     InvalidField {
         field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
+        source: Box<Error>,
     },
+
+    #[error(transparent)]
+    InvalidEid(#[from] crate::eid::Error),
 
     #[error("BPSec block violates RFC 9172 canonical CBOR encoding requirements")]
     NotCanonical,
@@ -144,10 +147,10 @@ impl From<hardy_cbor::decode::Error> for Error {
 }
 
 impl crate::error::HasInvalidField for Error {
-    fn invalid_field(
-        field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self {
-        Error::InvalidField { field, source }
+    fn invalid_field(field: &'static str, source: Self) -> Self {
+        Error::InvalidField {
+            field,
+            source: Box::new(source),
+        }
     }
 }

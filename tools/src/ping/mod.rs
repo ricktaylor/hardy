@@ -1,3 +1,5 @@
+use std::num::NonZeroU8;
+
 use super::*;
 use hardy_bpv7::eid::{Eid, NodeId};
 use rand::RngExt;
@@ -81,9 +83,9 @@ pub struct Command {
     #[arg(short, long, num_args = 0..=1, require_equals = true, default_missing_value = "info")]
     verbose: Option<Verbosity>,
 
-    /// Hop limit (like IP TTL)
+    /// Hop limit (like IP TTL), RFC 9171 §4.4.3: 1 to 255
     #[arg(short = 't', long)]
-    ttl: Option<u64>,
+    ttl: Option<NonZeroU8>,
 
     /// Bundle lifetime
     #[arg(long)]

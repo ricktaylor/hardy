@@ -892,7 +892,7 @@ impl<'a> Editor<'a> {
                             self,
                             error::Error::InvalidField {
                                 field: "BIB Abstract Syntax Block",
-                                source: e.into(),
+                                source: Box::new(e.into()),
                             }
                             .into(),
                         ));
@@ -939,7 +939,7 @@ impl<'a> Editor<'a> {
                             self,
                             error::Error::InvalidField {
                                 field: "BCB Abstract Syntax Block",
-                                source: e.into(),
+                                source: Box::new(e.into()),
                             }
                             .into(),
                         ));

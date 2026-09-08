@@ -473,7 +473,7 @@ fn decode_bcb_opset(
         Ok(opset) => Ok(Some(opset)),
         Err(e) => Err(crate::error::Error::InvalidField {
             field: "BCB Abstract Syntax Block",
-            source: e.into(),
+            source: Box::new(e.into()),
         }
         .into()),
     }
@@ -532,7 +532,7 @@ where
             CoveredBib::ParseFailed(
                 crate::error::Error::InvalidField {
                     field: "BIB Abstract Syntax Block",
-                    source: e.into(),
+                    source: Box::new(e.into()),
                 }
                 .into(),
             ),

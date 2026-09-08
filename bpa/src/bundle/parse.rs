@@ -251,7 +251,7 @@ impl HeaderVerify {
             .extensions
             .hop_count
             .as_ref()
-            .is_some_and(|h| h.count > h.limit)
+            .is_some_and(|h| h.count > u64::from(h.limit.get()))
         {
             Some(ReasonCode::HopLimitExceeded)
         } else {
@@ -663,9 +663,7 @@ mod tests {
             use bpsec::key::{EncAlgorithm, Key, KeyAlgorithm, KeySet, Operation, Type};
             Box::new(KeySet::new(vec![
                 Key {
-                    key_type: Type::OctetSequence {
-                        key: hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b").into(),
-                    },
+                    key_type: Type::octet_sequence(hex!("1a2b1a2b1a2b1a2b1a2b1a2b1a2b1a2b")),
                     key_algorithm: Some(KeyAlgorithm::HS384),
                     enc_algorithm: None,
                     operations: Some([Operation::Verify].into_iter().collect()),
@@ -673,9 +671,7 @@ mod tests {
                     key_use: None,
                 },
                 Key {
-                    key_type: Type::OctetSequence {
-                        key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-                    },
+                    key_type: Type::octet_sequence(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
                     key_algorithm: None,
                     enc_algorithm: Some(EncAlgorithm::A256GCM),
                     operations: Some([Operation::Decrypt].into_iter().collect()),
@@ -717,6 +713,8 @@ mod tests {
     #[cfg(feature = "rfc9173")]
     #[tokio::test]
     async fn nokey_hop_count_fatal_at_ingress_a_fact_at_validate() {
+        use core::num::NonZeroU8;
+
         use hardy_bpv7::{
             bpsec::{
                 encryptor::{Context, Encryptor},
@@ -727,11 +725,14 @@ mod tests {
             creation_timestamp::CreationTimestamp,
             hop_info::HopInfo,
         };
+        use rand::{TryRng, rngs::SysRng};
 
+        // Immaterial key value: the test parses with `no_keys`, so the
+        // key only has to encrypt; generated per the no-literal-keys rule.
+        let mut enc_k_bytes = vec![0u8; 32];
+        SysRng.try_fill_bytes(&mut enc_k_bytes).unwrap();
         let enc_k = Key {
-            key_type: Type::OctetSequence {
-                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-            },
+            key_type: Type::octet_sequence(enc_k_bytes),
             key_algorithm: None,
             enc_algorithm: Some(EncAlgorithm::A256GCM),
             operations: Some([Operation::Encrypt].into_iter().collect()),
@@ -742,7 +743,7 @@ mod tests {
         let (built, data) =
             Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.99".parse().unwrap())
                 .with_hop_count(&HopInfo {
-                    limit: 64,
+                    limit: NonZeroU8::new(64).unwrap(),
                     count: 1,
                 })
                 .with_payload(b"payload".as_slice().into())
@@ -808,9 +809,7 @@ mod tests {
     fn sign_key() -> bpsec::key::Key {
         use bpsec::key::{Key, KeyAlgorithm, Operation, Type};
         Key {
-            key_type: Type::OctetSequence {
-                key: b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice().into(),
-            },
+            key_type: Type::octet_sequence(b"qwertyuiopasdfghqwertyuiopasdfgh".as_slice()),
             key_algorithm: Some(KeyAlgorithm::HS256),
             enc_algorithm: None,
             operations: Some([Operation::Sign, Operation::Verify].into_iter().collect()),

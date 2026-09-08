@@ -326,14 +326,22 @@ mod tests {
         parse::{Parsed, parse},
     };
 
+    use rand::{TryRng, rngs::SysRng};
+
     use super::*;
+
+    // Immaterial key bytes (the lookup/priority tests never read them),
+    // generated per the no-literal-keys rule.
+    fn rand_key_bytes(len: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        SysRng.try_fill_bytes(&mut buf).unwrap();
+        buf
+    }
 
     fn hmac_key(kid: &str) -> Key {
         Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![0xAA; 32].into(),
-            },
+            key_type: Type::octet_sequence(rand_key_bytes(32)),
             key_algorithm: Some(KeyAlgorithm::HS256),
             operations: Some([Operation::Sign, Operation::Verify].into()),
             key_use: Some(Use::Signature),
@@ -344,9 +352,7 @@ mod tests {
     fn aes_key(kid: &str) -> Key {
         Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![0xBB; 32].into(),
-            },
+            key_type: Type::octet_sequence(rand_key_bytes(32)),
             key_algorithm: Some(KeyAlgorithm::A256KW),
             enc_algorithm: Some(EncAlgorithm::A256GCM),
             operations: Some(
@@ -630,9 +636,7 @@ mod tests {
     fn a2_source(role: SecurityRole) -> PatternKeySource {
         let key = Key {
             id: Some("a2-key".into()),
-            key_type: Type::OctetSequence {
-                key: b"abcdefghijklmnop".to_vec().into(),
-            },
+            key_type: Type::octet_sequence(b"abcdefghijklmnop".to_vec()),
             key_algorithm: Some(KeyAlgorithm::A128KW),
             enc_algorithm: Some(EncAlgorithm::A128GCM),
             operations: Some([Operation::UnwrapKey, Operation::Decrypt].into()),
@@ -737,9 +741,7 @@ mod tests {
     fn make_source(kid: &str) -> PatternKeySource {
         let key = Key {
             id: Some(kid.into()),
-            key_type: Type::OctetSequence {
-                key: vec![1, 2, 3].into(),
-            },
+            key_type: Type::octet_sequence(rand_key_bytes(3)),
             operations: Some([Operation::Verify].into()),
             ..Default::default()
         };

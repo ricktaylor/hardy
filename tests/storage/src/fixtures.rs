@@ -1,5 +1,8 @@
 use core::time::Duration;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    num::NonZeroU8,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use hardy_bpa::{bundle::Origin, cla::ClaAddress};
 use hardy_bpv7::{
@@ -55,7 +58,7 @@ pub fn ingress_bundle() -> bundle::Bundle {
     metadata.extensions.previous_node = Some("ipn:1.0".parse().unwrap());
     metadata.extensions.age = Some(Duration::from_millis(1234));
     metadata.extensions.hop_count = Some(HopInfo {
-        limit: 32,
+        limit: NonZeroU8::new(32).unwrap(),
         count: 3,
     });
 

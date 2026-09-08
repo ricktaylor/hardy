@@ -568,8 +568,8 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
             ))?;
             output.append_str(format!(
                 "IV: ({} bits) {}\n\n",
-                op.parameters.iv.len() * 8,
-                dump_bytes(&op.parameters.iv),
+                op.parameters.iv.as_slice().len() * 8,
+                dump_bytes(op.parameters.iv.as_slice()),
             ))?;
             if let Some(key) = &op.parameters.key {
                 output.append_str(format!("Wrapped Key: {}\n\n", dump_bytes(key),))?;
@@ -683,7 +683,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
 
         match op {
             bpsec::bib::Operation::HMAC_SHA2(op) => {
-                output.append_str(format!("HMAC: {}\n\n", dump_bytes(&op.results.0)))?;
+                output.append_str(format!("HMAC: {:x}\n\n", op.results.0))?;
             }
             bpsec::bib::Operation::Unrecognised(_u, op) => {
                 for (r, v) in op.results.iter() {

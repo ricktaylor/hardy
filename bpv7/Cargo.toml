@@ -30,7 +30,7 @@ std = [
 # Enable this feature on targets without native CAS instructions (e.g., thumbv6m / Cortex-M0).
 # Requires a critical-section implementation - see https://docs.rs/portable-atomic
 critical-section = ["portable-atomic/critical-section"]
-rfc9173 = ["bpsec", "dep:hmac", "dep:sha2", "dep:aes-gcm", "dep:aes-kw", "dep:rand"]
+rfc9173 = ["bpsec", "dep:hmac", "dep:sha2", "dep:aes-gcm", "dep:aes-kw", "dep:rand", "dep:subtle"]
 serde = ["dep:serde","hashbrown/serde"]
 # Internal feature: enables BPSec signing/encryption modules.
 # Automatically enabled by security context features (rfc9173, and future cose).
@@ -54,9 +54,12 @@ smallvec = "1"
 hmac = { version = "0.13", default-features = false, optional = true }
 aes-gcm = { version = "0.11", default-features = false, features = ["alloc", "aes", "zeroize"], optional = true }
 aes-kw = { version = "0.3", default-features = false, optional = true }
+subtle = { version = "2", default-features = false, optional = true }
 serde = { version = "1", default-features = false, features = ["alloc","derive"], optional = true }
 
 [dev-dependencies]
 hex-literal = "1"
 serde_json = "1"
+rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
+base64 = { version = "0.23", default-features = false, features = ["alloc"] }
 hardy-bpv7 = { path = ".", features = ["serde", "std"] }

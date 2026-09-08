@@ -292,10 +292,7 @@ impl hardy_cbor::decode::FromCbor for Eid {
                     .map_err(Error::from)
                     .map_field_err::<Error>("EID scheme")?;
             if !s {
-                return Err(Error::invalid_field(
-                    "EID scheme",
-                    Error::NotCanonical.into(),
-                ));
+                return Err(Error::invalid_field("EID scheme", Error::NotCanonical));
             }
 
             match scheme {
@@ -372,7 +369,9 @@ impl hardy_cbor::decode::FromCbor for Eid {
                     Ok((
                         Eid::Unknown {
                             scheme,
-                            data: data[start..a.offset()].into(),
+                            // Infallible in practice: `skip_value` just
+                            // consumed exactly this extent.
+                            ssp: UnknownSsp::new(data[start..a.offset()].into())?,
                         },
                         canonical,
                     ))

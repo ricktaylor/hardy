@@ -4,7 +4,7 @@
 //! covering the component test plan (PLAN-BPA-01) Suites A and B.
 
 use core::{
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU8, NonZeroU32, NonZeroUsize},
     time::Duration,
 };
 use hardy_bpa::{
@@ -1200,7 +1200,10 @@ fn build_expired_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Byte
 // A bundle carrying a Hop Count block whose count already exceeds its limit.
 // Oversized payload so it streams as `Partial`.
 fn build_hop_exhausted_bundle(source: &Eid, destination: &Eid, payload: &[u8]) -> Bytes {
-    let hop = HopInfo { limit: 1, count: 2 };
+    let hop = HopInfo {
+        limit: NonZeroU8::new(1).unwrap(),
+        count: 2,
+    };
     let (_, data) = Builder::new(source.clone(), destination.clone())
         .with_hop_count(&hop)
         .with_payload(Cow::Borrowed(payload))
@@ -1335,7 +1338,10 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     // Hop-exhausted, report-requesting transit bundle.
     let (_, data) = Builder::new(remote_source.clone(), dest.clone())
         .with_flags(report_flags.clone())
-        .with_hop_count(&HopInfo { limit: 1, count: 2 })
+        .with_hop_count(&HopInfo {
+            limit: NonZeroU8::new(1).unwrap(),
+            count: 2,
+        })
         .with_payload(Cow::Borrowed(b"opaque".as_slice()))
         .build(CreationTimestamp::now())
         .unwrap();

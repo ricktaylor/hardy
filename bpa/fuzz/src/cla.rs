@@ -1,3 +1,5 @@
+use core::num::NonZeroU8;
+
 use super::*;
 use hardy_async::sync::spin::Once;
 use hardy_bpa::async_trait;
@@ -11,7 +13,7 @@ pub struct RandomBundle {
     flags: Option<u32>,
     crc_type: Option<u8>,
     lifetime: Option<core::time::Duration>,
-    hop_limit: Option<(u64, u64)>,
+    hop_limit: Option<(NonZeroU8, u64)>,
     payload: Vec<u8>,
 }
 

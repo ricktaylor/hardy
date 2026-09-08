@@ -66,5 +66,6 @@ arc-swap = "1"
 
 [dev-dependencies]
 hex-literal = "1"
+rand = { version = "0.10", default-features = false, features = ["alloc", "sys_rng"] }
 tempfile = "3"
 serial_test = "4"

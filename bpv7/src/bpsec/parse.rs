@@ -66,35 +66,34 @@ pub(super) fn bounded_slice(data: &[u8], range: Range<usize>) -> Result<&[u8], E
     })
 }
 
+// Copies each range of `data` into an owned buffer, keyed as on the wire.
+fn slice_map(
+    ranges: HashMap<u64, Range<usize>>,
+    data: &[u8],
+) -> Result<HashMap<u64, Box<[u8]>>, Error> {
+    let mut map = HashMap::with_capacity(ranges.len());
+    for (id, range) in ranges {
+        map.insert(id, bounded_slice(data, range)?.into());
+    }
+    Ok(map)
+}
+
 impl UnknownOperation {
     pub fn parse(
         asb: AbstractSyntaxBlock,
         source_data: &[u8],
     ) -> Result<(eid::Eid, HashMap<u64, Self>), Error> {
-        let param_count = asb.parameters.len();
-        let mut parameters = HashMap::with_capacity(param_count);
-        for (id, range) in asb.parameters {
-            parameters.insert(id, bounded_slice(source_data, range)?.into());
-        }
-        let parameters = Arc::from(parameters);
-
-        // Unpack results
-        let mut operations = HashMap::with_capacity(asb.results.len());
-        for (target, results) in asb.results {
-            let result_count = results.len();
-            let mut result_map = HashMap::with_capacity(result_count);
-            for (id, range) in results {
-                result_map.insert(id, bounded_slice(source_data, range)?.into());
-            }
-            operations.insert(
-                target,
-                Self {
-                    parameters: parameters.clone(),
-                    results: result_map,
-                },
-            );
-        }
-        Ok((asb.source, operations))
+        asb.into_operations(
+            source_data,
+            "security context parameters",
+            "security results",
+            slice_map,
+            slice_map,
+            |parameters, results| Self {
+                parameters,
+                results,
+            },
+        )
     }
 
     pub fn emit_context(
@@ -129,9 +128,36 @@ impl UnknownOperation {
 
 pub struct AbstractSyntaxBlock {
     pub context: Context,
-    pub source: eid::Eid,
-    pub parameters: HashMap<u64, Range<usize>>,
-    pub results: HashMap<u64, HashMap<u64, Range<usize>>>,
+    // Private: the ranges can only be consumed through `into_operations`,
+    // so every security context unpacks an ASB the same way.
+    source: eid::Eid,
+    parameters: HashMap<u64, Range<usize>>,
+    results: HashMap<u64, HashMap<u64, Range<usize>>>,
+}
+
+impl AbstractSyntaxBlock {
+    /// The only way to consume the parameter/result ranges: parses the
+    /// parameters once, shares them across every target, parses one
+    /// result set per target keyed by its wire target number, and wraps
+    /// each failure in `InvalidField` with the given field name.
+    pub fn into_operations<P, R, Op>(
+        self,
+        data: &[u8],
+        params_field: &'static str,
+        results_field: &'static str,
+        parse_params: impl FnOnce(HashMap<u64, Range<usize>>, &[u8]) -> Result<P, Error>,
+        parse_results: impl Fn(HashMap<u64, Range<usize>>, &[u8]) -> Result<R, Error>,
+        make: impl Fn(Arc<P>, R) -> Op,
+    ) -> Result<(eid::Eid, HashMap<u64, Op>), Error> {
+        let parameters =
+            Arc::new(parse_params(self.parameters, data).map_field_err::<Error>(params_field)?);
+        let mut operations = HashMap::with_capacity(self.results.len());
+        for (target, results) in self.results {
+            let results = parse_results(results, data).map_field_err::<Error>(results_field)?;
+            operations.insert(target, make(parameters.clone(), results));
+        }
+        Ok((self.source, operations))
+    }
 }
 
 impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
@@ -254,4 +280,105 @@ pub fn decode_box(range: Range<usize>, data: &[u8]) -> Result<Box<[u8]>, Error> 
         .into()),
     })
     .map(|v| v.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use hardy_cbor::encode::Encoder;
+
+    use super::*;
+
+    // An Abstract Syntax Block is a CBOR sequence (RFC 9172 §3.6), not an
+    // array: emit each field into a bare encoder.
+    fn emit_asb(targets: &[u64], source: &eid::Eid, result_sets: usize) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder.emit_array(Some(targets.len()), |a| {
+            for target in targets {
+                a.emit(target);
+            }
+        });
+        encoder.emit(&99u64); // unrecognised security context id
+        encoder.emit(&0u64); // flags: no context parameters
+        encoder.emit(source);
+        encoder.emit_array(Some(result_sets), |a| {
+            for _ in 0..result_sets {
+                a.emit_array(Some(0), |_| {}); // empty per-target result set
+            }
+        });
+        encoder.build()
+    }
+
+    fn ipn_source() -> eid::Eid {
+        "ipn:1.0".parse().unwrap()
+    }
+
+    fn expect_error(data: &[u8]) -> Error {
+        match hardy_cbor::decode::parse::<AbstractSyntaxBlock>(data) {
+            Ok(_) => panic!("malformed ASB parsed successfully"),
+            Err(e) => e,
+        }
+    }
+
+    // A well-formed ASB with an unrecognised context parses cleanly.
+    #[test]
+    fn asb_unknown_context_accepted() {
+        let data = emit_asb(&[1, 2], &ipn_source(), 2);
+        let (asb, shortest, len) =
+            hardy_cbor::decode::parse::<(AbstractSyntaxBlock, bool, usize)>(&data)
+                .expect("should parse");
+        assert!(matches!(asb.context, Context::Unrecognised(99)));
+        assert_eq!(asb.source, ipn_source());
+        assert_eq!(asb.results.len(), 2);
+        assert!(shortest, "strict-canonical ASB decode returns shortest");
+        assert_eq!(len, data.len());
+    }
+
+    // RFC 9172 §3.6: the security targets array must not be empty.
+    #[test]
+    fn asb_no_targets_rejected() {
+        let data = emit_asb(&[], &ipn_source(), 0);
+        assert!(matches!(expect_error(&data), Error::NoTargets));
+    }
+
+    // RFC 9172 §3.2 (uniqueness of security operations): the same target
+    // must not appear twice in one security block. The error surfaces
+    // wrapped as the targets field error.
+    #[test]
+    fn asb_duplicate_target_rejected() {
+        let data = emit_asb(&[1, 1], &ipn_source(), 2);
+        let Error::InvalidField {
+            field: "security targets",
+            source,
+        } = expect_error(&data)
+        else {
+            panic!("duplicate target should fail on the security targets field");
+        };
+        assert!(matches!(source.as_ref(), Error::DuplicateOpTarget));
+    }
+
+    // RFC 9172 §3.6: the security results array must line up one-to-one with
+    // the targets array, in both directions.
+    #[test]
+    fn asb_mismatched_target_result_rejected() {
+        // Fewer result sets than targets.
+        let data = emit_asb(&[1, 2], &ipn_source(), 1);
+        assert!(matches!(expect_error(&data), Error::MismatchedTargetResult));
+
+        // More result sets than targets.
+        let data = emit_asb(&[1], &ipn_source(), 2);
+        assert!(matches!(expect_error(&data), Error::MismatchedTargetResult));
+    }
+
+    // RFC 9172 §3.1: the security source must identify a node; the null and
+    // local-node EIDs are not acceptable.
+    #[test]
+    fn asb_invalid_security_source_rejected() {
+        let data = emit_asb(&[1], &eid::Eid::Null, 1);
+        assert!(matches!(expect_error(&data), Error::InvalidSecuritySource));
+
+        let data = emit_asb(&[1], &eid::Eid::LocalNode(1), 1);
+        assert!(matches!(expect_error(&data), Error::InvalidSecuritySource));
+    }
 }

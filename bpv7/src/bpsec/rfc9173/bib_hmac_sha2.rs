@@ -7,12 +7,16 @@ use hardy_cbor::{
 };
 use hmac::{KeyInit, Mac};
 
-use super::{ScopeFlags, canonical_primary, key_wrap, rand_bytes};
+use super::{ScopeFlags, canonical_primary, key_wrap::KeyWrap, mac_tag::MacTag, rand_bytes};
 use crate::{
-    CaptureFieldErr, HashMap, block,
+    HashMap, block,
     bpsec::{Context, Error, bib, key, parse},
     eid,
 };
+
+/// The RFC 9173 §3.3.1 variant parameter. A foreign wire value is a
+/// legitimate RFC 9172 pass-through state, carried as `Unrecognised`;
+/// `as_variant` never produces it, so it cannot reach the sign dispatch.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,8 +112,8 @@ impl ToCbor for Parameters {
     }
 }
 
-#[derive(Debug)]
-pub struct Results(pub Box<[u8]>);
+#[derive(Debug, PartialEq, Eq)]
+pub struct Results(pub MacTag);
 
 impl Results {
     fn from_cbor(results: HashMap<u64, Range<usize>>, data: &[u8]) -> Result<Self, Error> {
@@ -121,7 +125,9 @@ impl Results {
             }
         }
 
-        Ok(Self(r.ok_or(Error::InvalidContextResult(1))?))
+        Ok(Self(MacTag::from_bytes(
+            r.ok_or(Error::InvalidContextResult(1))?,
+        )))
     }
 }
 
@@ -129,15 +135,15 @@ impl ToCbor for Results {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
-        encoder.emit(&[&(1, &hardy_cbor::encode::Bytes(&self.0))]);
+        encoder.emit(&[&(1, &self.0)]);
     }
 }
 
-fn calculate_hmac<D>(
+fn build_hmac<D>(
     flags: &ScopeFlags,
     key: &[u8],
     args: &bib::OperationArgs,
-) -> Result<hmac::digest::Output<hmac::Hmac<D>>, Error>
+) -> Result<hmac::Hmac<D>, Error>
 where
     D: hmac::EagerHash,
 {
@@ -209,34 +215,7 @@ where
         mac.update(payload.as_ref());
     }
 
-    Ok(mac.finalize().into_bytes())
-}
-
-enum KeyWrap {
-    Aes128,
-    Aes192,
-    Aes256,
-}
-
-fn as_key_wrap(alg: Option<key::KeyAlgorithm>) -> Option<KeyWrap> {
-    match alg {
-        Some(key::KeyAlgorithm::A128KW)
-        | Some(key::KeyAlgorithm::HS256_A128KW)
-        | Some(key::KeyAlgorithm::HS384_A128KW)
-        | Some(key::KeyAlgorithm::HS512_A128KW) => Some(KeyWrap::Aes128),
-
-        Some(key::KeyAlgorithm::A192KW)
-        | Some(key::KeyAlgorithm::HS256_A192KW)
-        | Some(key::KeyAlgorithm::HS384_A192KW)
-        | Some(key::KeyAlgorithm::HS512_A192KW) => Some(KeyWrap::Aes192),
-
-        Some(key::KeyAlgorithm::A256KW)
-        | Some(key::KeyAlgorithm::HS256_A256KW)
-        | Some(key::KeyAlgorithm::HS384_A256KW)
-        | Some(key::KeyAlgorithm::HS512_A256KW) => Some(KeyWrap::Aes256),
-
-        _ => None,
-    }
+    Ok(mac)
 }
 
 fn as_variant(alg: Option<key::KeyAlgorithm>) -> Option<ShaVariant> {
@@ -288,7 +267,7 @@ impl Operation {
 
         let variant = as_variant(jwk.key_algorithm)
             .ok_or_else(|| Error::InvalidKey(key::Operation::Sign, jwk.clone()))?;
-        let key_wrap = as_key_wrap(jwk.key_algorithm);
+        let key_wrap = jwk.key_algorithm.and_then(KeyWrap::from_alg);
 
         let cek = if let Some(key_wrap) = &key_wrap {
             if let Some(ops) = &jwk.operations
@@ -309,35 +288,34 @@ impl Operation {
             return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
         };
 
-        let active_cek = cek
-            .as_ref()
-            .map_or(kek.as_ref(), |cek: &zeroize::Zeroizing<Box<[u8]>>| {
-                cek.as_ref()
-            });
+        let active_cek = cek.as_ref().map_or(
+            kek.expose_secret(),
+            |cek: &zeroize::Zeroizing<Box<[u8]>>| cek.as_ref(),
+        );
 
         let results = Results(match variant {
             ShaVariant::HMAC_256_256 => {
-                Box::from(calculate_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?.as_ref())
+                MacTag::from_mac(build_hmac::<sha2::Sha256>(&scope_flags, active_cek, &args)?)
             }
             ShaVariant::HMAC_384_384 => {
-                Box::from(calculate_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?.as_ref())
+                MacTag::from_mac(build_hmac::<sha2::Sha384>(&scope_flags, active_cek, &args)?)
             }
             ShaVariant::HMAC_512_512 => {
-                Box::from(calculate_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?.as_ref())
+                MacTag::from_mac(build_hmac::<sha2::Sha512>(&scope_flags, active_cek, &args)?)
             }
+            // Dead in practice: `as_variant` never yields `Unrecognised`.
             ShaVariant::Unrecognised(_) => {
-                unreachable!("Unrecognised variants filtered before signing")
+                return Err(Error::InvalidKey(key::Operation::Sign, jwk.clone()));
             }
         });
 
         let key = if let (Some(cek), Some(key_wrap)) = (cek, key_wrap) {
-            let key = match key_wrap {
-                KeyWrap::Aes128 => key_wrap::wrap::<aes_kw::aes::Aes128>(kek.as_ref(), &cek),
-                KeyWrap::Aes192 => key_wrap::wrap::<aes_kw::aes::Aes192>(kek.as_ref(), &cek),
-                KeyWrap::Aes256 => key_wrap::wrap::<aes_kw::aes::Aes256>(kek.as_ref(), &cek),
-            }
-            .map_err(Error::Algorithm)?;
-            Some(key.into())
+            Some(
+                key_wrap
+                    .wrap_key(kek.expose_secret(), &cek)
+                    .map_err(Error::Algorithm)?
+                    .into(),
+            )
         } else {
             None
         };
@@ -373,20 +351,12 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            let cek = match as_key_wrap(jwk.key_algorithm) {
-                Some(KeyWrap::Aes128) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes128>(key.as_ref(), wrapped_cek)
-                }
-                Some(KeyWrap::Aes192) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes192>(key.as_ref(), wrapped_cek)
-                }
-                Some(KeyWrap::Aes256) => {
-                    key_wrap::unwrap::<aes_kw::aes::Aes256>(key.as_ref(), wrapped_cek)
-                }
-                None => return Err(Error::IntegrityCheckFailed),
-            }
-            .map_err(|_| Error::IntegrityCheckFailed)?;
-            let cek = zeroize::Zeroizing::from(Box::from(cek));
+            let cek = jwk
+                .key_algorithm
+                .and_then(KeyWrap::from_alg)
+                .ok_or(Error::IntegrityCheckFailed)?
+                .unwrap_key(key.expose_secret(), wrapped_cek)
+                .map_err(|_| Error::IntegrityCheckFailed)?;
 
             if self.verify_inner(&cek, &args)? {
                 Ok(())
@@ -407,7 +377,7 @@ impl Operation {
                 return Err(Error::IntegrityCheckFailed);
             };
 
-            if self.verify_inner(key, &args)? {
+            if self.verify_inner(key.expose_secret(), &args)? {
                 Ok(())
             } else {
                 Err(Error::IntegrityCheckFailed)
@@ -416,21 +386,26 @@ impl Operation {
     }
 
     fn verify_inner(&self, cek: &[u8], args: &bib::OperationArgs) -> Result<bool, Error> {
-        match self.parameters.variant {
-            ShaVariant::HMAC_256_256 => {
-                let mac = calculate_hmac::<sha2::Sha256>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::HMAC_384_384 => {
-                let mac = calculate_hmac::<sha2::Sha384>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::HMAC_512_512 => {
-                let mac = calculate_hmac::<sha2::Sha512>(&self.parameters.flags, cek, args)?;
-                Ok(*mac == *self.results.0)
-            }
-            ShaVariant::Unrecognised(_) => Err(Error::UnsupportedOperation),
-        }
+        Ok(match self.parameters.variant {
+            ShaVariant::HMAC_256_256 => self.results.0.verify(build_hmac::<sha2::Sha256>(
+                &self.parameters.flags,
+                cek,
+                args,
+            )?),
+            ShaVariant::HMAC_384_384 => self.results.0.verify(build_hmac::<sha2::Sha384>(
+                &self.parameters.flags,
+                cek,
+                args,
+            )?),
+            ShaVariant::HMAC_512_512 => self.results.0.verify(build_hmac::<sha2::Sha512>(
+                &self.parameters.flags,
+                cek,
+                args,
+            )?),
+            // A foreign wire variant is a legitimate RFC 9172 pass-through
+            // state; this node just cannot verify it.
+            ShaVariant::Unrecognised(_) => return Err(Error::UnsupportedOperation),
+        })
     }
 
     pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
@@ -454,22 +429,17 @@ pub fn parse(
     asb: parse::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bib::Operation>), Error> {
-    let parameters = Arc::from(
-        Parameters::from_cbor(asb.parameters, data)
-            .map_field_err::<Error>("RFC9173 HMAC-SHA2 parameters")?,
-    );
-
-    // Unpack results
-    let mut operations = HashMap::with_capacity(asb.results.len());
-    for (target, results) in asb.results {
-        operations.insert(
-            target,
+    asb.into_operations(
+        data,
+        "RFC9173 HMAC-SHA2 parameters",
+        "RFC9173 HMAC-SHA2 results",
+        Parameters::from_cbor,
+        Results::from_cbor,
+        |parameters, results| {
             bib::Operation::HMAC_SHA2(Operation {
-                parameters: parameters.clone(),
-                results: Results::from_cbor(results, data)
-                    .map_field_err::<Error>("RFC9173 HMAC-SHA2 results")?,
-            }),
-        );
-    }
-    Ok((asb.source, operations))
+                parameters,
+                results,
+            })
+        },
+    )
 }

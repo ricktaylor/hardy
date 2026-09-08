@@ -1,5 +1,10 @@
-use hardy_bpv7::eid::Eid;
+use hardy_bpv7::eid::{Eid, UnknownSsp};
 use hardy_eid_patterns::{EidPattern, EidPatternItem};
+
+// The minimal valid unknown-scheme SSP: CBOR uint 0, a single data item.
+fn unknown_ssp() -> UnknownSsp {
+    UnknownSsp::new(Box::from([0x00u8].as_slice())).unwrap()
+}
 
 // R-11: a numeric scheme whose first digit is 9 must parse (grammar is
 // %x31-39 inclusive); '1'..'9' would exclude it.
@@ -28,11 +33,11 @@ fn scheme_wildcard_matches_unknown_scheme_eid() {
     let pat: EidPattern = "88:**".parse().unwrap();
     assert!(pat.matches(&Eid::Unknown {
         scheme: 88,
-        data: Box::default(),
+        ssp: unknown_ssp(),
     }));
     assert!(!pat.matches(&Eid::Unknown {
         scheme: 89,
-        data: Box::default(),
+        ssp: unknown_ssp(),
     }));
 }
 
@@ -45,7 +50,7 @@ fn unknown_text_scheme_matches_nothing() {
     assert!(!pat.matches(&Eid::Null));
     assert!(!pat.matches(&Eid::Unknown {
         scheme: 88,
-        data: Box::default(),
+        ssp: unknown_ssp(),
     }));
 }
 

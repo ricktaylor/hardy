@@ -37,11 +37,11 @@ impl ReadFilter for BundleValidityFilter {
         }
 
         if let Some(hop_info) = bundle.metadata.extensions.hop_count.as_ref()
-            && hop_info.count > hop_info.limit
+            && hop_info.count > u64::from(hop_info.limit.get())
         {
             debug!(
                 bundle_id = %bundle.id(),
-                limit = hop_info.limit,
+                limit = hop_info.limit.get(),
                 count = hop_info.count,
                 "Rejecting bundle: hop limit exceeded"
             );

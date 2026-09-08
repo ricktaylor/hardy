@@ -96,6 +96,10 @@ pub enum Error {
     #[error(transparent)]
     InvalidEid(#[from] eid::Error),
 
+    /// An error related to status report processing.
+    #[error(transparent)]
+    InvalidStatusReport(#[from] status_report::Error),
+
     /// An error related to CBOR decoding.
     #[error(transparent)]
     InvalidCBOR(hardy_cbor::decode::Error),
@@ -106,7 +110,7 @@ pub enum Error {
         /// The name of the field that failed to parse.
         field: &'static str,
         /// The underlying error that caused the failure.
-        source: Box<dyn core::error::Error + Send + Sync>,
+        source: Box<Error>,
     },
 }
 
@@ -128,21 +132,20 @@ impl From<CborError> for Error {
 /// Trait for error types that can represent an invalid field error.
 ///
 /// Implement this trait for error types that have an `InvalidField` variant
-/// to enable use of the [`CaptureFieldErr`] extension trait.
+/// to enable use of the [`CaptureFieldErr`] extension trait. The source is
+/// the domain's own error type, so consumers can pattern-match through the
+/// field-label chain instead of downcasting.
 pub trait HasInvalidField: Sized {
-    /// Creates an invalid field error with the given field name and source error.
-    fn invalid_field(
-        field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self;
+    /// Wraps an already-domain-typed source error with a field label.
+    fn invalid_field(field: &'static str, source: Self) -> Self;
 }
 
 impl HasInvalidField for Error {
-    fn invalid_field(
-        field: &'static str,
-        source: Box<dyn core::error::Error + Send + Sync>,
-    ) -> Self {
-        Error::InvalidField { field, source }
+    fn invalid_field(field: &'static str, source: Self) -> Self {
+        Error::InvalidField {
+            field,
+            source: Box::new(source),
+        }
     }
 }
 
@@ -151,16 +154,15 @@ impl HasInvalidField for Error {
 /// This is useful for providing more context when a parsing error occurs.
 /// The error type `E` is specified on the method, allowing turbofish syntax
 /// (`.map_field_err::<Error>("field")`) when type inference is insufficient.
-pub trait CaptureFieldErr<T> {
+/// The source error is converted into the target domain at wrap time, so
+/// the resulting chain is fully typed.
+pub trait CaptureFieldErr<T, Err> {
     /// Maps the error to an `InvalidField` error with the given field name.
-    fn map_field_err<E: HasInvalidField>(self, field: &'static str) -> Result<T, E>;
+    fn map_field_err<E: HasInvalidField + From<Err>>(self, field: &'static str) -> Result<T, E>;
 }
 
-impl<T, Err> CaptureFieldErr<T> for Result<T, Err>
-where
-    Err: Into<Box<dyn core::error::Error + Send + Sync>>,
-{
-    fn map_field_err<E: HasInvalidField>(self, field: &'static str) -> Result<T, E> {
+impl<T, Err> CaptureFieldErr<T, Err> for Result<T, Err> {
+    fn map_field_err<E: HasInvalidField + From<Err>>(self, field: &'static str) -> Result<T, E> {
         self.map_err(|e| E::invalid_field(field, e.into()))
     }
 }
@@ -181,26 +183,16 @@ pub(crate) fn require_canonical<T, E, const D: usize>(
 ) -> Result<T, E>
 where
     T: hardy_cbor::decode::FromCbor,
-    T::Error: From<CborError> + Into<Box<dyn core::error::Error + Send + Sync>>,
-    E: HasInvalidField + Into<Box<dyn core::error::Error + Send + Sync>>,
+    T::Error: From<CborError> + Into<E>,
+    E: HasInvalidField,
 {
     match seq.parse::<(Untagged<T>, bool)>() {
-        Err(e) => {
-            // Scalar `T`s surface the `Untagged` rejection as a raw cbor
-            // `UnexpectedTag`; translate it to the domain's canonical
-            // error, as the domain `From<CborError>` impls already do
-            // for composite `T`s.
-            let e: Box<dyn core::error::Error + Send + Sync> = e.into();
-            if matches!(
-                e.downcast_ref::<CborError>(),
-                Some(CborError::UnexpectedTag)
-            ) {
-                Err(E::invalid_field(field, not_canonical.into()))
-            } else {
-                Err(E::invalid_field(field, e))
-            }
-        }
-        Ok((_, false)) => Err(E::invalid_field(field, not_canonical.into())),
+        // The wrap-time `Into<E>` conversion routes through the domain's
+        // `From<CborError>` impl, which already translates the `Untagged`
+        // rejection (`UnexpectedTag`) into the domain's own canonical
+        // error, so no downcast sniffing is needed here.
+        Err(e) => Err(E::invalid_field(field, e.into())),
+        Ok((_, false)) => Err(E::invalid_field(field, not_canonical)),
         Ok((Untagged(t), true)) => Ok(t),
     }
 }
