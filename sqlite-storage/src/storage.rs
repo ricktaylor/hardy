@@ -194,8 +194,8 @@ fn to_status(
         0 => Some(BundleStatus::New),
         1 => Some(BundleStatus::Waiting),
         2 => Some(BundleStatus::ForwardPending {
-            peer: param1? as u32,
-            queue: param2? as u32,
+            peer: u32::try_from(param1?).ok()?,
+            queue: u32::try_from(param2?).ok()?,
         }),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
@@ -535,22 +535,17 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
-        // Ensure status codes match
-        debug_assert!(
-            from_status(&BundleStatus::Waiting).0 == 1,
-            "Status code mismatch"
-        );
-        debug_assert!(
-            from_status(&BundleStatus::ForwardPending { peer, queue: 0 })
-                == (2, Some(peer as i64), Some(0), None),
-            "Status code mismatch"
-        );
+        // Both statuses bind through the codec: the values in the SQL are
+        // from_status's own output, so codec/SQL drift is unrepresentable.
+        let (from_code, from_p1, _, _) =
+            from_status(&BundleStatus::ForwardPending { peer, queue: 0 });
+        let (to_code, to_p1, to_p2, _) = from_status(&BundleStatus::Waiting);
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = 1, status_param1 = NULL, status_param2 = NULL WHERE status_code = 2 AND status_param1 = ?1",
+                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3 WHERE status_code = ?4 AND status_param1 = ?5",
             )?
-            .execute((Some(peer),))
+            .execute((to_code, to_p1, to_p2, from_code, from_p1))
             .map(|c| c as u64)
             .map_err(Into::into)
         })
@@ -559,22 +554,14 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn reset_peer_ack_pending(&self, peer: u32) -> storage::Result<u64> {
-        // Ensure status codes match
-        debug_assert!(
-            from_status(&BundleStatus::Waiting).0 == 1,
-            "Status code mismatch"
-        );
-        debug_assert!(
-            from_status(&BundleStatus::ForwardAckPending { peer })
-                == (6, Some(peer as i64), None, None),
-            "Status code mismatch"
-        );
+        let (from_code, from_p1, _, _) = from_status(&BundleStatus::ForwardAckPending { peer });
+        let (to_code, to_p1, _, _) = from_status(&BundleStatus::Waiting);
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = 1, status_param1 = NULL WHERE status_code = 6 AND status_param1 = ?1",
+                "UPDATE bundles SET status_code = ?1, status_param1 = ?2 WHERE status_code = ?3 AND status_param1 = ?4",
             )?
-            .execute((Some(peer),))
+            .execute((to_code, to_p1, from_code, from_p1))
             .map(|c| c as u64)
             .map_err(Into::into)
         })
@@ -583,29 +570,20 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
-        // Ensure status codes match; the service EID string (param3) is the
-        // same in both statuses, so only the code changes.
-        debug_assert!(
-            from_status(&BundleStatus::WaitingForService {
-                service: service.clone()
-            })
-            .0 == 5,
-            "Status code mismatch"
-        );
-        debug_assert!(
-            from_status(&BundleStatus::DeliverPending {
-                service: service.clone()
-            })
-            .0 == 8,
-            "Status code mismatch"
-        );
+        // The service EID string (param3) is the same in both statuses, so
+        // only the code changes; all three values bind through the codec.
+        let (from_code, _, _, from_p3) = from_status(&BundleStatus::DeliverPending {
+            service: service.clone(),
+        });
+        let (to_code, _, _, _) = from_status(&BundleStatus::WaitingForService {
+            service: service.clone(),
+        });
 
-        let service = service.to_string();
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = 5 WHERE status_code = 8 AND status_param3 = ?1",
+                "UPDATE bundles SET status_code = ?1 WHERE status_code = ?2 AND status_param3 = ?3",
             )?
-            .execute((service,))
+            .execute((to_code, from_code, from_p3))
             .map(|c| c as u64)
             .map_err(Into::into)
         })
@@ -614,10 +592,7 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
     async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
-        debug_assert!(
-            from_status(&BundleStatus::New).0 == 0,
-            "Status code mismatch"
-        ); // Ensure status codes match
+        let (new_code, _, _, _) = from_status(&BundleStatus::New);
 
         // Keyset pages: the consumer closes the stream once it has what it
         // needs, so each page is fetched only if the previous one was
@@ -632,11 +607,11 @@ impl MetadataStorage for SqliteStorage {
                         .unwrap_or_else(|| (String::new(), 0));
                     conn.prepare_cached(
                         "SELECT rowid, expiry, bundle, status_code, status_param1, status_param2, status_param3 FROM bundles
-                            WHERE bundle IS NOT NULL AND status_code != 0 AND (expiry, rowid) > (?1, ?2)
+                            WHERE bundle IS NOT NULL AND status_code != ?4 AND (expiry, rowid) > (?1, ?2)
                             ORDER BY expiry ASC, rowid ASC
                             LIMIT ?3",
                     )?
-                    .query_map((expiry, rowid, PAGE_SIZE as isize), |row| {
+                    .query_map((expiry, rowid, PAGE_SIZE as isize, new_code), |row| {
                         Ok((
                             row.get::<_, i64>(0)?,
                             row.get::<_, String>(1)?,
@@ -678,16 +653,15 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all))]
     async fn poll_waiting(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
-        debug_assert!(
-            from_status(&BundleStatus::Waiting).0 == 1,
-            "Status code mismatch"
-        ); // Ensure status codes match
+        let (waiting_code, _, _, _) = from_status(&BundleStatus::Waiting);
 
         // Refresh the waiting queue
         self.write(move |conn| {
-            conn.execute_batch(
-                "INSERT OR IGNORE INTO waiting_queue (id,received_at) SELECT id,received_at FROM bundles WHERE status_code = 1",
-            )
+            conn.prepare_cached(
+                "INSERT OR IGNORE INTO waiting_queue (id,received_at) SELECT id,received_at FROM bundles WHERE status_code = ?1",
+            )?
+            .execute((waiting_code,))
+            .map(|_| ())
             .map_err(Into::into)
         }).await?;
 
@@ -752,23 +726,17 @@ impl MetadataStorage for SqliteStorage {
         source: hardy_bpv7::eid::Eid,
         stream: &dyn Sender<Bundle>,
     ) -> storage::Result<()> {
-        debug_assert!(
-            from_status(&BundleStatus::WaitingForService {
-                service: source.clone()
-            })
-            .0 == 5,
-            "Status code mismatch"
-        ); // Ensure status codes match
-
-        let source_str = source.to_string();
+        let (code, _, _, p3) = from_status(&BundleStatus::WaitingForService {
+            service: source.clone(),
+        });
         let bundles = self
             .read(move |conn| {
                 conn.prepare_cached(
                     "SELECT bundle FROM bundles
-                        WHERE bundle IS NOT NULL AND status_code = 5 AND status_param3 = ?1
+                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param3 = ?2
                         ORDER BY received_at ASC",
                 )?
-                .query_map((source_str,), |row| row.get::<_, Vec<u8>>(0))?
+                .query_map((code, p3), |row| row.get::<_, Vec<u8>>(0))?
                 .collect::<Result<Vec<Vec<u8>>, _>>()
                 .map_err(Into::into)
             })
@@ -882,7 +850,7 @@ mod tests {
         stream::{SendError, Sender},
     };
 
-    use super::SqliteStorage;
+    use super::{SqliteStorage, from_status, to_status};
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -1360,5 +1328,72 @@ mod tests {
                 service: other_service
             }
         );
+    }
+
+    // The on-disk status numbering is frozen: every row in an existing
+    // database is a copy of this table, so renumbering a variant silently
+    // corrupts it. Never renumber — retire codes and append new ones.
+    #[test]
+    fn status_codec_numbering_is_frozen() {
+        let service: hardy_bpv7::eid::Eid = "ipn:60.3".parse().unwrap();
+        let source: hardy_bpv7::eid::Eid = "ipn:60.4".parse().unwrap();
+        let timestamp = hardy_bpv7::creation_timestamp::CreationTimestamp::from_parts(
+            Some(hardy_bpv7::dtn_time::DtnTime::new(1234)),
+            5,
+        );
+
+        let frozen = [
+            (BundleStatus::New, (0, None, None, None)),
+            (BundleStatus::Waiting, (1, None, None, None)),
+            (
+                BundleStatus::ForwardPending { peer: 7, queue: 2 },
+                (2, Some(7), Some(2), None),
+            ),
+            (
+                BundleStatus::AduFragment {
+                    source: source.clone(),
+                    timestamp: timestamp.clone(),
+                },
+                (3, Some(1234), Some(5), Some(source.to_string())),
+            ),
+            (BundleStatus::Dispatching, (4, None, None, None)),
+            (
+                BundleStatus::WaitingForService {
+                    service: service.clone(),
+                },
+                (5, None, None, Some(service.to_string())),
+            ),
+            (
+                BundleStatus::ForwardAckPending { peer: 7 },
+                (6, Some(7), None, None),
+            ),
+            (BundleStatus::DispatchPending, (7, None, None, None)),
+            (
+                BundleStatus::DeliverPending {
+                    service: service.clone(),
+                },
+                (8, None, None, Some(service.to_string())),
+            ),
+            (
+                BundleStatus::DeliveryAckPending {
+                    service: service.clone(),
+                },
+                (9, None, None, Some(service.to_string())),
+            ),
+        ];
+
+        for (status, expected) in frozen {
+            let (code, p1, p2, p3) = from_status(&status);
+            assert_eq!(
+                (code, p1, p2, p3.clone()),
+                expected,
+                "on-disk encoding of {status:?} must never change"
+            );
+            assert_eq!(
+                to_status(code, p1, p2, p3),
+                Some(status),
+                "the codec must round-trip its own encoding"
+            );
+        }
     }
 }
