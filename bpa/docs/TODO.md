@@ -2,7 +2,7 @@
 
 ## Fragmentation and ADU reassembly
 
-All fragmentation-shaped work — the two sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is being consolidated in `fixing_fragmentation.md` (drafted, not yet in-tree), pending a decision once the bulk of the streaming work lands. Until that doc lands, the sections here remain the in-tree record.
+All fragmentation-shaped work — the two sections below, fragment-carried payload BIB deferral, streaming-shaped reassembly — is being consolidated in [`fixing_fragmentation.md`](fixing_fragmentation.md), pending a decision once the bulk of the streaming work lands. Until that decision is taken, the sections here remain the authoritative record.
 
 ### RFC 9171 §5.9 material-extents reassembly (overlapping fragments)
 

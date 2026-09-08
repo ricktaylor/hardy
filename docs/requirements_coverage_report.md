@@ -38,7 +38,7 @@ Initial phase scope: REQ-1, 3, 6, 7, 9, 15, 17, 18, 19, 21. Stretch: REQ-16, 20.
 | **4** | **Alignment with on-going DTN standardisation** | — | **Partial (not initial phase)** |
 | 4.1 | UDP-CL profile | — | Not started |
 | 4.2 | Custody Transfer profile | — | Not started |
-| 4.3 | QoS profile | EgressPolicy framework in bpa (`policy/`) | In progress |
+| 4.3 | QoS profile | FlowControllerFactory framework in bpa (`policy/`) | In progress |
 | 4.4 | Compressed Status Reporting profile | — | Not started |
 | 4.5 | BIBE profile | `bibe/` crate ([design](../bibe/docs/design.md)) | In progress |
 | 4.6–4.10 | Test reports for profiles | — | Not started |

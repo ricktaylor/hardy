@@ -974,7 +974,7 @@ Typestate within processing blocks (ensuring a bundle passes through required ga
 
 - **MetadataStorage** — bundle identity, status, queue assignment, polling, recovery all remain as-is. The existing `Sender<Bundle>` surface for poll methods is unchanged.
 - **BPSec header crypto primitives** — unchanged; BIB/BCB on extension blocks are now driven by the Transformer chain.
-- **Dispatch, EgressController, Deliver, Admin, Reassemble** — these processing blocks work on `BundleMetadata`, not raw bytes.
+- **Dispatch, FlowController, Deliver, Admin, Reassemble** — these processing blocks work on `BundleMetadata`, not raw bytes.
 - **Recovery protocol** — three-phase recovery continues; in-flight spool task temp files (no metadata reference) are cleaned up on startup.
 - **Reaper** — operates on expiry indexes in `MetadataStorage`, deleting from `BundleStorage` as ground truth.
 - **Bundle data cache** — remains an LRU cache of small bundles (`CachedBundleStorage`); no header-segment caching (§8.2).

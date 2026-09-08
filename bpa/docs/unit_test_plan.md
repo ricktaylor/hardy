@@ -68,7 +68,7 @@ All 15 tests implemented. ECMP uses per-instance `RandomState` for deterministic
 
 ### 3.3 Egress Policy Logic (QoS)
 
-*Objective: Verify the `EgressPolicy` trait implementations and configuration parsing (REQ-6, LLR 6.1.9).*
+*Objective: Verify the `FlowControllerFactory` trait implementations and configuration parsing (REQ-6, LLR 6.1.9).*
 
 | Test Scenario | Description | Source File | Input | Expected Output |
 | ----- | ----- | ----- | ----- | ----- |

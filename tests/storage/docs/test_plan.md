@@ -41,7 +41,7 @@ The harness defines two test suites, one per storage trait:
 
 | Suite | Trait | Source | Tests |
 | :--- | :--- | :--- | :--- |
-| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 14 (`meta_01` .. `meta_14`) |
+| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 16 (`meta_01` .. `meta_16`) |
 | Bundle | `BundleStorage` | `src/bundle_suite.rs` | 4 (`blob_01` .. `blob_04`) |
 
 Each test function takes an `Arc<dyn MetadataStorage>` or `Arc<dyn BundleStorage>` — the suite has no knowledge of which backend it is testing.
@@ -104,6 +104,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **META-02** | **Duplicate Insert** | 1. Insert a bundle.<br>2. Insert the same bundle again. | 1. First `insert` returns `true`.<br>2. Second `insert` returns `false`. |
 | **META-03** | **Update (Replace)** | 1. Insert a bundle (Status=`Waiting`).<br>2. Modify status to `Dispatching`.<br>3. Call `replace()`.<br>4. Call `get()`. | 1. `replace` returns `Ok`.<br>2. `get` returns bundle with `Dispatching` status. |
 | **META-04** | **Tombstone** | 1. Insert a bundle.<br>2. Call `tombstone()`.<br>3. Call `get()`.<br>4. Call `insert()` again. | 1. `tombstone` returns `Ok`.<br>2. `get` returns `None`.<br>3. `insert` returns `false` (prevents resurrection). |
+| **META-15** | **Metadata Round-Trip** | 1. Insert a bundle with every persisted metadata group populated (`Origin::Ingress` provenance, decoded extension fields).<br>2. Call `get()`. | 1. The whole record round-trips: wire bundle, metadata body (origin, received_at, extension fields), and status all match the original. |
 
 ### Suite B: Polling & Ordering
 
@@ -128,6 +129,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: 0 }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: 0 }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
 | **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
 | **META-13** | **Remove Unconfirmed** | 1. Insert Bundle A.<br>2. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives bundles (if implementation supports unconfirmed state). |
+| **META-16** | **Reset Service Queue** | 1. Insert Bundle A (Status=`DeliverPending { service: S1 }`).<br>2. Insert Bundle B (Status=`DeliveryAckPending { service: S1 }`).<br>3. Insert Bundle C (Status=`DeliverPending { service: S2 }`).<br>4. Call `reset_service_queue(S1)`. | 1. Returns 1 (only the queued bundle).<br>2. Bundle A becomes `WaitingForService { service: S1 }` and polls via `poll_service_waiting(S1)`.<br>3. Bundles B and C untouched.<br>4. A second sweep returns 0. |
 
 ## 5. Bundle Storage Suites
 
@@ -150,9 +152,9 @@ This section defines the boundary between generic harness coverage and backend-s
 
 | Area | Test IDs | What is verified |
 | :--- | :--- | :--- |
-| CRUD lifecycle | META-01..04, BLOB-01..03 | Insert, get, update, tombstone, save, load, delete |
+| CRUD lifecycle | META-01..04, META-15, BLOB-01..03 | Insert, get, update, tombstone, save, load, delete |
 | Polling & ordering | META-06..10, META-14 | FIFO ordering, expiry filtering, pending limits, peer matching, fragment ordering, service filtering |
-| State transitions | META-05, META-11..13 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup |
+| State transitions | META-05, META-11..13, META-16 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup, service queue sweep |
 | Recovery scan | BLOB-04 | Discovers all stored bundles on restart |
 
 ### 6.2 NOT covered — backend-specific responsibility
