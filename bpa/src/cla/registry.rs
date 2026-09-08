@@ -321,12 +321,16 @@ impl ClaRegistry {
 
         let peers = core::mem::take(&mut *cla.peers.lock());
         for (_, (node_ids, peer_id)) in peers {
-            // Remove RIB entries for all EIDs associated with this address
+            // Close the peer's egress queues first, then withdraw its RIB
+            // entries: the ForwardPending/ForwardAckPending sweeps inside
+            // remove_forward must run once no new send can re-enter the
+            // queue (mirrors remove_peer). A send that lands after the
+            // close bounces and is parked back to Waiting by its caller.
+            self.peers.remove(peer_id).await;
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
                 metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
-            self.peers.remove(peer_id).await;
         }
 
         info!("Unregistered CLA: {}", cla.name);
@@ -342,7 +346,8 @@ impl ClaRegistry {
         // Mint the id without publishing anything (reserved against reuse),
         // then claim the address — the adjacency's natural key — so a
         // duplicate exits before any peer state exists.
-        let peer_id = self.peers.reserve();
+        let reservation = self.peers.reserve();
+        let peer_id = reservation.id();
         let claimed = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
@@ -354,7 +359,6 @@ impl ClaRegistry {
             }
         };
         if !claimed {
-            self.peers.unreserve(peer_id);
             return false;
         }
 
@@ -374,7 +378,7 @@ impl ClaRegistry {
             &self.tasks,
         )
         .await;
-        self.peers.publish(peer_id, peer);
+        reservation.publish(peer);
 
         // Post-construction liveness re-check (whole-codebase review #14):
         // a concurrent remove_peer/unregister_cla during construction has

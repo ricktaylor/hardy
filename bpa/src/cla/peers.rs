@@ -120,10 +120,11 @@ impl Peer {
 #[derive(Default)]
 struct PeerTableInner {
     peers: HashMap<u32, Arc<Peer>>,
-    // Ids minted by `reserve` but not yet published. Cleared by `publish`
-    // (the normal path) or `unreserve` (an abandoned claim); `remove` never
-    // touches it, so a concurrent removal cannot let `reserve` re-mint an
-    // id whose peer is still mid-construction.
+    // Ids minted by `reserve` but not yet published. Cleared by the
+    // `Reservation` — `publish` (the normal path) or its `Drop` (an
+    // abandoned claim); `remove` never touches it, so a concurrent removal
+    // cannot let `reserve` re-mint an id whose peer is still
+    // mid-construction.
     reserved: HashSet<u32>,
     next: u32,
 }
@@ -139,11 +140,11 @@ impl PeerTable {
         }
     }
 
-    /// Mint a fresh peer id without publishing anything: the id is
-    /// reserved against reuse until [`publish`](Self::publish) (or
-    /// [`unreserve`](Self::unreserve), if the claim is abandoned before a
-    /// peer is built) clears it.
-    pub fn reserve(&self) -> u32 {
+    /// Mint a fresh peer id without publishing anything: the returned
+    /// [`Reservation`] holds the id against reuse until
+    /// [`publish`](Reservation::publish) consumes it, or releases it on
+    /// drop if the claim is abandoned before a peer is built.
+    pub fn reserve(&self) -> Reservation<'_> {
         // sync::spin::RwLock::write() returns guard directly (no Result)
         let mut inner = self.inner.write();
         let peer_id = loop {
@@ -153,21 +154,11 @@ impl PeerTable {
             }
         };
         inner.reserved.insert(peer_id);
-        peer_id
-    }
-
-    /// Release a reserved id whose peer was never built (a duplicate
-    /// address claim). Nothing was published, so there is nothing to close.
-    pub fn unreserve(&self, peer_id: u32) {
-        self.inner.write().reserved.remove(&peer_id);
-    }
-
-    /// Publish a fully-constructed peer under its reserved id — the only
-    /// way a peer becomes reachable, and it is complete by construction.
-    pub fn publish(&self, peer_id: u32, peer: Arc<Peer>) {
-        let mut inner = self.inner.write();
-        inner.reserved.remove(&peer_id);
-        inner.peers.insert(peer_id, peer);
+        Reservation {
+            table: self,
+            id: peer_id,
+            published: false,
+        }
     }
 
     pub async fn remove(&self, peer_id: u32) {
@@ -195,6 +186,42 @@ impl PeerTable {
     }
 }
 
+/// A reserved peer id: released exactly once — by
+/// [`publish`](Self::publish) when the peer is built, or automatically on
+/// drop (including unwind) when the claim is abandoned. Publishing consumes
+/// the reservation, so a double publish or use-after-publish does not
+/// compile.
+#[must_use = "an unused reservation releases its id immediately"]
+pub struct Reservation<'a> {
+    table: &'a PeerTable,
+    id: u32,
+    published: bool,
+}
+
+impl Reservation<'_> {
+    /// The reserved peer id.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Publish a fully-constructed peer under the reserved id — the only
+    /// way a peer becomes reachable, and it is complete by construction.
+    pub fn publish(mut self, peer: Arc<Peer>) {
+        let mut inner = self.table.inner.write();
+        inner.reserved.remove(&self.id);
+        inner.peers.insert(self.id, peer);
+        self.published = true;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            self.table.inner.write().reserved.remove(&self.id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // use super::*;
@@ -210,4 +237,24 @@ mod tests {
     // fn test_queue_fallback() {
     //     todo!("Verify fallback to default queue on invalid index");
     // }
+
+    use super::*;
+
+    #[test]
+    fn reservation_holds_the_id_until_dropped() {
+        let table = PeerTable::new();
+
+        let reservation = table.reserve();
+        let id = reservation.id();
+        assert!(
+            table.inner.read().reserved.contains(&id),
+            "the id is withheld from reuse while the reservation lives"
+        );
+
+        drop(reservation);
+        assert!(
+            !table.inner.read().reserved.contains(&id),
+            "an abandoned claim releases its id"
+        );
+    }
 }

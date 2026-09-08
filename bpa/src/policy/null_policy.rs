@@ -17,13 +17,6 @@ impl policy::FlowController for FlowController {
     }
 }
 
-#[async_trait]
-impl policy::EgressQueue for FlowController {
-    async fn forward(&self, bundle: bundle::Bundle) {
-        self.queue.forward(bundle).await
-    }
-}
-
 /// The null egress policy: one total FIFO queue, no prioritisation, no lane
 /// pinning — it applies no policy.
 #[derive(Default)]
@@ -44,18 +37,16 @@ impl policy::FlowControllerFactory for FlowControllerFactory {
 
     async fn new_controller(
         &self,
-        queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>>,
+        queues: policy::EgressQueueSet,
     ) -> Arc<dyn policy::FlowController> {
         // Applying no policy means imposing no lane constraint: the one
-        // queue transmits with the next-free-lane directive (`None`), so a
+        // queue transmits with the next-free-lane directive, so a
         // multi-lane CLA still fans across its idle lanes. Any pinned
         // per-lane queues a CLA's declaration created simply sit unused —
         // pinning is what a real policy does when it wants flow affinity.
-        let queue = queues
-            .get(&None)
-            .trace_expect("No next-free queue?!?")
-            .clone();
-        Arc::new(FlowController { queue })
+        Arc::new(FlowController {
+            queue: queues.next_free,
+        })
     }
 }
 
@@ -84,16 +75,24 @@ mod tests {
     #[tokio::test]
     async fn declared_lanes_are_tolerated_on_the_next_free_endpoint() {
         let (tx, rx) = flume::unbounded();
-        let mut queues: HashMap<Option<u32>, Arc<dyn policy::EgressQueue>> = HashMap::new();
-        for lane in [None, Some(0), Some(1)] {
-            queues.insert(
-                lane,
-                Arc::new(CapturingQueue {
-                    lane,
-                    tx: tx.clone(),
-                }),
-            );
-        }
+        let queues = policy::EgressQueueSet {
+            next_free: Arc::new(CapturingQueue {
+                lane: None,
+                tx: tx.clone(),
+            }),
+            pinned: [0, 1]
+                .into_iter()
+                .map(|lane| {
+                    (
+                        lane,
+                        Arc::new(CapturingQueue {
+                            lane: Some(lane),
+                            tx: tx.clone(),
+                        }) as Arc<dyn policy::EgressQueue>,
+                    )
+                })
+                .collect(),
+        };
         let controller = FlowControllerFactory::new().new_controller(queues).await;
 
         let (_, data) = hardy_bpv7::builder::Builder::new(

@@ -47,22 +47,29 @@ pub trait FlowControllerFactory: Send + Sync {
     /// This allows the policy to wrap the CLA's basic `forward` capability with its
     /// own logic, such as token bucket filtering or prioritized dispatching.
     ///
-    /// `queues` is the per-lane-directive queue set, keyed by directive:
-    /// `Some(n)` transmits pinned to declared lane `n`, and `None` — always
-    /// present — transmits on the next free lane.
-    async fn new_controller(
-        &self,
-        queues: HashMap<Option<u32>, Arc<dyn EgressQueue>>,
-    ) -> Arc<dyn FlowController>;
+    /// `queues` is the per-lane-directive [`EgressQueueSet`] the controller
+    /// transmits through.
+    async fn new_controller(&self, queues: EgressQueueSet) -> Arc<dyn FlowController>;
 }
 
 /// The queue feeding one lane directive, from which a CLA pulls bundles
-/// for transmission: pinned to a declared lane (`Some`), or — the entry
-/// that always exists — the next free lane (`None`).
+/// for transmission: pinned to a declared lane, or the next free lane.
 #[async_trait]
 pub trait EgressQueue: Send + Sync {
     /// Enqueues a bundle for transmission under this queue's lane directive.
     async fn forward(&self, bundle: bundle::Bundle);
+}
+
+/// The egress queue set handed to a policy at controller construction, one
+/// queue per lane directive: `next_free` transmits on the next free lane, and
+/// `pinned` queues transmit pinned to the declared lane keying them. The
+/// non-optional `next_free` field is the contract that every policy has
+/// somewhere to transmit without lane pinning.
+pub struct EgressQueueSet {
+    /// The next-free-lane queue.
+    pub next_free: Arc<dyn EgressQueue>,
+    /// The pinned per-lane queues, keyed by declared lane index.
+    pub pinned: HashMap<u32, Arc<dyn EgressQueue>>,
 }
 
 #[cfg(test)]
@@ -82,8 +89,10 @@ mod tests {
         impl EgressQueue for NullQueue {
             async fn forward(&self, _bundle: bundle::Bundle) {}
         }
-        let queues: HashMap<Option<u32>, Arc<dyn EgressQueue>> =
-            [(None, Arc::new(NullQueue) as Arc<dyn EgressQueue>)].into();
+        let queues = EgressQueueSet {
+            next_free: Arc::new(NullQueue),
+            pinned: HashMap::new(),
+        };
         let controller = policy.new_controller(queues).await;
         let queue = controller.queue_for();
         assert_eq!(queue, 0);
