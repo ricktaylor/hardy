@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleStatus, StoredBundle, StoredBundleRef},
     storage::{self, ConfirmResponse, MetadataStorage},
     stream::Sender,
 };
@@ -254,10 +254,9 @@ impl MetadataStorage for SqliteStorage {
             return Ok(None);
         };
 
-        let mut bundle: Bundle = serde_json::from_slice(&bundle)?;
+        let stored: StoredBundle = serde_json::from_slice(&bundle)?;
         if let Some(status) = to_status(status_code, p1, p2, p3) {
-            bundle.status = status;
-            Ok(Some(bundle))
+            Ok(Some(stored.into_bundle(status)))
         } else {
             warn!("Failed to unpack metadata status: code = {status_code}");
             Ok(None)
@@ -271,7 +270,7 @@ impl MetadataStorage for SqliteStorage {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.status);
         let id = serde_json::to_vec(bundle.id())?;
-        let bundle = serde_json::to_vec(bundle)?;
+        let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         self.write(move |conn| {
             // Insert bundle
             conn.prepare_cached(
@@ -291,7 +290,7 @@ impl MetadataStorage for SqliteStorage {
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.status);
         let id = serde_json::to_vec(bundle.id())?;
-        let bundle = serde_json::to_vec(bundle)?;
+        let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         if self
             .write(move |conn| {
                 // Update bundle
@@ -433,10 +432,11 @@ impl MetadataStorage for SqliteStorage {
             return Ok(None);
         };
 
-        match serde_json::from_slice::<Bundle>(&bundle) {
-            Ok(bundle) => {
+        match serde_json::from_slice::<StoredBundle>(&bundle) {
+            Ok(stored) => {
                 if let Some(status) = to_status(status_code, p1, p2, p3) {
-                    Ok(Some((bundle.metadata, status)))
+                    let bundle = stored.into_bundle(status);
+                    Ok(Some((bundle.metadata, bundle.status)))
                 } else {
                     error!("Failed to unpack metadata status: code = {status_code}");
                     self.tombstone(bundle_id).await.map(|_| None)
@@ -494,9 +494,17 @@ impl MetadataStorage for SqliteStorage {
             }
 
             for bundle in bundles {
-                match serde_json::from_slice(&bundle) {
-                    Ok(bundle) => {
-                        if stream.send(bundle).await.is_err() {
+                match serde_json::from_slice::<StoredBundle>(&bundle) {
+                    // The removal above NULLed the typed status columns, so
+                    // the record's status is gone; the consumer only reports
+                    // the unconfirmed orphan, and `New` — a record ingress
+                    // never finished committing — is exactly what it was.
+                    Ok(stored) => {
+                        if stream
+                            .send(stored.into_bundle(BundleStatus::New))
+                            .await
+                            .is_err()
+                        {
                             // The other end is shutting down - get out
                             return Ok(());
                         }
@@ -604,11 +612,10 @@ impl MetadataStorage for SqliteStorage {
             let full_page = bundles.len() == PAGE_SIZE;
             for (rowid, expiry, bundle, status_code, p1, p2, p3) in bundles {
                 cursor = Some((expiry, rowid));
-                match serde_json::from_slice::<Bundle>(&bundle) {
-                    Ok(mut bundle) => {
+                match serde_json::from_slice::<StoredBundle>(&bundle) {
+                    Ok(stored) => {
                         if let Some(status) = to_status(status_code, p1, p2, p3) {
-                            bundle.status = status;
-                            if stream.send(bundle).await.is_err() {
+                            if stream.send(stored.into_bundle(status)).await.is_err() {
                                 // The other end is shutting down - get out
                                 return Ok(());
                             }
@@ -680,10 +687,13 @@ impl MetadataStorage for SqliteStorage {
             }
 
             for bundle in bundles {
-                match serde_json::from_slice::<Bundle>(&bundle) {
-                    Ok(mut bundle) => {
-                        bundle.status = BundleStatus::Waiting;
-                        if stream.send(bundle).await.is_err() {
+                match serde_json::from_slice::<StoredBundle>(&bundle) {
+                    Ok(stored) => {
+                        if stream
+                            .send(stored.into_bundle(BundleStatus::Waiting))
+                            .await
+                            .is_err()
+                        {
                             // The other end is shutting down - get out
                             return Ok(());
                         }
@@ -717,11 +727,11 @@ impl MetadataStorage for SqliteStorage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<Bundle>(&bundle) {
-                Ok(mut bundle) => {
-                    bundle.status = BundleStatus::WaitingForService {
+            match serde_json::from_slice::<StoredBundle>(&bundle) {
+                Ok(stored) => {
+                    let bundle = stored.into_bundle(BundleStatus::WaitingForService {
                         service: source.clone(),
-                    };
+                    });
                     if stream.send(bundle).await.is_err() {
                         break;
                     }
@@ -757,10 +767,13 @@ impl MetadataStorage for SqliteStorage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<Bundle>(&bundle) {
-                Ok(mut bundle) => {
-                    bundle.status = status.clone();
-                    if stream.send(bundle).await.is_err() {
+            match serde_json::from_slice::<StoredBundle>(&bundle) {
+                Ok(stored) => {
+                    if stream
+                        .send(stored.into_bundle(status.clone()))
+                        .await
+                        .is_err()
+                    {
                         // The other end is shutting down - get out
                         break;
                     }
@@ -798,10 +811,13 @@ impl MetadataStorage for SqliteStorage {
             .await?;
 
         for bundle in bundles {
-            match serde_json::from_slice::<Bundle>(&bundle) {
-                Ok(mut bundle) => {
-                    bundle.status = status.clone();
-                    if stream.send(bundle).await.is_err() {
+            match serde_json::from_slice::<StoredBundle>(&bundle) {
+                Ok(stored) => {
+                    if stream
+                        .send(stored.into_bundle(status.clone()))
+                        .await
+                        .is_err()
+                    {
                         // The other end is shutting down - get out
                         break;
                     }

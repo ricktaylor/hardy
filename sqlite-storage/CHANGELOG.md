@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Records (de)serialize through `hardy-bpa`'s `StoredBundle`/`StoredBundleRef` — the on-disk format is unchanged, and the status is re-imposed from the typed columns by construction.
 - `MetadataStorage::update_status` is gone (removed from the `hardy-bpa` trait): every persisted status transition after first dispatch is a conditional compare-and-swap.
 - `poll_expiry` pages with a keyset cursor `(expiry, rowid)` and streams until the consumer closes the stream, per the revised `hardy-bpa` trait contract (the `limit` parameter is gone).
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Rows written by earlier versions no longer deserialize: recovery logs each as "Garbage bundle found in metadata" and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates of the tombstoned rows. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.

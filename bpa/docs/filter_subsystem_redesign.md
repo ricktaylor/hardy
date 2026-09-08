@@ -272,7 +272,7 @@ The delta decision forces the wider question, and the answer is a principle: **m
 
 Two fields leave the metadata record entirely:
 
-- **`status`** is queue assignment (`queue_architecture.md`); its `serde(skip)` today shows the move half-made — the queue redesign completes it.
+- **`status`** is queue assignment (`queue_architecture.md`); today it already lives outside the persisted record (`StoredBundle` carries no status; backends re-impose it from typed columns) — the queue redesign completes the move out of the in-memory record too.
 - **`next_hop`** is a per-dispatch transient: computed by the RIB lookup, consumed by ClaSend, carried in the Dispatch→ClaSend queue entry rather than in metadata. It is never persisted (as today), and any re-dispatch recomputes it — consistent with re-routing semantics.
 
 Making provenance explicit fixes a latent bug: `ingress_cla` is currently transient (`serde(skip)`), so after a restart both the Egress transit predicate and re-admission's chain selection would mis-read a recovered bundle as locally originated. Provenance is **persisted, write-once**: the `origin` enum records the arrival facts durably (the CLA name is a fact about arrival even if that CLA instance no longer exists), makes the transit predicate a type-level match, and gives restart re-admission its chain selector.

@@ -5,7 +5,8 @@ use hardy_bpv7::{creation_timestamp::CreationTimestamp, eid::Eid};
 /// Tracks where a bundle is in the dispatch/forward/deliver lifecycle.
 /// Persisted to metadata storage so processing can resume after restart —
 /// but never through serde: backends encode it in their own typed columns
-/// (it is `serde(skip)`ed on [`Bundle`](super::Bundle)).
+/// and re-impose it via
+/// [`StoredBundle::into_bundle`](super::StoredBundle::into_bundle).
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub enum BundleStatus {
     /// Freshly received, not yet processed.

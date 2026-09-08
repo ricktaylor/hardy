@@ -1,6 +1,6 @@
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleStatus, StoredBundle, StoredBundleRef},
     storage::{self, ConfirmResponse},
     stream::Sender,
 };
@@ -192,19 +192,16 @@ impl PendingRow {
     }
 }
 
-// Deserialize a bundle from BYTEA and override its status from the pre-decoded typed columns.
-// The BYTEA blob is authoritative for all fields; typed columns are only for indexing.
-// We still override status from typed columns to guard against any blob/column skew.
+// Deserialize a stored record from BYTEA and recompose it with the status
+// from the pre-decoded typed columns — the blob has no status field, so the
+// typed columns are its only source.
 fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<Bundle> {
     let Some(status) = status else {
         warn!("Failed to decode metadata status");
         return None;
     };
-    match serde_json::from_slice::<Bundle>(&bundle_bytes) {
-        Ok(mut bundle) => {
-            bundle.status = status;
-            Some(bundle)
-        }
+    match serde_json::from_slice::<StoredBundle>(&bundle_bytes) {
+        Ok(stored) => Some(stored.into_bundle(status)),
         Err(e) => {
             warn!("Garbage bundle in metadata store: {e}");
             None
@@ -235,7 +232,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let bundle_key = bundle.id().to_key();
-        let bundle_bytes = serde_json::to_vec(bundle)?;
+        let bundle_bytes = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         let received_at = bundle.metadata.received_at();
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
@@ -280,7 +277,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.id().to_key();
-        let bundle_bytes = serde_json::to_vec(bundle)?;
+        let bundle_bytes = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
 
