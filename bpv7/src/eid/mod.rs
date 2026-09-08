@@ -407,10 +407,11 @@ impl fmt::Display for Eid {
                     Ok::<_, CborError>(r)
                 }) {
                     Ok((r, _)) => r,
-                    // Unreachable in practice: `UnknownSsp` is validated at
-                    // construction, but `parse_value`'s error bound cannot
-                    // carry `fmt::Error`, so the arm must exist.
-                    Err(_) => Err(fmt::Error),
+                    // The SSP is well-formed CBOR by construction, but need
+                    // not be decodable (e.g. a text string that is not valid
+                    // UTF-8). Display must stay total: returning `fmt::Error`
+                    // on a healthy stream aborts `format!`.
+                    Err(e) => write!(f, "unknown({scheme}):error: {e:?}"),
                 }
             }
         }

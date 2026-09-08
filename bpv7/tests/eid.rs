@@ -68,6 +68,25 @@ fn unknown_scheme_cbor_roundtrip() {
     assert!(eid.to_string().starts_with("unknown(3):"));
 }
 
+// An unknown-scheme SSP is only skip-validated at construction: it must be
+// well-formed CBOR, but need not be decodable. Display must stay total on
+// such an SSP — returning `fmt::Error` from a healthy stream aborts
+// `format!` (and `to_string`).
+//
+// Byte layout: 82 = array(2), 05 = scheme 5, 61 FF = text(1) with an
+// invalid UTF-8 byte: skip-clean, decode-dirty.
+#[test]
+fn unknown_scheme_display_is_total_for_undecodable_ssp() {
+    let (eid, _) = parse::<(Eid, bool)>(&hex!("82 05 61 FF")).expect("should parse");
+    let Eid::Unknown { scheme: 5, .. } = &eid else {
+        panic!("expected Eid::Unknown with scheme 5, got {eid:?}");
+    };
+    assert_eq!(
+        eid.to_string(),
+        "unknown(5):error: InvalidUtf8(Utf8Error { valid_up_to: 0, error_len: Some(1) })"
+    );
+}
+
 fn ipn(allocator_id: u32, node_number: u32, service_number: u32) -> Eid {
     Eid::Ipn {
         fqnn: IpnNodeId {
