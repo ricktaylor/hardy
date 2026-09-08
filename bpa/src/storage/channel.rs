@@ -237,7 +237,7 @@ impl Sender {
 
                     Err(TrySendError::Full(_dropped)) => {
                         // Intentional drop: the bundle's status was just
-                        // durably updated by `update_status` above, so the
+                        // durably moved by the conditional swap above, so the
                         // poller can recover it via `poll_pending`. See the
                         // module-level delivery contract.
                         let _ = self.shared.compare_exchange_state(

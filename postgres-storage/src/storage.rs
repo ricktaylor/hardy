@@ -8,7 +8,7 @@ use hardy_bpv7::eid::Eid;
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use super::status;
 use crate::PostgresStorageBuilder;
@@ -367,47 +367,6 @@ impl storage::MetadataStorage for PostgresStorage {
         .rows_affected();
 
         Ok(rows == 1)
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
-    async fn update_status(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        status: &BundleStatus,
-    ) -> storage::Result<()> {
-        let bundle_key = bundle_id.to_key();
-        let sf = status::StatusFields::try_from(status)?;
-
-        let rows = sqlx::query(
-            "UPDATE metadata
-             SET status      = $2,
-                 peer_id     = $3,
-                 queue_id    = $4,
-                 adu_source  = $5,
-                 adu_ts_ms   = $6,
-                 adu_ts_seq  = $7,
-                 service_eid = $8
-             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
-        )
-        .bind(bundle_key)
-        .bind(sf.status)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
-        .bind(sf.adu_source)
-        .bind(sf.adu_ts_ms)
-        .bind(sf.adu_ts_seq)
-        .bind(sf.service_eid)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-
-        if rows == 0 {
-            // Delete is terminal: the bundle was removed between the
-            // caller's read and this write, and the update quietly loses
-            debug!("Status update for a deleted bundle, ignored");
-        }
-
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]

@@ -189,20 +189,6 @@ impl Store {
             .trace_expect("Failed to replace metadata")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, bundle),fields(bundle.id = %bundle.id())))]
-    pub async fn update_status(&self, bundle: &mut Bundle, status: &BundleStatus) {
-        if bundle.status != *status {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).decrement(1.0);
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(status)).increment(1.0);
-
-            bundle.status = status.clone();
-            self.metadata_storage
-                .update_status(bundle.id(), status)
-                .await
-                .trace_expect("Failed to update bundle status");
-        }
-    }
-
     // Compare-and-swap from the caller's snapshot status: the arbiter for
     // writers racing the peer sweeps, the expiry reaper, and each other.
     // Gauges move only when the swap wins.
@@ -409,9 +395,6 @@ mod tests {
                 Err("backend down".into())
             }
             async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
-            }
-            async fn update_status(&self, _bundle_id: &Id, _status: &BundleStatus) -> Result<()> {
                 unimplemented!()
             }
             async fn swap_status(

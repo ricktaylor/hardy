@@ -257,23 +257,6 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()> {
-        let mut inner = self.inner.lock();
-        // peek_mut leaves the LRU order untouched on a miss; a concurrently
-        // deleted bundle (absent or tombstoned) quietly loses the update.
-        let updated = match inner.entries.peek_mut(bundle_id) {
-            Some(Entry::Live(bundle)) => {
-                bundle.status = status.clone();
-                true
-            }
-            _ => false,
-        };
-        if updated {
-            inner.entries.promote(bundle_id);
-        }
-        Ok(())
-    }
-
     async fn swap_status(
         &self,
         bundle_id: &Id,
@@ -804,12 +787,6 @@ mod tests {
         let bundle = make_bundle(1);
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(bundle.id()).await.unwrap();
-
-        storage
-            .update_status(bundle.id(), &BundleStatus::Dispatching)
-            .await
-            .unwrap();
-        assert!(storage.get(bundle.id()).await.unwrap().is_none());
 
         storage.replace(&bundle).await.unwrap();
         assert!(storage.get(bundle.id()).await.unwrap().is_none());

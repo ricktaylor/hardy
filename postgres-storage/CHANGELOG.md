@@ -11,12 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `dispatch_pending`, `deliver_pending`, and `delivery_ack_pending` bundle statuses (migration 0004) with the `deliver_pending` per-service partial index (migration 0005), and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation. Migration 0006 adds the `dispatch_pending` partial index the dispatch queue's storage poller pages by, and drops the read-dead `dispatching` index it succeeds.
 
 ### Changed
+- `MetadataStorage::update_status` is gone (removed from the `hardy-bpa` trait): every persisted status transition after first dispatch is a conditional compare-and-swap.
 - `poll_expiry` streams keyset pages until the consumer closes the stream, per the revised `hardy-bpa` trait contract (the `limit` parameter is gone); the page budget no longer caps the scan.
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Records written by earlier versions no longer deserialize: recovery treats each as corrupt and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates against the permanent `bundles` identity anchor. The schema-checksum validation cannot catch this — the blob inside the schema is unversioned. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.
 - **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `PostgresStorage::builder()`, with the pool defaults owned privately by the builder; config-file schemas belong to the server crates. Timeouts are `Duration`s, `poll_page_size` and `max_connections` are `NonZeroU32` (a zero-connection pool is unrepresentable), and a missing database URL is the dedicated `Error::NoDatabaseUrl`.
-
-### Fixed
-- `update_status` no longer errors when the bundle was deleted concurrently: delete is terminal and the update quietly loses. Previously the error propagated into the BPA's fail-stop storage wrapper, turning a benign race with the expiry reaper into a panic.
 
 ## [0.2.0]
 

@@ -310,32 +310,6 @@ impl MetadataStorage for SqliteStorage {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
-    async fn update_status(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        status: &BundleStatus,
-    ) -> storage::Result<()> {
-        let (status_code, status_param1, status_param2, status_param3) = from_status(status);
-        let id = serde_json::to_vec(bundle_id)?;
-        if self
-            .write(move |conn| {
-                conn.prepare_cached(
-                    "UPDATE bundles SET status_code = ?2, status_param1 = ?3, status_param2 = ?4, status_param3 = ?5 WHERE bundle_id = ?1 AND bundle IS NOT NULL",
-                )?
-                .execute((id, status_code, status_param1, status_param2, status_param3))
-                .map_err(Into::into)
-            })
-            .await?
-            != 1
-        {
-            // Delete is terminal: the bundle was removed between the
-            // caller's read and this write, and the update quietly loses
-            debug!("Status update for a deleted bundle, ignored");
-        }
-        Ok(())
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
     async fn swap_status(
         &self,
         bundle_id: &hardy_bpv7::bundle::Id,
@@ -1041,40 +1015,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-    }
-
-    // A status write against a tombstone quietly loses: the tombstone's
-    // status columns stay NULL rather than being written back. Checked
-    // against the raw row, because get() shields readers by filtering on
-    // live bundles.
-    #[tokio::test]
-    async fn test_update_status_does_not_resurrect_tombstone() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage =
-            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
-
-        let mut bundle = make_bundle(1);
-        bundle.status = BundleStatus::ForwardAckPending { peer: 7 };
-        assert!(storage.insert(&bundle).await.unwrap());
-        storage.tombstone(bundle.id()).await.unwrap();
-
-        storage
-            .update_status(bundle.id(), &BundleStatus::Waiting)
-            .await
-            .unwrap();
-
-        assert!(storage.get(bundle.id()).await.unwrap().is_none());
-
-        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
-        let (bundle_col, status_code): (Option<Vec<u8>>, Option<i64>) = conn
-            .query_row(
-                "SELECT bundle, status_code FROM bundles WHERE bundle_id = ?1",
-                [serde_json::to_vec(bundle.id()).unwrap()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert!(bundle_col.is_none(), "tombstone must keep bundle NULL");
-        assert!(status_code.is_none(), "tombstone must keep status NULL");
     }
 
     // SQL-01: Database is created at the configured path.

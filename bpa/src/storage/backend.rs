@@ -59,17 +59,6 @@ pub trait MetadataStorage: Send + Sync {
     /// Replaces an existing bundle's metadata.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
-    /// Unconditionally sets the status of the bundle with the given
-    /// `bundle_id` — the typed status columns only.
-    ///
-    /// Cheaper than `replace` because the bundle blob is not written. Use this
-    /// for pure state-machine transitions where no other metadata has changed.
-    ///
-    /// A bundle deleted concurrently is not an error: delete is terminal, and
-    /// the update quietly loses. Backends must neither resurrect the bundle
-    /// nor fail the call.
-    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()>;
-
     /// Updates the status of the bundle with the given `bundle_id` only if
     /// its current status equals `expected`, returning whether the swap was
     /// applied.

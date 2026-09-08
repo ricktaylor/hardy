@@ -212,14 +212,6 @@ mod tests {
             self.0.replace(bundle).await
         }
 
-        async fn update_status(
-            &self,
-            bundle_id: &Id,
-            status: &bundle::BundleStatus,
-        ) -> StorageResult<()> {
-            self.0.update_status(bundle_id, status).await
-        }
-
         async fn swap_status(
             &self,
             bundle_id: &Id,

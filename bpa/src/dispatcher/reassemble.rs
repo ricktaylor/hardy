@@ -16,8 +16,14 @@ impl Dispatcher {
                         source: bundle.id().source.clone(),
                         timestamp: bundle.id().timestamp.clone(),
                     };
-                    self.store.update_status(&mut bundle, &status).await;
-                    return self.store.watch_bundle(bundle).await;
+                    // Conditional park, like every other park: the reaper
+                    // can resolve the fragment at any await, and the park
+                    // must not resurrect a tombstone. Losing the swap means
+                    // another resolver got there first.
+                    if self.store.swap_status(&mut bundle, &status).await {
+                        return self.store.watch_bundle(bundle).await;
+                    }
+                    return;
                 }
                 ReassemblyResult::Failed => {
                     debug!("Fragment reassembly failed for bundle {}", bundle.id());

@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Removed
 - **BREAKING:** `ServiceSink::cancel` and `ApplicationSink::cancel` — the implementation was status-blind, reporting success for a bundle already mid-transfer at a CLA. A future cancellation must be conditional on a still-cancellable status; the contract is recorded in [docs/TODO.md](docs/TODO.md).
+- **BREAKING:** `MetadataStorage::update_status` — the last unconditional status write in a pipeline whose races are arbitrated by the status-conditioned `swap_status`/`tombstone_if`. A stale writer can no longer stomp a live re-assignment or resurrect a tombstone by construction; external backends simply delete the method.
 - **BREAKING:** the `services::registry` module is no longer public: `registry::Service` and `registry::ServiceImpl` were internal registry wiring never accepted or returned by any public API, and the service API surface is the `services::Service`/`Application` traits and their sinks.
 
 ## [0.2.0]
