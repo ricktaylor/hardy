@@ -147,6 +147,16 @@ impl<'a> BundleReader<'a> {
         block_number: u64,
     ) -> Result<Option<block::Payload<'a>>, hardy_bpv7::Error> {
         let bundle = self.bundle;
+        // Residency pre-check: a present block whose extents fall outside
+        // the resident bytes is "not available to me" (`Ok(None)`), the
+        // same answer `Block::extract` gives — without it the extent slice
+        // below surfaces as `Err(Altered)`. Compared in u64: a block past
+        // usize::MAX on a 32-bit target is equally non-resident.
+        if let Some(block) = bundle.bpv7.blocks.get(&block_number)
+            && block.payload_range().end > self.data.len() as u64
+        {
+            return Ok(None);
+        }
         match bpsec::block_data(
             block_number,
             &bundle.bpv7.blocks,
@@ -261,4 +271,40 @@ pub enum RewriteContext<'a> {
     /// Runs for every local delivery; the edits are observable only on the
     /// raw-bundle [`Service`](crate::services::Service) path.
     Deliver,
+}
+
+#[cfg(test)]
+mod tests {
+    use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+
+    use super::*;
+    use crate::bundle::BundleMetadata;
+
+    // A present block whose extents fall outside the resident bytes is
+    // "not resident": the documented Ok(None), never Err(Altered). Only
+    // reachable once the Phase 3 peek seat delivers truncated buffers, but
+    // the contract is public today.
+    #[test]
+    fn block_data_returns_none_for_non_resident_block() {
+        let (_, data) = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+            .with_payload(b"a payload long enough to truncate".as_slice().into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        let parsed = hardy_bpv7::parse::parse(bytes::Bytes::from(data)).unwrap();
+        let bundle = Bundle::new(parsed.bundle, BundleMetadata::originated());
+
+        // Truncate inside the payload block's extents.
+        let end = usize::try_from(bundle.bpv7.blocks[&1].payload_range().end).unwrap();
+        let truncated = &parsed.data[..end - 8];
+
+        let bcb_ops = HashMap::default();
+        let keys = hardy_bpv7::bpsec::no_keys(&bundle.bpv7, truncated);
+        let reader = BundleReader::new(&bundle, truncated, &bcb_ops, &*keys);
+        assert!(matches!(reader.block_data(1), Ok(None)));
+
+        // The whole buffer still reads the block.
+        let keys = hardy_bpv7::bpsec::no_keys(&bundle.bpv7, &parsed.data);
+        let reader = BundleReader::new(&bundle, &parsed.data, &bcb_ops, &*keys);
+        assert!(matches!(reader.block_data(1), Ok(Some(_))));
+    }
 }
