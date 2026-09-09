@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Fixed
+- `Editor::push_block` and `Builder::add_extension_block` canonicalize their block-type argument through the new `block::Type::canonicalize()`, which folds an `Unrecognised` alias of a known type code back to its named variant. A hand-built `Type::Unrecognised(v)` encodes as the raw code `v`, so `Unrecognised(11)` or `Unrecognised(12)` previously bypassed `push_block`'s security-block refusal and emitted a block the next node parses as a real BIB/BCB without going through the Signer/Encryptor; `Unrecognised(0)` bypassed both primary-block refusals, and `Unrecognised(1 | 6 | 7 | 10)` bypassed the singleton-duplicate rules (producing bundles the receiving parser rejects). All reserved and singleton codes are now refused whatever variant carries them, and any other policy that matches on named variants can canonicalize first.
 - A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
 
 ### Changed

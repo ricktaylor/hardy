@@ -531,3 +531,64 @@ fn remove_block_rejects_security_block() {
         "remove_block must reject a BIB block with Error::SecurityBlock"
     );
 }
+
+// `Type::canonicalize` folds an `Unrecognised` alias of a known code back
+// to the named variant it encodes as, and leaves everything else alone.
+#[test]
+fn canonicalize_folds_reserved_aliases() {
+    assert_eq!(
+        block::Type::Unrecognised(0).canonicalize(),
+        block::Type::Primary
+    );
+    assert_eq!(
+        block::Type::Unrecognised(11).canonicalize(),
+        block::Type::BlockIntegrity
+    );
+    assert_eq!(
+        block::Type::Unrecognised(12).canonicalize(),
+        block::Type::BlockSecurity
+    );
+    assert_eq!(
+        block::Type::Unrecognised(192).canonicalize(),
+        block::Type::Unrecognised(192)
+    );
+    assert_eq!(block::Type::Payload.canonicalize(), block::Type::Payload);
+}
+
+// Reserved wire codes must be refused whatever `Type` variant carries them:
+// `Unrecognised(v)` encodes as the raw code `v`, so a hand-built
+// `Unrecognised(11)` would otherwise emit a block the next node parses as a
+// real BIB.
+#[test]
+fn push_block_rejects_reserved_wire_codes() {
+    let (bundle, data) = make_bundle();
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(0));
+    assert!(matches!(result, Err((_, Error::PrimaryBlock))));
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(11));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(12));
+    assert!(matches!(result, Err((_, Error::SecurityBlock))));
+}
+
+// The singleton rules see the canonicalized type too: `Unrecognised(1)` is
+// a second payload block, whatever the variant says (and the refusal names
+// the canonical type).
+#[test]
+fn push_block_rejects_singleton_duplicates_by_wire_code() {
+    let (bundle, data) = make_bundle();
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(1));
+    assert!(matches!(
+        result,
+        Err((_, Error::IllegalDuplicate(block::Type::Payload)))
+    ));
+
+    let (bundle, data) = make_bundle_with_hop_count();
+    let result = Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(10));
+    assert!(matches!(
+        result,
+        Err((_, Error::IllegalDuplicate(block::Type::HopCount)))
+    ));
+}

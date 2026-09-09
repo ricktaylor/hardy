@@ -97,6 +97,9 @@ impl<'a> Builder<'a> {
 
     /// Adds an extension block to this [`Builder`].
     pub fn add_extension_block(self, block_type: block::Type) -> Result<BlockBuilder<'a>, Error> {
+        // Canonicalized so an `Unrecognised(0)` alias cannot bypass the
+        // primary-block refusal.
+        let block_type = block_type.canonicalize();
         if let block::Type::Primary = block_type {
             Err(Error::PrimaryBlock)
         } else {
@@ -340,6 +343,15 @@ impl From<BundleTemplate> for Builder<'_> {
 
         builder
     }
+}
+
+// The primary-block refusal compares in wire code: `Unrecognised(0)`
+// encodes as type code 0 and must not bypass the variant it aliases.
+#[test]
+fn add_extension_block_rejects_wire_code_zero() {
+    let r = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .add_extension_block(block::Type::Unrecognised(0));
+    assert!(matches!(r, Err(Error::PrimaryBlock)));
 }
 
 // Requirement: LLR 1.1.25
