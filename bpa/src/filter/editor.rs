@@ -1,9 +1,10 @@
 //! The scoped extension-block editor handed to a [`Rewriter`](super::Rewriter).
 //!
-//! The handle exposes insert/replace/remove of *extension* blocks only,
-//! making payload/primary/BIB/BCB immutability a compile-time property
-//! rather than a review promise. Operations are validated and applied as
-//! they are called — a refused operation is the rewriter's no-match path —
+//! The handle exposes insert/replace/remove of *extension* blocks only:
+//! payload, primary-block, and BIB/BCB targets are refused with a typed
+//! [`Error`] at call time, so payload-purity is enforced by the handle,
+//! not by review. Operations are validated and applied as they are
+//! called — a refused operation is the rewriter's no-match path —
 //! and the engine materialises the accumulated edits into the per-attempt
 //! wire form only when the invocation returns [`Verdict::Continue`]
 //! (dropping the bundle discards them wholesale).
