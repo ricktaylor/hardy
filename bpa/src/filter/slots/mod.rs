@@ -4,10 +4,13 @@
 //! A custom filter pair (an ingress Classifier and an egress Rewriter shipped
 //! together) registers a slot at BPA construction — a stable name plus a
 //! typed, size-bounded value — and receives a typed [`SlotHandle`]. The
-//! handle is the capability: possession grants access, so a pair shares state
-//! by sharing the handle in its common construction code, and no other code
-//! can name the slot. The BPA carries the values opaquely as
-//! canonically-encoded CBOR; the pair sees them fully typed.
+//! handle is the capability: possession grants access, so a pair shares
+//! state by sharing the handle in its common construction code, and other
+//! *registered* code cannot obtain one (a duplicate registration fails
+//! `build()`). The scheme is cooperative, not cryptographic: a handle is
+//! forgeable by code that reconstructs the pack and slot names. The BPA
+//! carries the values opaquely as canonically-encoded CBOR; the pair sees
+//! them fully typed.
 //!
 //! A slot value is a cache of a pure derivation over (stored bytes, chain,
 //! config) — never a ledger. It is persisted with the bundle. Clearing and

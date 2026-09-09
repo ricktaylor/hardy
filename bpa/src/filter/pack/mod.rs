@@ -3,8 +3,8 @@
 //! A pack reifies a filter pair's common construction code: annotation
 //! slots and hook registrations are declared on one [`FilterPack`], whose
 //! name prefixes both the at-rest slot names (`"<pack>.<slot>"`) and the
-//! diagnostic labels (`"<pack>.<label>"`), so slot collisions between
-//! distinct packs are unrepresentable.
+//! diagnostic labels (`"<pack>.<label>"`), so distinctly-named packs
+//! cannot collide, and same-named packs are rejected at `build()`.
 //! [`BpaBuilder::add_filters`](crate::builder::BpaBuilder::add_filters)
 //! splices packs into the per-hook chains — chain order is call order,
 //! within a pack and across `add_filters` calls — and
