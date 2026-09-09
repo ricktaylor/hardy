@@ -1,7 +1,9 @@
 # Hardy BPA gRPC Client Authentication — Design Document
 
 **Status:** Draft for iteration
+
 **Scope:** `hardy-bpa-server` (and by extension `hardy-bpa`), `hardy-proto` (docs only — no schema change), all gRPC clients of the BPA (CLAs, services, routing agents)
+
 **Related:** `test-cla-design.md` (first exerciser; consumes this, does not define it)
 
 ---

@@ -660,8 +660,8 @@ impl storage::MetadataStorage for PostgresStorage {
             for r in rows {
                 last_received_at = r.received_at;
                 last_id = r.id;
-                // Status is 'waiting' by the WHERE clause; override the blob's status
-                // field (which may lag by one write) to keep them consistent.
+                // The WHERE clause guarantees status 'waiting', so that is the
+                // status the stored blob is rematerialized under.
                 let Some(bundle) = r.decode(&BundleStatus::Waiting) else {
                     continue;
                 };

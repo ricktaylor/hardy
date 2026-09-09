@@ -464,7 +464,7 @@ mod tests {
         async fn on_unregister(&self) {}
         async fn forward(
             &self,
-            _queue: Option<u32>,
+            _lane: Option<u32>,
             _cla_addr: &ClaAddress,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _total_len: u64,

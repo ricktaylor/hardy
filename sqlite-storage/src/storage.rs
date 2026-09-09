@@ -10,6 +10,7 @@ use hardy_bpa::{
 use hardy_bpv7::eid::Eid;
 
 use rusqlite::OptionalExtension;
+use time::UtcOffset;
 use trace_err::*;
 use tracing::{debug, error, info, warn};
 
@@ -265,7 +266,10 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
-        let expiry = bundle.expiry();
+        // Normalized to UTC so the TEXT `expiry` column's lexicographic
+        // order is chronological — rusqlite stores the value's own offset,
+        // and `poll_expiry`'s keyset cursor depends on a uniform one.
+        let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
         let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.status);
@@ -285,7 +289,8 @@ impl MetadataStorage for SqliteStorage {
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        let expiry = bundle.expiry();
+        // UTC-normalized for the same reason as `insert`.
+        let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
         let received_at = bundle.metadata.received_at();
         let (status_code, status_param1, status_param2, status_param3) =
             from_status(&bundle.status);
@@ -578,7 +583,14 @@ impl MetadataStorage for SqliteStorage {
 
         // Keyset pages: the consumer closes the stream once it has what it
         // needs, so each page is fetched only if the previous one was
-        // consumed whole.
+        // consumed whole. The `(expiry, rowid) > (?1, ?2)` cursor and the
+        // ORDER BY compare the TEXT `expiry` column lexicographically,
+        // which is chronological order because every write site normalizes
+        // the value to UTC before binding (rusqlite encodes the value's
+        // own offset, so a mixed-offset table would sort wrong) — see
+        // `insert`. This keeps both the cursor and the sort on
+        // `idx_bundles_expiry`; an expression like `datetime(expiry)`
+        // would forfeit the index and truncate sub-second precision.
         const PAGE_SIZE: usize = 64;
         let mut cursor: Option<(String, i64)> = None;
         loop {

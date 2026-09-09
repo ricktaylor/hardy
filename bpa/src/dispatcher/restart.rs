@@ -180,7 +180,7 @@ mod tests {
 
         async fn forward(
             &self,
-            _queue: Option<u32>,
+            _lane: Option<u32>,
             _cla_addr: &cla::ClaAddress,
             bundle_id: &Id,
             _total_len: u64,
@@ -384,6 +384,7 @@ mod tests {
             .await
             .unwrap();
 
+        // the timeout only bounds a regression
         let id2 = tokio::time::timeout(tokio::time::Duration::from_secs(5), offers_rx.recv_async())
             .await
             .expect("Timeout waiting for re-offer")

@@ -78,7 +78,7 @@ impl cla::Cla for PipelineCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &Id,
         total_len: u64,
@@ -249,7 +249,7 @@ impl cla::Cla for TimedCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         _bundle_id: &Id,
         _total_len: u64,
@@ -2038,7 +2038,7 @@ impl cla::Cla for DeferringCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         bundle_id: &Id,
         _total_len: u64,
@@ -2365,7 +2365,7 @@ impl cla::Cla for BlockingCla {
 
     async fn forward(
         &self,
-        _queue: Option<u32>,
+        _lane: Option<u32>,
         _cla_addr: &cla::ClaAddress,
         bundle_id: &Id,
         _total_len: u64,

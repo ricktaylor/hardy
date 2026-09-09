@@ -409,13 +409,17 @@ impl ServiceRegistry {
         // duplicate check: nothing reachable is ever half-built, and the
         // RIB (added below) only ever sees a deliverable service. The
         // channel's creation-time poll recovers any DeliverPending bundles
-        // left over from a previous registration under the same EID; a
-        // duplicate's channel is dropped unconsumed, closing it.
+        // left over from a previous registration under the same EID.
         let (tx, rx) = dispatcher.new_delivery_channel(&eid);
         let service = Service::new(service, service_id.clone(), eid.clone(), tx);
         {
             let mut services = self.services.lock();
             if services.contains_key(service_id) {
+                // The loser closes the channel it opened: the channel
+                // spawns its storage poller at creation, and dropping the
+                // sender does not close it — an unclosed loser parks that
+                // poller until store shutdown.
+                service.close_queue();
                 return Err(services::Error::ServiceIdInUse(service_id.to_string()));
             }
             services.insert(service_id.clone(), service.clone());
