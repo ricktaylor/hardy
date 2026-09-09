@@ -308,7 +308,7 @@ async fn originate(app: &SendOnlyApp, payload: &'static [u8]) -> Eid {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_cla_receives_single_final_segment() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(false);
     bpa.register_cla("stream".to_string(), cla.clone(), None)
@@ -357,7 +357,7 @@ async fn streaming_cla_receives_single_final_segment() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn buffered_cla_receives_whole_bundle() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = BufferedCla::new();
     bpa.register_cla("buffered".to_string(), cla.clone(), None)
@@ -395,7 +395,7 @@ async fn buffered_cla_receives_whole_bundle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_is_requeued_and_retried() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(true);
     bpa.register_cla("flaky".to_string(), cla.clone(), None)
@@ -458,7 +458,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_streamed_forward_does_not_retry_inline() {
     let bpa = Bpa::builder().build().await.unwrap();
-    bpa.start(false);
+    bpa.start(false).await;
 
     let (cla, events_rx) = FailingCla::new();
     bpa.register_cla("failing".to_string(), cla.clone(), None)

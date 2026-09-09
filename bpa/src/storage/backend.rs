@@ -59,17 +59,6 @@ pub trait MetadataStorage: Send + Sync {
     /// Replaces an existing bundle's metadata.
     async fn replace(&self, bundle: &Bundle) -> Result<()>;
 
-    /// Unconditionally sets the status of the bundle with the given
-    /// `bundle_id` — the typed status columns only.
-    ///
-    /// Cheaper than `replace` because the bundle blob is not written. Use this
-    /// for pure state-machine transitions where no other metadata has changed.
-    ///
-    /// A bundle deleted concurrently is not an error: delete is terminal, and
-    /// the update quietly loses. Backends must neither resurrect the bundle
-    /// nor fail the call.
-    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()>;
-
     /// Updates the status of the bundle with the given `bundle_id` only if
     /// its current status equals `expected`, returning whether the swap was
     /// applied.
@@ -154,10 +143,24 @@ pub trait MetadataStorage: Send + Sync {
     /// of bundles reset.
     async fn reset_peer_ack_pending(&self, peer: u32) -> Result<u64>;
 
-    /// Pushes the next `limit` bundles, excluding status `BundleStatus::New`
-    /// and ordered by expiry, to `stream`. Stops early if `stream.send`
-    /// returns `Err(SendError(_))`.
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()>;
+    /// Resets all bundles with status `BundleStatus::DeliverPending { service }`
+    /// to `WaitingForService { service }`: the service has unregistered, so its
+    /// queued deliveries re-park to await the next registration (the local
+    /// analogue of [`reset_peer_queue`](Self::reset_peer_queue)). In-flight
+    /// deliveries (`DeliveryAckPending`) are untouched — they resolve
+    /// themselves. Returns the number of bundles reset.
+    async fn reset_service_queue(&self, service: &Eid) -> Result<u64>;
+
+    /// Pushes live bundles, ordered by expiry ascending, to `stream`, until
+    /// the rows are exhausted or `stream.send` returns `Err(SendError(_))`:
+    /// the consumer closes the stream once it has what it needs, so the
+    /// backend never decides how many rows matter — a status-blind ordered
+    /// scan. The one exclusion is `BundleStatus::New` (a record ingress has
+    /// not finished committing — storage lifecycle, not dispatch policy; it
+    /// retires with the planned removal of the persisted `New` status).
+    /// Which statuses defer expiry is the reaper's policy, applied
+    /// caller-side.
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> Result<()>;
 
     /// Pushes all `BundleStatus::Waiting` bundles, snapshotted at the time of
     /// the call and ordered by received time, to `stream`. Stops early if

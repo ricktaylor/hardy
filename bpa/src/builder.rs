@@ -8,7 +8,7 @@ use crate::{
     filter::{Filter, FilterEngine, Hook, validity::BundleValidityFilter},
     keys::KeyProvider,
     node_ids::NodeIds,
-    policy::EgressPolicy,
+    policy::FlowControllerFactory,
     routing::{RibBuilder, RoutingAgent},
     services::{self, Service, registry::ServiceRegistryBuilder},
     storage::{
@@ -181,7 +181,7 @@ impl BpaBuilder {
         mut self,
         name: impl Into<String>,
         cla: Arc<dyn Cla>,
-        policy: Option<Arc<dyn EgressPolicy>>,
+        policy: Option<Arc<dyn FlowControllerFactory>>,
     ) -> Self {
         self.cla_registry_builder
             .insert(name.into(), cla, policy)
@@ -259,7 +259,7 @@ impl BpaBuilder {
             .await?;
         let filter_engine = self.filter_engine;
 
-        let dispatcher = Dispatcher::new(
+        let (dispatcher, start_dispatcher) = Dispatcher::new(
             self.status_reports,
             self.poll_channel_depth,
             self.processing_pool_size,
@@ -271,22 +271,23 @@ impl BpaBuilder {
             filter_engine.clone(),
         );
 
-        let (service_registry, cla_registry) = futures::join!(
-            self.service_registry_builder
-                .build(&node_ids, &rib, &dispatcher),
-            self.cla_registry_builder.build(
-                &node_ids,
-                self.poll_channel_depth.into(),
-                &rib,
-                &store,
-                &dispatcher,
-            ),
+        // Both registries park their configured registrations: activation
+        // happens in Bpa::start, after storage recovery.
+        let service_registry = self.service_registry_builder.build(&node_ids)?;
+        let cla_registry = self.cla_registry_builder.build(
+            &node_ids,
+            self.poll_channel_depth.into(),
+            &rib,
+            &store,
         );
-        let service_registry = service_registry?;
-        let cla_registry = cla_registry?;
 
-        // TODO: Remove this circular dependency between Dispatcher and ClaRegistry
-        dispatcher.set_cla_registry(cla_registry.clone());
+        // TODO: Dispatcher and ClaRegistry still reference each other: the
+        // registry holds the dispatcher, and the dispatcher late-binds the
+        // registry through its Once cell — readers driven from Rib::start
+        // (poll_waiting) rest on a runtime expect rather than the type
+        // system. The start closure fixes the wiring order; the cycle
+        // itself remains to be dissolved.
+        start_dispatcher(cla_registry.clone());
 
         Ok(Bpa::from_parts(
             node_ids,

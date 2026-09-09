@@ -170,6 +170,19 @@ impl Reaper {
                     .await
                     .inspect_err(|e| error!("Failed to get metadata from store: {e}"))
                 {
+                    // Hand-off commits at its claim: a bundle mid-`on_deliver`
+                    // cannot be recalled from the service, and a transfer a
+                    // CLA has accepted cannot be recalled from the wire, so
+                    // expiring either here would report a deletion that did
+                    // not happen. Each hand-off resolves its own outcome — a
+                    // completion tombstones truthfully, and every
+                    // non-terminal exit either parks the bundle (park_bundle
+                    // re-arms this watch) or re-enters dispatch, whose expiry
+                    // checkpoint drops it as LifetimeExpired.
+                    if bundle.status.defers_expiry() {
+                        debug!("Deferring expiry of in-flight hand-off");
+                        continue;
+                    }
                     dispatcher
                         .drop_bundle(
                             bundle,
@@ -203,9 +216,9 @@ impl Reaper {
         join!(
             async {
                 // Race against cancel so the producer can't block on a full
-                // channel after the consumer breaks (join! keeps rx alive).
+                // channel after the consumer drops its receiver.
                 select_biased! {
-                    r = self.metadata_storage.poll_expiry(&stream, self.cache_size).fuse() => {
+                    r = self.metadata_storage.poll_expiry(&stream).fuse() => {
                         let _ = r.inspect_err(|e| error!("Failed to poll store for expiry bundles: {e}"));
                     }
                     _ = cancel_token.cancelled().fuse() => {}
@@ -213,14 +226,31 @@ impl Reaper {
                 drop(stream);
             },
             async {
+                // The consumer owns termination: it accepts rows until the
+                // cache is full, then drops the receiver, which stops the
+                // backend's scan. A skipped row costs no budget, so rows the
+                // expiry pass defers (their exits re-arm the watch) can
+                // never starve the cache of reapable bundles behind them —
+                // the backend stays policy-blind and keeps supplying rows.
+                // The bare `New` skip is defence in depth: the backend
+                // contract already excludes it.
+                let rx = rx;
+                let mut accepted = 0;
                 loop {
                     select_biased! {
                         bundle = rx.recv().fuse() => {
                             let Ok(bundle) = bundle else {
                                 break;
                             };
-                            if bundle.status != BundleStatus::New {
-                                self.watch(&bundle, false);
+                            if bundle.status == BundleStatus::New
+                                || bundle.status.defers_expiry()
+                            {
+                                continue;
+                            }
+                            self.watch(&bundle, false);
+                            accepted += 1;
+                            if accepted >= self.cache_size {
+                                break;
                             }
                         },
                         _ = cancel_token.cancelled().fuse() => {

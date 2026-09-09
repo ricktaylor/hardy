@@ -1,3 +1,5 @@
+use tracing::warn;
+
 use super::*;
 
 // PeerTable uses hardy_async::sync::spin::RwLock because:
@@ -6,26 +8,23 @@ use super::*;
 // 3. No blocking/iteration while holding lock
 // 4. Avoids OS rwlock overhead on hot forwarding path
 
-struct PeerInner {
-    queues: HashMap<Option<u32>, storage::channel::Sender>,
-}
-
 pub struct Peer {
-    cla: Weak<registry::Cla>,
-    inner: hardy_async::sync::spin::Once<PeerInner>,
+    // One poller per policy queue, indexed by the queue index — queue 0
+    // always exists (`FlowControllerFactory::queue_count` is non-zero).
+    queues: Vec<storage::channel::Sender>,
+    // This peer's controller: owns the queue assignment (`queue_for`), so
+    // the hot forwarding path touches no shared policy state.
+    controller: Arc<dyn policy::FlowController>,
 }
 
 impl Peer {
-    pub fn new(cla: Weak<registry::Cla>) -> Self {
-        Self {
-            cla,
-            inner: hardy_async::sync::spin::Once::new(),
-        }
-    }
-
+    /// Builds the peer complete — controller and per-queue pollers — and
+    /// returns it ready to forward. Publication into the [`PeerTable`]
+    /// happens strictly after construction ([`PeerTable::publish`]), so a
+    /// `Peer` that is reachable is a `Peer` that works: there is no
+    /// half-built state to guard against.
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
-        &self,
         poll_channel_depth: usize,
         cla: Arc<registry::Cla>,
         peer: u32,
@@ -33,7 +32,7 @@ impl Peer {
         store: Arc<storage::store::Store>,
         dispatcher: Arc<dispatcher::Dispatcher>,
         tasks: &hardy_async::TaskPool,
-    ) {
+    ) -> Arc<Self> {
         let controller = cla
             .policy
             .new_controller(egress_queue::new_queue_set(
@@ -45,44 +44,29 @@ impl Peer {
             ))
             .await;
 
-        let queue_count = cla.policy.queue_count();
-        let mut queues = HashMap::with_capacity(queue_count as usize + 1);
-        queues.insert(
-            None,
-            Self::start_queue_poller(
+        let queue_count = cla.policy.queue_count().get();
+        let mut queues = Vec::with_capacity(queue_count as usize);
+        for q in 0..queue_count {
+            queues.push(Self::start_queue_poller(
                 poll_channel_depth,
                 controller.clone(),
                 store.clone(),
                 tasks,
                 peer,
-                None,
-            ),
-        );
-
-        for q in 0..queue_count {
-            queues.insert(
-                Some(q),
-                Self::start_queue_poller(
-                    poll_channel_depth,
-                    controller.clone(),
-                    store.clone(),
-                    tasks,
-                    peer,
-                    Some(q),
-                ),
-            );
+                q,
+            ));
         }
 
-        self.inner.call_once(|| PeerInner { queues });
+        Arc::new(Self { queues, controller })
     }
 
     fn start_queue_poller(
         poll_channel_depth: usize,
-        controller: Arc<dyn policy::EgressController>,
+        controller: Arc<dyn policy::FlowController>,
         store: Arc<storage::store::Store>,
         tasks: &hardy_async::TaskPool,
         peer: u32,
-        queue: Option<u32>,
+        queue: u32,
     ) -> storage::channel::Sender {
         let (tx, rx) = store.channel(
             bundle::BundleStatus::ForwardPending { peer, queue },
@@ -110,25 +94,15 @@ impl Peer {
         &self,
         bundle: bundle::Bundle,
     ) -> core::result::Result<(), bundle::Bundle> {
-        let queue = if let Some(flow_label) = bundle.metadata.writable.flow_label {
-            let Some(cla) = self.cla.upgrade() else {
-                return Err(bundle);
-            };
-            cla.policy.classify(Some(flow_label))
-        } else {
-            None
-        };
-
-        // The peer is published into the PeerTable before start() initialises
-        // the queues, so a forward may race ahead of initialisation. Return the
-        // bundle for re-routing rather than blocking on an uninitialised cell.
-        let Some(inner) = self.inner.get() else {
-            return Err(bundle);
-        };
-        let queue = inner
-            .queues
-            .get(&queue)
-            .unwrap_or_else(|| inner.queues.get(&None).trace_expect("No None queue?!?"));
+        // The per-peer controller owns the queue assignment; nothing on
+        // this path touches shared policy state.
+        let queue = self.controller.queue_for();
+        // An out-of-range index is a policy bug: clamp to queue 0, which
+        // always exists.
+        let queue = self.queues.get(queue as usize).unwrap_or_else(|| {
+            warn!("Egress policy classified a bundle into out-of-range queue {queue}");
+            &self.queues[0]
+        });
 
         match queue.send(bundle).await {
             Ok(_) => Ok(()),
@@ -137,12 +111,7 @@ impl Peer {
     }
 
     fn close(&self) {
-        // An orphaned peer (added to the PeerTable but never started, e.g. a
-        // duplicate address) has no queues, so closing is a no-op.
-        let Some(inner) = self.inner.get() else {
-            return;
-        };
-        for tx in inner.queues.values() {
+        for tx in &self.queues {
             tx.close();
         }
     }
@@ -151,6 +120,12 @@ impl Peer {
 #[derive(Default)]
 struct PeerTableInner {
     peers: HashMap<u32, Arc<Peer>>,
+    // Ids minted by `reserve` but not yet published. Cleared by the
+    // `Reservation` — `publish` (the normal path) or its `Drop` (an
+    // abandoned claim); `remove` never touches it, so a concurrent removal
+    // cannot let `reserve` re-mint an id whose peer is still
+    // mid-construction.
+    reserved: HashSet<u32>,
     next: u32,
 }
 
@@ -165,18 +140,25 @@ impl PeerTable {
         }
     }
 
-    pub fn insert(&self, peer: Arc<Peer>) -> u32 {
+    /// Mint a fresh peer id without publishing anything: the returned
+    /// [`Reservation`] holds the id against reuse until
+    /// [`publish`](Reservation::publish) consumes it, or releases it on
+    /// drop if the claim is abandoned before a peer is built.
+    pub fn reserve(&self) -> Reservation<'_> {
         // sync::spin::RwLock::write() returns guard directly (no Result)
         let mut inner = self.inner.write();
         let peer_id = loop {
             inner.next = inner.next.wrapping_add(1);
-            if !inner.peers.contains_key(&inner.next) {
+            if !inner.peers.contains_key(&inner.next) && !inner.reserved.contains(&inner.next) {
                 break inner.next;
             }
         };
-
-        inner.peers.insert(peer_id, peer);
-        peer_id
+        inner.reserved.insert(peer_id);
+        Reservation {
+            table: self,
+            id: peer_id,
+            published: false,
+        }
     }
 
     pub async fn remove(&self, peer_id: u32) {
@@ -204,6 +186,42 @@ impl PeerTable {
     }
 }
 
+/// A reserved peer id: released exactly once — by
+/// [`publish`](Self::publish) when the peer is built, or automatically on
+/// drop (including unwind) when the claim is abandoned. Publishing consumes
+/// the reservation, so a double publish or use-after-publish does not
+/// compile.
+#[must_use = "an unused reservation releases its id immediately"]
+pub struct Reservation<'a> {
+    table: &'a PeerTable,
+    id: u32,
+    published: bool,
+}
+
+impl Reservation<'_> {
+    /// The reserved peer id.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Publish a fully-constructed peer under the reserved id — the only
+    /// way a peer becomes reachable, and it is complete by construction.
+    pub fn publish(mut self, peer: Arc<Peer>) {
+        let mut inner = self.table.inner.write();
+        inner.reserved.remove(&self.id);
+        inner.peers.insert(self.id, peer);
+        self.published = true;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            self.table.inner.write().reserved.remove(&self.id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // use super::*;
@@ -219,4 +237,24 @@ mod tests {
     // fn test_queue_fallback() {
     //     todo!("Verify fallback to default queue on invalid index");
     // }
+
+    use super::*;
+
+    #[test]
+    fn reservation_holds_the_id_until_dropped() {
+        let table = PeerTable::new();
+
+        let reservation = table.reserve();
+        let id = reservation.id();
+        assert!(
+            table.inner.read().reserved.contains(&id),
+            "the id is withheld from reuse while the reservation lives"
+        );
+
+        drop(reservation);
+        assert!(
+            !table.inner.read().reserved.contains(&id),
+            "an abandoned claim releases its id"
+        );
+    }
 }

@@ -10,7 +10,7 @@ use super::*;
 
 pub struct Cla {
     pub(super) cla: Arc<dyn cla::Cla>,
-    pub(super) policy: Arc<dyn policy::EgressPolicy>,
+    pub(super) policy: Arc<dyn policy::FlowControllerFactory>,
 
     name: Arc<str>,
     // Cancelled at unregistration; every in-flight stream of this
@@ -147,7 +147,7 @@ impl Drop for Sink {
 }
 
 // CLA registry in the building phase — only insert() is available.
-pub(crate) struct ClaRegistryBuilder {
+pub struct ClaRegistryBuilder {
     clas: ClaMap,
 }
 
@@ -162,7 +162,7 @@ impl ClaRegistryBuilder {
         &mut self,
         name: String,
         cla: Arc<dyn cla::Cla>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<()> {
         let hash_map::Entry::Vacant(e) = self.clas.entry(name.clone()) else {
             return Err(cla::Error::AlreadyExists(name));
@@ -173,50 +173,44 @@ impl ClaRegistryBuilder {
             cla,
             peers: Default::default(),
             name: Arc::from(name.as_str()),
-            policy: policy.unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+            policy: policy
+                .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
         }));
         Ok(())
     }
 
-    // Transition to the running registry by registering all inserted CLAs.
-    pub async fn build(
+    // Transition to the running registry with the configured CLAs parked.
+    // Activation happens in [`ClaRegistry::start`], after storage recovery:
+    // `Cla::on_register` opens listeners (tcpclv4), and registrations must
+    // not race the consistency check.
+    pub fn build(
         self,
         node_ids: &Arc<node_ids::NodeIds>,
         poll_channel_depth: usize,
         rib: &Arc<routing::Rib>,
         store: &Arc<storage::store::Store>,
-        dispatcher: &Arc<dispatcher::Dispatcher>,
-    ) -> cla::Result<Arc<ClaRegistry>> {
+    ) -> Arc<ClaRegistry> {
         let peers = Arc::new(cla::peers::PeerTable::new());
-        let registry = Arc::new(ClaRegistry {
+        Arc::new(ClaRegistry {
             node_ids: node_ids.clone(),
             clas: hardy_async::sync::spin::Mutex::new(Default::default()),
+            pending: hardy_async::sync::spin::Mutex::new(self.clas.into_values().collect()),
             rib: rib.clone(),
             store: store.clone(),
             peers,
             poll_channel_depth,
             tasks: hardy_async::TaskPool::new(),
-        });
-
-        for (_, cla) in self.clas {
-            registry
-                .register(
-                    cla.name.to_string(),
-                    cla.cla.clone(),
-                    dispatcher,
-                    Some(cla.policy.clone()),
-                )
-                .await?;
-        }
-
-        Ok(registry)
+        })
     }
 }
 
 // CLA registry in the running phase — full register/unregister available.
-pub(crate) struct ClaRegistry {
+pub struct ClaRegistry {
     node_ids: Arc<node_ids::NodeIds>,
     clas: hardy_async::sync::spin::Mutex<ClaMap>,
+    // Builder-configured CLAs, parked until `start` activates them after
+    // storage recovery.
+    pending: hardy_async::sync::spin::Mutex<Vec<Arc<Cla>>>,
     rib: Arc<routing::Rib>,
     store: Arc<storage::store::Store>,
     peers: Arc<peers::PeerTable>,
@@ -225,6 +219,28 @@ pub(crate) struct ClaRegistry {
 }
 
 impl ClaRegistry {
+    /// Activate the builder-configured CLAs, in configuration order.
+    /// Called by `Bpa::start` once storage recovery has completed: a CLA
+    /// going live earlier would race the consistency check.
+    pub async fn start(self: &Arc<Self>, dispatcher: &Arc<dispatcher::Dispatcher>) {
+        let pending = core::mem::take(&mut *self.pending.lock());
+        for cla in pending {
+            // The builder pre-checked duplicate names; a failure here is a
+            // bug, not a config error.
+            if let Err(e) = self
+                .register(
+                    cla.name.to_string(),
+                    cla.cla.clone(),
+                    dispatcher,
+                    Some(cla.policy.clone()),
+                )
+                .await
+            {
+                error!("Failed to activate configured CLA {}: {e}", cla.name);
+            }
+        }
+    }
+
     // Err(bundle) deliberately hands ownership back to the caller; boxing
     // the bundle to shrink the Err variant would tax every call site.
     #[allow(clippy::result_large_err)]
@@ -256,7 +272,7 @@ impl ClaRegistry {
         name: String,
         cla: Arc<dyn cla::Cla>,
         dispatcher: &Arc<dispatcher::Dispatcher>,
-        policy: Option<Arc<dyn policy::EgressPolicy>>,
+        policy: Option<Arc<dyn policy::FlowControllerFactory>>,
     ) -> cla::Result<Vec<NodeId>> {
         let address_type = cla.address_type();
         let entry = {
@@ -270,7 +286,7 @@ impl ClaRegistry {
                 peers: Default::default(),
                 name: Arc::from(name.as_str()),
                 policy: policy
-                    .unwrap_or_else(|| Arc::new(policy::null_policy::EgressPolicy::new())),
+                    .unwrap_or_else(|| Arc::new(policy::null_policy::FlowControllerFactory::new())),
             }))
             .clone()
         };
@@ -320,12 +336,16 @@ impl ClaRegistry {
 
         let peers = core::mem::take(&mut *cla.peers.lock());
         for (_, (node_ids, peer_id)) in peers {
-            // Remove RIB entries for all EIDs associated with this address
+            // Close the peer's egress queues first, then withdraw its RIB
+            // entries: the ForwardPending/ForwardAckPending sweeps inside
+            // remove_forward must run once no new send can re-enter the
+            // queue (mirrors remove_peer). A send that lands after the
+            // close bounces and is parked back to Waiting by its caller.
+            self.peers.remove(peer_id).await;
             for node_id in node_ids {
                 self.rib.remove_forward(node_id, peer_id).await;
                 metrics::gauge!("bpa.fib.entries", "cla" => cla.name.clone()).decrement(1.0);
             }
-            self.peers.remove(peer_id).await;
         }
 
         info!("Unregistered CLA: {}", cla.name);
@@ -338,29 +358,22 @@ impl ClaRegistry {
         cla_addr: ClaAddress,
         node_ids: &[NodeId],
     ) -> bool {
-        let peer = Arc::new(peers::Peer::new(Arc::downgrade(&cla)));
-
-        // Acquire peer_id first (without holding cla.peers lock) to avoid nested spinlock acquisition.
-        // If the cla.peers entry already exists, we clean up the orphaned peer_id.
-        let peer_id = self.peers.insert(peer.clone());
-
-        // Now try to insert into cla.peers (separate lock acquisition, no nesting)
-        let inserted = {
+        // Mint the id without publishing anything (reserved against reuse),
+        // then claim the address — the adjacency's natural key — so a
+        // duplicate exits before any peer state exists.
+        let reservation = self.peers.reserve();
+        let peer_id = reservation.id();
+        let claimed = {
             let mut peers = cla.peers.lock();
             match peers.entry(cla_addr.clone()) {
                 hash_map::Entry::Vacant(e) => {
                     e.insert((node_ids.to_vec(), peer_id));
                     true
                 }
-                hash_map::Entry::Occupied(_) => false, // Already exists
+                hash_map::Entry::Occupied(_) => false,
             }
         };
-
-        // If entry already existed, clean up the orphaned peer_id. The orphan
-        // was never started, so Peer::close() (via PeerTable::remove) is a no-op
-        // — close()/forward() skip an uninitialised cell rather than blocking.
-        if !inserted {
-            self.peers.remove(peer_id).await;
+        if !claimed {
             return false;
         }
 
@@ -368,17 +381,29 @@ impl ClaRegistry {
 
         debug!("Added new peer {peer_id}: [{node_ids:?}] at {cla_addr} via CLA {cla_name}");
 
-        // Start the peer polling the queue
-        peer.start(
+        // Construct the peer complete, then publish: the table only ever
+        // holds working peers.
+        let peer = peers::Peer::start(
             self.poll_channel_depth,
-            cla,
+            cla.clone(),
             peer_id,
-            cla_addr,
+            cla_addr.clone(),
             self.store.clone(),
             dispatcher,
             &self.tasks,
         )
         .await;
+        reservation.publish(peer);
+
+        // Post-construction liveness re-check: a concurrent
+        // remove_peer/unregister_cla during construction has already taken
+        // the address entry — withdraw the published peer instead of
+        // installing RIB entries nothing will ever clean up.
+        let still_ours = matches!(cla.peers.lock().get(&cla_addr), Some((_, id)) if *id == peer_id);
+        if !still_ours {
+            self.peers.remove(peer_id).await;
+            return false;
+        }
 
         // Add RIB entry for each known EID.
         // Neighbours (empty node_ids) get no RIB entry — BP-ARP will resolve them later.
@@ -439,7 +464,7 @@ mod tests {
         async fn on_unregister(&self) {}
         async fn forward(
             &self,
-            _queue: Option<u32>,
+            _lane: Option<u32>,
             _cla_addr: &ClaAddress,
             _bundle_id: &hardy_bpv7::bundle::Id,
             _total_len: u64,
@@ -453,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn test_duplicate_registration() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla1 = Arc::new(TestCla::new());
         let result = bpa.register_cla("test-cla".to_string(), cla1, None).await;
@@ -473,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn test_peer_lifecycle() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("lifecycle-cla".to_string(), cla.clone(), None)
@@ -509,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn test_cascading_cleanup() {
         let bpa = Bpa::builder().build().await.unwrap();
-        bpa.start(false);
+        bpa.start(false).await;
 
         let cla = Arc::new(TestCla::new());
         bpa.register_cla("cascade-cla".to_string(), cla.clone(), None)

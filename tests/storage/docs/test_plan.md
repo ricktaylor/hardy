@@ -41,7 +41,7 @@ The harness defines two test suites, one per storage trait:
 
 | Suite | Trait | Source | Tests |
 | :--- | :--- | :--- | :--- |
-| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 14 (`meta_01` .. `meta_14`) |
+| Metadata | `MetadataStorage` | `src/metadata_suite.rs` | 16 (`meta_01` .. `meta_16`) |
 | Bundle | `BundleStorage` | `src/bundle_suite.rs` | 4 (`blob_01` .. `blob_04`) |
 
 Each test function takes an `Arc<dyn MetadataStorage>` or `Arc<dyn BundleStorage>` — the suite has no knowledge of which backend it is testing.
@@ -104,6 +104,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **META-02** | **Duplicate Insert** | 1. Insert a bundle.<br>2. Insert the same bundle again. | 1. First `insert` returns `true`.<br>2. Second `insert` returns `false`. |
 | **META-03** | **Update (Replace)** | 1. Insert a bundle (Status=`Waiting`).<br>2. Modify status to `Dispatching`.<br>3. Call `replace()`.<br>4. Call `get()`. | 1. `replace` returns `Ok`.<br>2. `get` returns bundle with `Dispatching` status. |
 | **META-04** | **Tombstone** | 1. Insert a bundle.<br>2. Call `tombstone()`.<br>3. Call `get()`.<br>4. Call `insert()` again. | 1. `tombstone` returns `Ok`.<br>2. `get` returns `None`.<br>3. `insert` returns `false` (prevents resurrection). |
+| **META-15** | **Metadata Round-Trip** | 1. Insert a bundle with every persisted metadata group populated (`Origin::Ingress` provenance, decoded extension fields).<br>2. Call `get()`. | 1. The whole record round-trips: wire bundle, metadata body (origin, received_at, extension fields), and status all match the original. |
 
 ### Suite B: Polling & Ordering
 
@@ -114,7 +115,7 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | **META-06** | **Poll Waiting (FIFO)** | 1. Insert Bundle A (Received T=100, Status=Waiting).<br>2. Insert Bundle B (Received T=200, Status=Waiting).<br>3. Call `poll_waiting()`. | 1. Returns Bundle A, then Bundle B (Ordered by Received Time). |
 | **META-07** | **Poll Expiry** | 1. Insert Bundle A (Expiry T=500, Status=`Waiting`).<br>2. Insert Bundle B (Expiry T=300, Status=`Waiting`).<br>3. Insert Bundle C (Expiry T=100, Status=`New`).<br>4. Call `poll_expiry(limit=10)`.<br>5. Call `poll_expiry(limit=1)`. | 1. Step 4 returns Bundle B, then Bundle A (Ordered by Expiry Time).<br>2. Bundle C excluded (`New` status filtered).<br>3. Step 5 returns Bundle B only (limit respected). |
 | **META-08** | **Poll Pending (FIFO & Limit)** | 1. Insert A (Status=X, T=100).<br>2. Insert B (Status=X, T=200).<br>3. Call `poll_pending(X, limit=1)`.<br>4. Call `poll_pending(X, limit=2)`. | 1. First call returns A only.<br>2. Second call returns A, then B (Strict FIFO). |
-| **META-09** | **Poll Pending (Exact Match)** | 1. Insert A (Status=`ForwardPending { peer: 1, queue: Some(0) }`).<br>2. Insert B (Status=`ForwardPending { peer: 2, queue: Some(0) }`).<br>3. Insert C (Status=`ForwardPending { peer: 1, queue: Some(1) }`).<br>4. Call `poll_pending(ForwardPending { peer: 1, queue: Some(0) })`. | 1. Returns A only.<br>2. Does not return B (different `peer`) or C (different `queue`).<br>3. Verifies all enum fields participate in matching. |
+| **META-09** | **Poll Pending (Exact Match)** | 1. Insert A (Status=`ForwardPending { peer: 1, queue: 0 }`).<br>2. Insert B (Status=`ForwardPending { peer: 2, queue: 0 }`).<br>3. Insert C (Status=`ForwardPending { peer: 1, queue: 1 }`).<br>4. Call `poll_pending(ForwardPending { peer: 1, queue: 0 })`. | 1. Returns A only.<br>2. Does not return B (different `peer`) or C (different `queue`).<br>3. Verifies all enum fields participate in matching. |
 | **META-10** | **Poll Fragments** | 1. Insert Bundle A (Status=`AduFragment { source: S, timestamp: T }`, `fragment_info.offset`=0).<br>2. Insert Bundle B (Status=`AduFragment { source: S, timestamp: T }`, `fragment_info.offset`=100).<br>3. Call `poll_adu_fragments(AduFragment { source: S, timestamp: T })`. | 1. Returns Bundle A, then Bundle B (Ordered by `fragment_info.offset` from bundle ID). |
 | **META-14** | **Poll Service Waiting (FIFO & Filtering)** | 1. Insert Bundle A1 (Status=`WaitingForService { service: S1 }`, Received T=200).<br>2. Insert Bundle B1 (Status=`WaitingForService { service: S2 }`, Received T=150).<br>3. Insert Bundle A2 (Status=`WaitingForService { service: S1 }`, Received T=100).<br>4. Call `poll_service_waiting(S1)`.<br>5. Call `poll_service_waiting(S2)`. | 1. Step 4 returns A2, then A1 (FIFO by Received Time).<br>2. B1 excluded (different service).<br>3. Step 5 returns B1 only. |
 
@@ -125,9 +126,10 @@ Backends requiring external infrastructure are gated behind Cargo features to ke
 | Test ID | Scenario | Procedure | Expected Result |
 | :--- | :--- | :--- | :--- |
 | **META-05** | **Confirm Exists (Recovery)** | _Persistent backends only._<br>1. Insert bundle A.<br>2. Call `start_recovery()` (marks A unconfirmed).<br>3. Call `confirm_exists(A)`.<br>4. Call `confirm_exists(B)` (never inserted).<br>5. Call `remove_unconfirmed(tx)`. | 1. Step 3 returns `Some(metadata)`.<br>2. Step 4 returns `None`.<br>3. Step 5 removes nothing (A was confirmed).<br>4. `get(A)` still returns `Some`. |
-| **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: Some(0) }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: Some(0) }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
+| **META-11** | **Reset Peer Queue** | 1. Insert Bundle A (Status=`ForwardPending { peer: 100, queue: 0 }`).<br>2. Insert Bundle B (Status=`ForwardPending { peer: 200, queue: 0 }`).<br>3. Call `reset_peer_queue(100)`. | 1. `reset_peer_queue` returns `true`.<br>2. Bundle A status becomes `Waiting`.<br>3. Bundle B status remains `ForwardPending`. |
 | **META-12** | **Recovery** | 1. Call `start_recovery()`. | 1. Returns `()` (No panic/error). |
 | **META-13** | **Remove Unconfirmed** | 1. Insert Bundle A.<br>2. Call `remove_unconfirmed(tx)`. | 1. Returns `Ok`.<br>2. `tx` receives bundles (if implementation supports unconfirmed state). |
+| **META-16** | **Reset Service Queue** | 1. Insert Bundle A (Status=`DeliverPending { service: S1 }`).<br>2. Insert Bundle B (Status=`DeliveryAckPending { service: S1 }`).<br>3. Insert Bundle C (Status=`DeliverPending { service: S2 }`).<br>4. Call `reset_service_queue(S1)`. | 1. Returns 1 (only the queued bundle).<br>2. Bundle A becomes `WaitingForService { service: S1 }` and polls via `poll_service_waiting(S1)`.<br>3. Bundles B and C untouched.<br>4. A second sweep returns 0. |
 
 ## 5. Bundle Storage Suites
 
@@ -150,9 +152,9 @@ This section defines the boundary between generic harness coverage and backend-s
 
 | Area | Test IDs | What is verified |
 | :--- | :--- | :--- |
-| CRUD lifecycle | META-01..04, BLOB-01..03 | Insert, get, update, tombstone, save, load, delete |
+| CRUD lifecycle | META-01..04, META-15, BLOB-01..03 | Insert, get, update, tombstone, save, load, delete |
 | Polling & ordering | META-06..10, META-14 | FIFO ordering, expiry filtering, pending limits, peer matching, fragment ordering, service filtering |
-| State transitions | META-05, META-11..13 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup |
+| State transitions | META-05, META-11..13, META-16 | Recovery confirmation, peer queue reset, recovery replay, unconfirmed cleanup, service queue sweep |
 | Recovery scan | BLOB-04 | Discovers all stored bundles on restart |
 
 ### 6.2 NOT covered — backend-specific responsibility

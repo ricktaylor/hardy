@@ -7,12 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Records (de)serialize through `hardy-bpa`'s `StoredBundle`/`StoredBundleRef` — the on-disk format is unchanged, and the status is re-imposed from the typed columns by construction.
+- `MetadataStorage::update_status` is gone (removed from the `hardy-bpa` trait): every persisted status transition after first dispatch is a conditional compare-and-swap.
+- `poll_expiry` pages with a keyset cursor `(expiry, rowid)` and streams until the consumer closes the stream, per the revised `hardy-bpa` trait contract (the `limit` parameter is gone).
 - **BREAKING:** the persisted record format changed in `hardy-bpa` (the wire-bundle key rename `bundle` → `bpv7` and the new required `origin` provenance key). Rows written by earlier versions no longer deserialize: recovery logs each as "Garbage bundle found in metadata" and tombstones it, and the restart re-ingest then discards the orphaned bundle data as duplicates of the tombstoned rows. Wipe the metadata database when upgrading a node with a populated store — restart then re-ingests the bundle store cleanly.
 - **BREAKING:** the serde `Config` struct and the free `new()` function are replaced by `SqliteStorage::new(db_dir, db_name, upgrade)` taking `Option` knobs, with the defaults owned privately by the backend; config-file schemas belong to the server crates. The connection pool moves into its own module.
 - Run all connections at `PRAGMA synchronous = NORMAL` (previously the SQLite default, `FULL`). Under WAL this stops fsyncing the log on every commit — a significant win on fsync-expensive storage, since the metadata store commits on each bundle status transition. Consistency across a crash is unaffected; at most the un-checkpointed tail of commits is lost, which restart recovery already tolerates (bundle data storage is ground truth, and data whose metadata is missing is re-ingested at startup).
 
 ### Added
 - `forward_ack_pending` status encoding (code 6), the `reset_peer_ack_pending` sweep, and the status-conditioned `swap_status`/`tombstone_if`, for the deferred CLA transfer-outcome extension.
+- `dispatch_pending` (code 7), `deliver_pending` (code 8), and `delivery_ack_pending` (code 9) status encodings and the `reset_service_queue` sweep, for the BPA's dispatch/delivery queue rationalisation.
 
 ### Fixed
 - A status update or tombstone for a concurrently deleted bundle logs at debug rather than error: delete is terminal and the write quietly loses.

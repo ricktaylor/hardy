@@ -41,9 +41,8 @@ impl Dispatcher {
         // process issued and there is nothing to retry. `DuplicateBundle`
         // surfaces a duplicate already in the store (in practice a
         // pre-restart bundle after a backward clock step, made vanishingly
-        // unlikely by the nanosecond-seeded sequence floor) or a
-        // metadata-storage failure, which `Store::store` currently folds
-        // into the same `false`.
+        // unlikely by the nanosecond-seeded sequence floor) — and only
+        // that: a metadata-storage failure aborts inside `Store::store`.
         let mut builder =
             hardy_bpv7::builder::Builder::new(source, destination.clone()).with_lifetime(lifetime);
 
@@ -162,7 +161,10 @@ impl Dispatcher {
             return Err(services::Error::Dropped(None));
         };
 
-        // Now store (single persist operation, preserves filter-modified metadata)
+        // Now store (single persist operation, preserves filter-modified
+        // metadata). False means duplicate and nothing else — a backend
+        // failure aborts inside store() — so the retry loop in
+        // local_dispatch can never spin against a storage outage.
         if !self.store.store(&mut bundle, &data).await {
             return Err(services::Error::DuplicateBundle);
         }
@@ -182,27 +184,107 @@ impl Dispatcher {
         service: Arc<services::registry::Service>,
         bundle: bundle::Bundle,
     ) {
-        let Some((bundle, data)) = self.load_data_or_drop(bundle).await else {
+        let Some((mut bundle, data)) = self.load_data_or_drop(bundle).await else {
             return;
         };
 
+        // The claim key and every park in the offer use the canonical
+        // registration EID stored at construction — the exact key
+        // `poll_service_waiting` matches on re-registration. The bundle's
+        // own destination can be a different Eid variant for the same
+        // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
+        let service_eid = service.eid().clone();
+
+        // Snapshot the routing table before the claim: the parks in the
+        // offer re-check it to close the park-vs-poll window (see
+        // park_bundle).
+        let seen = self.rib.table_snapshot();
+
+        // Delivery commits at the claim below — the reaper defers an
+        // in-flight delivery — so never commence one for a bundle that has
+        // already expired: resolve it as the reaper would.
+        if bundle.has_expired() {
+            return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
+        }
+
+        // Claim the bundle out of its delivery queue before offering it.
+        // The claim must be a conditional swap: the delivery channel is
+        // at-least-once, so a duplicate copy recovered by the storage
+        // poller must lose here rather than produce a second delivery. The
+        // new status also marks the point past which the delivery cannot be
+        // recalled: the reaper defers it, and the unregister sweep only
+        // touches the queued status.
+        if !self
+            .store
+            .swap_status(
+                &mut bundle,
+                &bundle::BundleStatus::DeliveryAckPending {
+                    service: service_eid.clone(),
+                },
+            )
+            .await
+        {
+            debug!("Bundle already claimed for delivery or swept, skipping offer");
+            return;
+        }
+
+        // Claim-to-resolution is one expression: the offer's outcome is the
+        // claim's resolution.
+        self.resolve_offer(
+            OfferKind::Delivery,
+            self.offer_to_service(service, service_eid, bundle, data, seen)
+                .await,
+        )
+        .await
+    }
+
+    /// Offer a claimed bundle to its service. Runs strictly inside the
+    /// `DeliveryAckPending` claim: every exit is an [`OfferOutcome`] the
+    /// caller resolves, so the claim cannot dangle.
+    async fn offer_to_service(
+        &self,
+        service: Arc<services::registry::Service>,
+        service_eid: Eid,
+        bundle: bundle::Bundle,
+        data: Bytes,
+        seen: routing::RibSnapshot,
+    ) -> OfferOutcome {
+        let bundle_id = bundle.id().clone();
+
         // Deliver filter hook
-        let (mut bundle, mut data) = match self
+        let (bundle, mut data) = match self
             .filter_engine
             .exec(filter::Hook::Deliver, bundle, data, self.key_provider())
             .await
         {
             Ok(filter::ExecResult::Continue(_, bundle, data)) => (bundle, data),
             Ok(filter::ExecResult::Drop(bundle, reason)) => {
-                if let Some(reason) = reason {
-                    return self.drop_bundle(bundle, reason).await;
-                } else {
-                    return self.delete_bundle(bundle).await;
-                }
+                return OfferOutcome::Dropped(bundle, reason);
             }
             Err(e) => {
                 error!("Deliver filter execution failed: {e}");
-                return;
+
+                // The filter consumed the claimed bundle, so re-fetch it and
+                // conditionally park it for the next registration. A
+                // re-fetch that finds the bundle moved on means a sweep or
+                // the reaper resolved it first.
+                return match self.store.get_metadata(&bundle_id).await {
+                    Some(bundle)
+                        if bundle.status
+                            == (bundle::BundleStatus::DeliveryAckPending {
+                                service: service_eid.clone(),
+                            }) =>
+                    {
+                        OfferOutcome::Parked(
+                            bundle,
+                            bundle::BundleStatus::WaitingForService {
+                                service: service_eid,
+                            },
+                            seen,
+                        )
+                    }
+                    _ => OfferOutcome::Lost,
+                };
             }
         };
 
@@ -253,8 +335,16 @@ impl Dispatcher {
                 let mut payload = match payload_result {
                     Err(hardy_bpv7::Error::InvalidBPSec(hardy_bpv7::bpsec::Error::NoKey)) => {
                         // TODO: We are unable to decrypt the payload, what do we do?
+                        // For now, park for the next registration (which may
+                        // bring usable keys).
                         debug!("Failed to decrypt payload: No valid keys");
-                        return self.store.watch_bundle(bundle).await;
+                        return OfferOutcome::Parked(
+                            bundle,
+                            bundle::BundleStatus::WaitingForService {
+                                service: service_eid,
+                            },
+                            seen,
+                        );
                     }
                     Err(e) => {
                         // Other decryption error - skip delivery
@@ -262,9 +352,10 @@ impl Dispatcher {
 
                         // TODO: This is where we can wrap the damaged bundle in a "Junk Bundle Payload" and forward it to a 'lost+found' endpoint.  For now we just drop it.
 
-                        return self
-                            .drop_bundle(bundle, ReasonCode::BlockUnintelligible)
-                            .await;
+                        return OfferOutcome::Dropped(
+                            bundle,
+                            Some(ReasonCode::BlockUnintelligible),
+                        );
                     }
                     Ok(payload) => payload,
                 };
@@ -285,44 +376,19 @@ impl Dispatcher {
 
         if let Err(e) = delivery_result {
             debug!("Service delivery deferred: {e}");
-            // Park under the service's registration EID, the exact key
-            // `poll_service_waiting` matches on re-registration. The bundle's
-            // own destination can be a different Eid variant for the same
-            // endpoint (e.g. LegacyIpn vs Ipn) and would never match.
-            let service_eid = self
-                .node_ids
-                .resolve_eid(&service.service_id)
-                .unwrap_or_else(|_| bundle.primary().destination.clone());
-            let desired = bundle::BundleStatus::WaitingForService {
-                service: service_eid,
-            };
-            // Conditional: the reaper expires bundles regardless of status,
-            // so it may have resolved this one mid-delivery, and the park
-            // must not resurrect a tombstoned bundle.
-            if self.store.swap_status(&mut bundle, &desired).await {
-                self.store.watch_bundle(bundle).await;
-            }
-            return;
-        }
-
-        // The terminal claim is a conditional tombstone: the reaper races
-        // in-flight deliveries, and losing the claim means it resolved the
-        // bundle first. Its "Lifetime expired" deletion report has gone
-        // out, so this delivery must stay silent rather than contradict it.
-        if !self.store.tombstone_if(&bundle).await {
-            debug!(
-                "Delivery completion for {} lost the resolution race, ignored",
-                bundle.id()
+            // Park under the registration EID for the next registration; the
+            // park re-checks the routing snapshot, so a service that
+            // (re-)registered while this delivery was in flight re-dispatches
+            // the bundle instead of stranding it (see park_bundle).
+            return OfferOutcome::Parked(
+                bundle,
+                bundle::BundleStatus::WaitingForService {
+                    service: service_eid,
+                },
+                seen,
             );
-            return;
         }
 
-        metrics::counter!("bpa.bundle.delivered").increment(1);
-        self.report_bundle_delivery(&bundle).await;
-
-        // Don't use drop_bundle() as we do not want to count the Drop as a 'dropped bundle'
-        self.report_bundle_deletion(&bundle, ReasonCode::NoAdditionalInformation)
-            .await;
-        self.delete_bundle(bundle).await
+        OfferOutcome::Completed(bundle)
     }
 }

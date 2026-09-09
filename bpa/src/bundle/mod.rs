@@ -20,17 +20,65 @@ use time::{Duration, OffsetDateTime};
 /// Pairs the on-the-wire BPv7 bundle with [`BundleMetadata`] (persisted facts:
 /// ingress context, decoded extension fields, filter annotations) and the
 /// bundle's current [`BundleStatus`].
+///
+/// `Bundle` itself is never (de)serialized: persistence deals in
+/// [`StoredBundle`]/[`StoredBundleRef`], whose only exit demands the status
+/// from the backend's typed columns.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Bundle {
     /// The parsed BPv7 bundle (primary block + blocks map).
     pub bpv7: Bpv7Bundle,
     /// BPA-local metadata: ingress info, decoded extension fields, annotations.
     pub metadata: BundleMetadata,
-    /// Current processing status within the BPA pipeline. Excluded from the
-    /// serialized record — see [`BundleStatus`] for the persistence contract.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Current processing status within the BPA pipeline. Never persisted
+    /// in the record blob: backends re-impose it from their typed status
+    /// columns via [`StoredBundle::into_bundle`].
     pub status: BundleStatus,
+}
+
+/// The persisted half of a [`Bundle`] — everything except the processing
+/// status, which backends encode in their own typed columns.
+///
+/// [`into_bundle`](Self::into_bundle) is the only way back to a [`Bundle`],
+/// so re-imposing the status at every deserialize site is a compile-time
+/// obligation in every current and future backend: a forgotten status is a
+/// missing argument, not a silently defaulted `New`.
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+pub struct StoredBundle {
+    bpv7: Bpv7Bundle,
+    metadata: BundleMetadata,
+}
+
+#[cfg(feature = "serde")]
+impl StoredBundle {
+    /// Recompose the record, re-imposing the status the backend holds in
+    /// its typed columns.
+    pub fn into_bundle(self, status: BundleStatus) -> Bundle {
+        Bundle {
+            bpv7: self.bpv7,
+            metadata: self.metadata,
+            status,
+        }
+    }
+}
+
+/// The borrowing serializer for [`StoredBundle`]'s on-disk shape.
+#[cfg(feature = "serde")]
+#[derive(Serialize)]
+pub struct StoredBundleRef<'a> {
+    bpv7: &'a Bpv7Bundle,
+    metadata: &'a BundleMetadata,
+}
+
+#[cfg(feature = "serde")]
+impl<'a> From<&'a Bundle> for StoredBundleRef<'a> {
+    fn from(bundle: &'a Bundle) -> Self {
+        Self {
+            bpv7: &bundle.bpv7,
+            metadata: &bundle.metadata,
+        }
+    }
 }
 
 impl Bundle {

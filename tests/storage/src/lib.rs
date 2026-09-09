@@ -44,6 +44,38 @@ impl<T: Send + Sync + 'static> Sender<T> for VecSink<T> {
     }
 }
 
+/// A sink that closes after accepting `cap` items: the consumer-driven
+/// termination of the streaming polls, in test form.
+pub struct CappedSink<T> {
+    items: std::sync::Mutex<Vec<T>>,
+    cap: usize,
+}
+
+impl<T> CappedSink<T> {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            items: std::sync::Mutex::new(Vec::new()),
+            cap,
+        }
+    }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.items.into_inner().unwrap()
+    }
+}
+
+#[hardy_bpa::async_trait]
+impl<T: Send + Sync + 'static> Sender<T> for CappedSink<T> {
+    async fn send(&self, item: T) -> Result<(), SendError<T>> {
+        let mut items = self.items.lock().unwrap();
+        if items.len() >= self.cap {
+            return Err(SendError(item));
+        }
+        items.push(item);
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Backend setup functions
 // ---------------------------------------------------------------------------
@@ -250,6 +282,7 @@ macro_rules! storage_meta_tests {
             meta_test!(meta_10_poll_adu_fragments);
             meta_test!(meta_11_reset_peer_queue);
             meta_test!(meta_14_poll_service_waiting);
+            meta_test!(meta_16_reset_service_queue);
             meta_test!(meta_12_recovery);
             meta_test!(meta_13_remove_unconfirmed);
         }
@@ -310,6 +343,7 @@ macro_rules! storage_meta_tests_async {
             meta_test!(meta_10_poll_adu_fragments);
             meta_test!(meta_11_reset_peer_queue);
             meta_test!(meta_14_poll_service_waiting);
+            meta_test!(meta_16_reset_service_queue);
             meta_test!(meta_12_recovery);
             meta_test!(meta_13_remove_unconfirmed);
         }

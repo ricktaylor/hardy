@@ -257,23 +257,6 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(())
     }
 
-    async fn update_status(&self, bundle_id: &Id, status: &BundleStatus) -> Result<()> {
-        let mut inner = self.inner.lock();
-        // peek_mut leaves the LRU order untouched on a miss; a concurrently
-        // deleted bundle (absent or tombstoned) quietly loses the update.
-        let updated = match inner.entries.peek_mut(bundle_id) {
-            Some(Entry::Live(bundle)) => {
-                bundle.status = status.clone();
-                true
-            }
-            _ => false,
-        };
-        if updated {
-            inner.entries.promote(bundle_id);
-        }
-        Ok(())
-    }
-
     async fn swap_status(
         &self,
         bundle_id: &Id,
@@ -371,7 +354,23 @@ impl MetadataStorage for MetadataMemStorage {
         Ok(updated)
     }
 
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> Result<()> {
+    async fn reset_service_queue(&self, service: &Eid) -> Result<u64> {
+        let mut updated = 0;
+        for (_, v) in self.inner.lock().entries.iter_mut() {
+            if let Entry::Live(v) = v
+                && let BundleStatus::DeliverPending { service: s } = &v.status
+                && s == service
+            {
+                v.status = BundleStatus::WaitingForService {
+                    service: service.clone(),
+                };
+                updated += 1;
+            }
+        }
+        Ok(updated)
+    }
+
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> Result<()> {
         let mut entries: Vec<Bundle> = self
             .inner
             .lock()
@@ -384,7 +383,7 @@ impl MetadataStorage for MetadataMemStorage {
 
         entries.sort_unstable_by_key(|b| b.expiry());
 
-        for e in entries.into_iter().take(limit) {
+        for e in entries {
             if stream.send(e).await.is_err() {
                 break;
             }
@@ -788,12 +787,6 @@ mod tests {
         let bundle = make_bundle(1);
         assert!(storage.insert(&bundle).await.unwrap());
         storage.tombstone(bundle.id()).await.unwrap();
-
-        storage
-            .update_status(bundle.id(), &BundleStatus::Dispatching)
-            .await
-            .unwrap();
-        assert!(storage.get(bundle.id()).await.unwrap().is_none());
 
         storage.replace(&bundle).await.unwrap();
         assert!(storage.get(bundle.id()).await.unwrap().is_none());

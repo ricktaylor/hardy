@@ -2,6 +2,8 @@
 
 This document describes the egress policy subsystem in the BPA, covering flow classification, queue management, and the integration with CLA forwarding.
 
+> **Note:** the trait names below predate the FlowController rename: `EgressPolicy` is now `FlowControllerFactory`, `EgressController` is now `FlowController`, and `classify` has been removed in favour of `FlowController::queue_for`. See [policy_subsystem_redesign.md](policy_subsystem_redesign.md).
+
 ## Related Documents
 
 - **[Routing Design](routing_subsystem_design.md)**: RIB lookup and peer selection (ECMP uses flow_label)

@@ -92,7 +92,7 @@ It is stored as `JSONB` rather than `BYTEA` or plain `TEXT` because:
 
 It is **not** a normalized relational representation of the RFC bundle structure. Every poll query in this design filters on `status`, `expiry`, and `received_at` — fields from `BundleMetadata`, not from the RFC block structure. The database never needs to look inside the RFC fields.
 
-The JSONB blob is the authoritative source for deserialization on `get()` and all poll calls; the typed columns (`status`, `expiry`, `peer_id`, etc.) are projections of `BundleMetadata` fields, duplicated only so the database can index and filter without parsing JSONB on every row.
+The JSONB blob is the authoritative source for the stored halves of the record (`StoredBundle`: the wire bundle and its metadata) on `get()` and all poll calls; the processing status lives only in the typed columns, which every deserialize re-imposes through `StoredBundle::into_bundle`. The remaining typed columns (`expiry`, `peer_id`, etc.) are projections of `BundleMetadata` fields, duplicated only so the database can index and filter without parsing JSONB on every row.
 
 ### Snapshot Polling via `REPEATABLE READ`
 

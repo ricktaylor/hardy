@@ -25,14 +25,20 @@
 //!
 //! - On the fast path (in-memory buffer has space), the bundle is enqueued
 //!   directly. A subsequent poller cycle may *also* pull it from storage
-//!   and re-deliver it; consumers must tombstone delivered bundles to
-//!   suppress duplicates.
+//!   and re-deliver it.
 //! - On the slow path (buffer full), the in-memory copy is dropped on the
 //!   floor and the poller recovers it via `MetadataStorage::poll_pending`
 //!   filtered by the channel's target status. The drop is safe because the
 //!   bundle's status is already persisted (see above).
 //!
-//! Consumers that need exactly-once must tombstone each delivered bundle.
+//! Consumers therefore **must claim each received bundle out of the
+//! channel's target status** (a conditional `swap_status` from the received
+//! copy's snapshot) before acting on it, and drop copies that lose the
+//! swap. The target status must mean exactly "queued in this channel":
+//! while a bundle keeps it, the poller treats the bundle as recoverable and
+//! will re-push it. The dispatch queue claims `DispatchPending` →
+//! `Dispatching` on dequeue; the egress queues claim `ForwardPending` →
+//! `ForwardAckPending` before offering the transfer to a CLA.
 //!
 //! # State Machine
 //!
@@ -231,7 +237,7 @@ impl Sender {
 
                     Err(TrySendError::Full(_dropped)) => {
                         // Intentional drop: the bundle's status was just
-                        // durably updated by `update_status` above, so the
+                        // durably moved by the conditional swap above, so the
                         // poller can recover it via `poll_pending`. See the
                         // module-level delivery contract.
                         let _ = self.shared.compare_exchange_state(
@@ -457,10 +463,7 @@ mod tests {
         test_expired_bundle(&format!("ipn:0.{n}.1"), "ipn:0.99.1")
     }
 
-    const STATUS: BundleStatus = BundleStatus::ForwardPending {
-        peer: 1,
-        queue: None,
-    };
+    const STATUS: BundleStatus = BundleStatus::ForwardPending { peer: 1, queue: 0 };
 
     // The delivery contract requires the bundle to already exist in metadata
     // storage before it is offered to the channel; insert it with the

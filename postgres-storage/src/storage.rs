@@ -1,13 +1,14 @@
 use hardy_bpa::{
     async_trait,
-    bundle::{Bundle, BundleStatus},
+    bundle::{Bundle, BundleStatus, StoredBundle, StoredBundleRef},
     storage::{self, ConfirmResponse},
     stream::Sender,
 };
+use hardy_bpv7::eid::Eid;
 use sqlx::{FromRow, PgPool, migrate::Migrate};
 #[cfg(feature = "instrument")]
 use tracing::instrument;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use super::status;
 use crate::PostgresStorageBuilder;
@@ -191,19 +192,16 @@ impl PendingRow {
     }
 }
 
-// Deserialize a bundle from BYTEA and override its status from the pre-decoded typed columns.
-// The BYTEA blob is authoritative for all fields; typed columns are only for indexing.
-// We still override status from typed columns to guard against any blob/column skew.
+// Deserialize a stored record from BYTEA and recompose it with the status
+// from the pre-decoded typed columns — the blob has no status field, so the
+// typed columns are its only source.
 fn decode_bundle(bundle_bytes: Vec<u8>, status: Option<BundleStatus>) -> Option<Bundle> {
     let Some(status) = status else {
         warn!("Failed to decode metadata status");
         return None;
     };
-    match serde_json::from_slice::<Bundle>(&bundle_bytes) {
-        Ok(mut bundle) => {
-            bundle.status = status;
-            Some(bundle)
-        }
+    match serde_json::from_slice::<StoredBundle>(&bundle_bytes) {
+        Ok(stored) => Some(stored.into_bundle(status)),
         Err(e) => {
             warn!("Garbage bundle in metadata store: {e}");
             None
@@ -234,7 +232,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         let bundle_key = bundle.id().to_key();
-        let bundle_bytes = serde_json::to_vec(bundle)?;
+        let bundle_bytes = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         let received_at = bundle.metadata.received_at();
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
@@ -279,7 +277,7 @@ impl storage::MetadataStorage for PostgresStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
     async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
         let bundle_key = bundle.id().to_key();
-        let bundle_bytes = serde_json::to_vec(bundle)?;
+        let bundle_bytes = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
         let expiry = bundle.expiry();
         let sf = status::StatusFields::try_from(&bundle.status)?;
 
@@ -366,47 +364,6 @@ impl storage::MetadataStorage for PostgresStorage {
         .rows_affected();
 
         Ok(rows == 1)
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
-    async fn update_status(
-        &self,
-        bundle_id: &hardy_bpv7::bundle::Id,
-        status: &BundleStatus,
-    ) -> storage::Result<()> {
-        let bundle_key = bundle_id.to_key();
-        let sf = status::StatusFields::try_from(status)?;
-
-        let rows = sqlx::query(
-            "UPDATE metadata
-             SET status      = $2,
-                 peer_id     = $3,
-                 queue_id    = $4,
-                 adu_source  = $5,
-                 adu_ts_ms   = $6,
-                 adu_ts_seq  = $7,
-                 service_eid = $8
-             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
-        )
-        .bind(bundle_key)
-        .bind(sf.status)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
-        .bind(sf.adu_source)
-        .bind(sf.adu_ts_ms)
-        .bind(sf.adu_ts_seq)
-        .bind(sf.service_eid)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-
-        if rows == 0 {
-            // Delete is terminal: the bundle was removed between the
-            // caller's read and this write, and the update quietly loses
-            debug!("Status update for a deleted bundle, ignored");
-        }
-
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
@@ -603,18 +560,38 @@ impl storage::MetadataStorage for PostgresStorage {
         Ok(rows)
     }
 
+    #[cfg_attr(feature = "instrument", instrument(skip(self)))]
+    async fn reset_service_queue(&self, service: &Eid) -> storage::Result<u64> {
+        // The service EID column is the same in both statuses, so only the
+        // status changes.
+        let rows = sqlx::query(
+            "UPDATE metadata
+             SET status = $2
+             WHERE status = $3
+               AND service_eid = $1",
+        )
+        .bind(service.to_string())
+        .bind(status::BundleStatusKind::WaitingForService)
+        .bind(status::BundleStatusKind::DeliverPending)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(rows)
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip(self, stream)))]
-    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>, limit: usize) -> storage::Result<()> {
+    async fn poll_expiry(&self, stream: &dyn Sender<Bundle>) -> storage::Result<()> {
         let mut conn = begin_snapshot(&self.pool).await?;
 
         // UNIX_EPOCH as the initial keyset cursor: all BIGSERIAL ids start at 1,
-        // so (UNIX_EPOCH, 0) is strictly less than every real row.
+        // so (UNIX_EPOCH, 0) is strictly less than every real row. The consumer
+        // closes the stream once it has what it needs, so each page is fetched
+        // only if the previous one was consumed whole.
         let mut last_expiry = time::OffsetDateTime::UNIX_EPOCH;
         let mut last_id: i64 = 0;
-        let mut sent: usize = 0;
 
         loop {
-            let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, ExpiryRow>(
                 "SELECT id, expiry, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid
@@ -627,7 +604,7 @@ impl storage::MetadataStorage for PostgresStorage {
             .bind(status::BundleStatusKind::New)
             .bind(last_expiry)
             .bind(last_id)
-            .bind(page_limit)
+            .bind(self.poll_page_size)
             .fetch_all(&mut *conn)
             .await?;
 
@@ -646,11 +623,6 @@ impl storage::MetadataStorage for PostgresStorage {
                     // conn dropped here; sqlx issues implicit ROLLBACK on return to pool
                     return Ok(());
                 }
-                sent += 1;
-            }
-
-            if sent >= limit {
-                break;
             }
         }
 
@@ -688,8 +660,8 @@ impl storage::MetadataStorage for PostgresStorage {
             for r in rows {
                 last_received_at = r.received_at;
                 last_id = r.id;
-                // Status is 'waiting' by the WHERE clause; override the blob's status
-                // field (which may lag by one write) to keep them consistent.
+                // The WHERE clause guarantees status 'waiting', so that is the
+                // status the stored blob is rematerialized under.
                 let Some(bundle) = r.decode(&BundleStatus::Waiting) else {
                     continue;
                 };
