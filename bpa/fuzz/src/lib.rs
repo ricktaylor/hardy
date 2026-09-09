@@ -6,7 +6,8 @@ mod service;
 mod test;
 
 use arbitrary::Arbitrary;
-use hardy_bpa::bpa::BpaRegistration;
+use core::num::NonZeroUsize;
+use hardy_bpa::{bpa::BpaRegistration, cla::ClaInit};
 use std::sync::Arc;
 
 #[derive(Arbitrary)]
@@ -45,7 +46,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
 
     let mut builder = hardy_bpa::bpa::Bpa::builder()
         .status_reports(true)
-        .lru_capacity(core::num::NonZeroUsize::new(16).unwrap())
+        .lru_capacity(NonZeroUsize::new(16).unwrap())
         .node_ids(
             [hardy_bpv7::eid::NodeId::Ipn(hardy_bpv7::eid::IpnNodeId {
                 allocator_id: 0,
@@ -121,7 +122,7 @@ async fn new_bpa(testname: &str) -> hardy_bpa::bpa::Bpa {
             })
             .expect("Failed to create file CLA"),
         );
-        bpa.register_cla("file-cla".to_string(), cla, None)
+        bpa.register_cla("file-cla".to_string(), cla, None, ClaInit::default())
             .await
             .expect("Failed to register CLA");
     }
@@ -139,7 +140,7 @@ impl Msg {
                 let bpa = new_bpa("fuzz").await;
 
                 let cla = std::sync::Arc::new(cla::NullCla::new());
-                bpa.register_cla("fuzz".to_string(), cla.clone(), None)
+                bpa.register_cla("fuzz".to_string(), cla.clone(), None, ClaInit::default())
                     .await
                     .expect("Failed to register CLA");
 

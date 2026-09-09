@@ -5,7 +5,7 @@
 //! or a slow service sees the same bundle delivered concurrently more than
 //! once.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::{num::NonZeroU64, time::Duration};
 use std::{
     borrow::Cow,
     sync::{
@@ -296,15 +296,16 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -365,9 +366,14 @@ async fn stale_poller_duplicate_never_redelivers() {
         .expect("Failed to build bundle");
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -620,9 +626,14 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .unwrap();
 
     let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     // Bundle A's dequeue claim parks at the gate.
     let (bundle_a, data_a) =

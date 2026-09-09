@@ -2,6 +2,7 @@
 //! `stream::buffer_stream`, the whole-buffer convenience used by CLAs that
 //! need a contiguous bundle.
 
+use core::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -10,7 +11,7 @@ use std::sync::{
 use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
-    cla::{self, Cla},
+    cla::{self, Cla, ClaInit},
     services,
     stream::{Receiver, Segment},
 };
@@ -60,15 +61,16 @@ impl StreamingCla {
 
 #[async_trait]
 impl cla::Cla for StreamingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -126,15 +128,16 @@ impl BufferedCla {
 
 #[async_trait]
 impl cla::Cla for BufferedCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -171,15 +174,16 @@ impl FailingCla {
 
 #[async_trait]
 impl cla::Cla for FailingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -311,7 +315,7 @@ async fn streaming_cla_receives_single_final_segment() {
     bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(false);
-    bpa.register_cla("stream".to_string(), cla.clone(), None)
+    bpa.register_cla("stream".to_string(), cla.clone(), None, ClaInit::default())
         .await
         .unwrap();
     cla.sink
@@ -360,9 +364,14 @@ async fn buffered_cla_receives_whole_bundle() {
     bpa.start(false).await;
 
     let (cla, events_rx) = BufferedCla::new();
-    bpa.register_cla("buffered".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "buffered".to_string(),
+        cla.clone(),
+        None,
+        ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -398,7 +407,7 @@ async fn failed_streamed_forward_is_requeued_and_retried() {
     bpa.start(false).await;
 
     let (cla, events_rx) = StreamingCla::new(true);
-    bpa.register_cla("flaky".to_string(), cla.clone(), None)
+    bpa.register_cla("flaky".to_string(), cla.clone(), None, ClaInit::default())
         .await
         .unwrap();
     cla.sink
@@ -461,7 +470,7 @@ async fn failed_streamed_forward_does_not_retry_inline() {
     bpa.start(false).await;
 
     let (cla, events_rx) = FailingCla::new();
-    bpa.register_cla("failing".to_string(), cla.clone(), None)
+    bpa.register_cla("failing".to_string(), cla.clone(), None, ClaInit::default())
         .await
         .unwrap();
     cla.sink

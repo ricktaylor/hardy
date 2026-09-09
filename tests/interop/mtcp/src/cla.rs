@@ -1,3 +1,5 @@
+use core::num::NonZeroU64;
+
 use super::*;
 
 pub struct Cla {
@@ -26,11 +28,12 @@ impl Cla {
 
 #[hardy_bpa::async_trait]
 impl hardy_bpa::cla::Cla for Cla {
-    fn address_type(&self) -> Option<hardy_bpa::cla::ClaAddressType> {
-        Some(hardy_bpa::cla::ClaAddressType::Tcp)
-    }
-
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[NodeId],
+        max_bundle_size: Option<NonZeroU64>,
+    ) {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         self.sink.call_once(|| sink.clone());
 
@@ -52,12 +55,21 @@ impl hardy_bpa::cla::Cla for Cla {
             }
         }
 
-        // Start listener if address is configured
+        // Start listener if address is configured. The inbound framing
+        // bound is the configured limit folded with the negotiated
+        // effective cap (0 = unbounded): a frame the BPA would only
+        // reject deterministically is refused at the codec instead of
+        // being buffered whole first.
         if let Some(address) = self.config.address {
+            let max_bundle_size = match (self.config.max_bundle_size, max_bundle_size) {
+                (0, Some(cap)) => cap.get(),
+                (configured, Some(cap)) => configured.min(cap.get()),
+                (configured, None) => configured,
+            };
             let listener = listen::Listener {
                 address,
                 framing: self.config.framing.clone(),
-                max_bundle_size: self.config.max_bundle_size,
+                max_bundle_size,
                 sink,
             };
             let tasks = self.tasks.clone();
@@ -69,10 +81,6 @@ impl hardy_bpa::cla::Cla for Cla {
 
     async fn on_unregister(&self) {
         self.tasks.shutdown().await;
-    }
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
     }
 
     // INTERIM BUFFERING: MTCP frames the whole bundle as one CBOR byte

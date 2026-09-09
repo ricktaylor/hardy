@@ -79,6 +79,14 @@ Remaining work when the consumers land:
 
 **Pin the ADU-length definition at the Application door.** The announced size is the *stored* payload block data length, pre-BPSec-decryption — AES-GCM preserves plaintext length so the two coincide today, but a length-changing confidentiality suite would make the distinction real. Post-reassembly bundles re-derive both lengths from the reassembled bundle's index.
 
+## Negotiated size-cap deferrals (negotiated-max-bundle-size review, 2026-09-10)
+
+**Default flips to no-policy when streaming lands.** `max_bundle_size` is admission policy carried as `Option<NonZeroU64>` end-to-end, but an unset builder cap still takes the private 64 MiB default at the point of use, because ingress accumulates whole bundles in memory and "no policy" would mean unbounded RAM growth per hostile stream. The streaming pipeline enforces the bound in the u64 domain against spooled storage, at which point the default becomes `None` — a non-breaking change, the default being private. The dispatcher's `max_bundle_size_mem` seam (and its addressable-bound clamp) is deleted by the same work.
+
+**Central egress enforcement of the declared CLA limit.** The registration declaration only shrinks the effective cap echoed back to the CLA; egress does not consult it, so a CLA with a genuine transport limit below the BPA cap is still offered larger bundles and must refuse each per-bundle (`proto/cla.proto` documents this contract). Enforcing it centrally first requires splitting the two semantics the field conflates: a receive MRU folded into advertising (tcpclv4's declaration — RFC 9174 sends are bounded by the peer's session MRU, unknowable at registration) versus a transport limit the BPA must respect when offering.
+
+**No terminal disposition for a deterministic per-bundle forward error.** A bundle whose encapsulated outer exceeds bibe's negotiated cap parks retriable in `Waiting` after its deterministic `PayloadTooLarge`, so every routing event re-runs the full egress pipeline into the same rejection for the bundle's whole lifetime. The dispatcher needs a terminal outcome (or back-off) for forward errors that cannot resolve differently on retry.
+
 ## Registration/routing concurrency races (whole-codebase review 2026-07-08, #14/#15)
 
 Two non-atomic await sequences in the CLA/routing registries can race and leave stranded or wrongly-deleted state. Neither is data-loss or wire-corruption, and both need specific concurrent timing, so they were deferred past v0.2.0.

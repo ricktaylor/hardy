@@ -381,9 +381,12 @@ impl ConnectionContext {
 // peer's advertised segment MRU. The wire-derived u64 is clamped, not
 // truncated: on a 32-bit target `as usize` can truncate a large MRU to 0,
 // turning the sender's segmentation loop into an infinite empty-segment
-// spin.
+// spin. The clamp is taken in the u64 domain and lands on the allocator's
+// addressable bound (`isize::MAX`) rather than `usize::MAX`, so downstream
+// size arithmetic against the MTU stays satisfiable.
 pub fn negotiate_segment_mtu(local_mtu: Option<usize>, peer_segment_mru: u64) -> usize {
-    let peer_segment_mru = usize::try_from(peer_segment_mru).unwrap_or(usize::MAX);
+    let peer_segment_mru = usize::try_from(peer_segment_mru.min(isize::MAX as u64))
+        .expect("clamped into the addressable range");
     local_mtu
         .map(|mtu| mtu.min(peer_segment_mru))
         .unwrap_or(peer_segment_mru)
@@ -398,7 +401,7 @@ mod tests {
     fn negotiate_segment_mtu_cases() {
         assert_eq!(negotiate_segment_mtu(Some(8192), 16384), 8192);
         assert_eq!(negotiate_segment_mtu(None, 16384), 16384);
-        assert_eq!(negotiate_segment_mtu(None, u64::MAX), usize::MAX);
+        assert_eq!(negotiate_segment_mtu(None, u64::MAX), isize::MAX as usize);
         assert_eq!(negotiate_segment_mtu(Some(8192), u64::MAX), 8192);
     }
 }

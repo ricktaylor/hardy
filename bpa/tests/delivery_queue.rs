@@ -4,7 +4,7 @@
 //! alone — the service consumes or defers it itself), and a later
 //! registration on the same EID delivers them.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::{num::NonZeroU64, time::Duration};
 use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
@@ -102,15 +102,16 @@ struct IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -175,9 +176,14 @@ async fn unregister_sweeps_queued_deliveries() {
     let cla = Arc::new(IngressCla {
         sink: hardy_async::sync::spin::Once::new(),
     });
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let dispatch = |payload: &'static [u8]| {
         let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())

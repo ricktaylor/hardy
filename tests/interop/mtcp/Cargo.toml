@@ -1,3 +1,9 @@
+# Excluded from the repository workspace; the empty table stops workspace
+# discovery from walking above this standalone interop crate (which would
+# otherwise capture it when the repo is checked out inside another tree,
+# e.g. a git worktree under .claude/worktrees/).
+[workspace]
+
 [package]
 name = "hardy-mtcp-cla"
 description = "MTCP/STCP CLA binary for interop testing (not a standards-track protocol)"

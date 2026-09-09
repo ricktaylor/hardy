@@ -4,7 +4,7 @@
 //! covering the component test plan (PLAN-BPA-01) Suites A and B.
 
 use core::{
-    num::{NonZeroU8, NonZeroU32, NonZeroUsize},
+    num::{NonZeroU8, NonZeroU64},
     time::Duration,
 };
 use hardy_bpa::{
@@ -66,11 +66,12 @@ impl PipelineCla {
 
 #[async_trait]
 impl cla::Cla for PipelineCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -237,11 +238,12 @@ impl TimedCla {
 
 #[async_trait]
 impl cla::Cla for TimedCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -348,9 +350,14 @@ async fn app_to_cla_routing() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -430,9 +437,14 @@ async fn echo_round_trip() {
 
     // Register CLA with a peer for the "remote" node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -513,9 +525,14 @@ async fn streamed_originate_setup() -> (Bpa, Arc<EchoService>, flume::Receiver<B
         .unwrap();
 
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -706,9 +723,14 @@ async fn local_delivery() {
 
     // Register CLA (needed for dispatch)
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     // Build an inbound bundle addressed to our local application
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
@@ -809,9 +831,14 @@ async fn reception_report_carries_unknown_security_operation() {
     // both the forwarded bundle and the reception report (report-to defaults
     // to the source).
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
@@ -922,9 +949,14 @@ async fn cla_streamed_ingress_delivers() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -982,9 +1014,14 @@ async fn cla_unregister_cancels_parked_stream() {
     bpa.start(false).await;
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     // A producer that sends one segment then stalls — the sender stays
     // alive throughout, so only registration teardown can end the stream.
@@ -1046,9 +1083,14 @@ async fn cla_streamed_ingress_truncation_is_an_error() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1147,9 +1189,14 @@ async fn streamed_oversized_payload_local_delivery() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1233,9 +1280,14 @@ async fn streamed_oversized_gate_drops_before_draining_payload() {
         .unwrap();
 
     let (cla, _forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     let sink = || cla.sink.get().unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
@@ -1313,9 +1365,14 @@ async fn gate_reports_hop_exhaustion_but_not_expiry() {
     // A CLA with a peer for the remote node — the route for the reports
     // (report-to defaults to the source).
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
@@ -1444,9 +1501,14 @@ async fn streamed_truncated_final_segment_is_dropped_not_cancelled() {
         .await
         .unwrap();
     let (cla, _fwd) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let remote_source: Eid = "ipn:0.2.1".parse().unwrap();
     let local_dest: Eid = "ipn:0.1.42".parse().unwrap();
@@ -1500,15 +1562,20 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
-            .max_bundle_size(NonZeroUsize::new(256).unwrap())
+            .max_bundle_size(NonZeroU64::new(256).unwrap())
             .build()
             .await
             .unwrap();
         bpa.start(false).await;
         let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla("test".to_string(), cla.clone(), None)
-            .await
-            .unwrap();
+        bpa.register_cla(
+            "test".to_string(),
+            cla.clone(),
+            None,
+            cla::ClaInit::default(),
+        )
+        .await
+        .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
         let err = cla
             .sink
@@ -1529,15 +1596,20 @@ async fn ingress_size_cap_refuses_oversized_bundle() {
     {
         let bpa = Bpa::builder()
             .node_ids(node_ids.clone())
-            .max_bundle_size(NonZeroUsize::new(10_000).unwrap())
+            .max_bundle_size(NonZeroU64::new(10_000).unwrap())
             .build()
             .await
             .unwrap();
         bpa.start(false).await;
         let (cla, _fwd) = PipelineCla::new();
-        bpa.register_cla("test".to_string(), cla.clone(), None)
-            .await
-            .unwrap();
+        bpa.register_cla(
+            "test".to_string(),
+            cla.clone(),
+            None,
+            cla::ClaInit::default(),
+        )
+        .await
+        .unwrap();
         let mut stream = SegmentReceiver::new(&inbound, 1000);
         let err = cla
             .sink
@@ -1573,9 +1645,14 @@ async fn throughput() {
     bpa.start(false).await;
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -1675,9 +1752,14 @@ async fn forwarding_latency() {
     bpa.start(false).await;
 
     let (cla, arrival_rx) = TimedCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -1813,9 +1895,14 @@ async fn egress_filter_sees_consistent_extents() {
 
     // Register CLA and add a peer for the remote node (ipn:0.2)
     let (cla, forwarded_rx) = PipelineCla::new();
-    bpa.register_cla("test".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "test".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let peer_addr = cla::ClaAddress::Private("peer".as_bytes().into());
     let remote_node = NodeId::Ipn(IpnNodeId {
@@ -2026,11 +2113,12 @@ impl DeferringCla {
 
 #[async_trait]
 impl cla::Cla for DeferringCla {
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -2074,9 +2162,14 @@ async fn deferring_setup(
     bpa.start(false).await;
 
     let (cla, offers_rx) = DeferringCla::new(accepts);
-    bpa.register_cla(format!("deferring-{peer_node_number}"), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        format!("deferring-{peer_node_number}"),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink()
         .add_peer(
             cla::ClaAddress::Private(format!("peer-{peer_node_number}").into_bytes().into()),
@@ -2250,9 +2343,14 @@ async fn deferred_outcome_ignores_wrong_cla() {
 
     // A second CLA with its own peer on a different node
     let (cla_b, offers_b) = DeferringCla::new(0);
-    bpa.register_cla("deferring-b".to_string(), cla_b.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "deferring-b".to_string(),
+        cla_b.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla_b
         .sink()
         .add_peer(
@@ -2353,15 +2451,16 @@ impl BlockingCla {
 
 #[async_trait]
 impl cla::Cla for BlockingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -2391,9 +2490,14 @@ async fn forward_failure_park_recheck_redispatches() {
     bpa.start(false).await;
 
     let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla("blocking".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "blocking".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2473,9 +2577,14 @@ async fn forward_failure_never_resurrects_resolved_bundle() {
     bpa.start(false).await;
 
     let (cla, offered_rx, release_tx) = BlockingCla::new();
-    bpa.register_cla("blocking".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "blocking".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     let remote_node = NodeId::Ipn(IpnNodeId {
         allocator_id: 0,
         node_number: 2,
@@ -2551,15 +2660,16 @@ async fn configured_endpoints_activate_at_start() {
 
     #[async_trait]
     impl cla::Cla for ProbeCla {
-        async fn on_register(&self, _sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        async fn on_register(
+            &self,
+            _sink: Box<dyn cla::Sink>,
+            _node_ids: &[NodeId],
+            _max_bundle_size: Option<NonZeroU64>,
+        ) {
             self.registered.call_once(|| ());
         }
 
         async fn on_unregister(&self) {}
-
-        fn lane_count(&self) -> Option<NonZeroU32> {
-            None
-        }
 
         async fn forward(
             &self,
@@ -2577,7 +2687,7 @@ async fn configured_endpoints_activate_at_start() {
         registered: hardy_async::sync::spin::Once::new(),
     });
     let bpa = Bpa::builder()
-        .cla("probe", probe.clone(), None)
+        .cla("probe", probe.clone(), None, cla::ClaInit::default())
         .build()
         .await
         .unwrap();

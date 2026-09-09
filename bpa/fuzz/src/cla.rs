@@ -1,4 +1,4 @@
-use core::num::NonZeroU8;
+use core::num::{NonZeroU8, NonZeroU64};
 
 use super::*;
 use hardy_async::sync::spin::Once;
@@ -72,7 +72,12 @@ impl NullCla {
 
 #[async_trait]
 impl hardy_bpa::cla::Cla for NullCla {
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn hardy_bpa::cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         sink.add_peer(
             hardy_bpa::cla::ClaAddress::Private("fuzz".as_bytes().into()),
             &[NodeId::Ipn(IpnNodeId {
@@ -96,10 +101,6 @@ impl hardy_bpa::cla::Cla for NullCla {
         ))
         .await
         .expect("remove_peer failed");
-    }
-
-    fn lane_count(&self) -> Option<core::num::NonZeroU32> {
-        None
     }
 
     async fn forward(

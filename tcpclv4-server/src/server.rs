@@ -112,7 +112,12 @@ impl Tcpclv4Server {
         let remote_bpa = RemoteBpa::new(self.bpa_address.clone());
 
         let node_ids = remote_bpa
-            .register_cla(self.cla_name.clone(), self.cla.clone(), None)
+            .register_cla(
+                self.cla_name.clone(),
+                self.cla.clone(),
+                None,
+                self.cla.cla_init(),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("CLA registration failed: {e}"))?;
 

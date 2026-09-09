@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- A file larger than the size cap negotiated at registration (when one exists, via the new `Cla::on_register` cap) is skipped with a warning instead of being read and offered to a certain rejection; the file is the operator's to clean up.
 - Adapted to the `hardy-bpa` deferred transfer-outcome CLA contract (new `Cla::forward` signature). Behaviour is unchanged: forwards remain terminal.
 
 ### Fixed

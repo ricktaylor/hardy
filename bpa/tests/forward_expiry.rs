@@ -4,7 +4,10 @@
 //! arrives — a completed transfer reports completion, and a failed one is
 //! dropped as `LifetimeExpired` at the dispatch expiry checkpoint.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 use std::{borrow::Cow, sync::Arc};
 
 use hardy_bpa::{
@@ -122,15 +125,16 @@ impl AcceptingCla {
 
 #[async_trait]
 impl cla::Cla for AcceptingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -161,15 +165,16 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: Option<NonZeroU64>,
+    ) {
         self.sink.call_once(|| sink);
     }
 
     async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
 
     async fn forward(
         &self,
@@ -257,9 +262,14 @@ async fn expiry_mid_transfer_rig() -> (
 
     // The egress CLA owns transfers to node ipn:0.3 without resolving them.
     let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla("accepting".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "accepting".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -274,9 +284,14 @@ async fn expiry_mid_transfer_rig() -> (
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        ingress.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     let (bundle_a, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.3.1".parse().unwrap())
         .with_report_to("ipn:0.1.9".parse().unwrap())
@@ -441,7 +456,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
     let bpa = Bpa::builder()
         .node_ids(node_ids)
         .status_reports(true)
-        .poll_channel_depth(core::num::NonZeroUsize::new(2).unwrap())
+        .poll_channel_depth(NonZeroUsize::new(2).unwrap())
         .build()
         .await
         .unwrap();
@@ -453,9 +468,14 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .unwrap();
 
     let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla("accepting".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "accepting".to_string(),
+        cla.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
     cla.sink
         .get()
         .unwrap()
@@ -470,9 +490,14 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
-        .await
-        .unwrap();
+    bpa.register_cla(
+        "ingress".to_string(),
+        ingress.clone(),
+        None,
+        cla::ClaInit::default(),
+    )
+    .await
+    .unwrap();
 
     // Two transfers with the earliest expiries, accepted by the CLA and
     // never resolved: expired-but-deferred hand-offs filling the cache.

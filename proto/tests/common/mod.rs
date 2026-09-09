@@ -6,6 +6,7 @@
 
 pub mod sinks;
 
+use core::num::NonZeroU64;
 use hardy_async::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
 use hardy_bpa::{cla, routing, services};
@@ -21,6 +22,10 @@ use std::sync::Arc;
 /// Tracks the last registered routing agent and sink for assertions.
 pub struct MockBpa {
     node_ids: Vec<NodeId>,
+    /// The effective cap this mock hands to `Cla::on_register`.
+    effective_max_bundle_size: Option<NonZeroU64>,
+    /// The declarations the last `register_cla` carried.
+    pub declared_init: hardy_async::sync::spin::Mutex<Option<cla::ClaInit>>,
     pub last_routing_sink: hardy_async::sync::spin::Mutex<Option<Arc<MockRoutingSink>>>,
     pub last_routing_agent: hardy_async::sync::spin::Mutex<Option<Arc<dyn routing::RoutingAgent>>>,
     pub last_cla: hardy_async::sync::spin::Mutex<Option<Arc<dyn cla::Cla>>>,
@@ -33,12 +38,22 @@ impl MockBpa {
     pub fn new() -> Self {
         Self {
             node_ids: vec!["ipn:1.0".parse().unwrap()],
+            effective_max_bundle_size: None,
+            declared_init: hardy_async::sync::spin::Mutex::new(None),
             last_routing_sink: hardy_async::sync::spin::Mutex::new(None),
             last_routing_agent: hardy_async::sync::spin::Mutex::new(None),
             last_cla: hardy_async::sync::spin::Mutex::new(None),
             last_cla_sink: hardy_async::sync::spin::Mutex::new(None),
             last_service: hardy_async::sync::spin::Mutex::new(None),
             last_application: hardy_async::sync::spin::Mutex::new(None),
+        }
+    }
+
+    /// A mock whose `register_cla` hands `effective` to `Cla::on_register`.
+    pub fn with_effective_max_bundle_size(effective: NonZeroU64) -> Self {
+        Self {
+            effective_max_bundle_size: Some(effective),
+            ..Self::new()
         }
     }
 
@@ -61,12 +76,18 @@ impl BpaRegistration for MockBpa {
         _name: String,
         cla: Arc<dyn cla::Cla>,
         _policy: Option<Arc<dyn hardy_bpa::policy::FlowControllerFactory>>,
+        init: cla::ClaInit,
     ) -> cla::Result<Vec<NodeId>> {
+        *self.declared_init.lock() = Some(init);
         let sink = Arc::new(MockClaSink::new());
         *self.last_cla.lock() = Some(cla.clone());
         *self.last_cla_sink.lock() = Some(sink.clone());
-        cla.on_register(Box::new(ClaSinkWrapper(sink)), &self.node_ids)
-            .await;
+        cla.on_register(
+            Box::new(ClaSinkWrapper(sink)),
+            &self.node_ids,
+            self.effective_max_bundle_size,
+        )
+        .await;
         Ok(self.node_ids.clone())
     }
 

@@ -43,7 +43,7 @@ pub mod tls;
 pub use self::error::Error;
 pub use self::tcpclv4::Tcpclv4;
 
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::NonZeroU64;
 use hardy_async::sync::spin::Once;
 use hardy_bpv7::eid::NodeId;
 use std::net::SocketAddr;

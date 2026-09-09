@@ -74,7 +74,7 @@ async fn start_cla(outbox: &Path) -> (Cla, flume::Receiver<Vec<u8>>) {
     .unwrap();
 
     let (tx, rx) = flume::unbounded();
-    cla.on_register(Box::new(StubSink(tx)), &[]).await;
+    cla.on_register(Box::new(StubSink(tx)), &[], None).await;
     (cla, rx)
 }
 
