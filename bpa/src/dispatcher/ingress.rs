@@ -150,7 +150,10 @@ impl Dispatcher {
             }
             Err(parse::HeaderFailure::TooLarge { size, max }) => {
                 debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                return Err(cla::Error::PayloadTooLarge { size, max });
+                return Err(cla::Error::PayloadTooLarge {
+                    size: size as u64,
+                    max: max as u64,
+                });
             }
             Err(parse::HeaderFailure::Invalid(report)) => {
                 let reason = match report {
@@ -198,7 +201,10 @@ impl Dispatcher {
                 Err(DrainFailure::Cancelled) => return Err(cla::Error::StreamCancelled),
                 Err(DrainFailure::TooLarge { size, max }) => {
                     debug!("Streamed bundle exceeds max_bundle_size: {size} > {max}");
-                    return Err(cla::Error::PayloadTooLarge { size, max });
+                    return Err(cla::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    });
                 }
                 Err(DrainFailure::Rejected) => {
                     metrics::counter!("bpa.bundle.received.dropped", "reason" => crate::otel_metrics::reason_label(&ReasonCode::BlockUnintelligible)).increment(1);

@@ -99,7 +99,10 @@ impl Dispatcher {
             .map_err(|e| match e {
                 crate::stream::ConcatError::Cancelled => services::Error::StreamCancelled,
                 crate::stream::ConcatError::TooLarge { size, max } => {
-                    services::Error::PayloadTooLarge { size, max }
+                    services::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    }
                 }
             })?;
         self.local_dispatch_raw(expected_source, data).await
