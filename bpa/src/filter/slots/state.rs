@@ -46,7 +46,7 @@ impl SlotMap {
 
     /// Drops every value whose name is not registered in `table` — the
     /// load-time half of the "unknown name dropped harmlessly" contract.
-    #[allow(dead_code)] // called by the metadata load path when the engine swap (C3) lands
+    #[allow(dead_code)] // wired by the restart re-admission path (Phase 3, filter_subsystem_design.md)
     pub fn retain_registered(&mut self, table: &SlotTable) {
         self.0.retain(|name, _| table.0.contains_key(name));
     }

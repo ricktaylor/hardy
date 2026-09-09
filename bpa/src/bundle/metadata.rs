@@ -274,7 +274,7 @@ impl BundleMetadata {
     /// Clears the classification group for re-derivation (restart
     /// re-admission or a policy-epoch bump), stamping the epoch the next
     /// classification pass runs under.
-    #[allow(dead_code)] // wired to the re-admission path by the engine swap (C3)
+    #[allow(dead_code)] // wired by the restart re-admission path (Phase 3, filter_subsystem_design.md)
     pub(crate) fn clear_classification(&mut self, epoch: PolicyEpoch) {
         self.classification.slots.clear();
         self.classification.epoch = epoch;

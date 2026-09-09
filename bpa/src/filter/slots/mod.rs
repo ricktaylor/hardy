@@ -10,11 +10,12 @@
 //! canonically-encoded CBOR; the pair sees them fully typed.
 //!
 //! A slot value is a cache of a pure derivation over (stored bytes, chain,
-//! config) — never a ledger. It is persisted with the bundle, cleared and
-//! re-derived at restart re-admission and policy-epoch bumps, and a value
-//! whose registration disappeared across a restart is dropped harmlessly:
-//! name-keyed at rest, it is unreadable without a handle and the engine's
-//! re-admission path prunes it.
+//! config) — never a ledger. It is persisted with the bundle. Clearing and
+//! re-derivation at restart re-admission and policy-epoch bumps is settled
+//! design, not yet wired (Phase 3, `filter_subsystem_design.md`): until
+//! then a recovered bundle keeps its stored slot values. A value whose
+//! registration disappears is name-keyed at rest and unreadable without a
+//! handle; the Phase 3 re-admission path additionally prunes it.
 
 use core::{marker::PhantomData, num::NonZeroUsize};
 
