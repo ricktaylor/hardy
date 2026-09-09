@@ -9,6 +9,24 @@
 //! [`build()`](crate::builder::BpaBuilder::build), and run inline by the
 //! engine at the pipeline's hook positions. The BPA's own checks are
 //! pipeline code gated by configuration, never registered filters.
+//!
+//! # Failure and Drop contract
+//!
+//! A [`Verdict::Drop`] is policy, never a failure. Its disposition per
+//! hook, and the pipeline's recovery when a chain *fails* (the engine
+//! could not run — a re-parse or edit-materialisation fault, never a
+//! filter's verdict):
+//!
+//! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
+//! |---|---|---|---|
+//! | Originate | the reason returns to the caller as `services::Error::Dropped` (pre-store: no report is ever sent) | same, with `None` | `services::Error::Internal` to the caller; nothing was stored |
+//! | Ingress | dropped with a deletion report per the bundle's request flags | deleted silently, even when the flags request reporting | resolved as `BlockUnintelligible` — the stored bytes failed the chain's own decode pass |
+//! | Egress | dropped with a flag-gated deletion report; the transmission attempt ends | deleted silently | the claim returns to `Waiting` for a fresh routing decision |
+//! | Deliver | dropped with a flag-gated deletion report | deleted silently | parked `WaitingForService`, recovered by the next (re-)registration |
+//!
+//! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
+//! applied rewrite, and `bpa.filter.error` every chain failure, all by
+//! hook.
 
 use hardy_bpv7::{
     block,
@@ -50,6 +68,16 @@ pub enum Verdict<T = ()> {
     /// Accept the bundle, carrying the kind's contribution.
     Continue(T),
     /// Drop the bundle, optionally with a status-report reason code.
+    ///
+    /// With `Some(reason)`, the Ingress/Egress/Deliver hooks generate an
+    /// RFC 9171 §5.10 deletion status report per the bundle's
+    /// report-request flags; at Originate no report is ever sent (nothing
+    /// is stored yet) and the reason returns to the caller in
+    /// [`services::Error::Dropped`](crate::services::Error). With `None`
+    /// the drop is silent even when the bundle's flags request reporting —
+    /// use `Some(ReasonCode::NoAdditionalInformation)` for a reported drop
+    /// with nothing specific to say. The per-hook table in the
+    /// [module docs](self#failure-and-drop-contract) is the full contract.
     Drop(Option<ReasonCode>),
 }
 
