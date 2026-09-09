@@ -148,16 +148,15 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the largest bundle size eligible for caching, in bytes; unset
-    /// applies the cache's own default. Has no effect when no bundle
-    /// storage is configured: the default memory store is never cached.
-    /// Sets the maximum size of a single reassembled bundle at ingress.
+    /// Sets the maximum accepted bundle size, in bytes (private 64 MiB
+    /// default).
     ///
     /// Streamed dispatch and streamed service origination accumulate
     /// segments until the bundle is complete; this bound stops a runaway or
-    /// hostile producer growing BPA memory without limit. Streams exceeding
-    /// it are rejected with an error to the producer. Defaults privately at
-    /// the point of use.
+    /// hostile producer growing BPA memory without limit. An over-cap CLA
+    /// transfer is answered [`Acceptance::Refused`](crate::cla::Acceptance)
+    /// (the CLA withholds its acknowledgement); an over-cap origination
+    /// fails with a size error to the producer.
     pub fn max_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_bundle_size = Some(v);
         self
@@ -185,6 +184,9 @@ impl BpaBuilder {
         self
     }
 
+    /// Sets the largest bundle size eligible for caching, in bytes; unset
+    /// applies the cache's own default. Has no effect when no bundle
+    /// storage is configured: the default memory store is never cached.
     pub fn max_cached_bundle_size(mut self, v: NonZeroUsize) -> Self {
         self.max_cached_bundle_size = Some(v);
         self

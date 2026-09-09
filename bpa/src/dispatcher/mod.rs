@@ -1,3 +1,5 @@
+use core::num::NonZeroUsize;
+
 use futures::join;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
 use hardy_eid_patterns::EidPattern;
@@ -18,15 +20,14 @@ mod restart;
 // dissolved the transport-level caps that used to bound ingress implicitly,
 // so the concat chokepoint enforces one; sized generously above the old
 // 16 MiB wire cap to leave room for large ADUs.
-const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+const DEFAULT_MAX_BUNDLE_SIZE: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
 
 /// The dispatcher's plain configuration values, gathered by the builder.
 pub struct Config {
     pub status_reports: bool,
-    pub poll_channel_depth: core::num::NonZeroUsize,
-    pub processing_pool_size: core::num::NonZeroUsize,
-    pub max_bundle_size: Option<core::num::NonZeroUsize>,
+    pub poll_channel_depth: NonZeroUsize,
+    pub processing_pool_size: NonZeroUsize,
+    pub max_bundle_size: Option<NonZeroUsize>,
     /// Require primary-block integrity protection (RFC 9171 §4.3.1).
     pub primary_block_integrity: bool,
     /// Require a Bundle Age block on clockless bundles (RFC 9171 §4.4.2).
