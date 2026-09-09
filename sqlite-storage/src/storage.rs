@@ -419,7 +419,7 @@ impl MetadataStorage for SqliteStorage {
                 .execute((&id,))?;
 
                 conn.prepare_cached(
-                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 LIMIT 1",
+                    "SELECT bundle, status_code, status_param1, status_param2, status_param3 FROM bundles WHERE bundle_id = ?1 AND bundle IS NOT NULL LIMIT 1",
                 )?
                 .query_row((id,), |row| {
                      Ok((
