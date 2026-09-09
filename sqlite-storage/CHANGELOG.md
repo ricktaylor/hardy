@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Migration `02_poll_pending_index`: the covering index `idx_bundles_status_received (status_code, status_param1, status_param2, received_at, status_param3)` serves the `poll_pending` page query in index order — previously every drain page top-K-sorted the entire matching backlog through a temp B-tree, an O(B²) drain under sustained overload, on the node-wide dispatch queue and every per-service delivery queue. The superseded `idx_bundles_status` and `idx_bundles_status_peer` (both strict prefixes of the new index) are dropped, and a plan pin test asserts the poll shape never sorts out of index.
+
 ### Fixed
 - `confirm_exists` treats a tombstoned row as absent (`Ok(None)`) instead of failing on its NULL columns. Previously a bundle-data blob whose metadata row was tombstoned — a crash between tombstone and data deletion leaves exactly that — made startup recovery panic on every boot, an unrecoverable crash loop cleared only by manual database surgery; the row now matches the same `bundle IS NOT NULL` predicate every other tombstone-aware query uses, recovery re-ingests the blob as an orphan, the insert reports it as a duplicate of the tombstone, and the stranded data is deleted — the store self-heals.
 

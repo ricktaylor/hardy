@@ -228,6 +228,13 @@ fn to_status(
     }
 }
 
+// The poll_pending page shape, hoisted so the plan pin test below EXPLAINs
+// the exact production SQL.
+const POLL_PENDING_SQL: &str = "SELECT bundle FROM bundles
+    WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+    ORDER BY received_at ASC
+    LIMIT ?5";
+
 #[async_trait]
 impl MetadataStorage for SqliteStorage {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
@@ -808,17 +815,19 @@ impl MetadataStorage for SqliteStorage {
 
         let bundles = self
             .read(move |conn| {
-                conn.prepare_cached(
-                    "SELECT bundle FROM bundles
-                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
-                        ORDER BY received_at ASC
-                        LIMIT ?5",
-                )?
-                .query_map((status_code, status_param1, status_param2,status_param3, limit as isize), |row| {
-                    row.get::<_, Vec<u8>>(0)
-                })?
-                .collect::<Result<Vec<Vec<u8>>, _>>()
-                .map_err(Into::into)
+                conn.prepare_cached(POLL_PENDING_SQL)?
+                    .query_map(
+                        (
+                            status_code,
+                            status_param1,
+                            status_param2,
+                            status_param3,
+                            limit as isize,
+                        ),
+                        |row| row.get::<_, Vec<u8>>(0),
+                    )?
+                    .collect::<Result<Vec<Vec<u8>>, _>>()
+                    .map_err(Into::into)
             })
             .await?;
 
@@ -852,7 +861,7 @@ mod tests {
         stream::{SendError, Sender},
     };
 
-    use super::{SqliteStorage, from_status, to_status};
+    use super::{POLL_PENDING_SQL, SqliteStorage, from_status, to_status};
 
     /// Test sink that collects items into a `Vec` for assertions.
     struct VecSink<T>(std::sync::Mutex<Vec<T>>);
@@ -1295,6 +1304,33 @@ mod tests {
             BundleStatus::DeliverPending {
                 service: other_service
             }
+        );
+    }
+
+    // The poll_pending page query must be served in index order: a plan
+    // with a TEMP B-TREE re-sorts the whole backlog per drain page, an
+    // O(B^2) drain in exactly the overload regime the poller exists for
+    // (see schemas/02_poll_pending_index.sql for the index rationale).
+    #[test]
+    fn poll_pending_plan_has_no_temp_btree() {
+        let dir = tempfile::tempdir().unwrap();
+        let _storage =
+            SqliteStorage::new(Some(dir.path().to_path_buf()), Some("test.db".into()), true);
+
+        let conn = rusqlite::Connection::open(dir.path().join("test.db")).unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {POLL_PENDING_SQL}"))
+            .unwrap()
+            .query_map(
+                rusqlite::params![8i64, None::<i64>, None::<i64>, Some("ipn:60.3"), 16isize],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "poll_pending plan sorts out of index: {plan:?}"
         );
     }
 
