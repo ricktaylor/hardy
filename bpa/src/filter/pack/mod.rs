@@ -80,12 +80,12 @@ pub type Result<T> = core::result::Result<T, Error>;
 pub struct FilterPack {
     name: Arc<str>,
     slots: SlotRegistry,
-    ingress_verifiers: Vec<PendingVerifier>,
-    originate_verifiers: Vec<PendingVerifier>,
+    ingress_verifiers: Vec<Pending<VerifierEntry>>,
+    originate_verifiers: Vec<Pending<VerifierEntry>>,
     egress_verifiers: Vec<VerifierEntry>,
     deliver_verifiers: Vec<VerifierEntry>,
-    ingress_classifiers: Vec<PendingClassifier>,
-    originate_classifiers: Vec<PendingClassifier>,
+    ingress_classifiers: Vec<Pending<ClassifierEntry>>,
+    originate_classifiers: Vec<Pending<ClassifierEntry>>,
     egress_rewriters: Vec<RewriterEntry>,
     deliver_rewriters: Vec<RewriterEntry>,
 }
@@ -150,13 +150,8 @@ impl FilterPack {
         verifier: impl Verifier + 'static,
         peek: usize,
     ) -> &mut Self {
-        self.ingress_verifiers.push(PendingVerifier {
-            peek,
-            entry: VerifierEntry {
-                label: self.label(label),
-                verifier: Box::new(verifier),
-            },
-        });
+        let entry = self.verifier_entry(label, verifier);
+        self.ingress_verifiers.push(Pending { peek, entry });
         self
     }
 
@@ -181,23 +176,16 @@ impl FilterPack {
         verifier: impl Verifier + 'static,
         peek: usize,
     ) -> &mut Self {
-        self.originate_verifiers.push(PendingVerifier {
-            peek,
-            entry: VerifierEntry {
-                label: self.label(label),
-                verifier: Box::new(verifier),
-            },
-        });
+        let entry = self.verifier_entry(label, verifier);
+        self.originate_verifiers.push(Pending { peek, entry });
         self
     }
 
     /// Appends a [`Verifier`] to the Egress chain. No peek variant: the
     /// bundle's bytes are resident at the output hooks.
     pub fn egress_verifier(&mut self, label: &str, verifier: impl Verifier + 'static) -> &mut Self {
-        self.egress_verifiers.push(VerifierEntry {
-            label: self.label(label),
-            verifier: Box::new(verifier),
-        });
+        let entry = self.verifier_entry(label, verifier);
+        self.egress_verifiers.push(entry);
         self
     }
 
@@ -208,10 +196,8 @@ impl FilterPack {
         label: &str,
         verifier: impl Verifier + 'static,
     ) -> &mut Self {
-        self.deliver_verifiers.push(VerifierEntry {
-            label: self.label(label),
-            verifier: Box::new(verifier),
-        });
+        let entry = self.verifier_entry(label, verifier);
+        self.deliver_verifiers.push(entry);
         self
     }
 
@@ -236,13 +222,8 @@ impl FilterPack {
         classifier: impl Classifier + 'static,
         peek: usize,
     ) -> &mut Self {
-        self.ingress_classifiers.push(PendingClassifier {
-            peek,
-            entry: ClassifierEntry {
-                label: self.label(label),
-                classifier: Box::new(classifier),
-            },
-        });
+        let entry = self.classifier_entry(label, classifier);
+        self.ingress_classifiers.push(Pending { peek, entry });
         self
     }
 
@@ -268,22 +249,15 @@ impl FilterPack {
         classifier: impl Classifier + 'static,
         peek: usize,
     ) -> &mut Self {
-        self.originate_classifiers.push(PendingClassifier {
-            peek,
-            entry: ClassifierEntry {
-                label: self.label(label),
-                classifier: Box::new(classifier),
-            },
-        });
+        let entry = self.classifier_entry(label, classifier);
+        self.originate_classifiers.push(Pending { peek, entry });
         self
     }
 
     /// Appends a [`Rewriter`] to the Egress chain.
     pub fn egress_rewriter(&mut self, label: &str, rewriter: impl Rewriter + 'static) -> &mut Self {
-        self.egress_rewriters.push(RewriterEntry {
-            label: self.label(label),
-            rewriter: Box::new(rewriter),
-        });
+        let entry = self.rewriter_entry(label, rewriter);
+        self.egress_rewriters.push(entry);
         self
     }
 
@@ -293,26 +267,52 @@ impl FilterPack {
         label: &str,
         rewriter: impl Rewriter + 'static,
     ) -> &mut Self {
-        self.deliver_rewriters.push(RewriterEntry {
-            label: self.label(label),
-            rewriter: Box::new(rewriter),
-        });
+        let entry = self.rewriter_entry(label, rewriter);
+        self.deliver_rewriters.push(entry);
         self
     }
 
     fn label(&self, suffix: &str) -> Arc<str> {
         format!("{}.{suffix}", self.name).into()
     }
+
+    // The three labelled-entry constructors every registration body funnels
+    // through — the one place each entry literal is spelled.
+    fn verifier_entry(&self, label: &str, verifier: impl Verifier + 'static) -> VerifierEntry {
+        VerifierEntry {
+            label: self.label(label),
+            verifier: Box::new(verifier),
+        }
+    }
+
+    fn classifier_entry(
+        &self,
+        label: &str,
+        classifier: impl Classifier + 'static,
+    ) -> ClassifierEntry {
+        ClassifierEntry {
+            label: self.label(label),
+            classifier: Box::new(classifier),
+        }
+    }
+
+    fn rewriter_entry(&self, label: &str, rewriter: impl Rewriter + 'static) -> RewriterEntry {
+        RewriterEntry {
+            label: self.label(label),
+            rewriter: Box::new(rewriter),
+        }
+    }
 }
 
-// Input-hook pending records: the declared peek rides beside the entry
+// Input-hook pending record: the declared peek rides beside the entry
 // until freeze folds it into the node-wide P.
-struct PendingVerifier {
+pub(super) struct Pending<E> {
     peek: usize,
-    entry: VerifierEntry,
+    entry: E,
 }
 
-struct PendingClassifier {
-    peek: usize,
-    entry: ClassifierEntry,
+impl<E> Pending<E> {
+    pub(super) fn into_parts(self) -> (usize, E) {
+        (self.peek, self.entry)
+    }
 }
