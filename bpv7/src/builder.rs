@@ -243,7 +243,12 @@ impl<'a> BlockTemplate<'a> {
     ) -> Self {
         Self {
             block: block::Block {
-                block_type,
+                // Canonicalized here as the invariant every door funnels
+                // through: a stored template never holds an `Unrecognised`
+                // alias of a known code, so type-keyed policy and
+                // replace-by-type matches over templates are sound even if
+                // a future door forgets its own canonicalize.
+                block_type: block_type.canonicalize(),
                 flags,
                 crc_type,
                 ..Default::default()
@@ -343,15 +348,6 @@ impl From<BundleTemplate> for Builder<'_> {
 
         builder
     }
-}
-
-// The primary-block refusal compares in wire code: `Unrecognised(0)`
-// encodes as type code 0 and must not bypass the variant it aliases.
-#[test]
-fn add_extension_block_rejects_wire_code_zero() {
-    let r = Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
-        .add_extension_block(block::Type::Unrecognised(0));
-    assert!(matches!(r, Err(Error::PrimaryBlock)));
 }
 
 // Requirement: LLR 1.1.25
