@@ -40,7 +40,7 @@ pub enum Error {
 /// The primary trait for a Routing Agent.
 ///
 /// A routing agent discovers or computes routes and pushes them to the BPA's
-/// Routing Information Base (RIB) via a [`RoutingSink`]. Examples include static
+/// Routing Information Base (RIB) via a [`Sink`]. Examples include static
 /// route configuration, link-state protocols, and neighbour discovery.
 ///
 /// Routing agents are purely push-based: they push routes to the BPA via the Sink,
@@ -49,7 +49,7 @@ pub enum Error {
 ///
 /// # Sink Lifecycle
 ///
-/// The routing agent receives a [`RoutingSink`] in [`on_register`](Self::on_register)
+/// The routing agent receives a [`Sink`] in [`on_register`](Self::on_register)
 /// which it **must store** for its entire active lifetime. The Sink provides the
 /// communication channel back to the BPA's RIB.
 ///
@@ -70,7 +70,7 @@ pub trait RoutingAgent: Send + Sync {
     /// # Arguments
     /// * `sink` - Communication channel back to the BPA's RIB. Must be stored.
     /// * `node_ids` - The BPA's own node identifiers.
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, node_ids: &[NodeId]);
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]);
 
     /// Called when the routing agent is being unregistered.
     ///
@@ -96,7 +96,7 @@ pub trait RoutingAgent: Send + Sync {
 ///
 /// After disconnection, all Sink operations return [`Error::Disconnected`].
 #[async_trait]
-pub trait RoutingSink: Send + Sync {
+pub trait Sink: Send + Sync {
     /// Explicitly unregisters the associated routing agent from the BPA.
     ///
     /// Equivalent to dropping the Sink. After this call, the BPA calls

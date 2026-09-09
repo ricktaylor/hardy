@@ -3,7 +3,7 @@ use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::warn;
 
-use super::{RoutingAgent, RoutingSink};
+use super::{RoutingAgent, Sink};
 use crate::{async_trait, routing::action::RouteAction};
 
 /// A simple routing agent that installs a fixed set of routes on registration.
@@ -25,7 +25,7 @@ use crate::{async_trait, routing::action::RouteAction};
 /// ```
 pub struct StaticRoutingAgent {
     routes: Vec<(EidPattern, RouteAction, u32)>,
-    sink: spin::Once<Box<dyn RoutingSink>>,
+    sink: spin::Once<Box<dyn Sink>>,
 }
 
 impl StaticRoutingAgent {
@@ -39,7 +39,7 @@ impl StaticRoutingAgent {
 
 #[async_trait]
 impl RoutingAgent for StaticRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
         for (pattern, action, priority) in &self.routes {
             if let Err(e) = sink
                 .add_route(pattern.clone(), action.clone(), *priority)

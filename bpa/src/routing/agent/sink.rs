@@ -1,6 +1,6 @@
 use hardy_eid_patterns::EidPattern;
 
-use super::{Error, Result, RoutingSink};
+use super::{Error, Result};
 use crate::{
     Arc, async_trait,
     routing::{action::RouteAction, rib::Rib},
@@ -25,8 +25,10 @@ impl Sink {
     }
 }
 
+// The trait stays path-qualified: this implementation struct is itself
+// named `Sink`, and importing the trait would collide.
 #[async_trait]
-impl RoutingSink for Sink {
+impl super::Sink for Sink {
     async fn unregister(&self) {
         self.rib.unregister_agent(&self.name).await;
     }

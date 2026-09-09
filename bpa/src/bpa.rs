@@ -110,7 +110,7 @@ use crate::{
 ///
 /// # For Routing Agent Implementors
 ///
-/// Routing agents receive [`routing::RoutingSink`] in
+/// Routing agents receive [`routing::Sink`] in
 /// [`routing::RoutingAgent::on_register`]. Key Sink methods:
 ///
 /// - `add_route()` / `remove_route()` - Manage routes in the RIB (source auto-injected)
@@ -175,7 +175,7 @@ pub trait BpaRegistration: Send + Sync {
 
     /// Register a Routing Agent with the BPA.
     ///
-    /// The routing agent will receive a [`routing::RoutingSink`] via
+    /// The routing agent will receive a [`routing::Sink`] via
     /// [`routing::RoutingAgent::on_register`] for managing routes in the RIB.
     ///
     /// # Arguments

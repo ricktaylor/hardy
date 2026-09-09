@@ -1,5 +1,5 @@
 use crate::scheduler::SchedulerHandle;
-use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, Sink};
 use hardy_bpv7::eid::NodeId;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -43,11 +43,11 @@ pub enum Schedule {
 }
 
 // The TVR routing agent. Manages the RIB and projects active contacts
-// into the BPA's FIB via the RoutingSink.
+// into the BPA's FIB via the Sink.
 pub struct TvrAgent {
     default_priority: u32,
     scheduler: SchedulerHandle,
-    sink: hardy_async::sync::spin::Once<Arc<dyn RoutingSink>>,
+    sink: hardy_async::sync::spin::Once<Arc<dyn Sink>>,
 }
 
 impl TvrAgent {
@@ -72,7 +72,7 @@ impl TvrAgent {
     }
 
     // Get the stored sink (available after registration).
-    pub fn sink(&self) -> Option<Arc<dyn RoutingSink>> {
+    pub fn sink(&self) -> Option<Arc<dyn Sink>> {
         self.sink.get().cloned()
     }
 
@@ -86,12 +86,12 @@ impl TvrAgent {
 
 #[hardy_bpa::async_trait]
 impl RoutingAgent for TvrAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn Sink>, node_ids: &[NodeId]) {
         info!(
             "TVR agent registered, node IDs: {:?}",
             node_ids.iter().map(|n| n.to_string()).collect::<Vec<_>>()
         );
-        let sink: Arc<dyn RoutingSink> = sink.into();
+        let sink: Arc<dyn Sink> = sink.into();
         self.sink.call_once(|| sink);
     }
 

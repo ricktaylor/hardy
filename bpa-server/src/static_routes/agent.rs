@@ -8,7 +8,7 @@ use hardy_async::{
     sync::spin::Once,
     watcher::{self, WatchMode},
 };
-use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, Sink};
 use hardy_bpv7::eid::NodeId;
 use hardy_eid_patterns::EidPattern;
 use tracing::{error, info, warn};
@@ -29,7 +29,7 @@ pub struct StaticRoutesAgent {
     routes_file: PathBuf,
     priority: u32,
     watch: Option<WatchMode>,
-    sink: Once<Arc<dyn RoutingSink>>,
+    sink: Once<Arc<dyn Sink>>,
     routes: Arc<Mutex<Vec<StaticRoute>>>,
     tasks: TaskPool,
 }
@@ -84,7 +84,7 @@ impl StaticRoutesAgent {
 async fn reload_routes(
     routes_file: &Path,
     priority: u32,
-    sink: &dyn RoutingSink,
+    sink: &dyn Sink,
     routes: &Mutex<Vec<StaticRoute>>,
     ignore_errors: bool,
 ) {
@@ -143,8 +143,8 @@ async fn reload_routes(
 
 #[hardy_async::async_trait]
 impl RoutingAgent for StaticRoutesAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
-        let sink: Arc<dyn RoutingSink> = sink.into();
+    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
+        let sink: Arc<dyn Sink> = sink.into();
         self.sink.call_once(|| sink);
 
         info!(

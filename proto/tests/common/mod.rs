@@ -140,7 +140,7 @@ struct ServiceSinkWrapper(Arc<MockServiceSink>);
 struct ApplicationSinkWrapper(Arc<MockApplicationSink>);
 
 #[async_trait]
-impl routing::RoutingSink for RoutingSinkWrapper {
+impl routing::Sink for RoutingSinkWrapper {
     async fn unregister(&self) {
         self.0.unregister().await;
     }

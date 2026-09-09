@@ -1,7 +1,7 @@
 use super::*;
 use proto::routing::*;
 
-type RoutingSink = Arc<dyn hardy_bpa::routing::RoutingSink>;
+type Sink = Arc<dyn hardy_bpa::routing::Sink>;
 
 fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
     match e {
@@ -14,12 +14,12 @@ fn routing_error_to_status(e: hardy_bpa::routing::Error) -> tonic::Status {
 }
 
 struct RemoteRoutingAgent {
-    sink: Mutex<Option<RoutingSink>>,
+    sink: Mutex<Option<Sink>>,
     proxy: Once<RpcProxy<Result<BpaToAgent, tonic::Status>, AgentToBpa>>,
 }
 
 impl RemoteRoutingAgent {
-    fn sink(&self) -> Result<RoutingSink, tonic::Status> {
+    fn sink(&self) -> Result<Sink, tonic::Status> {
         self.sink
             .lock()
             .clone()
@@ -87,7 +87,7 @@ impl RemoteRoutingAgent {
 impl hardy_bpa::routing::RoutingAgent for RemoteRoutingAgent {
     async fn on_register(
         &self,
-        sink: Box<dyn hardy_bpa::routing::RoutingSink>,
+        sink: Box<dyn hardy_bpa::routing::Sink>,
         _node_ids: &[hardy_bpv7::eid::NodeId],
     ) {
         *self.sink.lock() = Some(Arc::from(sink));
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl hardy_bpa::routing::RoutingSink for MockSink {
+    impl hardy_bpa::routing::Sink for MockSink {
         async fn unregister(&self) {
             self.unregistered.store(true, Ordering::Relaxed);
         }
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl hardy_bpa::routing::RoutingSink for ReentrantSink {
+    impl hardy_bpa::routing::Sink for ReentrantSink {
         async fn unregister(&self) {
             self.agent.on_unregister().await;
         }
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn srv_03_sink_unavailable_after_unregister() {
         let agent = RemoteRoutingAgent {
-            sink: Mutex::new(Some(Arc::new(MockSink::new()) as RoutingSink)),
+            sink: Mutex::new(Some(Arc::new(MockSink::new()) as Sink)),
             proxy: Once::new(),
         };
 

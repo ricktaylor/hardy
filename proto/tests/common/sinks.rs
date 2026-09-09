@@ -9,7 +9,7 @@ use hardy_bpa::{cla, routing, services};
 use hardy_bpv7::eid::NodeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── RoutingSink ───────────────────────────────────────────────────────
+// ── Sink ───────────────────────────────────────────────────────
 
 pub struct MockRoutingSink {
     unregistered: AtomicBool,
@@ -28,7 +28,7 @@ impl MockRoutingSink {
 }
 
 #[async_trait]
-impl routing::RoutingSink for MockRoutingSink {
+impl routing::Sink for MockRoutingSink {
     async fn unregister(&self) {
         self.unregistered.store(true, Ordering::Relaxed);
     }

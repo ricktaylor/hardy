@@ -8,7 +8,7 @@ mod common;
 use common::MockBpa;
 use hardy_bpa::async_trait;
 use hardy_bpa::bpa::BpaRegistration;
-use hardy_bpa::routing::{RouteAction, RoutingAgent, RoutingSink};
+use hardy_bpa::routing::{RouteAction, RoutingAgent, Sink};
 use hardy_bpv7::eid::NodeId;
 use hardy_proto::client::RemoteBpa;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // A mock RoutingAgent that stores the sink for test use.
 struct MockRoutingAgent {
     registered: AtomicBool,
-    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn RoutingSink>>>,
+    sink: hardy_async::sync::spin::Mutex<Option<Box<dyn Sink>>>,
 }
 
 impl MockRoutingAgent {
@@ -28,14 +28,14 @@ impl MockRoutingAgent {
         }
     }
 
-    fn take_sink(&self) -> Option<Box<dyn RoutingSink>> {
+    fn take_sink(&self) -> Option<Box<dyn Sink>> {
         self.sink.lock().take()
     }
 }
 
 #[async_trait]
 impl RoutingAgent for MockRoutingAgent {
-    async fn on_register(&self, sink: Box<dyn RoutingSink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn Sink>, _node_ids: &[NodeId]) {
         *self.sink.lock() = Some(sink);
         self.registered.store(true, Ordering::Relaxed);
     }
@@ -80,7 +80,7 @@ async fn rte_cli_01_registration() {
 // RTE-CLI-02: Add route via sink.
 //
 // After registration, the agent uses its sink to add a route. The
-// request goes through the gRPC proxy to the mock BPA's RoutingSink,
+// request goes through the gRPC proxy to the mock BPA's Sink,
 // which returns success.
 #[tokio::test]
 async fn rte_cli_02_add_route() {
@@ -114,7 +114,7 @@ async fn rte_cli_02_add_route() {
 // RTE-CLI-03: Remove route via sink.
 //
 // After registration, the agent uses its sink to remove a route. The
-// request goes through the gRPC proxy to the mock BPA's RoutingSink,
+// request goes through the gRPC proxy to the mock BPA's Sink,
 // which returns success.
 #[tokio::test]
 async fn rte_cli_03_remove_route() {
