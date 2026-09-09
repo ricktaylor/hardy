@@ -9,8 +9,8 @@
 //! splices packs into the per-hook chains — chain order is call order,
 //! within a pack and across `add_filters` calls — and
 //! [`build()`](crate::builder::BpaBuilder::build) validates pack names,
-//! freezes the chains and the slot table, and fixes the node-wide payload
-//! peek `P` as the maximum declared across every registration.
+//! freezes the chains and the slot table, and fixes the node-wide
+//! payload peek as the maximum declared across every registration.
 
 use core::num::NonZeroUsize;
 
@@ -73,10 +73,10 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Hook registrations take a `label`, carried as `"<pack>.<label>"` in logs
 /// and metrics — purely diagnostic, never unique. The `_with_peek` variants
 /// at the input hooks declare a payload-prefix byte count folded into the
-/// node-wide peek `P` at `build()`; the base methods declare 0. Until the
+/// node-wide payload peek at `build()`; the base methods declare 0. Until the
 /// streaming ingress gate lands (Phase 3, `filter_subsystem_design.md`),
 /// the declaration is recorded but has no effect: hooks run with the full
-/// bundle resident and `P` is unconsumed.
+/// bundle resident and the peek is unconsumed.
 pub struct FilterPack {
     name: Arc<str>,
     slots: SlotRegistry,
