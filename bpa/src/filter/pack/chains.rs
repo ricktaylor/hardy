@@ -2,7 +2,7 @@
 //! payload peek, produced from the packs at `build()` and executed by the
 //! engine.
 
-use super::{Error, FilterPack, Result};
+use super::{Error, FilterPack, Pending, Result};
 use crate::{
     Arc,
     filter::{
@@ -83,22 +83,26 @@ impl FilterChains {
             }
             slots.merge(pack.slots);
 
-            for v in pack.ingress_verifiers {
-                max_peek = max_peek.max(v.peek);
-                ingress_verifiers.push(v.entry);
-            }
-            for v in pack.originate_verifiers {
-                max_peek = max_peek.max(v.peek);
-                originate_verifiers.push(v.entry);
-            }
-            for c in pack.ingress_classifiers {
-                max_peek = max_peek.max(c.peek);
-                ingress_classifiers.push(c.entry);
-            }
-            for c in pack.originate_classifiers {
-                max_peek = max_peek.max(c.peek);
-                originate_classifiers.push(c.entry);
-            }
+            drain_pending(
+                pack.ingress_verifiers,
+                &mut ingress_verifiers,
+                &mut max_peek,
+            );
+            drain_pending(
+                pack.originate_verifiers,
+                &mut originate_verifiers,
+                &mut max_peek,
+            );
+            drain_pending(
+                pack.ingress_classifiers,
+                &mut ingress_classifiers,
+                &mut max_peek,
+            );
+            drain_pending(
+                pack.originate_classifiers,
+                &mut originate_classifiers,
+                &mut max_peek,
+            );
             egress_verifiers.extend(pack.egress_verifiers);
             deliver_verifiers.extend(pack.deliver_verifiers);
             egress_rewriters.extend(pack.egress_rewriters);
@@ -129,5 +133,16 @@ impl FilterChains {
             },
             slot_table,
         ))
+    }
+}
+
+// The one peek-fold: every input-hook pending list drains through here, so
+// a future hook that forgets the fold is a missing call, not a silently
+// dropped peek declaration.
+fn drain_pending<E>(pending: Vec<Pending<E>>, out: &mut Vec<E>, max_peek: &mut usize) {
+    for p in pending {
+        let (peek, entry) = p.into_parts();
+        *max_peek = (*max_peek).max(peek);
+        out.push(entry);
     }
 }
