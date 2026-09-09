@@ -10,8 +10,6 @@ enum BlockTypeArg {
     BundleAge,
     HopCount,
     PreviousNode,
-    BlockIntegrity,
-    BlockSecurity,
     Numeric(u64),
 }
 
@@ -23,8 +21,6 @@ impl FromStr for BlockTypeArg {
             "bundle-age" | "age" => Ok(Self::BundleAge),
             "hop-count" | "hop" => Ok(Self::HopCount),
             "previous-node" | "prev" => Ok(Self::PreviousNode),
-            "block-integrity" | "bib" => Ok(Self::BlockIntegrity),
-            "block-security" | "bcb" => Ok(Self::BlockSecurity),
             _ => s
                 .parse::<u64>()
                 .map(Self::Numeric)
@@ -39,8 +35,6 @@ impl From<BlockTypeArg> for block::Type {
             BlockTypeArg::BundleAge => block::Type::BundleAge,
             BlockTypeArg::HopCount => block::Type::HopCount,
             BlockTypeArg::PreviousNode => block::Type::PreviousNode,
-            BlockTypeArg::BlockIntegrity => block::Type::BlockIntegrity,
-            BlockTypeArg::BlockSecurity => block::Type::BlockSecurity,
             BlockTypeArg::Numeric(n) => block::Type::Unrecognised(n),
         }
     }
@@ -52,8 +46,10 @@ impl From<BlockTypeArg> for block::Type {
     long_about = "Add an extension block to a bundle.\n\n\
         Adds a new extension block of the specified type to the bundle. The block \
         payload must be provided as raw CBOR data appropriate for the block type.\n\n\
-        Supported block types: bundle-age, hop-count, previous-node, block-integrity \
-        (bib), block-security (bcb), or a numeric type code for custom blocks.\n\n\
+        Supported block types: bundle-age, hop-count, previous-node, or a numeric \
+        type code for custom extension blocks. Security blocks (BIB/BCB) cannot be \
+        added here: the editor refuses them by wire code — use the signing and \
+        encryption commands instead.\n\n\
         Use --force to replace an existing block of the same type."
 )]
 pub struct Command {
