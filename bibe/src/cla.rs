@@ -7,7 +7,10 @@ use core::{
 use hardy_async::sync::spin::Once;
 use hardy_bpa::{
     Bytes, async_trait,
-    cla::{Acceptance, Cla, ClaAddress, ForwardBundleResult, Result as ClaResult, Segment, Sink},
+    cla::{
+        Acceptance, Cla, ClaAddress, Error as ClaError, ForwardBundleResult, Result as ClaResult,
+        Segment, Sink,
+    },
     stream::{Receiver, buffer_stream},
 };
 use hardy_bpv7::{
@@ -152,24 +155,129 @@ impl Cla for BibeCla {
         // registration, when no forward can arrive.)
         let cap = self.max_bundle_size.load(Ordering::Relaxed);
         if cap > 0 && outer.len() as u64 > cap {
-            warn!(
-                "BIBE outer bundle exceeds the BPA's max bundle size ({} > {cap})",
-                outer.len()
-            );
-            return Ok(ForwardBundleResult::NoNeighbour);
+            // A per-bundle condition, never `NoNeighbour`: the link-scoped
+            // signal would sweep the whole peer queue back to Waiting on
+            // every routing event for this bundle's lifetime.
+            return Err(ClaError::PayloadTooLarge {
+                size: outer.len(),
+                max: usize::try_from(cap).unwrap_or(usize::MAX),
+            });
         }
 
         // Dispatch the outer bundle back into the BPA
         match self.dispatch(outer).await {
             Ok(Acceptance::Accepted) => Ok(ForwardBundleResult::Sent),
-            Ok(Acceptance::Refused) => {
-                warn!("BIBE outer bundle refused by the BPA");
-                Ok(ForwardBundleResult::NoNeighbour)
-            }
-            Err(e) => {
-                warn!("BIBE dispatch failed: {e}");
-                Ok(ForwardBundleResult::NoNeighbour)
-            }
+            // The BPA refused this bundle: a per-bundle verdict, reported as
+            // such so the dispatcher parks this bundle alone.
+            Ok(Acceptance::Refused) => Err(ClaError::Internal(Box::new(Error::Refused))),
+            // The sink is genuinely gone — the one link-scoped outcome.
+            Err(Error::Dispatch(ClaError::Disconnected)) => Ok(ForwardBundleResult::NoNeighbour),
+            Err(Error::Dispatch(e)) => Err(e),
+            Err(e) => Err(ClaError::Internal(Box::new(e))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use hardy_bpa::cla::TransferOutcome;
+    use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
+
+    use super::*;
+
+    struct StubSink {
+        verdict: Acceptance,
+    }
+
+    #[async_trait]
+    impl Sink for StubSink {
+        async fn unregister(&self) {}
+
+        async fn dispatch(
+            &self,
+            _peer_node: Option<&NodeId>,
+            _peer_addr: Option<&ClaAddress>,
+            stream: &mut dyn Receiver<Segment>,
+        ) -> ClaResult<Acceptance> {
+            // Drain the one-segment stream like the real door would.
+            while let Ok(segment) = stream.recv().await {
+                if matches!(segment, Segment::Final(_)) {
+                    break;
+                }
+            }
+            Ok(self.verdict)
+        }
+
+        async fn add_peer(&self, _cla_addr: ClaAddress, _node_ids: &[NodeId]) -> ClaResult<bool> {
+            Ok(true)
+        }
+
+        async fn remove_peer(&self, _cla_addr: &ClaAddress) -> ClaResult<bool> {
+            Ok(true)
+        }
+
+        async fn transfer_outcome(
+            &self,
+            _bundle_id: &Id,
+            _outcome: TransferOutcome,
+        ) -> ClaResult<()> {
+            Ok(())
+        }
+    }
+
+    fn inner_bundle() -> (Id, Bytes) {
+        let (bundle, data) = Builder::new("ipn:10.1".parse().unwrap(), "ipn:20.1".parse().unwrap())
+            .with_payload(vec![0u8; 256].into())
+            .build(CreationTimestamp::now())
+            .unwrap();
+        (bundle.primary.id, Bytes::from(data))
+    }
+
+    fn tunnel_addr() -> ClaAddress {
+        let outer_dest: Eid = "ipn:30.1".parse().unwrap();
+        ClaAddress::Private(Bytes::from(encode::emit(&outer_dest).0))
+    }
+
+    async fn registered_cla(verdict: Acceptance, cap: u64) -> BibeCla {
+        let cla = BibeCla::new("ipn:10.0".parse().unwrap());
+        cla.on_register(
+            Box::new(StubSink { verdict }),
+            &[],
+            NonZeroU64::new(cap).unwrap(),
+        )
+        .await;
+        cla
+    }
+
+    // An outer bundle over the BPA's cap is a per-bundle refusal, never the
+    // link-scoped NoNeighbour (which would sweep the whole peer queue).
+    #[tokio::test]
+    async fn over_cap_outer_is_payload_too_large() {
+        let cla = registered_cla(Acceptance::Accepted, 64).await;
+
+        let (id, mut inner) = inner_bundle();
+        let total_len = inner.len() as u64;
+        let result = cla
+            .forward(None, &tunnel_addr(), &id, total_len, &mut inner)
+            .await;
+
+        assert!(matches!(result, Err(ClaError::PayloadTooLarge { .. })));
+    }
+
+    // A BPA refusal of the outer bundle is this bundle's verdict, surfaced
+    // as an error the dispatcher parks per-bundle.
+    #[tokio::test]
+    async fn bpa_refusal_is_not_no_neighbour() {
+        let cla = registered_cla(Acceptance::Refused, u64::MAX).await;
+
+        let (id, mut inner) = inner_bundle();
+        let total_len = inner.len() as u64;
+        let result = cla
+            .forward(None, &tunnel_addr(), &id, total_len, &mut inner)
+            .await;
+
+        assert!(matches!(result, Err(ClaError::Internal(_))));
     }
 }

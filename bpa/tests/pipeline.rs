@@ -1797,7 +1797,6 @@ async fn forwarding_latency() {
     bpa.shutdown().await;
 }
 
-
 // ---------------------------------------------------------------------------
 // Failing Application — always returns Err from on_deliver
 // ---------------------------------------------------------------------------

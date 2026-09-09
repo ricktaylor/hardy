@@ -1879,6 +1879,7 @@ dependencies = [
  "serde",
  "thiserror",
  "time",
+ "tokio",
  "tracing",
 ]
 
@@ -2101,6 +2102,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "serde",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",

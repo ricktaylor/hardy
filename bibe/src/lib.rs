@@ -161,6 +161,9 @@ pub enum Error {
     /// Failed to encode/decode CBOR.
     #[error(transparent)]
     Cbor(#[from] hardy_cbor::decode::Error),
+    /// The BPA refused the encapsulated bundle.
+    #[error("the BPA refused the encapsulated bundle")]
+    Refused,
     /// Failed to dispatch bundle.
     #[error(transparent)]
     Dispatch(#[from] hardy_bpa::cla::Error),

@@ -1,8 +1,8 @@
 use core::num::NonZeroU64;
 
 use futures::join;
-use hardy_eid_patterns::EidPattern;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_eid_patterns::EidPattern;
 
 use super::*;
 
