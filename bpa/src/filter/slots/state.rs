@@ -85,7 +85,7 @@ impl SlotRegistry {
         }
     }
 
-    /// Absorbs another registry's registrations, preserving their order.
+    /// Merges another registry's registrations into this one, preserving their order.
     pub fn merge(&mut self, other: Self) {
         self.0.extend(other.0);
     }
