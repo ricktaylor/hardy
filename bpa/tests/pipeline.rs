@@ -1800,7 +1800,11 @@ struct ExtentCheckVerifier {
 }
 
 impl hardy_bpa::filter::Verifier for ExtentCheckVerifier {
-    fn check(&self, reader: &hardy_bpa::filter::BundleReader<'_>) -> hardy_bpa::filter::Verdict {
+    fn check(
+        &self,
+        reader: &hardy_bpa::filter::BundleReader<'_>,
+        _metadata: &hardy_bpa::bundle::BundleMetadata,
+    ) -> hardy_bpa::filter::Verdict {
         let mut mismatch = self.mismatch.lock().unwrap();
 
         // The payload extent must index the rewritten bytes.

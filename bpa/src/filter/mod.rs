@@ -14,7 +14,7 @@
 //!
 //! A [`Verdict::Drop`] is policy, never a failure. Its disposition per
 //! hook, and the pipeline's recovery when a chain *fails* (the engine
-//! could not run — a re-parse or edit-materialisation fault, never a
+//! could not run its decode pass over the stored bytes — never a
 //! filter's verdict):
 //!
 //! | Hook | `Drop(Some(reason))` | `Drop(None)` | chain failure |
@@ -27,6 +27,12 @@
 //! `bpa.filter.filtered` counts every Drop, `bpa.filter.modified` every
 //! applied rewrite, and `bpa.filter.error` every chain failure, all by
 //! hook.
+//!
+//! A [`Rewriter`] execution failure — an invalid edit, or an edit whose
+//! materialised bytes do not re-parse — is not a chain failure: a rewrite
+//! that was meant to work and has not leaves every subsequent processing
+//! step undefined, so the engine fail-stops with a panic naming the
+//! failing link's pack-prefixed label (the storage-fault rule).
 
 use hardy_bpv7::{
     block,
@@ -42,10 +48,7 @@ pub use self::{
     pack::FilterPack,
     slots::{MetadataDelta, SlotHandle},
 };
-use crate::{
-    HashMap,
-    bundle::{Bundle, BundleMetadata},
-};
+use crate::{HashMap, bundle::BundleMetadata};
 
 mod engine;
 
@@ -85,9 +88,11 @@ pub enum Verdict<T = ()> {
     Drop(Option<ReasonCode>),
 }
 
-/// The read handle every filter kind is invoked with: the bundle, the resident
-/// source bytes, the BCB OperationSets, and the key source, bundled into one
-/// borrow.
+/// The read handle every filter kind is invoked with: the *wire* bundle, the
+/// resident source bytes, the BCB OperationSets, and the key source, bundled
+/// into one borrow. The BPA-local record state travels as the invocation's
+/// separate `metadata` argument — the wire form and the record's mutable
+/// annotations are deliberately never one object.
 ///
 /// The OperationSets are stack-local at the call site (decoded once by
 /// `parse()`); the reader lends them to block access, so a filter reads or
@@ -95,18 +100,21 @@ pub enum Verdict<T = ()> {
 /// bpv7 accessors, which return `None` when the bytes are not resident (the
 /// headers-only or streaming case).
 pub struct BundleReader<'a> {
-    bundle: &'a Bundle,
+    // The *wire* bundle, deliberately: the BPA-local metadata is a separate
+    // argument to every filter invocation, so the two states cannot be
+    // confused — and the reader is invariant wherever the wire form is.
+    bundle: &'a hardy_bpv7::Bundle,
     data: &'a [u8],
     bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
     keys: &'a dyn KeySource,
 }
 
 impl<'a> BundleReader<'a> {
-    /// Builds a reader over a bundle, its resident bytes, the decoded BCB
-    /// OperationSets, and the key source. Constructed by the engine at each
-    /// hook from the pieces `parse()` produced.
+    /// Builds a reader over the wire bundle, its resident bytes, the decoded
+    /// BCB OperationSets, and the key source. Constructed by the engine at
+    /// each hook from the pieces `parse()` produced.
     pub(crate) fn new(
-        bundle: &'a Bundle,
+        bundle: &'a hardy_bpv7::Bundle,
         data: &'a [u8],
         bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
         keys: &'a dyn KeySource,
@@ -119,22 +127,16 @@ impl<'a> BundleReader<'a> {
         }
     }
 
-    /// The BPA-local metadata (provenance, wire cache, classification), read
-    /// through the record's own field privacy.
-    pub fn metadata(&self) -> &'a BundleMetadata {
-        &self.bundle.metadata
-    }
-
     /// The bundle's primary block, decoded into typed fields.
     pub fn primary(&self) -> &'a PrimaryBlock {
-        self.bundle.primary()
+        &self.bundle.primary
     }
 
     /// The block header (type, flags, CRC, BPSec coverage, extents) for a block
     /// number, or `None` when the bundle has no such block. Block *bodies* come
     /// from [`block_data`](Self::block_data).
     pub fn block(&self, block_number: u64) -> Option<&'a block::Block> {
-        self.bundle.bpv7.blocks.get(&block_number)
+        self.bundle.blocks.get(&block_number)
     }
 
     /// A block's plaintext bytes: the raw body when unencrypted, or the
@@ -150,20 +152,19 @@ impl<'a> BundleReader<'a> {
         &self,
         block_number: u64,
     ) -> Result<Option<block::Payload<'a>>, hardy_bpv7::Error> {
-        let bundle = self.bundle;
         // Residency pre-check: a present block whose extents fall outside
         // the resident bytes is "not available to me" (`Ok(None)`), the
         // same answer `Block::extract` gives — without it the extent slice
         // below surfaces as `Err(Altered)`. Compared in u64: a block past
         // usize::MAX on a 32-bit target is equally non-resident.
-        if let Some(block) = bundle.bpv7.blocks.get(&block_number)
+        if let Some(block) = self.bundle.blocks.get(&block_number)
             && block.payload_range().end > self.data.len() as u64
         {
             return Ok(None);
         }
         match bpsec::block_data(
             block_number,
-            &bundle.bpv7.blocks,
+            &self.bundle.blocks,
             self.data,
             self.bcb_ops,
             self.keys,
@@ -173,23 +174,6 @@ impl<'a> BundleReader<'a> {
             | Err(hardy_bpv7::Error::MissingBlock(_)) => Ok(None),
             Err(e) => Err(e),
         }
-    }
-
-    /// The bundle's creation time: the primary block's timestamp, or for a
-    /// clockless source, arrival time minus the Bundle Age.
-    pub fn creation_time(&self) -> time::OffsetDateTime {
-        self.bundle.creation_time()
-    }
-
-    /// When the bundle's lifetime ends: creation time plus the primary
-    /// block's lifetime, saturating.
-    pub fn expiry(&self) -> time::OffsetDateTime {
-        self.bundle.expiry()
-    }
-
-    /// Whether [`expiry`](Self::expiry) has already passed.
-    pub fn has_expired(&self) -> bool {
-        self.bundle.has_expired()
     }
 
     /// CBOR-decodes a block's plaintext body into `T`, requiring the whole body
@@ -217,27 +201,36 @@ impl<'a> BundleReader<'a> {
 /// by contract: no ordering is guaranteed among them and there is no
 /// cross-talk, so a Verifier must not depend on another filter having run.
 ///
-/// The invocation reads the bundle through the [`BundleReader`] — the primary
-/// block, per-block headers, and block bodies (plaintext or BCB-decrypted). The
-/// kind is payload-independent by contract.
+/// The invocation reads the wire bundle through the [`BundleReader`] — the
+/// primary block, per-block headers, and block bodies (plaintext or
+/// BCB-decrypted) — and the BPA-local record state through the separate
+/// `metadata` argument (provenance, extension-field cache, annotation
+/// slots; expiry via [`BundleMetadata::expiry`]). The kind is
+/// payload-independent by contract.
 pub trait Verifier: Send + Sync {
     /// Inspect the bundle and return [`Verdict::Continue`] to accept or
     /// [`Verdict::Drop`] to reject it.
-    fn check(&self, reader: &BundleReader<'_>) -> Verdict;
+    fn check(&self, reader: &BundleReader<'_>, metadata: &BundleMetadata) -> Verdict;
 }
 
 /// An annotating input filter for the Ingress and Originate hooks. Runs
-/// sequentially — seeing the deltas applied by preceding links of the same
-/// pass — and contributes a [`slots::MetadataDelta`] the engine applies before
-/// the next invocation.
+/// sequentially — `metadata` shows the deltas applied by preceding links of
+/// the same pass — and contributes a [`slots::MetadataDelta`] the engine
+/// applies before the next invocation.
 ///
 /// Node-scoped: it writes metadata this node's own downstream consumes. The
-/// returned delta is applied idempotently, never by touching `bundle.metadata`
-/// directly.
+/// returned delta is applied idempotently, never by touching the record
+/// directly — the wire bundle (the reader) and the BPA-local record state
+/// (`metadata`) are deliberately separate arguments: only the latter ever
+/// changes, and only through deltas.
 pub trait Classifier: Send + Sync {
     /// Inspect the bundle and return the metadata changes to apply
     /// ([`Verdict::Continue`]) or drop the bundle ([`Verdict::Drop`]).
-    fn classify(&self, reader: &BundleReader<'_>) -> Verdict<slots::MetadataDelta>;
+    fn classify(
+        &self,
+        reader: &BundleReader<'_>,
+        metadata: &BundleMetadata,
+    ) -> Verdict<slots::MetadataDelta>;
 }
 
 /// An extension-block rewriter. Runs sequentially, per attempt, in memory —
@@ -269,6 +262,7 @@ pub trait Rewriter: Send + Sync {
     fn rewrite(
         &self,
         reader: &BundleReader<'_>,
+        metadata: &BundleMetadata,
         context: RewriteContext<'_>,
         editor: &mut ScopedEditor<'_>,
     ) -> Verdict;
@@ -299,7 +293,6 @@ mod tests {
     use hardy_bpv7::{builder::Builder, creation_timestamp::CreationTimestamp};
 
     use super::*;
-    use crate::bundle::BundleMetadata;
 
     // A present block whose extents fall outside the resident bytes is
     // "not resident": the documented Ok(None), never Err(Altered). Only
@@ -312,19 +305,19 @@ mod tests {
             .build(CreationTimestamp::now())
             .unwrap();
         let parsed = hardy_bpv7::parse::parse(bytes::Bytes::from(data)).unwrap();
-        let bundle = Bundle::new(parsed.bundle, BundleMetadata::originated());
+        let bundle = parsed.bundle;
 
         // Truncate inside the payload block's extents.
-        let end = usize::try_from(bundle.bpv7.blocks[&1].payload_range().end).unwrap();
+        let end = usize::try_from(bundle.blocks[&1].payload_range().end).unwrap();
         let truncated = &parsed.data[..end - 8];
 
         let bcb_ops = HashMap::default();
-        let keys = hardy_bpv7::bpsec::no_keys(&bundle.bpv7, truncated);
+        let keys = hardy_bpv7::bpsec::no_keys(&bundle, truncated);
         let reader = BundleReader::new(&bundle, truncated, &bcb_ops, &*keys);
         assert!(matches!(reader.block_data(1), Ok(None)));
 
         // The whole buffer still reads the block.
-        let keys = hardy_bpv7::bpsec::no_keys(&bundle.bpv7, &parsed.data);
+        let keys = hardy_bpv7::bpsec::no_keys(&bundle, &parsed.data);
         let reader = BundleReader::new(&bundle, &parsed.data, &bcb_ops, &*keys);
         assert!(matches!(reader.block_data(1), Ok(Some(_))));
     }

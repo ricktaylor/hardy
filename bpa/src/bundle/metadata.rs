@@ -3,6 +3,7 @@ use core::{str::from_utf8, time::Duration};
 use hardy_bpv7::{
     eid::{Eid, NodeId},
     hop_info::HopInfo,
+    primary_block::PrimaryBlock,
 };
 use hardy_cbor::decode::{Head, Marker, parse, parse_exact};
 #[cfg(feature = "serde")]
@@ -189,6 +190,27 @@ impl BundleMetadata {
     /// Wall-clock time when the bundle entered this BPA's custody.
     pub fn received_at(&self) -> OffsetDateTime {
         self.provenance.received_at
+    }
+
+    /// The bundle's creation time under the RFC 9171 rule: the primary
+    /// block's timestamp when the source is clocked, else
+    /// [`received_at`](Self::received_at) minus the Bundle Age extension
+    /// field. Lives here because both fallback inputs are this record's —
+    /// the primary block is the caller's argument.
+    pub fn creation_time(&self, primary: &PrimaryBlock) -> OffsetDateTime {
+        super::creation_time(primary, self.extensions.age, self.received_at())
+    }
+
+    /// When the bundle's lifetime ends:
+    /// [`creation_time`](Self::creation_time) plus the primary block's
+    /// lifetime, saturating.
+    pub fn expiry(&self, primary: &PrimaryBlock) -> OffsetDateTime {
+        super::expiry(primary, self.extensions.age, self.received_at())
+    }
+
+    /// Whether [`expiry`](Self::expiry) has already passed.
+    pub fn has_expired(&self, primary: &PrimaryBlock) -> bool {
+        self.expiry(primary) <= OffsetDateTime::now_utc()
     }
 
     /// How the bundle entered this BPA's custody.
