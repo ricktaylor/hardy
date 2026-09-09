@@ -148,16 +148,18 @@ impl BpaBuilder {
         self
     }
 
-    /// Sets the maximum size of a single reassembled bundle at ingress.
+    /// Sets the maximum accepted bundle size, in bytes (private 64 MiB
+    /// default).
     ///
     /// Streamed dispatch and streamed service origination accumulate
     /// segments until the bundle is complete; this bound stops a runaway or
-    /// hostile producer growing BPA memory without limit. Streams exceeding
-    /// it are rejected with an error to the producer. Defaults privately at
-    /// the point of use. A cap beyond the target's addressable bound
-    /// (`isize::MAX`, relevant on 32-bit targets) is clamped to it — the
-    /// clamped value is both enforced and advertised to CLAs at
-    /// registration.
+    /// hostile producer growing BPA memory without limit. An over-cap CLA
+    /// transfer is answered [`Acceptance::Refused`](crate::cla::Acceptance)
+    /// (the CLA withholds its acknowledgement); an over-cap origination
+    /// fails with a size error to the producer. A cap beyond the target's
+    /// addressable bound (`isize::MAX`, relevant on 32-bit targets) is
+    /// clamped to it — the clamped value is both enforced and advertised to
+    /// CLAs at registration.
     pub fn max_bundle_size(mut self, v: NonZeroU64) -> Self {
         self.max_bundle_size = Some(v);
         self

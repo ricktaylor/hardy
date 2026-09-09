@@ -814,6 +814,13 @@ impl storage::MetadataStorage for PostgresStorage {
 
         loop {
             let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
+            // Queue-identity match (`BundleStatus::same_queue`): `next_hop`
+            // is deliberately absent from the WHERE list — a ForwardPending
+            // record's adjacency is its own per-bundle payload, which the
+            // caller's queue key cannot name — so it is selected back and
+            // each bundle's own record is emitted. Adding a `next_hop`
+            // predicate here would strand every spilled egress bundle whose
+            // stored adjacency differs from the caller's placeholder.
             let rows = sqlx::query_as::<_, PendingRow>(
                 "SELECT id, received_at, bundle, status, peer_id, queue_id,
                         adu_source, adu_ts_ms, adu_ts_seq, service_eid, next_hop
