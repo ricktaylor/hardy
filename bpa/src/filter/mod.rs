@@ -37,7 +37,11 @@ use hardy_bpv7::{
 };
 use hardy_cbor::decode::{FromCbor, parse_exact};
 
-use self::editor::ScopedEditor;
+pub use self::{
+    editor::ScopedEditor,
+    pack::FilterPack,
+    slots::{MetadataDelta, SlotHandle},
+};
 use crate::{
     HashMap,
     bundle::{Bundle, BundleMetadata},
@@ -169,6 +173,23 @@ impl<'a> BundleReader<'a> {
             | Err(hardy_bpv7::Error::MissingBlock(_)) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The bundle's creation time: the primary block's timestamp, or for a
+    /// clockless source, arrival time minus the Bundle Age.
+    pub fn creation_time(&self) -> time::OffsetDateTime {
+        self.bundle.creation_time()
+    }
+
+    /// When the bundle's lifetime ends: creation time plus the primary
+    /// block's lifetime, saturating.
+    pub fn expiry(&self) -> time::OffsetDateTime {
+        self.bundle.expiry()
+    }
+
+    /// Whether [`expiry`](Self::expiry) has already passed.
+    pub fn has_expired(&self) -> bool {
+        self.bundle.has_expired()
     }
 
     /// CBOR-decodes a block's plaintext body into `T`, requiring the whole body

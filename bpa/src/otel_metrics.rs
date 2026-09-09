@@ -174,11 +174,6 @@ pub fn init() {
         "Currently registered services"
     );
     metrics::describe_gauge!(
-        "bpa.filter.registered",
-        metrics::Unit::Count,
-        "Currently registered filters (by hook)"
-    );
-    metrics::describe_gauge!(
         "bpa.rib.agents",
         metrics::Unit::Count,
         "Currently registered routing agents"
