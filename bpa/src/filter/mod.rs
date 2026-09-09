@@ -180,9 +180,11 @@ impl<'a> BundleReader<'a> {
     }
 }
 
-/// A read-only admission check. Runs in parallel with the other Verifiers at
-/// its hook (registrable at any hook) and contributes nothing — it only
-/// accepts or drops.
+/// A read-only admission check, registrable at any hook. It contributes
+/// nothing — it only accepts or drops — and is invoked synchronously,
+/// inline on the pipeline task. Verifiers at a hook are order-independent
+/// by contract: no ordering is guaranteed among them and there is no
+/// cross-talk, so a Verifier must not depend on another filter having run.
 ///
 /// The invocation reads the bundle through the [`BundleReader`] — the primary
 /// block, per-block headers, and block bodies (plaintext or BCB-decrypted). The

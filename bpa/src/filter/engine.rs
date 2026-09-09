@@ -1,10 +1,8 @@
 //! The chain runner: executes the frozen per-hook chains inline.
 //!
 //! Filter invocations are synchronous and the decoded BCB OperationSets are
-//! not `Send`, so every chain runs inline on the calling task — "parallel"
-//! Verifiers is an independence contract (no ordering, no cross-talk), not a
-//! spawning strategy. An empty chain costs one branch: nothing is parsed and
-//! nothing is allocated.
+//! not `Send`, so every chain runs inline on the calling task. An empty
+//! chain costs one branch: nothing is parsed and nothing is allocated.
 //!
 //! Every runner returns the bundle to the caller on both the verdict and the
 //! error path, so a claimed bundle's status is always resolved by the site
