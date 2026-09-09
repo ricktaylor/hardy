@@ -73,7 +73,10 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// Hook registrations take a `label`, carried as `"<pack>.<label>"` in logs
 /// and metrics — purely diagnostic, never unique. The `_with_peek` variants
 /// at the input hooks declare a payload-prefix byte count folded into the
-/// node-wide peek `P` at `build()`; the base methods declare 0.
+/// node-wide peek `P` at `build()`; the base methods declare 0. Until the
+/// streaming ingress gate lands (Phase 3, `filter_subsystem_design.md`),
+/// the declaration is recorded but has no effect: hooks run with the full
+/// bundle resident and `P` is unconsumed.
 pub struct FilterPack {
     name: Arc<str>,
     slots: SlotRegistry,
@@ -137,6 +140,10 @@ impl FilterPack {
 
     /// Appends a [`Verifier`] to the Ingress chain, declaring a `peek`-byte
     /// payload prefix.
+    ///
+    /// Recorded but inert until the Phase 3 streaming ingress gate lands
+    /// (`filter_subsystem_design.md`): hooks currently run with the full
+    /// bundle resident.
     pub fn ingress_verifier_with_peek(
         &mut self,
         label: &str,
@@ -164,6 +171,10 @@ impl FilterPack {
 
     /// Appends a [`Verifier`] to the Originate chain, declaring a
     /// `peek`-byte payload prefix.
+    ///
+    /// Recorded but inert until the Phase 3 streaming ingress gate lands
+    /// (`filter_subsystem_design.md`): hooks currently run with the full
+    /// bundle resident.
     pub fn originate_verifier_with_peek(
         &mut self,
         label: &str,
@@ -215,6 +226,10 @@ impl FilterPack {
 
     /// Appends a [`Classifier`] to the Ingress chain, declaring a
     /// `peek`-byte payload prefix.
+    ///
+    /// Recorded but inert until the Phase 3 streaming ingress gate lands
+    /// (`filter_subsystem_design.md`): hooks currently run with the full
+    /// bundle resident.
     pub fn ingress_classifier_with_peek(
         &mut self,
         label: &str,
@@ -243,6 +258,10 @@ impl FilterPack {
 
     /// Appends a [`Classifier`] to the Originate chain, declaring a
     /// `peek`-byte payload prefix.
+    ///
+    /// Recorded but inert until the Phase 3 streaming ingress gate lands
+    /// (`filter_subsystem_design.md`): hooks currently run with the full
+    /// bundle resident.
     pub fn originate_classifier_with_peek(
         &mut self,
         label: &str,
