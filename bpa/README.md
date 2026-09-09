@@ -44,7 +44,8 @@ use hardy_bpa::node_ids::NodeIds;
 let bpa = Bpa::builder()
     .node_ids(node_ids)
     .status_reports(true)
-    .build();
+    .build()
+    .await?;
 
 // Start processing
 bpa.start(false).await;

@@ -1,6 +1,5 @@
-use core::time::Duration;
-
 use alloc::borrow::Cow;
+use core::time::Duration;
 
 // `Bpv7Bundle` disambiguates the structural wire bundle from the BPA
 // record `bundle::Bundle` used throughout this module.
