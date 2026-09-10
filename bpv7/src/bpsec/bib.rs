@@ -5,13 +5,14 @@ use hardy_cbor::{
 use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
+use crate::bpsec::context;
 use crate::bundle::{BibCoverage, BlockType};
 use crate::{
     HashMap,
-    bpsec::{BlockSet, Context, Error, key, parse},
+    bpsec::{BlockSet, ContextId, Error, asb, key},
     crc, eid,
 };
+
 /// A parsed BIB (Block Integrity Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
@@ -19,9 +20,9 @@ use crate::{
 pub enum Operation {
     /// HMAC-SHA2 integrity operation (RFC 9173).
     #[cfg(feature = "rfc9173")]
-    HMAC_SHA2(rfc9173::bib_hmac_sha2::Operation),
+    HMAC_SHA2(context::bib_hmac_sha2::Operation),
     /// An unrecognised security context (context ID, raw parameters/results).
-    Unrecognised(u64, parse::UnknownOperation),
+    Unrecognised(u64, asb::UnknownOperation),
 }
 
 /// Arguments passed to a BIB verification operation.
@@ -199,7 +200,7 @@ impl ToCbor for OperationSet {
         // Targets
         encoder.emit(targets.as_slice());
 
-        // Context
+        // ContextId
         operations
             .first()
             // SAFETY: An OperationSet is non-empty by construction
@@ -220,18 +221,18 @@ impl FromCbor for OperationSet {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         // ASB parsing is strict-canonical (errors on non-shortest, indefinite,
-        // or tagged content) and likewise the rfc9173 context parsers below,
+        // or tagged content) and likewise the security-context parsers below,
         // so any value returned here is canonical by construction.
-        let (asb, len) = parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
+        let (asb, len) = parse::<(asb::AbstractSyntaxBlock, usize)>(data)?;
 
         // Unpack into strong types
         #[allow(unreachable_patterns)]
         match asb.context {
             #[cfg(feature = "rfc9173")]
-            Context::BIB_HMAC_SHA2 => rfc9173::bib_hmac_sha2::parse(asb, data)
+            ContextId::BIB_HMAC_SHA2 => context::bib_hmac_sha2::parse(asb, data)
                 .map(|(source, operations)| (OperationSet { source, operations }, true, len)),
-            Context::Unrecognised(id) => {
-                parse::UnknownOperation::parse(asb, data).map(|(source, operations)| {
+            ContextId::Unrecognised(id) => {
+                asb::UnknownOperation::parse(asb, data).map(|(source, operations)| {
                     (
                         OperationSet {
                             source,

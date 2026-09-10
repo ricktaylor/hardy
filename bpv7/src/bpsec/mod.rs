@@ -18,17 +18,26 @@ pub mod key;
 /// [`BPSecEditor`]: edit::BPSecEditor
 pub mod edit;
 
+mod asb;
 mod error;
-pub use self::error::{Error, Result};
-
-mod parse;
 
 /// RFC 9173 default security contexts (BIB-HMAC-SHA2 and BCB-AES-GCM).
+/// The default security contexts, grouped by context name
+/// (BIB-HMAC-SHA2 from RFC 9173 §3, BCB-AES-GCM from §4).
 #[cfg(feature = "rfc9173")]
-pub mod rfc9173;
+pub mod context;
+
+// Crypto primitives shared by the security contexts (and any future one):
+// wire MAC tags, AES key wrap, and the sized IV type.
+#[cfg(feature = "rfc9173")]
+mod iv;
+#[cfg(feature = "rfc9173")]
+mod key_wrap;
+#[cfg(feature = "rfc9173")]
+mod mac_tag;
 
 // Signer and encryptor always compile. Without any security context
-// feature enabled (e.g. rfc9173), their `Context` enums only carry the
+// feature enabled (e.g. context), their `Context` enums only carry the
 // `__Reserved` placeholder variant — callers cannot construct a useful
 // context, and the build paths return `Error::UnsupportedOperation`.
 /// Bundle encryption API for adding BCB blocks to bundles.
@@ -37,6 +46,13 @@ pub mod encryptor;
 /// Bundle signing API for adding BIB blocks to bundles.
 #[cfg(feature = "bpsec")]
 pub mod signer;
+
+pub use self::asb::UnknownOperation;
+#[cfg(feature = "bpsec")]
+pub use self::encryptor::Encryptor;
+pub use self::error::{Error, Result};
+#[cfg(feature = "bpsec")]
+pub use self::signer::Signer;
 
 use crate::bundle::{Block, Payload};
 use crate::{HashMap, bundle, canonical::CaptureFieldErr};
@@ -49,9 +65,12 @@ pub fn no_keys(_bundle: &bundle::Bundle, _data: &[u8]) -> Box<dyn key::KeySource
 
 /// BPSec security context identifier (RFC 9172 Section 3.4).
 #[derive(Debug, Clone, Copy)]
+// The variant names are RFC 9173's own context names, kept verbatim as
+// spec vocabulary; the same rationale covers every allow of this pair in
+// the bpsec tree.
 #[allow(clippy::upper_case_acronyms)]
 #[allow(non_camel_case_types)]
-pub enum Context {
+pub enum ContextId {
     /// BIB-HMAC-SHA2 integrity context (RFC 9173 Section 3).
     #[cfg(feature = "rfc9173")]
     BIB_HMAC_SHA2,
@@ -62,7 +81,7 @@ pub enum Context {
     Unrecognised(u64),
 }
 
-impl ToCbor for Context {
+impl ToCbor for ContextId {
     type Result = ();
 
     fn to_cbor(&self, encoder: &mut Encoder) -> Self::Result {
@@ -76,7 +95,7 @@ impl ToCbor for Context {
     }
 }
 
-impl FromCbor for Context {
+impl FromCbor for ContextId {
     type Error = Error;
 
     fn from_cbor(data: &[u8]) -> core::result::Result<(Self, bool, usize), Self::Error> {

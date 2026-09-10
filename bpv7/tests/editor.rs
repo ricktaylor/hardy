@@ -5,7 +5,7 @@ use core::{num::NonZeroU8, time::Duration};
 
 use hardy_bpv7::{
     Bundle,
-    bpsec::{key, rfc9173::ScopeFlags, signer},
+    bpsec::{context::ScopeFlags, key, signer},
     builder, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
     eid, hop_info, parser,

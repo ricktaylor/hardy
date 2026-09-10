@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use thiserror::Error;
 
 #[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
+use crate::bpsec::context;
 use crate::bundle::{BibCoverage, BlockType};
 use crate::{
     HashMap,
@@ -53,7 +53,7 @@ impl From<bpsec::Error> for Error {
 pub enum Context {
     /// BIB-HMAC-SHA2 context with the specified IPPT scope flags (RFC 9173 Section 3).
     #[cfg(feature = "rfc9173")]
-    HMAC_SHA2(rfc9173::ScopeFlags),
+    HMAC_SHA2(context::ScopeFlags),
 
     /// Placeholder for future context types
     #[doc(hidden)]
@@ -264,12 +264,12 @@ fn build_bib_data(
     #[cfg(feature = "rfc9173")]
     if let Context::HMAC_SHA2(scope_flags) = context {
         return Ok(bib::Operation::HMAC_SHA2(
-            rfc9173::bib_hmac_sha2::Operation::sign(key, scope_flags, args)?,
+            context::bib_hmac_sha2::Operation::sign(key, scope_flags, args)?,
         ));
     }
 
     // Reachable when no security context feature is enabled (e.g.
-    // `--no-default-features` with no `rfc9173`), or when a caller
+    // `--no-default-features` with no `context`), or when a caller
     // constructs `Context::__Reserved`. Returns a typed error rather
     // than panicking, so an unsupported context is a signature-level
     // failure.

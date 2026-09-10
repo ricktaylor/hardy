@@ -10,10 +10,11 @@ use hardy_cbor::{
     encode::{Array, Encoder, Raw, ToCbor},
 };
 
-use super::{ScopeFlags, canonical_primary, iv::Iv, key_wrap::KeyWrap, rand_array, rand_bytes};
+use super::{ScopeFlags, canonical_primary, rand_array, rand_bytes};
+use crate::bpsec::{iv::Iv, key_wrap::KeyWrap};
 use crate::{
     HashMap,
-    bpsec::{Context, Error, bcb, key, parse},
+    bpsec::{ContextId, Error, asb, bcb, key},
     eid,
 };
 /// The RFC 9173 §4.3.2 variant parameter. A foreign wire value is a
@@ -74,18 +75,10 @@ impl Parameters {
         let mut flags = None;
         for (id, range) in parameters {
             match id {
-                1 => iv = Some(parse::decode_box(range, data)?),
-                2 => {
-                    variant = Some(hardy_cbor::decode::parse(parse::bounded_slice(
-                        data, range,
-                    )?)?)
-                }
-                3 => key = Some(parse::decode_box(range, data)?),
-                4 => {
-                    flags = Some(hardy_cbor::decode::parse(parse::bounded_slice(
-                        data, range,
-                    )?)?)
-                }
+                1 => iv = Some(asb::decode_box(range, data)?),
+                2 => variant = Some(hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?),
+                3 => key = Some(asb::decode_box(range, data)?),
+                4 => flags = Some(hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?),
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
@@ -140,7 +133,7 @@ impl Results {
         let mut r = None;
         for (id, range) in results {
             match id {
-                1 => r = Some(parse::decode_box(range, data)?),
+                1 => r = Some(asb::decode_box(range, data)?),
                 _ => return Err(Error::InvalidContextResult(id)),
             }
         }
@@ -318,7 +311,7 @@ impl Operation {
             Some(
                 key_wrap
                     .wrap_key(kek.expose_secret(), cek)
-                    .map_err(Error::Algorithm)?
+                    .map_err(|e| Error::Algorithm(e.to_string()))?
                     .into(),
             )
         } else {
@@ -487,7 +480,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
-        encoder.emit(&Context::BCB_AES_GCM);
+        encoder.emit(&ContextId::BCB_AES_GCM);
         encoder.emit(&1);
         encoder.emit(source);
         encoder.emit(self.parameters.as_ref());
@@ -499,7 +492,7 @@ impl Operation {
 }
 
 pub fn parse(
-    asb: parse::AbstractSyntaxBlock,
+    asb: asb::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bcb::Operation>), Error> {
     asb.into_operations(
@@ -526,7 +519,7 @@ mod tests {
     use super::*;
     use crate::HashMap;
     use crate::bpsec::Error;
-    use crate::bpsec::rfc9173::ScopeFlags;
+    use crate::bpsec::context::ScopeFlags;
 
     // RFC 9173 §4.3.1: decrypt must accept any IV of 8-16 bytes, not only 12.
     // Encrypt with a given nonce size via the crate's own encrypt_inner, then

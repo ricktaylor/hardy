@@ -1,14 +1,25 @@
-use super::*;
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use aes_kw::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockSizeUser, KeyInit, consts::U16};
+use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::bpsec::key::KeyAlgorithm;
+
+/// Errors from the AES-KW dispatch. Deliberately detail-free beyond which
+/// precondition failed: cipher-level diagnostics are withheld for the same
+/// side-channel reason the context errors are opaque.
+#[derive(Error, Debug)]
+pub enum Error {
+    /// The key-encryption key length does not match the selected cipher.
+    #[error("invalid key-encryption-key length for the selected AES-KW cipher")]
+    InvalidKekLength,
+    /// The wrap or unwrap operation failed.
+    #[error("AES key wrap operation failed")]
+    Failed,
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// An AES key-wrap (RFC 3394) algorithm, selected from a JWK `alg` by
 /// the security contexts. Owns the per-cipher dispatch for both
@@ -55,7 +66,7 @@ impl KeyWrap {
         }
     }
 
-    pub fn wrap_key(self, kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String> {
+    pub fn wrap_key(self, kek: &[u8], cek: &[u8]) -> Result<Vec<u8>> {
         match self {
             Self::Aes128 => wrap::<aes_kw::aes::Aes128>(kek, cek),
             Self::Aes192 => wrap::<aes_kw::aes::Aes192>(kek, cek),
@@ -63,11 +74,7 @@ impl KeyWrap {
         }
     }
 
-    pub fn unwrap_key(
-        self,
-        kek: &[u8],
-        wrapped_key: &[u8],
-    ) -> Result<Zeroizing<Box<[u8]>>, String> {
+    pub fn unwrap_key(self, kek: &[u8], wrapped_key: &[u8]) -> Result<Zeroizing<Box<[u8]>>> {
         match self {
             Self::Aes128 => unwrap::<aes_kw::aes::Aes128>(kek, wrapped_key),
             Self::Aes192 => unwrap::<aes_kw::aes::Aes192>(kek, wrapped_key),
@@ -76,30 +83,30 @@ impl KeyWrap {
     }
 }
 
-fn wrap<C>(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>, String>
+fn wrap<C>(kek: &[u8], cek: &[u8]) -> Result<Vec<u8>>
 where
     C: BlockCipherEncrypt + BlockSizeUser<BlockSize = U16>,
     aes_kw::AesKw<C>: KeyInit,
 {
-    let kw = aes_kw::AesKw::<C>::new_from_slice(kek).map_err(|e| e.to_string())?;
+    let kw = aes_kw::AesKw::<C>::new_from_slice(kek).map_err(|_| Error::InvalidKekLength)?;
     let mut buf = vec![0u8; cek.len() + 8];
     kw.wrap_key(cek, &mut buf)
         .map(|out| out.to_vec())
-        .map_err(|e| e.to_string())
+        .map_err(|_| Error::Failed)
 }
 
 // Unwraps an AES-KW wrapped CEK. The plaintext buffer is owned by
 // `Zeroizing` while still all-zero, so every exit path, including `?`,
 // wipes it on drop.
-fn unwrap<C>(kek: &[u8], wrapped_key: &[u8]) -> Result<Zeroizing<Box<[u8]>>, String>
+fn unwrap<C>(kek: &[u8], wrapped_key: &[u8]) -> Result<Zeroizing<Box<[u8]>>>
 where
     C: BlockCipherDecrypt + BlockSizeUser<BlockSize = U16>,
     aes_kw::AesKw<C>: KeyInit,
 {
-    let kw = aes_kw::AesKw::<C>::new_from_slice(kek).map_err(|e| e.to_string())?;
+    let kw = aes_kw::AesKw::<C>::new_from_slice(kek).map_err(|_| Error::InvalidKekLength)?;
     let mut buf: Zeroizing<Box<[u8]>> =
         Zeroizing::new(vec![0u8; wrapped_key.len().saturating_sub(8)].into_boxed_slice());
     kw.unwrap_key(wrapped_key, &mut buf)
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| Error::Failed)?;
     Ok(buf)
 }

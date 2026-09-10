@@ -577,7 +577,7 @@ fn dump_bcb(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 output.append_str(format!("Wrapped Key: {}\n\n", dump_bytes(key),))?;
             }
 
-            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
+            if op.parameters.flags == bpsec::context::ScopeFlags::NONE {
                 output.append_str("Scope BundleFlags: None\n\n")?;
             } else {
                 output.append_str("Scope BundleFlags:\n\n")?;
@@ -648,7 +648,7 @@ fn dump_bib(data: &[u8], output: &io::Output) -> anyhow::Result<()> {
                 output.append_str(format!("Wrapped Key: {}\n\n", dump_bytes(key),))?;
             }
 
-            if op.parameters.flags == bpsec::rfc9173::ScopeFlags::NONE {
+            if op.parameters.flags == bpsec::context::ScopeFlags::NONE {
                 output.append_str("Scope BundleFlags: None\n\n")?;
             } else {
                 output.append_str("Scope BundleFlags:\n\n")?;

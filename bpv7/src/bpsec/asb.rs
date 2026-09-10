@@ -124,7 +124,7 @@ impl UnknownOperation {
 }
 
 pub struct AbstractSyntaxBlock {
-    pub context: Context,
+    pub context: ContextId,
     // Private: the ranges can only be consumed through `into_operations`,
     // so every security context unpacks an ASB the same way.
     source: eid::Eid,
@@ -198,7 +198,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 return Err(Error::NoTargets);
             }
 
-            // Context
+            // ContextId
             let context = require_canonical(seq, "security context id", Error::NotCanonical)?;
 
             // BundleFlags
@@ -210,7 +210,7 @@ impl hardy_cbor::decode::FromCbor for AbstractSyntaxBlock {
                 return Err(Error::InvalidSecuritySource);
             }
 
-            // Context Parameters
+            // ContextId Parameters
             let parameters = if flags & 1 == 0 {
                 HashMap::new()
             } else {
@@ -325,7 +325,7 @@ mod tests {
         let (asb, shortest, len) =
             hardy_cbor::decode::parse::<(AbstractSyntaxBlock, bool, usize)>(&data)
                 .expect("should parse");
-        assert!(matches!(asb.context, Context::Unrecognised(99)));
+        assert!(matches!(asb.context, ContextId::Unrecognised(99)));
         assert_eq!(asb.source, ipn_source());
         assert_eq!(asb.results.len(), 2);
         assert!(shortest, "strict-canonical ASB decode returns shortest");

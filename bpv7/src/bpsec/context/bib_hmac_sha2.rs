@@ -7,11 +7,12 @@ use hardy_cbor::{
 };
 use hmac::{KeyInit, Mac};
 
-use super::{ScopeFlags, canonical_primary, key_wrap::KeyWrap, mac_tag::MacTag, rand_bytes};
+use super::{ScopeFlags, canonical_primary, rand_bytes};
+use crate::bpsec::{key_wrap::KeyWrap, mac_tag::MacTag};
 use crate::bundle::BlockType;
 use crate::{
     HashMap,
-    bpsec::{Context, Error, bib, key, parse},
+    bpsec::{ContextId, Error, asb, bib, key},
     eid,
 };
 
@@ -72,11 +73,9 @@ impl Parameters {
         let mut result = Self::default();
         for (id, range) in parameters {
             match id {
-                1 => {
-                    result.variant = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?
-                }
-                2 => result.key = Some(parse::decode_box(range, data)?),
-                3 => result.flags = hardy_cbor::decode::parse(parse::bounded_slice(data, range)?)?,
+                1 => result.variant = hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?,
+                2 => result.key = Some(asb::decode_box(range, data)?),
+                3 => result.flags = hardy_cbor::decode::parse(asb::bounded_slice(data, range)?)?,
                 _ => return Err(Error::InvalidContextParameter(id)),
             }
         }
@@ -121,7 +120,7 @@ impl Results {
         let mut r = None;
         for (id, range) in results {
             match id {
-                1 => r = Some(parse::decode_box(range, data)?),
+                1 => r = Some(asb::decode_box(range, data)?),
                 _ => return Err(Error::InvalidContextResult(id)),
             }
         }
@@ -314,7 +313,7 @@ impl Operation {
             Some(
                 key_wrap
                     .wrap_key(kek.expose_secret(), &cek)
-                    .map_err(Error::Algorithm)?
+                    .map_err(|e| Error::Algorithm(e.to_string()))?
                     .into(),
             )
         } else {
@@ -410,7 +409,7 @@ impl Operation {
     }
 
     pub fn emit_context(&self, encoder: &mut Encoder, source: &eid::Eid) {
-        encoder.emit(&Context::BIB_HMAC_SHA2);
+        encoder.emit(&ContextId::BIB_HMAC_SHA2);
         if self.parameters.as_ref() == &Parameters::default() {
             encoder.emit(&0);
             encoder.emit(source);
@@ -427,7 +426,7 @@ impl Operation {
 }
 
 pub fn parse(
-    asb: parse::AbstractSyntaxBlock,
+    asb: asb::AbstractSyntaxBlock,
     data: &[u8],
 ) -> Result<(eid::Eid, HashMap<u64, bib::Operation>), Error> {
     asb.into_operations(

@@ -8,7 +8,7 @@
 
 use hardy_bpv7::{
     Bundle,
-    bpsec::{self, edit::BPSecEditor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{self, context::ScopeFlags, edit::BPSecEditor, key, signer},
     builder::Builder,
     bundle::BlockType,
     checks, crc,

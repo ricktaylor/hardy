@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use thiserror::Error;
 
 #[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
+use crate::bpsec::context;
 use crate::bundle::{BibCoverage, BlockFlags, BlockType};
 use crate::{
     HashMap,
@@ -53,7 +53,7 @@ impl From<bpsec::Error> for Error {
 pub enum Context {
     /// BCB-AES-GCM context with the specified IPPT scope flags (RFC 9173 Section 4).
     #[cfg(feature = "rfc9173")]
-    AES_GCM(rfc9173::ScopeFlags),
+    AES_GCM(context::ScopeFlags),
 
     /// Placeholder for future context types
     #[doc(hidden)]
@@ -341,12 +341,12 @@ fn build_bcb_data(
 ) -> Result<(bcb::Operation, Box<[u8]>), bpsec::Error> {
     #[cfg(feature = "rfc9173")]
     if let Context::AES_GCM(scope_flags) = context {
-        let (op, data) = rfc9173::bcb_aes_gcm::Operation::encrypt(key, scope_flags, args)?;
+        let (op, data) = context::bcb_aes_gcm::Operation::encrypt(key, scope_flags, args)?;
         return Ok((bcb::Operation::AES_GCM(op), data));
     }
 
     // Reachable when no security context feature is enabled (e.g.
-    // `--no-default-features` with no `rfc9173`), or when a caller
+    // `--no-default-features` with no `context`), or when a caller
     // constructs `Context::__Reserved`. Returns a typed error rather
     // than panicking, so an unsupported context is a signature-level
     // failure.

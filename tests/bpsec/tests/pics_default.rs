@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{self, context::ScopeFlags, edit::BPSecEditor, encryptor, key, signer},
     bundle,
     bundle::{BibCoverage, BlockType},
     checks,

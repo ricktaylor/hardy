@@ -340,7 +340,7 @@ mod cascade_reencryption_tests {
             signer = signer
                 .sign_block(
                     t,
-                    bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
+                    bpsec::signer::Context::HMAC_SHA2(bpsec::context::ScopeFlags::default()),
                     "ipn:2.1".parse().unwrap(),
                     key,
                 )
@@ -355,9 +355,9 @@ mod cascade_reencryption_tests {
     fn encrypt(bundle_bytes: &[u8], target: u64, enc_k: &bpsec::key::Key) -> Box<[u8]> {
         let (bundle_bytes, raw, _, _) =
             raw_parse_tuple(Bytes::copy_from_slice(bundle_bytes)).expect("parse");
-        let flags = bpsec::rfc9173::ScopeFlags {
+        let flags = bpsec::context::ScopeFlags {
             include_security_header: false,
-            ..bpsec::rfc9173::ScopeFlags::default()
+            ..bpsec::context::ScopeFlags::default()
         };
         let encryptor = bpsec::encryptor::Encryptor::new(&raw, &bundle_bytes)
             .encrypt_block(
@@ -962,7 +962,7 @@ mod deferred_payload_bib_tests {
         bpsec::signer::Signer::new(&raw, &bytes)
             .sign_block(
                 1,
-                bpsec::signer::Context::HMAC_SHA2(bpsec::rfc9173::ScopeFlags::default()),
+                bpsec::signer::Context::HMAC_SHA2(bpsec::context::ScopeFlags::default()),
                 "ipn:2.1".parse().unwrap(),
                 key,
             )

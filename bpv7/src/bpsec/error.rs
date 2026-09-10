@@ -2,7 +2,8 @@ use alloc::{boxed::Box, string::String};
 
 use thiserror::Error;
 
-use crate::bpsec::{Context, key};
+use crate::bpsec::{ContextId, key};
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Block is not the target of a BCB")]
@@ -83,7 +84,7 @@ pub enum Error {
     NoTargets,
 
     #[error("Invalid context {0:?}")]
-    InvalidContext(Context),
+    InvalidContext(ContextId),
 
     #[error("Decryption failed")]
     DecryptionFailed,

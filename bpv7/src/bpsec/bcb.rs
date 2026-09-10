@@ -7,11 +7,11 @@ use hardy_cbor::{
 use smallvec::SmallVec;
 
 #[cfg(feature = "rfc9173")]
-use crate::bpsec::rfc9173;
+use crate::bpsec::context;
 use crate::bundle::BlockType;
 use crate::{
     HashMap,
-    bpsec::{BlockSet, Context, Error, key, parse},
+    bpsec::{BlockSet, ContextId, Error, asb, key},
     crc, eid,
 };
 /// A parsed BCB (Block Confidentiality Block) security operation.
@@ -21,9 +21,9 @@ use crate::{
 pub enum Operation {
     /// AES-GCM encryption operation (RFC 9173).
     #[cfg(feature = "rfc9173")]
-    AES_GCM(rfc9173::bcb_aes_gcm::Operation),
+    AES_GCM(context::bcb_aes_gcm::Operation),
     /// An unrecognised security context (context ID, raw parameters/results).
-    Unrecognised(u64, parse::UnknownOperation),
+    Unrecognised(u64, asb::UnknownOperation),
 }
 
 /// Arguments passed to a BCB decryption operation.
@@ -135,7 +135,7 @@ impl Operation {
                 let key = key_source
                     .key(args.bpsec_source, &[key::Operation::Encrypt])
                     .ok_or(Error::NoKey)?;
-                let (new_op, ciphertext) = rfc9173::bcb_aes_gcm::Operation::encrypt(
+                let (new_op, ciphertext) = context::bcb_aes_gcm::Operation::encrypt(
                     key,
                     op.parameters.flags.clone(),
                     args,
@@ -276,7 +276,7 @@ impl ToCbor for OperationSet {
         // Targets
         encoder.emit(targets.as_slice());
 
-        // Context
+        // ContextId
         operations
             .first()
             // SAFETY: An OperationSet is non-empty by construction
@@ -297,18 +297,18 @@ impl FromCbor for OperationSet {
 
     fn from_cbor(data: &[u8]) -> Result<(Self, bool, usize), Self::Error> {
         // ASB parsing is strict-canonical (errors on non-shortest, indefinite,
-        // or tagged content) and likewise the rfc9173 context parsers below,
+        // or tagged content) and likewise the security-context parsers below,
         // so any value returned here is canonical by construction.
-        let (asb, len) = parse::<(parse::AbstractSyntaxBlock, usize)>(data)?;
+        let (asb, len) = parse::<(asb::AbstractSyntaxBlock, usize)>(data)?;
 
         // Unpack into strong types
         #[allow(unreachable_patterns)]
         match asb.context {
             #[cfg(feature = "rfc9173")]
-            Context::BCB_AES_GCM => rfc9173::bcb_aes_gcm::parse(asb, data)
+            ContextId::BCB_AES_GCM => context::bcb_aes_gcm::parse(asb, data)
                 .map(|(source, operations)| (OperationSet { source, operations }, true, len)),
-            Context::Unrecognised(id) => {
-                parse::UnknownOperation::parse(asb, data).map(|(source, operations)| {
+            ContextId::Unrecognised(id) => {
+                asb::UnknownOperation::parse(asb, data).map(|(source, operations)| {
                     (
                         OperationSet {
                             source,

@@ -1,7 +1,7 @@
 use core::time::Duration;
 use hardy_bpv7::{
     Bundle,
-    bpsec::{self, edit::BPSecEditor, encryptor, key, rfc9173::ScopeFlags, signer},
+    bpsec::{self, context::ScopeFlags, edit::BPSecEditor, encryptor, key, signer},
     builder::Builder,
     bundle::{Block, BlockType},
     checks,

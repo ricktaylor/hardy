@@ -551,7 +551,7 @@ where
 /// that BCB and must be re-encrypted before the bundle is re-serialised.
 ///
 /// Bypasses the [`encryptor::Encryptor`] orchestrator and calls
-/// [`rfc9173::bcb_aes_gcm::Operation::encrypt`] directly. AAD inputs
+/// [`context::bcb_aes_gcm::Operation::encrypt`] directly. AAD inputs
 /// (primary block bytes, target/source block headers) are unchanged
 /// across the cascade — only the BIB's BTSD differs — so reusing the
 /// original `scope_flags`, BCB source EID, and key is sound. The

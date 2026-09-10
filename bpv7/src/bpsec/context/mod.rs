@@ -7,12 +7,8 @@ use hardy_cbor::{
 use rand::TryRng;
 
 use crate::{bpsec::Error, bundle};
-pub(crate) mod bcb_aes_gcm;
-pub(crate) mod bib_hmac_sha2;
-
-mod iv;
-mod key_wrap;
-mod mac_tag;
+pub mod bcb_aes_gcm;
+pub mod bib_hmac_sha2;
 
 /// Return the bytes to feed into BPSec IPPT/AAD for the primary block.
 ///
@@ -45,7 +41,7 @@ fn rand_array<const N: usize>() -> Result<[u8; N], Error> {
     Ok(buf)
 }
 
-// Tests live in `bpv7/tests/rfc9173.rs` (integration tests using the
+// Tests live in `bpv7/tests/context.rs` (integration tests using the
 // public API — keys, Signer/Encryptor/Editor — per the
 // inline-tests-vs-tests/ split convention).
 

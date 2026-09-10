@@ -1,6 +1,6 @@
 use super::*;
 use hardy_bpv7::eid::Eid;
-mod rfc9173 {
+mod context {
     use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -25,18 +25,18 @@ mod rfc9173 {
     }
 
     impl ArgFlags {
-        pub fn to_scope_flags(args: &[ArgFlags]) -> hardy_bpv7::bpsec::rfc9173::ScopeFlags {
+        pub fn to_scope_flags(args: &[ArgFlags]) -> hardy_bpv7::bpsec::context::ScopeFlags {
             // If no flags specified, use Default (all true)
             if args.is_empty() {
-                return hardy_bpv7::bpsec::rfc9173::ScopeFlags::default();
+                return hardy_bpv7::bpsec::context::ScopeFlags::default();
             }
 
             // If individual flags specified, start from NONE and enable only specified ones
-            let mut flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE;
+            let mut flags = hardy_bpv7::bpsec::context::ScopeFlags::NONE;
 
             for arg in args {
                 match arg {
-                    ArgFlags::None => flags = hardy_bpv7::bpsec::rfc9173::ScopeFlags::NONE,
+                    ArgFlags::None => flags = hardy_bpv7::bpsec::context::ScopeFlags::NONE,
                     ArgFlags::All => {
                         flags.include_primary_block = true;
                         flags.include_target_header = true;
@@ -80,7 +80,7 @@ pub struct Command {
 
     /// One or more scope flags, separated by ','
     #[arg(short, long, value_delimiter = ',')]
-    flags: Vec<rfc9173::ArgFlags>,
+    flags: Vec<context::ArgFlags>,
 
     /// The bundle file containing the block to sign, '-' to use stdin.
     input: io::Input,
@@ -101,7 +101,7 @@ impl Command {
         let signer = hardy_bpv7::bpsec::signer::Signer::new(&raw, &data)
             .sign_block(
                 self.block,
-                hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(rfc9173::ArgFlags::to_scope_flags(
+                hardy_bpv7::bpsec::signer::Context::HMAC_SHA2(context::ArgFlags::to_scope_flags(
                     &self.flags,
                 )),
                 self.source.unwrap_or_else(|| raw.primary.id.source.clone()),
