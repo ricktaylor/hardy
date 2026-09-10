@@ -277,14 +277,14 @@ fn do_glob(node_name: &str, demux: &str, pattern: &glob::Pattern) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::EidPattern;
+    use crate::{EidPattern, Repr};
 
     use super::*;
 
     // Parses `s` and asserts it is a set of exactly one dtn pattern item equal
     // to `expected`.
     fn dtn_parse(s: &str, expected: DtnPatternItem) {
-        let EidPattern::Set(v) = s
+        let EidPattern(Repr::Set(v)) = s
             .parse()
             .unwrap_or_else(|e| panic!("failed to parse pattern {s}: {e}"))
         else {

@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, collections::BTreeSet};
 
 use hardy_bpv7::eid::{Eid, IpnNodeId, UnknownSsp};
-use hardy_eid_patterns::{EidPattern, EidPatternItem, Error};
+use hardy_eid_patterns::{EidPattern, Error};
 
 // Parses `pattern` and reports whether it matches `eid`, panicking with the
 // offending input if either fails to parse.
@@ -42,18 +42,20 @@ fn scheme_beginning_with_nine_parses() {
         let pat: EidPattern = s
             .parse()
             .unwrap_or_else(|e| panic!("{s} should parse: {e}"));
-        assert_eq!(
-            pat,
-            EidPattern::Set(
-                [EidPatternItem::AnyNumericScheme(
-                    s.strip_suffix(":**")
-                        .expect("test scheme strings end in :**")
-                        .parse()
-                        .unwrap()
-                )]
-                .into()
-            )
-        );
+        assert_eq!(pat.to_string(), s, "{s} must round-trip through Display");
+        let scheme = s
+            .strip_suffix(":**")
+            .expect("test scheme strings end in :**")
+            .parse()
+            .unwrap();
+        assert!(pat.matches(&Eid::Unknown {
+            scheme,
+            ssp: unknown_ssp(),
+        }));
+        assert!(!pat.matches(&Eid::Unknown {
+            scheme: scheme + 1,
+            ssp: unknown_ssp(),
+        }));
     }
 }
 
@@ -112,7 +114,7 @@ fn union_sorts_more_specific_than_any() {
 #[test]
 fn any_pattern_matches_every_eid() {
     let any: EidPattern = "*:**".parse().expect("Failed to parse");
-    assert_eq!(any, EidPattern::Any);
+    assert_eq!(any.to_string(), "*:**");
 
     assert!(any.matches(&"ipn:1.2.3".parse().unwrap()));
     assert!(any.matches(&"dtn://node/svc".parse().unwrap()));
@@ -721,7 +723,7 @@ fn expand_local_node_any() {
         node_number: 1,
     };
 
-    let pattern = EidPattern::Any;
+    let pattern: EidPattern = "*:**".parse().unwrap();
     assert!(pattern.expand_local_node(&node_id).is_none());
 }
 

@@ -33,13 +33,13 @@ fn parse_eid_pattern(input: &mut &str) -> ModalResult<EidPattern> {
 
 // any-scheme-item = wildcard ":" multi-wildcard
 fn parse_any_scheme_item(input: &mut &str) -> ModalResult<EidPattern> {
-    ("*:**").map(|_| EidPattern::Any).parse_next(input)
+    ("*:**").map(|_| EidPattern::any()).parse_next(input)
 }
 
 // eid-pattern-set = eid-pattern-item *( "|" eid-pattern-item )
 fn parse_eid_pattern_set(input: &mut &str) -> ModalResult<EidPattern> {
     separated(1.., parse_eid_pattern_item, "|")
-        .map(|v: Vec<EidPatternItem>| EidPattern::Set(v.into()))
+        .map(|v: Vec<EidPatternItem>| EidPattern::from_items(v.into()))
         .parse_next(input)
 }
 
@@ -121,7 +121,7 @@ mod tests {
             "dtn://node/service|ipn:0.3.4"
                 .parse::<EidPattern>()
                 .expect("Failed to parse"),
-            EidPattern::Set(
+            EidPattern::from_items(
                 [
                     EidPatternItem::DtnPatternItem(DtnPatternItem::Exact(
                         "node".into(),

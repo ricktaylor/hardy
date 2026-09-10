@@ -55,19 +55,35 @@ pub enum Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// A pattern that matches one or more BPv7 Endpoint Identifiers.
-///
-/// `Any` matches every EID. `Set` holds one or more [`EidPatternItem`]s joined
-/// as a union (pipe-separated in text form, e.g. `ipn:1.*|dtn://node/**`).
+/// The private representation of an [`EidPattern`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(into = "String"))]
-#[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
-pub enum EidPattern {
+enum Repr {
     /// Matches any EID (displayed as `*:**`).
     Any,
     /// A union of one or more pattern items; matches if any item matches.
     Set(Box<[EidPatternItem]>),
+}
+
+/// A pattern that matches one or more BPv7 Endpoint Identifiers.
+///
+/// A pattern is either the catch-all (`*:**`, matching every EID) or a union
+/// of one or more scheme-specific items (pipe-separated in text form, e.g.
+/// `ipn:1.*|dtn://node/**`). The representation is private: patterns are
+/// built by parsing ([`FromStr`](core::str::FromStr)) or converting from an
+/// [`Eid`], both of which produce canonical values, so two patterns that
+/// match the same EIDs by the same spelling always compare equal.
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "String"))]
+#[cfg_attr(feature = "serde", serde(try_from = "Cow<'_,str>"))]
+pub struct EidPattern(Repr);
+
+impl fmt::Debug for EidPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The text form is the canonical representation; debug output shows
+        // it rather than the private structure.
+        write!(f, "EidPattern({self})")
+    }
 }
 
 impl PartialOrd for EidPattern {
@@ -83,24 +99,53 @@ impl Ord for EidPattern {
         let other_score = other.specificity_score().unwrap_or(0);
         other_score.cmp(&self_score).then_with(|| {
             // Structural tiebreaker for equal scores
-            match (self, other) {
-                (EidPattern::Any, EidPattern::Any) => Ordering::Equal,
-                (EidPattern::Any, EidPattern::Set(_)) => Ordering::Less,
-                (EidPattern::Set(_), EidPattern::Any) => Ordering::Greater,
-                (EidPattern::Set(a), EidPattern::Set(b)) => a.cmp(b),
+            match (&self.0, &other.0) {
+                (Repr::Any, Repr::Any) => Ordering::Equal,
+                (Repr::Any, Repr::Set(_)) => Ordering::Less,
+                (Repr::Set(_), Repr::Any) => Ordering::Greater,
+                (Repr::Set(a), Repr::Set(b)) => a.cmp(b),
             }
         })
     }
 }
 
 impl EidPattern {
+    /// The catch-all pattern (`*:**`).
+    fn any() -> Self {
+        EidPattern(Repr::Any)
+    }
+
+    /// A pattern from a non-empty item set.
+    fn from_items(items: Box<[EidPatternItem]>) -> Self {
+        EidPattern(Repr::Set(items))
+    }
+
     /// Returns `true` if the pattern matches the given EID.
     #[inline]
     pub fn matches(&self, eid: &Eid) -> bool {
-        match self {
-            EidPattern::Any => true,
-            EidPattern::Set(items) => items.iter().any(|i| i.matches(eid)),
+        match &self.0 {
+            Repr::Any => true,
+            Repr::Set(items) => items.iter().any(|i| i.matches(eid)),
         }
+    }
+
+    /// Decomposes the pattern into its atomic route keys: a multi-item union
+    /// yields one single-item pattern per member, and any other pattern
+    /// yields itself. Route selection compares the specificity of the pattern
+    /// that matched, so a union must never be stored as one key: an aggregate
+    /// score would let a broad member drag a specific sibling behind routes
+    /// the sibling strictly beats. A union route is shorthand for one route
+    /// per member.
+    pub fn into_atoms(self) -> impl Iterator<Item = EidPattern> {
+        let atoms: Vec<EidPattern> = match self.0 {
+            Repr::Set(items) if items.len() > 1 => items
+                .into_vec()
+                .into_iter()
+                .map(|item| EidPattern::from_items([item].into()))
+                .collect(),
+            repr => Vec::from([EidPattern(repr)]),
+        };
+        atoms.into_iter()
     }
 
     /// Harmonized Specificity Score.
@@ -110,9 +155,9 @@ impl EidPattern {
     /// widest one. Returns `None` for an empty set or if any member is
     /// unscoreable.
     pub fn specificity_score(&self) -> Option<u32> {
-        match self {
-            EidPattern::Any => Some(0),
-            EidPattern::Set(items) => items.iter().map(|i| i.specificity_score()).min().flatten(),
+        match &self.0 {
+            Repr::Any => Some(0),
+            Repr::Set(items) => items.iter().map(|i| i.specificity_score()).min().flatten(),
         }
     }
 
@@ -120,9 +165,9 @@ impl EidPattern {
     /// return a new pattern with the sentinel replaced by the concrete `node_id`.
     /// Returns `None` if no LocalNode pattern was found.
     pub fn expand_local_node(&self, node_id: &IpnNodeId) -> Option<Self> {
-        match self {
-            EidPattern::Any => None,
-            EidPattern::Set(items) => {
+        match &self.0 {
+            Repr::Any => None,
+            Repr::Set(items) => {
                 let mut expanded = Vec::new();
                 let mut changed = false;
                 for item in items.iter() {
@@ -133,17 +178,17 @@ impl EidPattern {
                         expanded.push(item.clone());
                     }
                 }
-                changed.then(|| EidPattern::Set(expanded.into()))
+                changed.then(|| EidPattern::from_items(expanded.into()))
             }
         }
     }
 
     /// Returns `true` if `self` is a subset of (or equal to) `other`.
     pub fn is_subset(&self, other: &Self) -> bool {
-        match (self, other) {
-            (_, EidPattern::Any) => true,
-            (EidPattern::Any, _) => false,
-            (EidPattern::Set(lhs), EidPattern::Set(rhs)) => {
+        match (&self.0, &other.0) {
+            (_, Repr::Any) => true,
+            (Repr::Any, _) => false,
+            (Repr::Set(lhs), Repr::Set(rhs)) => {
                 // Every member of lhs must be a subset of at least one member in rhs
                 lhs.iter().all(|l| rhs.iter().any(|r| l.is_subset(r)))
             }
@@ -167,7 +212,7 @@ impl From<EidPattern> for String {
 
 impl From<IpnNodeId> for EidPattern {
     fn from(value: IpnNodeId) -> Self {
-        EidPattern::Set(
+        EidPattern::from_items(
             [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
                 value.allocator_id,
                 value.node_number,
@@ -181,7 +226,7 @@ impl From<IpnNodeId> for EidPattern {
 impl From<DtnNodeId> for EidPattern {
     #[cfg(feature = "dtn-pat-item")]
     fn from(value: DtnNodeId) -> Self {
-        EidPattern::Set(
+        EidPattern::from_items(
             [EidPatternItem::DtnPatternItem(
                 DtnPatternItem::new_glob(format!("{}/**", value.node_name).as_str())
                     .expect("dtn node names contain no glob metacharacters"),
@@ -192,7 +237,7 @@ impl From<DtnNodeId> for EidPattern {
 
     #[cfg(not(feature = "dtn-pat-item"))]
     fn from(_: DtnNodeId) -> Self {
-        EidPattern::Set(
+        EidPattern::from_items(
             [
                 EidPatternItem::AnyNumericScheme(1),
                 EidPatternItem::AnyTextScheme("dtn".into()),
@@ -205,7 +250,7 @@ impl From<DtnNodeId> for EidPattern {
 impl From<NodeId> for EidPattern {
     fn from(value: NodeId) -> Self {
         match value {
-            NodeId::LocalNode => EidPattern::Set(
+            NodeId::LocalNode => EidPattern::from_items(
                 [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
                     0,
                     u32::MAX,
@@ -222,7 +267,7 @@ impl From<NodeId> for EidPattern {
 impl From<Eid> for EidPattern {
     fn from(value: Eid) -> Self {
         match value {
-            Eid::Null => EidPattern::Set(
+            Eid::Null => EidPattern::from_items(
                 [
                     EidPatternItem::IpnPatternItem(IpnPatternItem::new(0, 0, Some(0))),
                     #[cfg(feature = "dtn-pat-item")]
@@ -230,7 +275,7 @@ impl From<Eid> for EidPattern {
                 ]
                 .into(),
             ),
-            Eid::LocalNode(service_number) => EidPattern::Set(
+            Eid::LocalNode(service_number) => EidPattern::from_items(
                 [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
                     0,
                     u32::MAX,
@@ -253,7 +298,7 @@ impl From<Eid> for EidPattern {
                         node_number,
                     },
                 service_number,
-            } => EidPattern::Set(
+            } => EidPattern::from_items(
                 [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
                     allocator_id,
                     node_number,
@@ -265,7 +310,7 @@ impl From<Eid> for EidPattern {
             Eid::Dtn {
                 node_name,
                 service_name,
-            } => EidPattern::Set(
+            } => EidPattern::from_items(
                 [EidPatternItem::DtnPatternItem(DtnPatternItem::Exact(
                     node_name.node_name,
                     service_name,
@@ -273,7 +318,7 @@ impl From<Eid> for EidPattern {
                 .into(),
             ),
             #[cfg(not(feature = "dtn-pat-item"))]
-            Eid::Dtn { .. } => EidPattern::Set(
+            Eid::Dtn { .. } => EidPattern::from_items(
                 [
                     EidPatternItem::AnyNumericScheme(1),
                     EidPatternItem::AnyTextScheme("dtn".into()),
@@ -281,7 +326,7 @@ impl From<Eid> for EidPattern {
                 .into(),
             ),
             Eid::Unknown { scheme, .. } => {
-                EidPattern::Set([EidPatternItem::AnyNumericScheme(scheme)].into())
+                EidPattern::from_items([EidPatternItem::AnyNumericScheme(scheme)].into())
             }
         }
     }
@@ -295,8 +340,8 @@ impl TryFrom<EidPattern> for Eid {
     /// `From<Eid>` produces for [`Eid::Null`] (`ipn:0.0` | `dtn:none`), whose
     /// items both name the null endpoint.
     fn try_from(value: EidPattern) -> Result<Self> {
-        match value {
-            EidPattern::Set(items) => {
+        match value.0 {
+            Repr::Set(items) => {
                 let mut items = items.iter();
                 let first = items
                     .next()
@@ -309,16 +354,16 @@ impl TryFrom<EidPattern> for Eid {
                 }
                 Ok(first)
             }
-            EidPattern::Any => Err(Error::NotExact),
+            Repr::Any => Err(Error::NotExact),
         }
     }
 }
 
 impl fmt::Display for EidPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EidPattern::Any => write!(f, "*:**"),
-            EidPattern::Set(items) => {
+        match &self.0 {
+            Repr::Any => write!(f, "*:**"),
+            Repr::Set(items) => {
                 for (i, p) in items.iter().enumerate() {
                     if i != 0 {
                         write!(f, "|")?;
@@ -355,7 +400,7 @@ fn numeric_scheme_of_text(scheme: &str) -> Option<u64> {
 
 /// A single scheme-specific EID pattern within an [`EidPattern`] union set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EidPatternItem {
+enum EidPatternItem {
     /// Matches any EID using the given numeric scheme code (e.g. `2:**`).
     AnyNumericScheme(u64),
     /// Matches any EID using the given text scheme name (e.g. `dtn:**`).
@@ -443,7 +488,7 @@ impl EidPatternItem {
     /// Harmonized Specificity Score.
     ///
     /// Returns `None` if the pattern violates monotonic constraints.
-    pub fn specificity_score(&self) -> Option<u32> {
+    fn specificity_score(&self) -> Option<u32> {
         match self {
             EidPatternItem::IpnPatternItem(i) => i.specificity_score(),
             #[cfg(feature = "dtn-pat-item")]

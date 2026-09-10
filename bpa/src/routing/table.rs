@@ -89,7 +89,7 @@ impl RouteTable {
         }
 
         let mut inserted = false;
-        for pattern in flatten(pattern) {
+        for pattern in pattern.into_atoms() {
             match self.routes.entry(priority) {
                 btree_map::Entry::Vacant(e) => {
                     e.insert([(pattern, [entry.clone()].into())].into());
@@ -113,7 +113,7 @@ impl RouteTable {
 
     pub(super) fn remove(&mut self, pattern: &EidPattern, entry: &Entry, priority: u32) -> bool {
         let mut removed = false;
-        for pattern in flatten(pattern.clone()) {
+        for pattern in pattern.clone().into_atoms() {
             if let Some(patterns) = self.routes.get_mut(&priority)
                 && let Some(actions) = patterns.get_mut(&pattern)
                 && actions.remove(entry)
@@ -292,22 +292,6 @@ impl RouteTable {
 fn sorted_insert<'a>(peers: &mut Vec<(u32, &'a Eid)>, peer: u32, next_hop: &'a Eid) {
     if let Err(idx) = peers.binary_search_by_key(&peer, |(p, _)| *p) {
         peers.insert(idx, (peer, next_hop));
-    }
-}
-
-// Route selection iterates patterns in specificity order and must compare the
-// specificity of the pattern that *matched*, so a multi-item union is never
-// stored as a single key: any set-level score ranks every member by one
-// aggregate, letting a broad member drag a specific sibling behind routes the
-// sibling strictly beats. A union route is shorthand for one route per member.
-fn flatten(pattern: EidPattern) -> Vec<EidPattern> {
-    match pattern {
-        EidPattern::Set(items) if items.len() > 1 => items
-            .into_vec()
-            .into_iter()
-            .map(|item| EidPattern::Set([item].into()))
-            .collect(),
-        pattern => Vec::from([pattern]),
     }
 }
 

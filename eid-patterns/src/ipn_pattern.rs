@@ -456,14 +456,14 @@ fn parse_ipn_interval(input: &mut &str) -> ModalResult<RangeInclusive<u32>> {
 mod tests {
     use alloc::vec;
 
-    use crate::EidPattern;
+    use crate::{EidPattern, Repr};
 
     use super::*;
 
     // Parses `s` and asserts it is a set of exactly one ipn pattern item equal
     // to `expected`.
     fn ipn_parse(s: &str, expected: IpnPatternItem) {
-        let EidPattern::Set(v) = s
+        let EidPattern(Repr::Set(v)) = s
             .parse()
             .unwrap_or_else(|e| panic!("failed to parse pattern {s}: {e}"))
         else {
