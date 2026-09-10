@@ -13,8 +13,9 @@
 //! - The editor's internal reader — staged (unmaterialised) rewrites.
 //!
 //! For BCB-covered payloads decrypted on demand, see
-//! [`bpsec::block_data`](crate::bpsec::block_data), which composes a
-//! [`PlainReader`] with the BCB decrypt operation.
+//! [`bpsec::DecryptingReader`](crate::bpsec::DecryptingReader), which
+//! composes a [`PlainReader`] with the BCB decrypt operation and memoises
+//! the outcomes.
 
 use crate::{
     HashMap,
@@ -77,8 +78,7 @@ pub trait Reader<'a> {
 /// a blocks map plus the contiguous bundle bytes the offsets index into.
 /// Each block's payload is the raw wire body ([`Block::payload`]) —
 /// no decryption, no staged rewrites. This is the Reader to use when
-/// feeding [`bpsec::block_data`](crate::bpsec::block_data) / signer /
-/// encryptor for an in-memory bundle.
+/// feeding the signer / encryptor for an in-memory bundle.
 pub struct PlainReader<'a> {
     /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
     pub blocks: &'a HashMap<u64, Block>,
