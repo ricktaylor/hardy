@@ -77,7 +77,10 @@ impl hardy_bpa::cla::Sink for Sink {
             .map_err(|e| match e {
                 hardy_bpa::stream::ConcatError::Cancelled => hardy_bpa::cla::Error::StreamCancelled,
                 hardy_bpa::stream::ConcatError::TooLarge { size, max } => {
-                    hardy_bpa::cla::Error::PayloadTooLarge { size, max }
+                    hardy_bpa::cla::Error::PayloadTooLarge {
+                        size: size as u64,
+                        max: max as u64,
+                    }
                 }
             })?;
         match self

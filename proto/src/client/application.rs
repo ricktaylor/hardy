@@ -104,8 +104,8 @@ impl hardy_bpa::services::ApplicationSink for Sink {
         // application.
         if data.len() > crate::MAX_PAYLOAD_SIZE {
             return Err(hardy_bpa::services::Error::PayloadTooLarge {
-                size: data.len(),
-                max: crate::MAX_PAYLOAD_SIZE,
+                size: data.len() as u64,
+                max: crate::MAX_PAYLOAD_SIZE as u64,
             });
         }
         match self
