@@ -147,7 +147,7 @@ impl OperationSet {
     /// §3.8 (a BCB targeting a BIB must share a target with it) is not
     /// checked here — it fires only for BCB-encrypted BIBs whose
     /// OperationSet can't be decoded without keys. Shared by the
-    /// structural parser ([`crate::parse`]) and the keyed
+    /// structural parser ([`crate::parser`]) and the keyed
     /// [`crate::checks::verify`] pass as the single source of truth for
     /// the per-OperationSet BIB rules.
     ///

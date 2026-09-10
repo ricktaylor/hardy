@@ -333,8 +333,8 @@ impl Store {
         // Rewrite primary block — Editor needs a `&Bundle`; re-parse structurally.
         // Consume `old_data` into the parse and use the authoritative
         // buffer it returns (the streaming path concatenates pushes).
-        let (old_data, raw) = match hardy_bpv7::parse::parse(old_data) {
-            Ok(hardy_bpv7::parse::Parsed {
+        let (old_data, raw) = match hardy_bpv7::parse(old_data) {
+            Ok(hardy_bpv7::parser::Parsed {
                 data: buf,
                 bundle: b,
                 ..
@@ -414,8 +414,8 @@ mod tests {
     /// container; the keyed validate pipeline (`parse_validate_with_provider`)
     /// would just do this same parse after redundant BPSec validation.
     fn bundle_from_bytes(data: &[u8]) -> hardy_bpv7::bundle::Bundle {
-        let hardy_bpv7::parse::Parsed { bundle, .. } =
-            hardy_bpv7::parse::parse(Bytes::copy_from_slice(data)).unwrap();
+        let hardy_bpv7::parser::Parsed { bundle, .. } =
+            hardy_bpv7::parse(Bytes::copy_from_slice(data)).unwrap();
         bundle
     }
 
@@ -656,11 +656,11 @@ mod tests {
                 .unwrap();
 
         // Editor needs a `&Bundle`; re-parse structurally.
-        let hardy_bpv7::parse::Parsed {
+        let hardy_bpv7::parser::Parsed {
             data: complete_data,
             bundle: raw_bundle,
             ..
-        } = hardy_bpv7::parse::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
+        } = hardy_bpv7::parse(Bytes::copy_from_slice(&complete_data)).unwrap();
 
         // Create fragment 0: offset=0, total=10, payload="Hello"
         let frag0_data = Editor::new(&raw_bundle, &complete_data)
@@ -734,11 +734,11 @@ mod tests {
         let (_, reassembled_data) = result.unwrap();
 
         // Parse the reassembled bundle structurally and verify.
-        let hardy_bpv7::parse::Parsed {
+        let hardy_bpv7::parser::Parsed {
             data: reassembled_data,
             bundle: reassembled_bundle,
             ..
-        } = hardy_bpv7::parse::parse(reassembled_data).unwrap();
+        } = hardy_bpv7::parse(reassembled_data).unwrap();
 
         // Should no longer be a fragment
         assert!(

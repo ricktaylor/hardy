@@ -6,7 +6,7 @@
 use core::{iter::repeat_n, num::NonZeroU8};
 
 use bytes::Bytes;
-use hardy_bpv7::{Error, builder, bundle::BlockType, crc, creation_timestamp, hop_info, parse};
+use hardy_bpv7::{Error, builder, bundle::BlockType, crc, creation_timestamp, hop_info, parser};
 // Aliased: collides with the bpv7 `Error` imported above.
 use hardy_cbor::decode::Error as CborError;
 use hex_literal::hex;
@@ -46,9 +46,9 @@ fn indefinite_length_block_data_is_rejected() {
         "ff"
     );
 
-    parse::parse(Bytes::copy_from_slice(&definite)).expect("the definite-length twin must parse");
+    parser::parse(Bytes::copy_from_slice(&definite)).expect("the definite-length twin must parse");
 
-    let Err(err) = parse::parse(Bytes::copy_from_slice(&indefinite)) else {
+    let Err(err) = parser::parse(Bytes::copy_from_slice(&indefinite)) else {
         panic!("indefinite-length block data must be rejected");
     };
     let Error::InvalidField { source, .. } = &err else {
@@ -74,7 +74,7 @@ fn invalid_flags() {
         "9f89071844018202820301820100820100821b000000b5998c982b011a000493e042c9f6850602182700458202820200850704010042183485010101004454455354ff"
     );
     assert!(matches!(
-        parse::parse(Bytes::from_static(BUNDLE)),
+        parser::parse(Bytes::from_static(BUNDLE)),
         Err(Error::InvalidFlags)
     ));
 }
@@ -96,7 +96,7 @@ fn hop_count_extraction() {
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
 
-    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
     // Decode the HopCount block body directly via its bpv7 CBOR type.
     let hc_block = parsed
         .bundle
@@ -126,7 +126,7 @@ fn extension_block_parsing() {
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap();
 
-    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
 
     // HopCount block present (interpretation into a typed field is a
     // hardy-bpa concern — here we just confirm the block parsed).
@@ -154,7 +154,7 @@ fn truncated_bundle() {
     for len in [0, 1, 2, 5, data.len() / 2, data.len() - 1] {
         assert!(
             matches!(
-                parse::parse(Bytes::copy_from_slice(&data[..len])),
+                parser::parse(Bytes::copy_from_slice(&data[..len])),
                 Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
             ),
             "parse: truncated at {len} bytes should report a CBOR shortfall"
@@ -177,7 +177,7 @@ fn truncated_large_payload() {
 
     // Confirm the complete bundle parses successfully.
     assert!(
-        parse::parse(Bytes::copy_from_slice(&full_data)).is_ok(),
+        parser::parse(Bytes::copy_from_slice(&full_data)).is_ok(),
         "complete large-payload bundle should parse"
     );
 
@@ -186,7 +186,7 @@ fn truncated_large_payload() {
     let truncated = &full_data[..200];
     assert!(
         matches!(
-            parse::parse(Bytes::copy_from_slice(truncated)),
+            parser::parse(Bytes::copy_from_slice(truncated)),
             Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
         ),
         "truncated large-payload bundle must not parse as complete"
@@ -211,7 +211,7 @@ fn crafted_max_extent_payload() {
     // extent.end to exactly u64::MAX:
     //   extent.end = block_start + header(14) + len + crc_trailer(5)
     // so len = u64::MAX - block_start - 19.
-    let block_start = parse::parse(Bytes::copy_from_slice(&good))
+    let block_start = parser::parse(Bytes::copy_from_slice(&good))
         .unwrap()
         .bundle
         .blocks
@@ -228,7 +228,7 @@ fn crafted_max_extent_payload() {
     // Must return a truncation error, not panic on overflow.
     assert!(
         matches!(
-            parse::parse(Bytes::copy_from_slice(&evil)),
+            parser::parse(Bytes::copy_from_slice(&evil)),
             Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
         ),
         "crafted max-extent payload must be rejected, not overflow"
@@ -242,13 +242,13 @@ fn trailing_data() {
     let mut with_trailing = data.to_vec();
     with_trailing.push(0xFF);
 
-    // Trailing data is detected by `parse::finish` (payload extent doesn't
+    // Trailing data is detected by `parser::finish` (payload extent doesn't
     // reach the end of `data`). The check lives at the structural-parse
     // layer; every higher orchestrator just propagates the resulting
     // `Err(AdditionalData)`.
     assert!(
         matches!(
-            parse::parse(Bytes::copy_from_slice(&with_trailing)),
+            parser::parse(Bytes::copy_from_slice(&with_trailing)),
             Err(Error::AdditionalData)
         ),
         "parse with trailing data should return Err(AdditionalData)"
@@ -278,7 +278,7 @@ fn non_canonical_rewriting_rejects_outer_tag() {
     // The tag-wrapped form is rejected at the parse layer's first-byte
     // gate (the first byte isn't 0x9F), and the error reports the byte.
     assert!(matches!(
-        parse::parse(Bytes::copy_from_slice(&tagged)),
+        parser::parse(Bytes::copy_from_slice(&tagged)),
         Err(Error::NotABundle(0xD9))
     ));
 }
@@ -295,14 +295,14 @@ fn first_byte_gate_classifies_non_bundles() {
     // A definite-length outer array is the §4.1 canonical violation.
     data[0] = 0x82;
     assert!(matches!(
-        parse::parse(Bytes::copy_from_slice(&data)),
+        parser::parse(Bytes::copy_from_slice(&data)),
         Err(Error::NotCanonical)
     ));
 
     // 0x06 is the version byte opening an RFC 5050 (BPv6) primary block.
     data[0] = 0x06;
     assert!(matches!(
-        parse::parse(Bytes::copy_from_slice(&data)),
+        parser::parse(Bytes::copy_from_slice(&data)),
         Err(Error::PossibleBpv6)
     ));
 
@@ -310,7 +310,7 @@ fn first_byte_gate_classifies_non_bundles() {
     // offending byte.
     data[0] = 0xA1;
     assert!(matches!(
-        parse::parse(Bytes::copy_from_slice(&data)),
+        parser::parse(Bytes::copy_from_slice(&data)),
         Err(Error::NotABundle(0xA1))
     ));
 }
@@ -326,7 +326,7 @@ fn first_byte_gate_classifies_non_bundles() {
 #[test]
 fn block_gate_rejects_tag_head_as_not_canonical() {
     let data = build_minimal_bundle();
-    let block_start = parse::parse(Bytes::copy_from_slice(&data))
+    let block_start = parser::parse(Bytes::copy_from_slice(&data))
         .unwrap()
         .bundle
         .blocks
@@ -345,7 +345,7 @@ fn block_gate_rejects_tag_head_as_not_canonical() {
         let Err(Error::InvalidField {
             field: "block",
             source,
-        }) = parse::parse(Bytes::from(evil))
+        }) = parser::parse(Bytes::from(evil))
         else {
             panic!("a tag run of {run} at a block position must fail the block gate");
         };
@@ -362,7 +362,7 @@ fn block_gate_rejects_tag_head_as_not_canonical() {
 #[test]
 fn tagged_block_field_is_rejected_as_not_canonical() {
     let data = build_minimal_bundle();
-    let block_start = parse::parse(Bytes::copy_from_slice(&data))
+    let block_start = parser::parse(Bytes::copy_from_slice(&data))
         .unwrap()
         .bundle
         .blocks
@@ -382,7 +382,7 @@ fn tagged_block_field_is_rejected_as_not_canonical() {
     let Err(Error::InvalidField {
         field: "block",
         source,
-    }) = parse::parse(Bytes::from(evil))
+    }) = parser::parse(Bytes::from(evil))
     else {
         panic!("a tagged block number must fail its field parse");
     };
@@ -415,7 +415,7 @@ fn tag24_block_data_is_accepted() {
         "ff"
     );
 
-    let parsed = parse::parse(Bytes::copy_from_slice(&tagged))
+    let parsed = parser::parse(Bytes::copy_from_slice(&tagged))
         .expect("a #6.24-tagged block body must parse");
     let payload = parsed.bundle.blocks.get(&1).expect("payload block");
     assert_eq!(
@@ -449,7 +449,7 @@ fn non_tag24_block_data_head_is_rejected() {
         let Err(Error::InvalidField {
             field: "block",
             source,
-        }) = parse::parse(Bytes::from(evil))
+        }) = parser::parse(Bytes::from(evil))
         else {
             panic!("{why} on block data must fail the block-data gate");
         };
@@ -472,7 +472,7 @@ fn truncated_tag24_block_data_head_needs_more() {
     );
     assert!(
         matches!(
-            parse::parse(Bytes::copy_from_slice(&truncated)),
+            parser::parse(Bytes::copy_from_slice(&truncated)),
             Err(Error::InvalidCBOR(CborError::NeedMoreData(_)))
         ),
         "a lone trailing 0xD8 must report a CBOR shortfall, not NotCanonical"
@@ -489,7 +489,7 @@ fn crc16_bundle() {
         .unwrap();
 
     // Parse and verify CRC type via parse (primary block field).
-    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
     assert!(
         matches!(parsed.bundle.primary.crc_type, crc::CrcType::CRC16_X25),
         "CRC type should be CRC-16"
@@ -517,7 +517,7 @@ fn ccsds_compliance() {
     );
 
     // Parse and verify structural compliance via primitives.
-    let parsed = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    let parsed = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
     assert!(
         parsed.bundle.blocks.contains_key(&1),
         "Payload block (block 1) must be present"
@@ -540,17 +540,17 @@ fn encoded_len_is_the_wire_length() {
             .unwrap();
     assert_eq!(bundle.encoded_len(), data.len() as u64);
 
-    let parsed = parse::parse(Bytes::from(data)).expect("round-trip parse");
+    let parsed = parser::parse(Bytes::from(data)).expect("round-trip parse");
     assert_eq!(parsed.bundle.encoded_len(), parsed.data.len() as u64);
 }
 
 // Wire-input structural block rules (RFC 9171 §4.1): duplicate, misnumbered,
 // misplaced, and missing blocks. On this API an invalid bundle surfaces as
-// `Err(Error::…)` from `parse::parse`; emitting the corresponding
+// `Err(Error::…)` from `parser::parse`; emitting the corresponding
 // status-report reason code is the BPA's concern, not the parser's.
 mod block_rules {
     use bytes::Bytes;
-    use hardy_bpv7::{Error, bundle::BlockType, parse};
+    use hardy_bpv7::{Error, bundle::BlockType, parser};
     use hardy_cbor::encode::emit;
 
     use super::build_minimal_bundle;
@@ -564,7 +564,7 @@ mod block_rules {
         let data = build_minimal_bundle();
         let dup_payload = make_block(1, 1, 0, b"XX");
         let modified = insert_after_primary(&data, &[&dup_payload]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a second payload must be rejected");
         };
         assert!(
@@ -582,7 +582,7 @@ mod block_rules {
         let age_block_2 = make_block(7, 2, 0, &age);
         let age_block_3 = make_block(7, 3, 0, &age);
         let modified = insert_after_primary(&data, &[&age_block_2, &age_block_3]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("two BundleAge blocks must be rejected");
         };
         assert!(
@@ -598,7 +598,7 @@ mod block_rules {
         let block_a = make_block(999, 2, 0, &[0xDE, 0xAD]);
         let block_b = make_block(998, 2, 0, &[0xBE, 0xEF]);
         let modified = insert_after_primary(&data, &[&block_a, &block_b]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a reused block number must be rejected");
         };
         assert!(
@@ -616,7 +616,7 @@ mod block_rules {
         let mut modified = data[..data.len() - 1].to_vec();
         modified.extend_from_slice(&trailing_block);
         modified.push(0xFF);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a block after the payload must be rejected");
         };
         assert!(
@@ -631,7 +631,7 @@ mod block_rules {
         let data = build_minimal_bundle();
         let mut modified = data[..end_of_primary(&data)].to_vec();
         modified.push(0xFF);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a bundle with no payload must be rejected");
         };
         assert!(
@@ -641,10 +641,10 @@ mod block_rules {
     }
 }
 
-// CRC framing (RFC 9171 §4.2.1 and §4.2.2) through parse::parse.
+// CRC framing (RFC 9171 §4.2.1 and §4.2.2) through parser::parse.
 mod crc_rules {
     use bytes::Bytes;
-    use hardy_bpv7::{Error, crc, parse};
+    use hardy_bpv7::{Error, crc, parser};
     // Aliased: `decode::Error` collides with the bpv7 `Error`, and
     // `encode::Bytes` with `bytes::Bytes`, both imported above.
     use hardy_cbor::{
@@ -674,7 +674,7 @@ mod crc_rules {
         let Err(Error::InvalidField {
             field: "block",
             source,
-        }) = parse::parse(Bytes::from(modified))
+        }) = parser::parse(Bytes::from(modified))
         else {
             panic!("a block declaring a CRC but carrying none must be rejected");
         };
@@ -703,7 +703,7 @@ mod crc_rules {
         let Err(Error::InvalidField {
             field: "block",
             source,
-        }) = parse::parse(Bytes::from(modified))
+        }) = parser::parse(Bytes::from(modified))
         else {
             panic!("a CRC value with crc_type=none must be rejected");
         };
@@ -729,7 +729,7 @@ mod crc_rules {
             a.emit(&CborBytes(&[0x00, 0x00, 0x00, 0x00]));
         });
         let modified = insert_after_primary(&data, &[&block]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("an unrecognised CRC type must be rejected");
         };
         assert!(
@@ -739,10 +739,10 @@ mod crc_rules {
     }
 }
 
-// BPSec target rules (RFC 9172 §3.8) through parse::parse.
+// BPSec target rules (RFC 9172 §3.8) through parser::parse.
 mod bpsec_rules {
     use bytes::Bytes;
-    use hardy_bpv7::{Error, bpsec, parse};
+    use hardy_bpv7::{Error, bpsec, parser};
 
     use super::build_minimal_bundle;
     use super::common::{insert_after_primary, make_block, make_unknown_context_asb};
@@ -753,7 +753,7 @@ mod bpsec_rules {
         let data = build_minimal_bundle();
         let bcb = make_block(12, 2, 0, &make_unknown_context_asb(1)); // must_replicate clear
         let modified = insert_after_primary(&data, &[&bcb]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a BCB targeting the payload without must_replicate must be rejected");
         };
         assert!(
@@ -768,12 +768,61 @@ mod bpsec_rules {
         let data = build_minimal_bundle();
         let bcb = make_block(12, 2, 0x01, &make_unknown_context_asb(0));
         let modified = insert_after_primary(&data, &[&bcb]);
-        let Err(err) = parse::parse(Bytes::from(modified)) else {
+        let Err(err) = parser::parse(Bytes::from(modified)) else {
             panic!("a BCB targeting the primary block must be rejected");
         };
         assert!(
             matches!(err, Error::InvalidBPSec(bpsec::Error::InvalidBCBTarget)),
             "BCB targeting primary, got: {err:?}"
+        );
+    }
+}
+
+// Relocated from the in-crate parser module: exercises only public API.
+mod parser_regressions {
+    use bytes::Bytes;
+    use hardy_bpv7::parse;
+
+    // A block whose byte-string body header claims a length far larger than
+    // the bytes present must not drive an unbounded `BytesMut::reserve` on the
+    // `NeedMoreData` growth path. Reserving the raw wire shortfall aborts the
+    // process with a capacity overflow (before any caller size cap is
+    // consulted) — a remotely reachable DoS the `random_bundles` fuzzer found.
+    // The reserve is clamped to `chunk_size`, so the truncated input is
+    // rejected gracefully instead of aborting. The valid builder-made primary
+    // keeps this on the block-length path across the whole parse train (a
+    // non-canonical primary would be rejected earlier on later legs); the
+    // guarded regression is abort-vs-return, so the assertion is on graceful
+    // failure rather than a specific error variant that evolves down the train.
+    #[test]
+    fn oversized_block_length_does_not_abort_the_reserve() {
+        let (bundle, full) =
+            crate::builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+                .with_payload(b"hi".as_slice().into())
+                .build(crate::creation_timestamp::CreationTimestamp::now())
+                .unwrap();
+
+        // Keep `0x9f` + the valid canonical primary block (so the input stays
+        // on the block-length path across the whole parse train — a
+        // non-canonical primary is rejected earlier on later legs), then
+        // append an unknown extension block whose byte-string body claims
+        // 2^63 bytes and truncate. 2^63 exceeds `isize::MAX`, so an unclamped
+        // `reserve` aborts with a capacity overflow; the clamp turns it into a
+        // graceful rejection instead.
+        let payload_start = bundle.blocks[&1].extent.start as usize;
+        let mut input = full[..payload_start].to_vec();
+        input.extend_from_slice(&[
+            0x85, // block: array(5)
+            0x18, 0xc0, // block type 192 (unknown)
+            0x02, // block number 2
+            0x00, // flags
+            0x00, // CRC type: none
+            0x5b, 0x80, 0, 0, 0, 0, 0, 0, 0, // byte string, 8-byte length 2^63
+        ]);
+
+        assert!(
+            parse(Bytes::copy_from_slice(&input)).is_err(),
+            "an oversized block length must fail gracefully, not abort the process"
         );
     }
 }

@@ -10,17 +10,17 @@ use hardy_bpv7::{
     editor::Chunk,
     eid::Eid,
     hop_info::HopInfo,
-    parse,
+    parser,
 };
 use hardy_cbor::{decode::FromCbor, encode::emit};
 use std::collections::{HashMap, HashSet};
 /// Structural parse + keyed BPSec validation in one pass: each tool runs
-/// the stages it needs and gets back a `parse::Parsed` (already
+/// the stages it needs and gets back a `parser::Parsed` (already
 /// coverage-stamped) ready to feed to Editor / Signer / Encryptor — no
-/// second `parse::parse` call.
+/// second `parser::parse` call.
 ///
 /// Stages run:
-/// * structural parse (`parse::parse`);
+/// * structural parse (`parser::parse`);
 /// * §A — `classify_unsupported`, which surfaces `Error::Unsupported(n)`
 ///   (unknown block) or the security block's `unsupported_error`
 ///   (unsupported security operation) if a block flagged
@@ -30,13 +30,13 @@ use std::collections::{HashMap, HashSet};
 ///   are not Verifiers and do not apply §5.1.1 failure-drop);
 /// * §C7 — `verify_all_bibs` with the supplied keys (`NoKey` is soft).
 ///
-/// Returns a [`parse::Parsed`] with the bundle's block-coverage stamps
+/// Returns a [`parser::Parsed`] with the bundle's block-coverage stamps
 /// already updated by §B.
 pub(crate) fn parse_with_keys(
     data: Bytes,
     keys: &KeySet,
-) -> Result<parse::Parsed, hardy_bpv7::Error> {
-    let mut parsed = parse::parse(data)?;
+) -> Result<parser::Parsed, hardy_bpv7::Error> {
+    let mut parsed = parser::parse(data)?;
 
     // §A — classification. `?` propagates Unsupported on
     // delete_bundle_on_failure blocks; report-flag side effects are
@@ -73,7 +73,7 @@ pub(crate) fn parse_with_keys(
     )?;
     // Hard assert: this is shipped code, and a silently dropped defer-set is
     // an unverified integrity statement (the tool parses complete buffers via
-    // `parse::parse`, so the branch is a one-shot `is_empty` check).
+    // `parser::parse`, so the branch is a one-shot `is_empty` check).
     assert!(deferred.is_empty(), "a complete buffer defers nothing");
 
     Ok(parsed)
@@ -180,12 +180,12 @@ pub(crate) fn full_rewrite(
     data: Bytes,
     keys: &KeySet,
 ) -> Result<Option<Vec<Chunk>>, hardy_bpv7::Error> {
-    let parse::Parsed {
+    let parser::Parsed {
         data,
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
-    } = parse::parse(data)?;
+    } = parser::parse(data)?;
 
     // §A — classify; collect deletables.
     let classification = checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;

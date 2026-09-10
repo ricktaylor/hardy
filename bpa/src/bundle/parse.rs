@@ -32,7 +32,7 @@ use hardy_bpv7::{
     bundle::{Block, BlockType},
     bundle_age, checks,
     editor::Chunk,
-    parse, rewrite,
+    parser, rewrite,
     status_report::ReasonCode,
 };
 use time::OffsetDateTime;
@@ -142,12 +142,12 @@ pub fn parse_validate_with_provider<F>(
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
-    let parse::Parsed {
+    let parser::Parsed {
         data,
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
-    } = parse::parse(data)?;
+    } = parser::parse(data)?;
     let key_source = key_provider(&bundle, &data);
 
     // §A — no removals scheduled, but `?` still catches an Unsupported
@@ -300,11 +300,11 @@ pub async fn parse_headers<F>(
     stream: &mut dyn Receiver<Segment>,
     max_size: usize,
     key_provider: F,
-) -> Result<(HeaderVerify, Bytes, Option<parse::PayloadTail>), HeaderFailure>
+) -> Result<(HeaderVerify, Bytes, Option<parser::PayloadTail>), HeaderFailure>
 where
     F: FnOnce(&Bpv7Bundle, &[u8]) -> Box<dyn bpsec::key::KeySource>,
 {
-    let mut parser = parse::BundleParser::default();
+    let mut parser = parser::BundleParser::default();
     // Drive the parser up to the header chain. `headers` is the resident bytes
     // (the whole bundle, or the `consumed` prefix for an oversized payload);
     // `tail` (if any) drains the rest back in `dispatcher::ingress`.
@@ -326,12 +326,12 @@ where
             });
         }
         match parser.push(bytes) {
-            Ok(parse::ParserProgress::NeedMore(_)) if last => {
+            Ok(parser::ParserProgress::NeedMore(_)) if last => {
                 debug!("Truncated bundle");
                 return Err(HeaderFailure::Invalid(None));
             }
-            Ok(parse::ParserProgress::NeedMore(_)) => {}
-            Ok(parse::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
+            Ok(parser::ParserProgress::NeedMore(_)) => {}
+            Ok(parser::ParserProgress::Ready(whole)) => match parser.finish(whole.clone()) {
                 Ok(parsed) => break (parsed, whole, None),
                 Err(e) => {
                     debug!("Bundle BPSec structural validation failed: {e}");
@@ -342,11 +342,11 @@ where
             // bundle: the declared payload cannot complete (`tail.remaining()`
             // is positive), so reject it exactly like `NeedMore` at end-of-
             // stream instead of handing an exhausted stream to the payload drain.
-            Ok(parse::ParserProgress::Partial { .. }) if last => {
+            Ok(parser::ParserProgress::Partial { .. }) if last => {
                 debug!("Truncated bundle (oversized payload, stream ended)");
                 return Err(HeaderFailure::Invalid(None));
             }
-            Ok(parse::ParserProgress::Partial { consumed, tail }) => {
+            Ok(parser::ParserProgress::Partial { consumed, tail }) => {
                 match parser.finish(consumed.clone()) {
                     Ok(parsed) => break (parsed, consumed, Some(tail)),
                     Err(e) => {
@@ -365,7 +365,7 @@ where
     // Header verification (§A–§D) against the resident bytes. On a keyed failure
     // the recoverable `bundle` is returned so the caller need only emit a reception
     // report; on success it moves into the returned `HeaderVerify`.
-    let parse::Parsed {
+    let parser::Parsed {
         bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
@@ -840,7 +840,7 @@ mod tests {
             .with_payload(vec![0xAB_u8; 50_000].as_slice().into())
             .build(CreationTimestamp::now())
             .unwrap();
-        let parsed = parse::parse(Bytes::from(base)).expect("parse the built bundle");
+        let parsed = parser::parse(Bytes::from(base)).expect("parse the built bundle");
         Bytes::from(
             Signer::new(&parsed.bundle, &parsed.data)
                 .sign_block(

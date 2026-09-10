@@ -2,7 +2,7 @@
 This module defines the core bundle data model: the [`Bundle`] structure
 (primary block + blocks map) together with its identifying types
 ([`BundleId`], [`Flags`], [`FragmentInfo`]). The wire parser lives in
-[`crate::parse`]; the BPSec validation/transform primitives in
+[`crate::parser`]; the BPSec validation/transform primitives in
 [`crate::checks`] and [`crate::rewrite`]. Semantic bundle comparison
 ([`Bundle::semantic_eq`]) lives in the private `compare` submodule.
 */
@@ -28,7 +28,7 @@ pub use self::{
 
 /// A parsed BPv7 bundle: the primary block plus the extension and payload
 /// blocks keyed by block number. This is the crate's structural bundle
-/// representation, produced by [`parse`](crate::parse::parse) and emitted
+/// representation, produced by [`parse`](crate::parser) and emitted
 /// by [`Builder`](crate::builder::Builder) / [`Editor`](crate::editor::Editor).
 ///
 /// The derived `==` is structural and offset-sensitive — block extents are
@@ -65,7 +65,7 @@ impl Bundle {
     /// # Panics
     ///
     /// Panics if the bundle has no payload block (block number 1); every
-    /// bundle produced by [`parse`](crate::parse::parse) or
+    /// bundle produced by [`parse`](crate::parser) or
     /// [`Builder`](crate::builder::Builder) has exactly one.
     pub fn encoded_len(&self) -> u64 {
         self.blocks

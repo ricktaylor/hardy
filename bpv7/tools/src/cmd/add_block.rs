@@ -99,7 +99,7 @@ impl Command {
 
         // Structural parse + keyed BPSec validation in one pass
         // (see `cmd::parse_with_keys` for the stage list).
-        let parse::Parsed { data, bundle, .. } = parse_with_keys(data, &key_store)
+        let parser::Parsed { data, bundle, .. } = parse_with_keys(data, &key_store)
             .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
         // Get block payload (BlockBuilder::with_data wants Cow<[u8]>,

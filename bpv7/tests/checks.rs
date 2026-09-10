@@ -3,18 +3,18 @@
 //! consumer would (mirrors the reference pipeline in `bpa::bundle::parse`).
 
 use bytes::Bytes;
-use hardy_bpv7::parse::Parsed;
+use hardy_bpv7::parser::Parsed;
 use hardy_bpv7::{
     Bundle, Error, bpsec, builder,
     bundle::{BibCoverage, BlockType},
-    checks, creation_timestamp, editor, eid, parse, rewrite,
+    checks, creation_timestamp, editor, eid, parser, rewrite,
 };
 use std::collections::{HashMap, HashSet};
 
 mod common;
 use self::common::{insert_after_primary, make_block, rand_k};
 
-/// Adapter: drive the public `parse::parse` and expose the legacy 4-tuple
+/// Adapter: drive the public `parser::parse` and expose the legacy 4-tuple
 /// shape the pipeline tests are written against.
 #[allow(clippy::type_complexity)]
 fn raw_parse_tuple(
@@ -33,7 +33,7 @@ fn raw_parse_tuple(
         bundle,
         bcbs,
         bibs,
-    } = parse::parse(data)?;
+    } = parser::parse(data)?;
     // Every parsed vector doubles as an `encoded_len` conformance check:
     // the derivation must equal the wire length (RFC 9171 §4.1 —
     // payload block last, one closing break byte).
@@ -134,7 +134,7 @@ fn build_parse_roundtrip() {
         .unwrap();
 
     // Verify canonicalization-mode invariants by composing primitives
-    // directly: callers run `parse::parse` plus the per-section helpers they
+    // directly: callers run `parser::parse` plus the per-section helpers they
     // actually care about.
     let (_data, raw_bundle, bcb_ops, bib_ops) =
         raw_parse_tuple(Bytes::copy_from_slice(&data)).unwrap();
@@ -904,7 +904,7 @@ mod cascade_reencryption_tests {
 
     // The producers (Signer/Encryptor) must only ever emit bundles that the
     // validator's structural rules (`bib`/`bcb::OperationSet::check`, run inside
-    // `parse::parse`) accept. This is currently guaranteed by construction; this
+    // `parser::parse`) accept. This is currently guaranteed by construction; this
     // test makes the invariant explicit and is the place to extend when a new
     // security context enables multi-target (shared) BCBs.
     #[test]
@@ -917,13 +917,13 @@ mod cascade_reencryption_tests {
 
         // Signer output -> bib::OperationSet::check (plaintext BIB) inside parse.
         let signed = sign(&base, &[1], &sign_key());
-        parse::parse(Bytes::copy_from_slice(&signed))
+        parser::parse(Bytes::copy_from_slice(&signed))
             .expect("signer output must pass structural check");
 
         // Encryptor output -> bcb::OperationSet::check inside parse. Encrypting
         // the signed payload also encrypts its BIB (sign-before-encrypt).
         let encrypted = encrypt(&signed, 1, &enc_key());
-        parse::parse(Bytes::copy_from_slice(&encrypted))
+        parser::parse(Bytes::copy_from_slice(&encrypted))
             .expect("encryptor output must pass structural check");
     }
 }
@@ -936,7 +936,7 @@ mod cascade_reencryption_tests {
 #[cfg(all(feature = "rfc9173", feature = "serde"))]
 mod deferred_payload_bib_tests {
     use super::*;
-    use hardy_bpv7::parse::{BundleParser, ParserProgress};
+    use hardy_bpv7::parser::{BundleParser, ParserProgress};
 
     fn sign_key() -> bpsec::key::Key {
         serde_json::from_value(serde_json::json!({

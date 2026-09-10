@@ -254,11 +254,11 @@ impl Dispatcher {
         //
         // Editor needs a `&Bundle`, so re-parse structurally.
         // `editor::Error` has several `From` impls so disambiguate explicitly.
-        let hardy_bpv7::parse::Parsed {
+        let hardy_bpv7::parser::Parsed {
             data: source_data,
             bundle: raw,
             ..
-        } = hardy_bpv7::parse::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
+        } = hardy_bpv7::parse(source_data).map_err(hardy_bpv7::editor::Error::from)?;
 
         // RFC 9171 §4.2.3-4/-5: report_on_failure MUST NOT be set on any block
         // of an admin-record or anonymous bundle — the receiver has nowhere

@@ -6,7 +6,7 @@ decrypt/verify outcomes, coverage stamps) and applies no policy of its
 own. Consumers — the BPA ingress pipeline, the bpv7 CLI tools — compose
 the helpers they need (or call [`verify`] for the whole keyed pass) and
 layer their own policy on top. The structural parser lives in
-[`crate::parse`]; rewrite application in [`crate::rewrite`].
+[`crate::parser`]; rewrite application in [`crate::rewrite`].
 
 The §A–§E pipeline these helpers implement — what each `A1` / `A2` /
 `A3` / `B` / `B6` / `C7` / `C8` / `D` / `E` label means — is documented
@@ -107,7 +107,7 @@ pub struct Classification {
 ///
 /// Panics if `bcb_ops` / `bib_ops` name a block number absent from
 /// `blocks`. The three arguments are companion outputs of a single
-/// [`parse`](crate::parse::parse) over the same bundle; mixing outputs
+/// [`parse`](crate::parser) over the same bundle; mixing outputs
 /// from different parses is a caller error, not a recoverable state.
 pub fn classify_unsupported(
     blocks: &HashMap<u64, Block>,

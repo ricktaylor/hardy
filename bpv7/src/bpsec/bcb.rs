@@ -223,7 +223,7 @@ impl OperationSet {
     /// stamps after a successful return. Cross-BCB uniqueness (§2.6) is
     /// not checked here (it needs every operation in view at once).
     ///
-    /// Shared by the structural parser ([`crate::parse`]) and the keyed
+    /// Shared by the structural parser ([`crate::parser`]) and the keyed
     /// [`crate::checks::verify`] pass as the single source of truth for
     /// the per-OperationSet BCB rules.
     ///

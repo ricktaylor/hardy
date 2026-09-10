@@ -14,7 +14,7 @@ use hardy_bpv7::{
     checks, crc,
     creation_timestamp::CreationTimestamp,
     editor::Editor,
-    parse,
+    parser,
 };
 use std::collections::HashMap;
 
@@ -30,9 +30,9 @@ fn reparse(
     Bundle,
     HashMap<u64, bpsec::bib::OperationSet>,
 ) {
-    let parse::Parsed {
+    let parser::Parsed {
         data, bundle, bibs, ..
-    } = parse::parse(::bytes::Bytes::copy_from_slice(bytes)).expect("Failed to parse");
+    } = parser::parse(::bytes::Bytes::copy_from_slice(bytes)).expect("Failed to parse");
     (data, bundle, bibs)
 }
 

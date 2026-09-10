@@ -71,9 +71,9 @@ impl WriteFilter for IpnLegacyFilter {
         }
 
         // Editor needs a `&Bundle`, so re-parse structurally.
-        let hardy_bpv7::parse::Parsed {
+        let hardy_bpv7::parser::Parsed {
             data, bundle: raw, ..
-        } = hardy_bpv7::parse::parse(hardy_bpa::Bytes::copy_from_slice(data))
+        } = hardy_bpv7::parse(hardy_bpa::Bytes::copy_from_slice(data))
             .map_err(hardy_bpv7::editor::Error::from)?;
         let mut editor = Editor::new(&raw, &data);
 
@@ -115,7 +115,7 @@ mod tests {
     use hardy_bpa::bundle::BundleMetadata;
     use hardy_bpv7::builder::Builder;
     use hardy_bpv7::creation_timestamp::CreationTimestamp;
-    use hardy_bpv7::parse;
+    use hardy_bpv7::parser;
 
     fn make_config(patterns: &[&str]) -> Config {
         Config(patterns.iter().map(|p| p.parse().unwrap()).collect())
@@ -235,10 +235,10 @@ mod tests {
             "allocator_id!=0: 3-element should be rewritten to 2-element"
         );
 
-        let hardy_bpv7::parse::Parsed {
+        let hardy_bpv7::parser::Parsed {
             bundle: parsed_bundle,
             ..
-        } = parse::parse(hardy_bpa::Bytes::copy_from_slice(&new_data)).unwrap();
+        } = parser::parse(hardy_bpa::Bytes::copy_from_slice(&new_data)).unwrap();
 
         assert!(
             matches!(parsed_bundle.primary.id.source, Eid::LegacyIpn { .. }),

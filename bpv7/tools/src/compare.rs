@@ -19,7 +19,7 @@ use hardy_bpv7::{
     crc::CrcType,
     eid::Eid,
     hop_info::HopInfo,
-    parse,
+    parser,
 };
 use hardy_cbor::decode::{self, FromCbor};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -27,16 +27,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 ///
 /// Returns a list of human-readable differences. Empty means identical.
 pub fn compare_bundles(data_a: &[u8], data_b: &[u8]) -> Result<Vec<String>, Error> {
-    let parse::Parsed {
+    let parser::Parsed {
         data: data_a,
         bundle: bundle_a,
         ..
-    } = parse::parse(bytes::Bytes::copy_from_slice(data_a))?;
-    let parse::Parsed {
+    } = parser::parse(bytes::Bytes::copy_from_slice(data_a))?;
+    let parser::Parsed {
         data: data_b,
         bundle: bundle_b,
         ..
-    } = parse::parse(bytes::Bytes::copy_from_slice(data_b))?;
+    } = parser::parse(bytes::Bytes::copy_from_slice(data_b))?;
 
     let side_a = BundleSide::new(&bundle_a, &data_a);
     let side_b = BundleSide::new(&bundle_b, &data_b);
@@ -412,7 +412,7 @@ fn compare_security_block<S: OperationSet>(
 mod tests {
     use super::compare_bundles;
     use bytes::Bytes;
-    use hardy_bpv7::parse;
+    use hardy_bpv7::parser;
     use hex_literal::hex;
 
     // Original plain bundle (RFC 9173, Section A.3.1.4)
@@ -429,8 +429,8 @@ mod tests {
     /// Returns the diff list for further assertions.  If they disagree,
     /// the diff text is the diagnostic.
     fn compare(a: &[u8], b: &[u8]) -> Vec<String> {
-        let pa = parse::parse(Bytes::copy_from_slice(a)).expect("parse a");
-        let pb = parse::parse(Bytes::copy_from_slice(b)).expect("parse b");
+        let pa = parser::parse(Bytes::copy_from_slice(a)).expect("parse a");
+        let pb = parser::parse(Bytes::copy_from_slice(b)).expect("parse b");
         let semantic = pa.bundle.semantic_eq(&pa.data, &pb.bundle, &pb.data);
         let diffs = compare_bundles(a, b).expect("compare_bundles");
         assert_eq!(

@@ -1,16 +1,16 @@
 use bytes::Bytes;
-use hardy_bpv7::parse::{self, BundleParser, ParserProgress};
+use hardy_bpv7::parser::{self, BundleParser, ParserProgress};
 
 /// Drive the multi-push streaming pipeline over `full`: header chunks through
 /// [`BundleParser::push`], then — when an oversized payload takes the
-/// `Partial` route — the rest through [`parse::PayloadTail::push`], finishing
+/// `Partial` route — the rest through [`parser::PayloadTail::push`], finishing
 /// both state machines. Mirrors the ingress drain loop in `hardy-bpa`.
 #[allow(clippy::result_large_err)]
 fn drive_streamed(
     full: &[u8],
     parser_chunk: usize,
     push_chunk: usize,
-) -> Result<parse::Parsed, hardy_bpv7::Error> {
+) -> Result<parser::Parsed, hardy_bpv7::Error> {
     let mut parser = BundleParser::new(parser_chunk);
     let mut fed = 0;
     for c in full.chunks(push_chunk) {
@@ -53,7 +53,7 @@ fn drive_streamed(
     ))
 }
 
-/// Differential fuzz of the streaming parser against one-shot [`parse::parse`]:
+/// Differential fuzz of the streaming parser against one-shot [`parser::parse`]:
 /// the first two input bytes choose the parser chunk size (small, so any
 /// payload beyond a few hundred bytes takes the `Partial`/`PayloadTail` route)
 /// and the push granularity; the rest is the bundle. The two pipelines must
@@ -66,7 +66,7 @@ pub fn test_streaming(data: &[u8]) {
     let push_chunk = 1 + (*seed1 as usize % 64);
 
     let streamed = drive_streamed(bundle_bytes, parser_chunk, push_chunk);
-    let oneshot = parse::parse(Bytes::copy_from_slice(bundle_bytes));
+    let oneshot = parser::parse(Bytes::copy_from_slice(bundle_bytes));
 
     match (streamed, oneshot) {
         (Ok(s), Ok(o)) => {

@@ -6,7 +6,7 @@ This crate provides the building blocks for working with BPv7 bundles, including
 # Key Modules
 
 - [`bundle`]: Contains the structural [`Bundle`] (primary block + blocks map) and its identifying types, including [`Bundle::semantic_eq`](bundle::Bundle::semantic_eq) for RFC-tolerant equivalence.
-- [`parse`]: The streaming wire parser ([`parse`](parse::parse) / [`BundleParser`](parse::BundleParser)).
+- [`parse`]: The streaming wire parser ([`parse`](parser::parse) / [`BundleParser`](parser::BundleParser)).
 - [`checks`] / [`rewrite`]: Composable BPSec validation and rewrite primitives.
 - [`builder`]: Provides a [`Builder`](builder::Builder) for constructing new bundles.
 - [`editor`]: Offers an [`Editor`](editor::Editor) for modifying existing bundles.
@@ -42,7 +42,7 @@ The following example demonstrates how to parse a BPv7 bundle from its CBOR repr
 
 ```rust,cfg(feature = "std")
 use hardy_bpv7::builder::Builder;
-use hardy_bpv7::parse;
+use hardy_bpv7::parser;
 use hardy_bpv7::creation_timestamp::CreationTimestamp;
 use hardy_bpv7::eid::Eid;
 
@@ -60,7 +60,7 @@ let (original_bundle, cbor) = Builder::new(source, destination.clone())
 // BPSec validation on top by composing the primitives in
 // `hardy_bpv7::checks` (`classify_*`, `decrypt_and_validate_covered_bibs`,
 // `verify_all_bibs`, …) and `hardy_bpv7::rewrite`.
-let parsed = parse::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
+let parsed = parser::parse(bytes::Bytes::copy_from_slice(&cbor)).unwrap();
 
 assert_eq!(parsed.bundle.primary.id, original_bundle.primary.id);
 assert_eq!(parsed.bundle.primary.destination, original_bundle.primary.destination);
@@ -109,7 +109,7 @@ pub mod dtn_time;
 pub mod editor;
 pub mod eid;
 pub mod hop_info;
-pub mod parse;
+pub mod parser;
 pub mod rewrite;
 pub mod status_report;
 
@@ -118,6 +118,7 @@ mod error;
 
 pub use self::canonical::CaptureFieldErr;
 pub use self::error::{Error, Result};
+pub use self::parser::{Parsed, parse};
 
 /// The structural bpv7 bundle type (primary block + blocks map),
 /// re-exported so consumers can use the short path `hardy_bpv7::Bundle`.

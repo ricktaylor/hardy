@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use hardy_bpv7::{bpsec::key, checks, parse, rewrite};
+use hardy_bpv7::{bpsec::key, checks, parser, rewrite};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 /// Local parse pipeline for the fuzz harness, exercising the bpv7 parser:
@@ -24,12 +24,12 @@ fn parse_and_rewrite(
     data: &[u8],
     keys: &key::KeySet,
 ) -> Result<Option<Vec<hardy_bpv7::editor::Chunk>>, hardy_bpv7::Error> {
-    let parse::Parsed {
+    let parser::Parsed {
         data,
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
-    } = parse::parse(Bytes::copy_from_slice(data))?;
+    } = parser::parse(Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate); collect deletables.
     let classification = checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;
@@ -120,7 +120,7 @@ fn extract_canonical_rewrites<V: AsRef<[u8]>>(
         } else if is_encrypted {
             None
         } else {
-            // `data` is the complete in-memory bundle from `parse::parse`.
+            // `data` is the complete in-memory bundle from `parser::parse`.
             b.payload(data)
         };
         let Some(payload) = payload else { continue };

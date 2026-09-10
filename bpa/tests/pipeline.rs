@@ -27,7 +27,8 @@ use hardy_bpv7::{
         Service, {Eid, IpnNodeId, NodeId},
     },
     hop_info::HopInfo,
-    parse::{Parsed, parse},
+    parse,
+    parser::Parsed,
     status_report::ReasonCode,
 };
 use hardy_cbor::{

@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use hardy_bpv7::{
-    Error, builder, bundle, bundle::PrimaryBlock, crc, creation_timestamp, dtn_time, eid, parse,
+    Error, builder, bundle, bundle::PrimaryBlock, crc, creation_timestamp, dtn_time, eid, parser,
 };
 // Aliased: `decode::Error` collides with the bpv7 `Error` and
 // `encode::Bytes` with `bytes::Bytes` imported above.
@@ -27,11 +27,11 @@ fn build_bundle_with_crc(crc_type: crc::CrcType) -> Box<[u8]> {
 fn valid_crc() {
     // CRC-32 (default) — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
-    assert!(parse::parse(Bytes::copy_from_slice(&data)).is_ok());
+    assert!(parser::parse(Bytes::copy_from_slice(&data)).is_ok());
 
     // CRC-16 — valid bundle should parse
     let data = build_bundle_with_crc(crc::CrcType::CRC16_X25);
-    assert!(parse::parse(Bytes::copy_from_slice(&data)).is_ok());
+    assert!(parser::parse(Bytes::copy_from_slice(&data)).is_ok());
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn invalid_crc() {
         // value itself, not CBOR structure: the CRC value is the final field
         // of the primary block, so the last byte of the block extent is
         // inside it.
-        let parsed = parse::parse(Bytes::copy_from_slice(&data)).expect("valid bundle must parse");
+        let parsed = parser::parse(Bytes::copy_from_slice(&data)).expect("valid bundle must parse");
         let primary_extent = parsed
             .bundle
             .blocks
@@ -59,7 +59,7 @@ fn invalid_crc() {
         let Err(Error::InvalidField {
             field: "primary block",
             source,
-        }) = parse::parse(Bytes::from(data))
+        }) = parser::parse(Bytes::from(data))
         else {
             panic!("corrupted {crc_type:?} must fail as a primary-block field error");
         };
@@ -87,7 +87,7 @@ fn invalid_crc() {
 fn primary_block_validation() {
     // Valid bundle parses successfully
     let data = build_bundle_with_crc(crc::CrcType::CRC32_CASTAGNOLI);
-    let parse::Parsed { data, bundle, .. } = parse::parse(Bytes::copy_from_slice(&data)).unwrap();
+    let parser::Parsed { data, bundle, .. } = parser::parse(Bytes::copy_from_slice(&data)).unwrap();
     assert_eq!(bundle.primary.id.source, "ipn:1.0".parse().unwrap());
 
     // Bundle with version != 7 should fail
@@ -103,7 +103,7 @@ fn primary_block_validation() {
         .position(|w| w == [0x89, 0x07])
         .expect("version byte pattern [0x89, 0x07] not found — test fixture needs updating");
     bad_version[pos + 1] = 0x06; // change version to 6
-    let result = parse::parse(Bytes::copy_from_slice(&bad_version));
+    let result = parser::parse(Bytes::copy_from_slice(&bad_version));
     // Downcast the source: rejection must be for the version itself, not some
     // other primary-block failure the byte edit could provoke (e.g. the CRC).
     let Err(Error::InvalidField {
@@ -260,7 +260,7 @@ fn fragment_bundle_parsing() {
     }
 
     // A valid fragment parses and carries its fragment info in the id.
-    let parsed = parse::parse(Bytes::copy_from_slice(&make_bundle(40, 5000))).unwrap();
+    let parsed = parser::parse(Bytes::copy_from_slice(&make_bundle(40, 5000))).unwrap();
     assert!(parsed.bundle.primary.flags.is_fragment);
     assert_eq!(
         parsed.bundle.primary.id.fragment_info,
@@ -271,7 +271,7 @@ fn fragment_bundle_parsing() {
     );
 
     // An invalid offset is rejected as a primary-block field error.
-    let result = parse::parse(Bytes::copy_from_slice(&make_bundle(5001, 5000)));
+    let result = parser::parse(Bytes::copy_from_slice(&make_bundle(5001, 5000)));
     let Err(Error::InvalidField {
         field: "primary block",
         source,

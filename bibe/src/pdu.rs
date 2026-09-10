@@ -2,11 +2,8 @@ use alloc::borrow::Cow;
 
 use hardy_bpa::Bytes;
 use hardy_bpv7::{
-    Error as Bpv7Error,
-    builder::Builder,
-    creation_timestamp::CreationTimestamp,
-    eid::Eid,
-    parse::{Parsed, parse},
+    Error as Bpv7Error, builder::Builder, creation_timestamp::CreationTimestamp, eid::Eid, parse,
+    parser::Parsed,
 };
 use hardy_cbor::{
     decode::{Error as CborError, Value, parse_array},

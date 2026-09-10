@@ -262,7 +262,7 @@ pub trait ApplicationSink: Send + Sync {
 /// Unlike [`Application`] which receives only payload, `Service` receives
 /// the raw bundle bytes. This enables system services like echo that need
 /// to inspect/modify bundle structure. Services can parse the bundle
-/// themselves with [`hardy_bpv7::parse::parse`] for a structural parse, then
+/// themselves with [`hardy_bpv7::parser::parse`] for a structural parse, then
 /// apply the [`hardy_bpv7::checks`] primitives (e.g. `verify`) if they have
 /// key access.
 ///

@@ -2,12 +2,12 @@
 //! way a consumer would, then compare them for RFC-tolerant equivalence.
 
 use bytes::Bytes;
-use hardy_bpv7::parse;
+use hardy_bpv7::parser;
 use hex_literal::hex;
 /// Parse both inputs and compare their bundles for semantic equivalence.
 fn eq(a: &[u8], b: &[u8]) -> bool {
-    let a = parse::parse(Bytes::copy_from_slice(a)).expect("parse a");
-    let b = parse::parse(Bytes::copy_from_slice(b)).expect("parse b");
+    let a = parser::parse(Bytes::copy_from_slice(a)).expect("parse a");
+    let b = parser::parse(Bytes::copy_from_slice(b)).expect("parse b");
     a.bundle.semantic_eq(&a.data, &b.bundle, &b.data)
 }
 

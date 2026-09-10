@@ -29,8 +29,8 @@ impl Dispatcher {
         // into the parse and work from the authoritative buffer it
         // returns (the streaming path concatenates pushes), converting
         // the payload to an owned `Bytes` before the arm ends.
-        let payload_result = match hardy_bpv7::parse::parse(data) {
-            Ok(hardy_bpv7::parse::Parsed {
+        let payload_result = match hardy_bpv7::parse(data) {
+            Ok(hardy_bpv7::parser::Parsed {
                 data: buf,
                 bundle: raw,
                 bcbs: bcb_ops,

@@ -32,7 +32,7 @@ impl Command {
 
         // Structural parse + keyed BPSec validation in one pass; gives us
         // the bcb_ops map we need for the per-block decrypt below.
-        let parse::Parsed {
+        let parser::Parsed {
             data,
             bundle,
             bcbs: bcb_ops,

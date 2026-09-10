@@ -1,4 +1,4 @@
-use hardy_bpv7::{parse::PayloadTail, status_report::ReasonCode};
+use hardy_bpv7::{parser::PayloadTail, status_report::ReasonCode};
 
 use super::*;
 use crate::{bundle::parse, cla::Segment, stream::Receiver};

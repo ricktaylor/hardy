@@ -8,7 +8,7 @@ use hardy_bpv7::{
     bpsec::{key, rfc9173::ScopeFlags, signer},
     builder, crc, creation_timestamp,
     editor::{Chunk, Editor, Error},
-    eid, hop_info, parse,
+    eid, hop_info, parser,
 };
 use std::collections::HashSet;
 
@@ -48,7 +48,7 @@ fn ok<T>(result: Result<T, (Editor, Error)>) -> T {
 
 // Edit a bundle, rebuild, re-parse, and return the parsed Bundle.
 fn reparse(data: &[u8]) -> Bundle {
-    parse::parse(bytes::Bytes::copy_from_slice(data))
+    parser::parse(bytes::Bytes::copy_from_slice(data))
         .unwrap()
         .bundle
 }

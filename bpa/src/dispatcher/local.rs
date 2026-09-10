@@ -310,8 +310,8 @@ impl Dispatcher {
                 // path concatenates pushes), converting the payload to an
                 // owned `Bytes` (zero-copy for the unencrypted case via
                 // `slice_ref`) before the arm ends.
-                let payload_result = match hardy_bpv7::parse::parse(data) {
-                    Ok(hardy_bpv7::parse::Parsed {
+                let payload_result = match hardy_bpv7::parse(data) {
+                    Ok(hardy_bpv7::parser::Parsed {
                         data: buf,
                         bundle: raw,
                         bcbs: bcb_ops,

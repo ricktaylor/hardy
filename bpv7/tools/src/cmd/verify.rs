@@ -32,7 +32,7 @@ impl Command {
         // it calls `op.verify` and surfaces a missing key (NoKey/Maybe) or a
         // failed signature as an error, so `bundle verify` can't pass on the
         // structural `BibCoverage` stamp alone.
-        let parse::Parsed {
+        let parser::Parsed {
             data,
             bundle,
             bibs: bib_ops,

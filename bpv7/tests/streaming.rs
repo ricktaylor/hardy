@@ -1,5 +1,5 @@
 //! Streaming-parser tests for the oversized-payload `Partial` path: driving
-//! [`hardy_bpv7::parse::BundleParser`] segment-by-segment so the payload body
+//! [`hardy_bpv7::parser::BundleParser`] segment-by-segment so the payload body
 //! exceeds the buffer, then draining the tail through [`PayloadTail`]. These
 //! exercise the multi-`push` streaming half of the parser, which the one-shot
 //! `parse()` consumers never reach.
@@ -8,8 +8,8 @@ use bytes::Bytes;
 use hardy_bpv7::{
     Error, builder,
     crc::{self, CrcType},
-    creation_timestamp, parse,
-    parse::{BundleParser, ParserProgress, PayloadTail},
+    creation_timestamp, parser,
+    parser::{BundleParser, ParserProgress, PayloadTail},
 };
 use hex_literal::hex;
 // A bundle with a payload far larger than any sane parser chunk size, so the
@@ -184,7 +184,7 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
         .build(creation_timestamp::CreationTimestamp::now())
         .unwrap()
         .1;
-    let prefix_len = parse::parse(Bytes::copy_from_slice(&minimal))
+    let prefix_len = parser::parse(Bytes::copy_from_slice(&minimal))
         .unwrap()
         .bundle
         .blocks
@@ -254,7 +254,7 @@ fn craft_bundle(crc_type: CrcType, indefinite: bool, body: &[u8]) -> Vec<u8> {
 fn crc_none_indefinite_payload() {
     let full = craft_bundle(CrcType::None, true, &vec![0xAB_u8; 50_000]);
     assert!(
-        parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
+        parser::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
 
@@ -269,7 +269,7 @@ fn crc_none_indefinite_payload() {
 fn crc32_indefinite_payload() {
     let full = craft_bundle(CrcType::CRC32_CASTAGNOLI, true, &vec![0xCD_u8; 50_000]);
     assert!(
-        parse::parse(Bytes::copy_from_slice(&full)).is_ok(),
+        parser::parse(Bytes::copy_from_slice(&full)).is_ok(),
         "craft is a valid bundle"
     );
 
@@ -286,7 +286,7 @@ fn crc32_indefinite_payload() {
 #[test]
 fn one_shot_rejects_truncated_large_payload() {
     let full = large_payload_bundle();
-    let result = parse::parse(Bytes::copy_from_slice(&full[..500]));
+    let result = parser::parse(Bytes::copy_from_slice(&full[..500]));
     assert!(
         matches!(
             result,

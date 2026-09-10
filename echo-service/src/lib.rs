@@ -24,7 +24,8 @@ use hardy_bpv7::{
     bundle::{BundleFlags, BundleId},
     creation_timestamp::CreationTimestamp,
     eid::Eid,
-    parse::{Parsed, parse},
+    parse,
+    parser::Parsed,
     status_report::ReasonCode,
 };
 use tracing::{debug, warn};

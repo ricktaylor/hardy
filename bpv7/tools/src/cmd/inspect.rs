@@ -54,7 +54,7 @@ impl Command {
         let bundle_data = self.input.read_all()?;
 
         // Structural parse + keyed BPSec validation in one pass.
-        let parse::Parsed {
+        let parser::Parsed {
             data: bundle_data,
             bundle: raw,
             bcbs: bcb_ops,

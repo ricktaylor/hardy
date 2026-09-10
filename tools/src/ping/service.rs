@@ -12,7 +12,8 @@ use hardy_bpa::{
 use hardy_bpv7::{
     bundle::BundleId,
     eid::{Eid, NodeId},
-    parse::{Parsed, parse},
+    parse,
+    parser::Parsed,
     status_report::{AdministrativeRecord, ReasonCode},
 };
 use hardy_cbor::decode::parse_exact;

@@ -7,7 +7,7 @@ use hardy_bpv7::{
     checks,
     creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
-    parse,
+    parser,
 };
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ fn count_blocks_of_type(bundle: &Bundle, block_type: BlockType) -> usize {
 // get one. The bundle and bytes are produced together by Builder, so this
 // is a pure type-shape conversion.
 fn raw_of(bytes: &[u8]) -> Bundle {
-    parse::parse(::bytes::Bytes::copy_from_slice(bytes))
+    parser::parse(::bytes::Bytes::copy_from_slice(bytes))
         .expect("parse")
         .bundle
 }
@@ -53,12 +53,12 @@ fn validate_with_keys(
     ),
     hardy_bpv7::Error,
 > {
-    let parse::Parsed {
+    let parser::Parsed {
         data,
         mut bundle,
         bcbs: bcb_ops,
         bibs: mut bib_ops,
-    } = parse::parse(::bytes::Bytes::copy_from_slice(data))?;
+    } = parser::parse(::bytes::Bytes::copy_from_slice(data))?;
 
     // §A — classify (Unsupported errors propagate)
     checks::classify_unsupported(&bundle.blocks, &bcb_ops, &bib_ops, &[])?;

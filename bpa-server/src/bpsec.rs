@@ -321,10 +321,7 @@ mod tests {
         checks,
     };
 
-    use hardy_bpv7::{
-        bpsec::block_data,
-        parse::{Parsed, parse},
-    };
+    use hardy_bpv7::{bpsec::block_data, parse, parser::Parsed};
 
     use rand::{TryRng, rngs::SysRng};
 

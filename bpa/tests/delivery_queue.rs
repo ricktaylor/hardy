@@ -185,7 +185,7 @@ async fn unregister_sweeps_queued_deliveries() {
             .with_payload(Cow::Borrowed(payload))
             .build(CreationTimestamp::now())
             .expect("Failed to build bundle");
-        let parsed = hardy_bpv7::parse::parse(Bytes::from(data.clone())).unwrap();
+        let parsed = hardy_bpv7::parse(Bytes::from(data.clone())).unwrap();
         let id = parsed.bundle.primary.id.clone();
         (id, Bytes::from(data))
     };

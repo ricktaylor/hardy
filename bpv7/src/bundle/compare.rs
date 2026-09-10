@@ -31,8 +31,8 @@ impl Bundle {
     ///
     /// Both bundles must already be parsed; `self_data` / `other_data` are
     /// the backing wire buffers their block offsets index into (the
-    /// [`data`](crate::parse::Parsed::data) returned alongside each by
-    /// [`parse`](crate::parse::parse)). This answers the yes/no question
+    /// [`data`](crate::parser::Parsed::data) returned alongside each by
+    /// [`parse`](crate::parser)). This answers the yes/no question
     /// round-trip and conformance tests need; the `bundle compare` CLI in
     /// `hardy-bpv7-tools` layers a human-readable diff on top of the same
     /// rules.
