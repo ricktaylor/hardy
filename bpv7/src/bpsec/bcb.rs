@@ -10,8 +10,9 @@ use smallvec::SmallVec;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{BlockSet, Context, Error, key, parse},
+    bpsec::{Context, Error, key, parse},
     crc, eid,
+    reader::Reader,
 };
 /// A parsed BCB (Block Confidentiality Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
@@ -34,7 +35,7 @@ pub struct OperationArgs<'a> {
     /// The block number of the BCB itself.
     pub source: u64,
     /// A view of the bundle's blocks for accessing related data during decryption.
-    pub blocks: &'a dyn BlockSet<'a>,
+    pub blocks: &'a dyn Reader<'a>,
 }
 
 impl Operation {
@@ -233,7 +234,7 @@ impl OperationSet {
     /// different block set is a caller error, not a recoverable state.
     pub fn check<'a, B>(&self, bcb_block_number: u64, blocks: &'a B) -> Result<(), Error>
     where
-        B: BlockSet<'a> + ?Sized,
+        B: Reader<'a> + ?Sized,
     {
         let bcb_block = blocks
             .block_header(bcb_block_number)

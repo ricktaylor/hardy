@@ -18,7 +18,11 @@ use alloc::{boxed::Box, vec::Vec};
 use hardy_cbor::decode::FromCbor;
 use smallvec::SmallVec;
 
-use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
+use crate::{
+    Error, HashMap, block, bpsec,
+    error::CaptureFieldErr,
+    reader::{Availability, PlainReader, Reader},
+};
 /// View into a partially-processed bundle for BPSec operations.
 ///
 /// Returns the current best payload for each block: a decrypted body if a
@@ -26,18 +30,15 @@ use crate::{Error, HashMap, block, bpsec, error::CaptureFieldErr};
 /// OperationSet was shrunk, or the original byte range from `source_data`.
 /// Takes `&HashMap<u64, block::Block>` directly — no Bundle type
 /// dependency.
-struct BundleBlockSet<'a> {
+struct OverlayReader<'a> {
     blocks: &'a HashMap<u64, block::Block>,
     source_data: &'a [u8],
     decrypted_data: &'a HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
     to_update: &'a HashMap<u64, Vec<u8>>,
 }
 
-impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
-    fn block(
-        &'a self,
-        block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+impl<'a> Reader<'a> for OverlayReader<'a> {
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
         let payload = if let Some(b) = self.decrypted_data.get(&block_number) {
             Some(b.as_ref())
@@ -47,7 +48,12 @@ impl<'a> bpsec::BlockSet<'a> for BundleBlockSet<'a> {
             // `source_data` is the full in-memory bundle.
             block.payload(self.source_data)
         };
-        Some((block, payload.map(block::Payload::Borrowed)))
+        Some((
+            block,
+            payload
+                .map(block::Payload::Borrowed)
+                .map_or(Availability::NotResident, Availability::Available),
+        ))
     }
 
     fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
@@ -228,10 +234,10 @@ pub fn decrypt_and_validate_covered_bibs(
             .get(&bcb_block_number)
             .expect("BCB referenced by an encrypted BIB must be in bcb_ops");
 
-        // Scope the BlockSet so its `blocks` borrow ends before we mutate
+        // Scope the reader so its `blocks` borrow ends before we mutate
         // for coverage stamping.
         let plaintext = {
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data,
@@ -279,7 +285,7 @@ pub fn decrypt_and_validate_covered_bibs(
         // reach this branch for BCB-encrypted BIBs.
         bib_op_set.check(
             bib_block_number,
-            &bpsec::PlainBlockSet {
+            &PlainReader {
                 blocks: &*blocks,
                 source_data: data,
             },
@@ -327,9 +333,10 @@ pub fn decrypt_and_validate_covered_bibs(
 
 /// The C7 defer-set: BIB block numbers whose op-set still has an **unchecked
 /// block-1 (payload) target**. `#[must_use]`: an unchecked payload target is
-/// an unverified integrity statement — defer it to [`verify_payload`] or
-/// assert the set empty; silently dropping it skips verification.
-#[must_use = "an unchecked payload target is an unverified integrity statement — defer to verify_payload or assert empty"]
+/// an unverified integrity statement — defer it to
+/// [`begin_payload_verification`] or assert the set empty; silently dropping
+/// it skips verification.
+#[must_use = "an unchecked payload target is an unverified integrity statement — defer to begin_payload_verification or assert empty"]
 #[derive(Debug, Default)]
 pub struct DeferredBibs(SmallVec<[u64; 4]>);
 
@@ -349,9 +356,9 @@ impl DeferredBibs {
 /// [`DeferredBibs`] whose op-set still has an unchecked block-1 (payload)
 /// target — which happens when run on a headers-only buffer (the streaming
 /// ingress gate), where the payload's over-claiming extent isn't resident so
-/// its bytes can't be read yet. Those are the op-sets to re-check with
-/// [`verify_payload`] once the payload is resident ([`verify`] hands them
-/// over, drained out of its `bib_ops`, in
+/// its bytes can't be read yet. Those are the op-sets
+/// [`begin_payload_verification`] re-checks as the payload streams ([`verify`]
+/// hands them over, drained out of its `bib_ops`, in
 /// [`VerifyFacts::deferred_bibs`]). For an all-resident buffer every target
 /// is checked and the returned set is **empty** — nothing to defer.
 ///
@@ -382,8 +389,9 @@ pub fn verify_all_bibs(
             }
             // Target bytes not resident — the payload (block 1), whose
             // over-claiming extent isn't in a headers-only buffer. Defer this
-            // op-set's block-1 target to `verify_payload` on the full bundle.
-            // Never taken for an all-resident buffer.
+            // op-set's block-1 target to `begin_payload_verification`, which
+            // verifies it as the payload streams. Never taken for an
+            // all-resident buffer.
             if !decrypted_data.contains_key(&target_number)
                 && !to_update.contains_key(&target_number)
                 && target_block.payload(data).is_none()
@@ -391,7 +399,7 @@ pub fn verify_all_bibs(
                 defer = true;
                 continue;
             }
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data,
@@ -418,54 +426,58 @@ pub fn verify_all_bibs(
     Ok(DeferredBibs(deferred))
 }
 
-/// Second-pass companion to [`verify_all_bibs`] for the streaming ingress
-/// gate: verify the **block-1 (payload)** target of every BIB in `bib_ops`
-/// against the now-resident full bundle `data`. The header pass
-/// ([`verify`] on a headers-only buffer) skips block-1 targets because the
-/// payload isn't yet resident, and hands the caller exactly the op-sets that
-/// still target block 1; this re-checks only those targets (header targets
-/// were already verified in the first pass — no re-checking).
+/// Streaming companion to [`verify_all_bibs`] for the ingress drain: begin
+/// incremental verification of the **block-1 (payload)** target of every
+/// BIB in `bib_ops` (the [`VerifyFacts::deferred_bibs`] hand-over), against
+/// a headers-only buffer. The caller feeds each returned verifier the
+/// payload's block-type-specific data as it streams past, then settles it
+/// with [`bpsec::bib::Verifier::finish`] — no resident payload is
+/// ever required, which is the point.
 ///
-/// `NoKey` is a soft skip, as in [`verify_all_bibs`]. A BCB-encrypted payload
-/// is skipped here too — its integrity is established at delivery, when the
-/// payload is decrypted ([`bpsec::block_data`]).
-pub fn verify_payload(
+/// Skip rules: a BCB-encrypted payload is not verified here (its integrity
+/// is established at delivery, once decrypted), and `NoKey` is a soft policy
+/// skip. The result pairs each
+/// verifier with its BIB's block number so the caller can attribute a
+/// failure to the block that made the claim.
+pub fn begin_payload_verification(
     data: &[u8],
     key_source: &dyn bpsec::key::KeySource,
     blocks: &HashMap<u64, block::Block>,
     bib_ops: &HashMap<u64, bpsec::bib::OperationSet>,
-    decrypted_data: &HashMap<u64, zeroize::Zeroizing<Box<[u8]>>>,
-    to_update: &HashMap<u64, Vec<u8>>,
-) -> Result<(), Error> {
+) -> Result<Vec<(u64, bpsec::bib::Verifier)>, Error> {
+    let empty_decrypted = HashMap::default();
+    let empty_updates = HashMap::default();
+
+    let mut verifiers = Vec::new();
     for (&bib_block_number, ops) in bib_ops {
         let Some(op) = ops.operations.get(&1) else {
             continue;
         };
         let target_block = blocks.get(&1).expect("payload block exists");
-        if target_block.bcb.is_some() && !decrypted_data.contains_key(&1) {
+        if target_block.bcb.is_some() {
             continue;
         }
-        let block_set = BundleBlockSet {
+        let block_set = OverlayReader {
             blocks,
             source_data: data,
-            decrypted_data,
-            to_update,
+            decrypted_data: &empty_decrypted,
+            to_update: &empty_updates,
         };
-        match op.verify(
+        match op.begin_verify(
             key_source,
-            bpsec::bib::OperationArgs {
+            &bpsec::bib::OperationArgs {
                 bpsec_source: &ops.source,
                 target: 1,
                 source: bib_block_number,
                 blocks: &block_set,
             },
         ) {
-            Ok(()) => {}
+            Ok(verifier) => verifiers.push((bib_block_number, verifier)),
             Err(bpsec::Error::NoKey) => {}
             Err(e) => return Err(e.into()),
         }
     }
-    Ok(())
+    Ok(verifiers)
 }
 
 // ===== Composed keyed verification (B + C8 + C7) =====
@@ -489,8 +501,8 @@ pub struct VerifyFacts {
     /// (payload) target — the payload wasn't resident in this buffer (the
     /// streaming ingress gate ran on headers only). [`verify`] drains them
     /// out of its `bib_ops` and hands them over **owned**, so the caller
-    /// passes this map straight to [`verify_payload`] once the payload is
-    /// drained. Empty for an all-resident buffer.
+    /// passes this map straight to [`begin_payload_verification`] to verify as
+    /// the payload streams. Empty for an all-resident buffer.
     pub deferred_bibs: HashMap<u64, bpsec::bib::OperationSet>,
 }
 
@@ -543,7 +555,7 @@ pub fn verify(
             .get(&bcb_block_number)
             .expect("BCB referenced by encrypted block must be in bcb_ops");
         let result = {
-            let block_set = BundleBlockSet {
+            let block_set = OverlayReader {
                 blocks,
                 source_data: data,
                 decrypted_data: decrypted,
@@ -575,10 +587,11 @@ pub fn verify(
 
     // §C7 — verify every BIB, draining the op-sets with a deferred block-1
     // (payload) target out of `bib_ops` and handing them over owned in
-    // `facts.deferred_bibs` — the exact map `verify_payload` re-checks once
-    // the payload is resident. (A block-1 BCB — payload confidentiality — is
+    // `facts.deferred_bibs` — the exact map `begin_payload_verification`
+    // re-checks as the payload streams. (A block-1 BCB — payload
+    // confidentiality — is
     // left untouched in `bcb_ops` by §B/§C8 and decrypted at delivery via
-    // `bpsec::block_data`.)
+    // `bpsec::DecryptingReader::block_data`.)
     for n in verify_all_bibs(data, key_source, blocks, bib_ops, decrypted, to_update)?.iter() {
         let ops = bib_ops
             .remove(&n)

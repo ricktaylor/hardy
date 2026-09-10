@@ -8,8 +8,9 @@ use smallvec::SmallVec;
 use crate::bpsec::rfc9173;
 use crate::{
     HashMap, block,
-    bpsec::{BlockSet, Context, Error, key, parse},
+    bpsec::{Context, Error, key, parse},
     crc, eid,
+    reader::Reader,
 };
 /// A parsed BIB (Block Integrity Block) security operation.
 #[allow(clippy::upper_case_acronyms)]
@@ -32,7 +33,62 @@ pub struct OperationArgs<'a> {
     /// The block number of the BIB itself.
     pub source: u64,
     /// A view of the bundle's blocks for accessing related data during verification.
-    pub blocks: &'a dyn BlockSet<'a>,
+    pub blocks: &'a dyn Reader<'a>,
+}
+
+/// Incremental verifier for one BIB operation. Context-dispatching wrapper
+/// over the per-context verifiers; the single verification engine — the
+/// all-in-one [`Operation::verify`] is a thin resident-target wrapper over
+/// it, and the streaming ingress drain feeds it a non-resident payload
+/// target segment by segment.
+///
+/// Owns everything it needs (including copied key material — see the
+/// per-context verifier docs), so it is `Send` and may cross `await`
+/// points and task boundaries.
+///
+/// Contract for future security contexts: a verifier carries the *minimum
+/// derived state* across the drain — a running digest, never a raw key
+/// larger than the digest state. Resolve key material from the
+/// [`KeySource`](super::key::KeySource) inside `begin_verify`'s sync scope;
+/// a context that instead needs the key at settle (a hash-then-verify
+/// signature scheme, say) should extend [`finish`](Self::finish) to take a
+/// `KeySource` — the settle site is sync and can re-resolve — rather than
+/// store the key in the verifier.
+#[allow(clippy::upper_case_acronyms)]
+#[allow(non_camel_case_types)]
+#[must_use = "an unfinished verifier is an unchecked integrity statement — call finish()"]
+pub enum Verifier {
+    /// HMAC-SHA2 incremental verification (RFC 9173).
+    #[cfg(feature = "rfc9173")]
+    HMAC_SHA2(rfc9173::bib_hmac_sha2::Verifier),
+}
+
+impl Verifier {
+    /// Absorb the next run of the target's block-type-specific data.
+    #[allow(unused_variables)]
+    pub fn update(&mut self, bytes: &[u8]) {
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(v) => v.update(bytes),
+            // With no security context compiled in the enum is empty and a
+            // `Verifier` is never constructed; the arm keeps the reference
+            // match exhaustive.
+            #[cfg(not(feature = "rfc9173"))]
+            _ => unreachable!("no security context compiled in"),
+        }
+    }
+
+    /// Settle the operation once every byte has been absorbed. Fails with
+    /// [`Error::IntegrityCheckFailed`] on tag mismatch.
+    pub fn finish(self) -> Result<(), Error> {
+        // By-value match: with no security context compiled in the enum is
+        // empty, so the match is exhaustive with no arms (unlike `update`'s
+        // reference match, which needs its catch-all).
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(v) => v.finish(),
+        }
+    }
 }
 
 impl Operation {
@@ -55,16 +111,21 @@ impl Operation {
         }
     }
 
-    /// Verifies the integrity of the target block using the provided key source.
+    /// Begin incremental verification of this operation: the returned
+    /// [`Verifier`] absorbs the target's data streamed through
+    /// [`Verifier::update`] (the ingress drain); a resident target takes the
+    /// all-in-one [`verify`](Self::verify) instead. Applies the RFC 9172
+    /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
+    /// policy skip.
     #[allow(unused_variables)]
-    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
+    pub fn begin_verify<K>(&self, key_source: &K, args: &OperationArgs) -> Result<Verifier, Error>
     where
         K: key::KeySource + ?Sized,
     {
-        // RFC 9172 Section 3.8: CRC must be removed for targets "other than the bundle's
-        // primary block". The primary block (block 0) is exempt from this requirement.
+        // RFC 9172 Section 3.8: CRC must be removed for targets "other than
+        // the bundle's primary block". The primary block (block 0) is exempt.
         if args.target != 0
-            && let Some((target_block, _)) = args.blocks.block(args.target)
+            && let Some(target_block) = args.blocks.block_header(args.target)
             && !matches!(target_block.crc_type, crc::CrcType::None)
         {
             return Err(Error::CrcPresent);
@@ -72,7 +133,33 @@ impl Operation {
 
         match self {
             #[cfg(feature = "rfc9173")]
-            Self::HMAC_SHA2(o) => o.verify(key_source, args),
+            Self::HMAC_SHA2(o) => o.begin_verify(key_source, args).map(Verifier::HMAC_SHA2),
+            Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
+        }
+    }
+
+    /// Verifies the integrity of a fully-resident target block. The
+    /// all-in-one counterpart to [`begin_verify`](Self::begin_verify);
+    /// both share the per-context IPPT/MAC primitives. Applies the RFC 9172
+    /// Section 3.8 CRC-presence rule; [`Error::NoKey`] is the caller's
+    /// policy skip.
+    #[allow(unused_variables)]
+    pub fn verify<K>(&self, key_source: &K, args: OperationArgs) -> Result<(), Error>
+    where
+        K: key::KeySource + ?Sized,
+    {
+        // RFC 9172 Section 3.8: CRC must be removed for targets "other than
+        // the bundle's primary block". The primary block (block 0) is exempt.
+        if args.target != 0
+            && let Some(target_block) = args.blocks.block_header(args.target)
+            && !matches!(target_block.crc_type, crc::CrcType::None)
+        {
+            return Err(Error::CrcPresent);
+        }
+
+        match self {
+            #[cfg(feature = "rfc9173")]
+            Self::HMAC_SHA2(o) => o.verify(key_source, &args),
             Self::Unrecognised(id, ..) => Err(Error::UnrecognisedContext(*id)),
         }
     }
@@ -157,7 +244,7 @@ impl OperationSet {
     /// different block set is a caller error, not a recoverable state.
     pub fn check<'a, B>(&self, bib_block_number: u64, blocks: &'a B) -> Result<(), Error>
     where
-        B: BlockSet<'a> + ?Sized,
+        B: Reader<'a> + ?Sized,
     {
         // Whether this BIB is itself protected by a BCB — used by the §3.9
         // check on each target.

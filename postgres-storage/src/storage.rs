@@ -217,7 +217,7 @@ impl storage::MetadataStorage for PostgresStorage {
 
         let row = sqlx::query_as::<_, MetadataRow>(
             "SELECT m.bundle, m.status, m.peer_id, m.queue_id,
-                    m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
+                    m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid, m.next_hop
              FROM metadata m
              JOIN bundles b ON m.id = b.id
              WHERE b.bundle_id = $1",
@@ -250,9 +250,9 @@ impl storage::MetadataStorage for PostgresStorage {
              INSERT INTO metadata
                  (id, expiry, received_at, status,
                   peer_id, queue_id, adu_source, adu_ts_ms, adu_ts_seq, service_eid,
-                  bundle)
+                  next_hop, bundle)
              SELECT id, $3, $4, $5,
-                    $6, $7, $8, $9, $10, $11, $12
+                    $6, $7, $8, $9, $10, $11, $12, $13
              FROM ins_bundle
              RETURNING id",
         )
@@ -267,52 +267,12 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
         .bind(sf.service_eid)
+        .bind(sf.next_hop)
         .bind(bundle_bytes)
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(inserted.is_some())
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle.id())))]
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        let bundle_key = bundle.id().to_key();
-        let bundle_bytes = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
-        let expiry = bundle.expiry();
-        let sf = status::StatusFields::try_from(&bundle.status)?;
-
-        let rows = sqlx::query(
-            "UPDATE metadata
-             SET status      = $2,
-                 expiry      = $3,
-                 peer_id     = $4,
-                 queue_id    = $5,
-                 adu_source  = $6,
-                 adu_ts_ms   = $7,
-                 adu_ts_seq  = $8,
-                 service_eid = $9,
-                 bundle      = $10
-             WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)",
-        )
-        .bind(bundle_key)
-        .bind(sf.status)
-        .bind(expiry)
-        .bind(sf.peer_id)
-        .bind(sf.queue_id)
-        .bind(sf.adu_source)
-        .bind(sf.adu_ts_ms)
-        .bind(sf.adu_ts_seq)
-        .bind(sf.service_eid)
-        .bind(bundle_bytes)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-
-        if rows == 0 {
-            return Err(sqlx::Error::RowNotFound.into());
-        }
-
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all, fields(bundle.id = %bundle_id)))]
@@ -334,15 +294,17 @@ impl storage::MetadataStorage for PostgresStorage {
                  adu_source  = $5,
                  adu_ts_ms   = $6,
                  adu_ts_seq  = $7,
-                 service_eid = $8
+                 service_eid = $8,
+                 next_hop    = $9
              WHERE id = (SELECT id FROM bundles WHERE bundle_id = $1)
-               AND status = $9
-               AND peer_id     IS NOT DISTINCT FROM $10
-               AND queue_id    IS NOT DISTINCT FROM $11
-               AND adu_source  IS NOT DISTINCT FROM $12
-               AND adu_ts_ms   IS NOT DISTINCT FROM $13
-               AND adu_ts_seq  IS NOT DISTINCT FROM $14
-               AND service_eid IS NOT DISTINCT FROM $15",
+               AND status = $10
+               AND peer_id     IS NOT DISTINCT FROM $11
+               AND queue_id    IS NOT DISTINCT FROM $12
+               AND adu_source  IS NOT DISTINCT FROM $13
+               AND adu_ts_ms   IS NOT DISTINCT FROM $14
+               AND adu_ts_seq  IS NOT DISTINCT FROM $15
+               AND service_eid IS NOT DISTINCT FROM $16
+               AND next_hop    IS NOT DISTINCT FROM $17",
         )
         .bind(bundle_key)
         .bind(sf.status)
@@ -352,6 +314,7 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(sf.adu_ts_ms)
         .bind(sf.adu_ts_seq)
         .bind(sf.service_eid)
+        .bind(sf.next_hop)
         .bind(expected.status)
         .bind(expected.peer_id)
         .bind(expected.queue_id)
@@ -359,6 +322,7 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(expected.adu_ts_ms)
         .bind(expected.adu_ts_seq)
         .bind(expected.service_eid)
+        .bind(expected.next_hop)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -384,7 +348,8 @@ impl storage::MetadataStorage for PostgresStorage {
                AND adu_source  IS NOT DISTINCT FROM $5
                AND adu_ts_ms   IS NOT DISTINCT FROM $6
                AND adu_ts_seq  IS NOT DISTINCT FROM $7
-               AND service_eid IS NOT DISTINCT FROM $8",
+               AND service_eid IS NOT DISTINCT FROM $8
+               AND next_hop    IS NOT DISTINCT FROM $9",
         )
         .bind(bundle_key)
         .bind(expected.status)
@@ -394,6 +359,7 @@ impl storage::MetadataStorage for PostgresStorage {
         .bind(expected.adu_ts_ms)
         .bind(expected.adu_ts_seq)
         .bind(expected.service_eid)
+        .bind(expected.next_hop)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -442,7 +408,7 @@ impl storage::MetadataStorage for PostgresStorage {
 
         let row = sqlx::query_as::<_, MetadataRowWithId>(
             "SELECT m.id, m.bundle, m.status, m.peer_id, m.queue_id,
-                    m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
+                    m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid, m.next_hop
              FROM metadata m
              JOIN bundles b ON m.id = b.id
              WHERE b.bundle_id = $1",
@@ -487,7 +453,7 @@ impl storage::MetadataStorage for PostgresStorage {
                  ),
                  snapshot AS (
                      SELECT m.bundle, m.status, m.peer_id, m.queue_id,
-                            m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid
+                            m.adu_source, m.adu_ts_ms, m.adu_ts_seq, m.service_eid, m.next_hop
                      FROM metadata m
                      JOIN batch ON m.id = batch.id
                  ),
@@ -527,7 +493,8 @@ impl storage::MetadataStorage for PostgresStorage {
             "UPDATE metadata
              SET status   = $2,
                  peer_id  = NULL,
-                 queue_id = NULL
+                 queue_id = NULL,
+                 next_hop = NULL
              WHERE status = $3
                AND peer_id = $1",
         )
@@ -594,7 +561,7 @@ impl storage::MetadataStorage for PostgresStorage {
         loop {
             let rows = sqlx::query_as::<_, ExpiryRow>(
                 "SELECT id, expiry, bundle, status, peer_id, queue_id,
-                        adu_source, adu_ts_ms, adu_ts_seq, service_eid
+                        adu_source, adu_ts_ms, adu_ts_seq, service_eid, next_hop
                  FROM metadata
                  WHERE status != $1
                    AND (expiry, id) > ($2, $3)
@@ -746,7 +713,7 @@ impl storage::MetadataStorage for PostgresStorage {
         loop {
             let rows = sqlx::query_as::<_, PendingRow>(
                 "SELECT id, received_at, bundle, status, peer_id, queue_id,
-                        adu_source, adu_ts_ms, adu_ts_seq, service_eid
+                        adu_source, adu_ts_ms, adu_ts_seq, service_eid, next_hop
                  FROM metadata
                  WHERE status = $1
                    AND adu_source IS NOT DISTINCT FROM $2
@@ -807,7 +774,7 @@ impl storage::MetadataStorage for PostgresStorage {
             let page_limit = (limit.saturating_sub(sent) as i64).min(self.poll_page_size);
             let rows = sqlx::query_as::<_, PendingRow>(
                 "SELECT id, received_at, bundle, status, peer_id, queue_id,
-                        adu_source, adu_ts_ms, adu_ts_seq, service_eid
+                        adu_source, adu_ts_ms, adu_ts_seq, service_eid, next_hop
                  FROM metadata
                  WHERE status    = $1
                    AND peer_id     IS NOT DISTINCT FROM $2

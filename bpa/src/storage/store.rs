@@ -181,14 +181,6 @@ impl Store {
             .trace_expect("Failed to confirm bundle existence")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub async fn update_metadata(&self, bundle: &Bundle) {
-        self.metadata_storage
-            .replace(bundle)
-            .await
-            .trace_expect("Failed to replace metadata")
-    }
-
     // Compare-and-swap from the caller's snapshot status: the arbiter for
     // writers racing the peer sweeps, the expiry reaper, and each other.
     // Gauges move only when the swap wins.
@@ -249,7 +241,9 @@ impl Store {
             .trace_expect("Failed to reset peer queue");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0 }))
+            // Label derivation only: the variant selects the label, the
+            // fields (including the placeholder adjacency) never reach it.
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0, next_hop: Eid::Null }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
@@ -393,9 +387,6 @@ mod tests {
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
                 Err("backend down".into())
-            }
-            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
             }
             async fn swap_status(
                 &self,

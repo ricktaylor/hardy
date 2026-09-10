@@ -30,7 +30,7 @@ impl hardy_bpa::cla::Cla for Cla {
         Some(hardy_bpa::cla::ClaAddressType::Tcp)
     }
 
-    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(&self, sink: Box<dyn hardy_bpa::cla::Sink>, _node_ids: &[NodeId], _max_bundle_size: core::num::NonZeroU64) {
         let sink: Arc<dyn hardy_bpa::cla::Sink> = sink.into();
         self.sink.call_once(|| sink.clone());
 

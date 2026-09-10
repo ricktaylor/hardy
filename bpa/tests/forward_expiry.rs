@@ -122,7 +122,12 @@ impl AcceptingCla {
 
 #[async_trait]
 impl cla::Cla for AcceptingCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -161,7 +166,12 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: core::num::NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -257,7 +267,7 @@ async fn expiry_mid_transfer_rig() -> (
 
     // The egress CLA owns transfers to node ipn:0.3 without resolving them.
     let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla("accepting".to_string(), cla.clone(), None)
+    bpa.register_cla("accepting".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -274,7 +284,7 @@ async fn expiry_mid_transfer_rig() -> (
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
+    bpa.register_cla("ingress".to_string(), ingress.clone(), None, None)
         .await
         .unwrap();
 
@@ -289,13 +299,16 @@ async fn expiry_mid_transfer_rig() -> (
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
     let a_id = bundle_a.primary.id;
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The transfer is accepted and left open (the timeout only bounds a
     // regression): A is in ForwardAckPending.
@@ -320,13 +333,16 @@ async fn expiry_mid_transfer_rig() -> (
         .with_payload(Cow::Borrowed(b"reap me".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // The reaper's expiry pass: B — never handed off — is reaped honestly,
     // while A, in ForwardAckPending since before the pass, is deferred.
@@ -453,7 +469,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .unwrap();
 
     let (cla, accepted_rx) = AcceptingCla::new();
-    bpa.register_cla("accepting".to_string(), cla.clone(), None)
+    bpa.register_cla("accepting".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -470,7 +486,7 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
+    bpa.register_cla("ingress".to_string(), ingress.clone(), None, None)
         .await
         .unwrap();
 
@@ -482,13 +498,16 @@ async fn deferred_handoffs_do_not_starve_expiry() {
             .with_payload(Cow::Borrowed(b"stuck transfer".as_slice()))
             .build(CreationTimestamp::now())
             .expect("Failed to build bundle");
-        ingress
-            .sink
-            .get()
-            .unwrap()
-            .dispatch(None, None, &mut Bytes::from(data))
-            .await
-            .unwrap();
+        assert_eq!(
+            ingress
+                .sink
+                .get()
+                .unwrap()
+                .dispatch(None, None, &mut Bytes::from(data))
+                .await
+                .unwrap(),
+            cla::Acceptance::Accepted
+        );
         tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
             accepted_rx.recv_async(),
@@ -511,13 +530,16 @@ async fn deferred_handoffs_do_not_starve_expiry() {
         .with_payload(Cow::Borrowed(b"reap me".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
-        .await
-        .unwrap();
+    assert_eq!(
+        ingress
+            .sink
+            .get()
+            .unwrap()
+            .dispatch(None, None, &mut Bytes::from(data))
+            .await
+            .unwrap(),
+        cla::Acceptance::Accepted
+    );
 
     // Event-driven; the timeout only bounds a regression (a starved reaper
     // never delivers this report).
