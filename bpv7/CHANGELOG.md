@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - **BREAKING:** the block read abstraction is renamed and lifted to the crate root, joining the `Builder`/`Editor`/`Signer`/`Encryptor` role-noun family: trait `bpsec::BlockSet` is now `reader::Reader`, and `bpsec::PlainBlockSet` is now `reader::PlainReader`. No behavioural change — signatures and semantics are otherwise identical, and plain block reading no longer requires the `bpsec` module path.
+- **BREAKING:** `reader::Reader::block` reports the payload slot as a four-state `reader::Availability` instead of `Option<Payload>`: `Available(Payload)`, `NotResident` (extents beyond the resident bytes), `NoKey` (BCB-covered, no usable key), and `NotDecryptable` (BCB-covered, decryption attempted and failed). A present block's unavailable payload no longer conflates "not held in memory" with "not decryptable by this node", so a caller can respond to each state differently; callers to whom every unavailable state is equivalent use `Availability::available()`.
 
 ### Fixed
 - A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
