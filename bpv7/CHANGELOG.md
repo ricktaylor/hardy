@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `bpsec::DecryptingReader`: a `reader::Reader` that decrypts BCB-covered blocks on demand and memoises each block's outcome — plaintext, no-key, or decrypt-failure — for the reader's lifetime, so a chain of consumers sharing one reader costs one decrypt attempt per covered block. The trait impl lends (cache borrows, zeroized when the reader drops); the inherent `block_data()` gives (owned plaintext, typed errors carrying the diagnostic cause, and `Ok(None)` for non-resident extents), preserving the free `bpsec::block_data` contract.
+
 ### Changed
 - **BREAKING:** the block read abstraction is renamed and lifted to the crate root, joining the `Builder`/`Editor`/`Signer`/`Encryptor` role-noun family: trait `bpsec::BlockSet` is now `reader::Reader`, and `bpsec::PlainBlockSet` is now `reader::PlainReader`. No behavioural change — signatures and semantics are otherwise identical, and plain block reading no longer requires the `bpsec` module path.
 - **BREAKING:** `reader::Reader::block` reports the payload slot as a four-state `reader::Availability` instead of `Option<Payload>`: `Available(Payload)`, `NotResident` (extents beyond the resident bytes), `NoKey` (BCB-covered, no usable key), and `NotDecryptable` (BCB-covered, decryption attempted and failed). A present block's unavailable payload no longer conflates "not held in memory" with "not decryptable by this node", so a caller can respond to each state differently; callers to whom every unavailable state is equivalent use `Availability::available()`.

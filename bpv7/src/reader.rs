@@ -30,6 +30,7 @@ use crate::{
 /// bare `None`. This is the *outcome* axis only: how available bytes are
 /// held (borrowed slice vs owned decrypted buffer) remains [`Payload`]'s
 /// concern, wrapped in [`Available`](Self::Available).
+#[derive(Debug)]
 pub enum Availability<'a> {
     /// The payload bytes are available.
     Available(Payload<'a>),

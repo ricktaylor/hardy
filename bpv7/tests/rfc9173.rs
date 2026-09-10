@@ -8,7 +8,6 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     editor::{Chunk, Editor},
     parse,
-    reader::{Availability, Reader},
 };
 use std::collections::HashMap;
 
@@ -97,75 +96,10 @@ fn validate_with_keys(
     Ok((data, bundle, bcb_ops, bib_ops))
 }
 
-/// A `Reader` over `(blocks, bytes)` that decrypts on demand: if a
-/// queried block is BCB-protected, it's decrypted on the fly so BIB
-/// verification over BCB-encrypted targets sees the plaintext the BIB
-/// actually signed (RFC 9172 §3.10 — sign before encrypt). Distinct from
-/// the canonical [`hardy_bpv7::reader::PlainReader`], which returns raw wire bytes;
-/// this recursion is why the per-block `verify_block` helper below can't
-/// just use the plain one.
-struct DecryptingBlockSet<'a> {
-    blocks: &'a HashMap<u64, Block>,
-    source_data: &'a [u8],
-    bcb_ops: &'a HashMap<u64, bpsec::bcb::OperationSet>,
-    keys: &'a key::KeySet,
-    /// Block number currently being verified — skip BCB-decryption for
-    /// it to avoid infinite recursion when the target is itself the
-    /// BCB-protected block we're trying to verify.
-    skip_decrypt: Option<u64>,
-}
-
-impl<'a> Reader<'a> for DecryptingBlockSet<'a> {
-    fn block(&'a self, block_number: u64) -> Option<(&'a Block, Availability<'a>)> {
-        let block = self.blocks.get(&block_number)?;
-        let availability = if let Some(bcb_num) = block.bcb {
-            if Some(block_number) == self.skip_decrypt {
-                // Caller (e.g. block_data for a BCB target) wants the
-                // raw ciphertext bytes — don't recurse into decrypt.
-                block
-                    .payload(self.source_data)
-                    .map(hardy_bpv7::block::Payload::Borrowed)
-                    .map_or(Availability::NotResident, Availability::Available)
-            } else {
-                let opset = self.bcb_ops.get(&bcb_num)?;
-                let op = opset.operations().get(&block_number)?;
-                match op.decrypt(
-                    self.keys,
-                    bpsec::bcb::OperationArgs {
-                        bpsec_source: opset.source(),
-                        target: block_number,
-                        source: bcb_num,
-                        blocks: &DecryptingBlockSet {
-                            blocks: self.blocks,
-                            source_data: self.source_data,
-                            bcb_ops: self.bcb_ops,
-                            keys: self.keys,
-                            // Prevent recursion through the same BCB.
-                            skip_decrypt: Some(block_number),
-                        },
-                    },
-                ) {
-                    Ok(plaintext) => {
-                        Availability::Available(hardy_bpv7::block::Payload::Decrypted(plaintext))
-                    }
-                    Err(bpsec::Error::NoKey) => Availability::NoKey,
-                    Err(_) => Availability::NotDecryptable,
-                }
-            }
-        } else {
-            block
-                .payload(self.source_data)
-                .map(hardy_bpv7::block::Payload::Borrowed)
-                .map_or(Availability::NotResident, Availability::Available)
-        };
-        Some((block, availability))
-    }
-}
-
 /// Per-block BIB verify. Returns `Ok(true)` when the block was
 /// BIB-covered and verified, `Ok(false)` when it had no BIB, and
 /// `Err(_)` for any verify failure (including `NoKey`). Handles
-/// BCB-encrypted targets transparently via `DecryptingBlockSet`'s
+/// BCB-encrypted targets transparently via `DecryptingReader`'s
 /// on-demand decryption — RFC 9172 §3.10 sign-before-encrypt.
 fn verify_block(
     block_number: u64,
@@ -194,13 +128,7 @@ fn verify_block(
         .operations()
         .get(&block_number)
         .ok_or(hardy_bpv7::Error::Altered)?;
-    let block_set = DecryptingBlockSet {
-        blocks,
-        source_data: data,
-        bcb_ops,
-        keys,
-        skip_decrypt: None,
-    };
+    let block_set = bpsec::DecryptingReader::new(blocks, data, bcb_ops, keys);
     op.verify(
         keys,
         bpsec::bib::OperationArgs {
@@ -219,44 +147,12 @@ fn block_data<'a>(
     block_number: u64,
     blocks: &'a HashMap<u64, Block>,
     data: &'a [u8],
-    bcb_ops: &HashMap<u64, bpsec::bcb::OperationSet>,
-    keys: &key::KeySet,
+    bcb_ops: &'a HashMap<u64, bpsec::bcb::OperationSet>,
+    keys: &'a key::KeySet,
 ) -> Result<hardy_bpv7::block::Payload<'a>, hardy_bpv7::Error> {
-    let target = blocks
-        .get(&block_number)
-        .ok_or(hardy_bpv7::Error::MissingBlock(block_number))?;
-    if let Some(bcb_num) = target.bcb {
-        let opset = bcb_ops.get(&bcb_num).ok_or(hardy_bpv7::Error::Altered)?;
-        let op = opset
-            .operations()
-            .get(&block_number)
-            .ok_or(hardy_bpv7::Error::Altered)?;
-        let block_set = DecryptingBlockSet {
-            blocks,
-            source_data: data,
-            bcb_ops,
-            keys,
-            // We're already decrypting `block_number`; DecryptingBlockSet
-            // must not recurse into another decrypt of the same target.
-            skip_decrypt: Some(block_number),
-        };
-        op.decrypt(
-            keys,
-            bpsec::bcb::OperationArgs {
-                bpsec_source: opset.source(),
-                target: block_number,
-                source: bcb_num,
-                blocks: &block_set,
-            },
-        )
-        .map(hardy_bpv7::block::Payload::Decrypted)
-        .map_err(hardy_bpv7::Error::InvalidBPSec)
-    } else {
-        target
-            .payload(data)
-            .map(hardy_bpv7::block::Payload::Borrowed)
-            .ok_or(hardy_bpv7::Error::Altered)
-    }
+    bpsec::DecryptingReader::new(blocks, data, bcb_ops, keys)
+        .block_data(block_number)?
+        .ok_or(hardy_bpv7::Error::Altered)
 }
 
 #[test]
