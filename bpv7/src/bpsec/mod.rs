@@ -1,9 +1,11 @@
 use alloc::boxed::Box;
+use core::cell::OnceCell;
 
 use hardy_cbor::{
     decode::FromCbor,
     encode::{Encoder, ToCbor},
 };
+use zeroize::Zeroizing;
 /// Block Confidentiality Block (BCB) types and operations (RFC 9172 Section 3.7).
 pub mod bcb;
 /// Block Integrity Block (BIB) types and operations (RFC 9172 Section 3.6).
@@ -38,7 +40,11 @@ pub mod encryptor;
 #[cfg(feature = "bpsec")]
 pub mod signer;
 
-use crate::{HashMap, block, bundle, error::CaptureFieldErr};
+use crate::{
+    HashMap, block, bundle,
+    error::CaptureFieldErr,
+    reader::{Availability, PlainReader, Reader},
+};
 
 /// A key provider function that returns no keys.
 /// Use this when parsing bundles that don't require decryption.
@@ -94,99 +100,231 @@ impl FromCbor for Context {
     }
 }
 
-/// Provides access to bundle blocks by number, used during BPSec IPPT construction.
-pub trait BlockSet<'a> {
-    /// Returns the block and its payload for the given block number, or `None` if absent.
-    fn block(&'a self, block_number: u64)
-    -> Option<(&'a block::Block, Option<block::Payload<'a>>)>;
-
-    /// Returns just the block header for the given block number, or `None`
-    /// if absent — for callers (e.g. per-OperationSet structural
-    /// validation) that need only the header fields, not the payload. The
-    /// default delegates to [`block`](BlockSet::block); impls override it
-    /// when they can resolve the header without computing the payload.
-    fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
-        self.block(block_number).map(|(block, _)| block)
-    }
+/// The memoised outcome of one covered block's decrypt attempt.
+enum Decrypt {
+    Plain(Zeroizing<Box<[u8]>>),
+    NoKey,
+    Failed,
 }
 
-/// The canonical [`BlockSet`] over a parsed bundle held wholly in memory:
-/// a blocks map plus the contiguous bundle bytes the offsets index into.
-/// Each block's payload is the raw wire body ([`block::Block::payload`]) —
-/// no decryption, no staged rewrites. This is the BlockSet to use when
-/// feeding [`block_data`] / signer / encryptor for an in-memory bundle.
-pub struct PlainBlockSet<'a> {
+/// A [`Reader`] that decrypts BCB-covered blocks on demand, memoising each
+/// block's outcome for the reader's lifetime.
+///
+/// Uncovered blocks read as borrowed wire slices, exactly like
+/// [`PlainReader`]. A covered block is decrypted at most once: the first
+/// request runs the BCB operation (with [`PlainReader`] serving the AAD
+/// lookups) and caches the outcome — plaintext, no-usable-key, or
+/// decrypt-failure — and every later request replays the cached state.
+/// Cached plaintext is zeroized when the reader drops, so its lifetime
+/// bounds how long decrypted bytes stay in memory.
+///
+/// The two read doors serve different possession needs:
+///
+/// - The [`Reader`] impl **lends**: `Available` payloads borrow from the
+///   wire or from the cache, which is what a chain of consumers sharing
+///   one reader wants.
+/// - [`block_data`](Self::block_data) **gives**: available plaintext comes
+///   back owned (never a cache borrow), and failures come back as typed
+///   errors carrying the diagnostic cause.
+///
+/// `blocks` and `bcb_ops` MUST be products of the same parse of
+/// `source_data`; mixing parse products is a logic error (see the
+/// [`Reader`] impl's panic note).
+///
+/// The memoisation uses interior mutability without locking, so the
+/// reader is not `Sync`; share it within one thread of work.
+pub struct DecryptingReader<'a> {
     /// The bundle's blocks, keyed by block number (e.g. `Bundle::blocks`).
     pub blocks: &'a HashMap<u64, block::Block>,
     /// The complete, contiguous bundle byte stream the offsets index into.
     pub source_data: &'a [u8],
+    /// The bundle's decoded BCB OperationSets, keyed by BCB block number.
+    pub bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+    /// The key source consulted for BCB decryption.
+    pub keys: &'a dyn key::KeySource,
+    // One cell per BCB-covered block, memoising its decrypt outcome.
+    cache: HashMap<u64, OnceCell<Decrypt>>,
 }
 
-impl<'a> BlockSet<'a> for PlainBlockSet<'a> {
-    fn block(
-        &'a self,
+impl<'a> DecryptingReader<'a> {
+    /// Builds a reader over a parsed bundle's blocks, its complete
+    /// in-memory bytes, its decoded BCB OperationSets, and a key source.
+    pub fn new(
+        blocks: &'a HashMap<u64, block::Block>,
+        source_data: &'a [u8],
+        bcb_ops: &'a HashMap<u64, bcb::OperationSet>,
+        keys: &'a dyn key::KeySource,
+    ) -> Self {
+        Self {
+            blocks,
+            source_data,
+            bcb_ops,
+            keys,
+            cache: blocks
+                .iter()
+                .filter(|(_, block)| block.bcb.is_some())
+                .map(|(number, _)| (*number, OnceCell::new()))
+                .collect(),
+        }
+    }
+
+    // The block's payload extents lie within the resident bytes. Compared
+    // in u64: a block past usize::MAX on a 32-bit target is equally
+    // non-resident.
+    fn is_resident(&self, block: &block::Block) -> bool {
+        block.payload_range().end <= self.source_data.len() as u64
+    }
+
+    // Runs the BCB decrypt operation for `block_number` (covered by BCB
+    // `bcb_num`), with PlainReader serving the AAD lookups. Missing
+    // OperationSet entries surface as `Altered`, matching [`block_data`].
+    fn decrypt_target(
+        &self,
         block_number: u64,
-    ) -> Option<(&'a block::Block, Option<block::Payload<'a>>)> {
+        bcb_num: u64,
+    ) -> Result<Zeroizing<Box<[u8]>>, crate::Error> {
+        let opset = self.bcb_ops.get(&bcb_num).ok_or(crate::Error::Altered)?;
+        let op = opset
+            .operations
+            .get(&block_number)
+            .ok_or(crate::Error::Altered)?;
+        op.decrypt(
+            self.keys,
+            bcb::OperationArgs {
+                bpsec_source: &opset.source,
+                target: block_number,
+                source: bcb_num,
+                blocks: &PlainReader {
+                    blocks: self.blocks,
+                    source_data: self.source_data,
+                },
+            },
+        )
+        .map_err(crate::Error::InvalidBPSec)
+    }
+
+    /// Block `block_number`'s plaintext, owned: `Payload::Borrowed` only
+    /// ever slices `source_data` (the uncovered case), and a covered
+    /// block's plaintext comes back as an owned `Payload::Decrypted` —
+    /// never a borrow of this reader's cache — so the result can outlive
+    /// the reader's other borrows and feed zero-copy `Bytes` construction.
+    ///
+    /// The contract matches [`block_data`]: `Err(MissingBlock)` for an
+    /// absent block, `Err` carrying the BPSec cause for no-key and
+    /// decrypt-failure, `Err(Altered)` when the coverage index and
+    /// `bcb_ops` disagree — plus `Ok(None)` when the block's extents lie
+    /// beyond the resident bytes (the headers-only or streaming case).
+    ///
+    /// Shares the memo cells with the [`Reader`] impl: a cached plaintext
+    /// is cloned out, a cached no-key replays without touching the key
+    /// source, and a cached failure re-runs the decrypt so the returned
+    /// error carries the exact cause.
+    pub fn block_data(
+        &self,
+        block_number: u64,
+    ) -> Result<Option<block::Payload<'a>>, crate::Error> {
+        let target = self
+            .blocks
+            .get(&block_number)
+            .ok_or(crate::Error::MissingBlock(block_number))?;
+        if !self.is_resident(target) {
+            return Ok(None);
+        }
+        let Some(bcb_num) = target.bcb else {
+            // Unencrypted — the raw wire body is the plaintext.
+            return target
+                .payload(self.source_data)
+                .map(block::Payload::Borrowed)
+                .map(Some)
+                .ok_or(crate::Error::Altered);
+        };
+
+        let cell = self
+            .cache
+            .get(&block_number)
+            .expect("the decrypt cache indexes every covered block");
+        match cell.get() {
+            Some(Decrypt::Plain(plaintext)) => {
+                Ok(Some(block::Payload::Decrypted(plaintext.clone())))
+            }
+            Some(Decrypt::NoKey) => Err(crate::Error::InvalidBPSec(Error::NoKey)),
+            // Uncached, or a cached failure: (re-)run the decrypt — a
+            // repeat failure is deterministic, and re-running surfaces
+            // the exact cause instead of a cached summary.
+            Some(Decrypt::Failed) | None => match self.decrypt_target(block_number, bcb_num) {
+                Ok(plaintext) => {
+                    let payload = block::Payload::Decrypted(plaintext.clone());
+                    let _ = cell.set(Decrypt::Plain(plaintext));
+                    Ok(Some(payload))
+                }
+                Err(e) => {
+                    match &e {
+                        crate::Error::InvalidBPSec(Error::NoKey) => {
+                            let _ = cell.set(Decrypt::NoKey);
+                        }
+                        // Structural mismatch is a precondition violation,
+                        // not a decrypt outcome — never cached.
+                        crate::Error::Altered => {}
+                        _ => {
+                            let _ = cell.set(Decrypt::Failed);
+                        }
+                    }
+                    Err(e)
+                }
+            },
+        }
+    }
+}
+
+impl<'a> Reader<'a> for DecryptingReader<'a> {
+    /// # Panics
+    ///
+    /// Panics if a block's coverage index names a BCB whose OperationSet
+    /// has no operation for it. The parser derives the coverage index
+    /// from the OperationSets themselves, so this cannot happen for
+    /// `blocks` and `bcb_ops` taken from one parse of `source_data`; it
+    /// means the reader was constructed from mismatched parse products —
+    /// a logic error, not a runtime state.
+    fn block(&'a self, block_number: u64) -> Option<(&'a block::Block, Availability<'a>)> {
         let block = self.blocks.get(&block_number)?;
+        if !self.is_resident(block) {
+            return Some((block, Availability::NotResident));
+        }
+        let Some(bcb_num) = block.bcb else {
+            return Some((
+                block,
+                block
+                    .payload(self.source_data)
+                    .map(block::Payload::Borrowed)
+                    .map_or(Availability::NotResident, Availability::Available),
+            ));
+        };
+
+        let outcome = self
+            .cache
+            .get(&block_number)
+            .expect("the decrypt cache indexes every covered block")
+            .get_or_init(|| match self.decrypt_target(block_number, bcb_num) {
+                Ok(plaintext) => Decrypt::Plain(plaintext),
+                Err(crate::Error::InvalidBPSec(Error::NoKey)) => Decrypt::NoKey,
+                Err(crate::Error::Altered) => panic!(
+                    "block {block_number} is marked BCB-covered but its OperationSet has no operation for it — blocks and bcb_ops are not products of the same parse"
+                ),
+                Err(_) => Decrypt::Failed,
+            });
         Some((
             block,
-            block
-                .payload(self.source_data)
-                .map(block::Payload::Borrowed),
+            match outcome {
+                Decrypt::Plain(plaintext) => {
+                    Availability::Available(block::Payload::Borrowed(plaintext))
+                }
+                Decrypt::NoKey => Availability::NoKey,
+                Decrypt::Failed => Availability::NotDecryptable,
+            },
         ))
     }
 
     fn block_header(&'a self, block_number: u64) -> Option<&'a block::Block> {
         self.blocks.get(&block_number)
     }
-}
-
-/// Return block `block_number`'s plaintext: a borrowed slice of
-/// `source_data` when the block is unencrypted, or the BCB-decrypted
-/// bytes (via `bcb_ops` + `keys`) when it is. `source_data` MUST be the
-/// complete in-memory bundle the blocks were parsed from.
-///
-/// Composes [`PlainBlockSet`] with the BCB decrypt op so consumers
-/// (BPA delivery, `bundle` CLI) don't each re-implement it.
-pub fn block_data<'a, K>(
-    block_number: u64,
-    blocks: &'a HashMap<u64, block::Block>,
-    source_data: &'a [u8],
-    bcb_ops: &HashMap<u64, bcb::OperationSet>,
-    keys: &K,
-) -> Result<block::Payload<'a>, crate::Error>
-where
-    K: key::KeySource + ?Sized,
-{
-    let target = blocks
-        .get(&block_number)
-        .ok_or(crate::Error::MissingBlock(block_number))?;
-
-    let Some(bcb_num) = target.bcb else {
-        // Unencrypted — the raw wire body is the plaintext.
-        return target
-            .payload(source_data)
-            .map(block::Payload::Borrowed)
-            .ok_or(crate::Error::Altered);
-    };
-
-    let opset = bcb_ops.get(&bcb_num).ok_or(crate::Error::Altered)?;
-    let op = opset
-        .operations
-        .get(&block_number)
-        .ok_or(crate::Error::Altered)?;
-    op.decrypt(
-        keys,
-        bcb::OperationArgs {
-            bpsec_source: &opset.source,
-            target: block_number,
-            source: bcb_num,
-            blocks: &PlainBlockSet {
-                blocks,
-                source_data,
-            },
-        },
-    )
-    .map(block::Payload::Decrypted)
-    .map_err(crate::Error::InvalidBPSec)
 }

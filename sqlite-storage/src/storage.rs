@@ -163,9 +163,16 @@ fn from_status(status: &BundleStatus) -> (i64, Option<i64>, Option<i64>, Option<
     match status {
         BundleStatus::New => (0, None, None, None),
         BundleStatus::Waiting => (1, None, None, None),
-        BundleStatus::ForwardPending { peer, queue } => {
-            (2, Some(*peer as i64), Some(*queue as i64), None)
-        }
+        BundleStatus::ForwardPending {
+            peer,
+            queue,
+            next_hop,
+        } => (
+            2,
+            Some(*peer as i64),
+            Some(*queue as i64),
+            Some(next_hop.to_string()),
+        ),
         BundleStatus::AduFragment { source, timestamp } => (
             3,
             Some(
@@ -197,6 +204,7 @@ fn to_status(
         2 => Some(BundleStatus::ForwardPending {
             peer: u32::try_from(param1?).ok()?,
             queue: u32::try_from(param2?).ok()?,
+            next_hop: param3?.parse().ok()?,
         }),
         3 => {
             let source: hardy_bpv7::eid::Eid = param3?.parse().ok()?;
@@ -285,32 +293,6 @@ impl MetadataStorage for SqliteStorage {
             .map_err(Into::into)
         })
         .await
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        // UTC-normalized for the same reason as `insert`.
-        let expiry = bundle.expiry().to_offset(UtcOffset::UTC);
-        let received_at = bundle.metadata.received_at();
-        let (status_code, status_param1, status_param2, status_param3) =
-            from_status(&bundle.status);
-        let id = serde_json::to_vec(bundle.id())?;
-        let bundle = serde_json::to_vec(&StoredBundleRef::from(bundle))?;
-        if self
-            .write(move |conn| {
-                // Update bundle
-                conn.prepare_cached(
-                    "UPDATE bundles SET bundle = ?2, expiry = ?3, received_at = ?4, status_code = ?5, status_param1 = ?6, status_param2 = ?7, status_param3 = ?8 WHERE bundle_id = ?1",
-                )?
-                .execute((id,bundle,expiry,received_at,status_code,status_param1,status_param2,status_param3))
-                .map_err(Into::into)
-            })
-            .await?
-            != 1
-        {
-            error!("Failed to replace bundle!");
-        }
-        Ok(())
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
@@ -524,15 +506,20 @@ impl MetadataStorage for SqliteStorage {
     async fn reset_peer_queue(&self, peer: u32) -> storage::Result<u64> {
         // Both statuses bind through the codec: the values in the SQL are
         // from_status's own output, so codec/SQL drift is unrepresentable.
-        let (from_code, from_p1, _, _) =
-            from_status(&BundleStatus::ForwardPending { peer, queue: 0 });
-        let (to_code, to_p1, to_p2, _) = from_status(&BundleStatus::Waiting);
+        // The sweep matches by peer alone — any queue, any resolved
+        // adjacency (param3) — and the park clears all three params.
+        let (from_code, from_p1, _, _) = from_status(&BundleStatus::ForwardPending {
+            peer,
+            queue: 0,
+            next_hop: hardy_bpv7::eid::Eid::Null,
+        });
+        let (to_code, to_p1, to_p2, to_p3) = from_status(&BundleStatus::Waiting);
 
         self.write(move |conn| {
             conn.prepare_cached(
-                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3 WHERE status_code = ?4 AND status_param1 = ?5",
+                "UPDATE bundles SET status_code = ?1, status_param1 = ?2, status_param2 = ?3, status_param3 = ?4 WHERE status_code = ?5 AND status_param1 = ?6",
             )?
-            .execute((to_code, to_p1, to_p2, from_code, from_p1))
+            .execute((to_code, to_p1, to_p2, to_p3, from_code, from_p1))
             .map(|c| c as u64)
             .map_err(Into::into)
         })
@@ -806,30 +793,55 @@ impl MetadataStorage for SqliteStorage {
     ) -> storage::Result<()> {
         let (status_code, status_param1, status_param2, status_param3) = from_status(status);
 
+        // Queue-identity match (`BundleStatus::same_queue`): a ForwardPending
+        // record's param3 carries its own resolved adjacency, which the
+        // caller's queue key cannot name — so it is selected back rather
+        // than filtered on, and each bundle's own record is emitted.
+        let forward_pending = matches!(status, BundleStatus::ForwardPending { .. });
         let bundles = self
             .read(move |conn| {
-                conn.prepare_cached(
-                    "SELECT bundle FROM bundles
-                        WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
-                        ORDER BY received_at ASC
-                        LIMIT ?5",
-                )?
-                .query_map((status_code, status_param1, status_param2,status_param3, limit as isize), |row| {
-                    row.get::<_, Vec<u8>>(0)
-                })?
-                .collect::<Result<Vec<Vec<u8>>, _>>()
-                .map_err(Into::into)
+                if forward_pending {
+                    conn.prepare_cached(
+                        "SELECT bundle, status_param3 FROM bundles
+                            WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3
+                            ORDER BY received_at ASC
+                            LIMIT ?4",
+                    )?
+                    .query_map((status_code, status_param1, status_param2, limit as isize), |row| {
+                        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?))
+                    })?
+                    .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                    .map_err(Into::into)
+                } else {
+                    conn.prepare_cached(
+                        "SELECT bundle FROM bundles
+                            WHERE bundle IS NOT NULL AND status_code = ?1 AND status_param1 IS ?2 AND status_param2 IS ?3 AND status_param3 IS ?4
+                            ORDER BY received_at ASC
+                            LIMIT ?5",
+                    )?
+                    .query_map((status_code, status_param1, status_param2, status_param3, limit as isize), |row| {
+                        Ok((row.get::<_, Vec<u8>>(0)?, None))
+                    })?
+                    .collect::<Result<Vec<(Vec<u8>, Option<String>)>, _>>()
+                    .map_err(Into::into)
+                }
             })
             .await?;
 
-        for bundle in bundles {
+        for (bundle, row_param3) in bundles {
             match serde_json::from_slice::<StoredBundle>(&bundle) {
                 Ok(stored) => {
-                    if stream
-                        .send(stored.into_bundle(status.clone()))
-                        .await
-                        .is_err()
-                    {
+                    let row_status = if forward_pending {
+                        let (code, p1, p2, _) = from_status(status);
+                        let Some(row_status) = to_status(code, p1, p2, row_param3) else {
+                            warn!("Garbage ForwardPending adjacency dropped from poll");
+                            continue;
+                        };
+                        row_status
+                    } else {
+                        status.clone()
+                    };
+                    if stream.send(stored.into_bundle(row_status)).await.is_err() {
                         // The other end is shutting down - get out
                         break;
                     }
@@ -1152,9 +1164,18 @@ mod tests {
         store.poll_waiting(&sink).await.unwrap();
         assert_eq!(sink.into_inner().len(), 1, "should poll 1 waiting bundle");
 
-        // Update status to Dispatching
+        // Claim the bundle to Dispatching
         bundle.status = BundleStatus::Dispatching;
-        store.replace(&bundle).await.unwrap();
+        assert!(
+            store
+                .swap_status(
+                    bundle.id(),
+                    &BundleStatus::Waiting,
+                    &BundleStatus::Dispatching
+                )
+                .await
+                .unwrap()
+        );
 
         // Poll waiting again — should return nothing
         let sink = VecSink::new();
@@ -1314,8 +1335,12 @@ mod tests {
             (BundleStatus::New, (0, None, None, None)),
             (BundleStatus::Waiting, (1, None, None, None)),
             (
-                BundleStatus::ForwardPending { peer: 7, queue: 2 },
-                (2, Some(7), Some(2), None),
+                BundleStatus::ForwardPending {
+                    peer: 7,
+                    queue: 2,
+                    next_hop: service.clone(),
+                },
+                (2, Some(7), Some(2), Some(service.to_string())),
             ),
             (
                 BundleStatus::AduFragment {

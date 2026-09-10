@@ -1,23 +1,45 @@
+use core::num::NonZeroU64;
+
 use futures::join;
 use hardy_bpv7::{eid::Eid, status_report::ReasonCode};
+use hardy_eid_patterns::EidPattern;
 
 use super::*;
+use crate::filter::{pack::chains::FilterChains, slots::state::SlotTable};
 
 mod admin;
+mod deliver;
 mod dispatch;
 mod forward;
 mod ingress;
-mod local;
+mod originate;
 mod reassemble;
 mod report;
 mod restart;
+mod validate;
 
 // The default bound on a single reassembled bundle. Streaming producers
 // dissolved the transport-level caps that used to bound ingress implicitly,
 // so the concat chokepoint enforces one; sized generously above the old
 // 16 MiB wire cap to leave room for large ADUs.
-const DEFAULT_MAX_BUNDLE_SIZE: core::num::NonZeroUsize =
-    core::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+const DEFAULT_MAX_BUNDLE_SIZE: NonZeroU64 = NonZeroU64::new(64 * 1024 * 1024).unwrap();
+
+/// The dispatcher's plain configuration values, gathered by the builder.
+pub struct Config {
+    pub status_reports: bool,
+    pub poll_channel_depth: core::num::NonZeroUsize,
+    pub processing_pool_size: core::num::NonZeroUsize,
+    pub max_bundle_size: Option<NonZeroU64>,
+    /// Pre-drain gate: require primary-block integrity protection
+    /// (RFC 9171 §4.3.1).
+    pub primary_block_integrity: bool,
+    /// Pre-drain gate: require a Bundle Age block on clockless bundles
+    /// (RFC 9171 §4.4.2).
+    pub bundle_age_required: bool,
+    /// Peers whose next hop requires legacy 2-element IPN EID encoding in
+    /// the per-hop rewrite stage.
+    pub ipn_legacy_peers: Vec<EidPattern>,
+}
 
 /// The resolution of a hand-off offer: every exit of `offer_to_cla` and
 /// `offer_to_service` is one of these variants, consumed exactly once by
@@ -41,9 +63,6 @@ enum OfferOutcome {
     Detached(bundle::Bundle),
     /// Re-enter dispatch for a fresh routing decision.
     Redispatch(bundle::Bundle),
-    /// Another resolver (a sweep, the reaper, a duplicate outcome) claimed
-    /// the bundle first; its resolution stands.
-    Lost,
 }
 
 /// Which hand-off produced an [`OfferOutcome`] — completion reports and
@@ -59,7 +78,11 @@ pub(crate) struct Dispatcher {
     store: Arc<storage::store::Store>,
     rib: Arc<routing::Rib>,
     key_provider: Arc<dyn keys::KeyProvider>,
-    filter_engine: Arc<filter::FilterEngine>,
+    filters: FilterChains,
+    // Drives slot pruning and re-classification at restart re-admission
+    // (Phase 3); frozen here so the engine and the table share a lifetime.
+    #[allow(dead_code)]
+    slot_table: SlotTable,
     cla_registry: hardy_async::sync::spin::Once<Arc<cla::registry::ClaRegistry>>,
 
     // Dispatch queue
@@ -69,7 +92,10 @@ pub(crate) struct Dispatcher {
     status_reports: bool,
     node_ids: Arc<node_ids::NodeIds>,
     poll_channel_depth: usize,
-    max_bundle_size: usize,
+    max_bundle_size: NonZeroU64,
+    primary_block_integrity: bool,
+    bundle_age_required: bool,
+    ipn_legacy_peers: Vec<EidPattern>,
 }
 
 impl Dispatcher {
@@ -81,23 +107,20 @@ impl Dispatcher {
     /// recovers persisted `DispatchPending` bundles as soon as the consumer
     /// drains them, and processing one dereferences the registry. It owns
     /// the channel receiver, so a second start path cannot exist.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        status_reports: bool,
-        poll_channel_depth: core::num::NonZeroUsize,
-        processing_pool_size: core::num::NonZeroUsize,
-        max_bundle_size: Option<core::num::NonZeroUsize>,
+        config: Config,
         node_ids: Arc<node_ids::NodeIds>,
         store: Arc<storage::store::Store>,
         rib: Arc<routing::Rib>,
         key_provider: Arc<dyn keys::KeyProvider>,
-        filter_engine: Arc<filter::FilterEngine>,
+        filters: FilterChains,
+        slot_table: SlotTable,
     ) -> (Arc<Self>, impl FnOnce(Arc<cla::registry::ClaRegistry>)) {
-        if status_reports {
+        if config.status_reports {
             warn!("Bundle status reports are enabled");
         }
 
-        let poll_channel_depth_usize: usize = poll_channel_depth.into();
+        let poll_channel_depth_usize: usize = config.poll_channel_depth.into();
 
         // Create the dispatch queue channel. DispatchPending marks "queued":
         // the consumer claims each bundle to Dispatching on dequeue, so the
@@ -110,17 +133,21 @@ impl Dispatcher {
 
         let dispatcher = Arc::new(Self {
             tasks: hardy_async::TaskPool::new(),
-            processing_pool: hardy_async::BoundedTaskPool::new(processing_pool_size),
+            processing_pool: hardy_async::BoundedTaskPool::new(config.processing_pool_size),
             store,
             rib,
             key_provider,
-            filter_engine,
+            filters,
+            slot_table,
             cla_registry: hardy_async::sync::spin::Once::new(),
             dispatch_tx,
-            status_reports,
+            status_reports: config.status_reports,
             node_ids,
             poll_channel_depth: poll_channel_depth_usize,
-            max_bundle_size: max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE).get(),
+            max_bundle_size: config.max_bundle_size.unwrap_or(DEFAULT_MAX_BUNDLE_SIZE),
+            primary_block_integrity: config.primary_block_integrity,
+            bundle_age_required: config.bundle_age_required,
+            ipn_legacy_peers: config.ipn_legacy_peers,
         });
 
         let d = dispatcher.clone();
@@ -131,6 +158,11 @@ impl Dispatcher {
                 dispatcher.run_dispatch_queue(dispatch_rx).await
             });
         })
+    }
+
+    // The dispatch size cap, advertised to CLAs at registration.
+    pub(crate) fn max_bundle_size(&self) -> NonZeroU64 {
+        self.max_bundle_size
     }
 
     fn cla_registry(&self) -> &Arc<cla::registry::ClaRegistry> {
@@ -299,7 +331,6 @@ impl Dispatcher {
                 self.store.watch_bundle(bundle).await
             }
             OfferOutcome::Redispatch(bundle) => self.dispatch_bundle(bundle).await,
-            OfferOutcome::Lost => {}
         }
     }
 

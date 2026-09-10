@@ -13,6 +13,8 @@ use hardy_bpv7::{
     status_report::ReasonCode,
 };
 use hardy_eid_patterns::EidPattern;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, trace};
 
 #[cfg(feature = "instrument")]
@@ -26,7 +28,7 @@ use super::{
 };
 use crate::{
     Arc, HashMap, HashSet,
-    bundle::{Bundle, BundleMetadata},
+    bundle::Bundle,
     cla::{ClaAddressType, registry::Cla},
     dispatcher::Dispatcher,
     hash_map::Entry as HashMapEntry,
@@ -35,11 +37,78 @@ use crate::{
     storage::store::Store,
 };
 
+/// The resolved inputs of a RIB lookup — the `{table, key}` pair
+/// [`Rib::find`] reads from the bundle's own record at every lookup.
+///
+/// `None` means the default in both halves: the default table, and the
+/// bundle's destination EID as the lookup key. Classifiers fill the halves
+/// through the delta's `route_table`/`route_key` fields; a bundle whose
+/// chain expressed no opinion looks up with the defaults.
+///
+/// Contract for key producers, recorded ahead of the first producer: the key
+/// replaces the destination for the *entire* walk, deciding node-level
+/// disposition — so a Classifier must never emit a key that resolves locally
+/// for a bundle that must forward (the segment-routing skip-self discipline;
+/// `docs/routing_table_redesign.md`, "Key selection").
+///
+/// The pair's influence ends at route selection: it picks the ECMP *group*
+/// (the route the walk resolves), never the *member* within it — member
+/// selection hashes the conversation `(source, destination)` only, the
+/// packet-entropy/lookup-state split every ECMP implementation observes. An
+/// explicit default in either half — the default table, or a key equal to
+/// the destination — is indistinguishable from unset.
+///
+/// Persisted in the bundle's classification group as the cache of the
+/// Classifier chain's last derivation; every lookup resolves from the
+/// record, so the persisted shape and the lookup input are one type by
+/// construction.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct RoutingKey {
+    /// The routing table to walk. `None` selects the default table, and an
+    /// explicit [`Self::DEFAULT_TABLE`] is indistinguishable from `None`.
+    /// Naming any other table is a strict no-match while only the default
+    /// exists — the bundle Waits for its topology rather than leaking onto
+    /// another (wait-not-drop). The representation of table identity is the
+    /// tables tranche's open question; the seam carries a numeric id until
+    /// it is settled.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub table: Option<u32>,
+    /// The lookup key. `None` keys the walk on the bundle's destination.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub key: Option<Eid>,
+}
+
+impl RoutingKey {
+    /// The id of the default table — the table `None` selects. Provisional
+    /// alongside the numeric id itself, until the tables tranche settles
+    /// table identity.
+    pub const DEFAULT_TABLE: u32 = 0;
+
+    /// Whether both halves are unset — the serde skip predicate that keeps
+    /// unkeyed records byte-identical to the prior at-rest shape.
+    pub fn is_unset(&self) -> bool {
+        self.table.is_none() && self.key.is_none()
+    }
+}
+
 #[derive(Debug)]
 pub enum DispatchAction {
     AdminEndpoint,
     Deliver(Arc<Service>),
-    Forward(u32),
+    Forward {
+        /// The selected CLA peer.
+        peer: u32,
+        /// The adjacency EID whose forward entry the lookup matched —
+        /// carried into the peer queue's assignment record.
+        next_hop: Eid,
+    },
     Drop(Option<ReasonCode>),
 }
 
@@ -138,13 +207,29 @@ impl Rib {
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub fn find(&self, bundle: &mut Bundle) -> Option<DispatchAction> {
+    pub fn find(&self, bundle: &Bundle) -> Option<DispatchAction> {
+        // The lookup inputs are the record's own: the {table, key} the
+        // Classifier chain derived, destination-in-default-table when unset.
+        let key = bundle.metadata.routing_key();
+
+        // Only the default table exists until the tables tranche: a lookup
+        // naming any other table is a strict no-match, and the bundle Waits
+        // for its topology rather than leaking onto this one. An explicit
+        // default is the default — the same normalisation as the key.
+        if let Some(table_id) = key.table
+            && table_id != RoutingKey::DEFAULT_TABLE
+        {
+            debug!("Lookup names unknown table {table_id}: no match");
+            return None;
+        }
+
         let table = self.snapshot.load();
 
-        // Precise field borrow: the lookup result keeps this Eid borrowed,
-        // and the match arms below mutate `bundle.metadata`.
-        let result =
-            table.find_recurse(&bundle.bpv7.primary.destination, true, &mut HashSet::new())?;
+        let result = table.find_recurse(
+            key.key.as_ref().unwrap_or(&bundle.primary().destination),
+            true,
+            &mut HashSet::new(),
+        )?;
 
         let previous;
         let result = if matches!(result, LookupResult::Reflect) {
@@ -160,13 +245,11 @@ impl Rib {
             LookupResult::AdminEndpoint => Some(DispatchAction::AdminEndpoint),
             LookupResult::Deliver(service) => Some(DispatchAction::Deliver(service)),
             LookupResult::Drop(reason) => Some(DispatchAction::Drop(reason)),
-            LookupResult::Forward(peer, next_hop) => {
-                bundle.metadata.next_hop = Some(next_hop.clone());
-                Some(DispatchAction::Forward(peer))
-            }
-            LookupResult::ForwardEcmp(peers) => {
-                self.select_peer(peers, &bundle.bpv7, &mut bundle.metadata)
-            }
+            LookupResult::Forward(peer, next_hop) => Some(DispatchAction::Forward {
+                peer,
+                next_hop: next_hop.clone(),
+            }),
+            LookupResult::ForwardEcmp(peers) => self.select_peer(peers, &bundle.bpv7),
             LookupResult::Reflect => None,
         }
     }
@@ -198,7 +281,6 @@ impl Rib {
         &self,
         mut peers: Vec<(u32, &Eid)>,
         bundle: &Bpv7Bundle,
-        metadata: &mut BundleMetadata,
     ) -> Option<DispatchAction> {
         if peers.is_empty() {
             debug_assert!(false, "Empty Forward result from find_recurse");
@@ -207,18 +289,26 @@ impl Rib {
 
         trace!(peers = ?peers, "Forward to CLA peers");
 
+        // Member selection hashes the conversation only. The RoutingKey's
+        // influence was spent selecting the group (the route the walk
+        // resolved): hashing lookup state here would split a conversation
+        // whose classification varies per bundle across members — the
+        // reordering ECMP affinity exists to prevent. Packet entropy picks
+        // the member; policy-injected entropy is the egress flow-label
+        // input's seat, not this one.
         let idx = if peers.len() > 1 {
-            (self.ecmp_hash_state.hash_one((
-                &bundle.primary.id.source,
-                &bundle.primary.destination,
-                &metadata.writable.flow_label,
-            )) % (peers.len() as u64)) as usize
+            (self
+                .ecmp_hash_state
+                .hash_one((&bundle.primary.id.source, &bundle.primary.destination))
+                % (peers.len() as u64)) as usize
         } else {
             0
         };
         let (peer, next_hop) = peers.swap_remove(idx);
-        metadata.next_hop = Some(next_hop.clone());
-        Some(DispatchAction::Forward(peer))
+        Some(DispatchAction::Forward {
+            peer,
+            next_hop: next_hop.clone(),
+        })
     }
 
     pub(crate) async fn add(
@@ -513,6 +603,7 @@ mod tests {
 
     use super::*;
     use crate::bundle::tests::test_bundle;
+    use crate::filter::slots::MetadataDelta;
     use crate::services::registry::ServiceImpl;
     use crate::services::tests::NullService;
     use crate::storage::{BundleMemStorage, MetadataMemStorage};
@@ -592,14 +683,27 @@ mod tests {
         })
     }
 
+    // Writes the routing inputs the way production does: through the
+    // classification group's delta-apply write path.
+    fn set_routing(bundle: &mut Bundle, table: Option<u32>, key: Option<&str>) {
+        bundle.metadata.apply(MetadataDelta {
+            route_table: table,
+            route_key: key.map(|k| k.parse().unwrap()),
+            ..Default::default()
+        });
+    }
+
     #[test]
     fn test_exact_match() {
         let rib = make_rib();
         add_local_forward(&rib, ipn_node(2), 42);
 
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(42))));
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 42, .. })
+        ));
     }
 
     #[test]
@@ -614,9 +718,12 @@ mod tests {
         );
         add_local_forward(&rib, ipn_node(10), 99);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(99))));
+        let bundle = make_bundle("ipn:0.50.1");
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 99, .. })
+        ));
     }
 
     #[test]
@@ -641,20 +748,22 @@ mod tests {
         );
         add_local_forward(&rib, ipn_node(3), 77);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(77))));
+        let bundle = make_bundle("ipn:0.50.1");
+        let Some(DispatchAction::Forward { peer: 77, next_hop }) = rib.find(&bundle) else {
+            panic!("Via chain must resolve to the adjacent neighbour's peer");
+        };
 
-        // The next-hop handed to egress filters must be the adjacent neighbour
-        // (ipn:0.3.0), not the first intermediate gateway (ipn:0.40.0).
-        assert_eq!(bundle.metadata.next_hop, Some("ipn:0.3.0".parse().unwrap()),);
+        // The next-hop carried into the queue assignment must be the adjacent
+        // neighbour (ipn:0.3.0), not the first intermediate gateway
+        // (ipn:0.40.0).
+        assert_eq!(next_hop, "ipn:0.3.0".parse().unwrap());
     }
 
     #[test]
     fn test_no_route() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.50.1");
+        let result = rib.find(&bundle);
         assert!(result.is_none());
     }
 
@@ -676,8 +785,8 @@ mod tests {
             10,
         );
 
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Recursive route should return None (wait), not Drop"
@@ -698,8 +807,11 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.find(&mut bundle);
-        assert!(matches!(result, Some(DispatchAction::Forward(77))));
+        let result = rib.find(&bundle);
+        assert!(matches!(
+            result,
+            Some(DispatchAction::Forward { peer: 77, .. })
+        ));
     }
 
     #[test]
@@ -722,7 +834,7 @@ mod tests {
 
         let mut bundle = make_bundle("ipn:0.5.1");
         bundle.metadata.extensions.previous_node = Some("ipn:0.4.0".parse().unwrap());
-        let result = rib.find(&mut bundle);
+        let result = rib.find(&bundle);
         assert!(result.is_none());
     }
 
@@ -746,18 +858,18 @@ mod tests {
         add_local_forward(&rib, ipn_node(10), 10);
         add_local_forward(&rib, ipn_node(11), 11);
 
-        let mut bundle = make_bundle("ipn:0.50.1");
-        let result1 = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.50.1");
+        let result1 = rib.find(&bundle);
         let peer1 = match result1 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
         let mut bundle2 = make_bundle("ipn:0.50.1");
         bundle2.bpv7.primary.id = bundle.id().clone();
-        let result2 = rib.find(&mut bundle2);
+        let result2 = rib.find(&bundle2);
         let peer2 = match result2 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
 
@@ -765,6 +877,65 @@ mod tests {
         assert!(
             peer1 == 10 || peer1 == 11,
             "Peer must be one of the ECMP targets, got {peer1}"
+        );
+    }
+
+    #[test]
+    fn test_ecmp_key_selects_group_not_member() {
+        let rib = make_rib();
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_a",
+            Action::Route(RouteAction::Via("ipn:0.10.0".parse().unwrap())),
+            10,
+        );
+        add_route(
+            &rib,
+            "ipn:0.50.*",
+            "ecmp_b",
+            Action::Route(RouteAction::Via("ipn:0.11.0".parse().unwrap())),
+            10,
+        );
+        add_local_forward(&rib, ipn_node(10), 10);
+        add_local_forward(&rib, ipn_node(11), 11);
+
+        // A keyed walk reaches the ECMP group even when the destination has
+        // no route of its own — the key selects the group.
+        let mut bundle = make_bundle("ipn:0.60.1");
+        set_routing(&mut bundle, None, Some("ipn:0.50.7"));
+        let keyed_off_destination = match rib.find(&bundle) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert!(
+            keyed_off_destination == 10 || keyed_off_destination == 11,
+            "Peer must be one of the ECMP targets, got {keyed_off_destination}"
+        );
+
+        // Member selection hashes the conversation only: the same
+        // (source, destination) selects the same member whatever the
+        // RoutingKey, provided the walks resolve to the same group. This
+        // holds for every hash seed — lookup state is not hash input.
+        let bundle = make_bundle("ipn:0.50.1");
+        let unkeyed = match rib.find(&bundle) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        let mut keyed = make_bundle("ipn:0.50.1");
+        keyed.bpv7.primary.id = bundle.id().clone();
+        set_routing(
+            &mut keyed,
+            Some(RoutingKey::DEFAULT_TABLE),
+            Some("ipn:0.50.7"),
+        );
+        let keyed = match rib.find(&keyed) {
+            Some(DispatchAction::Forward { peer, .. }) => peer,
+            other => panic!("Expected Forward, got {other:?}"),
+        };
+        assert_eq!(
+            unkeyed, keyed,
+            "The RoutingKey must not perturb member selection within a group"
         );
     }
 
@@ -781,10 +952,10 @@ mod tests {
         assert_eq!(peers, Some([42, 43].into()));
 
         // find resolves deterministically to one of them
-        let mut bundle = make_bundle("ipn:0.2.1");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.1");
+        let result = rib.find(&bundle);
         let peer = match result {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
         assert!(
@@ -795,19 +966,67 @@ mod tests {
         // Same bundle deterministically picks the same peer
         let mut bundle2 = make_bundle("ipn:0.2.1");
         bundle2.bpv7.primary.id = bundle.id().clone();
-        let result2 = rib.find(&mut bundle2);
+        let result2 = rib.find(&bundle2);
         let peer2 = match result2 {
-            Some(DispatchAction::Forward(p)) => p,
+            Some(DispatchAction::Forward { peer: p, .. }) => p,
             other => panic!("Expected Forward, got {other:?}"),
         };
         assert_eq!(peer, peer2, "ECMP selection must be deterministic");
     }
 
     #[test]
+    fn test_key_overrides_destination() {
+        let rib = make_rib();
+        add_local_forward(&rib, ipn_node(2), 42);
+
+        // No route exists for the destination; the key routes the bundle.
+        let mut bundle = make_bundle("ipn:0.50.1");
+        set_routing(&mut bundle, None, Some("ipn:0.2.1"));
+        let result = rib.find(&bundle);
+        assert!(
+            matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
+            "The key must drive the walk when the destination has no route, got {result:?}"
+        );
+
+        // The override is total: a key with no route waits, even though the
+        // destination itself has one.
+        let mut bundle = make_bundle("ipn:0.2.1");
+        set_routing(&mut bundle, None, Some("ipn:0.60.1"));
+        let result = rib.find(&bundle);
+        assert!(
+            result.is_none(),
+            "A keyed lookup must not fall back to the destination, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_table_waits() {
+        let rib = make_rib();
+        add_local_forward(&rib, ipn_node(2), 42);
+
+        let mut bundle = make_bundle("ipn:0.2.1");
+        set_routing(&mut bundle, Some(1), None);
+        let result = rib.find(&bundle);
+        assert!(
+            result.is_none(),
+            "A lookup naming a table that does not exist must wait, not fall through, got {result:?}"
+        );
+
+        // An explicit default table is the default table (per-field
+        // last-writer-wins overwrites the stored table).
+        set_routing(&mut bundle, Some(RoutingKey::DEFAULT_TABLE), None);
+        let result = rib.find(&bundle);
+        assert!(
+            matches!(result, Some(DispatchAction::Forward { peer: 42, .. })),
+            "An explicit default table must walk as None does, got {result:?}"
+        );
+    }
+
+    #[test]
     fn test_admin_endpoint_lookup() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.0");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.0");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "Admin EID should resolve to AdminEndpoint, got {result:?}"
@@ -817,8 +1036,8 @@ mod tests {
     #[test]
     fn test_unregistered_local_waits() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.99");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.99");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Unregistered local service should wait (no route), got {result:?}"
@@ -837,8 +1056,8 @@ mod tests {
             1,
         );
 
-        let mut bundle = make_bundle("ipn:0.1.42");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.42");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::Deliver(_))),
             "got {result:?}"
@@ -857,8 +1076,8 @@ mod tests {
             1,
         );
 
-        let mut bundle = make_bundle("ipn:0.2.42");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.2.42");
+        let result = rib.find(&bundle);
         assert!(
             result.is_none(),
             "Remote EID should not match local service route, got {result:?}"
@@ -868,8 +1087,8 @@ mod tests {
     #[test]
     fn test_admin_endpoint_matches_concrete() {
         let rib = make_rib();
-        let mut bundle = make_bundle("ipn:0.1.0");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.0");
+        let result = rib.find(&bundle);
         assert!(
             matches!(result, Some(DispatchAction::AdminEndpoint)),
             "got {result:?}"
@@ -889,8 +1108,8 @@ mod tests {
             10,
         );
 
-        let mut bundle = make_bundle("ipn:0.1.99");
-        let result = rib.find(&mut bundle);
+        let bundle = make_bundle("ipn:0.1.99");
+        let result = rib.find(&bundle);
         assert!(
             matches!(
                 result,

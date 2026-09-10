@@ -6,7 +6,7 @@
 //! back to `Waiting` by its caller) — never stranded in `ForwardPending`
 //! on a dead peer.
 
-use core::num::{NonZeroU32, NonZeroUsize};
+use core::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::{
     borrow::Cow,
     sync::{
@@ -118,10 +118,6 @@ impl MetadataStorage for SweepGate {
 
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         self.inner.insert(bundle).await
-    }
-
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
     }
 
     async fn swap_status(
@@ -253,7 +249,12 @@ impl StallCla {
 
 #[async_trait]
 impl cla::Cla for StallCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -292,7 +293,12 @@ impl IngressCla {
 
 #[async_trait]
 impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+    async fn on_register(
+        &self,
+        sink: Box<dyn cla::Sink>,
+        _node_ids: &[NodeId],
+        _max_bundle_size: NonZeroU64,
+    ) {
         self.sink.call_once(|| sink);
     }
 
@@ -357,7 +363,7 @@ async fn racing_forward_is_not_stranded_by_unregister() {
     bpa.start(false).await;
 
     let (cla, forward_entered_rx, forward_release_tx) = StallCla::new();
-    bpa.register_cla("stall".to_string(), cla.clone(), None)
+    bpa.register_cla("stall".to_string(), cla.clone(), None, None)
         .await
         .unwrap();
     cla.sink
@@ -374,46 +380,73 @@ async fn racing_forward_is_not_stranded_by_unregister() {
         .unwrap();
 
     let ingress = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), ingress.clone(), None)
+    bpa.register_cla("ingress".to_string(), ingress.clone(), None, None)
         .await
         .unwrap();
 
     // Bundle A occupies the egress consumer: it is claimed out of the queue
     // and parked inside the CLA's forward.
     let (a_id, mut a_data) = build_bundle("ipn:0.2.1", "ipn:0.3.1");
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut a_data)
-        .await
-        .unwrap();
+    // Routing happens at the ingress gate and the forward executes on the
+    // dispatching task, so a dispatch whose transfer stalls must not be
+    // awaited inline: spawn it, as a real CLA session task would.
+    let a_dispatch = {
+        let ingress = ingress.clone();
+        tokio::spawn(async move {
+            assert_eq!(
+                ingress
+                    .sink
+                    .get()
+                    .unwrap()
+                    .dispatch(None, None, &mut a_data)
+                    .await
+                    .expect("dispatch failed"),
+                cla::Acceptance::Accepted
+            );
+        })
+    };
     assert_eq!(recv(&gates.fp_notify_rx, "A queued").await, a_id);
     assert_eq!(recv(&forward_entered_rx, "A offered").await, a_id);
 
     // Bundle C fills the depth-1 channel buffer behind the busy consumer,
     // so the racing bundle's send below takes the storage-spill path.
     let (c_id, mut c_data) = build_bundle("ipn:0.2.1", "ipn:0.3.2");
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut c_data)
-        .await
-        .unwrap();
+    let c_dispatch = {
+        let ingress = ingress.clone();
+        tokio::spawn(async move {
+            assert_eq!(
+                ingress
+                    .sink
+                    .get()
+                    .unwrap()
+                    .dispatch(None, None, &mut c_data)
+                    .await
+                    .expect("dispatch failed"),
+                cla::Acceptance::Accepted
+            );
+        })
+    };
     assert_eq!(recv(&gates.fp_notify_rx, "C queued").await, c_id);
 
     // Bundle B is the racing forward: its RIB lookup resolves the live
     // peer, then its queue-entry swap parks at the gate.
     metadata_store.fp_armed.store(true, Ordering::Release);
     let (b_id, mut b_data) = build_bundle("ipn:0.2.1", "ipn:0.3.3");
-    ingress
-        .sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut b_data)
-        .await
-        .unwrap();
+    let b_dispatch = {
+        let ingress = ingress.clone();
+        tokio::spawn(async move {
+            assert_eq!(
+                ingress
+                    .sink
+                    .get()
+                    .unwrap()
+                    .dispatch(None, None, &mut b_data)
+                    .await
+                    .expect("dispatch failed"),
+                cla::Acceptance::Accepted
+            );
+        })
+    };
     recv(&gates.fp_entered_rx, "B's queue entry to park at the gate").await;
 
     // Unregister the CLA concurrently; it parks inside its peer sweeps.
@@ -443,6 +476,9 @@ async fn racing_forward_is_not_stranded_by_unregister() {
     // Release the stalled transfer and drain everything: shutdown joins
     // the pools, so every park below has committed by the time it returns.
     forward_release_tx.send(()).unwrap();
+    a_dispatch.await.unwrap();
+    b_dispatch.await.unwrap();
+    c_dispatch.await.unwrap();
     bpa.shutdown().await;
 
     let b = metadata_store

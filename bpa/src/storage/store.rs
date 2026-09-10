@@ -12,7 +12,7 @@ use crate::{
     Arc, Bytes,
     bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
-    stream::Sender,
+    stream::{ConcatError, Receiver, Segment, Sender, concat_stream},
 };
 
 pub struct Store {
@@ -105,6 +105,35 @@ impl Store {
         }
     }
 
+    /// Save bundle data assembled from a segment stream, bounded by
+    /// `max_size`; returns the storage name and total size.
+    ///
+    /// This is the streaming write seam: callers hand the store one stream
+    /// carrying the whole bundle and assume an asynchronous store
+    /// (`docs/streaming_pipeline_design.md` §3). The interim body spools to
+    /// memory ([`concat_stream`] — the crate's one bounded accumulator) and
+    /// commits through the backends' whole-buffer `save` on the final
+    /// segment; the storage tranche replaces the body with the backends'
+    /// streamed write, and no caller changes.
+    ///
+    /// Nothing is persisted on [`ConcatError`] — an over-bound
+    /// ([`TooLarge`](ConcatError::TooLarge)) or incomplete
+    /// ([`Cancelled`](ConcatError::Cancelled)) stream discards the spool. A
+    /// verdict the caller settles only after the stream is consumed (e.g.
+    /// an input door's `ValidatingReceiver::finish`) owes the discard itself via
+    /// [`delete_data`](Self::delete_data): staging commits before such a
+    /// verdict can exist.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    pub async fn save_stream(
+        &self,
+        stream: &mut dyn Receiver<Segment>,
+        max_size: usize,
+    ) -> Result<(Arc<str>, usize), ConcatError> {
+        let data = concat_stream(stream, max_size).await?;
+        let len = data.len();
+        Ok((self.save_data(data).await, len))
+    }
+
     /// Load bundle data by storage name (read-through cache).
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn load_data(&self, storage_name: &str) -> Option<Bytes> {
@@ -120,14 +149,6 @@ impl Store {
             .save(data)
             .await
             .trace_expect("Failed to save bundle data")
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
-        self.bundle_storage
-            .replace(storage_name, data)
-            .await
-            .trace_expect("Failed to replace bundle data")
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
@@ -179,14 +200,6 @@ impl Store {
             .confirm_exists(bundle_id)
             .await
             .trace_expect("Failed to confirm bundle existence")
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub async fn update_metadata(&self, bundle: &Bundle) {
-        self.metadata_storage
-            .replace(bundle)
-            .await
-            .trace_expect("Failed to replace metadata")
     }
 
     // Compare-and-swap from the caller's snapshot status: the arbiter for
@@ -249,7 +262,9 @@ impl Store {
             .trace_expect("Failed to reset peer queue");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0 }))
+            // Label derivation only: the variant selects the label, the
+            // fields (including the placeholder adjacency) never reach it.
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0, next_hop: Eid::Null }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
@@ -313,6 +328,74 @@ mod tests {
 
     fn make_bundle(dest: &str) -> Bundle {
         test_bundle("ipn:0.99.1", dest)
+    }
+
+    #[tokio::test]
+    async fn save_stream_commits_the_assembled_segments() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"head")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"-tail1")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Final(Bytes::from_static(b"-tail2")))
+                .await
+                .is_ok()
+        );
+
+        let (name, len) = store.save_stream(&mut rx, 1024).await.unwrap();
+        assert_eq!(len, 16);
+        assert_eq!(
+            store.load_data(&name).await.unwrap().as_ref(),
+            b"head-tail1-tail2"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_stream_refuses_over_bound() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"head")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Final(Bytes::from_static(b"0123456789")))
+                .await
+                .is_ok()
+        );
+
+        let result = store.save_stream(&mut rx, 8).await;
+        assert!(
+            matches!(result, Err(ConcatError::TooLarge { size: 14, max: 8 })),
+            "got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_stream_discards_an_incomplete_stream() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"partial")))
+                .await
+                .is_ok()
+        );
+        drop(tx);
+
+        let result = store.save_stream(&mut rx, 1024).await;
+        assert!(
+            matches!(result, Err(ConcatError::Cancelled)),
+            "got {result:?}"
+        );
     }
 
     // Store a bundle and then store a duplicate — second insert should return false.
@@ -393,9 +476,6 @@ mod tests {
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
                 Err("backend down".into())
-            }
-            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
             }
             async fn swap_status(
                 &self,

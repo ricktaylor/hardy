@@ -15,7 +15,7 @@ use bytes::{Bytes, BytesMut};
 use hardy_cbor::decode::{Error as CborError, Head, Marker, Untagged};
 use smallvec::SmallVec;
 
-use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock};
+use crate::{error::CaptureFieldErr, primary_block::PrimaryBlock, reader::PlainReader};
 
 struct BlockHeader {
     /// `true` if the block array uses indefinite-length encoding (a trailing
@@ -314,6 +314,16 @@ impl PayloadTail {
     /// `0xFF` break).
     pub fn remaining(&self) -> u64 {
         self.remaining
+    }
+
+    /// Payload block-type-specific data bytes not yet seen — the target's
+    /// own content, excluding the CRC and break trailer. A caller feeding a
+    /// per-target digest (e.g. a deferred payload BIB) reads this before and
+    /// after each [`push`](Self::push) to slice the body prefix of the run
+    /// out from the trailer: the body is always consumed from the front, so
+    /// `body_remaining` before minus after is the run's leading body length.
+    pub fn body_remaining(&self) -> u64 {
+        self.body_remaining
     }
 
     /// Feed the next run of streamed bytes. Returns `true` once the bundle is
@@ -655,7 +665,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 *bcb_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },
@@ -709,7 +719,7 @@ impl BundleParser {
             // of truth shared with the post-decrypt keyed filter.
             ops.check(
                 bib_block_number,
-                &bpsec::PlainBlockSet {
+                &PlainReader {
                     blocks: &bundle.blocks,
                     source_data: data,
                 },

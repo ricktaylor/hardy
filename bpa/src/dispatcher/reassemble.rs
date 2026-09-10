@@ -1,7 +1,6 @@
-use trace_err::TraceErrResult;
 use tracing::{debug, warn};
 
-use super::Dispatcher;
+use super::{Dispatcher, ingress::Received};
 use crate::{
     bundle::{Bundle, BundleMetadata, BundleStatus},
     storage::adu_reassembly::ReassemblyResult,
@@ -39,30 +38,27 @@ impl Dispatcher {
 
         metrics::counter!("bpa.bundle.reassembled").increment(1);
 
-        let mut metadata = BundleMetadata::new(received_at, origin);
-        metadata.storage_name = Some(storage_name.clone());
+        let metadata = BundleMetadata::new(received_at, origin);
 
-        // TODO: Just push the entire bundle into the stream
-        let (tx, mut rx) = hardy_async::channel::bounded(1);
-        tx.send(crate::stream::Segment::Final(data))
-            .await
-            .trace_expect("New stream push failed?!?");
-
-        match self.process_received_bundle(&mut rx, metadata).await {
-            // Box::pin breaks the recursive async type cycle:
-            //   ingress_bundle → process_bundle → reassemble →
-            //   process_received_bundle → ingress_bundle
-            Ok(Some((bundle, data))) => Box::pin(self.ingress_bundle(bundle, data)).await,
-            // The reassembled data we pre-stored is now orphaned — delete it.
-            Ok(None) => {
-                self.store.delete_data(&storage_name).await;
-            }
-            // A reassembled ADU that trips the gate has no live transfer to
-            // refuse — log, and delete the orphaned pre-stored data.
-            Err(e) => {
-                warn!("Reassembled bundle rejected: {e}");
-                self.store.delete_data(&storage_name).await;
+        // Box::pin breaks the async cycle: process_received_bundle executes
+        // the gate's routing decision inline, whose Deliver-fragment arm is
+        // this function. Depth is bounded — fragments reassemble into a
+        // whole, which cannot be a fragment again. The reassembled bytes are
+        // handed as the bundle stream and the pipeline's spool saves an
+        // admitted bundle fresh; the pre-stored safety copy (which bridges
+        // the crash window between fragment deletion and admission) is
+        // stranded in every outcome and deleted below — a crash before the
+        // delete re-admits it as a restart orphan, where it loses as a
+        // duplicate.
+        let mut data = data;
+        match Box::pin(self.process_received_bundle(&mut data, metadata)).await {
+            Received::Dispatched | Received::Disposed => {}
+            // A reassembled ADU has no live transfer to refuse (the one
+            // reachable refusal is the size cap — the refusal site logs it).
+            Received::Refused => {
+                warn!("Reassembled bundle refused, deleted");
             }
         }
+        self.store.delete_data(&storage_name).await;
     }
 }
