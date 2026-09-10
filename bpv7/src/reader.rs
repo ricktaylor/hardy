@@ -17,8 +17,10 @@
 //! composes a [`PlainReader`] with the BCB decrypt operation and memoises
 //! the outcomes.
 
+use hardy_cbor::decode::{Error as CborError, FromCbor, parse_exact};
+
 use crate::{
-    HashMap,
+    Error, HashMap,
     block::{Block, Payload},
 };
 
@@ -73,6 +75,37 @@ pub trait Reader<'a> {
         self.block(block_number).map(|(block, _)| block)
     }
 }
+
+/// Decoding conveniences over any [`Reader`], blanket-implemented.
+///
+/// A separate trait because a generic method would make [`Reader`] itself
+/// unusable as a trait object, and the BPSec machinery holds readers as
+/// `&dyn Reader`.
+pub trait ReaderExt<'a>: Reader<'a> {
+    /// CBOR-decodes a block's payload into `T`, requiring the whole
+    /// payload to be consumed.
+    ///
+    /// `Ok(None)` when the block is absent or its payload is in any
+    /// unavailable [`Availability`] state — callers that respond
+    /// differently per state use [`Reader::block`] directly. `Err` means
+    /// the payload was available but did not decode as a `T`.
+    fn extract<T>(&'a self, block_number: u64) -> Result<Option<T>, Error>
+    where
+        T: FromCbor,
+        T::Error: From<CborError>,
+        Error: From<T::Error>,
+    {
+        let Some((_, availability)) = self.block(block_number) else {
+            return Ok(None);
+        };
+        match availability.available() {
+            Some(payload) => Ok(Some(parse_exact::<T>(payload.as_ref())?)),
+            None => Ok(None),
+        }
+    }
+}
+
+impl<'a, R: Reader<'a> + ?Sized> ReaderExt<'a> for R {}
 
 /// The canonical [`Reader`] over a parsed bundle held wholly in memory:
 /// a blocks map plus the contiguous bundle bytes the offsets index into.
