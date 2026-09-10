@@ -690,10 +690,10 @@ Each step is a `mac.update()` or AAD accumulation call. The stage provides these
 
 **What is removed:**
 
-- `BlockSet` trait — replaced by the Transformer's internal state capturing block data as it streams past
+- `Reader` trait — replaced by the Transformer's internal state capturing block data as it streams past
 - `Signer` struct — orchestration dissolves into the integrity stage
 - `Encryptor` struct — orchestration dissolves into the confidentiality stage
-- `EditorBlockSet` — no longer needed without `BlockSet`
+- `EditorReader` — no longer needed without `Reader`
 
 ### 6.2. CLA Egress: Cla::forward and Cla::write
 
@@ -778,7 +778,7 @@ pub struct PrimaryBlock {
 }
 ```
 
-Each extension `Block` records structural metadata only: byte extent in the wire data (`Range<u64>`), block type, flags, CRC type, BPSec coverage state (BIB / BCB references), and data range within the block extent. `u64` (rather than `usize`) is used so offsets remain valid on 32-bit targets where bundle storage may exceed `usize::MAX`. There is no `dyn Bundle` trait, no `BlockSet` trait, and no multiple implementations — a single concrete representation is used everywhere (parser output, Editor input, Transformer output).
+Each extension `Block` records structural metadata only: byte extent in the wire data (`Range<u64>`), block type, flags, CRC type, BPSec coverage state (BIB / BCB references), and data range within the block extent. `u64` (rather than `usize`) is used so offsets remain valid on 32-bit targets where bundle storage may exceed `usize::MAX`. There is no `dyn Bundle` trait, no `Reader` trait, and no multiple implementations — a single concrete representation is used everywhere (parser output, Editor input, Transformer output).
 
 `BundleMetadata` is the BPA's pipeline-state structure, separate from `Bundle`. It currently carries `storage_name`, `status` (processing state), `ReadOnlyMetadata` (ingress context plus the decoded extension-field cache), and `WritableMetadata` (`flow_label`). Its target shape is the metadata partition in `filter_subsystem_redesign.md`: provenance / wire cache / classification / infrastructure groups with per-group visibility; `WritableMetadata` and `flow_label` retire (classification replaces them), `status` becomes queue assignment, and `next_hop` moves to the Dispatch→ClaSend queue item. Decoded primary-block fields are read from `Bundle::primary`, never duplicated in metadata.
 

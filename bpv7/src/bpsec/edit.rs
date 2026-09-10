@@ -38,7 +38,7 @@ use crate::{
     HashMap, HashSet, block,
     bpsec::{Error, bcb, bib, key},
     crc,
-    editor::{Editor, EditorBlockSet, Error as EditorError},
+    editor::{Editor, EditorReader, Error as EditorError},
 };
 
 /// BPSec-aware operations on an [`Editor`]. See module docs for the
@@ -363,7 +363,7 @@ where
     };
 
     // Decrypt the target payload.
-    let block_set = EditorBlockSet { editor };
+    let block_set = EditorReader { editor };
     let mut target_payload = match op.decrypt(
         key_source,
         bcb::OperationArgs {
@@ -495,7 +495,7 @@ enum CoveredBib {
 
 /// Decrypt a BCB-covered BIB body and parse its OperationSet, using the
 /// per-target `Operation` already decoded into `bcb_opset`. Threads the
-/// editor through (the [`EditorBlockSet`] borrows it for the AAD lookup)
+/// editor through (the [`EditorReader`] borrows it for the AAD lookup)
 /// and returns it alongside the [`CoveredBib`] outcome.
 fn decrypt_covered_bib<'a, K>(
     editor: Editor<'a>,
@@ -510,7 +510,7 @@ where
     let Some(bcb_op) = bcb_opset.operations.get(&bib_num) else {
         return (editor, CoveredBib::NotCovered);
     };
-    let block_set = EditorBlockSet { editor };
+    let block_set = EditorReader { editor };
     let result = bcb_op.decrypt(
         key_source,
         bcb::OperationArgs {
@@ -582,7 +582,7 @@ where
     // so the existing context parameters carry over and `encrypt` produces
     // a fresh entry with rotated per-context state (e.g. AES-GCM IV) plus
     // the ciphertext. The caller must have staged the new BIB plaintext
-    // into the editor already, so `EditorBlockSet` surfaces it via
+    // into the editor already, so `EditorReader` surfaces it via
     // `args.blocks.block(target)`.
     // Invariant: `remove_blocks` only re-encrypts a BIB that is a target of
     // this BCB, so the OperationSet always has an entry for it.
@@ -591,7 +591,7 @@ where
             "BCB OperationSet must contain the target BIB {bib_block_number} being re-encrypted (logic bug)"
         )
     });
-    let editor_bs = EditorBlockSet { editor };
+    let editor_bs = EditorReader { editor };
     let result = template_op.encrypt(
         key_source,
         bcb::OperationArgs {
