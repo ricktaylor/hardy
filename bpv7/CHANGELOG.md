@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - `bpsec::DecryptingReader`: a `reader::Reader` that decrypts BCB-covered blocks on demand and memoises each block's outcome — plaintext, no-key, or decrypt-failure — for the reader's lifetime, so a chain of consumers sharing one reader costs one decrypt attempt per covered block. The trait impl lends (cache borrows, zeroized when the reader drops); the inherent `block_data()` gives (owned plaintext, typed errors carrying the diagnostic cause, and `Ok(None)` for non-resident extents), preserving the free `bpsec::block_data` contract.
 
+- `reader::ReaderExt`, blanket-implemented for every `Reader` (trait objects included): `extract<T>()` CBOR-decodes a block's payload, with `Ok(None)` for absent-or-unavailable and `Err` only for decode failures.
+
 ### Removed
 - **BREAKING:** the free `bpsec::block_data()` function — `bpsec::DecryptingReader::block_data` is the same contract (typed errors carrying the cause; owned decrypted plaintext) plus outcome memoisation and an explicit `Ok(None)` for non-resident extents.
 
