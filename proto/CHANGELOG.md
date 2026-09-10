@@ -7,11 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `GrpcServer::local_addr()`: the address the listening socket is bound to. `GrpcServer::new` now binds the socket, so a config address with port 0 gets a kernel-assigned port readable through this accessor, bind failures surface at construction instead of inside `serve`, and connections are accepted into the listener's backlog from construction onward.
 - `ForwardBundleRequest.bundle_id` — the RFC 9171 bundle identifier in key form, identifying the transfer for correlation; CLAs treat it as opaque. Required: the CLA client rejects a forward that omits it, so a CLA built on this crate requires a BPA of at least the same version (the reverse skew — an old CLA against a new BPA — degrades safely).
 - Deferred transfer outcomes on the wire: `accepted` as a `ForwardBundleResponse` result, and the `TransferOutcomeRequest`/`TransferOutcomeResponse` pair resolving an accepted transfer as `completed` or `failed` (with an opaque `google.rpc.Status` reason), keyed by `bundle_id`. Deferral is a per-bundle choice in the forward answer — there is no registration-level capability negotiation.
 - `AppReceiveRequest.bundle_id` and `ServiceReceiveRequest.bundle_id` — the delivered bundle's identifier, in the key encoding documented on `SendResponse.bundle_id`. Required: the client SDK fails the delivery without it.
 
 ### Changed
+- **BREAKING:** `GrpcServer::serve` returns `Result<(), Box<dyn Error + Send + Sync>>` (was `Result<(), tonic::transport::Error>`): serving on the pre-bound listener can also fail on runtime registration, not only in transport.
 - **BREAKING** (`serde` feature): the server `Config` refuses unknown keys at deserialization, so a typo in a consumer's `grpc` config section fails loudly instead of silently leaving the default in force.
 - **BREAKING:** `ForwardBundleRequest.queue` is renamed to `lane` (same field number and type: binary-compatible on the wire, breaking for generated-code consumers).
 - **BREAKING:** tracked the upstream `hardy-bpa` trait rework: the client-side `Application`/`Service` implementations deliver via `on_deliver` with the bundle ID and a segment stream, and the CLA client's `forward` carries the lane, `total_len`, and segment stream.

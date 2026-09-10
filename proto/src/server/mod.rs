@@ -44,16 +44,21 @@ impl Default for Config {
 
 /// A gRPC server that exposes BPA registration services to remote clients.
 ///
+/// The listening socket is bound by [`new()`](GrpcServer::new), so a bind
+/// failure surfaces at construction and a config address with port 0 gets a
+/// kernel-assigned port, readable via [`local_addr()`](GrpcServer::local_addr).
 /// The server does not spawn any tasks itself — call [`serve()`](GrpcServer::serve)
 /// to get a future, and spawn it in your own runtime.
 pub struct GrpcServer {
     routes: tonic::service::Routes,
-    address: std::net::SocketAddr,
+    listener: std::net::TcpListener,
+    local_addr: std::net::SocketAddr,
     session_tasks: hardy_async::TaskPool,
 }
 
 impl GrpcServer {
-    /// Build a gRPC server with the configured services.
+    /// Build a gRPC server with the configured services, bound to
+    /// `config.address`.
     pub fn new(
         config: &Config,
         bpa: Arc<dyn hardy_bpa::bpa::BpaRegistration>,
@@ -84,31 +89,51 @@ impl GrpcServer {
             }
         }
 
+        let listener = std::net::TcpListener::bind(config.address)?;
+        listener.set_nonblocking(true)?;
+        let local_addr = listener.local_addr()?;
+
         info!(
-            "gRPC server hosting {:?}, listening on {}",
-            config.services, config.address
+            "gRPC server hosting {:?}, listening on {local_addr}",
+            config.services
         );
 
         Ok(Self {
             routes: routes.routes(),
-            address: config.address,
+            listener,
+            local_addr,
             session_tasks: tasks,
         })
+    }
+
+    /// The address the listening socket is bound to. With a port-0 config
+    /// address this carries the kernel-assigned port. The socket accepts
+    /// connections into its backlog from construction, before
+    /// [`serve()`](GrpcServer::serve) runs.
+    pub fn local_addr(&self) -> std::net::SocketAddr {
+        self.local_addr
     }
 
     /// Serve until cancelled, then shut down session tasks.
     pub async fn serve(
         self,
         cancel: hardy_async::CancellationToken,
-    ) -> Result<(), tonic::transport::Error> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (health_reporter, health_service) = tonic_health::server::health_reporter();
         health_reporter
             .set_service_status("", tonic_health::ServingStatus::Serving)
             .await;
+        // NODELAY matches what `serve_with_shutdown` would apply through the
+        // builder's default `tcp_nodelay(true)` when it binds the socket
+        // itself.
+        let incoming = tonic::transport::server::TcpIncoming::from(
+            tokio::net::TcpListener::from_std(self.listener)?,
+        )
+        .with_nodelay(Some(true));
         tonic::transport::Server::builder()
             .add_routes(self.routes)
             .add_service(health_service)
-            .serve_with_shutdown(self.address, cancel.cancelled())
+            .serve_with_incoming_shutdown(incoming, cancel.cancelled())
             .await?;
         self.session_tasks.shutdown().await;
         Ok(())

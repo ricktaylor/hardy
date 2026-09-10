@@ -12,7 +12,6 @@ use hardy_bpa::{cla, routing, services};
 use hardy_bpv7::eid::NodeId;
 use sinks::*;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── Mock BPA ──────────────────────────────────────────────────────────
 
@@ -221,12 +220,6 @@ impl services::ApplicationSink for ApplicationSinkWrapper {
 
 // ── Server helpers ────────────────────────────────────────────────────
 
-/// Allocate a unique port for each test to avoid conflicts.
-fn test_port() -> u16 {
-    static NEXT_PORT: AtomicUsize = AtomicUsize::new(50100);
-    NEXT_PORT.fetch_add(1, Ordering::Relaxed) as u16
-}
-
 /// The loopback host for test servers: IPv6 when available, IPv4 as a
 /// fallback (some sandboxes have no `::1`).
 fn loopback_host() -> &'static str {
@@ -246,10 +239,11 @@ pub async fn start_server(
     bpa: &Arc<MockBpa>,
     service_names: &[&str],
 ) -> (String, hardy_async::TaskPool) {
-    let port = test_port();
+    // Port 0: the kernel assigns a free port, so concurrent test binaries
+    // never collide. `GrpcServer::new` binds the socket, so connections are
+    // accepted (into the backlog) from here on and no listen-wait is needed.
     let host = loopback_host();
-    let addr: std::net::SocketAddr = format!("{host}:{port}").parse().unwrap();
-    let grpc_addr = format!("http://{host}:{port}");
+    let addr: std::net::SocketAddr = format!("{host}:0").parse().unwrap();
 
     let tasks = hardy_async::TaskPool::new();
     let config = hardy_proto::server::Config {
@@ -259,6 +253,7 @@ pub async fn start_server(
 
     let server = hardy_proto::server::GrpcServer::new(&config, bpa.clone())
         .expect("Failed to create gRPC server");
+    let grpc_addr = format!("http://{}", server.local_addr());
     let cancel = tasks.cancel_token().clone();
     hardy_async::spawn!(tasks, "grpc_server", async move {
         if let Err(e) = server.serve(cancel).await {
@@ -266,21 +261,5 @@ pub async fn start_server(
         }
     });
 
-    wait_for_listen(addr).await;
-
     (grpc_addr, tasks)
-}
-
-async fn wait_for_listen(addr: std::net::SocketAddr) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "gRPC server on {addr} not accepting connections after 2s"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
 }
