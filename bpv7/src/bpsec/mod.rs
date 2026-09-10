@@ -100,56 +100,6 @@ impl FromCbor for Context {
     }
 }
 
-/// Return block `block_number`'s plaintext: a borrowed slice of
-/// `source_data` when the block is unencrypted, or the BCB-decrypted
-/// bytes (via `bcb_ops` + `keys`) when it is. `source_data` MUST be the
-/// complete in-memory bundle the blocks were parsed from.
-///
-/// Composes [`PlainReader`](crate::reader::PlainReader) with the BCB decrypt op so consumers
-/// (BPA delivery, `bundle` CLI) don't each re-implement it.
-pub fn block_data<'a, K>(
-    block_number: u64,
-    blocks: &'a HashMap<u64, block::Block>,
-    source_data: &'a [u8],
-    bcb_ops: &HashMap<u64, bcb::OperationSet>,
-    keys: &K,
-) -> Result<block::Payload<'a>, crate::Error>
-where
-    K: key::KeySource + ?Sized,
-{
-    let target = blocks
-        .get(&block_number)
-        .ok_or(crate::Error::MissingBlock(block_number))?;
-
-    let Some(bcb_num) = target.bcb else {
-        // Unencrypted — the raw wire body is the plaintext.
-        return target
-            .payload(source_data)
-            .map(block::Payload::Borrowed)
-            .ok_or(crate::Error::Altered);
-    };
-
-    let opset = bcb_ops.get(&bcb_num).ok_or(crate::Error::Altered)?;
-    let op = opset
-        .operations
-        .get(&block_number)
-        .ok_or(crate::Error::Altered)?;
-    op.decrypt(
-        keys,
-        bcb::OperationArgs {
-            bpsec_source: &opset.source,
-            target: block_number,
-            source: bcb_num,
-            blocks: &PlainReader {
-                blocks,
-                source_data,
-            },
-        },
-    )
-    .map(block::Payload::Decrypted)
-    .map_err(crate::Error::InvalidBPSec)
-}
-
 /// The memoised outcome of one covered block's decrypt attempt.
 enum Decrypt {
     Plain(Zeroizing<Box<[u8]>>),
