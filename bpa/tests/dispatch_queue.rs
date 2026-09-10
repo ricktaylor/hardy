@@ -5,7 +5,7 @@
 //! or a slow service sees the same bundle delivered concurrently more than
 //! once.
 
-use core::{num::NonZeroU32, time::Duration};
+use core::time::Duration;
 use std::{
     borrow::Cow,
     sync::{
@@ -18,7 +18,6 @@ use hardy_bpa::{
     Bytes, async_trait,
     bpa::{Bpa, BpaRegistration},
     bundle::{Bundle, BundleMetadata, BundleStatus},
-    cla,
     node_ids::NodeIds,
     services,
     storage::{self, MetadataMemStorage, MetadataStorage},
@@ -104,10 +103,6 @@ impl MetadataStorage for InjectingStorage {
 
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         self.inner.insert(bundle).await
-    }
-
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
     }
 
     async fn swap_status(
@@ -279,46 +274,6 @@ impl services::Service for CountingHoldService {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal CLA to inject the inbound bundle
-// ---------------------------------------------------------------------------
-
-struct IngressCla {
-    sink: hardy_async::sync::spin::Once<Box<dyn cla::Sink>>,
-}
-
-impl IngressCla {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            sink: hardy_async::sync::spin::Once::new(),
-        })
-    }
-}
-
-#[async_trait]
-impl cla::Cla for IngressCla {
-    async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
-        self.sink.call_once(|| sink);
-    }
-
-    async fn on_unregister(&self) {}
-
-    fn lane_count(&self) -> Option<NonZeroU32> {
-        None
-    }
-
-    async fn forward(
-        &self,
-        _lane: Option<u32>,
-        _cla_addr: &cla::ClaAddress,
-        _bundle_id: &Id,
-        _total_len: u64,
-        _stream: &mut dyn Receiver<Segment>,
-    ) -> cla::Result<cla::ForwardBundleResult> {
-        Ok(cla::ForwardBundleResult::Sent)
-    }
-}
-
-// ---------------------------------------------------------------------------
 
 /// A stale queued-status copy re-pushed by the channel's storage poller
 /// while the bundle is mid-delivery must lose the consumer's dequeue claim:
@@ -346,39 +301,53 @@ async fn stale_poller_duplicate_never_redelivers() {
         .unwrap();
     bpa.start(false).await;
 
-    // The service under test holds its deliveries open; the marker service
-    // completes immediately (its release sender is dropped at creation).
-    let (svc, started_rx, release_tx) = CountingHoldService::new();
-    bpa.register_service(Service::Ipn(7), svc.clone())
-        .await
-        .unwrap();
-    let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
-    drop(marker_release_tx);
-    bpa.register_service(Service::Ipn(8), marker_svc.clone())
+    // Both originate and fresh CLA arrivals now route at their doors and
+    // execute directly, so the dispatch queue (and the DispatchPending
+    // state this rig arms) belongs to the re-dispatch paths. The feeder
+    // here is the service-registration poll: bundles originated to a
+    // not-yet-registered service park WaitingForService, and registering
+    // the service pushes them through `dispatch_bundle` into the queue.
+    let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
+    drop(originator_release_tx);
+    bpa.register_service(Service::Ipn(9), originator.clone())
         .await
         .unwrap();
 
-    let (_, data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+    let (_, data) = Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
         .with_lifetime(Duration::from_secs(3600))
         .with_payload(Cow::Borrowed(b"deliver me once".as_slice()))
         .build(CreationTimestamp::now())
         .expect("Failed to build bundle");
-
-    let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
-        .await
-        .unwrap();
-    cla.sink
+    originator
+        .sink
         .get()
         .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data))
+        .send(&mut Bytes::from(data))
+        .await
+        .expect("raw origination failed");
+    let (_, marker_data) = Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+        .with_lifetime(Duration::from_secs(3600))
+        .with_payload(Cow::Borrowed(b"marker".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    originator
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(marker_data))
+        .await
+        .expect("raw origination failed");
+
+    // The service under test holds its deliveries open. Registering it
+    // recovers the parked bundle through poll_service_waiting →
+    // dispatch_bundle, which parks it in DispatchPending on the storage
+    // slow path — the channel's initial recovery poll is still blocked on
+    // the arm signal, keeping the fast path closed. (Every timeout below
+    // only bounds a regression.)
+    let (svc, started_rx, release_tx) = CountingHoldService::new();
+    bpa.register_service(Service::Ipn(7), svc.clone())
         .await
         .unwrap();
-
-    // The dispatch send parks the bundle in DispatchPending on the storage
-    // slow path — the initial recovery poll is still blocked on the arm
-    // signal, keeping the channel's fast path closed. (Every timeout below
-    // only bounds a regression.)
     tokio::time::timeout(tokio::time::Duration::from_secs(10), queued_rx.recv_async())
         .await
         .expect("Timed out waiting for the bundle to queue")
@@ -403,21 +372,15 @@ async fn stale_poller_duplicate_never_redelivers() {
     .expect("Timed out waiting for the delivery to start")
     .expect("Holding service gone");
 
-    // Dispatch a marker bundle to the other service. It enters the dispatch
-    // queue strictly after the injected duplicate (the injection completed
-    // above), so once the marker's delivery starts, the duplicate has been
-    // dequeued into its own claim task while the first delivery is
-    // verifiably still held; the claim's resolution itself is enforced by
-    // the shutdown barrier below, which joins the processing pool.
-    let (_, marker_data) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
-        .with_lifetime(Duration::from_secs(3600))
-        .with_payload(Cow::Borrowed(b"marker".as_slice()))
-        .build(CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(marker_data))
+    // Register the marker service: its registration poll pushes the parked
+    // marker bundle into the dispatch queue strictly after the injected
+    // duplicate (the injection completed above), so once the marker's
+    // delivery starts, the duplicate has been dequeued into its own claim
+    // task while the first delivery is verifiably still held; the claim, while the
+    // first delivery is verifiably still held.
+    let (marker_svc, marker_started_rx, marker_release_tx) = CountingHoldService::new();
+    drop(marker_release_tx);
+    bpa.register_service(Service::Ipn(8), marker_svc.clone())
         .await
         .unwrap();
     tokio::time::timeout(
@@ -483,10 +446,6 @@ impl MetadataStorage for ClaimGate {
 
     async fn insert(&self, bundle: &Bundle) -> storage::Result<bool> {
         self.inner.insert(bundle).await
-    }
-
-    async fn replace(&self, bundle: &Bundle) -> storage::Result<()> {
-        self.inner.replace(bundle).await
     }
 
     async fn swap_status(
@@ -607,35 +566,49 @@ async fn slow_claim_does_not_serialize_dispatch() {
         .unwrap();
     bpa.start(false).await;
 
-    // Both services complete deliveries immediately.
-    let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
-    drop(a_release_tx);
-    bpa.register_service(Service::Ipn(7), svc_a.clone())
-        .await
-        .unwrap();
-    let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
-    drop(b_release_tx);
-    bpa.register_service(Service::Ipn(8), svc_b.clone())
-        .await
-        .unwrap();
-
-    let cla = IngressCla::new();
-    bpa.register_cla("ingress".to_string(), cla.clone(), None)
+    // Originate and CLA arrivals route at their doors, so the dispatch
+    // queue belongs to the re-dispatch paths: originate to not-yet-
+    // registered services (parking WaitingForService), then register them
+    // — each registration poll pushes its bundle through dispatch_bundle
+    // into the queue.
+    let (originator, _originator_started_rx, originator_release_tx) = CountingHoldService::new();
+    drop(originator_release_tx);
+    bpa.register_service(Service::Ipn(9), originator.clone())
         .await
         .unwrap();
 
-    // Bundle A's dequeue claim parks at the gate.
     let (bundle_a, data_a) =
-        Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
+        Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.7".parse().unwrap())
             .with_lifetime(Duration::from_secs(3600))
             .with_payload(Cow::Borrowed(b"slow claim".as_slice()))
             .build(CreationTimestamp::now())
             .expect("Failed to build bundle");
     *metadata_store.gated.lock().unwrap() = Some(bundle_a.primary.id);
-    cla.sink
+    originator
+        .sink
         .get()
         .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data_a))
+        .send(&mut Bytes::from(data_a))
+        .await
+        .expect("raw origination failed");
+    let (_, data_b) = Builder::new("ipn:0.1.9".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
+        .with_lifetime(Duration::from_secs(3600))
+        .with_payload(Cow::Borrowed(b"overtakes".as_slice()))
+        .build(CreationTimestamp::now())
+        .expect("Failed to build bundle");
+    originator
+        .sink
+        .get()
+        .unwrap()
+        .send(&mut Bytes::from(data_b))
+        .await
+        .expect("raw origination failed");
+
+    // Both services complete deliveries immediately. Registering A's
+    // service queues A, whose dequeue claim parks at the gate.
+    let (svc_a, a_started_rx, a_release_tx) = CountingHoldService::new();
+    drop(a_release_tx);
+    bpa.register_service(Service::Ipn(7), svc_a.clone())
         .await
         .unwrap();
     tokio::time::timeout(
@@ -646,18 +619,13 @@ async fn slow_claim_does_not_serialize_dispatch() {
     .expect("Timed out waiting for A's claim to park")
     .expect("Storage wrapper gone");
 
-    // Bundle B is dispatched while A's claim is verifiably still held: its
-    // delivery starting is the proof that claims overlap. (The timeout only
-    // bounds a regression — an inline claim would serialize B behind A.)
-    let (_, data_b) = Builder::new("ipn:0.2.1".parse().unwrap(), "ipn:0.1.8".parse().unwrap())
-        .with_lifetime(Duration::from_secs(3600))
-        .with_payload(Cow::Borrowed(b"overtakes".as_slice()))
-        .build(CreationTimestamp::now())
-        .expect("Failed to build bundle");
-    cla.sink
-        .get()
-        .unwrap()
-        .dispatch(None, None, &mut Bytes::from(data_b))
+    // B's registration queues B while A's claim is verifiably still held:
+    // its delivery starting is the proof that claims overlap. (The timeout
+    // only bounds a regression — an inline claim would serialize B behind
+    // A.)
+    let (svc_b, b_started_rx, b_release_tx) = CountingHoldService::new();
+    drop(b_release_tx);
+    bpa.register_service(Service::Ipn(8), svc_b.clone())
         .await
         .unwrap();
     tokio::time::timeout(

@@ -1,3 +1,5 @@
+use crate::bundle::BundleStatus;
+
 use hardy_bpv7::status_report::ReasonCode;
 
 /// Initialise all BPA metric descriptions.
@@ -174,11 +176,6 @@ pub fn init() {
         "Currently registered services"
     );
     metrics::describe_gauge!(
-        "bpa.filter.registered",
-        metrics::Unit::Count,
-        "Currently registered filters (by hook)"
-    );
-    metrics::describe_gauge!(
         "bpa.rib.agents",
         metrics::Unit::Count,
         "Currently registered routing agents"
@@ -239,17 +236,17 @@ pub fn reason_label(reason: &ReasonCode) -> &'static str {
 
 /// Convert a BundleStatus to a static label string for the `"state"` label
 /// on `bpa.bundle.status`.
-pub fn status_label(status: &crate::bundle::BundleStatus) -> &'static str {
+pub fn status_label(status: &BundleStatus) -> &'static str {
     match status {
-        crate::bundle::BundleStatus::New => "received",
-        crate::bundle::BundleStatus::DispatchPending => "dispatch_pending",
-        crate::bundle::BundleStatus::Dispatching => "dispatching",
-        crate::bundle::BundleStatus::ForwardPending { .. } => "forward_pending",
-        crate::bundle::BundleStatus::ForwardAckPending { .. } => "forward_ack_pending",
-        crate::bundle::BundleStatus::DeliverPending { .. } => "deliver_pending",
-        crate::bundle::BundleStatus::DeliveryAckPending { .. } => "delivery_ack_pending",
-        crate::bundle::BundleStatus::AduFragment { .. } => "fragment",
-        crate::bundle::BundleStatus::Waiting => "waiting",
-        crate::bundle::BundleStatus::WaitingForService { .. } => "waiting_for_service",
+        BundleStatus::New => "received",
+        BundleStatus::DispatchPending => "dispatch_pending",
+        BundleStatus::Dispatching => "dispatching",
+        BundleStatus::ForwardPending { .. } => "forward_pending",
+        BundleStatus::ForwardAckPending { .. } => "forward_ack_pending",
+        BundleStatus::DeliverPending { .. } => "deliver_pending",
+        BundleStatus::DeliveryAckPending { .. } => "delivery_ack_pending",
+        BundleStatus::AduFragment { .. } => "fragment",
+        BundleStatus::Waiting => "waiting",
+        BundleStatus::WaitingForService { .. } => "waiting_for_service",
     }
 }

@@ -5,8 +5,9 @@ use super::*;
 impl Dispatcher {
     /// Queue a bundle for dispatch processing.
     /// The caller must have claimed the bundle (`Dispatching`), or be
-    /// re-queueing one recovered still queued (`DispatchPending`); the send
-    /// moves it to `DispatchPending` until the consumer claims it back.
+    /// re-queueing one recovered still queued (`DispatchPending`); the send's
+    /// conditional swap moves it to `DispatchPending`, the queue's commit
+    /// point, until the consumer claims it back.
     pub(super) async fn dispatch_bundle(&self, bundle: bundle::Bundle) {
         debug_assert!(matches!(
             bundle.status,
@@ -76,23 +77,42 @@ impl Dispatcher {
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub(super) async fn process_bundle(
         &self,
-        mut bundle: bundle::Bundle,
+        bundle: bundle::Bundle,
+        cla_registry: &cla::registry::ClaRegistry,
+    ) {
+        // Snapshot the routing table before the lookup: the parks re-check
+        // it to close the park-vs-poll window (see park_bundle). A Forward
+        // result names the peer, whose egress queue carries the adjacency.
+        let seen = self.rib.table_snapshot();
+        let action = self.rib.find(&bundle);
+        self.execute_dispatch_action(bundle, action, seen, cla_registry)
+            .await
+    }
+
+    // Execute a routing decision. Shared by `process_bundle` (which routes
+    // at dispatch: the re-dispatch, poll, sweep, and recovery paths) and the
+    // ingress commit (which routes at the pre-drain gate — the decision of
+    // record for fresh arrivals). `seen` is the table snapshot captured with
+    // the lookup: a decision that proves stale lands in a failure arm whose
+    // park re-checks it and re-enters dispatch, so no staleness strands a
+    // bundle.
+    pub(super) async fn execute_dispatch_action(
+        &self,
+        bundle: bundle::Bundle,
+        action: Option<routing::DispatchAction>,
+        seen: routing::RibSnapshot,
         cla_registry: &cla::registry::ClaRegistry,
     ) {
         // Expiry checkpoint: the reaper defers the hand-off statuses
         // (DeliveryAckPending/ForwardAckPending), so an expired bundle can
         // re-enter dispatch through a transfer outcome, a sweep, or a poll —
-        // resolve it here rather than routing it onward.
+        // and the ingress drain takes real time — so resolve expiry here
+        // rather than routing the bundle onward.
         if bundle.has_expired() {
             return self.drop_bundle(bundle, ReasonCode::LifetimeExpired).await;
         }
 
-        // Snapshot the routing table before the lookup: the parks below
-        // re-check it to close the park-vs-poll window (see park_bundle).
-        let seen = self.rib.table_snapshot();
-
-        // Perform RIB lookup (sets bundle.metadata.next_hop for Forward results)
-        match self.rib.find(&mut bundle) {
+        match action {
             Some(routing::DispatchAction::Drop(reason)) => {
                 if let Some(reason) = reason {
                     debug!("Routing lookup indicates bundle should be dropped: {reason:?}");
@@ -130,9 +150,9 @@ impl Dispatcher {
                     }
                 }
             }
-            Some(routing::DispatchAction::Forward(peer)) => {
+            Some(routing::DispatchAction::Forward { peer, next_hop }) => {
                 debug!("Queuing bundle for forwarding to CLA peer {peer}");
-                if let Err(bundle) = cla_registry.forward(peer, bundle).await {
+                if let Err(bundle) = cla_registry.forward(peer, next_hop, bundle).await {
                     // The peer vanished between the RIB lookup and the
                     // forward: return the bundle to Waiting so the next route
                     // event re-dispatches it, rather than leaving it stranded

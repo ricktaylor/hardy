@@ -332,6 +332,58 @@ fn hostile_claimed_block_length_bounds_reserve() {
     }
 }
 
+// The streamed twin of the 256 MiB pre-payload bound: an extension block
+// whose declared body crosses it is refused with the typed error at the
+// header, however the bytes are chunked — never `NeedMore` (which would
+// invite the CLA to stream a quarter-gigabyte the parser must reject
+// anyway).
+#[test]
+fn oversized_extension_block_rejected_streamed() {
+    let full = builder::Builder::new("ipn:1.0".parse().unwrap(), "ipn:2.0".parse().unwrap())
+        .with_payload(b"x".as_slice().into())
+        .build(creation_timestamp::CreationTimestamp::now())
+        .unwrap()
+        .1;
+    let parsed = {
+        let mut p = BundleParser::default();
+        let ParserProgress::Ready(whole) = p.push(Bytes::copy_from_slice(&full)).unwrap() else {
+            panic!("fixture bundle should parse Ready");
+        };
+        p.finish(whole).unwrap()
+    };
+    let prim_end = parsed.bundle.blocks[&0].extent.end;
+
+    // array(5)[type=7, num=2, flags=0, crc=none, data=bstr(len)] with the
+    // canonical 4-byte length head (256 MiB fits u32): the body starts 10
+    // bytes after the block and the extent ends where the body does (no CRC
+    // trailer).
+    let len: u64 = 256 * 1024 * 1024;
+    let mut crafted = full[..prim_end as usize].to_vec();
+    crafted.extend_from_slice(&[0x85, 0x07, 0x02, 0x00, 0x00, 0x5A]);
+    crafted.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
+
+    // Push in small chunks so the block header itself crosses pushes; the
+    // typed rejection must still surface once the header is whole.
+    let mut parser = BundleParser::new(4096);
+    let mut result = None;
+    for chunk in crafted.chunks(7) {
+        match parser.push(Bytes::copy_from_slice(chunk)) {
+            Ok(ParserProgress::NeedMore(_)) => continue,
+            other => {
+                result = Some(other);
+                break;
+            }
+        }
+    }
+    assert!(
+        matches!(
+            result,
+            Some(Err(Error::ExtensionBlocksTooLarge(end))) if end == prim_end + 10 + len
+        ),
+        "streamed oversized extension block must fail with the typed bound error"
+    );
+}
+
 // Push a small whole bundle one byte at a time: every possible chunk boundary
 // lands inside some field, so a `NeedMoreData` surfacing anywhere in the
 // field-error chain that is mis-read as a structural reject (instead of being

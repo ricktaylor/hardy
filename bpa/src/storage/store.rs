@@ -1,7 +1,8 @@
 use core::num::NonZeroUsize;
 
-use hardy_async::TaskPool;
+use hardy_async::{TaskPool, sync::Mutex};
 use hardy_bpv7::{bundle::Id, eid::Eid};
+use lru::LruCache;
 use trace_err::*;
 use tracing::error;
 #[cfg(feature = "instrument")]
@@ -12,14 +13,25 @@ use crate::{
     Arc, Bytes,
     bundle::{Bundle, BundleStatus},
     dispatcher::Dispatcher,
-    stream::Sender,
+    stream::{ConcatError, Receiver, Segment, Sender, concat_stream},
 };
+
+// The capacity of the recently-committed id cache. Sized for the burst the
+// gates dedup against — replay floods and same-millisecond origination
+// collisions — not for the store's population: anything beyond the cache is
+// still caught by `insert_metadata`'s atomic refusal.
+const RECENT_IDS: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
 pub struct Store {
     pub(super) tasks: TaskPool,
     pub(super) metadata_storage: Arc<dyn MetadataStorage>,
     pub(super) bundle_storage: Arc<dyn BundleStorage>,
     pub(super) reaper: Arc<Reaper>,
+    // The recently-committed id cache: every id this node commits (or
+    // refuses as a duplicate) is remembered here, exclusively for the input
+    // gates' advisory duplicate probe — a pure in-memory check that never
+    // touches the backends.
+    recent: Mutex<LruCache<Id, ()>>,
 }
 
 impl Store {
@@ -44,6 +56,7 @@ impl Store {
             metadata_storage,
             bundle_storage,
             reaper,
+            recent: Mutex::new(LruCache::new(RECENT_IDS)),
         }
     }
 
@@ -95,14 +108,46 @@ impl Store {
             .await
             .trace_expect("Failed to insert metadata")
         {
+            self.remember(bundle.id());
             true
         } else {
-            // We have a duplicate, remove the duplicate from the bundle store
+            // A record already exists; cache the id for the gates' probe
+            // and remove the duplicate copy from the bundle store.
+            self.remember(bundle.id());
             if let Some(storage_name) = &bundle.metadata.storage_name {
                 self.delete_data(storage_name).await;
             }
             false
         }
+    }
+
+    /// Save bundle data assembled from a segment stream, bounded by
+    /// `max_size`; returns the storage name and total size.
+    ///
+    /// This is the streaming write seam: callers hand the store one stream
+    /// carrying the whole bundle and assume an asynchronous store
+    /// (`docs/streaming_pipeline_design.md` §3). The interim body spools to
+    /// memory ([`concat_stream`] — the crate's one bounded accumulator) and
+    /// commits through the backends' whole-buffer `save` on the final
+    /// segment; the storage tranche replaces the body with the backends'
+    /// streamed write, and no caller changes.
+    ///
+    /// Nothing is persisted on [`ConcatError`] — an over-bound
+    /// ([`TooLarge`](ConcatError::TooLarge)) or incomplete
+    /// ([`Cancelled`](ConcatError::Cancelled)) stream discards the spool. A
+    /// verdict the caller settles only after the stream is consumed (e.g.
+    /// an input door's `ValidatingReceiver::finish`) owes the discard itself via
+    /// [`delete_data`](Self::delete_data): staging commits before such a
+    /// verdict can exist.
+    #[cfg_attr(feature = "instrument", instrument(skip_all))]
+    pub async fn save_stream(
+        &self,
+        stream: &mut dyn Receiver<Segment>,
+        max_size: usize,
+    ) -> Result<(Arc<str>, usize), ConcatError> {
+        let data = concat_stream(stream, max_size).await?;
+        let len = data.len();
+        Ok((self.save_data(data).await, len))
     }
 
     /// Load bundle data by storage name (read-through cache).
@@ -122,14 +167,6 @@ impl Store {
             .trace_expect("Failed to save bundle data")
     }
 
-    #[cfg_attr(feature = "instrument", instrument(skip(self, data)))]
-    pub async fn replace_data(&self, storage_name: &str, data: Bytes) {
-        self.bundle_storage
-            .replace(storage_name, data)
-            .await
-            .trace_expect("Failed to replace bundle data")
-    }
-
     #[cfg_attr(feature = "instrument", instrument(skip(self)))]
     pub async fn delete_data(&self, storage_name: &str) {
         self.bundle_storage
@@ -138,12 +175,35 @@ impl Store {
             .trace_expect("Failed to delete bundle data")
     }
 
+    /// The advisory duplicate probe: `bundle_id` was recently committed (or
+    /// refused as a duplicate) by this node. A pure cache check — the
+    /// backends are never touched — so a hit is definitive, while a miss
+    /// means nothing: copies racing in concurrently, ids past the cache's
+    /// horizon, and a cold cache after restart all settle at
+    /// [`insert_metadata`](Self::insert_metadata)'s atomic refusal.
+    pub fn seen_recently(&self, bundle_id: &Id) -> bool {
+        // `get`, not `peek`: an actively replayed id stays hot.
+        self.recent.lock().get(bundle_id).is_some()
+    }
+
+    // Remember an id whose committed record is known to exist, for the
+    // gates' probe. Only ever called with committed ids — a cache hit must
+    // imply a record (live or tombstoned), because the gates drop on it.
+    fn remember(&self, bundle_id: &Id) {
+        self.recent.lock().put(bundle_id.clone(), ());
+    }
+
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
     pub async fn insert_metadata(&self, bundle: &Bundle) -> bool {
-        self.metadata_storage
+        let inserted = self
+            .metadata_storage
             .insert(bundle)
             .await
-            .trace_expect("Failed to insert metadata")
+            .trace_expect("Failed to insert metadata");
+        // Cache the id on both arms: a refusal means a record already
+        // exists, which is exactly what the gates' probe answers.
+        self.remember(bundle.id());
+        inserted
     }
 
     #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle_id)))]
@@ -179,14 +239,6 @@ impl Store {
             .confirm_exists(bundle_id)
             .await
             .trace_expect("Failed to confirm bundle existence")
-    }
-
-    #[cfg_attr(feature = "instrument", instrument(skip_all,fields(bundle.id = %bundle.id())))]
-    pub async fn update_metadata(&self, bundle: &Bundle) {
-        self.metadata_storage
-            .replace(bundle)
-            .await
-            .trace_expect("Failed to replace metadata")
     }
 
     // Compare-and-swap from the caller's snapshot status: the arbiter for
@@ -249,7 +301,9 @@ impl Store {
             .trace_expect("Failed to reset peer queue");
 
         if reset > 0 {
-            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0 }))
+            // Label derivation only: the variant selects the label, the
+            // fields (including the placeholder adjacency) never reach it.
+            metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::ForwardPending { peer, queue: 0, next_hop: Eid::Null }))
                 .decrement(reset as f64);
             metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&BundleStatus::Waiting))
                 .increment(reset as f64);
@@ -313,6 +367,74 @@ mod tests {
 
     fn make_bundle(dest: &str) -> Bundle {
         test_bundle("ipn:0.99.1", dest)
+    }
+
+    #[tokio::test]
+    async fn save_stream_commits_the_assembled_segments() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"head")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"-tail1")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Final(Bytes::from_static(b"-tail2")))
+                .await
+                .is_ok()
+        );
+
+        let (name, len) = store.save_stream(&mut rx, 1024).await.unwrap();
+        assert_eq!(len, 16);
+        assert_eq!(
+            store.load_data(&name).await.unwrap().as_ref(),
+            b"head-tail1-tail2"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_stream_refuses_over_bound() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"head")))
+                .await
+                .is_ok()
+        );
+        assert!(
+            tx.send(Segment::Final(Bytes::from_static(b"0123456789")))
+                .await
+                .is_ok()
+        );
+
+        let result = store.save_stream(&mut rx, 8).await;
+        assert!(
+            matches!(result, Err(ConcatError::TooLarge { size: 14, max: 8 })),
+            "got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_stream_discards_an_incomplete_stream() {
+        let store = make_store();
+        let (tx, mut rx) = hardy_async::channel::bounded::<Segment>(4);
+        assert!(
+            tx.send(Segment::Next(Bytes::from_static(b"partial")))
+                .await
+                .is_ok()
+        );
+        drop(tx);
+
+        let result = store.save_stream(&mut rx, 1024).await;
+        assert!(
+            matches!(result, Err(ConcatError::Cancelled)),
+            "got {result:?}"
+        );
     }
 
     // Store a bundle and then store a duplicate — second insert should return false.
@@ -393,9 +515,6 @@ mod tests {
             }
             async fn insert(&self, _bundle: &Bundle) -> Result<bool> {
                 Err("backend down".into())
-            }
-            async fn replace(&self, _bundle: &Bundle) -> Result<()> {
-                unimplemented!()
             }
             async fn swap_status(
                 &self,

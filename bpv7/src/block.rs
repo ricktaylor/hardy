@@ -208,7 +208,11 @@ impl FromCbor for Type {
 /// payload has been decrypted from a Block Confidentiality Block (BCB) and
 /// therefore does not correspond to a contiguous region of the original data.
 pub enum Payload<'a> {
-    /// A slice within the original bundle data.
+    /// A borrowed slice: the block's wire bytes within the original bundle
+    /// data, or — when lent by a caching reader such as
+    /// [`DecryptingReader`](crate::bpsec::DecryptingReader) — a decrypted
+    /// payload owned by the reader for its lifetime. Only take it as a
+    /// sub-slice of the bundle buffer where the lender guarantees that.
     Borrowed(&'a [u8]),
     /// An owned byte slice, typically holding a decrypted payload.
     Decrypted(zeroize::Zeroizing<Box<[u8]>>),
@@ -323,7 +327,12 @@ impl Default for Block {
 impl Block {
     /// Bundle-absolute byte offsets of the block's payload within the
     /// wire stream. Honest `Range<u64>` — callers that have the bundle
-    /// in memory cast to `usize` at the slice point.
+    /// in memory cast to `usize` at the slice point. For a parsed bundle
+    /// only the payload block's `end` can run large: the parser bounds every
+    /// pre-payload offset to 256 MiB
+    /// ([`Error::ExtensionBlocksTooLarge`](crate::Error::ExtensionBlocksTooLarge)),
+    /// so any other range — and the payload's `start` — converts to `usize`
+    /// infallibly.
     pub fn payload_range(&self) -> Range<u64> {
         self.extent.start + self.data.start..self.extent.start + self.data.end
     }
@@ -332,7 +341,7 @@ impl Block {
     ///
     /// `source` MUST be the complete, contiguous bundle byte stream the
     /// block's offsets were parsed against (the `Bytes` returned by
-    /// [`parse::parse`], or the
+    /// [`parse::parse`](crate::parse::parse), or the
     /// buffer a `Builder`/`Editor` produced) — the offsets are
     /// bundle-absolute. Returns `None` if they fall outside `source`.
     ///

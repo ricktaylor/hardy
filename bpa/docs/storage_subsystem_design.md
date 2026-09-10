@@ -5,7 +5,7 @@ This document describes the storage subsystem in the BPA, covering the dual stor
 ## Related Documents
 
 - **[Bundle State Machine Design](bundle_state_machine_design.md)**: Bundle status values stored in metadata
-- **[Filter Subsystem Design](filter_subsystem_design.md)**: Filter checkpoint persistence
+- **[Filter Subsystem Design](filter_subsystem_design.md)**: classification persistence (no filter mutation is ever persisted)
 - **[Policy Subsystem Design](policy_subsystem_design.md)**: Hybrid channels for queue management
 - **[Routing Design](routing_subsystem_design.md)**: Route changes trigger `reset_peer_queue()`
 

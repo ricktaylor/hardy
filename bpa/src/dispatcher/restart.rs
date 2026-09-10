@@ -7,7 +7,7 @@ impl Dispatcher {
         storage_name: Arc<str>,
         file_time: time::OffsetDateTime,
     ) {
-        let Some(data) = self.store.load_data(&storage_name).await else {
+        let Some(mut data) = self.store.load_data(&storage_name).await else {
             // Data has gone while we were restarting — the reaper hasn't started,
             // so this is data loss. Safe because metadata recovery will report it
             // if the bundle is in the metadata store.
@@ -24,7 +24,7 @@ impl Dispatcher {
             data.clone(),
             self.key_provider(),
         ) {
-            Ok(validated) => validated.bundle,
+            Ok(bundle) => bundle,
             Err(e) => {
                 // Can't extract a bundle ID, so we can't check or clean up
                 // metadata here. Any orphaned metadata referencing this
@@ -62,14 +62,14 @@ impl Dispatcher {
                 status,
             };
             match &bundle.status {
-                bundle::BundleStatus::New => {
-                    // Ingress filter not yet complete — run full ingress
-                    self.ingress_bundle(bundle, data).await;
-                }
+                // `New` never reaches storage — fresh ingress runs the chain in
+                // memory and writes a single `Dispatching` checkpoint — so it is
+                // not a recoverable state and falls to the no-op arm below.
+                //
                 // Dispatching: claimed by the consumer but processing never
-                // completed; DispatchPending: still queued. Both re-enqueue.
+                // completed; DispatchPending: still queued. Both re-enqueue —
+                // the chain already ran, so re-dispatch rather than re-run it.
                 bundle::BundleStatus::Dispatching | bundle::BundleStatus::DispatchPending => {
-                    // Ingress filter done — enqueue for routing
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
                     self.dispatch_bundle(bundle).await;
                 }
@@ -104,10 +104,14 @@ impl Dispatcher {
                 }
                 // Handled by their own recovery mechanisms — poll_waiting,
                 // poll_service_waiting on re-registration, and fragment
-                // reassembly polling respectively. No wildcard: a new status
-                // must choose its re-admission here, not silently assume
-                // some poller recovers it.
-                bundle::BundleStatus::Waiting
+                // reassembly polling respectively. `New` never reaches
+                // storage — fresh ingress runs the chain in memory and
+                // writes a single `Dispatching` checkpoint — so it is not a
+                // recoverable state; a legacy row simply keeps its gauge.
+                // No wildcard: a new status must choose its re-admission
+                // here, not silently assume some poller recovers it.
+                bundle::BundleStatus::New
+                | bundle::BundleStatus::Waiting
                 | bundle::BundleStatus::WaitingForService { .. }
                 | bundle::BundleStatus::AduFragment { .. } => {
                     metrics::gauge!("bpa.bundle.status", "state" => crate::otel_metrics::status_label(&bundle.status)).increment(1.0);
@@ -115,30 +119,23 @@ impl Dispatcher {
             }
         } else {
             // Orphan — data exists but no metadata. Run the full receive
-            // pipeline (process_received_bundle: parse, block removal,
-            // canonicalization, storage, reporting, and Ingress filter).
-            let mut metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
-            metadata.storage_name = Some(storage_name.clone());
-
-            // TODO: Just push the entire bundle into the stream
-            let (tx, mut rx) = hardy_async::channel::bounded(1);
-            tx.send(crate::stream::Segment::Final(data))
-                .await
-                .trace_expect("New stream push failed?!?");
-
-            match self.process_received_bundle(&mut rx, metadata).await {
-                Ok(Some((bundle, data))) => self.ingress_bundle(bundle, data).await,
-                // Re-validation rejected the orphan — delete its stranded data.
-                Ok(None) => {
-                    self.store.delete_data(&storage_name).await;
-                }
-                // A stored orphan that trips the gate has no live transfer to
-                // refuse — log, and delete its stranded data.
-                Err(e) => {
-                    warn!("Restart orphan rejected: {e}");
-                    self.store.delete_data(&storage_name).await;
+            // pipeline (process_received_bundle: parse, validate, report, run
+            // the Ingress filter, and execute the routing decision), handing
+            // the loaded bytes as the bundle stream: the pipeline's spool
+            // saves an admitted bundle fresh, so the orphan copy is stranded
+            // in every outcome and deleted below. A crash before the delete
+            // re-admits it on the next restart, where it loses as a
+            // duplicate.
+            let metadata = bundle::BundleMetadata::new(file_time, bundle::Origin::Recovered);
+            match self.process_received_bundle(&mut data, metadata).await {
+                ingress::Received::Dispatched | ingress::Received::Disposed => {}
+                // A stored orphan has no live transfer to refuse (reachable
+                // only when the size cap tightened across the restart).
+                ingress::Received::Refused => {
+                    warn!("Restart orphan refused, deleted");
                 }
             }
+            self.store.delete_data(&storage_name).await;
             metrics::counter!("bpa.restart.orphan").increment(1);
         }
     }
@@ -172,7 +169,12 @@ mod tests {
             None
         }
 
-        async fn on_register(&self, sink: Box<dyn cla::Sink>, _node_ids: &[NodeId]) {
+        async fn on_register(
+            &self,
+            sink: Box<dyn cla::Sink>,
+            _node_ids: &[NodeId],
+            _max_bundle_size: core::num::NonZeroU64,
+        ) {
             self.sink.call_once(|| sink);
         }
 
@@ -206,10 +208,6 @@ mod tests {
 
         async fn insert(&self, bundle: &bundle::Bundle) -> StorageResult<bool> {
             self.0.insert(bundle).await
-        }
-
-        async fn replace(&self, bundle: &bundle::Bundle) -> StorageResult<()> {
-            self.0.replace(bundle).await
         }
 
         async fn swap_status(
@@ -320,8 +318,7 @@ mod tests {
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
-        .unwrap()
-        .bundle;
+        .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -368,7 +365,7 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-2".to_string(), cla.clone(), None)
+        bpa.register_cla("recording-2".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         cla.sink
@@ -417,8 +414,7 @@ mod tests {
             data.clone(),
             hardy_bpv7::bpsec::no_keys,
         )
-        .unwrap()
-        .bundle;
+        .unwrap();
         let mut metadata = bundle::BundleMetadata::originated();
         metadata.storage_name = Some(storage_name);
         let bundle = bundle::Bundle {
@@ -454,7 +450,7 @@ mod tests {
             sink: hardy_async::sync::spin::Once::new(),
             offers_tx,
         });
-        bpa.register_cla("recording-3".to_string(), cla.clone(), None)
+        bpa.register_cla("recording-3".to_string(), cla.clone(), None, None)
             .await
             .unwrap();
         cla.sink
@@ -561,8 +557,7 @@ mod tests {
                 data.clone(),
                 hardy_bpv7::bpsec::no_keys,
             )
-            .unwrap()
-            .bundle;
+            .unwrap();
             let mut metadata = bundle::BundleMetadata::originated();
             metadata.storage_name = Some(storage_name);
             let bundle = bundle::Bundle {

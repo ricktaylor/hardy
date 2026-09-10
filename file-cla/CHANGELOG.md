@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - Adapted to the `hardy-bpa` deferred transfer-outcome CLA contract (new `Cla::forward` signature). Behaviour is unchanged: forwards remain terminal.
 
+### Fixed
+- An outbox file is consumed only when the BPA accepts the bundle (`Acceptance::Accepted`): a refused or failed dispatch now leaves the file in place for a later scan, where previously it was deleted regardless — destroying the bundle on a transient failure. A file larger than the BPA's `max_bundle_size` (learned at registration) is skipped with a warning instead of being read and offered to a certain refusal; the file is the operator's to clean up.
+- The "later scan" above now exists. The watcher only reacted to file-creation events, so a file left in place was never re-offered — and files already in the outbox at startup were never offered at all. The watcher now sweeps the outbox once at startup (watch first, then sweep, so no file is missed), and also matches rename-into events, so the atomic write-then-rename spool idiom triggers dispatch. Dispositions now match their failure class: a refusal is deterministic, so the file is quarantined to the `outbox/refused/` subdirectory (outside the non-recursive watch and sweep) for the operator to inspect or move back to retry; a dispatch failure is transient, so the file stays for the next startup sweep.
+
 ## [0.2.0]
 
 ### Changed

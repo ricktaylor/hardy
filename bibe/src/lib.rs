@@ -4,7 +4,7 @@ Bundle-in-Bundle Encapsulation (BIBE) for the Hardy BPA.
 This crate implements Bundle-in-Bundle Encapsulation (RFC 9171 Appendix B concept),
 enabling bundles to be tunneled through intermediate DTN networks by wrapping an
 inner bundle inside the payload of an outer bundle. It uses a hybrid CLA/Service
-architecture: encapsulation is performed by a [`Cla`](Cla)
+architecture: encapsulation is performed by a [`Cla`](hardy_bpa::cla::Cla)
 implementation that intercepts `forward()` calls, while decapsulation is handled by
 a [`Service`](hardy_bpa::services::Service) that receives outer bundles, extracts
 the inner bundle, and re-injects it into the BPA. Tunnel destinations are registered
@@ -80,8 +80,10 @@ impl Bibe {
     /// bibe.register(&bpa).await?;
     /// ```
     pub async fn register(self: &Arc<Self>, bpa: &dyn BpaRegistration) -> Result<(), Error> {
-        // Register CLA (uses Private address type)
-        bpa.register_cla("bibe".into(), self.cla.clone(), None)
+        // Register CLA (uses Private address type). No declared size limit:
+        // the encapsulation overhead is per-bundle, so the outer-vs-cap
+        // check happens per forward instead.
+        bpa.register_cla("bibe".into(), self.cla.clone(), None, None)
             .await?;
 
         // Register decapsulation service
@@ -159,6 +161,9 @@ pub enum Error {
     /// Failed to encode/decode CBOR.
     #[error(transparent)]
     Cbor(#[from] hardy_cbor::decode::Error),
+    /// The BPA refused the encapsulated bundle.
+    #[error("the BPA refused the encapsulated bundle")]
+    Refused,
     /// Failed to dispatch bundle.
     #[error(transparent)]
     Dispatch(#[from] hardy_bpa::cla::Error),
