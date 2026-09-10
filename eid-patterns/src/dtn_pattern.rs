@@ -1,4 +1,7 @@
-use super::*;
+use alloc::boxed::Box;
+use core::fmt;
+
+use hardy_bpv7::eid::{DtnNodeId, Eid};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, percent_encode};
 use winnow::{
     ModalResult, Parser,
@@ -6,6 +9,8 @@ use winnow::{
     stream::AsChar,
     token::take_while,
 };
+
+use crate::{EidPatternItem, Error, Result};
 
 // Encode set matching RFC 3986 unreserved characters (keeps alphanumerics, -, _, ., ~)
 const URI_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
@@ -27,7 +32,7 @@ pub enum DtnPatternItem {
 
 impl DtnPatternItem {
     #[inline]
-    pub(super) fn matches(&self, eid: &Eid) -> bool {
+    pub fn matches(&self, eid: &Eid) -> bool {
         match self {
             DtnPatternItem::None => eid.is_null(),
             DtnPatternItem::Any => matches!(eid, Eid::Dtn { .. } | Eid::Unknown { scheme: 1, .. }),
@@ -44,7 +49,7 @@ impl DtnPatternItem {
         }
     }
 
-    pub(super) fn is_subset(&self, other: &Self) -> bool {
+    pub fn is_subset(&self, other: &Self) -> bool {
         match (self, other) {
             (DtnPatternItem::None, DtnPatternItem::None) => true,
             (DtnPatternItem::None, DtnPatternItem::Any) => false,
@@ -64,7 +69,7 @@ impl DtnPatternItem {
         }
     }
 
-    pub(super) fn try_to_eid(&self) -> Option<Eid> {
+    pub fn try_to_eid(&self) -> Option<Eid> {
         match self {
             DtnPatternItem::None => Some(Eid::Null),
             DtnPatternItem::Exact(node_name, service_name) => Some(Eid::Dtn {
@@ -114,7 +119,7 @@ impl DtnPatternItem {
         }
     }
 
-    pub(crate) fn new_glob(pattern: &str) -> Result<Self, Error> {
+    pub fn new_glob(pattern: &str) -> Result<Self> {
         Ok(Self::Glob(
             glob::Pattern::new(
                 &percent_decode_str(pattern)
@@ -126,8 +131,8 @@ impl DtnPatternItem {
     }
 }
 
-impl core::fmt::Display for DtnPatternItem {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for DtnPatternItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::None => write!(f, "none"),
             Self::Any => write!(f, "**"),
@@ -153,7 +158,7 @@ impl core::fmt::Display for DtnPatternItem {
 }
 
 // dtn-pat-item = "dtn:" dtn-wkssp-exact / dtn-fullssp
-pub(super) fn parse_dtn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem> {
+pub fn parse_dtn_pat_item(input: &mut &str) -> ModalResult<EidPatternItem> {
     preceded(
         "dtn:",
         alt((
@@ -268,4 +273,58 @@ fn do_glob(node_name: &str, demux: &str, pattern: &glob::Pattern) -> bool {
             require_literal_leading_dot: false,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::EidPattern;
+
+    use super::*;
+
+    // Parses `s` and asserts it is a set of exactly one dtn pattern item equal
+    // to `expected`.
+    fn dtn_parse(s: &str, expected: DtnPatternItem) {
+        let EidPattern::Set(v) = s
+            .parse()
+            .unwrap_or_else(|e| panic!("failed to parse pattern {s}: {e}"))
+        else {
+            panic!("{s}: expected a pattern set");
+        };
+        let [EidPatternItem::DtnPatternItem(item)] = &v[..] else {
+            panic!("{s}: expected exactly one dtn pattern item, got {v:?}");
+        };
+        assert_eq!(item, &expected);
+    }
+
+    #[test]
+    fn parse_items() {
+        dtn_parse(
+            "dtn://node/service",
+            DtnPatternItem::Exact("node".into(), "service".into()),
+        );
+        dtn_parse("dtn://node/*", DtnPatternItem::new_glob("node/*").unwrap());
+        dtn_parse(
+            "dtn://node/**",
+            DtnPatternItem::new_glob("node/**").unwrap(),
+        );
+        dtn_parse(
+            "dtn://node/pre/**",
+            DtnPatternItem::new_glob("node/pre/**").unwrap(),
+        );
+        dtn_parse(
+            "dtn://**/some/serv",
+            DtnPatternItem::new_glob("**/some/serv").unwrap(),
+        );
+    }
+
+    #[test]
+    fn none_pattern() {
+        dtn_parse("dtn:none", DtnPatternItem::None);
+    }
+
+    #[test]
+    fn scheme_wildcard() {
+        dtn_parse("dtn:**", DtnPatternItem::Any);
+        dtn_parse("1:**", DtnPatternItem::Any);
+    }
 }

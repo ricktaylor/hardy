@@ -8,30 +8,36 @@ EIDs as defined in RFC 9171. Patterns can be parsed from text representations
 such as `ipn:*.*` or union sets like `ipn:1.1|ipn:2.*`. The
 crate supports subset testing, specificity scoring for route selection, and
 conversion to/from exact EIDs.
+
+# Feature Flags
+
+- `std`: links the standard library and enables the dependencies' `std` features; without it the crate is `no_std` + `alloc`.
+- `dtn-pat-item`: enables `dtn` scheme glob pattern items (implies `std`; adds the `percent-encoding` and `glob` dependencies). Without it, `dtn` EIDs are only matchable by scheme-family wildcards.
+- `serde`: `Serialize`/`Deserialize` for [`EidPattern`] through its text form.
 */
 
 extern crate alloc;
 
-#[cfg(test)]
-use alloc::vec;
 use alloc::{
     borrow::Cow,
     boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
+use core::{cmp::Ordering, fmt};
 
 use hardy_bpv7::eid::{DtnNodeId, Eid, IpnNodeId, NodeId};
 use thiserror::Error;
+
+#[cfg(feature = "dtn-pat-item")]
+use crate::dtn_pattern::DtnPatternItem;
+use crate::ipn_pattern::IpnPatternItem;
 
 mod ipn_pattern;
 mod parse;
 
 #[cfg(feature = "dtn-pat-item")]
 mod dtn_pattern;
-
-#[cfg(test)]
-mod tests;
 
 /// Errors produced by EID pattern parsing and conversion.
 #[derive(Error, Debug)]
@@ -40,10 +46,14 @@ pub enum Error {
     #[error("Parse error: {0}")]
     ParseError(String),
 
-    /// The pattern is not an exact EID (contains wildcards or multiple items).
+    /// The pattern does not denote exactly one EID: it contains wildcards,
+    /// its items name different EIDs, or an exact-looking item denotes no
+    /// valid EID (e.g. `ipn:0.0.5`).
     #[error("Not an exact Eid")]
     NotExact,
 }
+
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// A pattern that matches one or more BPv7 Endpoint Identifiers.
 ///
@@ -61,22 +71,22 @@ pub enum EidPattern {
 }
 
 impl PartialOrd for EidPattern {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for EidPattern {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         // Higher specificity score = Less (most specific patterns first in BTreeMap)
         let self_score = self.specificity_score().unwrap_or(0);
         let other_score = other.specificity_score().unwrap_or(0);
         other_score.cmp(&self_score).then_with(|| {
             // Structural tiebreaker for equal scores
             match (self, other) {
-                (EidPattern::Any, EidPattern::Any) => core::cmp::Ordering::Equal,
-                (EidPattern::Any, EidPattern::Set(_)) => core::cmp::Ordering::Less,
-                (EidPattern::Set(_), EidPattern::Any) => core::cmp::Ordering::Greater,
+                (EidPattern::Any, EidPattern::Any) => Ordering::Equal,
+                (EidPattern::Any, EidPattern::Set(_)) => Ordering::Less,
+                (EidPattern::Set(_), EidPattern::Any) => Ordering::Greater,
                 (EidPattern::Set(a), EidPattern::Set(b)) => a.cmp(b),
             }
         })
@@ -144,7 +154,7 @@ impl EidPattern {
 impl TryFrom<Cow<'_, str>> for EidPattern {
     type Error = Error;
 
-    fn try_from(value: Cow<'_, str>) -> Result<Self, Self::Error> {
+    fn try_from(value: Cow<'_, str>) -> Result<Self> {
         value.parse()
     }
 }
@@ -158,9 +168,11 @@ impl From<EidPattern> for String {
 impl From<IpnNodeId> for EidPattern {
     fn from(value: IpnNodeId) -> Self {
         EidPattern::Set(
-            [EidPatternItem::IpnPatternItem(
-                ipn_pattern::IpnPatternItem::new(value.allocator_id, value.node_number, None),
-            )]
+            [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
+                value.allocator_id,
+                value.node_number,
+                None,
+            ))]
             .into(),
         )
     }
@@ -171,8 +183,8 @@ impl From<DtnNodeId> for EidPattern {
     fn from(value: DtnNodeId) -> Self {
         EidPattern::Set(
             [EidPatternItem::DtnPatternItem(
-                dtn_pattern::DtnPatternItem::new_glob(format!("{}/**", value.node_name).as_str())
-                    .expect("Invalid glob"),
+                DtnPatternItem::new_glob(format!("{}/**", value.node_name).as_str())
+                    .expect("dtn node names contain no glob metacharacters"),
             )]
             .into(),
         )
@@ -194,9 +206,11 @@ impl From<NodeId> for EidPattern {
     fn from(value: NodeId) -> Self {
         match value {
             NodeId::LocalNode => EidPattern::Set(
-                [EidPatternItem::IpnPatternItem(
-                    ipn_pattern::IpnPatternItem::new(0, u32::MAX, None),
-                )]
+                [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
+                    0,
+                    u32::MAX,
+                    None,
+                ))]
                 .into(),
             ),
             NodeId::Ipn(node_id) => node_id.into(),
@@ -210,16 +224,18 @@ impl From<Eid> for EidPattern {
         match value {
             Eid::Null => EidPattern::Set(
                 [
-                    EidPatternItem::IpnPatternItem(ipn_pattern::IpnPatternItem::new(0, 0, Some(0))),
+                    EidPatternItem::IpnPatternItem(IpnPatternItem::new(0, 0, Some(0))),
                     #[cfg(feature = "dtn-pat-item")]
-                    EidPatternItem::DtnPatternItem(dtn_pattern::DtnPatternItem::None),
+                    EidPatternItem::DtnPatternItem(DtnPatternItem::None),
                 ]
                 .into(),
             ),
             Eid::LocalNode(service_number) => EidPattern::Set(
-                [EidPatternItem::IpnPatternItem(
-                    ipn_pattern::IpnPatternItem::new(0, u32::MAX, Some(service_number)),
-                )]
+                [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
+                    0,
+                    u32::MAX,
+                    Some(service_number),
+                ))]
                 .into(),
             ),
             Eid::LegacyIpn {
@@ -238,13 +254,11 @@ impl From<Eid> for EidPattern {
                     },
                 service_number,
             } => EidPattern::Set(
-                [EidPatternItem::IpnPatternItem(
-                    ipn_pattern::IpnPatternItem::new(
-                        allocator_id,
-                        node_number,
-                        Some(service_number),
-                    ),
-                )]
+                [EidPatternItem::IpnPatternItem(IpnPatternItem::new(
+                    allocator_id,
+                    node_number,
+                    Some(service_number),
+                ))]
                 .into(),
             ),
             #[cfg(feature = "dtn-pat-item")]
@@ -252,9 +266,10 @@ impl From<Eid> for EidPattern {
                 node_name,
                 service_name,
             } => EidPattern::Set(
-                [EidPatternItem::DtnPatternItem(
-                    dtn_pattern::DtnPatternItem::Exact(node_name.node_name, service_name),
-                )]
+                [EidPatternItem::DtnPatternItem(DtnPatternItem::Exact(
+                    node_name.node_name,
+                    service_name,
+                ))]
                 .into(),
             ),
             #[cfg(not(feature = "dtn-pat-item"))]
@@ -275,18 +290,32 @@ impl From<Eid> for EidPattern {
 impl TryFrom<EidPattern> for Eid {
     type Error = Error;
 
-    fn try_from(value: EidPattern) -> Result<Self, Self::Error> {
+    /// Succeeds when every item in the set denotes the same single EID. This
+    /// covers the usual one-item exact pattern, and also the two-item set that
+    /// `From<Eid>` produces for [`Eid::Null`] (`ipn:0.0` | `dtn:none`), whose
+    /// items both name the null endpoint.
+    fn try_from(value: EidPattern) -> Result<Self> {
         match value {
-            EidPattern::Set(items) if items.len() == 1 => {
-                items[0].try_to_eid().ok_or(Error::NotExact)
+            EidPattern::Set(items) => {
+                let mut items = items.iter();
+                let first = items
+                    .next()
+                    .and_then(EidPatternItem::try_to_eid)
+                    .ok_or(Error::NotExact)?;
+                for item in items {
+                    if item.try_to_eid().as_ref() != Some(&first) {
+                        return Err(Error::NotExact);
+                    }
+                }
+                Ok(first)
             }
-            _ => Err(Error::NotExact),
+            EidPattern::Any => Err(Error::NotExact),
         }
     }
 }
 
-impl core::fmt::Display for EidPattern {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for EidPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EidPattern::Any => write!(f, "*:**"),
             EidPattern::Set(items) => {
@@ -332,10 +361,10 @@ pub enum EidPatternItem {
     /// Matches any EID using the given text scheme name (e.g. `dtn:**`).
     AnyTextScheme(String),
     /// A pattern over the `ipn` scheme with optional wildcards on each component.
-    IpnPatternItem(ipn_pattern::IpnPatternItem),
+    IpnPatternItem(IpnPatternItem),
     /// A pattern over the `dtn` scheme using glob-style matching.
     #[cfg(feature = "dtn-pat-item")]
-    DtnPatternItem(dtn_pattern::DtnPatternItem),
+    DtnPatternItem(DtnPatternItem),
 }
 
 impl EidPatternItem {
@@ -425,8 +454,8 @@ impl EidPatternItem {
     }
 }
 
-impl core::fmt::Display for EidPatternItem {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Display for EidPatternItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EidPatternItem::IpnPatternItem(i) => write!(f, "ipn:{i}"),
             #[cfg(feature = "dtn-pat-item")]

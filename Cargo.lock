@@ -2076,7 +2076,6 @@ dependencies = [
  "glob",
  "hardy-bpv7",
  "hardy-eid-patterns",
- "hex-literal",
  "percent-encoding",
  "serde",
  "thiserror",

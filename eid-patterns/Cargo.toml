@@ -30,5 +30,4 @@ glob = { version = "0.3", optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-hex-literal = "1"
 hardy-eid-patterns = { path = ".", features = ["dtn-pat-item"] }
