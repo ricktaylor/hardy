@@ -112,7 +112,6 @@ pub mod dtn_time;
 pub mod editor;
 pub mod eid;
 pub mod hop_info;
-pub mod lifetime;
 pub mod parse;
 pub mod primary_block;
 pub mod rewrite;

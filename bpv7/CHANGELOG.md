@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+- **BREAKING:** the `lifetime` module and its `Lifetime` newtype. It had no consumers: `PrimaryBlock::lifetime` is a `core::time::Duration` and no other code referenced the type.
+- **BREAKING:** the `eid::IpnServiceNumber` and `eid::DtnServiceName` type aliases. They were transparent spellings of `u32` and `Box<str>`; the underlying types now appear directly in the `Service` and `Eid` signatures (same types, so only code naming the aliases breaks).
+- **BREAKING:** `PrimaryBlock::as_block` is crate-internal. It fabricates the block-0 index entry for the parser and editor, which are its only callers.
+
 ### Fixed
 - A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
 

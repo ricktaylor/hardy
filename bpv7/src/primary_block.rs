@@ -208,7 +208,10 @@ impl PrimaryBlock {
     /// `data` is set to `0..extent.len()` per the primary-block
     /// convention (no inner CBOR wrapper — the whole primary block IS
     /// the data, head byte included).
-    pub fn as_block(crc_type: crc::CrcType, extent: core::ops::Range<usize>) -> block::Block {
+    pub(crate) fn as_block(
+        crc_type: crc::CrcType,
+        extent: core::ops::Range<usize>,
+    ) -> block::Block {
         let len = extent.len() as u64;
         block::Block {
             block_type: block::Type::Primary,

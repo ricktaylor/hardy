@@ -136,11 +136,6 @@ impl fmt::Display for NodeId {
     }
 }
 
-/// The service demultiplexer for the `ipn` EID scheme (RFC 9171 Section 4.2.5.1.2).
-pub type IpnServiceNumber = u32;
-/// The service demultiplexer for the `dtn` EID scheme (RFC 9171 Section 4.2.5.1.3).
-pub type DtnServiceName = Box<str>;
-
 /// The service demultiplexer component of an [`Eid`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(
@@ -150,9 +145,9 @@ pub type DtnServiceName = Box<str>;
 )]
 pub enum Service {
     /// A numeric service number from the `ipn` scheme.
-    Ipn(IpnServiceNumber),
+    Ipn(u32),
     /// A named service path from the `dtn` scheme.
-    Dtn(DtnServiceName),
+    Dtn(Box<str>),
 }
 
 impl fmt::Display for Service {
@@ -200,27 +195,27 @@ pub enum Eid {
     #[default]
     Null,
     /// A service on the local node, used as a self-referential sentinel.
-    LocalNode(IpnServiceNumber),
+    LocalNode(u32),
     /// An `ipn`-scheme EID decoded from the legacy two-element CBOR array encoding.
     LegacyIpn {
         /// The fully qualified node number.
         fqnn: IpnNodeId,
         /// The service number demultiplexer.
-        service_number: IpnServiceNumber,
+        service_number: u32,
     },
     /// An `ipn`-scheme EID (RFC 9171 Section 4.2.5.1.2).
     Ipn {
         /// The fully qualified node number.
         fqnn: IpnNodeId,
         /// The service number demultiplexer.
-        service_number: IpnServiceNumber,
+        service_number: u32,
     },
     /// A `dtn`-scheme EID (RFC 9171 Section 4.2.5.1.3).
     Dtn {
         /// The node authority component.
         node_name: DtnNodeId,
         /// The service path demultiplexer.
-        service_name: DtnServiceName,
+        service_name: Box<str>,
     },
     /// An EID with an unrecognised scheme code, preserved as raw CBOR bytes.
     Unknown {
