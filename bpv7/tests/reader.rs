@@ -11,7 +11,7 @@ use hardy_bpv7::{
     creation_timestamp::CreationTimestamp,
     eid::Eid,
     parse,
-    reader::{Availability, Reader},
+    reader::{Availability, Reader, ReaderExt},
 };
 use std::collections::HashMap;
 
@@ -318,4 +318,48 @@ fn mismatched_parse_products_error_on_the_inherent_door() {
         reader.block_data(1),
         Err(hardy_bpv7::Error::Altered)
     ));
+}
+
+#[test]
+fn extract_decodes_an_available_payload() {
+    // A payload that is itself canonical CBOR: extract() decodes it.
+    let (_, bundle_bytes) = Builder::new("ipn:1.2".parse().unwrap(), "ipn:2.1".parse().unwrap())
+        .with_payload(hardy_cbor::encode::emit(&42u64).0.into())
+        .build(CreationTimestamp::now())
+        .unwrap();
+    let parse::Parsed {
+        data, bundle, bcbs, ..
+    } = parse::parse(bytes::Bytes::copy_from_slice(&bundle_bytes)).expect("parse");
+
+    let keys = key::KeySet::EMPTY;
+    let reader = DecryptingReader::new(&bundle.blocks, &data, &bcbs, &keys);
+
+    // Through the concrete reader, and through the dyn object the hooks
+    // hand out — the blanket impl must cover both.
+    assert_eq!(reader.extract::<u64>(1).expect("decodes"), Some(42));
+    let dyn_reader: &dyn Reader = &reader;
+    assert_eq!(dyn_reader.extract::<u64>(1).expect("decodes"), Some(42));
+
+    // Absent block: None, not an error.
+    assert_eq!(reader.extract::<u64>(99).expect("absent is None"), None);
+}
+
+#[test]
+fn extract_flattens_unavailable_and_reports_decode_failures() {
+    let key = enc_key();
+    let (data, blocks, bcbs) = encrypted_bundle(&key);
+
+    // Covered with no key: unavailable flattens to None.
+    let empty = key::KeySet::EMPTY;
+    let reader = DecryptingReader::new(&blocks, &data, &bcbs, &empty);
+    assert_eq!(reader.extract::<u64>(1).expect("unavailable is None"), None);
+
+    // Decryptable, but the plaintext is not a CBOR u64: a decode error.
+    let keys = key::KeySet::new(vec![key.clone()]);
+    let reader = DecryptingReader::new(&blocks, &data, &bcbs, &keys);
+    assert!(
+        reader
+            .extract::<u64>(1)
+            .is_err_and(|e| matches!(e, hardy_bpv7::Error::InvalidCBOR(_)))
+    );
 }
