@@ -351,8 +351,12 @@ impl BundleParser {
             // Body range recovered from the block index — no need for
             // the parser to have stashed it separately.
             let body = bib_block.payload_range();
-            let body_end = body.end as usize;
-            let mut o = body.start as usize;
+            // Non-payload blocks are wholly inside the staged buffer, so
+            // their offsets fit the address space by construction.
+            let body_end = usize::try_from(body.end)
+                .expect("non-payload block offsets are bounded by the in-memory buffer");
+            let mut o = usize::try_from(body.start)
+                .expect("non-payload block offsets are bounded by the in-memory buffer");
             // Bound the slice to the body: `OperationSet::from_cbor` uses
             // `parse_sequence`, which requires `offset == data.len()` at
             // completion (cbor series.rs:79). Handing it the whole bundle
@@ -612,7 +616,8 @@ impl BundleParser {
                 // Body is in the buffer. Consume CRC + trailing break and
                 // verify the CRC. Any NeedMoreData from here propagates
                 // normally — we want the small wait.
-                offset = body_end as usize;
+                offset = usize::try_from(body_end)
+                    .expect("in-buffer block bodies are bounded by the in-memory buffer");
                 let (new_offset, crc_value_start) = try_consume_block_after_body(
                     data,
                     offset,
@@ -698,8 +703,17 @@ impl BundleParser {
             // and BCB-coverage on each block is known.
             let bcb_ops = match header.block_type {
                 BlockType::BlockSecurity => {
-                    let mut o = block_start + header.data_start as usize;
-                    let body_end = block_start + header.data_end as usize;
+                    // A BCB is a non-payload block: its body is wholly
+                    // inside the staged buffer, so the offsets fit the
+                    // address space by construction.
+                    let mut o = block_start
+                        + usize::try_from(header.data_start).expect(
+                            "non-payload block offsets are bounded by the in-memory buffer",
+                        );
+                    let body_end = block_start
+                        + usize::try_from(header.data_end).expect(
+                            "non-payload block offsets are bounded by the in-memory buffer",
+                        );
                     // See the BIB call in `finish()` for the slice-bound
                     // rationale — `parse_sequence` requires consuming the
                     // whole input.

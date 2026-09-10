@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **BREAKING:** `PrimaryBlock::as_block` is crate-internal. It fabricates the block-0 index entry for the parser and editor, which are its only callers.
 
 ### Fixed
+- The parser's block-offset conversions no longer use bare `as usize` casts on wire-derived `u64` lengths: on a 32-bit target an offset beyond the address space (excluded today by the staged-buffer invariant) now fails loudly via `try_from` + a stated invariant instead of silently truncating. No behavior change on any supported configuration.
 - A CBOR tag on the status flag of a status-report assertion was silently accepted — the bare `bool` decode folds tag presence into a canonical flag the caller discarded. It is now rejected (`InvalidField("status")` wrapping `NotCanonical`).
 
 ### Changed
