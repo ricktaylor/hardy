@@ -848,11 +848,30 @@ fn extension_editor_refuses_bcb_covered_targets() {
 
 #[test]
 fn extension_editor_refuses_unprovable_coverage() {
-    // One BIB signing both the payload and the extension block, then the
-    // payload encrypted: the Encryptor also encrypts the covering BIB, so
-    // a keyless re-parse cannot prove what the BIB covers — the extension
-    // block's coverage is Maybe, with no BCB of its own.
+    // Encrypting a signed block also encrypts its covering BIB (and, per
+    // the RFC 9172 cascade, the BIB's other targets). The parser then
+    // cannot read the encrypted BIB's target list, so it conservatively
+    // sweeps every non-security block it cannot prove uncovered to
+    // BibCoverage::Maybe — the actual hidden targets (which the cascade
+    // also gave a BCB) and innocent bystanders (which have none) alike.
+    // Both shapes are conformant wire, and both must refuse.
     let (bundle, data, ext) = make_bundle_with_extension();
+
+    // The bystander: a second extension block nobody signs or encrypts.
+    let bystander_data = ok(Editor::new(&bundle, &data).push_block(block::Type::Unrecognised(201)))
+        .with_data(b"bystander".as_slice().into())
+        .rebuild()
+        .rebuild()
+        .map(|c| Chunk::flatten(c, &data))
+        .unwrap();
+    let bundle = reparse(&bystander_data);
+    let bystander = bundle
+        .blocks
+        .iter()
+        .find(|(_, b)| matches!(b.block_type, block::Type::Unrecognised(201)))
+        .map(|(n, _)| *n)
+        .expect("the bystander block is present");
+
     let kek: key::Key = serde_json::from_value(serde_json::json!({
         "kid": "ipn:2.1",
         "kty": "oct",
@@ -861,15 +880,7 @@ fn extension_editor_refuses_unprovable_coverage() {
         "k": rand_k(16)
     }))
     .unwrap();
-    let signed_bytes = signer::Signer::new(&bundle, &data)
-        .sign_block(
-            1,
-            signer::Context::HMAC_SHA2(ScopeFlags::default()),
-            "ipn:2.1".parse().unwrap(),
-            &kek,
-        )
-        .map_err(|(_, e)| e)
-        .expect("sign the payload")
+    let signed_bytes = signer::Signer::new(&bundle, &bystander_data)
         .sign_block(
             ext,
             signer::Context::HMAC_SHA2(ScopeFlags::default()),
@@ -897,32 +908,43 @@ fn extension_editor_refuses_unprovable_coverage() {
     };
     let encrypted_bytes = encryptor::Encryptor::new(&signed, &signed_bytes)
         .encrypt_block(
-            1,
+            ext,
             encryptor::Context::AES_GCM(flags),
             "ipn:2.1".parse().unwrap(),
             &enc_key,
         )
         .map_err(|(_, e)| e)
-        .expect("encrypt the payload (and so its covering BIB)")
+        .expect("encrypt the signed extension block (and so its covering BIB)")
         .rebuild()
         .expect("rebuild encrypted");
     let encrypted = reparse(&encrypted_bytes);
-    // The RFC 9172 cascade also BCB-covers every target of the encrypted
-    // BIB, so Maybe never appears BCB-less on an extension block from
-    // conformant wire (only on the primary, which the `<= 1` gate already
-    // reserves) — but Maybe is the first condition the gate tests.
+
+    // The actual hidden target: Maybe, with the cascade's BCB.
+    let ext_block = encrypted.blocks.get(&ext).unwrap();
     assert!(
-        matches!(
-            encrypted.blocks.get(&ext).unwrap().bib,
-            block::BibCoverage::Maybe
-        ),
-        "the undecryptable BIB must leave the extension block's coverage unprovable"
+        matches!(ext_block.bib, block::BibCoverage::Maybe) && ext_block.bcb.is_some(),
+        "the encrypted BIB's real target is swept to Maybe and BCB-covered"
+    );
+    // The bystander: Maybe with no BCB at all — unprovable coverage on an
+    // otherwise untouched extension block.
+    let bystander_block = encrypted.blocks.get(&bystander).unwrap();
+    assert!(
+        matches!(bystander_block.bib, block::BibCoverage::Maybe) && bystander_block.bcb.is_none(),
+        "the sweep must mark the bystander Maybe without any BCB"
     );
 
     let mut editor = ExtensionEditor::new(&encrypted, &encrypted_bytes);
     assert!(matches!(
         editor.replace(ext, b"x".as_slice().into()),
         Err(extension_editor::Error::Covered(n)) if n == ext
+    ));
+    assert!(matches!(
+        editor.replace(bystander, b"x".as_slice().into()),
+        Err(extension_editor::Error::Covered(n)) if n == bystander
+    ));
+    assert!(matches!(
+        editor.remove(bystander),
+        Err(extension_editor::Error::Covered(n)) if n == bystander
     ));
 }
 
